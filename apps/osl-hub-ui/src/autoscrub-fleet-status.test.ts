@@ -1,19 +1,35 @@
-import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   isTauriRuntime: vi.fn(() => true),
+  emitTo: vi.fn(),
+  listen: vi.fn(() => Promise.resolve(() => undefined)),
+  window: {
+    isFullscreen: vi.fn(() => Promise.resolve(false)),
+    setFullscreen: vi.fn(() => Promise.resolve()),
+    onResized: vi.fn(() => Promise.resolve(() => undefined)),
+    isMaximized: vi.fn(() => Promise.resolve(false)),
+    minimize: vi.fn(() => Promise.resolve()),
+    toggleMaximize: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+    setFocus: vi.fn(() => Promise.resolve()),
+  },
 }));
 
+vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => mocks.window }));
 vi.mock("./preferences", () => ({ isTauriRuntime: mocks.isTauriRuntime }));
+vi.mock("./logos", () => ({
+  browserLogo: (id: string) => `<span data-logo="${id}">${id}</span>`,
+  providerLogo: (id: string) => `<span data-logo="${id}">${id}</span>`,
+  serviceLogo: (id: string) => `<span data-logo="${id}">${id}</span>`,
+}));
 
 import { loadAutoScrubRunFleetStatus } from "./autoscrub-unattended-run";
 import { parseAutoScrubFleetStatus, projectAutoScrubFleetStatus } from "./autoscrub-contract";
-
-const mainSource = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
-const runnerSource = readFileSync(new URL("./autoscrub-unattended-run.ts", import.meta.url), "utf8");
 
 const fleetStatus = {
   contract: "autoscrubRunFleet.v1",
@@ -37,18 +53,43 @@ const fleetStatus = {
   }],
 } as const;
 
+async function loadUi() {
+  vi.resetModules();
+  const store = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => { store.set(key, value); },
+    removeItem: (key: string) => { store.delete(key); },
+    clear: () => { store.clear(); },
+  });
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
+  return import("./main");
+}
+
 describe("AutoScrub fleet status renderer contract", () => {
   beforeEach(() => {
+    vi.unstubAllGlobals();
     mocks.invoke.mockReset();
     mocks.isTauriRuntime.mockReturnValue(true);
   });
 
-  it("loads the fleet status command instead of the retired single-run command", async () => {
+  it("loads and returns the native fleet status", async () => {
     mocks.invoke.mockResolvedValue(fleetStatus);
     await expect(loadAutoScrubRunFleetStatus()).resolves.toEqual(fleetStatus);
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
     expect(mocks.invoke).toHaveBeenCalledWith("get_autoscrub_run_fl");
-    expect(runnerSource).not.toContain("get_autoscrub_run_status");
-    expect(mainSource).toContain("loadAutoScrubRunFleetStatus");
+  });
+
+  it("renders a loaded fleet status in the AutoScrub controls", async () => {
+    const { __oslHubUiTest } = await loadUi();
+    __oslHubUiTest.reset({ route: "settings", autoScrubFleetStatus: fleetStatus });
+
+    const markup = __oslHubUiTest.renderSettingsSection("scrub");
+
+    expect(markup).toContain("autoscrub-status-working");
+    expect(markup).toContain('aria-disabled="false"');
+    expect(markup).toContain('id="autoscrub-stop"');
   });
 
   it("strictly rejects optimistic or legacy run status payloads", () => {
