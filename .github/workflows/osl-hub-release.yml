@@ -122,3 +122,24 @@ jobs:
           python scripts/verify_update_feed_acceptance.py \
             --manifest candidate/latest.json \
             --installer "candidate/$installer_name"
+
+      - name: Publish signed release checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_TAG: ${{ steps.hub-version.outputs.tag }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.HUB_TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.HUB_TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          rm -rf release-assets
+          mkdir release-assets
+          gh release download "$CANDIDATE_TAG" --dir release-assets --clobber
+          mapfile -t assets < <(find release-assets -maxdepth 1 -type f \
+            ! -name SHA256SUMS.txt ! -name SHA256SUMS.txt.minisig -printf '%f\n' | sort)
+          test "${#assets[@]}" -gt 0
+          npm install --global @tauri-apps/cli@2.11.4
+          python scripts/publish_release_checksums.py --sign --output release-assets/SHA256SUMS.txt \
+            "${assets[@]/#/release-assets/}"
+          gh release upload "$CANDIDATE_TAG" release-assets/SHA256SUMS.txt \
+            release-assets/SHA256SUMS.txt.minisig --clobber
