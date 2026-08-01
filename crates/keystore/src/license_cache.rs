@@ -22,7 +22,7 @@
 //! `create_dir_all` already provisions the directory; we don't
 //! re-create it here.
 //!
-//! Versioning: blob version starts at 1. Future migrations bump
+//! Versioning: blob version starts at 2. Future migrations bump
 //! this; loaders raise [`Error::BlobVersionMismatch`] on mismatch.
 
 use crate::sealer::Sealer;
@@ -32,7 +32,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-const LICENSE_BLOB_VERSION: u32 = 1;
+const LICENSE_BLOB_VERSION: u32 = 2;
 
 const INSECURE_BANNER: &str = "INSECURE prototype license cache — plain JSON, no TPM/keyring \
      sealing. The license plaintext is at rest unencrypted; treat \
@@ -69,6 +69,14 @@ pub struct LicenseCacheInner {
     /// (HTTP 200) round-trip. One of `"ACTIVE" | "GRACE" |
     /// "CANCELLED" | "EXPIRED" | "REVOKED" | "UNKNOWN" | "PENDING"`.
     pub last_validated_status: String,
+    /// Unix seconds at which this activation code first started its
+    /// entitlement period. This comes only from `/v1/license/redeem` and is
+    /// preserved across later validate-only refreshes.
+    pub redeemed_at: Option<i64>,
+    /// Unix seconds at which the prepaid entitlement period ends. This comes
+    /// only from `/v1/license/redeem` and is preserved across later
+    /// validate-only refreshes.
+    pub expires_at: Option<i64>,
     /// Cached `current_period_end` (unix seconds) from the same
     /// round-trip. `None` for PENDING / UNKNOWN / pre-F2.0 records.
     pub current_period_end: Option<i64>,

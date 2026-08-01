@@ -20,6 +20,8 @@ fn paid_sealed_entitlement_is_available_after_bootstrap_without_network() {
     let entitlement = keystore::LicenseCacheInner {
         license_plaintext: "OSL-2222-3333-4444-5555".to_owned(),
         last_validated_status: "ACTIVE".to_owned(),
+        redeemed_at: Some(1_700_000_000),
+        expires_at: Some(1_800_000_000),
         current_period_end: Some(1_800_000_000),
         last_validated_at: 1_700_000_000,
         checksum_ok: true,

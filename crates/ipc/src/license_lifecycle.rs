@@ -225,6 +225,8 @@ pub fn refresh_license_state_with_url(
                 let updated = LicenseCacheInner {
                     license_plaintext: cache.license_plaintext.clone(),
                     last_validated_status: resp.status.clone(),
+                    redeemed_at: cache.redeemed_at,
+                    expires_at: cache.expires_at,
                     current_period_end: resp.current_period_end,
                     last_validated_at: now,
                     checksum_ok: resp.checksum_ok,
