@@ -144,7 +144,7 @@ import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./
 import { OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { parseCircleAudience, type CircleAudience } from "./osl-collab";
-import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, type FriendVerificationCopy } from "./ui-behavior";
+import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
 import { BurnGuaranteeCopy, type BurnGuaranteeState } from "./two-step-burn";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -4389,7 +4389,7 @@ function ownedConfirmationMarkup(): string {
     : request.kind === "removeFriend"
       ? `<p>Removing ${escapeHtml(person?.alias ?? "this friend")} deletes this friend's keys from this device and withdraws every conversation approval they hold.</p><p>This cannot be undone.</p>`
     : `<p>Pro features will be unavailable on this device until you activate again.</p>`;
-  return `<dialog class="owned-confirmation-dialog" id="owned-confirmation-dialog" aria-labelledby="owned-confirmation-title"><section class="owned-confirmation-card"><header><h2 id="owned-confirmation-title">${title}</h2><button class="icon-button" data-close-owned-confirmation aria-label="Cancel">×</button></header>${detail}<p class="form-status" role="status">${escapeHtml(ownedConfirmationError)}</p><footer><button class="button" data-close-owned-confirmation>Cancel</button><button class="button ${verifying ? "primary" : "danger"}" id="owned-confirmation-submit" type="button" ${ownedConfirmationBusy || verifying ? "disabled" : ""}>${ownedConfirmationBusy ? "Working…" : verifying ? "Accept key" : removing ? "Remove friend" : "Clear activation"}</button></footer></section></dialog>`;
+  return `<dialog class="owned-confirmation-dialog" id="owned-confirmation-dialog" aria-labelledby="owned-confirmation-title"><section class="owned-confirmation-card"><header><h2 id="owned-confirmation-title">${title}</h2><button class="icon-button" data-close-owned-confirmation aria-label="Cancel">×</button></header>${detail}<p class="form-status" role="status">${escapeHtml(ownedConfirmationError)}</p><footer><button class="button" data-close-owned-confirmation>Cancel</button><button class="button ${verifying ? "primary" : "danger"}" id="owned-confirmation-submit" type="button" ${ownedConfirmationSubmitDisabled(ownedConfirmationBusy) ? "disabled" : ""}>${ownedConfirmationBusy ? "Working…" : verifying ? "Accept key" : removing ? "Remove friend" : "Clear activation"}</button></footer></section></dialog>`;
 }
 
 function serviceContent(): string {
@@ -5070,10 +5070,10 @@ function bindOwnedConfirmation(): void {
   const dialog = document.querySelector<HTMLDialogElement>("#owned-confirmation-dialog");
   dialog?.addEventListener("cancel", (event) => { event.preventDefault(); closeOwnedConfirmation(); });
   dialog?.addEventListener("close", () => { if (ownedConfirmation) closeOwnedConfirmation(); });
-  const input = document.querySelector<HTMLInputElement>("#friend-verification-input");
   const submit = document.querySelector<HTMLButtonElement>("#owned-confirmation-submit");
-  const validate = (): void => { if (input && submit) submit.disabled = ownedConfirmationBusy || input.value.length === 0; };
-  input?.addEventListener("input", validate);
+  // No `input` listener gates this button. Its state is a function of whether a
+  // submit is in flight; what the field holds is read at submit time, so a value
+  // that arrived by paste or programmatic fill works exactly like a typed one.
   submit?.addEventListener("click", () => void executeOwnedConfirmation());
 }
 
@@ -7466,7 +7466,15 @@ async function executeOwnedConfirmation(): Promise<void> {
   const request = ownedConfirmation;
   const verificationInput = document.querySelector<HTMLInputElement>("#friend-verification-input");
   const typedVerificationCode = request.kind === "verifyFriend" ? verificationInput?.value ?? "" : "";
-  if (request.kind === "verifyFriend" && typedVerificationCode.length === 0) return;
+  if (request.kind === "verifyFriend") {
+    const submission = verificationSubmission(typedVerificationCode);
+    if ("refusal" in submission) {
+      ownedConfirmationError = submission.refusal;
+      const blankStatus = document.querySelector<HTMLElement>("#owned-confirmation-dialog .form-status");
+      if (blankStatus) blankStatus.textContent = submission.refusal;
+      return;
+    }
+  }
   ownedConfirmationBusy = true;
   ownedConfirmationError = "";
   const submit = document.querySelector<HTMLButtonElement>("#owned-confirmation-submit");
@@ -7477,7 +7485,7 @@ async function executeOwnedConfirmation(): Promise<void> {
     const status = document.querySelector<HTMLElement>("#owned-confirmation-dialog .form-status");
     if (status) status.textContent = message;
     if (submit) {
-      submit.disabled = request.kind === "verifyFriend" && (verificationInput?.value.length ?? 0) === 0;
+      submit.disabled = false;
       submit.textContent = request.kind === "verifyFriend" ? "Accept key" : request.kind === "removeFriend" ? "Remove friend" : "Clear activation";
     }
   };

@@ -110,6 +110,40 @@ export function friendVerificationCopy(
   };
 }
 
+export const EMPTY_VERIFICATION_CODE_REFUSAL =
+  "Enter the code shown on your friend's screen before accepting.";
+
+/**
+ * Whether the owned-confirmation submit button is unusable.
+ *
+ * Being mid-submit is the only reason, and it is not derived from any observed
+ * event. The verify dialog used to render this button `disabled` for the whole
+ * dialog kind and re-enable it only from an `input` listener, so a paste that
+ * fires no `input` — or any programmatic fill — left a dead button on the one
+ * screen a first-time user has to get through, with no other way forward from
+ * it. Whether the field is empty is decided when the button is pressed, by
+ * reading the field, rather than predicted from events that may never arrive.
+ */
+export function ownedConfirmationSubmitDisabled(busy: boolean): boolean {
+  return busy;
+}
+
+/**
+ * What to do with whatever is in the verification field at submit time.
+ *
+ * The code is handed on exactly as it was entered — grouping and separators are
+ * normalised by the constant-time comparison in Rust, not here — so a pasted
+ * value survives untouched. Blank is refused visibly instead of being made
+ * unreachable by a disabled control.
+ */
+export function verificationSubmission(
+  fieldValue: string,
+): { code: string } | { refusal: string } {
+  return fieldValue.trim().length === 0
+    ? { refusal: EMPTY_VERIFICATION_CODE_REFUSAL }
+    : { code: fieldValue };
+}
+
 export function shouldClearRemovedFriendChat(
   activePersonId: string | null,
   removedPersonId: string,
