@@ -1,0 +1,90 @@
+name: Live deployment drift check
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Full commit SHA production is expected to serve (defaults to origin/main)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  compare-live-build:
+    runs-on: ubuntu-latest
+    outputs:
+      expected_sha: ${{ steps.compare.outputs.expected_sha }}
+      live_sha: ${{ steps.compare.outputs.live_sha }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: OSLPrivacy/oslprivacy-web
+          ref: main
+          fetch-depth: 0
+      - id: compare
+        name: Compare production build SHA with origin/main
+        env:
+          REQUESTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          expected_sha="${REQUESTED_SHA:-}"
+          if [ -z "$expected_sha" ]; then
+            expected_sha="$(git rev-parse origin/main)"
+          fi
+          case "$expected_sha" in
+            *[!0123456789abcdef]*|???????????????????????????????????????)
+              echo "expected SHA must be a full lowercase 40-character commit ID" >&2
+              exit 2
+              ;;
+          esac
+          live_sha="$(curl --fail --silent --show-error --retry 3 --retry-all-errors https://oslprivacy.com/build.json | node -e '
+            let body = "";
+            process.stdin.setEncoding("utf8");
+            process.stdin.on("data", (chunk) => { body += chunk; });
+            process.stdin.on("end", () => {
+              try {
+                const commit = JSON.parse(body).commit;
+                if (typeof commit !== "string" || !/^[0-9a-f]{40}$/.test(commit)) process.exit(2);
+                process.stdout.write(commit);
+              } catch {
+                process.exit(2);
+              }
+            });
+          ' )" || {
+            echo "production /build.json did not contain a full lowercase commit SHA" >&2
+            exit 2
+          }
+          echo "expected_sha=$expected_sha" >> "$GITHUB_OUTPUT"
+          echo "live_sha=$live_sha" >> "$GITHUB_OUTPUT"
+          if [ "$live_sha" != "$expected_sha" ]; then
+            echo "::error title=Production drift::live $live_sha does not match origin/main $expected_sha"
+            exit 1
+          fi
+
+  report-drift:
+    needs: compare-live-build
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open or update production drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ needs.compare-live-build.outputs.expected_sha }}
+          LIVE_SHA: ${{ needs.compare-live-build.outputs.live_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Production deployment is drifting from main"
+          body="Production drift check failed. Expected origin/main: ${EXPECTED_SHA:-unavailable}; live /build.json: ${LIVE_SHA:-unavailable}. Run: $RUN_URL"
+          number="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body" --label bug
+          fi
