@@ -7,6 +7,7 @@ export interface CoreReadiness {
   keyserverInitialised: boolean;
   cloudRegistrationState: "notAttempted" | "pending" | "registered" | "conflict" | "offline";
   groupSenderKeysEnabled: boolean;
+  groupSenderKeysReachable?: boolean;
   remoteServiceHasNativeAccess: boolean;
   bootstrapAttempted: boolean;
   passwordGateRequired: boolean;
@@ -124,6 +125,7 @@ export const unavailableCoreIntegration: CoreIntegration = {
     keyserverInitialised: false,
     cloudRegistrationState: "notAttempted",
     groupSenderKeysEnabled: false,
+    groupSenderKeysReachable: false,
     remoteServiceHasNativeAccess: false,
     bootstrapAttempted: false,
     passwordGateRequired: true,
@@ -142,6 +144,7 @@ const readinessKeys = [
   "groupSenderKeysEnabled",
   "remoteServiceHasNativeAccess",
 ] as const;
+const optionalReadinessKeys = ["groupSenderKeysReachable"] as const;
 const cloudRegistrationStates: readonly CoreReadiness["cloudRegistrationState"][] = [
   "notAttempted", "pending", "registered", "conflict", "offline",
 ];
@@ -390,12 +393,21 @@ export function parseMainPasswordSetupResult(raw: unknown): HubMainPasswordSetup
 export function parseCoreReadiness(raw: unknown): CoreReadiness {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return structuredClone(unavailableCoreIntegration.readiness);
   const record = raw as Record<string, unknown>;
-  const allowedKeys = [...readinessKeys, "cloudRegistrationState", ...extendedReadinessKeys, "storageMethod"];
+  const allowedKeys = [
+    ...readinessKeys,
+    ...optionalReadinessKeys,
+    "cloudRegistrationState",
+    ...extendedReadinessKeys,
+    "storageMethod",
+  ];
   const actualKeys = Object.keys(record);
   if (actualKeys.some((key) => !allowedKeys.includes(key as typeof allowedKeys[number])) || readinessKeys.some((key) => !(key in record))) {
     return structuredClone(unavailableCoreIntegration.readiness);
   }
   if (readinessKeys.some((key) => typeof record[key] !== "boolean")) return structuredClone(unavailableCoreIntegration.readiness);
+  if (record.groupSenderKeysReachable !== undefined && typeof record.groupSenderKeysReachable !== "boolean") {
+    return structuredClone(unavailableCoreIntegration.readiness);
+  }
   const cloudRegistrationState = record.cloudRegistrationState ?? "notAttempted";
   if (!cloudRegistrationStates.includes(cloudRegistrationState as CoreReadiness["cloudRegistrationState"])) {
     return structuredClone(unavailableCoreIntegration.readiness);

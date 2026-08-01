@@ -8,6 +8,7 @@
 use ipc::AppState;
 use serde::Serialize;
 use std::fmt;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 pub struct HubCoreState {
@@ -66,6 +67,7 @@ pub struct CoreReadiness {
     pub keyserver_initialised: bool,
     pub cloud_registration_state: &'static str,
     pub group_sender_keys_enabled: bool,
+    pub group_sender_keys_reachable: bool,
     pub remote_service_has_native_access: bool,
 }
 
@@ -87,6 +89,10 @@ impl fmt::Debug for CoreReadiness {
             .field("keyserver_initialised", &self.keyserver_initialised)
             .field("cloud_registration_state", &self.cloud_registration_state)
             .field("group_sender_keys_enabled", &self.group_sender_keys_enabled)
+            .field(
+                "group_sender_keys_reachable",
+                &self.group_sender_keys_reachable,
+            )
             .field(
                 "remote_service_has_native_access",
                 &self.remote_service_has_native_access,
@@ -270,9 +276,11 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
         storage_method: identity_storage_method(status.identity_loaded),
         keyserver_initialised: status.keyserver_initialised,
         cloud_registration_state: state.osl.cloud_registration_state().as_str(),
-        // The original core deliberately leaves v5 disabled because one social
-        // account on two physical devices can currently desynchronise it.
-        group_sender_keys_enabled: false,
+        // The core's v5 switch is independent from product reachability: this
+        // app constructs only direct-message scopes, so group sender keys are
+        // enabled in the core but cannot yet be used from this surface.
+        group_sender_keys_enabled: state.osl.sender_keys_enabled.load(Ordering::Acquire),
+        group_sender_keys_reachable: false,
         remote_service_has_native_access: false,
     }
 }
@@ -529,14 +537,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn links_the_original_core_without_enabling_unsafe_group_state() {
+    fn reports_core_sender_key_switch_separately_from_unreachable_group_surface() {
         let state = HubCoreState::default();
         let status = readiness(&state);
         assert!(status.original_core_linked);
         assert!(!status.identity_loaded);
         assert!(status.storage_method.is_none());
-        assert!(!status.group_sender_keys_enabled);
+        assert!(status.group_sender_keys_enabled);
+        assert!(!status.group_sender_keys_reachable);
         assert!(!status.remote_service_has_native_access);
+
+        state
+            .osl
+            .sender_keys_enabled
+            .store(false, Ordering::Release);
+        let disabled_status = readiness(&state);
+        assert!(!disabled_status.group_sender_keys_enabled);
+        assert!(!disabled_status.group_sender_keys_reachable);
     }
 
     #[test]
@@ -553,6 +570,7 @@ mod tests {
             keyserver_initialised: true,
             cloud_registration_state: "registered",
             group_sender_keys_enabled: false,
+            group_sender_keys_reachable: false,
             remote_service_has_native_access: false,
         };
         let debug = format!("{status:?}");
