@@ -89,6 +89,9 @@ pub mod wire_v2;
 // protection plus sealed per-peer ratchet session state. Strictly
 // additive — the v=2/v=3/v=4/v=5 paths above are untouched.
 pub mod wire_rn;
+// OSL-RN per-peer health state. Kept separate from ratchet sessions so a
+// recovery delete cannot erase the durable fact that a peer desynchronised.
+pub mod rn_health;
 
 // A handful of things this crate reaches for are genuinely process-global:
 // `keystore::set_base_dir_override` / `set_active_account_dir` (an `RwLock`
