@@ -81,6 +81,17 @@ name = "osl-privacy-hub"
 path = "src/main.rs"
 required-features = ["desktop"]
 
+# ThinLTO preserves cross-crate release optimisation without the 20–30 GB
+# single-LLVM-process peak of fat LTO, which is not viable for local release
+# builds on the development machines. Keep one codegen unit for the shipping
+# binary; the slower compile is confined to release builds.
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+strip = "symbols"
+opt-level = 3
+
 # Keep this preview crate isolated from the production workspace until its
 # architecture and security boundaries have been reviewed. This also lets it
 # be checked with `cargo check --manifest-path apps/osl-hub/Cargo.toml`

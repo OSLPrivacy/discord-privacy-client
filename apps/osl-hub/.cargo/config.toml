@@ -1,0 +1,6 @@
+# This nested workspace needs a configuration home of its own: `tauri build`
+# runs from apps/osl-hub, rather than from the repository workspace. Keep
+# Windows release linker flags here so they reach the shipping binary.
+#
+# Do not add /Brepro as a general build flag. It disables incremental linking;
+# the release-only reproducibility work owns that flag.
