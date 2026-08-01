@@ -897,11 +897,16 @@ fn launch_and_scavenge(staged: peer_attachment_io::StagedPlaintext) -> Result<()
     }
     #[cfg(not(windows))]
     {
-        Err(with_plaintext_removal(
-            "Native attachment viewing is available only on Windows".to_owned(),
-            staged.remove_now(),
-        ))
+        external_viewer_unavailable()
+            .map_err(|error| with_plaintext_removal(error, staged.remove_now()))
     }
+}
+
+/// This handoff needs the Windows shell viewer. Do not claim a successful open
+/// on platforms where OSL cannot provide that handoff.
+#[cfg(not(windows))]
+fn external_viewer_unavailable() -> Result<(), String> {
+    Err("Native attachment viewing is available only on Windows".to_owned())
 }
 
 /// Absolute System32 path for a Windows helper binary, so neither spawn can be
@@ -965,5 +970,14 @@ mod tests {
         );
         assert!(parse_token("0011").is_err());
         assert!(parse_token("00112233445566778899aabbccddeefg").is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn non_windows_external_viewer_handoff_refuses_with_a_stated_limitation() {
+        assert_eq!(
+            external_viewer_unavailable(),
+            Err("Native attachment viewing is available only on Windows".to_owned())
+        );
     }
 }
