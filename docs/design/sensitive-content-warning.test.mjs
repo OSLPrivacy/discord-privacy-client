@@ -40,3 +40,28 @@ test("the warning appears only for an enabled unencrypted finding", () => {
     assert.equal(expectedSendBehavior(scenario), scenario.expect, scenario.name);
   }
 });
+
+test("categories are grouped by their actual detector and v1 stays text-only", () => {
+  assert.deepEqual(contract.categories, {
+    shippingScope: { text: true, attachments: false },
+    detectorFamilies: {
+      structuredText: [
+        "credential",
+        "recovery-material",
+        "payment-card",
+        "government-identity",
+        "precise-location",
+      ],
+      lexicalText: [
+        "profanity",
+        "sexual-content",
+        "sensitive-health",
+        "controlled-substances",
+        "potentially-unlawful-conduct",
+        "work-sensitive-information",
+      ],
+      attachmentOnly: ["explicit-imagery", "imagery-targeting-a-group"],
+    },
+    unsupportedDetectors: ["general-entropy", "slur-or-toxicity-model"],
+  });
+});

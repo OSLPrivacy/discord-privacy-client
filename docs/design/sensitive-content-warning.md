@@ -47,10 +47,57 @@ otherwise morally or politically judged.
 
 ## Non-goals and boundaries
 
-This contract does not define categories or detectors; that work belongs to the categories
-contract. It also does not claim that an unencrypted platform will definitely retain a message.
-The warning states the meaningful consequence: the plaintext leaves the device and the platform
-can retain it.
+This contract does not define detector implementation or a semantic safety judgement. It also does
+not claim that an unencrypted platform will definitely retain a message. The warning states the
+meaningful consequence: the plaintext leaves the device and the platform can retain it.
+
+## Categories and detector boundary
+
+The warning is about accidental exposure, so its categories are grouped by the detector that can
+actually produce them, rather than by a broad label such as “sensitive content.” A finding means
+only that its stated detector matched. It does not establish intent, truth, legality, offensiveness,
+or whether sending is wise.
+
+### Structured text checks — included in v1
+
+These are deterministic, local checks over the text draft. They do not use an AI model or a
+general-purpose entropy scanner.
+
+| Category | What detects it | Boundary |
+|---|---|---|
+| Credential | Secret assignment labels and known credential prefixes | This detects a credential-shaped value, not whether a person is authorised to use it. |
+| Recovery material | Specific recovery or private-key phrases | A phrase is a warning signal, not proof that a recovery secret is present. |
+| Payment card | A 13–19 digit run validated with Luhn | A Luhn-valid number can still be a test or non-card number. |
+| Government identity | SSN shape plus a short label list | It does not validate identity documents or infer nationality. |
+| Precise location | Location-introducing phrases together with digits | It does not geocode text or infer a location from context. |
+
+### Lexical text checks — included in v1, with the same non-blocking boundary
+
+These are local word or phrase lists, not semantic understanding and not ML. They can offer the
+same exposure warning, but must never be described as judging a user or their message.
+
+| Category | What detects it | Boundary |
+|---|---|---|
+| Profanity | Word list | Does not detect abuse, harassment, or hate. |
+| Sexual content | Word and phrase lists | Does not classify consent, legality, or explicit imagery. |
+| Sensitive health | Phrase list | Does not diagnose or infer health status. |
+| Controlled substances | Word and phrase lists | Does not determine possession, use, or legality. |
+| Potentially unlawful conduct | Phrase list | Does not make a legal conclusion. |
+| Work-sensitive information | Phrase list | Does not prove confidentiality or scan for every business secret. |
+
+There is deliberately no general entropy scan over chat text: UUIDs, hashes, base64, and crypto
+addresses would create too many unrelated findings. There is also no slur, toxicity, or political
+classifier. Ordinary political discussion, quotation, self-description, and dialect remain outside
+this warning as required by the contract.
+
+### Attachments and imagery — not part of v1
+
+V1 evaluates **text drafts only**. It does not inspect attachments before this warning. Explicit
+imagery would require a local image classifier; the code has only an optional trait hook, with no
+shipping implementation. OCR, video-frame extraction, and audio transcription are likewise
+optional hooks, not v1 detectors. No current detector identifies imagery targeting a group; that
+is not implied by the generic image-classifier hook and is out of scope rather than silently
+treated as detected.
 
 ## Contract test vectors
 
@@ -68,6 +115,28 @@ show the non-blocking choice described above; `send` means continue without show
     "canBlock": false,
     "canJudge": false,
     "choices": ["send-unencrypted", "protect-with-osl", "keep-editing"]
+  },
+  "categories": {
+    "shippingScope": { "text": true, "attachments": false },
+    "detectorFamilies": {
+      "structuredText": [
+        "credential",
+        "recovery-material",
+        "payment-card",
+        "government-identity",
+        "precise-location"
+      ],
+      "lexicalText": [
+        "profanity",
+        "sexual-content",
+        "sensitive-health",
+        "controlled-substances",
+        "potentially-unlawful-conduct",
+        "work-sensitive-information"
+      ],
+      "attachmentOnly": ["explicit-imagery", "imagery-targeting-a-group"]
+    },
+    "unsupportedDetectors": ["general-entropy", "slur-or-toxicity-model"]
   },
   "cases": [
     {
