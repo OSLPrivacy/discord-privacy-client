@@ -18,6 +18,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 sha2 = { workspace = true }
 base64 = "0.22"
+rand = { workspace = true }
 
 # CBOR for Phase 7b control-message bodies (BurnMarker /
 # WhitelistInvitation / WhitelistResponse). Chosen for

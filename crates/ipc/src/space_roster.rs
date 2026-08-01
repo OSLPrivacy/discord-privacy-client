@@ -4,7 +4,69 @@
 //! module owns only its at-rest boundary: a roster is never created or
 //! overwritten without the unlocked file-storage key, and writes are atomic.
 
+use rand::{rngs::OsRng, RngCore};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// Opaque, client-generated identity for a Space.
+///
+/// A Space ID is fresh CSPRNG output. It deliberately accepts no account or
+/// founder input, so creating multiple Spaces cannot create an account-derived
+/// identifier that a relay could use to group their memberships. This is local
+/// roster state only: delivery routing uses independent rotating tags.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct SpaceId([u8; Self::LENGTH]);
+
+impl SpaceId {
+    /// The number of uniformly random bytes in a Space identity.
+    pub const LENGTH: usize = 32;
+
+    /// Creates a new unlinkable Space identity from the operating system CSPRNG.
+    pub fn generate() -> Self {
+        let mut bytes = [0_u8; Self::LENGTH];
+        OsRng.fill_bytes(&mut bytes);
+        Self(bytes)
+    }
+
+    /// Returns locally stored bytes for serialization in the encrypted roster.
+    pub fn as_bytes(&self) -> &[u8; Self::LENGTH] {
+        &self.0
+    }
+}
+
+/// Monotonic membership version for a Space.
+///
+/// Membership events advance this value before key rotation binds to it. The
+/// zero value represents a newly generated Space before its first event.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SpaceEpoch(u64);
+
+impl SpaceEpoch {
+    /// Epoch of a Space before the create event establishes membership.
+    pub const INITIAL: Self = Self(0);
+
+    /// Returns the epoch as a value suitable for local roster persistence.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    /// Advances exactly once for one membership change.
+    ///
+    /// Overflow is rejected rather than wrapping, because wraparound could
+    /// make a future membership event appear stale to the rotation layer.
+    pub fn advance(self) -> Result<Self, SpaceEpochError> {
+        self.0
+            .checked_add(1)
+            .map(Self)
+            .ok_or(SpaceEpochError::Exhausted)
+    }
+}
+
+#[derive(Debug, thiserror::Error, Eq, PartialEq)]
+pub enum SpaceEpochError {
+    #[error("space membership epoch is exhausted")]
+    Exhausted,
+}
 
 /// The single account-relative path for the Space roster.
 ///
@@ -123,5 +185,25 @@ mod tests {
         assert_eq!(load_space_roster(&path).unwrap(), roster);
 
         set_file_storage_key(None);
+    }
+
+    #[test]
+    fn generated_space_ids_are_fresh_and_epochs_advance_monotonically() {
+        let first = SpaceId::generate();
+        let second = SpaceId::generate();
+        assert_ne!(first, second, "independently created Spaces need fresh IDs");
+        assert_ne!(first.as_bytes(), &[0_u8; SpaceId::LENGTH]);
+
+        let first_membership = SpaceEpoch::INITIAL.advance().unwrap();
+        let second_membership = first_membership.advance().unwrap();
+        assert_eq!(first_membership.get(), 1);
+        assert_eq!(second_membership.get(), 2);
+        assert!(second_membership > first_membership);
+    }
+
+    #[test]
+    fn an_exhausted_epoch_never_wraps_to_a_stale_value() {
+        let exhausted = SpaceEpoch(u64::MAX);
+        assert_eq!(exhausted.advance(), Err(SpaceEpochError::Exhausted));
     }
 }
