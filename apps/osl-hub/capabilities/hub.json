@@ -148,6 +148,7 @@
     "allow-execute-hub-full-cleanup",
     "allow-get-hub-service-burn-readiness",
     "allow-burn-hub-service-account",
-    "allow-burn-active-hub-context"
+    "allow-burn-active-hub-context",
+    "allow-get-hub-revocation-status"
   ]
 }

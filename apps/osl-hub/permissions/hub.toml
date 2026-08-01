@@ -752,3 +752,8 @@ commands.allow = ["burn_hub_service_account"]
 identifier = "allow-burn-active-hub-context"
 description = "Burn only the exact active trusted service/account context and report local versus remote outcomes separately."
 commands.allow = ["burn_active_hub_context"]
+
+[[permission]]
+identifier = "allow-get-hub-revocation-status"
+description = "Read whether the burn notices already queued for one canonical OSL scope key have been acknowledged by the peers who had access; reads no message content and changes nothing."
+commands.allow = ["get_hub_revocation_status"]

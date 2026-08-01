@@ -3232,6 +3232,32 @@ pub fn revocation_status(
     })
 }
 
+/// [`revocation_status`] addressed by the storage key a burn just returned.
+///
+/// The burn result the renderer already holds carries `storage_key`, not a
+/// `ScopeInput`, and the hosted context the scope came from is *gone* by the
+/// time the burn returns — `burn_local_protected_context` tears it down — so a
+/// context-token-addressed status command could never be called on the one path
+/// that needs it. [`Scope::parse`] is the documented inverse of
+/// [`Scope::storage_key`], so this re-derives the exact same key and refuses
+/// anything that is not a canonical scope key rather than guessing.
+pub fn revocation_status_for_storage_key(
+    security: &HubSecurityState,
+    storage_key: &str,
+) -> Result<HubRevocationStatusDto, String> {
+    validate_storage_key(storage_key)?;
+    let scope = Scope::parse(storage_key).ok_or_else(|| "OSL scope is invalid".to_owned())?;
+    revocation_status(
+        security,
+        ScopeInput {
+            kind: scope.kind,
+            id: scope.id,
+            server_id: scope.server_id,
+            channel_id: scope.channel_id,
+        },
+    )
+}
+
 /// Peers to notify for a scope, resolved from the peer map **before** any
 /// whitelist entry is removed.
 fn revocation_peers_for_scope(
@@ -5315,6 +5341,135 @@ mod tests {
             dm_scope_input(scope_id)
         )
         .unwrap());
+    /// Read the burn identifiers the outbox actually persisted, so the ack half
+    /// of this lifecycle is driven by the real queue rather than by recomputing
+    /// the commitment chain a second time (which would only prove the test
+    /// agrees with itself).
+    fn queued_burn_ids(storage_key: &str) -> Vec<String> {
+        let file_key = ipc::main_password::get_file_storage_key().expect("file key is set");
+        let path = config_dir().unwrap().join(REVOCATION_OUTBOX_FILE);
+        let mut ids: Vec<String> = load_revocation_outbox(&path, &file_key)
+            .unwrap()
+            .entries
+            .iter()
+            .filter(|entry| entry.storage_key == storage_key)
+            .map(|entry| entry.burn_id_hex.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    fn ack_b64(burn_id_hex: &str, applied: bool) -> String {
+        let mut burn_id = [0u8; 32];
+        for (index, byte) in burn_id.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&burn_id_hex[index * 2..index * 2 + 2], 16)
+                .expect("burn id is lower hex");
+        }
+        STANDARD.encode(
+            ipc::control_messages::serialize_revocation_ack(
+                &ipc::control_messages::RevocationAck { burn_id, applied },
+            )
+            .unwrap(),
+        )
+    }
+
+    /// Queued is not acknowledged, and the product has to be able to say so.
+    ///
+    /// `queue_scope_revocations_locked` promises the operator "must be shown
+    /// `Not acknowledged` — never a success" while a notice is only queued, and
+    /// `HubScopeBurnResult::revocations_queued` is documented "Queued, not
+    /// delivered — see `revocation_status`". `revocation_status` was never
+    /// wired to anything, so that promise had no live surface at all.
+    ///
+    /// This drives the whole delivery lifecycle through
+    /// [`revocation_status_for_storage_key`] — the exact entry point the
+    /// `get_hub_revocation_status` Tauri command calls — and pins the one thing
+    /// the UI must never get wrong: a conversation only reads acknowledged when
+    /// every peer has actually acknowledged.
+    #[test]
+    fn revocation_status_reports_queued_notices_as_not_acknowledged_until_every_peer_acks() {
+        let _harness = FileBackedSecurityHarness::new("revocation-status-lifecycle");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        let storage_key = Scope::dm("peer-conversation-1").storage_key();
+
+        // A key shape that is not a canonical scope key is refused, not guessed.
+        assert!(revocation_status_for_storage_key(&security, "not-a-scope-key").is_err());
+
+        let recipients = RevocationRecipients {
+            peers: vec![
+                ("osl-peer-a".to_owned(), [0x11; X25519_PUBLIC_BYTES]),
+                ("osl-peer-b".to_owned(), [0x22; X25519_PUBLIC_BYTES]),
+            ],
+            skipped: 0,
+            resolver_failed: false,
+        };
+        assert_eq!(
+            queue_scope_revocations(
+                &core,
+                &security,
+                &storage_key,
+                &storage_key,
+                &recipients,
+                &[],
+                1_700_000_000,
+            )
+            .unwrap(),
+            (2, true),
+            "both peers are addressable, so both notices queue"
+        );
+
+        // Queued for two peers, acknowledged by neither. This is the state the
+        // shipping build could not express.
+        let queued = revocation_status_for_storage_key(&security, &storage_key).unwrap();
+        assert_eq!(queued.storage_key, storage_key);
+        assert_eq!(queued.status, ipc::revocation::STATUS_NOT_ACKNOWLEDGED);
+        assert_eq!((queued.peers_pending, queued.peers_acknowledged), (2, 0));
+
+        let burn_ids = queued_burn_ids(&storage_key);
+        assert_eq!(burn_ids.len(), 2);
+
+        // A delivery attempt is not an acknowledgement.
+        record_revocation_attempt(&security, &burn_ids[0], 1_700_000_100).unwrap();
+        let attempted = revocation_status_for_storage_key(&security, &storage_key).unwrap();
+        assert_eq!(attempted.status, ipc::revocation::STATUS_SENT_REQUEST);
+        assert_eq!(
+            (attempted.peers_pending, attempted.peers_acknowledged),
+            (2, 0)
+        );
+
+        // One peer acknowledges; the conversation as a whole still may not read
+        // complete while the other is outstanding.
+        assert!(record_revocation_ack(&security, &ack_b64(&burn_ids[0], true)).unwrap());
+        let half = revocation_status_for_storage_key(&security, &storage_key).unwrap();
+        assert_eq!(half.status, ipc::revocation::STATUS_SENT_REQUEST);
+        assert_eq!((half.peers_pending, half.peers_acknowledged), (1, 1));
+
+        // A refusal (`applied == false`) never clears the queue.
+        assert!(!record_revocation_ack(&security, &ack_b64(&burn_ids[1], false)).unwrap());
+        let refused = revocation_status_for_storage_key(&security, &storage_key).unwrap();
+        assert_eq!(refused.status, ipc::revocation::STATUS_SENT_REQUEST);
+        assert_eq!((refused.peers_pending, refused.peers_acknowledged), (1, 1));
+
+        // Both acknowledged: now, and only now, the conversation is complete.
+        assert!(record_revocation_ack(&security, &ack_b64(&burn_ids[1], true)).unwrap());
+        let complete = revocation_status_for_storage_key(&security, &storage_key).unwrap();
+        assert_eq!(complete.status, ipc::revocation::STATUS_ACKNOWLEDGED);
+        assert_eq!((complete.peers_pending, complete.peers_acknowledged), (0, 2));
+        assert_eq!(complete.claims, burn_claims());
+
+        // Another conversation is never covered by this one's acknowledgements.
+        let untouched = revocation_status_for_storage_key(
+            &security,
+            &Scope::dm("peer-conversation-2").storage_key(),
+        )
+        .unwrap();
+        assert_eq!(untouched.status, ipc::revocation::STATUS_NOT_ACKNOWLEDGED);
+        assert_eq!(
+            (untouched.peers_pending, untouched.peers_acknowledged),
+            (0, 0)
+        );
     }
 
     #[test]

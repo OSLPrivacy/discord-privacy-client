@@ -70,8 +70,8 @@ use osl_privacy_hub::scrub_index::{
     ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
-    self, AddFriendResult, FriendCodeExport, HubScopeBurnResult, HubSecurityState, PersonDto,
-    RemoveFriendResult, ScopeSecurityDto,
+    self, AddFriendResult, FriendCodeExport, HubRevocationStatusDto, HubScopeBurnResult,
+    HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -6392,6 +6392,28 @@ async fn burn_active_hub_context(
     })
     .await
     .map_err(|_| "OSL active-context burn worker failed".to_owned())?
+}
+
+/// Whether the peer revocations a burn queued for one conversation have
+/// actually been acknowledged.
+///
+/// `queue_scope_revocations_locked` promises the operator is shown
+/// `Not acknowledged` — never a success — while a notice is only queued, and
+/// `HubScopeBurnResult::revocations_queued` is documented as "Queued, not
+/// delivered — see `revocation_status`". This is the command that makes that
+/// promise reachable: without it the renderer had no live way to tell a queued
+/// revocation from an acknowledged one, so every burn read as done.
+///
+/// Read-only. It takes the `storage_key` the burn result already returned
+/// rather than a context token, because the hosted context is torn down by the
+/// burn itself; `revocation_status_for_storage_key` refuses anything that is
+/// not a canonical scope key.
+#[tauri::command]
+async fn get_hub_revocation_status(
+    security_state: State<'_, HubSecurityState>,
+    storage_key: String,
+) -> Result<HubRevocationStatusDto, String> {
+    security::revocation_status_for_storage_key(&security_state, &storage_key)
 }
 
 /// Headless self-test driver for the protected Discord send path.

@@ -102,7 +102,7 @@ import {
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
@@ -145,6 +145,7 @@ import { OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatsViewMarkup, type O
 import { parseCircleAudience, type CircleAudience } from "./osl-collab";
 import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat } from "./ui-behavior";
 import { BurnGuaranteeCopy, type BurnGuaranteeState } from "./two-step-burn";
+import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
 import { listOslChatAttachments, openOslChatAttachment, selectOslChatAttachment } from "./native-overlay-adapter";
@@ -220,6 +221,12 @@ type BurnResult = {
   tone: "success" | "warning" | "error";
   message: string;
   showUninstall: boolean;
+  /**
+   * Peer-acknowledgement half of a chat burn, shown as its own line. Absent for
+   * the burn scopes that queue no peer revocation, so nothing is implied about
+   * a conversation that was never asked about.
+   */
+  revocation?: BurnRevocationReceipt;
 };
 type OwnedConfirmation =
   | { kind: "verifyFriend"; personId: string }
@@ -4296,6 +4303,22 @@ function closeBurnDialog(): void {
   render();
 }
 
+/**
+ * The peer-acknowledgement line of a chat burn.
+ *
+ * `data-revocation-acknowledged` is the machine-readable half: `false` means at
+ * least one person who had access has not confirmed the revocation, and the
+ * line renders in the app's refusal colour rather than the finished one.
+ *
+ * All styling is in styles.css. The app ships CSP `style-src 'self'`, which
+ * drops runtime `<style>` elements and inline `style=` attributes alike, so an
+ * inline rule here would silently render unstyled.
+ */
+function burnRevocationMarkup(revocation: BurnRevocationReceipt | undefined): string {
+  if (!revocation) return "";
+  return `<p class="burn-revocation-line ${revocation.acknowledged ? "acknowledged" : "outstanding"}" data-revocation-acknowledged="${revocation.acknowledged ? "true" : "false"}" data-revocation-outstanding="${revocation.outstanding}" role="status">${escapeHtml(revocation.line)}</p>`;
+}
+
 function burnGuaranteeMarkup(effects: string): string {
   const stateLabel = (state: BurnGuaranteeState): string => {
     switch (state) {
@@ -4317,7 +4340,7 @@ function burnGuaranteeMarkup(effects: string): string {
 function burnDialogMarkup(): string {
   if (!burnDialogOpen) return "";
   if (burnResult) {
-    return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card burn-result"><header><div><p class="eyebrow">Burn</p><h2 id="burn-dialog-title">${burnResult.tone === "success" ? "Finished" : burnResult.tone === "warning" ? "Needs attention" : "Nothing was claimed"}</h2></div><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><p class="burn-result-message ${burnResult.tone}" role="status">${escapeHtml(burnResult.message)}</p>${burnResult.showUninstall ? `<div class="burn-uninstall"><strong>Uninstall is separate</strong><p>Your local OSL cleanup finished. Windows controls removal of the app itself.</p><a class="button" href="ms-settings:appsfeatures">Open Windows installed apps</a></div>` : ""}<footer><button class="button primary" data-close-burn>Done</button></footer></section></dialog>`;
+    return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card burn-result"><header><div><p class="eyebrow">Burn</p><h2 id="burn-dialog-title">${burnResult.tone === "success" ? "Finished" : burnResult.tone === "warning" ? "Needs attention" : "Nothing was claimed"}</h2></div><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><p class="burn-result-message ${burnResult.tone}" role="status">${escapeHtml(burnResult.message)}</p>${burnRevocationMarkup(burnResult.revocation)}${burnResult.showUninstall ? `<div class="burn-uninstall"><strong>Uninstall is separate</strong><p>Your local OSL cleanup finished. Windows controls removal of the app itself.</p><a class="button" href="ms-settings:appsfeatures">Open Windows installed apps</a></div>` : ""}<footer><button class="button primary" data-close-burn>Done</button></footer></section></dialog>`;
   }
 
   const cards: Array<{ scope: BurnScope; title: string; detail: string }> = [
@@ -7542,7 +7565,8 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
   if (burnScope === "chat") {
     const contextToken = activeContextToken;
     const contextKind = activeProtectedContextKind;
-    if (!contextToken || !(await burnActiveHubContext(contextToken))) {
+    const outcome = contextToken ? await burnActiveHubContext(contextToken) : null;
+    if (!outcome) {
       burnBusy = false;
       burnResult = { tone: "error", message: "The chat burn failed closed. No deletion success is being claimed.", showUninstall: false };
       render();
@@ -7550,12 +7574,19 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
     }
     burnBusy = false;
     resetLocalProtectedSheet();
+    // The local half is done. Whether the OTHER side's access is actually gone
+    // is a separate question with a separate answer, and a queued-but-
+    // unacknowledged revocation must never be shown as a success --
+    // `queue_scope_revocations_locked` in apps/osl-hub/src/security.rs.
+    const revocation = burnRevocationReceipt(outcome, await getHubRevocationStatus(outcome.storageKey));
+    const localLine = contextKind === "peer"
+      ? "Local approval, display, and expiry settings for this app account + friend were revoked. OSL attempted relay cleanup. Provider messages and opened copies remain."
+      : "Local OSL decrypt material and caches for this chat were removed. Native app history was not deleted.";
     burnResult = {
-      tone: "success",
-      message: contextKind === "peer"
-        ? "Local approval, display, and expiry settings for this app account + friend were revoked. OSL attempted relay cleanup. Provider messages and opened copies remain."
-        : "Local OSL decrypt material and caches for this chat were removed. Native app history was not deleted.",
+      tone: revocation.tone,
+      message: localLine,
       showUninstall: false,
+      revocation,
     };
     render();
     return;

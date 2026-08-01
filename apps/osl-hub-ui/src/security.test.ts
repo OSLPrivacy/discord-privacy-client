@@ -406,6 +406,9 @@ describe("bundled preview security boundary", () => {
       // just needs the main password again. It belongs inside the local
       // main-window boundary this test protects.
       "allow-lock-hub-session",
+      // Read-only: whether the burn notices already queued for one scope have
+      // been acknowledged. Without it a queued revocation renders as a success.
+      "allow-get-hub-revocation-status",
     ];
     expect(new Set(capability.permissions)).toEqual(new Set(expectedPermissions));
     expect(capability.permissions).toHaveLength(expectedPermissions.length);

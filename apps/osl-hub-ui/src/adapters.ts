@@ -9,6 +9,15 @@ import {
   parseNativeDiscordOverlayOpenedBatch,
   type NativeDiscordOverlayOpenedBatch,
 } from "./overlay-state";
+import {
+  REVOCATION_STATUS_ACKNOWLEDGED,
+  REVOCATION_STATUS_NOT_ACKNOWLEDGED,
+  REVOCATION_STATUS_SENT_REQUEST,
+  type HubRevocationStatus,
+  type HubScopeBurnOutcome,
+} from "./burn-revocation-receipt";
+
+export type { HubRevocationStatus, HubScopeBurnOutcome };
 
 export interface FriendProfile { friendCode: string; oslUserId: string; safetyNumber: string; }
 export interface AppNotification { id: string; title: string; detail: string; createdAt: string; }
@@ -1063,10 +1072,64 @@ export function bindReviewedItemIdentities(
   return bound;
 }
 
-export async function burnActiveHubContext(contextToken: string): Promise<boolean> {
-  if (!isTauriRuntime() || !safe(contextToken, 180)) return false;
-  try { await invoke("burn_active_hub_context", { contextToken }); return true; }
-  catch (error) { recordBackendFailure("burn_active_hub_context", error); return false; }
+/**
+ * Burn the active context and keep the part of the result the operator has to
+ * be told about.
+ *
+ * This used to throw the whole `HubScopeBurnResult` away and return `true`,
+ * which is how a burn whose peer revocations were only QUEUED still rendered as
+ * "Finished": the caller had no `storageKey` to read the acknowledgement state
+ * back with, and no `revocationQueueComplete` to notice a peer had been dropped.
+ * `null` still reads falsy, so every existing failure branch is unchanged.
+ */
+export async function burnActiveHubContext(contextToken: string): Promise<HubScopeBurnOutcome | null> {
+  if (!isTauriRuntime() || !safe(contextToken, 180)) return null;
+  try {
+    return parseHubScopeBurnOutcome(await invoke<unknown>("burn_active_hub_context", { contextToken }));
+  }
+  catch (error) { recordBackendFailure("burn_active_hub_context", error); return null; }
+}
+
+/**
+ * Lenient on purpose. A strict `exact()` here would turn a burn that really
+ * happened into "the chat burn failed closed", which is a different lie. Only
+ * the three fields the acknowledgement read-back needs are validated.
+ */
+export function parseHubScopeBurnOutcome(raw: unknown): HubScopeBurnOutcome | null {
+  if (!isRecord(raw)
+    || !safePlaintext(raw.storageKey, 512)
+    || !boundedCount(raw.revocationsQueued)
+    || typeof raw.revocationQueueComplete !== "boolean") return null;
+  return {
+    storageKey: String(raw.storageKey),
+    revocationsQueued: Number(raw.revocationsQueued),
+    revocationQueueComplete: raw.revocationQueueComplete,
+  };
+}
+
+/**
+ * Whether the burn notices already queued for one conversation have been
+ * acknowledged. `null` means OSL could not tell, which the burn dialog reports
+ * as not acknowledged rather than as done.
+ */
+export async function getHubRevocationStatus(storageKey: string): Promise<HubRevocationStatus | null> {
+  if (!isTauriRuntime() || !safePlaintext(storageKey, 512)) return null;
+  try {
+    return checkedBackendResponse("get_hub_revocation_status",
+      parseHubRevocationStatus(await invoke<unknown>("get_hub_revocation_status", { storageKey })),
+      "the revocation status did not match the expected shape");
+  }
+  catch (error) { recordBackendFailure("get_hub_revocation_status", error); return null; }
+}
+
+export function parseHubRevocationStatus(raw: unknown): HubRevocationStatus | null {
+  if (!isRecord(raw) || !exact(raw, ["storageKey", "status", "peersPending", "peersAcknowledged", "claims"])) return null;
+  if (!safePlaintext(raw.storageKey, 512)
+    || !boundedCount(raw.peersPending)
+    || !boundedCount(raw.peersAcknowledged)) return null;
+  if (![REVOCATION_STATUS_SENT_REQUEST, REVOCATION_STATUS_ACKNOWLEDGED, REVOCATION_STATUS_NOT_ACKNOWLEDGED].includes(String(raw.status))) return null;
+  if (!Array.isArray(raw.claims) || raw.claims.length > 8 || !raw.claims.every((claim) => safePlaintext(claim, 512))) return null;
+  return raw as unknown as HubRevocationStatus;
 }
 
 export async function getHubServiceBurnReadiness(serviceId: string, accountId: string): Promise<HubServiceBurnReadiness | null> {
