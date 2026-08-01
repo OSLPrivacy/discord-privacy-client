@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { BurnGuaranteeCopy } from "./two-step-burn";
+import { BurnGuaranteeCopy, burnFeatureClaimsMarkup } from "./feature-claims";
 import { friendVerificationCopy } from "./ui-behavior";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
@@ -59,21 +59,15 @@ describe("truthful Burn UI", () => {
   });
 
   it("renders the five Burn guarantee outcomes from the shared copy contract", () => {
-    const helper = functionSource("burnGuaranteeMarkup", "burnDialogMarkup");
-    const dialog = functionSource("burnDialogMarkup", "ownedConfirmationMarkup");
-    expect(dialog).toContain("${burnGuaranteeMarkup(effects)}");
-    expect(helper).toContain("BurnGuaranteeCopy.summary");
-    expect(helper).toContain("BurnGuaranteeCopy.intro");
-    expect(helper).toContain("BurnGuaranteeCopy.limit");
-    expect(helper).toContain("BurnGuaranteeCopy.items.map");
-    expect(helper).toContain('data-burn-guarantee="${escapeHtml(item.id)}"');
-    expect(helper).toContain('case "available": return "Available"');
-    expect(helper).toContain('case "request_only": return "Request only"');
-    expect(helper).toContain('case "unavailable": return "Unavailable"');
-    expect(helper).toContain('case "not_possible": return "Not possible"');
-    expect(helper).not.toMatch(/cryptographic burn|disappears forever|permanently undecryptable|gone for good/i);
-    expect(helper).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/i);
-    expect(helper).not.toMatch(/\b\d+%\b/);
+    const rendered = burnFeatureClaimsMarkup();
+    expect(rendered).toContain('data-burn-guarantee="local_osl_copy"');
+    expect(rendered).toContain('data-burn-reach="available"');
+    expect(rendered).toContain("Request only");
+    expect(rendered).toContain("Unavailable");
+    expect(rendered).toContain("Not possible");
+    expect(rendered).not.toMatch(/cryptographic burn|disappears forever|permanently undecryptable|gone for good/i);
+    expect(rendered).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/i);
+    expect(rendered).not.toMatch(/\b\d+%\b/);
   });
 
   it("states deletion limits before typed local confirmation", () => {

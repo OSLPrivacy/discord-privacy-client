@@ -149,7 +149,7 @@ import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusC
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
 import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, recoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
-import { BurnGuaranteeCopy, type BurnGuaranteeState } from "./two-step-burn";
+import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
@@ -4551,21 +4551,7 @@ function burnRevocationMarkup(revocation: BurnRevocationReceipt | undefined): st
 }
 
 function burnGuaranteeMarkup(effects: string): string {
-  const stateLabel = (state: BurnGuaranteeState): string => {
-    switch (state) {
-      case "available": return "Available";
-      case "request_only": return "Request only";
-      case "unavailable": return "Unavailable";
-      case "not_possible": return "Not possible";
-    }
-  };
-  const items = BurnGuaranteeCopy.items.map((item) => (
-    // data-burn-reach carries the reach state to the sheet, which is the only
-    // place a rule can live under `style-src 'self'`. The label beside it says
-    // the same thing in words, so nothing here depends on colour being seen.
-    `<li data-burn-guarantee="${escapeHtml(item.id)}" data-burn-reach="${escapeHtml(item.state)}"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(stateLabel(item.state))}</span><p>${escapeHtml(item.body)}</p></li>`
-  )).join("");
-  return `<section class="burn-truth burn-guarantees" aria-labelledby="burn-guarantee-title"><strong id="burn-guarantee-title">Before you continue</strong><p>${escapeHtml(effects)}</p><p><strong>${escapeHtml(BurnGuaranteeCopy.summary)}</strong> ${escapeHtml(BurnGuaranteeCopy.intro)}</p><ul>${items}</ul><p>${escapeHtml(BurnGuaranteeCopy.limit)}</p></section>`;
+  return `<section class="burn-truth burn-guarantees" aria-labelledby="burn-guarantee-title"><strong id="burn-guarantee-title">Before you continue</strong><p>${escapeHtml(effects)}</p>${burnFeatureClaimsMarkup()}</section>`;
 }
 
 function burnDialogMarkup(): string {
