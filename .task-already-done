@@ -1,0 +1,1 @@
+T20-A1 is satisfied: health probe uses /v1/healthz and rejects non-200 responses.
