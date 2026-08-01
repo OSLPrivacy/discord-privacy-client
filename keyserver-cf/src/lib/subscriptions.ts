@@ -141,7 +141,7 @@ export async function updateSubscriptionStatus(
     .run();
 }
 
-/** Hourly cron: promote past-period-end rows to EXPIRED.
+/** Hourly cron: promote expired entitlement rows to EXPIRED.
  *  Idempotent — re-running is a no-op.
  *
  *  Two independent sweeps:
@@ -150,13 +150,11 @@ export async function updateSubscriptionStatus(
  *       sub reaches these only via webhook; once its period ends
  *       it's genuinely dead.
  *
- *   (2) ACTIVE *and* is_comp=1 (comped / mint-beta-keys). These
- *       never get a Stripe webhook, so without this they would
- *       stay ACTIVE forever past current_period_end. The is_comp=1
- *       guard is mandatory: a Stripe-paid ACTIVE row can briefly
- *       hold a past current_period_end during normal renewal lag
- *       and MUST NEVER be swept — that path's expiry is owned by
- *       the Stripe webhook, not this cron. */
+ *   (2) ACTIVE comped rows and redeemed prepaid licenses. Neither
+ *       gets a Stripe expiry webhook. Unredeemed prepaid licenses
+ *       must remain ACTIVE regardless of a stale expires_at value,
+ *       and ordinary Stripe-paid ACTIVE rows remain excluded to
+ *       tolerate normal renewal lag. */
 export async function sweepExpired(db: D1Database): Promise<number> {
   const now = Math.floor(Date.now() / 1000);
   const stripe = await db
@@ -169,18 +167,27 @@ export async function sweepExpired(db: D1Database): Promise<number> {
     )
     .bind(now, now)
     .run();
-  const comped = await db
+  const entitlements = await db
     .prepare(
       `UPDATE subscriptions
           SET status = 'EXPIRED', updated_at = ?
         WHERE status = 'ACTIVE'
-          AND is_comp = 1
-          AND current_period_end IS NOT NULL
-          AND current_period_end < ?`,
+          AND (
+            (is_comp = 1
+             AND current_period_end IS NOT NULL
+             AND current_period_end < ?)
+            OR EXISTS (
+              SELECT 1 FROM licenses
+              WHERE licenses.subscription_id = subscriptions.subscription_id
+                AND licenses.redeemed_at IS NOT NULL
+                AND licenses.expires_at IS NOT NULL
+                AND licenses.expires_at < ?
+            )
+          )`,
     )
-    .bind(now, now)
+    .bind(now, now, now)
     .run();
-  return (stripe.meta?.changes ?? 0) + (comped.meta?.changes ?? 0);
+  return (stripe.meta?.changes ?? 0) + (entitlements.meta?.changes ?? 0);
 }
 
 // ---- licenses ----

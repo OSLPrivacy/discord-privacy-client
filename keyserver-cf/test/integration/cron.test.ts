@@ -69,6 +69,47 @@ describe("sweepExpired (hourly cron)", () => {
     expect(row?.status).toBe("ACTIVE");
   });
 
+  it("expires redeemed prepaid entitlements but never unredeemed codes", async () => {
+    const suffix = crypto.randomUUID().slice(0, 8);
+    const redeemedSubId = `sub_redeemed_${suffix}`;
+    const unredeemedSubId = `sub_unredeemed_${suffix}`;
+    const oneHourAgo = Math.floor(Date.now() / 1000) - 3600;
+
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO subscriptions (subscription_id, customer_id, customer_email,
+          status, current_period_end, cancel_at_period_end, created_at, updated_at)
+         VALUES (?, 'cus_paid', 'paid@b.com', 'ACTIVE', NULL, 0, ?, ?)`,
+      ).bind(redeemedSubId, oneHourAgo - 86400, oneHourAgo - 86400),
+      env.DB.prepare(
+        `INSERT INTO licenses (license_hash, subscription_id, issued_at,
+          redeemed_at, grant_seconds, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).bind(`license_redeemed_${suffix}`, redeemedSubId, oneHourAgo - 86400, oneHourAgo - 86400, 86400, oneHourAgo),
+      env.DB.prepare(
+        `INSERT INTO subscriptions (subscription_id, customer_id, customer_email,
+          status, current_period_end, cancel_at_period_end, created_at, updated_at)
+         VALUES (?, 'cus_unredeemed', 'unredeemed@b.com', 'ACTIVE', NULL, 0, ?, ?)`,
+      ).bind(unredeemedSubId, oneHourAgo - 86400, oneHourAgo - 86400),
+      env.DB.prepare(
+        `INSERT INTO licenses (license_hash, subscription_id, issued_at,
+          redeemed_at, grant_seconds, expires_at)
+         VALUES (?, ?, ?, NULL, ?, ?)`,
+      ).bind(`license_unredeemed_${suffix}`, unredeemedSubId, oneHourAgo - 86400, 86400, oneHourAgo),
+    ]);
+
+    await sweepExpired(env.DB);
+
+    const rows = await env.DB.prepare(
+      `SELECT subscription_id, status FROM subscriptions
+       WHERE subscription_id IN (?, ?) ORDER BY subscription_id`,
+    ).bind(redeemedSubId, unredeemedSubId).all<{ subscription_id: string; status: string }>();
+    expect(rows.results).toEqual([
+      { subscription_id: redeemedSubId, status: "EXPIRED" },
+      { subscription_id: unredeemedSubId, status: "ACTIVE" },
+    ]);
+  });
+
   it("is idempotent (re-running is a no-op on already-EXPIRED rows)", async () => {
     const subId = `sub_iter_${crypto.randomUUID().slice(0, 8)}`;
     const oneHourAgo = Math.floor(Date.now() / 1000) - 3600;
