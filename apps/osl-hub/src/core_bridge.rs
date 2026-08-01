@@ -504,7 +504,7 @@ pub fn feature_manifest() -> Vec<CoreFeature> {
         (
             "updates",
             "Lifecycle",
-            "Signed update channels",
+            "Updater-key-verified update channel",
             "shell-adapter-required",
         ),
         (

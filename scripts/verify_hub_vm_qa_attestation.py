@@ -29,6 +29,16 @@ TAG = re.compile(r"^hub-v[0-9A-Za-z.+-]{1,64}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 RELEASE_DOWNLOAD_PREFIX = "/OSLPrivacy/discord-privacy-client/releases/download/"
 
+# `signedUpdate` is the only required case that cannot be satisfied on the first promotion.
+# Attesting it means watching an installed build take an update from the live `hub-latest` feed
+# — but that feed does not exist until a promotion publishes it, and a promotion cannot happen
+# until the case is attested. The bootstrap is circular by construction, so the case is made
+# waivable exactly once, under a record that names who accepted the risk and is bound to a single
+# tag. `scripts/check_bootstrap_waiver_allowed.py` refuses the waiver the moment a feed exists,
+# so the exception expires on its own rather than on a promise.
+BOOTSTRAP_WAIVABLE_CASES: frozenset[str] = frozenset(("signedUpdate",))
+BOOTSTRAP_WAIVER_VALUE = "waived:bootstrap-no-published-feed"
+
 
 def require(condition: bool, message: str) -> None:
     if not condition:
@@ -88,6 +98,41 @@ def verify_updater_manifest(tag: str, manifest_path: Path, installer: Path) -> N
             "signed updater manifest URL does not name the tested installer")
 
 
+def verify_case_results(tag: str, document: dict[str, object], cases: dict[str, object]) -> frozenset[str]:
+    """Return the waived case names, refusing any waiver that is not bounded and accountable."""
+    waived = frozenset(name for name, value in cases.items() if value == BOOTSTRAP_WAIVER_VALUE)
+    require(all(cases[name] is True for name in set(cases) - waived),
+            "every required QA case must pass")
+    require(waived <= BOOTSTRAP_WAIVABLE_CASES,
+            "only the bootstrap-waivable QA cases may be waived")
+
+    waiver = document.get("bootstrapWaiver")
+    if not waived:
+        require(waiver is None,
+                "a bootstrap waiver must not be recorded when no QA case is waived")
+        return frozenset()
+
+    require(isinstance(waiver, dict), "a waived QA case requires a bootstrapWaiver record")
+    assert isinstance(waiver, dict)
+    require(waiver.get("appliesToTag") == tag,
+            "the bootstrap waiver must be bound to this candidate tag and no other")
+    declared = waiver.get("cases")
+    require(isinstance(declared, list) and len(declared) == len(waived) and set(declared) == waived,
+            "the bootstrap waiver must name exactly the cases it waives")
+    approver = waiver.get("approvedBy")
+    require(isinstance(approver, str) and bool(approver.strip()),
+            "the bootstrap waiver needs a named accountable approver")
+    reason = waiver.get("reason")
+    require(isinstance(reason, str) and len(reason.strip()) >= 16,
+            "the bootstrap waiver needs a stated reason")
+    require(waiver.get("restoredByTag") != tag,
+            "the bootstrap waiver must name a later tag at which the case is attested for real")
+    restored_by = waiver.get("restoredByTag")
+    require(isinstance(restored_by, str) and bool(TAG.fullmatch(restored_by)),
+            "the bootstrap waiver must name the hub-v* tag that restores the case")
+    return waived
+
+
 def verify(tag: str, candidate_dir: Path, attestation_path: Path) -> None:
     require(bool(TAG.fullmatch(tag)), "invalid candidate tag")
     installers = sorted(candidate_dir.glob("*.exe"))
@@ -137,7 +182,7 @@ def verify(tag: str, candidate_dir: Path, attestation_path: Path) -> None:
     cases = document.get("cases")
     require(isinstance(cases, dict), "QA attestation cases are missing")
     require(set(cases) == REQUIRED_CASES, "QA attestation case set is incomplete or unknown")
-    require(all(value is True for value in cases.values()), "every required QA case must pass")
+    verify_case_results(tag, document, cases)
 
 
 class HubVmQaAttestationVerifierTests(unittest.TestCase):

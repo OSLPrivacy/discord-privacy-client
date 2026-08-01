@@ -99,6 +99,14 @@ def audit_release_policy(
                        "HUB_TAURI_SIGNING_PRIVATE_KEY",
                        "Audit OSL Privacy updater supply-chain policy",
                        "OSL Privacy signing secret must not be reachable before the supply-chain audit")
+    require("scripts/normalize_updater_manifest.py" in workflow,
+            "OSL Privacy release must normalize the updater manifest the promotion gate reads")
+    require_before(workflow,
+                   "tauri-apps/tauri-action@",
+                   "scripts/normalize_updater_manifest.py",
+                   "OSL Privacy updater manifest can only be normalized after it is built")
+    require("scripts/verify_update_feed_acceptance.py" in workflow,
+            "OSL Privacy release must prove an installed client would accept the manifest")
 
     require("on:\n  workflow_dispatch:" in promotion,
             "OSL Privacy promotion must be a separate manual workflow")
@@ -114,6 +122,18 @@ def audit_release_policy(
             "Only the promotion workflow may publish the attested draft")
     require("gh release upload hub-latest candidate/latest.json --clobber" in promotion,
             "Only verified promotion may move the app updater feed")
+    require("scripts/check_bootstrap_waiver_allowed.py" in promotion,
+            "OSL Privacy promotion must refuse a bootstrap QA waiver once the feed exists")
+    require_before(promotion,
+                   "scripts/check_bootstrap_waiver_allowed.py",
+                   'gh release edit "$CANDIDATE_TAG" --draft=false',
+                   "The bootstrap waiver guard must run before anything is published")
+    require("scripts/verify_update_feed_acceptance.py" in promotion,
+            "OSL Privacy promotion must prove an installed client would accept the manifest")
+    require_before(promotion,
+                   "scripts/verify_update_feed_acceptance.py",
+                   "gh release upload hub-latest candidate/latest.json --clobber",
+                   "Client acceptance must be proven before the update feed moves")
     repro_errors = audit_reproducible_build_workflow()
     require(not repro_errors,
             "OSL Privacy reproducible-build workflow drifted: " + "; ".join(repro_errors))
@@ -169,6 +189,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.HUB_TAURI_SIGNING_PRIVATE_KEY }}
         with:
           releaseDraft: true
+      - name: Normalize updater manifest
+        run: |
+          python scripts/normalize_updater_manifest.py --manifest candidate/latest.json
+          python scripts/verify_update_feed_acceptance.py --manifest candidate/latest.json
 """.strip()
         promotion = """
 on:
@@ -181,6 +205,8 @@ jobs:
       - run: gh release view "$CANDIDATE_TAG" --json isDraft --jq .isDraft
       - run: gh release download "$CANDIDATE_TAG" --pattern hub-vm-qa-attestation.json --dir candidate
       - run: python scripts/verify_hub_vm_qa_attestation.py
+      - run: python scripts/check_bootstrap_waiver_allowed.py --attestation candidate/hub-vm-qa-attestation.json
+      - run: python scripts/verify_update_feed_acceptance.py --manifest candidate/latest.json
       - run: gh release edit "$CANDIDATE_TAG" --draft=false
       - run: gh release upload hub-latest candidate/latest.json --clobber
 """.strip()
@@ -218,6 +244,41 @@ jobs:
         workflow, promotion, hub, original, root = self.fixture()
         workflow = workflow + "\n      - run: gh release upload hub-latest latest.json"
         with self.assertRaises(SystemExit):
+            audit_release_policy(workflow, promotion, hub, original, root)
+
+    def test_rejects_a_release_that_ships_the_raw_tauri_action_manifest(self) -> None:
+        workflow, promotion, hub, original, root = self.fixture()
+        workflow = workflow.replace("python scripts/normalize_updater_manifest.py --manifest candidate/latest.json\n", "")
+        with self.assertRaisesRegex(SystemExit, "normalize the updater manifest"):
+            audit_release_policy(workflow, promotion, hub, original, root)
+
+    def test_rejects_normalization_ordered_before_the_manifest_is_built(self) -> None:
+        workflow, promotion, hub, original, root = self.fixture()
+        workflow = "      - run: python scripts/normalize_updater_manifest.py\n" + workflow
+        with self.assertRaisesRegex(SystemExit, "only be normalized after it is built"):
+            audit_release_policy(workflow, promotion, hub, original, root)
+
+    def test_rejects_promotion_without_the_bootstrap_waiver_guard(self) -> None:
+        workflow, promotion, hub, original, root = self.fixture()
+        promotion = promotion.replace(
+            "      - run: python scripts/check_bootstrap_waiver_allowed.py --attestation candidate/hub-vm-qa-attestation.json\n",
+            "",
+        )
+        with self.assertRaisesRegex(SystemExit, "refuse a bootstrap QA waiver"):
+            audit_release_policy(workflow, promotion, hub, original, root)
+
+    def test_rejects_a_waiver_guard_that_runs_after_publication(self) -> None:
+        workflow, promotion, hub, original, root = self.fixture()
+        guard = "      - run: python scripts/check_bootstrap_waiver_allowed.py --attestation candidate/hub-vm-qa-attestation.json\n"
+        promotion = promotion.replace(guard, "") + "\n" + guard
+        with self.assertRaisesRegex(SystemExit, "before anything is published"):
+            audit_release_policy(workflow, promotion, hub, original, root)
+
+    def test_rejects_moving_the_feed_before_proving_client_acceptance(self) -> None:
+        workflow, promotion, hub, original, root = self.fixture()
+        check = "      - run: python scripts/verify_update_feed_acceptance.py --manifest candidate/latest.json\n"
+        promotion = promotion.replace(check, "") + "\n" + check
+        with self.assertRaisesRegex(SystemExit, "before the update feed moves"):
             audit_release_policy(workflow, promotion, hub, original, root)
 
     def test_refuses_release_supply_chain_drift_before_any_candidate_is_signed(self) -> None:
