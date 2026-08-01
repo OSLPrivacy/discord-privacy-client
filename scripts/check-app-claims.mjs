@@ -112,6 +112,13 @@ const REQUIRED_GROUP_SENDER_KEY_BANS = [
   "forward secrecy in groups",
   "bounded blast radius",
 ];
+const REQUIRED_SPACES_CLAIM_BANS = [
+  "private communities",
+  "space administrators cannot read messages",
+  "space admins cannot read messages",
+  "osl spaces moderation",
+  "space moderation keeps communities safe",
+];
 const REQUIRED_CONDITIONAL_APP_EVIDENCE = [
   {
     id: "telegram_desktop_native",
@@ -3115,6 +3122,14 @@ function bannedPhraseInputFailures(bannedPhrases) {
       actual: groupSenderKeyBanCount,
     });
   }
+  const spacesClaimBanCount = REQUIRED_SPACES_CLAIM_BANS.filter((phrase) => present.has(phrase)).length;
+  if (spacesClaimBanCount < REQUIRED_SPACES_CLAIM_BANS.length) {
+    failures.push({
+      name: "Spaces claim bans parsed from section D",
+      expected: REQUIRED_SPACES_CLAIM_BANS.length,
+      actual: spacesClaimBanCount,
+    });
+  }
   return failures;
 }
 
@@ -3303,6 +3318,21 @@ async function runSelfTest() {
     {
       name: "catches unsupported all-devices transfer wording",
       text: "Use OSL on all your devices.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches unearned private-communities wording",
+      text: "OSL has private communities today.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches unearned Space-admin visibility wording",
+      text: "Space administrators cannot read messages.",
+      shouldFlag: true,
+    },
+    {
+      name: "catches unearned Spaces moderation wording",
+      text: "Space moderation keeps communities safe.",
       shouldFlag: true,
     },
     {
@@ -4499,7 +4529,8 @@ async function runSelfTest() {
       passed: REQUIRED_SUPPORT_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase))
         && REQUIRED_BURN_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase))
         && REQUIRED_DEVICE_TRANSFER_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase))
-        && REQUIRED_GROUP_SENDER_KEY_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase)),
+        && REQUIRED_GROUP_SENDER_KEY_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase))
+        && REQUIRED_SPACES_CLAIM_BANS.every((phrase) => bannedPhrases.some((parsed) => parsed.normalized === phrase)),
     },
     {
       name: "Block banned Burn and support phrasings",
@@ -4523,6 +4554,11 @@ async function runSelfTest() {
         && REQUIRED_GROUP_SENDER_KEY_BANS.every((phrase) => analyseFragments(
           "self-test/group-sender-key-phrasing",
           [{ text: `Group messages have ${phrase}.`, line: 1 }],
+          bannedPhrases,
+        ).length > 0)
+        && REQUIRED_SPACES_CLAIM_BANS.every((phrase) => analyseFragments(
+          "self-test/spaces-claim-phrasing",
+          [{ text: phrase, line: 1 }],
           bannedPhrases,
         ).length > 0)
         && analyseFragments(
