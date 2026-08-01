@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "task": "t7-02",
+  "platform": "windows",
+  "auditState": "blocked",
+  "sourceCommit": "7344d9dbb03da12fc8d89bed454085454f628aa3",
+  "recordedAt": "2026-08-01T00:00:00-07:00",
+  "requiredRun": {
+    "environment": "dedicated Windows VM",
+    "binary": "freshly built osl-hub executable whose embedded frontend is from sourceCommit",
+    "observation": "UI Automation; capture protection blocks screenshots"
+  },
+  "blocker": "T7-01 has not produced an admissible fresh-binary identity for the same commit, and this WSL author environment has no dedicated Windows VM or UI Automation session. No Windows verdict may be inferred from source inspection.",
+  "verdicts": {
+    "12_status_tag_tone": "not-assessed",
+    "13_status_tag_radius": "not-assessed"
+  }
+}
