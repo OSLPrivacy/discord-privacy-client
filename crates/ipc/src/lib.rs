@@ -53,6 +53,9 @@ pub mod migration;
 pub mod peer_map;
 pub mod prose_token;
 pub mod recovery;
+// OSL-RN ciphertexts are single-use.  This sealed cache lets transcript
+// rendering reuse an already-decrypted payload without advancing the ratchet.
+pub mod rn_plaintext_cache;
 // Bilateral burn (wire 0x0A / 0x0B): sender sequencing, opaque commitments,
 // the receiver replay ledger and the durable revocation outbox. Strictly
 // additive; the legacy `MSG_TYPE_BURN` (0x01) path above is untouched except
