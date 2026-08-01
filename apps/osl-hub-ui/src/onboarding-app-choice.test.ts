@@ -18,7 +18,8 @@ describe("onboarding app choice", () => {
 
     expect(content).toContain("Choose apps");
     expect(content).toContain("Pick available apps for Home, or skip this for now.");
-    expect(content).toContain("Detected");
+    expect(content).toContain("Connected");
+    expect(content).toContain("Seen in your browser history");
     expect(content).toContain("Other apps");
     expect(content).toContain('data-onboarding-app-choice="${app.id}"');
     expect(content).toContain('selectedOnboardingApps.size > 0 ? defaultContinueLabel : "Skip apps"');

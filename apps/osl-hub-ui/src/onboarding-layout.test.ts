@@ -244,14 +244,13 @@ describe("fresh-account continuation", () => {
     expect(bootstrap).toContain('pendingOnboardingRoute() ?? onboardingRouteForBuild("pro")');
   });
 
-  it("combines detected and remaining apps in one chooser", () => {
+  it("combines connected, browser-history, and remaining apps in one chooser", () => {
     const choice = functionSource("tutorialContent", "selectedNativeApps");
     expect(choice).toContain("Choose apps");
-    expect(choice).toContain("Detected");
+    expect(choice).toContain("Connected");
+    expect(choice).toContain("Seen in your browser history");
     expect(choice).toContain("Other apps");
-    expect(choice).toContain("app.linked");
-    expect(choice).toContain('native?.availability === "installed"');
-    expect(choice).toContain("savedAccountsReady && importedFirefoxHomeAppIds.has(app.id)");
+    expect(choice).toContain("groupOnboardingApps");
     expect(choice).toContain('data-onboarding-app-choice="${app.id}"');
     expect(choice).toContain("Nothing opens during setup");
     expect(choice).toContain('nativeCatalogBusy ? "Checking Windows…" : "Continue"');
