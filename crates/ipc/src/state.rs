@@ -967,10 +967,12 @@ mod tests {
     }
 }
 
-fn default_rn_session_store() -> crate::wire_rn::RnSessionStore {
+pub(crate) fn default_rn_session_store() -> crate::wire_rn::RnSessionStore {
     let dir = keystore::osl_config_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("osl-rn-session-store-unconfigured"));
-    crate::wire_rn::RnSessionStore::new(dir.join("rn_sessions"))
+    crate::wire_rn::RnSessionStore::for_config_dir(&dir).unwrap_or_else(|_| {
+        crate::wire_rn::RnSessionStore::new(dir.join(crate::wire_rn::RN_SESSION_DIR))
+    })
 }
 
 fn default_production_duress_engine() -> keystore::DuressEngine {

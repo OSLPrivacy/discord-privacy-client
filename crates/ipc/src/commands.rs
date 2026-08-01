@@ -3874,7 +3874,8 @@ impl EncryptWire {
 fn rn_session_store_from_config_dir() -> Result<crate::wire_rn::RnSessionStore, String> {
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
-    Ok(crate::wire_rn::RnSessionStore::new(dir.join("rn")))
+    crate::wire_rn::RnSessionStore::for_config_dir(dir)
+        .map_err(|e| format!("OSL: cannot open RN session store: {e}"))
 }
 
 fn select_rn_wire_path_for_send(
@@ -4662,7 +4663,7 @@ fn try_encrypt_rn_first_contact_from_state(
 
     let peer_identity = rn_peer_identity_from_entry(peer_did, &peer_entry)?;
     let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: OSL-RN state dir: {e}"))?;
-    let store = crate::wire_rn::RnSessionStore::new(dir.join("rn"));
+    let store = rn_session_store_for_first_contact(&dir)?;
     let sealer = keystore::select_best_sealer();
 
     let caps = match verified_rn_capabilities_for_live_peer(state, &peer_entry) {
@@ -7010,8 +7011,6 @@ pub const OSL_RESULT_MODE1_CONFLICT: &str = "__OSL_CONTROL_MODE1_CONFLICT__";
 /// (it's just innocuous English) and logs the rejection.
 pub const OSL_RESULT_MODE1_INVALID: &str = "__OSL_CONTROL_MODE1_INVALID__";
 
-const RN_SESSION_DIR_NAME: &str = "rn_sessions";
-
 struct InboundOpened {
     msg_type: u8,
     plaintext: Vec<u8>,
@@ -7354,9 +7353,15 @@ fn rn_session_store(config_dir: Option<&Path>) -> Result<crate::wire_rn::RnSessi
         None => keystore::osl_config_dir()
             .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?,
     };
-    Ok(crate::wire_rn::RnSessionStore::new(
-        dir.join(RN_SESSION_DIR_NAME),
-    ))
+    crate::wire_rn::RnSessionStore::for_config_dir(dir)
+        .map_err(|e| format!("OSL: cannot open RN session store: {e}"))
+}
+
+fn rn_session_store_for_first_contact(
+    config_dir: &Path,
+) -> Result<crate::wire_rn::RnSessionStore, String> {
+    crate::wire_rn::RnSessionStore::for_config_dir(config_dir)
+        .map_err(|e| format!("OSL: cannot open RN session store: {e}"))
 }
 
 fn local_rn_prekeys_from_identity(
@@ -7487,6 +7492,61 @@ mod rn_inbound_unknown_tests {
     use osl_ratchet_next::test_support::{fresh_bundle, seeded_rng};
     use std::sync::atomic::Ordering;
     use tempfile::TempDir;
+
+    struct ConfigDirReset(#[allow(dead_code)] crate::test_process_globals::SerialGuard);
+
+    impl Drop for ConfigDirReset {
+        fn drop(&mut self) {
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+        }
+    }
+
+    fn use_rn_test_config_dir(dir: &Path) -> ConfigDirReset {
+        let serial = crate::test_process_globals::serialize();
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(dir.to_path_buf()));
+        ConfigDirReset(serial)
+    }
+
+    #[test]
+    fn t19_t03_all_production_rn_store_helpers_share_persisted_sessions() {
+        let config_dir = TempDir::new().expect("config dir");
+        let _config_reset = use_rn_test_config_dir(config_dir.path());
+
+        let send_store = rn_session_store_from_config_dir().expect("send helper store");
+        let first_contact_store = rn_session_store_for_first_contact(config_dir.path())
+            .expect("first-contact helper store");
+        let receive_store =
+            rn_session_store(Some(config_dir.path())).expect("receive helper store");
+        let app_state_store = crate::state::default_rn_session_store();
+
+        let mut rng = seeded_rng(0xA3);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (identity, _) = osl_ratchet_next::primitives::x25519_keypair(&mut rng);
+        let session = osl_ratchet_next::Session::initiate(
+            &identity,
+            &bundle,
+            osl_ratchet_next::SessionParams::default(),
+            &mut rng,
+        )
+        .expect("initiate session");
+        let peer = *bundle.identity.as_bytes();
+        let sealer = MemorySealer::new();
+
+        send_store
+            .save_session_with_sealer(&peer, &session, &sealer)
+            .expect("send helper persists session");
+        for store in [&first_contact_store, &receive_store, &app_state_store] {
+            assert!(
+                store
+                    .load_session_with_sealer(&peer, &sealer)
+                    .expect("read persisted session")
+                    .is_some(),
+                "each production helper must reopen the session written by send"
+            );
+        }
+    }
 
     fn identity_from_rn_prekeys(
         user_id: &str,
@@ -7661,7 +7721,7 @@ mod rn_inbound_unknown_tests {
             "{err}"
         );
         assert!(
-            !dir.path().join(RN_SESSION_DIR_NAME).exists(),
+            !dir.path().join(crate::wire_rn::RN_SESSION_DIR).exists(),
             "disabled RN branch must refuse before creating responder state"
         );
     }
@@ -7681,7 +7741,8 @@ mod rn_inbound_unknown_tests {
         assert_eq!(opened.msg_type, crate::wire_v2::MSG_TYPE_CONTENT);
         assert_eq!(opened.plaintext, b"rn hello".to_vec());
 
-        let store = crate::wire_rn::RnSessionStore::new(dir.path().join(RN_SESSION_DIR_NAME));
+        let store =
+            crate::wire_rn::RnSessionStore::new(dir.path().join(crate::wire_rn::RN_SESSION_DIR));
         assert!(store
             .load_session_with_sealer(&peer_identity, &sealer)
             .expect("load session")
@@ -7756,8 +7817,9 @@ mod rn_inbound_unknown_tests {
             .expect("load alice pin")
             .is_pinned_to_rn());
 
-        let bob_store =
-            crate::wire_rn::RnSessionStore::new(bob_dir.path().join(RN_SESSION_DIR_NAME));
+        let bob_store = crate::wire_rn::RnSessionStore::new(
+            bob_dir.path().join(crate::wire_rn::RN_SESSION_DIR),
+        );
         assert!(bob_store
             .load_session_with_sealer(alice_identity_public.as_bytes(), &sealer)
             .expect("load bob session")
@@ -7820,8 +7882,9 @@ mod rn_inbound_unknown_tests {
 
         assert_eq!(opened.msg_type, crate::wire_v2::MSG_TYPE_CONTENT);
         assert_eq!(opened.plaintext, b"b77 command RN round trip".to_vec());
-        let bob_store =
-            crate::wire_rn::RnSessionStore::new(bob_dir.path().join(RN_SESSION_DIR_NAME));
+        let bob_store = crate::wire_rn::RnSessionStore::new(
+            bob_dir.path().join(crate::wire_rn::RN_SESSION_DIR),
+        );
         assert!(bob_store
             .load_session_with_sealer(alice_identity_public.as_bytes(), &sealer)
             .expect("load responder session")
@@ -7926,8 +7989,9 @@ mod rn_inbound_unknown_tests {
         )
         .expect("send m3");
 
-        let bob_store =
-            crate::wire_rn::RnSessionStore::new(bob_dir.path().join(RN_SESSION_DIR_NAME));
+        let bob_store = crate::wire_rn::RnSessionStore::new(
+            bob_dir.path().join(crate::wire_rn::RN_SESSION_DIR),
+        );
         let third = crate::wire_rn::receive_rn_for_state(
             &bob_state,
             &bob_store,
@@ -7938,8 +8002,9 @@ mod rn_inbound_unknown_tests {
         .expect("receive m3 first");
         assert_eq!(third.plaintext, b"three");
 
-        let reloaded_bob_store =
-            crate::wire_rn::RnSessionStore::new(bob_dir.path().join(RN_SESSION_DIR_NAME));
+        let reloaded_bob_store = crate::wire_rn::RnSessionStore::new(
+            bob_dir.path().join(crate::wire_rn::RN_SESSION_DIR),
+        );
         let first = crate::wire_rn::receive_rn_for_state(
             &bob_state,
             &reloaded_bob_store,
