@@ -10,7 +10,101 @@
 
 use crate::native_apps::{BrowserImportId, FirefoxServiceId};
 use serde::{Deserialize, Serialize};
+#[cfg(any(target_os = "windows", test))]
+use std::ffi::OsString;
 use std::path::Path;
+
+#[cfg(any(target_os = "windows", test))]
+const CHROMIUM_RENDERER_ACCESSIBILITY_ARGUMENT: &str = "--force-renderer-accessibility=complete";
+#[cfg(any(target_os = "windows", test))]
+const FIREFOX_ACCESSIBILITY_FORCE_DISABLED_PREF: &str =
+    "user_pref(\"accessibility.force_disabled\", 0);\n";
+
+#[cfg(any(target_os = "windows", test))]
+fn browser_launch_arguments(
+    account_mode: BrowserAccountMode,
+    browser_id: BrowserImportId,
+    profile: Option<&Path>,
+    url: &str,
+) -> Result<Vec<OsString>, ()> {
+    let chromium = crate::native_apps::browser_uses_chromium_app_mode(browser_id);
+    match account_mode {
+        BrowserAccountMode::ExistingBrowser => Ok(if chromium {
+            vec!["--new-window".into(), format!("--app={url}").into()]
+        } else {
+            vec!["--new-window".into(), url.into()]
+        }),
+        BrowserAccountMode::IsolatedOsl => {
+            let profile = profile.ok_or(())?;
+            if chromium {
+                let mut profile_argument = OsString::from("--user-data-dir=");
+                profile_argument.push(profile.as_os_str());
+                Ok(vec![
+                    profile_argument,
+                    CHROMIUM_RENDERER_ACCESSIBILITY_ARGUMENT.into(),
+                    "--new-window".into(),
+                    format!("--app={url}").into(),
+                ])
+            } else if browser_id == BrowserImportId::Firefox {
+                Ok(vec![
+                    "-no-remote".into(),
+                    "-profile".into(),
+                    profile.as_os_str().into(),
+                    "--new-window".into(),
+                    url.into(),
+                ])
+            } else {
+                Err(())
+            }
+        }
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn enable_isolated_firefox_accessibility(profile: &Path) -> Result<(), ()> {
+    use std::fs::{self, OpenOptions};
+    use std::io::{Read, Write};
+
+    const MAX_USER_JS_BYTES: u64 = 64 * 1024;
+    let preference_file = profile.join("user.js");
+    match fs::symlink_metadata(&preference_file) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            if metadata.len() > MAX_USER_JS_BYTES {
+                return Err(());
+            }
+        }
+        Ok(_) => return Err(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(()),
+    }
+
+    let mut current = String::new();
+    if preference_file.exists() {
+        OpenOptions::new()
+            .read(true)
+            .open(&preference_file)
+            .and_then(|mut file| file.read_to_string(&mut current))
+            .map_err(|_| ())?;
+    }
+    if current
+        .lines()
+        .any(|line| line.trim() == FIREFOX_ACCESSIBILITY_FORCE_DISABLED_PREF.trim())
+    {
+        return Ok(());
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&preference_file)
+        .map_err(|_| ())?;
+    if !current.is_empty() && !current.ends_with('\n') {
+        file.write_all(b"\n").map_err(|_| ())?;
+    }
+    file.write_all(FIREFOX_ACCESSIBILITY_FORCE_DISABLED_PREF.as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|_| ())
+}
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -256,7 +350,7 @@ impl Drop for BrowserCompanionState {
 mod windows {
     use super::*;
     use std::collections::HashSet;
-    use std::ffi::{c_void, OsString};
+    use std::ffi::c_void;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::os::windows::process::CommandExt;
     use std::path::{Path, PathBuf};
@@ -427,11 +521,9 @@ mod windows {
         let mut command = Command::new(executable.path());
         match account_mode {
             BrowserAccountMode::ExistingBrowser => {
-                if crate::native_apps::browser_uses_chromium_app_mode(browser_id) {
-                    command.arg("--new-window").arg(format!("--app={url}"));
-                } else {
-                    command.arg("--new-window").arg(url);
-                }
+                let arguments = browser_launch_arguments(account_mode, browser_id, None, &url)
+                    .expect("existing-browser arguments are defined for every trusted browser");
+                command.args(arguments);
             }
             BrowserAccountMode::IsolatedOsl => {
                 let profile = match prepare_isolated_profile(
@@ -446,25 +538,27 @@ mod windows {
                         )
                     }
                 };
-                if crate::native_apps::browser_uses_chromium_app_mode(browser_id) {
-                    let mut profile_argument = OsString::from("--user-data-dir=");
-                    profile_argument.push(profile.as_os_str());
-                    command
-                        .arg(profile_argument)
-                        .arg("--new-window")
-                        .arg(format!("--app={url}"));
-                } else if browser_id == BrowserImportId::Firefox {
-                    command
-                        .arg("-no-remote")
-                        .arg("-profile")
-                        .arg(profile)
-                        .arg("--new-window")
-                        .arg(url);
-                } else {
+                if browser_id == BrowserImportId::Firefox
+                    && enable_isolated_firefox_accessibility(&profile).is_err()
+                {
                     return BrowserCompanionAction::failed(
-                        BrowserCompanionReason::IsolatedProfileUnsupported,
+                        BrowserCompanionReason::ProfileUnavailable,
                     );
                 }
+                let arguments = match browser_launch_arguments(
+                    account_mode,
+                    browser_id,
+                    Some(&profile),
+                    &url,
+                ) {
+                    Ok(arguments) => arguments,
+                    Err(()) => {
+                        return BrowserCompanionAction::failed(
+                            BrowserCompanionReason::IsolatedProfileUnsupported,
+                        )
+                    }
+                };
+                command.args(arguments);
             }
         }
         let launched = command
@@ -936,6 +1030,49 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn isolated_browser_accessibility_is_enabled_without_flagging_existing_browsers() {
+        let profile = Path::new("C:/osl/browser-companion-profile");
+        let isolated = browser_launch_arguments(
+            BrowserAccountMode::IsolatedOsl,
+            BrowserImportId::Chrome,
+            Some(profile),
+            "https://web.whatsapp.com",
+        )
+        .expect("isolated Chromium launch arguments");
+        let existing = browser_launch_arguments(
+            BrowserAccountMode::ExistingBrowser,
+            BrowserImportId::Chrome,
+            None,
+            "https://web.whatsapp.com",
+        )
+        .expect("existing Chromium launch arguments");
+
+        assert!(isolated
+            .iter()
+            .any(|argument| argument == CHROMIUM_RENDERER_ACCESSIBILITY_ARGUMENT));
+        assert!(!existing
+            .iter()
+            .any(|argument| argument == CHROMIUM_RENDERER_ACCESSIBILITY_ARGUMENT));
+    }
+
+    #[test]
+    fn isolated_firefox_profile_enables_accessibility() {
+        let profile =
+            std::env::temp_dir().join(format!("osl-browser-companion-a11y-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&profile);
+        std::fs::create_dir_all(&profile).expect("test profile directory");
+
+        enable_isolated_firefox_accessibility(&profile).expect("Firefox accessibility preference");
+        let preferences = std::fs::read_to_string(profile.join("user.js"))
+            .expect("Firefox accessibility preference file");
+        assert!(preferences
+            .lines()
+            .any(|line| line.trim() == FIREFOX_ACCESSIBILITY_FORCE_DISABLED_PREF.trim()));
+
+        std::fs::remove_dir_all(profile).expect("remove test profile directory");
+    }
 
     #[test]
     fn every_result_is_truthful_about_capture_and_containment() {
