@@ -1088,18 +1088,10 @@ pub fn record_wrong_password_attempt_or_duress(
 }
 
 pub fn lock_main_password_session(state: &AppState) {
-    set_file_storage_key(None);
-    state.clear_identity();
-    state.clear_prekey_state();
-    state.sender_pubkey_cache.clear();
-    *state
-        .message_store
-        .lock()
-        .expect("message_store mutex poisoned") = None;
-    *state
-        .recovery_token
-        .lock()
-        .expect("recovery_token mutex poisoned") = None;
+    // Keep this legacy entry point at parity with the production session lock:
+    // inactivity callers still reach it directly, and a partial lock leaves
+    // sensitive reassembly plaintext and account policy in process memory.
+    crate::session_lock::lock_session(state, crate::session_lock::SessionLockTrigger::Internal);
 }
 
 pub fn run_inactivity_auto_lock_timer_for_state(
@@ -2271,6 +2263,36 @@ mod password_policy_tests {
                 now,
             ),
             InactivityAutoLockOutcome::AlreadyLocked
+        );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn main_password_lock_discards_half_assembled_mode1_plaintext() {
+        let _serial = crate::test_process_globals::serialize();
+        set_file_storage_key(None);
+        let state = AppState::new();
+        let mut buffer = stego::ReassemblyBuffer::new();
+        let outcome = buffer.push(7, 0, 2, b"half-assembled plaintext".to_vec(), 1);
+        assert!(
+            matches!(outcome, stego::PushOutcome::Incomplete { .. }),
+            "a single chunk must remain buffered until the rest of the message arrives"
+        );
+        state
+            .mode1_reassembly
+            .lock()
+            .expect("mode1_reassembly mutex poisoned")
+            .insert("private-channel".to_owned(), buffer);
+
+        lock_main_password_session(&state);
+
+        assert!(
+            state
+                .mode1_reassembly
+                .lock()
+                .expect("mode1_reassembly mutex poisoned")
+                .is_empty(),
+            "locking must discard half-assembled Mode-1 plaintext"
         );
         set_file_storage_key(None);
     }
