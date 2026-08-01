@@ -144,7 +144,8 @@ import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./
 import { OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { parseCircleAudience, type CircleAudience } from "./osl-collab";
-import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
+import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
+import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
 import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, recoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
 import { BurnGuaranteeCopy, type BurnGuaranteeState } from "./two-step-burn";
@@ -486,6 +487,12 @@ let scrubReviewPage = 0;
 let lastFocusKey = "";
 let lastOnboardingMarkup: string | null = null;
 let renderedOnboardingRoute: OnboardingRoute | null = null;
+/**
+ * Set by a flow that is answering the owner's own keystroke, so its paint is
+ * not deferred by the "someone is typing a password" guard in
+ * `renderOnboarding`. Cleared by the pass that consumes it.
+ */
+let forceOnboardingPaint = false;
 let lastWorkspaceMarkup: string | null = null;
 let lastWorkspaceViewKey = "";
 let deferredBackgroundRender = false;
@@ -1568,15 +1575,24 @@ function renderOnboarding(): void {
   const markup = onboardingShellMarkup(setupNavigation);
   lastWorkspaceMarkup = null;
   lastWorkspaceViewKey = "";
-  if (lastOnboardingMarkup === markup && root.querySelector(".onboarding-shell")) {
+  const active = document.activeElement;
+  // Consumed by this pass whatever it decides, so one forced paint can never
+  // leak into the next background refresh and start clobbering live typing.
+  const forced = forceOnboardingPaint;
+  forceOnboardingPaint = false;
+  const decision = onboardingPaintDecision({
+    markupUnchanged: lastOnboardingMarkup === markup,
+    shellMounted: root.querySelector(".onboarding-shell") !== null,
+    sameRouteAsRendered: renderedOnboardingRoute === onboardingRoute,
+    passwordEditInProgress: [...root.querySelectorAll<HTMLInputElement>('input[type="password"]')]
+      .some((input) => input === active || input.value.length > 0),
+    forced,
+  });
+  if (decision === "skip-unchanged") {
     openScrubReviewDialogAfterRender();
     return;
   }
-  const active = document.activeElement;
-  const sensitiveEditInProgress = renderedOnboardingRoute === onboardingRoute
-    && [...root.querySelectorAll<HTMLInputElement>('input[type="password"]')]
-      .some((input) => input === active || input.value.length > 0);
-  if (sensitiveEditInProgress) return;
+  if (decision === "defer-sensitive-edit") return;
   lastOnboardingMarkup = markup;
   renderedOnboardingRoute = onboardingRoute;
   root.innerHTML = markup;
@@ -2369,34 +2385,33 @@ function recoveryContent(): string {
  */
 async function revealRecoveryKit(event: SubmitEvent): Promise<void> {
   event.preventDefault();
-  if (recoveryRevealBusy) return;
   const password = document.querySelector<HTMLInputElement>("#recovery-reveal-password")?.value ?? "";
-  if (!password) return;
-  recoveryRevealBusy = true;
-  recoveryRevealError = null;
-  render();
-  try {
-    await proveRecoveryCaptureProtection();
-    const passwordPhrase = await viewHubRecoveryPhrase(password);
-    if (!passwordPhrase) {
-      recoveryRevealError = "That password did not open your recovery kit. Nothing was shown.";
-      return;
-    }
-    applyRecoveryKitAction({
-      kind: "revealed",
-      secrets: {
-        userId: core.readiness.activeOslUserId ?? "Local OSL identity",
-        // The 12-word ACCOUNT phrase is shown once at creation and is not
-        // re-derivable from the password marker. Saying so is the honest
-        // answer; pretending this screen restores it would not be.
-        identityPhrase: null,
-        passwordPhrase,
-      },
-    });
-  } finally {
-    recoveryRevealBusy = false;
-    render();
-  }
+  const outcome = await runRecoveryReveal(password, {
+    isBusy: () => recoveryRevealBusy,
+    setBusy: (busy) => { recoveryRevealBusy = busy; },
+    setError: (message) => { recoveryRevealError = message; },
+    // Forced and flushed: the password field this form owns still holds the
+    // typed password when the answer lands, and an unforced paint would be
+    // deferred by the sensitive-edit guard — which is exactly how a failed or
+    // even a *successful* reveal used to leave the screen frozen.
+    render: () => { forceOnboardingPaint = true; renderNow(); },
+    proveCaptureProtection: () => proveRecoveryCaptureProtection(),
+    readRecoveryPhrase: (typed) => viewHubRecoveryPhrase(typed),
+  });
+  if (outcome.kind !== "revealed") return;
+  applyRecoveryKitAction({
+    kind: "revealed",
+    secrets: {
+      userId: core.readiness.activeOslUserId ?? "Local OSL identity",
+      // The 12-word ACCOUNT phrase is shown once at creation and is not
+      // re-derivable from the password marker. Saying so is the honest
+      // answer; pretending this screen restores it would not be.
+      identityPhrase: null,
+      passwordPhrase: outcome.passwordPhrase,
+    },
+  });
+  forceOnboardingPaint = true;
+  renderNow();
 }
 
 function secureRecoveryOnboardingContent(): string {
@@ -2579,7 +2594,16 @@ function bindOnboarding(): void {
     onboardingRoute = onboardingRouteForBuild("pro");
     render();
   });
-  document.querySelector<HTMLFormElement>("#recovery-reveal-form")?.addEventListener("submit", (event) => void revealRecoveryKit(event));
+  const recoveryRevealForm = document.querySelector<HTMLFormElement>("#recovery-reveal-form");
+  recoveryRevealForm?.addEventListener("submit", (event) => void revealRecoveryKit(event));
+  // Implicit submission is not something this screen may depend on. It is the
+  // only screen an owner can be stranded on, and a keyboard-only owner reaching
+  // it must be able to finish without a pointer.
+  document.querySelector<HTMLInputElement>("#recovery-reveal-password")?.addEventListener("keydown", (event) => {
+    if (!submitsRecoveryReveal(event)) return;
+    event.preventDefault();
+    recoveryRevealForm?.requestSubmit();
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-app-choice]").forEach((button) => button.addEventListener("click", () => {
     const appId = button.dataset.onboardingAppChoice as HomeAppId;
     if (selectedOnboardingApps.has(appId)) selectedOnboardingApps.delete(appId);

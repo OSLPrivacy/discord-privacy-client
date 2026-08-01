@@ -31,6 +31,9 @@ use osl_privacy_hub::identity_registry::{
     self, HubIdentityBurnResult, HubIdentityRegistryState, HubIdentitySlotCreation,
     HubIdentitySlotDto, HubIdentitySwitchResult,
 };
+use osl_privacy_hub::main_window_reveal::{
+    main_window_reveal, CaptureAffinity, MainWindowReveal, PageLoadPhase,
+};
 use osl_privacy_hub::mass_cleanup::{
     self, MassCleanupCapabilityManifest, MassCleanupDiscoveryRequest, MassCleanupExecutionRequest,
 };
@@ -8913,6 +8916,17 @@ fn main() {
     startup_breadcrumb("plugin_updater_after"); // STARTUP-TRACE
     let builder = builder.on_page_load(|webview, payload| {
         startup_breadcrumb("page_load_fired"); // STARTUP-TRACE
+        let is_main_window = webview.label() == "main";
+        let page_load_phase = if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+            PageLoadPhase::Started
+        } else {
+            PageLoadPhase::Finished
+        };
+        // Windows only: the affinity readback that reveal is gated on. Every
+        // other platform has no such primitive, so there is nothing to read and
+        // `capture_protected` is not consulted for it.
+        #[allow(unused_mut)]
+        let mut capture_protected = false;
         #[cfg(windows)]
         {
             let _ = window_border::suppress_accent_border(webview);
@@ -8920,17 +8934,26 @@ fn main() {
             // revealed only after exact capture-affinity readback succeeds on
             // this HWND. Foreign native app windows remain outside this
             // boundary and are never claimed as protected.
-            if webview.label() == "main" {
-                if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+            if is_main_window {
+                if page_load_phase == PageLoadPhase::Started {
                     let _ = webview.window().hide();
                 }
-                let protected = protect_main_webview_or_hide(webview);
-                if protected && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
-                    let _ = webview.window().show();
-                }
+                capture_protected = protect_main_webview_or_hide(webview);
             } else {
                 let _ = screenshot::apply_to_webview(webview, active_osl_capture_protection());
             }
+        }
+        // `setup()` hides the main window unconditionally, so this is the only
+        // thing that ever undoes that on a normal launch. Off Windows it used to
+        // be unreachable, which left the app running behind an unmapped window.
+        if main_window_reveal(
+            is_main_window,
+            page_load_phase,
+            CaptureAffinity::for_this_platform(),
+            capture_protected,
+        ) == MainWindowReveal::Show
+        {
+            let _ = webview.window().show();
         }
         // This hook fires twice for every load, once on PageLoadEvent::Started
         // and once on PageLoadEvent::Finished. Pre-warming on both spawned two
