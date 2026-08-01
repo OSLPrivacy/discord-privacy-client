@@ -30,6 +30,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
+use crate::carrier_placement::{CarrierPlacement, CarrierPlacementTiming};
 use crate::discord_carrier_geometry::{
     self, CarrierGeometryInput, CarrierPlan, FixedPaddingSize, LineMetrics, PrivacyPaddingMode,
     VisibleStructure,
@@ -1360,12 +1361,19 @@ impl NativeDiscordComposerState {
         carrier: &str,
     ) -> DiscordCarrierReceipt {
         let delay = compatibility_delay_ms(chars_per_second);
+        let placement = CarrierPlacement::new(
+            carrier,
+            match mode {
+                DiscordCarrierMode::Atomic => CarrierPlacementTiming::Atomic,
+                DiscordCarrierMode::Compatibility => CarrierPlacementTiming::Compatibility,
+            },
+        );
         if !placement_context.is_some_and(|context| context.authorizes(scope_binding, mode)) {
             #[cfg(target_os = "windows")]
             windows::qa_place_stage("place_refused_product_context");
             return carrier_failure(mode, delay, DiscordCarrierStatus::PlacementRejected);
         }
-        if !valid_cover(carrier) {
+        if !valid_cover(placement.payload()) {
             #[cfg(target_os = "windows")]
             windows::qa_place_stage("place_refused_invalid_cover");
             return carrier_failure(mode, delay, DiscordCarrierStatus::PlacementRejected);
@@ -1385,7 +1393,7 @@ impl NativeDiscordComposerState {
                         scope_binding,
                         mode,
                         delay,
-                        carrier,
+                        placement.payload(),
                     ))
                 },
             );
@@ -1400,7 +1408,7 @@ impl NativeDiscordComposerState {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = (host, owner_osl_user_id, scope_binding, carrier);
+            let _ = (host, owner_osl_user_id, scope_binding, placement);
             carrier_failure(mode, delay, DiscordCarrierStatus::PlatformUnsupported)
         }
     }
@@ -17903,11 +17911,19 @@ mod windows {
             expected.clone(),
         );
         cleanup.arm(carrier);
-        let placed = match mode {
+        let placement = CarrierPlacement::new(
+            carrier,
+            match mode {
+                DiscordCarrierMode::Atomic => CarrierPlacementTiming::Atomic,
+                DiscordCarrierMode::Compatibility => CarrierPlacementTiming::Compatibility,
+            },
+        );
+        let carrier = placement.payload();
+        let placed = match placement.timing() {
             // Type the carrier as real Unicode keystrokes so Slate's own input
             // pipeline builds its document. Newlines are injected as
             // Shift+Enter; a bare Enter never appears inside the carrier.
-            DiscordCarrierMode::Atomic => {
+            CarrierPlacementTiming::Atomic => {
                 let mut ok =
                     may_continue_input(target, &focused.element, &expected, process_is_trusted, "");
                 // Paced and checked chunk by chunk rather than fired as one burst.
@@ -18029,7 +18045,7 @@ mod windows {
                 }
                 ok
             }
-            DiscordCarrierMode::Compatibility => drive_compatibility_carrier(
+            CarrierPlacementTiming::Compatibility => drive_compatibility_carrier(
                 carrier,
                 |placed_prefix| {
                     may_continue_input(
