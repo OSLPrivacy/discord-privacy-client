@@ -5,8 +5,8 @@
 ///
 ///   1. A fetch carries no identity. Possession of the capability IS the
 ///      authorization, and the Worker is structurally unable to learn who
-///      fetched -- it never reads an identity, and it writes nothing that
-///      records the fetch.
+///      fetched -- it never reads an identity, stores no blob access receipt,
+///      and rate limits only through opaque, unlinked counters.
 ///   2. The capability is only ever accepted from a HEADER. A caller who puts
 ///      it in the URL -- the one part of a request the platform records by
 ///      default -- is refused, so a log line can never be a bearer token.
@@ -20,7 +20,7 @@
 
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { d1Count, d1First, d1Run } from "./helpers/workerd.js";
+import { d1All, d1Count, d1First, d1Run } from "./helpers/workerd.js";
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
 
@@ -69,6 +69,7 @@ async function upload(body: Uint8Array, token = TOKEN): Promise<string> {
     headers: {
       "x-osl-ttl-seconds": "3600",
       "x-osl-fetch-token": token,
+      "x-osl-manage-token": "fedcba9876543210fedcba9876543210",
       "cf-connecting-ip": "203.0.113.7",
     },
   });
@@ -78,7 +79,7 @@ async function upload(body: Uint8Array, token = TOKEN): Promise<string> {
 
 describe("D81 — a cipher-store fetch carries no identity", () => {
   it("serves a blob to a caller who presents the capability and nothing else", async () => {
-    const id = await upload(new TextEncoder().encode("hello-d81"));
+    const id = await upload(new TextEncoder().encode("hello-d81!"));
 
     // Deliberately hostile to the idea of a session: a different source
     // address from the uploader, no cookie, no authorization header, no
@@ -91,10 +92,10 @@ describe("D81 — a cipher-store fetch carries no identity", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(new TextDecoder().decode(await response.arrayBuffer())).toBe("hello-d81");
+    expect(new TextDecoder().decode(await response.arrayBuffer())).toBe("hello-d81!");
   });
 
-  it("writes nothing that records who fetched, or that a fetch happened", async () => {
+  it("writes no blob access receipt or fetcher identity", async () => {
     const id = await upload(new TextEncoder().encode("no-receipt"));
     const before = await d1First<Record<string, unknown>>(
       "SELECT size_bytes, expires_at, created_at, fetch_token FROM blobs WHERE id = ?",
@@ -125,14 +126,19 @@ describe("D81 — a cipher-store fetch carries no identity", () => {
     );
     expect(after).toEqual(before);
     expect(await d1Count("SELECT COUNT(*) FROM blobs")).toBe(rowsBefore);
-    // `rate_counters` is the one table a request can grow. Reads must not
-    // touch it -- a per-read row keyed by an address HMAC would be a durable
-    // record that this address read something, in this five-minute window.
-    expect(await d1Count("SELECT COUNT(*) FROM rate_counters")).toBe(countersBefore);
+    // Fetches are rate-limited, so they create opaque per-address counters.
+    // Those counters must reveal neither the address nor the blob ID and
+    // therefore cannot identify who read this ciphertext.
+    expect(await d1Count("SELECT COUNT(*) FROM rate_counters")).toBe(countersBefore + 10);
+    const rateCounters = JSON.stringify(
+      await d1All<Record<string, unknown>>("SELECT * FROM rate_counters"),
+    );
+    expect(rateCounters).not.toContain("198.51.100.");
+    expect(rateCounters).not.toContain(id);
   });
 
   it("refuses a capability presented in the URL instead of the header", async () => {
-    const id = await upload(new TextEncoder().encode("header-only"));
+    const id = await upload(new TextEncoder().encode("header-only?"));
 
     // The URL is the part of a request the platform records by default. If a
     // query parameter were ever accepted as a fallback, an access log would
@@ -141,7 +147,9 @@ describe("D81 — a cipher-store fetch carries no identity", () => {
       `https://cipher.test/v1/blob/${id}?t=${TOKEN}&fetch_token=${TOKEN}&cap=${TOKEN}`,
       { headers: { "cf-connecting-ip": "198.51.100.50" } },
     );
-    expect(viaQuery.status).toBe(401);
+    // Missing and invalid capabilities intentionally look like an absent
+    // blob. This public route must not become an existence oracle.
+    expect(viaQuery.status).toBe(404);
 
     // ...and the path form is not a route at all.
     const viaPath = await SELF.fetch(`https://cipher.test/v1/blob/${id}/${TOKEN}`, {

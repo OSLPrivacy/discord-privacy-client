@@ -34,6 +34,7 @@ function blobRequest(bytes: Uint8Array): Request {
     headers: {
       "x-osl-ttl-seconds": "3600",
       "x-osl-fetch-token": token,
+      "x-osl-manage-token": "fedcba9876543210fedcba9876543210",
       "content-length": String(bytes.byteLength),
     },
     body: bytes,

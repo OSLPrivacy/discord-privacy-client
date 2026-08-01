@@ -37,7 +37,11 @@ describe("blob manage capability", () => {
     );
     expect(fetchBearerDelete.status).toBe(403);
 
-    const remainsFetchable = await handleFetch(new Request(url), env, id);
+    const remainsFetchable = await handleFetch(
+      new Request(url, { headers: { "x-osl-fetch-token": FETCH_TOKEN } }),
+      env,
+      id,
+    );
     expect(remainsFetchable.status).toBe(200);
 
     const managedDelete = await handleDelete(
@@ -46,7 +50,11 @@ describe("blob manage capability", () => {
       id,
     );
     expect(managedDelete.status).toBe(204);
-    expect((await handleFetch(new Request(url), env, id)).status).toBe(404);
+    expect((await handleFetch(
+      new Request(url, { headers: { "x-osl-fetch-token": FETCH_TOKEN } }),
+      env,
+      id,
+    )).status).toBe(404);
   });
 
   it("rejects an upload that omits its manage capability", async () => {
