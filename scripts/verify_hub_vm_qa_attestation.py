@@ -125,11 +125,11 @@ def verify_case_results(tag: str, document: dict[str, object], cases: dict[str, 
     reason = waiver.get("reason")
     require(isinstance(reason, str) and len(reason.strip()) >= 16,
             "the bootstrap waiver needs a stated reason")
-    require(waiver.get("restoredByTag") != tag,
-            "the bootstrap waiver must name a later tag at which the case is attested for real")
     restored_by = waiver.get("restoredByTag")
     require(isinstance(restored_by, str) and bool(TAG.fullmatch(restored_by)),
             "the bootstrap waiver must name the hub-v* tag that restores the case")
+    require(restored_by != tag,
+            "the bootstrap waiver must name a later tag at which the case is attested for real")
     return waived
 
 
