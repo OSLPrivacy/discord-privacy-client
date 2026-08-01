@@ -1,0 +1,37 @@
+.scrub-consent-gate {
+  margin-top: 16px;
+  padding: 16px;
+  border: 2px solid var(--warn);
+  background: var(--panel);
+}
+
+.scrub-consent-gate h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.scrub-consent-warning {
+  margin: 12px 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.scrub-consent-check,
+.scrub-consent-typed {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.scrub-consent-check { grid-template-columns: auto 1fr; align-items: start; }
+.scrub-consent-check input { margin-top: 3px; }
+.scrub-consent-typed strong { font-weight: 600; }
+.scrub-consent-typed input { min-height: 42px; }
+.scrub-consent-proceed { margin-top: 16px; font-size: 14px; font-weight: 600; }
