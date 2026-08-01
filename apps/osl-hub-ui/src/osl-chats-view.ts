@@ -1,4 +1,5 @@
-export const OSL_CHAT_MAX_DRAFT_BYTES = 1_000;
+// Matches the enforced OSL Chat logical-message limit in broker.rs.
+export const OSL_CHAT_MAX_DRAFT_BYTES = 1024 * 1024;
 
 export const FIRST_PARTY_OSL_SERVICE_SURFACES = [{
   surfaceId: "osl-chat",

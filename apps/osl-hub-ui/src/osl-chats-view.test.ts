@@ -103,13 +103,17 @@ describe("OSL chats view", () => {
     expect(oslChatsViewMarkup(model({ draft: "Hello", busy: true }))).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
   });
 
-  it("counts UTF-8 bytes and rejects over-limit drafts", () => {
+  it("accepts the backend maximum and blocks the first draft the backend would reject", () => {
     expect(oslChatDraftBytes("🔐")).toBe(4);
-    const draft = "a".repeat(OSL_CHAT_MAX_DRAFT_BYTES + 1);
-    const markup = oslChatsViewMarkup(model({ draft }));
-    expect(markup).toContain("1,001 / 1,000");
-    expect(markup).toContain("osl-chat-byte-count is-over");
-    expect(markup).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
+    const backendMaximum = 1024 * 1024;
+    const accepted = oslChatsViewMarkup(model({ draft: "a".repeat(backendMaximum) }));
+    expect(OSL_CHAT_MAX_DRAFT_BYTES).toBe(backendMaximum);
+    expect(accepted).toContain("1,048,576 / 1,048,576");
+    expect(accepted).toMatch(/class="osl-chat-send" type="submit"(?![^>]* disabled)[^>]*>/u);
+
+    const refused = oslChatsViewMarkup(model({ draft: "a".repeat(backendMaximum + 1) }));
+    expect(refused).toContain("osl-chat-byte-count is-over");
+    expect(refused).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
   });
 
   it("renders no external history, scripts, or backend capability claims", () => {
