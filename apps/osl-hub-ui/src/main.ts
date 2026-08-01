@@ -119,6 +119,7 @@ import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from 
 import { projectAutoScrubFleetStatus, type AutoScrubFleetStatus } from "./autoscrub-contract";
 import { loadAutoScrubRunFleetStatus, requestAutoScrubGlobalStop } from "./autoscrub-unattended-run";
 import { oslMailStage, type OslMailStage } from "./desktop-service-policy";
+import { webSurfaceLabel, type WebSurfaceCapability } from "./web-surface-label";
 import {
   acknowledgeOslMailRetrieval,
   burnOslMailbox,
@@ -3597,7 +3598,19 @@ function trustedHeader(): string {
     ? `<button class="local-protected-toggle" id="local-protected-toggle" type="button" aria-expanded="${localProtectedSheet.open || peerProtectedSheet.open || nativeDiscordProtectionActive}">Protect</button>`
     : "";
   const mailScope = route === "service" ? mailComposerEncryptionScope(activeHomeApp()) : "";
-  const serviceControls = route === "service" && activeService ? `<div class="service-context"><span class="service-context-logo">${serviceLogo(activeService.id)}</span><span><strong>${escapeHtml(activeHomeAppName())}</strong><small>${activeEmbeddedHost ? "Isolated OSL profile" : activeDefaultBrowserCompanion ? "Default-browser companion · unprotected" : activeNativeHostMode === "existingSession" ? "Native companion" : activeNativeHostId ? "OSL app window" : "Needs setup"}</small></span>${mailScope}${localProtection}</div>` : "";
+  const webSurfaceCapabilities: readonly WebSurfaceCapability[] = activeEmbeddedHost
+    ? ["L1", "L2", "L3"]
+    : activeDefaultBrowserCompanion
+      ? ["L1"]
+      : [];
+  const serviceSurfaceLabel = webSurfaceCapabilities.length > 0
+    ? webSurfaceLabel(webSurfaceCapabilities)
+    : activeNativeHostMode === "existingSession"
+      ? "Native companion"
+      : activeNativeHostId
+        ? "OSL app window"
+        : "Needs setup";
+  const serviceControls = route === "service" && activeService ? `<div class="service-context"><span class="service-context-logo">${serviceLogo(activeService.id)}</span><span><strong>${escapeHtml(activeHomeAppName())}</strong><small>${serviceSurfaceLabel}</small></span>${mailScope}${localProtection}</div>` : "";
   const onboardingContinue = route === "service" && onboardingServiceSetup && (activeEmbeddedHost || activeNativeHostId || activeDefaultBrowserCompanion)
     ? `<button class="button compact primary" id="onboarding-service-continue">Continue setup</button>`
     : "";
