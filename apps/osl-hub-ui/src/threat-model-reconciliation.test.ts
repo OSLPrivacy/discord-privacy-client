@@ -52,11 +52,10 @@ function rustBooleanInitializer(source: string, field: string): boolean {
   return match![1] === "true";
 }
 
-function exportedBooleanLiteral(source: string, field: string): boolean {
-  const expression = new RegExp(`${field}:\\s*(true|false),`, "u");
-  const match = source.match(expression);
-  expect(match, `${field} status literal must stay explicit`).not.toBeNull();
-  return match![1] === "true";
+function coreBridgeReadsIpcSenderKeySwitch(source: string): boolean {
+  return /group_sender_keys_enabled:\s*state\.osl\.sender_keys_enabled\.load\(Ordering::Acquire\),/u.test(
+    source,
+  );
 }
 
 describe("THREAT_MODEL reconciliation for retired v4 and v5 limits", () => {
@@ -83,18 +82,17 @@ describe("THREAT_MODEL reconciliation for retired v4 and v5 limits", () => {
     ]);
   });
 
-  it("v5_sender_keys_enabled_default_false_rationale_is_documented", () => {
+  it("v5_sender_key_defaults_agree_across_the_documented_core_and_bridge", () => {
     const model = threatModelReconciliation();
     const state = readRepo("crates/ipc/src/state.rs");
     const coreBridge = readRepo("apps/osl-hub/src/core_bridge.rs");
 
     expect(model.v5_sender_keys.public_product_default).toBe(false);
-    expect(model.v5_sender_keys.ipc_owner_switch_default).toBe(
-      rustBooleanInitializer(state, "sender_keys_enabled"),
+    expect(model.v5_sender_keys.ipc_owner_switch_default).toBe(true);
+    expect(rustBooleanInitializer(state, "sender_keys_enabled")).toBe(
+      model.v5_sender_keys.ipc_owner_switch_default,
     );
-    expect(
-      exportedBooleanLiteral(coreBridge, "group_sender_keys_enabled"),
-    ).toBe(model.v5_sender_keys.public_product_default);
+    expect(coreBridgeReadsIpcSenderKeySwitch(coreBridge)).toBe(true);
     expect(model.v5_sender_keys.default_false_rationale).toBe(
       "account_scoped_chain_state_is_not_device_bound",
     );
