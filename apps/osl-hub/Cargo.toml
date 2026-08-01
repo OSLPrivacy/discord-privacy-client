@@ -68,7 +68,9 @@ windows = { version = "=0.56.0", features = ["Win32_Foundation", "Win32_Graphics
 rfd = { version = "=0.16.0", default-features = false, features = ["gtk3"] }
 
 [features]
-default = []
+# The WhatsApp protected surface is part of the shipped desktop product. Keep
+# the feature name for its QA audit hooks, but compile it in the standard binary.
+default = ["whatsapp-qa-shell"]
 core = ["dep:base64", "dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:tracing"]
 desktop = ["dep:runtime", "dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tokio", "core"]
 custom-protocol = ["tauri/custom-protocol"]
