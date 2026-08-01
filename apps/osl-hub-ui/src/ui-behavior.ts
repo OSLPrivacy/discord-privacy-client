@@ -142,6 +142,72 @@ export function friendInviteCardMarkup(
   return `<section class="${options.sectionClass}" aria-labelledby="${options.labelId}"><div><span id="${options.labelId}">Your friend ID</span><code>${escapeHtml(compactFriendId)}</code></div><button class="button" id="copy-friend-code" type="button">Copy invite</button><p>Send your invite to someone you trust, and add theirs here. Both people must do this — no request ever arrives on its own.</p></section>`;
 }
 
+export interface FriendVerificationCopy {
+  readonly heading: string;
+  readonly code: string;
+  readonly instruction: string;
+  readonly consequence: string;
+  readonly invalidationNotice: string;
+}
+
+/**
+ * The words the safety-number ceremony puts on screen.
+ *
+ * The number is derived from BOTH identities, so the two devices display the
+ * same digits and the operator's job is to *compare* them. The previous copy
+ * told the operator to read their own code aloud and type back what their
+ * friend read to them — an instruction that, followed literally, made the
+ * ceremony fail, because each device could only ever accept the value already
+ * on its own screen. Returned as data rather than markup so the instruction can
+ * be checked against what the ceremony actually accepts.
+ */
+export function friendVerificationCopy(
+  alias: string | null,
+  safetyNumber: string | null,
+): FriendVerificationCopy {
+  return {
+    heading: `Your verification code for ${alias ?? "this friend"}. Their device shows this same code:`,
+    code: safetyNumber && safetyNumber.length > 0 ? safetyNumber : "Unavailable",
+    instruction: "Ask your friend to read out the code on their screen, over a channel that is not this app, and type it here",
+    consequence: "The codes match only if you are talking to the device OSL holds keys for. Accepting lets OSL encrypt to that key. It does not turn on decryption in any chat or approve any conversation.",
+    invalidationNotice: "Verifications recorded by earlier versions of OSL have been cleared. Those compared a code OSL generated against itself, so they proved nothing; every friend has to be verified again.",
+  };
+}
+
+export const EMPTY_VERIFICATION_CODE_REFUSAL =
+  "Enter the code shown on your friend's screen before accepting.";
+
+/**
+ * Whether the owned-confirmation submit button is unusable.
+ *
+ * Being mid-submit is the only reason, and it is not derived from any observed
+ * event. The verify dialog used to render this button `disabled` for the whole
+ * dialog kind and re-enable it only from an `input` listener, so a paste that
+ * fires no `input` — or any programmatic fill — left a dead button on the one
+ * screen a first-time user has to get through, with no other way forward from
+ * it. Whether the field is empty is decided when the button is pressed, by
+ * reading the field, rather than predicted from events that may never arrive.
+ */
+export function ownedConfirmationSubmitDisabled(busy: boolean): boolean {
+  return busy;
+}
+
+/**
+ * What to do with whatever is in the verification field at submit time.
+ *
+ * The code is handed on exactly as it was entered — grouping and separators are
+ * normalised by the constant-time comparison in Rust, not here — so a pasted
+ * value survives untouched. Blank is refused visibly instead of being made
+ * unreachable by a disabled control.
+ */
+export function verificationSubmission(
+  fieldValue: string,
+): { code: string } | { refusal: string } {
+  return fieldValue.trim().length === 0
+    ? { refusal: EMPTY_VERIFICATION_CODE_REFUSAL }
+    : { code: fieldValue };
+}
+
 export function shouldClearRemovedFriendChat(
   activePersonId: string | null,
   removedPersonId: string,

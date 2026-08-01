@@ -73,12 +73,18 @@ pub struct HubSecurityState {
     transition: Mutex<()>,
 }
 
+/// The invite this device hands out.
+///
+/// Deliberately carries **no safety number**. A safety number is a comparison
+/// between two identities; an invite has not met its counterparty yet, so no
+/// such number exists. The field used to be filled with a hash of this device's
+/// own bundle, which is not a value any second device could ever reproduce.
+/// The real, shared number appears on both screens once the friend is added.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FriendCodeExport {
     pub friend_code: String,
     pub osl_user_id: String,
-    pub safety_number: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -444,6 +450,46 @@ struct PeopleFile {
     people: BTreeMap<String, PersonMetadata>,
 }
 
+/// Schema version of `hub_people.json`.
+///
+/// Version 3 is the first version in which `safety_number_verified` means what
+/// it says. Every earlier file recorded verifications made against a one-sided
+/// number — a value OSL generated and then compared against itself — so those
+/// flags record only that a button was pressed. They are cleared on load, not
+/// migrated: there is nothing in them to carry forward.
+const PEOPLE_SCHEMA_VERSION: u32 = 3;
+
+/// Load `hub_people.json`, invalidating pre-v3 verification claims.
+///
+/// Every read of the People file goes through here so no caller can observe the
+/// stale flags. The clear happens in memory **before** the write, so a crash or
+/// a failed write between the two leaves the safer state: the file still says
+/// version 0 and is migrated again on the next load, while this process is
+/// already working from cleared flags. That is also why a failed write-back is
+/// not propagated — refusing to return would lock the operator out of their own
+/// roster to protect a value that has just been declared meaningless.
+fn load_people_file(dir: &Path) -> Result<PeopleFile, String> {
+    let path = dir.join(PEOPLE_FILE);
+    let mut people = load_encrypted_json::<PeopleFile>(&path)?;
+    if people.version >= PEOPLE_SCHEMA_VERSION {
+        return Ok(people);
+    }
+    let had_claims = people
+        .people
+        .values()
+        .any(|person| person.safety_number_verified);
+    for person in people.people.values_mut() {
+        person.safety_number_verified = false;
+    }
+    people.version = PEOPLE_SCHEMA_VERSION;
+    // Do not create a People file for an account that has never had one; an
+    // absent file loads as the default and there is nothing to invalidate.
+    if had_claims || (!people.people.is_empty() && path.exists()) {
+        let _ = write_encrypted_json(&path, &people);
+    }
+    Ok(people)
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct SecurityPreferences {
     version: u32,
@@ -520,8 +566,40 @@ fn friend_code_key_bundle(payload: &FriendCodeUnsigned) -> Result<KeyBundle, Str
     })
 }
 
-fn safety_number_for_bundle(bundle: &KeyBundle) -> Result<String, String> {
-    ipc::tofu::safety_number(bundle).map_err(|_| SAFETY_NUMBER_BUNDLE_REFUSAL.to_owned())
+/// This device's own complete public-key bundle.
+///
+/// Built from exactly the values `export_friend_code` publishes, so the bundle
+/// a peer canonicalises from our friend code is byte-identical to the one we
+/// canonicalise here — which is what makes the two devices agree on a number.
+fn self_key_bundle(core: &HubCoreState) -> Result<KeyBundle, String> {
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .clone()
+        .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    Ok(KeyBundle {
+        ed25519_pub: STANDARD.encode(identity.ed25519_public.as_bytes()),
+        x25519_pub: STANDARD.encode(identity.x25519_public.as_bytes()),
+        mlkem768_pub: STANDARD.encode(identity.mlkem_public_bytes),
+        ratchet_initial_pub: identity
+            .ratchet_initial_pub
+            .map(|key| STANDARD.encode(key.as_bytes())),
+    })
+}
+
+/// The number both devices display for this friendship.
+///
+/// Derived from **both** bundles, so the operator can be asked to compare their
+/// screen with their friend's screen and have that comparison mean something.
+/// The previous `safety_number_for_bundle` hashed the peer's bundle alone: the
+/// two devices necessarily showed different digits, and the only value either
+/// operator could type was the one already in front of them. That is the
+/// failure mode `verify_friend_safety_number`'s own doc comment describes.
+fn safety_number_for_pair(core: &HubCoreState, peer: &KeyBundle) -> Result<String, String> {
+    let mine = self_key_bundle(core)?;
+    ipc::tofu::safety_number_pair(&mine, peer).map_err(|_| SAFETY_NUMBER_BUNDLE_REFUSAL.to_owned())
 }
 
 fn reject_discord_identifier_identity(osl_user_id: &str) -> Result<(), String> {
@@ -575,7 +653,11 @@ pub fn export_friend_code(core: &HubCoreState) -> Result<FriendCodeExport, Strin
         payload,
         signature: URL_SAFE_NO_PAD.encode(signature.as_bytes()),
     };
-    let safety_number = safety_number_for_bundle(&friend_code_key_bundle(&signed.payload)?)?;
+    // Refuse to publish an invite whose keys cannot be canonicalised at all.
+    // This is a well-formedness check, not a safety number: there is no
+    // counterparty here to derive one against.
+    ipc::tofu::validate_key_bundle(&friend_code_key_bundle(&signed.payload)?)
+        .map_err(|_| SAFETY_NUMBER_BUNDLE_REFUSAL.to_owned())?;
     let encoded = serde_json::to_vec(&signed)
         .map_err(|_| "OSL friend code could not be encoded".to_owned())?;
     Ok(FriendCodeExport {
@@ -583,7 +665,6 @@ pub fn export_friend_code(core: &HubCoreState) -> Result<FriendCodeExport, Strin
         // `Identity` zeroizes on drop, so its fields cannot be moved out of —
         // the export gets a copy and the original is still wiped on the way out.
         osl_user_id: identity.user_id.clone(),
-        safety_number,
     })
 }
 
@@ -606,7 +687,7 @@ pub fn add_friend_code(
         .lock()
         .map_err(|_| "OSL People state is unavailable".to_owned())?;
     let dir = config_dir()?;
-    let mut people = load_encrypted_json::<PeopleFile>(&dir.join(PEOPLE_FILE))?;
+    let mut people = load_people_file(&dir)?;
 
     if let Some(existing_id) = people
         .people
@@ -658,7 +739,7 @@ pub fn add_friend_code(
         let trusted_bundle =
             trusted_peer_key_bundle(&existing_id, existing_metadata, &existing_peer)?;
         let presented_bundle = friend_code_key_bundle(&parsed.payload)?;
-        let presented_safety_number = safety_number_for_bundle(&presented_bundle)?;
+        let presented_safety_number = safety_number_for_pair(core, &presented_bundle)?;
         let existing = people
             .people
             .get_mut(&existing_id)
@@ -710,7 +791,7 @@ pub fn add_friend_code(
         );
     }
     let peer = peer_entry(&parsed.payload)?;
-    let safety_number = safety_number_for_bundle(&friend_code_key_bundle(&parsed.payload)?)?;
+    let safety_number = safety_number_for_pair(core, &friend_code_key_bundle(&parsed.payload)?)?;
     let mut peer_map = core
         .osl
         .peer_map
@@ -767,7 +848,7 @@ pub fn remove_friend(
         .map_err(|_| "OSL People state is unavailable".to_owned())?;
     let dir = config_dir()?;
     let people_path = dir.join(PEOPLE_FILE);
-    let mut people = load_encrypted_json::<PeopleFile>(&people_path)?;
+    let mut people = load_people_file(&dir)?;
     if !people.people.contains_key(&person_id) {
         return Err("OSL friend is unknown".to_owned());
     }
@@ -898,7 +979,7 @@ pub fn verify_friend_safety_number(
         .lock()
         .map_err(|_| "OSL People state is unavailable".to_owned())?;
     let dir = config_dir()?;
-    let mut people = load_encrypted_json::<PeopleFile>(&dir.join(PEOPLE_FILE))?;
+    let mut people = load_people_file(&dir)?;
     let metadata = people
         .people
         .get(&person_id)
@@ -932,7 +1013,7 @@ pub fn verify_friend_safety_number(
         }
         None => trusted_peer_key_bundle(&person_id, &metadata, &current_peer)?,
     };
-    let expected = safety_number_for_bundle(&expected_bundle)?;
+    let expected = safety_number_for_pair(core, &expected_bundle)?;
     if !safety_number_matches(&expected, &safety_number) {
         return Err(SAFETY_NUMBER_MISMATCH_REFUSAL.to_owned());
     }
@@ -979,7 +1060,7 @@ pub fn verify_friend_safety_number(
 
 pub fn list_people(core: &HubCoreState) -> Result<Vec<PersonDto>, String> {
     require_unlocked()?;
-    let people = load_encrypted_json::<PeopleFile>(&config_dir()?.join(PEOPLE_FILE))?;
+    let people = load_people_file(&config_dir()?)?;
     let prefs = load_security_preferences()?;
     people
         .people
@@ -1005,7 +1086,7 @@ pub fn set_friend_alias(
         .lock()
         .map_err(|_| "OSL People state is unavailable".to_owned())?;
     let dir = config_dir()?;
-    let mut people = load_encrypted_json::<PeopleFile>(&dir.join(PEOPLE_FILE))?;
+    let mut people = load_people_file(&dir)?;
     let metadata = people
         .people
         .get_mut(&person_id)
@@ -1046,7 +1127,7 @@ pub fn set_friend_scope_permission(
         .map_err(|_| "OSL People state is unavailable".to_owned())?;
     let dir = config_dir()?;
     if enabled {
-        let people = load_encrypted_json::<PeopleFile>(&dir.join(PEOPLE_FILE))?;
+        let people = load_people_file(&dir)?;
         let metadata = people
             .people
             .get(&person_id)
@@ -1198,7 +1279,7 @@ pub fn set_friend_scope_reach(
         .lock()
         .map_err(|_| "OSL People state is unavailable".to_owned())?;
     let dir = config_dir()?;
-    let people = load_encrypted_json::<PeopleFile>(&dir.join(PEOPLE_FILE))?;
+    let people = load_people_file(&dir)?;
     let metadata = people
         .people
         .get(&person_id)
@@ -1291,7 +1372,7 @@ pub fn revoke_friend_scope_entry(
         .lock()
         .map_err(|_| "OSL People state is unavailable".to_owned())?;
     let dir = config_dir()?;
-    let people = load_encrypted_json::<PeopleFile>(&dir.join(PEOPLE_FILE))?;
+    let people = load_people_file(&dir)?;
     let metadata = people
         .people
         .get(&person_id)
@@ -1493,7 +1574,7 @@ pub fn manual_peer_binding(
     require_unlocked()?;
     validate_person_id(&person_id)?;
     let dir = config_dir()?;
-    let people = load_encrypted_json::<PeopleFile>(&dir.join(PEOPLE_FILE))?;
+    let people = load_people_file(&dir)?;
     let metadata = people
         .people
         .get(&person_id)
@@ -3408,7 +3489,10 @@ fn trusted_peer_key_bundle(
     {
         return Err(SAFETY_NUMBER_BUNDLE_REFUSAL.to_owned());
     }
-    safety_number_for_bundle(&bundle)?;
+    // Well-formedness only. This function has no counterparty in scope, and
+    // deriving a one-sided number just to throw it away is how the previous
+    // ceremony convinced itself it was checking something.
+    ipc::tofu::validate_key_bundle(&bundle).map_err(|_| SAFETY_NUMBER_BUNDLE_REFUSAL.to_owned())?;
     Ok(bundle)
 }
 
@@ -3494,7 +3578,7 @@ fn person_dto(
         }
         None => trusted_bundle,
     };
-    let safety_number = safety_number_for_bundle(&displayed_bundle)?;
+    let safety_number = safety_number_for_pair(core, &displayed_bundle)?;
     let manual_whitelists = manual_approved_scopes_for_person(prefs, person_id);
     let whitelist_count = manual_whitelists.len();
     let whitelisted_scopes: Vec<PersonWhitelistScopeDto> = manual_whitelists
@@ -4184,9 +4268,13 @@ mod tests {
         )
     }
 
+    /// Write a People fixture at the CURRENT schema version. A fixture written
+    /// at an older version is a migration fixture, and loading it clears every
+    /// verification claim on purpose — see
+    /// `pre_v3_verification_claims_are_invalidated_on_load`.
     fn write_people(dir: &Path, person_id: &str, metadata: PersonMetadata) {
         let mut people = PeopleFile {
-            version: 1,
+            version: PEOPLE_SCHEMA_VERSION,
             ..PeopleFile::default()
         };
         people.people.insert(person_id.to_owned(), metadata);
@@ -4206,6 +4294,23 @@ mod tests {
 
     fn install_self_identity(core: &HubCoreState) {
         *core.osl.identity.lock().unwrap() = Some(keystore::generate_native_identity());
+    }
+
+    /// A fixed local bundle to derive ceremony numbers against, for tests whose
+    /// subject is the peer half of the pair. A safety number needs two sides;
+    /// pinning one of them keeps the peer-side property under test.
+    fn local_test_bundle() -> KeyBundle {
+        KeyBundle {
+            ed25519_pub: STANDARD.encode([200u8; ED25519_PUBLIC_BYTES]),
+            x25519_pub: STANDARD.encode([201u8; X25519_PUBLIC_BYTES]),
+            mlkem768_pub: STANDARD.encode([202u8; MLKEM768_PUBLIC_BYTES]),
+            ratchet_initial_pub: Some(STANDARD.encode([203u8; RATCHET_PUBLIC_BYTES])),
+        }
+    }
+
+    fn ceremony_number(peer: &KeyBundle) -> String {
+        ipc::tofu::safety_number_pair(&local_test_bundle(), peer)
+            .expect("fixture bundles are well formed and distinct")
     }
 
     fn friend_code_for_identity(identity: &keystore::Identity) -> String {
@@ -4808,16 +4913,231 @@ mod tests {
         ));
     }
 
+    /// The P0. Two devices, two identities, two separate stores.
+    ///
+    /// Every number in this test is derived on the device that displays it,
+    /// from that device's own state, and is then checked against a number
+    /// derived independently on the other device. That is the only arrangement
+    /// that can tell the two derivations apart: the previous one hashed a
+    /// single bundle, so the two devices displayed different digits and the
+    /// only value either operator could type was the one already on their own
+    /// screen.
+    ///
+    /// This is deliberately not shaped like the pairing check in
+    /// `discord_qa_identity`, which hands a device back its own derived number
+    /// and therefore passes for the broken derivation as well.
+    #[test]
+    fn two_devices_derive_one_shared_number_and_refuse_any_other() {
+        let harness = FileBackedSecurityHarness::new("two-device-shared-number");
+        let alice_dir = harness.path().join("alice");
+        let bob_dir = harness.path().join("bob");
+        let carol_dir = harness.path().join("carol");
+        for dir in [&alice_dir, &bob_dir, &carol_dir] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        // Each device owns its own store. Switching the active account dir is
+        // what makes these three separate installs rather than one.
+        let use_device = |dir: &std::path::Path| {
+            keystore::set_active_account_dir(Some(dir.to_path_buf()));
+        };
+
+        let alice = HubCoreState::default();
+        let alice_security = HubSecurityState::default();
+        let bob = HubCoreState::default();
+        let bob_security = HubSecurityState::default();
+        let carol = HubCoreState::default();
+        let carol_security = HubSecurityState::default();
+        install_self_identity(&alice);
+        install_self_identity(&bob);
+        install_self_identity(&carol);
+
+        use_device(&alice_dir);
+        let alice_invite = export_friend_code(&alice).unwrap();
+        use_device(&bob_dir);
+        let bob_invite = export_friend_code(&bob).unwrap();
+        use_device(&carol_dir);
+        let carol_invite = export_friend_code(&carol).unwrap();
+
+        // Alice adds Bob on Alice's device; Bob adds Alice on Bob's device.
+        use_device(&alice_dir);
+        let on_alice = add_friend_code(
+            &alice,
+            &alice_security,
+            bob_invite.friend_code.clone(),
+            None,
+        )
+        .unwrap();
+        use_device(&bob_dir);
+        let on_bob = add_friend_code(&bob, &bob_security, alice_invite.friend_code, None).unwrap();
+
+        // The whole point: the two screens agree.
+        assert_eq!(
+            on_alice.safety_number, on_bob.safety_number,
+            "the two devices must display one shared number, or comparing them \
+             out of band proves nothing",
+        );
+        assert_eq!(
+            on_alice
+                .safety_number
+                .chars()
+                .filter(char::is_ascii_digit)
+                .count(),
+            30,
+        );
+        assert!(!on_alice.safety_number_verified);
+        assert!(!on_bob.safety_number_verified);
+
+        // A third device pairing with Bob derives a DIFFERENT number, so the
+        // shared value is a property of the pair and not of Bob alone.
+        use_device(&carol_dir);
+        let on_carol =
+            add_friend_code(&carol, &carol_security, bob_invite.friend_code, None).unwrap();
+        assert_ne!(on_carol.safety_number, on_alice.safety_number);
+
+        // Following the on-screen instruction — comparing with the number the
+        // OTHER device displays — completes the ceremony.
+        use_device(&alice_dir);
+        let verified = verify_friend_safety_number(
+            &alice,
+            &alice_security,
+            on_alice.person_id.clone(),
+            on_bob.safety_number.clone(),
+        )
+        .expect("the number the peer device displays must be accepted");
+        assert!(verified.safety_number_verified);
+        assert_eq!(verified.safety_number, on_bob.safety_number);
+        let persisted = load_people_file(&alice_dir).unwrap();
+        assert!(
+            persisted
+                .people
+                .get(&on_alice.person_id)
+                .unwrap()
+                .safety_number_verified
+        );
+
+        // And the same ceremony on Bob's device, with Alice's number.
+        use_device(&bob_dir);
+        assert!(
+            verify_friend_safety_number(
+                &bob,
+                &bob_security,
+                on_bob.person_id.clone(),
+                on_alice.safety_number.clone(),
+            )
+            .unwrap()
+            .safety_number_verified
+        );
+
+        // Refusals. A different pair's real 30-digit number, and a single
+        // altered digit, are both rejected — and neither marks anyone verified.
+        use_device(&carol_dir);
+        let mut altered = normalise_safety_number(&on_carol.safety_number).into_bytes();
+        let last = altered.last_mut().unwrap();
+        *last = if *last == b'9' { b'8' } else { *last + 1 };
+        let altered = String::from_utf8(altered).unwrap();
+        for wrong in [on_alice.safety_number.clone(), altered] {
+            assert_eq!(
+                verify_friend_safety_number(
+                    &carol,
+                    &carol_security,
+                    on_carol.person_id.clone(),
+                    wrong,
+                )
+                .expect_err("a number from a different comparison must be refused"),
+                SAFETY_NUMBER_MISMATCH_REFUSAL,
+            );
+        }
+        let carol_people = load_people_file(&carol_dir).unwrap();
+        assert!(
+            !carol_people
+                .people
+                .get(&on_carol.person_id)
+                .unwrap()
+                .safety_number_verified,
+            "a refused ceremony must not mark the friend verified",
+        );
+
+        // The invite itself carries no safety number: before the two identities
+        // meet there is no comparison to report.
+        let invite = serde_json::to_value(&carol_invite).unwrap();
+        let mut fields: Vec<&str> = invite
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(fields, ["friendCode", "oslUserId"]);
+    }
+
+    /// Verification claims recorded before schema 3 were made against a number
+    /// the app compared with itself. Loading must clear them, say so on disk,
+    /// and be safe to repeat.
+    #[test]
+    fn pre_v3_verification_claims_are_invalidated_on_load() {
+        let harness = FileBackedSecurityHarness::new("people-schema-v3-invalidation");
+        let (person_id, mut metadata, _) = test_friend(83);
+        metadata.safety_number_verified = true;
+        let legacy = PeopleFile {
+            version: 0,
+            people: BTreeMap::from([(person_id.clone(), metadata)]),
+        };
+        write_encrypted_json(&harness.path().join(PEOPLE_FILE), &legacy).unwrap();
+
+        let loaded = load_people_file(harness.path()).unwrap();
+        assert_eq!(loaded.version, PEOPLE_SCHEMA_VERSION);
+        assert!(
+            !loaded
+                .people
+                .get(&person_id)
+                .unwrap()
+                .safety_number_verified,
+            "a claim made against the old self-referential number must not survive",
+        );
+
+        // Written back, so a second process does not see the stale claim either.
+        let on_disk: PeopleFile = load_encrypted_json(&harness.path().join(PEOPLE_FILE)).unwrap();
+        assert_eq!(on_disk.version, PEOPLE_SCHEMA_VERSION);
+        assert!(
+            !on_disk
+                .people
+                .get(&person_id)
+                .unwrap()
+                .safety_number_verified
+        );
+
+        // Idempotent: a verification recorded *after* the migration survives.
+        let mut migrated = load_people_file(harness.path()).unwrap();
+        migrated
+            .people
+            .get_mut(&person_id)
+            .unwrap()
+            .safety_number_verified = true;
+        write_encrypted_json(&harness.path().join(PEOPLE_FILE), &migrated).unwrap();
+        assert!(
+            load_people_file(harness.path())
+                .unwrap()
+                .people
+                .get(&person_id)
+                .unwrap()
+                .safety_number_verified,
+            "the migration must run once, not clear every load",
+        );
+    }
+
     #[test]
     fn verify_friend_safety_number_refuses_safety_number_mismatch_mutants() {
         let harness = FileBackedSecurityHarness::new("safety-mismatch-refusal");
         let core = HubCoreState::default();
         let security = HubSecurityState::default();
+        install_self_identity(&core);
         let (person_id, mut metadata, peer) = test_friend(61);
         metadata.safety_number_verified = false;
-        let expected =
-            safety_number_for_bundle(peer.tofu_key_bundle.as_ref().expect("fixture bundle"))
-                .unwrap();
+        let expected = safety_number_for_pair(
+            &core,
+            peer.tofu_key_bundle.as_ref().expect("fixture bundle"),
+        )
+        .unwrap();
         let mut wrong = normalise_safety_number(&expected).into_bytes();
         let last = wrong.last_mut().expect("fixture has safety-number digits");
         *last = if *last == b'9' { b'8' } else { *last + 1 };
@@ -4983,7 +5303,7 @@ mod tests {
             ratchet_initial_public: Some(STANDARD.encode([4u8; RATCHET_PUBLIC_BYTES])),
         };
         let trusted = friend_code_key_bundle(&base).unwrap();
-        let trusted_number = safety_number_for_bundle(&trusted).unwrap();
+        let trusted_number = ceremony_number(&trusted);
         let changed_payloads = [
             FriendCodeUnsigned {
                 x25519_public: STANDARD.encode([9u8; X25519_PUBLIC_BYTES]),
@@ -5001,7 +5321,7 @@ mod tests {
 
         for changed in changed_payloads {
             let presented = friend_code_key_bundle(&changed).unwrap();
-            let presented_number = safety_number_for_bundle(&presented).unwrap();
+            let presented_number = ceremony_number(&presented);
             assert_ne!(trusted_number, presented_number);
             let mut metadata = PersonMetadata {
                 osl_user_id: base.osl_user_id.clone(),
@@ -5458,7 +5778,10 @@ mod tests {
         assert!(record_revocation_ack(&security, &ack_b64(&burn_ids[1], true)).unwrap());
         let complete = revocation_status_for_storage_key(&security, &storage_key).unwrap();
         assert_eq!(complete.status, ipc::revocation::STATUS_ACKNOWLEDGED);
-        assert_eq!((complete.peers_pending, complete.peers_acknowledged), (0, 2));
+        assert_eq!(
+            (complete.peers_pending, complete.peers_acknowledged),
+            (0, 2)
+        );
         assert_eq!(complete.claims, burn_claims());
 
         // Another conversation is never covered by this one's acknowledgements.
@@ -5503,7 +5826,7 @@ mod tests {
         write_encrypted_json(
             &harness.path().join(PEOPLE_FILE),
             &PeopleFile {
-                version: 1,
+                version: PEOPLE_SCHEMA_VERSION,
                 people: BTreeMap::from([
                     (person_a.clone(), metadata_a),
                     (person_b.clone(), metadata_b),

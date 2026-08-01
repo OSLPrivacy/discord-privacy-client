@@ -1,8 +1,24 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import {
+  RESUMABLE_ONBOARDING_ROUTES,
+  resumeOnboardingRoute,
+  type OnboardingResumeStorage,
+} from "./onboarding-resume";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+
+const RESUME_STORAGE_KEY = "osl-onboarding-resume-v1";
+
+function fakeResumeStorage(seed: Record<string, string>): OnboardingResumeStorage {
+  const items = new Map(Object.entries(seed));
+  return {
+    getItem: (key) => items.get(key) ?? null,
+    setItem: (key, value) => { items.set(key, value); },
+    removeItem: (key) => { items.delete(key); },
+  };
+}
 
 function functionSource(name: string, nextName: string): string {
   const start = source.indexOf(`function ${name}`);
@@ -136,13 +152,23 @@ describe("fresh-account continuation", () => {
     const pending = functionSource("pendingOnboardingRoute", "beginServiceOnboarding");
     const renderOnboarding = functionSource("renderOnboarding", "onboardingContent");
     const bootstrap = source.slice(source.indexOf("async function bootstrap"));
-    for (const route of ["pro", "privacy", "defaults", "sending", "cover", "passwords", "burnpass", "mullvad", "browser", "tutorial"]) {
-      expect(pending).toContain(`pending === "${route}"`);
+    // T15-A8: the allow-list moved into ./onboarding-resume so `recovery` could
+    // join it as a first-class resumable step. Assert the policy itself, not
+    // the inlined comparisons it replaced.
+    expect(pending).toContain("resumeOnboardingRoute(localStorage, onboardingResumeStorageKey)");
+    for (const route of ["pro", "privacy", "defaults", "sending", "cover", "passwords", "burnpass", "mullvad", "browser", "tutorial"] as const) {
+      expect(RESUMABLE_ONBOARDING_ROUTES).toContain(route);
+      expect(resumeOnboardingRoute(fakeResumeStorage({ [RESUME_STORAGE_KEY]: route }), RESUME_STORAGE_KEY)).toBe(route);
     }
-    expect(pending).not.toContain('pending === "apps"');
-    expect(pending).not.toContain('pending === "detected"');
-    expect(pending).not.toContain('pending === "install"');
-    expect(pending).toContain("localStorage.removeItem(onboardingResumeStorageKey)");
+    for (const rejected of ["apps", "detected", "install"]) {
+      expect(RESUMABLE_ONBOARDING_ROUTES as readonly string[]).not.toContain(rejected);
+      expect(resumeOnboardingRoute(fakeResumeStorage({ [RESUME_STORAGE_KEY]: rejected }), RESUME_STORAGE_KEY)).toBeNull();
+    }
+    // A stale/unknown stored step is still cleared rather than carried around;
+    // that now happens inside the resume policy module.
+    const stale = fakeResumeStorage({ [RESUME_STORAGE_KEY]: "apps" });
+    expect(resumeOnboardingRoute(stale, RESUME_STORAGE_KEY)).toBeNull();
+    expect(stale.getItem(RESUME_STORAGE_KEY)).toBeNull();
     expect(renderOnboarding).toContain("persistCurrentOnboardingRoute()");
     expect(source).not.toContain('pendingOnboardingRoute() ?? "mullvad"');
     // The QA shell build swaps the default first-setup-step target ("pro" -> "sending")
@@ -459,10 +485,13 @@ describe("fresh-account continuation", () => {
     expect(recovery).toContain('recoverySavedAcknowledged ? "" : "disabled"');
     expect(binding).toMatch(/#copy-recovery-kit[\s\S]*?navigator\.clipboard\.writeText\(kit\)[\s\S]*?Recovery kit copied — save it, then confirm below/);
     expect(binding).not.toMatch(/#copy-recovery-kit[\s\S]*?recoverySavedAcknowledged = true/);
-    expect(binding).toMatch(/recoverySaved\?\.addEventListener\("change"[\s\S]*?recoverySavedAcknowledged = recoverySaved\.checked[\s\S]*?recoveryContinue\.disabled = !recoverySavedAcknowledged/);
+    // T15-A7: the checkbox and Continue now go through the recovery-kit
+    // reducer, which is what makes "saved" and "not saved" a state the app can
+    // still see after a restart instead of a module-local boolean.
+    expect(binding).toMatch(/recoverySaved\?\.addEventListener\("change"[\s\S]*?applyRecoveryKitAction\(\{ kind: "set-saved-acknowledged", acknowledged: recoverySaved\.checked \}\)[\s\S]*?recoveryContinue\.disabled = !recoverySavedAcknowledged/);
     // Same QA-shell-aware default as bootstrap: routes through onboardingRouteForBuild("pro")
     // instead of the hard-coded "pro" literal, still landing on Pro setup for normal builds.
-    expect(binding).toMatch(/#recovery-continue[\s\S]*?recoveryBundle = null;[\s\S]*?recoverySavedAcknowledged = false;[\s\S]*?onboardingRoute = onboardingRouteForBuild\("pro"\)/);
+    expect(binding).toMatch(/#recovery-continue[\s\S]*?applyRecoveryKitAction\(\{ kind: "continue" \}\) !== "leave-recovery"[\s\S]*?onboardingRoute = pendingOnboardingRoute\(\) \?\? onboardingRouteForBuild\("pro"\)/);
   });
 
   it("starts every recovery screen unacknowledged and clears recovery state on full cleanup", () => {
@@ -477,7 +506,12 @@ describe("fresh-account continuation", () => {
   it("adds secure recovery next steps without exposing machinery or claiming Android readiness", () => {
     const recovery = functionSource("recoveryContent", "secureRecoveryOnboardingContent");
     const nextSteps = functionSource("secureRecoveryOnboardingContent", "identityPasswordForm");
-    expect(recovery).toMatch(/recoveryCaptureGate\.canRender\(\)[\s\S]*?secureRecoveryOnboardingContent\(\)/);
+    // T15-A7: the capture latch is still what decides whether secrets paint —
+    // it is now read once into the recovery-kit state, and the next steps only
+    // render on the branch that got past `visibleRecoverySecrets`.
+    expect(functionSource("recoveryKitStateNow", "applyRecoveryKitAction"))
+      .toContain("captureProven: recoveryCaptureGate.canRender()");
+    expect(recovery).toMatch(/visibleRecoverySecrets\(state\)[\s\S]*?secureRecoveryOnboardingContent\(\)/);
     expect(nextSteps).toContain('class="secure-recovery-next-steps"');
     expect(nextSteps).toContain("Mullvad");
     expect(nextSteps).toContain("Optional. Use your existing session later for network privacy.");

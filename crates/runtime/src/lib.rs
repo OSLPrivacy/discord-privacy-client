@@ -33,7 +33,8 @@ pub use revalidation::{
 };
 pub use rotation::{RotationConfig, RotationController, RotationReason, SuspiciousEventKind};
 pub use screenshot::{
-    apply_to_hwnd, apply_to_hwnd_and_children, ScreenshotError, ScreenshotProtection,
+    apply_to_hwnd, apply_to_hwnd_and_children, capture_protection_is_enforced, ScreenshotError,
+    ScreenshotProtection,
 };
 pub use usb::{
     is_capture_device, ArrivalCallback, UsbDeviceDescriptor, UsbMonitor, UsbMonitorError,

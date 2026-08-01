@@ -294,10 +294,12 @@ struct Install {
     security: osl_privacy_hub::security::HubSecurityState,
     broker: osl_privacy_hub::broker::HubBrokerState,
     /// What "Copy invite" puts on the clipboard.
+    ///
+    /// The invite carries no safety number. A safety number is a comparison
+    /// between two identities and an invite has not met its counterparty yet;
+    /// the shared number appears on both screens only once each side has added
+    /// the other. See finding F2, inverted, at STEP 5.
     invite: String,
-    /// The number `export_friend_code` derives from this install's OWN bundle.
-    /// This is the value the OTHER side must type. See finding F2.
-    own_safety_number: String,
 }
 
 impl Install {
@@ -317,7 +319,6 @@ impl Install {
             security: osl_privacy_hub::security::HubSecurityState::default(),
             broker: osl_privacy_hub::broker::HubBrokerState::default(),
             invite: exported.friend_code,
-            own_safety_number: exported.safety_number,
         }
     }
 
@@ -382,16 +383,12 @@ fn two_fresh_installs_reach_encrypted_messaging_only_after_a_symmetric_handshake
         "two installs must not share an invite"
     );
 
-    // FINDING F2, pinned as an assertion: the safety number is derived from ONE
-    // bundle, so the two devices do NOT show the same number. Whoever changes
-    // this to the symmetric two-party derivation will land here first and must
-    // update the procedure document at the same time.
-    assert_ne!(
-        alice.own_safety_number, bob.own_safety_number,
-        "v2 safety numbers are per-bundle, so the two sides differ; if this now \
-         matches, the derivation became two-party and ADD-FRIEND-PROCEDURE.md \
-         step 7 must be rewritten"
-    );
+    // FINDING F2 used to be pinned here as `assert_ne!(alice_number, bob_number)`
+    // over two export-time numbers. Both halves of that are gone on purpose: the
+    // safety number is now derived from BOTH bundles, so an invite — which has
+    // met no counterparty — cannot carry one at all, and once both sides have
+    // added each other the two numbers are EQUAL. The inverted assertion is at
+    // STEP 5, where both numbers finally exist.
 
     // -----------------------------------------------------------------------
     // STEP 4 — Alice pastes Bob's invite. Adding alone grants nothing.
@@ -423,11 +420,17 @@ fn two_fresh_installs_reach_encrypted_messaging_only_after_a_symmetric_handshake
         bob_on_alice.osl_user_id, bob.osl_user_id,
         "the added record must carry the sender's real OSL id"
     );
-    // The number Alice's device shows for Bob is derived from BOB's bundle, so
-    // it equals the number Bob's own install exported for itself.
+    // The number Alice's device shows for Bob is derived from BOTH bundles. Its
+    // value is checked against Bob's own screen at STEP 5, once Bob has added
+    // Alice and has a number of his own; here only its shape is knowable.
     assert_eq!(
-        bob_on_alice.safety_number, bob.own_safety_number,
-        "the friend's number on this device is derived from THEIR bundle"
+        bob_on_alice
+            .safety_number
+            .chars()
+            .filter(char::is_ascii_digit)
+            .count(),
+        30,
+        "the displayed number must be the 30-digit comparable form"
     );
 
     // Gate 1: an added-but-unverified friend cannot be opened at all.
@@ -441,11 +444,16 @@ fn two_fresh_installs_reach_encrypted_messaging_only_after_a_symmetric_handshake
     );
 
     // -----------------------------------------------------------------------
-    // STEP 5 — the wrong number is refused.
+    // STEP 5 — FINDING F2, INVERTED: one number, on both screens.
     //
-    // This is the assertion that catches the on-screen instruction being wrong
-    // (finding F2): the code Bob would "read back" from HIS screen is the one
-    // his device derives for ALICE, and typing that here must fail.
+    // The safety number is derived from BOTH bundles, so Bob's screen and
+    // Alice's screen show the same digits and the on-screen instruction —
+    // compare with your friend's screen — is one a user can actually follow.
+    //
+    // The previous derivation hashed ONE bundle. The two screens then differed,
+    // this assertion demanded that the peer's number be REFUSED, and the only
+    // value either side could type was the one already in front of them: a
+    // self-check that proved nothing. That is the defect, not the guarantee.
     // -----------------------------------------------------------------------
     bob.activate();
     let alice_on_bob_preview = osl_privacy_hub::security::add_friend_code(
@@ -457,16 +465,42 @@ fn two_fresh_installs_reach_encrypted_messaging_only_after_a_symmetric_handshake
     .expect("bob adds alice's invite");
     let number_bobs_screen_shows = alice_on_bob_preview.safety_number.clone();
 
+    assert_eq!(
+        number_bobs_screen_shows, bob_on_alice.safety_number,
+        "both installs must display ONE shared number; if these differ the \
+         derivation has gone back to hashing a single bundle and the ceremony \
+         authenticates nothing"
+    );
+
+    // The negative half, so this is not a test that cannot fail: a real,
+    // well-formed 30-digit number produced by a THIRD identity's comparison
+    // must still be refused. Carol adds Bob too, and her screen shows
+    // SN(carol, bob) — never SN(alice, bob).
+    let carol = Install::new(&storage, "carol", &store.base_url);
+    carol.activate();
+    let bob_on_carol = osl_privacy_hub::security::add_friend_code(
+        &carol.core,
+        &carol.security,
+        bob.invite.clone(),
+        Some("Bob".to_owned()),
+    )
+    .expect("carol adds bob's invite");
+    assert_ne!(
+        bob_on_carol.safety_number, bob_on_alice.safety_number,
+        "the number is a property of the PAIR; a third party comparing with the \
+         same peer must not land on the same digits"
+    );
+
     alice.activate();
     let wrong = osl_privacy_hub::security::verify_friend_safety_number(
         &alice.core,
         &alice.security,
         bob_on_alice.person_id.clone(),
-        number_bobs_screen_shows.clone(),
+        bob_on_carol.safety_number.clone(),
     );
     assert!(
         wrong.is_err(),
-        "verification must refuse a number derived from the other side's bundle"
+        "verification must refuse a number derived from a different pair"
     );
     assert!(
         !alice
@@ -477,16 +511,18 @@ fn two_fresh_installs_reach_encrypted_messaging_only_after_a_symmetric_handshake
     );
 
     // -----------------------------------------------------------------------
-    // STEP 6-7 — Alice verifies Bob with the number Bob's install exported.
+    // STEP 6-7 — Alice completes the ceremony by typing the number she reads
+    // off BOB's screen. This is exactly what the dialog instructs, and exactly
+    // what used to fail.
     // -----------------------------------------------------------------------
     alice.activate();
     let verified = osl_privacy_hub::security::verify_friend_safety_number(
         &alice.core,
         &alice.security,
         bob_on_alice.person_id.clone(),
-        bob.own_safety_number.clone(),
+        number_bobs_screen_shows.clone(),
     )
-    .expect("alice verifies bob");
+    .expect("alice verifies bob with the number bob's screen shows");
     assert!(
         verified.safety_number_verified,
         "verification must set the persisted flag"
@@ -620,7 +656,8 @@ fn two_fresh_installs_reach_encrypted_messaging_only_after_a_symmetric_handshake
         &bob.core,
         &bob.security,
         alice_on_bob_preview.person_id.clone(),
-        alice.own_safety_number.clone(),
+        // The number on Alice's screen — the same digits Bob's own screen shows.
+        bob_on_alice.safety_number.clone(),
     )
     .expect("bob verifies alice");
     assert!(alice_on_bob.safety_number_verified);

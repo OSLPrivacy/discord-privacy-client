@@ -94,7 +94,6 @@ struct PublicOffer {
     version: u32,
     friend_code: String,
     osl_user_id: String,
-    safety_number: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -147,7 +146,6 @@ pub fn publish_and_consume(
         version: VERSION,
         friend_code: exported.friend_code,
         osl_user_id: exported.osl_user_id,
-        safety_number: exported.safety_number,
     };
     let encoded = encode_offer(&offer)?;
     crate::atomic_file::write_recoverable(
@@ -171,7 +169,7 @@ pub fn publish_and_consume(
         peer.friend_code,
         Some("WhatsApp QA peer".to_owned()),
     )?;
-    if added.osl_user_id != peer.osl_user_id || added.safety_number != peer.safety_number {
+    if added.osl_user_id != peer.osl_user_id {
         return Err("WhatsApp QA signed peer offer metadata mismatch".to_owned());
     }
     let verified = security::verify_friend_safety_number(
@@ -229,14 +227,11 @@ fn validate_offer(offer: &PublicOffer) -> Result<(), String> {
         || !offer.friend_code.starts_with("OSLFR1.")
         || offer.osl_user_id.is_empty()
         || offer.osl_user_id.len() > 160
-        || offer.safety_number.is_empty()
-        || offer.safety_number.len() > 160
         || offer
             .friend_code
             .bytes()
             .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')))
         || offer.osl_user_id.chars().any(char::is_control)
-        || offer.safety_number.chars().any(char::is_control)
     {
         return Err("WhatsApp QA public offer is invalid".to_owned());
     }
@@ -252,7 +247,6 @@ mod tests {
             version: 1,
             friend_code: format!("OSLFR1.{}", "a".repeat(32)),
             osl_user_id: "osl:test-public-id".to_owned(),
-            safety_number: "1234 5678".to_owned(),
         }
     }
 
@@ -260,7 +254,7 @@ mod tests {
     fn public_offer_is_bounded_strict_and_round_trips() {
         let bytes = encode_offer(&offer()).unwrap();
         assert_eq!(decode_offer(&bytes).unwrap(), offer());
-        assert!(decode_offer(br#"{"version":1,"friend_code":"OSLFR1.aaaaaaaaaaaaaaaa","osl_user_id":"x","safety_number":"y","extra":true}"#).is_err());
+        assert!(decode_offer(br#"{"version":1,"friend_code":"OSLFR1.aaaaaaaaaaaaaaaa","osl_user_id":"x","extra":true}"#).is_err());
         assert!(decode_offer(&vec![b'x'; MAX_OFFER_BYTES as usize + 1]).is_err());
     }
 }

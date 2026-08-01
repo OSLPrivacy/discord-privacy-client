@@ -46,7 +46,6 @@ struct PublicOffer {
     version: u32,
     friend_code: String,
     osl_user_id: String,
-    safety_number: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -271,7 +270,6 @@ pub fn publish_and_consume_pairing(
         version: PUBLIC_OFFER_VERSION,
         friend_code: exported.friend_code,
         osl_user_id: exported.osl_user_id,
-        safety_number: exported.safety_number,
     };
     let encoded = encode_public_offer(&offer)?;
     crate::atomic_file::write_recoverable(
@@ -296,9 +294,7 @@ pub fn publish_and_consume_pairing(
         peer_offer.friend_code,
         Some("Discord QA peer".to_owned()),
     )?;
-    if added.osl_user_id != peer_offer.osl_user_id
-        || added.safety_number != peer_offer.safety_number
-    {
+    if added.osl_user_id != peer_offer.osl_user_id {
         return Err("Discord QA peer offer metadata does not match its signed code".to_owned());
     }
     let verified = security::verify_friend_safety_number(
@@ -361,7 +357,6 @@ pub fn verified_pairing_person_id(
         || !status.verified
         || status.peer_offer_sha256 != hex_digest(&peer_bytes)
         || status.peer_osl_user_id != peer_offer.osl_user_id
-        || status.peer_safety_number != peer_offer.safety_number
     {
         return Err("Discord QA pairing status does not match its peer offer".to_owned());
     }
@@ -411,14 +406,11 @@ fn validate_public_offer(offer: &PublicOffer) -> Result<(), String> {
         || !offer.friend_code.starts_with("OSLFR1.")
         || offer.osl_user_id.is_empty()
         || offer.osl_user_id.len() > 160
-        || offer.safety_number.is_empty()
-        || offer.safety_number.len() > 160
         || offer
             .friend_code
             .bytes()
             .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')))
         || offer.osl_user_id.chars().any(char::is_control)
-        || offer.safety_number.chars().any(char::is_control)
     {
         return Err("Discord QA public offer is invalid".to_owned());
     }
@@ -574,7 +566,6 @@ mod tests {
             version: PUBLIC_OFFER_VERSION,
             friend_code: "OSLFR1.ABCDEFGHIJKLMNOP".to_owned(),
             osl_user_id: "osl-qa-public-id".to_owned(),
-            safety_number: "1234 5678 9012".to_owned(),
         }
     }
 
