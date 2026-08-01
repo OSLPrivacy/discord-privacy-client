@@ -37,6 +37,12 @@ impl HubCoreState {
             bootstrap_attempted: true,
             lifecycle_lock: Mutex::new(()),
         };
+        // The entitlement cache is device-level, not account-level. Stamp it
+        // before the UI mounts so a valid sealed license is available on the
+        // first render without waiting for a network refresh.
+        if let Ok(base_dir) = keystore::osl_base_dir() {
+            ipc::license_lifecycle::launch_classify(&state.osl, &base_dir);
+        }
         crate::original_bootstrap::run_autostart_local(&state.osl);
         state
     }
