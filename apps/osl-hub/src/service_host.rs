@@ -79,9 +79,16 @@ fn host_rect(width: u32, height: u32) -> HostRect {
 }
 
 #[cfg(any(feature = "desktop", test))]
-fn local_protected_sheet_rect(width: u32, height: u32, open: bool) -> HostRect {
+/// Return the bounds for the embedded service child. A local protection sheet
+/// belongs to the hub webview, so it consumes space only when that child exists.
+fn local_protected_sheet_rect(
+    width: u32,
+    height: u32,
+    has_embedded_host: bool,
+    open: bool,
+) -> HostRect {
     let mut rect = host_rect(width, height);
-    if open {
+    if has_embedded_host && open {
         let reserve = LOCAL_PROTECTED_SHEET_WIDTH
             .min(rect.width.saturating_sub(MIN_SERVICE_HOST_WIDTH_WITH_SHEET));
         rect.width = rect.width.saturating_sub(reserve).max(1);
@@ -1158,7 +1165,7 @@ pub mod desktop {
             .inner_size()
             .map_err(|error| error.to_string())?
             .to_logical::<u32>(scale);
-        let rect = local_protected_sheet_rect(logical.width, logical.height, open);
+        let rect = local_protected_sheet_rect(logical.width, logical.height, true, open);
         Ok((
             LogicalPosition::new(rect.x, rect.y),
             LogicalSize::new(rect.width, rect.height),
@@ -1714,17 +1721,23 @@ mod tests {
 
     #[test]
     fn local_protected_sheet_reserves_only_a_fixed_clamped_right_region() {
-        let closed = local_protected_sheet_rect(1_180, 780, false);
-        let open = local_protected_sheet_rect(1_180, 780, true);
+        let closed = local_protected_sheet_rect(1_180, 780, true, false);
+        let open = local_protected_sheet_rect(1_180, 780, true, true);
         assert_eq!(closed, host_rect(1_180, 780));
         assert_eq!(open.x, closed.x);
         assert_eq!(open.y, closed.y);
         assert_eq!(open.height, closed.height);
         assert_eq!(open.width, closed.width - LOCAL_PROTECTED_SHEET_WIDTH);
 
-        let compact = local_protected_sheet_rect(500, 700, true);
+        let compact = local_protected_sheet_rect(500, 700, true, true);
         assert_eq!(compact.width, MIN_SERVICE_HOST_WIDTH_WITH_SHEET);
         assert_eq!(compact.height, host_rect(500, 700).height);
+    }
+
+    #[test]
+    fn local_protected_sheet_does_not_reserve_embedded_host_space_when_hostless() {
+        let hub = host_rect(1_180, 780);
+        assert_eq!(local_protected_sheet_rect(1_180, 780, false, true), hub,);
     }
 
     #[test]
