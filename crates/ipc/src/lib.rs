@@ -47,6 +47,7 @@ pub mod friend_request;
 pub mod license_lifecycle;
 pub mod log_id;
 pub mod main_password;
+pub mod message_expiry_dial;
 pub mod mandatory_storage_key_policy;
 pub mod membership;
 pub mod migration;
