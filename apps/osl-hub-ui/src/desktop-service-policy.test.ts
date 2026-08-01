@@ -70,13 +70,13 @@ describe("Windows desktop service policy", () => {
     expect(riskText).not.toMatch(/undetectable|terms-safe|compliant because|allowed because/i);
   });
 
-  it("models OSL Mail stages without promoting later mailbox promises", () => {
+  it("keeps OSL Mail unavailable until its desktop bridge exists", () => {
     expect(oslMailStages.map((stage) => stage.id)).toEqual(["stageA", "stageB", "stageC"]);
     expect(oslMailStage("stageA")).toMatchObject({
-      availability: "available",
+      availability: "comingLater",
       externalEmailScope: "ordinaryExternalEmailUnlessSeparatelySupported",
     });
-    expect(oslMailStage("stageA").boundary).toContain("explicitly authorizes");
+    expect(oslMailStage("stageA").boundary).toContain("desktop bridge exists");
     expect(oslMailStage("stageA").excludes).toContain("OSL-operated mailbox");
     expect(oslMailStage("stageB").availability).toBe("comingLater");
     expect(oslMailStage("stageC").availability).toBe("comingLater");

@@ -73,8 +73,8 @@ export const oslMailStages: readonly OslMailStage[] = [
   {
     id: "stageA",
     label: "Stage A - private email client",
-    availability: "available",
-    boundary: "Client-side protection for mailboxes the user explicitly authorizes.",
+    availability: "comingLater",
+    boundary: "Client-side protection is unavailable until the OSL Mail desktop bridge exists.",
     includes: [
       "connect existing mailbox after authorization",
       "warn before send",

@@ -59,7 +59,7 @@ describe("OSL Mail surface", () => {
     expect(styles).toContain(".mail-composer-encryption-scope");
   });
 
-  it("Render OSL Mail Stage A as private client protection", async () => {
+  it("renders OSL Mail as unavailable until its desktop bridge exists", async () => {
     const { __oslHubUiTest, oslMailStageAContent } = await loadUi();
     __oslHubUiTest.reset({ route: "inbox" });
 
@@ -68,29 +68,25 @@ describe("OSL Mail surface", () => {
 
     for (const rendered of [card, html]) {
       expect(rendered).toContain('data-inbox-osl-surface="mail"');
-      expect(rendered).toContain('data-osl-mail-stage-a="available"');
+      expect(rendered).toContain('data-osl-mail-stage-a="unavailable"');
       expect(rendered).toContain('data-osl-mail-protection="private-client"');
       expect(rendered).toContain('data-mailbox-operations="refused"');
       expect(rendered).toContain('data-osl-mailbox-stage-c-gate="stage-c-coming-later"');
       expect(rendered).toContain("<small>Private client protection</small>");
-      expect(rendered).toContain("Protect mailboxes you already control after explicit authorization.");
-      expect(rendered).toContain("Connect an existing mailbox only after authorization");
-      expect(rendered).toContain("Warn before send and label the protection scope");
-      expect(rendered).toContain("Full OSL mailbox is coming later.");
-      expect(rendered).toContain("External email remains ordinary email unless a supported encrypted path is selected before send.");
+      expect(rendered).toContain("OSL Mail client protection is unavailable until its desktop bridge exists.");
       expect(rendered).not.toMatch(/ordinary external email is OSL end-to-end encrypted|universal encrypted delivery|silent mailbox import|auto.?retry|retry automatically/i);
       expect(rendered).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/i);
     }
-    expect(html).not.toContain('class="inbox-surface-card unavailable" data-inbox-osl-surface="mail"');
+    expect(html).toContain('class="inbox-surface-card unavailable" data-inbox-osl-surface="mail"');
   });
 
-  it("models OSL Mail product stages as a client-protection-first contract", () => {
+  it("models OSL Mail product stages without claiming its missing bridge", () => {
     expect(oslMailStages.map((stage) => stage.id)).toEqual(["stageA", "stageB", "stageC"]);
     expect(oslMailStage("stageA")).toMatchObject({
-      availability: "available",
+      availability: "comingLater",
       externalEmailScope: "ordinaryExternalEmailUnlessSeparatelySupported",
     });
-    expect(oslMailStage("stageA").boundary).toContain("explicitly authorizes");
+    expect(oslMailStage("stageA").boundary).toContain("desktop bridge exists");
     expect(oslMailStage("stageA").excludes).toContain("OSL-operated mailbox");
     expect(oslMailStage("stageB").availability).toBe("comingLater");
     expect(oslMailStage("stageC").availability).toBe("comingLater");
