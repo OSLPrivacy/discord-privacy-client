@@ -3,6 +3,17 @@
 Status: design inventory and keep decision. This is not evidence that an AI
 cover carrier ships today.
 
+## What changed
+
+Cloud carrier generation must not process the user's real plaintext or selected
+private-message context. It conditions only on previous cover messages; when
+there is no cover history, it generates a plausible random conversation from
+nothing.
+
+With the local model nothing leaves your device; if you choose cloud generation
+it only ever sees text the platform already has. Cloud generation can still
+reveal conversation membership to OSL, so this is not a zero-knowledge claim.
+
 ## Existing code: keep `osl-cover-draft`
 
 `crates/cover-draft` remains a workspace member but has no consumer crate.
