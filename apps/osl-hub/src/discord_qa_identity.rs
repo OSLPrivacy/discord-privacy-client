@@ -46,6 +46,11 @@ struct PublicOffer {
     version: u32,
     friend_code: String,
     osl_user_id: String,
+    /// Set only after this device has independently derived the number from
+    /// both public bundles. A friend-code export itself deliberately has no
+    /// safety number: it does not yet have a counterparty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    safety_number: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -256,35 +261,27 @@ pub fn ensure_disposable_identity(core: &HubCoreState) -> Result<(), String> {
 }
 
 /// Publish this device's signed public offer and, when the controller has
-/// installed the other VM's offer at the fixed peer path, import and verify it
-/// through the production People security functions. The operation is
-/// deliberately file-only, bounded, and idempotent; no renderer or network
-/// surface can select a path or supply key material.
+/// installed the other VM's offer at the fixed peer path, import it through
+/// the production People security functions. Each device publishes its own
+/// pair-derived safety number only after it has seen the other offer. Neither
+/// side verifies until the controller has exchanged those independent
+/// attestations and they compare equal. The operation is deliberately
+/// file-only, bounded, and idempotent; no renderer or network surface can
+/// select a path or supply key material.
 pub fn publish_and_consume_pairing(
     account_dir: &Path,
     core: &HubCoreState,
     security_state: &HubSecurityState,
 ) -> Result<(), String> {
     let exported = security::export_friend_code(core)?;
-    let offer = PublicOffer {
-        version: PUBLIC_OFFER_VERSION,
-        friend_code: exported.friend_code,
-        osl_user_id: exported.osl_user_id,
-    };
-    let encoded = encode_public_offer(&offer)?;
-    crate::atomic_file::write_recoverable(
-        &account_dir.join(PUBLIC_OFFER_FILENAME),
-        &encoded,
-        "Discord QA public offer",
-    )?;
-
     let peer_path = account_dir.join(PEER_OFFER_FILENAME);
-    let Some(peer_bytes) = crate::atomic_file::read_recoverable_bounded(
+    let peer_bytes = crate::atomic_file::read_recoverable_bounded(
         &peer_path,
         MAX_PUBLIC_OFFER_BYTES,
         "Discord QA peer offer",
-    )?
-    else {
+    )?;
+    let Some(peer_bytes) = peer_bytes else {
+        write_public_offer(account_dir, exported, None)?;
         return Ok(());
     };
     let peer_offer = decode_public_offer(&peer_bytes)?;
@@ -297,11 +294,23 @@ pub fn publish_and_consume_pairing(
     if added.osl_user_id != peer_offer.osl_user_id {
         return Err("Discord QA peer offer metadata does not match its signed code".to_owned());
     }
+    let local_safety_number = added.safety_number;
+    write_public_offer(account_dir, exported, Some(local_safety_number.clone()))?;
+
+    let Some(peer_safety_number) = peer_offer.safety_number else {
+        // The peer has not yet derived its number. Publishing ours creates the
+        // second round of the file-only QA exchange; fail closed rather than
+        // feeding our own number into the verifier.
+        return Ok(());
+    };
+    if local_safety_number != peer_safety_number {
+        return Err("Discord QA devices derived different safety numbers".to_owned());
+    }
     let verified = security::verify_friend_safety_number(
         core,
         security_state,
         added.person_id.clone(),
-        added.safety_number.clone(),
+        peer_safety_number,
     )?;
     if !verified.safety_number_verified || verified.pending_key_change {
         return Err("Discord QA peer offer was not verified to stable keys".to_owned());
@@ -357,6 +366,7 @@ pub fn verified_pairing_person_id(
         || !status.verified
         || status.peer_offer_sha256 != hex_digest(&peer_bytes)
         || status.peer_osl_user_id != peer_offer.osl_user_id
+        || peer_offer.safety_number.as_deref() != Some(&status.peer_safety_number)
     {
         return Err("Discord QA pairing status does not match its peer offer".to_owned());
     }
@@ -411,10 +421,34 @@ fn validate_public_offer(offer: &PublicOffer) -> Result<(), String> {
             .bytes()
             .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_')))
         || offer.osl_user_id.chars().any(char::is_control)
+        || offer.safety_number.as_ref().is_some_and(|safety_number| {
+            safety_number.is_empty()
+                || safety_number.len() > 160
+                || safety_number.chars().any(char::is_control)
+        })
     {
         return Err("Discord QA public offer is invalid".to_owned());
     }
     Ok(())
+}
+
+fn write_public_offer(
+    account_dir: &Path,
+    exported: security::FriendCodeExport,
+    safety_number: Option<String>,
+) -> Result<(), String> {
+    let offer = PublicOffer {
+        version: PUBLIC_OFFER_VERSION,
+        friend_code: exported.friend_code,
+        osl_user_id: exported.osl_user_id,
+        safety_number,
+    };
+    let encoded = encode_public_offer(&offer)?;
+    crate::atomic_file::write_recoverable(
+        &account_dir.join(PUBLIC_OFFER_FILENAME),
+        &encoded,
+        "Discord QA public offer",
+    )
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
@@ -566,6 +600,7 @@ mod tests {
             version: PUBLIC_OFFER_VERSION,
             friend_code: "OSLFR1.ABCDEFGHIJKLMNOP".to_owned(),
             osl_user_id: "osl-qa-public-id".to_owned(),
+            safety_number: None,
         }
     }
 
@@ -621,6 +656,10 @@ mod tests {
         offer.osl_user_id = "peer\nother".to_owned();
         assert!(encode_public_offer(&offer).is_err());
 
+        let mut offer = sample_offer();
+        offer.safety_number = Some(String::new());
+        assert!(encode_public_offer(&offer).is_err());
+
         assert!(decode_public_offer(&vec![b'A'; MAX_PUBLIC_OFFER_BYTES as usize + 1]).is_err());
     }
 
@@ -644,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn two_qa_profiles_exchange_only_public_offers_and_become_verified() {
+    fn two_qa_profiles_compare_independent_numbers_before_verifying() {
         let _serial = crate::global_keystore_test_lock();
         let _globals = StorageGlobalsGuard;
         let root = test_dir("pairing-roundtrip");
@@ -669,24 +708,65 @@ mod tests {
         publish_and_consume_pairing(&bob_dir, &bob, &HubSecurityState::default()).unwrap();
         let bob_people = security::list_people(&bob).unwrap();
         assert_eq!(bob_people.len(), 1);
-        assert!(bob_people[0].safety_number_verified);
+        assert!(!bob_people[0].safety_number_verified);
         assert!(!bob_people[0].pending_key_change);
         let bob_offer = std::fs::read(bob_dir.join(PUBLIC_OFFER_FILENAME)).unwrap();
-        let bob_status: PairingStatus =
-            serde_json::from_slice(&std::fs::read(bob_dir.join(PAIRING_STATUS_FILENAME)).unwrap())
-                .unwrap();
-        assert!(bob_status.verified);
-        assert_eq!(bob_status.peer_offer_sha256, hex_digest(&alice_offer));
+        let bob_offer_data = decode_public_offer(&bob_offer).unwrap();
+        assert_eq!(
+            bob_offer_data.safety_number,
+            Some(bob_people[0].safety_number.clone())
+        );
 
+        // A controller-provided number must not be replaced with Alice's own
+        // value at submission time. That was the old laundering bug.
+        let mut mismatched_offer = bob_offer_data.clone();
+        mismatched_offer.safety_number = Some("000000000000000000000000000000".to_owned());
+        assert_ne!(mismatched_offer.safety_number, bob_offer_data.safety_number);
+        std::fs::write(
+            alice_dir.join(PEER_OFFER_FILENAME),
+            encode_public_offer(&mismatched_offer).unwrap(),
+        )
+        .unwrap();
+        keystore::set_base_dir_override(Some(alice_dir.clone()));
+        let refusal = publish_and_consume_pairing(&alice_dir, &alice, &HubSecurityState::default())
+            .expect_err("a mismatched peer-derived number must refuse before verification");
+        assert_eq!(
+            refusal,
+            "Discord QA devices derived different safety numbers"
+        );
+
+        // Alice derives her number from Bob's signed public bundle. Before
+        // submitting anything, it must match Bob's independently derived
+        // attestation which the controller copied with Bob's offer.
         std::fs::write(alice_dir.join(PEER_OFFER_FILENAME), &bob_offer).unwrap();
         keystore::set_base_dir_override(Some(alice_dir.clone()));
-        publish_and_consume_pairing(&alice_dir, &alice, &HubSecurityState::default()).unwrap();
-        // Re-consuming the same fixed peer offer is intentionally idempotent.
         publish_and_consume_pairing(&alice_dir, &alice, &HubSecurityState::default()).unwrap();
         let alice_people = security::list_people(&alice).unwrap();
         assert_eq!(alice_people.len(), 1);
         assert!(alice_people[0].safety_number_verified);
-        assert!(!alice_people[0].pending_key_change);
+        let alice_offer = std::fs::read(alice_dir.join(PUBLIC_OFFER_FILENAME)).unwrap();
+        let alice_offer_data = decode_public_offer(&alice_offer).unwrap();
+        assert_eq!(
+            alice_offer_data.safety_number,
+            Some(bob_people[0].safety_number.clone())
+        );
+        let alice_status: PairingStatus = serde_json::from_slice(
+            &std::fs::read(alice_dir.join(PAIRING_STATUS_FILENAME)).unwrap(),
+        )
+        .unwrap();
+        assert!(alice_status.verified);
+        assert_eq!(alice_status.peer_offer_sha256, hex_digest(&bob_offer));
+
+        // Bob cannot verify until the controller sends Alice's independently
+        // derived attestation back. This catches the old self-referential
+        // harness: replacing `peer_safety_number` with `local_safety_number`
+        // makes the mismatch refusal above go green.
+        std::fs::write(bob_dir.join(PEER_OFFER_FILENAME), &alice_offer).unwrap();
+        keystore::set_base_dir_override(Some(bob_dir.clone()));
+        publish_and_consume_pairing(&bob_dir, &bob, &HubSecurityState::default()).unwrap();
+        let bob_people = security::list_people(&bob).unwrap();
+        assert!(bob_people[0].safety_number_verified);
+        assert!(!bob_people[0].pending_key_change);
 
         let _ = std::fs::remove_dir_all(root);
     }
