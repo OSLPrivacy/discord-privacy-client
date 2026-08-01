@@ -6,10 +6,9 @@
 ///   - TTL header `X-OSL-TTL-Seconds`: must be one of
 ///       3600 (1h), 86400 (24h), 259200 (72h), 604800 (7d).
 ///   - Fetch-token header `X-OSL-Fetch-Token`: 32 hex chars (16 bytes).
-///     Required on upload, fetch and delete, with no exceptions. A stored
+///     Required on upload and delete, with no exceptions. A stored
 ///     row whose `fetch_token` is NULL (only reachable for rows written
-///     before migration 0002) is treated as absent by every route. Phase 6
-///     capability gating -- prevents access with a bare blob ID. This opaque
+///     before migration 0002) is treated as absent by delete. This opaque
 ///     token is not an identity or sender-authentication credential, and it
 ///     is deliberately carried in a HEADER: the blob id travels in the URL
 ///     path and the platform records request paths by default.
@@ -193,44 +192,15 @@ export async function handleFetch(
   const id = hexToId(hex);
   if (!id) return error(400, "bad_id", "id must be 16 hex chars");
   const row = await env.DB.prepare(
-    "SELECT data, expires_at, fetch_token FROM blobs WHERE id = ? LIMIT 1"
+    "SELECT data, expires_at FROM blobs WHERE id = ? LIMIT 1"
   )
     .bind(id)
-    .first<{ data: unknown; expires_at: number; fetch_token: string | null }>();
+    .first<{ data: unknown; expires_at: number }>();
   if (!row) return notFound();
   const now = Math.floor(Date.now() / 1000);
   if (row.expires_at < now) {
     // Expired but the sweep hasn't run yet. Treat as gone.
     return notFound();
-  }
-  // D81 gate: a row with NO stored capability is treated as if it does not
-  // exist. It used to be fetchable by ID alone as a Phase 6 back-compat
-  // concession for pre-`0002` rows. That concession is the one place in this
-  // Worker where a value carried in the URL *path* -- and therefore recorded
-  // by the platform's default request logging -- is also the entire
-  // authorization. Every other capability in this Worker lives in a header or
-  // a request body precisely so a log line is not a bearer token.
-  //
-  // `handleUpload` has rejected a tokenless upload with 400 since `0002`, so
-  // no new NULL row is reachable and the surviving legacy rows expire within
-  // their 7d ceiling. Refusing them costs nothing and closes the branch.
-  //
-  // 404, not 401/403: the answer must be byte-identical to a missing row, or
-  // the refusal itself becomes an oracle for "a legacy blob with this id
-  // exists".
-  if (row.fetch_token === null) return notFound();
-  {
-    const presented = readFetchToken(request);
-    if (presented === null) {
-      return error(
-        401,
-        "fetch_token_required",
-        "X-OSL-Fetch-Token header required for this blob"
-      );
-    }
-    if (!constantTimeEqual(row.fetch_token, presented)) {
-      return error(403, "fetch_token_mismatch", "fetch token does not match");
-    }
   }
   // D1's BLOB return type is officially ArrayBuffer but in practice
   // varies by runtime version (Uint8Array, plain string, or even an
