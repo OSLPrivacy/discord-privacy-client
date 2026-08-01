@@ -66,7 +66,9 @@ use osl_ratchet_next::{
     Session, SessionParams, XPublic, XSecret, MLKEM_EK, WIRE_VERSION_RN,
 };
 use sha2::{Digest, Sha256};
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
@@ -167,6 +169,13 @@ pub enum RnError {
     /// The peer does not advertise OSL-RN and policy requires it.
     #[error("policy requires OSL-RN for this peer but the peer does not support it")]
     RnRequiredButUnsupported,
+
+    /// Another thread or process is currently advancing this peer's
+    /// session. Retrying from the state already loaded by this caller
+    /// would reuse a deterministic body nonce, so the caller must fail
+    /// and let its outbox retry from a freshly loaded state later.
+    #[error("OSL-RN session for this peer is busy with another writer")]
+    WriterBusy,
 
     /// The active sealer would write the session state in plaintext.
     /// Refused: the export contains every secret the session holds.
@@ -583,6 +592,24 @@ pub struct RnSessionStore {
     dir: PathBuf,
 }
 
+/// Owns the exclusive per-peer writer lock until the ratchet transition has
+/// been durably saved. The lock file is deliberately separate from the sealed
+/// state so a crash leaves no ambiguous partially-written session record.
+struct RnSessionWriterLock {
+    path: PathBuf,
+    file: Option<std::fs::File>,
+}
+
+impl Drop for RnSessionWriterLock {
+    fn drop(&mut self) {
+        // Windows does not permit unlinking an open file, so close before
+        // removal. A process crash still leaves the lock file behind, which
+        // fails closed as WriterBusy rather than allowing a stale-state retry.
+        drop(self.file.take());
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 impl std::fmt::Debug for RnSessionStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RnSessionStore")
@@ -680,6 +707,38 @@ impl RnSessionStore {
     fn session_path(&self, peer_identity_x25519: &[u8; 32]) -> PathBuf {
         self.dir
             .join(format!("{}.session", Self::peer_key(peer_identity_x25519)))
+    }
+
+    fn writer_lock_path(&self, peer_identity_x25519: &[u8; 32]) -> PathBuf {
+        self.dir
+            .join(format!("{}.lock", Self::peer_key(peer_identity_x25519)))
+    }
+
+    /// Acquire the non-blocking, cross-process writer exclusion for one peer.
+    ///
+    /// The caller must keep the returned guard alive over its whole
+    /// load/advance/save transition. A busy writer is an explicit failure:
+    /// queuing or retrying from already-loaded state would duplicate the
+    /// message key and its deterministic body nonce.
+    fn acquire_writer_lock(
+        &self,
+        peer_identity_x25519: &[u8; 32],
+    ) -> Result<RnSessionWriterLock, RnError> {
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|e| RnError::Storage(format!("create state dir for writer lock: {e}")))?;
+        let path = self.writer_lock_path(peer_identity_x25519);
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::AlreadyExists => RnError::WriterBusy,
+                _ => RnError::Storage(format!("acquire RN session writer lock: {e}")),
+            })?;
+        Ok(RnSessionWriterLock {
+            path,
+            file: Some(file),
+        })
     }
 
     fn pin_path(&self, peer_identity_x25519: &[u8; 32]) -> PathBuf {
@@ -1022,6 +1081,8 @@ pub fn initiate_and_persist_with_sealer(
     } else {
         peer
     };
+    let peer_id = *peer.identity.as_bytes();
+    let _writer_lock = store.acquire_writer_lock(&peer_id)?;
     let binding = initiator_binding(
         peer.identity.as_bytes(),
         peer_mlkem768_ek,
@@ -1030,7 +1091,6 @@ pub fn initiate_and_persist_with_sealer(
     )?;
     let session = osl_ratchet_next::initiate_rn_bound(own_identity_secret, peer, &binding, params)
         .map_err(RnError::from)?;
-    let peer_id = *peer.identity.as_bytes();
     store.save_session_with_sealer(&peer_id, &session, sealer)?;
     if caps.supports_rn() {
         store.raise_pin_to_rn(&peer_id)?;
@@ -1083,6 +1143,7 @@ pub fn accept_and_persist_with_sealer(
     let initiator = osl_ratchet_next::peek_bootstrap_initiator_identity(wire)
         .map_err(RnError::from)?
         .ok_or_else(|| RnError::Protocol("not a bootstrap message".into()))?;
+    let _writer_lock = store.acquire_writer_lock(initiator.as_bytes())?;
     let binding = responder_binding(
         own_identity_public,
         own_mlkem768_ek,
@@ -1332,6 +1393,7 @@ fn send_rn_after_gate(
     msg_type: u8,
     plaintext: &[u8],
 ) -> Result<String, RnError> {
+    let _writer_lock = store.acquire_writer_lock(peer_identity_x25519)?;
     let mut session = store
         .load_session_with_sealer(peer_identity_x25519, sealer)?
         .ok_or_else(|| RnError::Protocol("no OSL-RN session on file".into()))?;
@@ -1389,6 +1451,7 @@ fn receive_rn_after_gate(
     peer_identity_x25519: &[u8; 32],
     wire: &str,
 ) -> Result<Opened, RnError> {
+    let _writer_lock = store.acquire_writer_lock(peer_identity_x25519)?;
     let mut session = store
         .load_session_with_sealer(peer_identity_x25519, sealer)?
         .ok_or_else(|| RnError::Protocol("no OSL-RN session on file".into()))?;
@@ -1554,15 +1617,21 @@ fn b5_opk_id_from_bootstrap_wire(wire: &str) -> Result<Option<u32>, RnError> {
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), RnError> {
     use std::io::Write as _;
 
+    static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
     let parent = path
         .parent()
         .ok_or_else(|| RnError::Storage("state path has no parent directory".into()))?;
     std::fs::create_dir_all(parent)
         .map_err(|e| RnError::Storage(format!("create state dir: {e}")))?;
 
-    let tmp = path.with_extension("tmp");
+    let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp.{}.{}", std::process::id(), sequence));
     {
-        let mut f = std::fs::File::create(&tmp)
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
             .map_err(|e| RnError::Storage(format!("create temp state file: {e}")))?;
         f.write_all(bytes)
             .map_err(|e| RnError::Storage(format!("write temp state file: {e}")))?;
@@ -2751,6 +2820,106 @@ mod tests {
         assert!(
             !rendered.contains(store.dir.to_string_lossy().as_ref()),
             "debug output must not include local account storage paths"
+        );
+    }
+
+    #[test]
+    fn rn_session_writer_lock_child_process() {
+        let Ok(dir) = std::env::var("OSL_RN_WRITER_LOCK_CHILD_DIR") else {
+            return;
+        };
+        let store = RnSessionStore::new(dir);
+        let peer = [0xc5; 32];
+        assert!(matches!(
+            store.acquire_writer_lock(&peer),
+            Err(RnError::WriterBusy)
+        ));
+    }
+
+    #[test]
+    fn rn_session_writer_lock_excludes_threads_processes_and_stale_sends() {
+        use std::process::Command;
+        use std::sync::{Arc, Barrier};
+
+        let (_dir, store) = fresh_store();
+        let peer = [0xc5; 32];
+        let held_lock = store
+            .acquire_writer_lock(&peer)
+            .expect("first writer acquires lock");
+
+        // Two contenders begin together while another writer owns the peer.
+        // They must both fail, rather than load stale state and retry later.
+        let barrier = Arc::new(Barrier::new(3));
+        let contenders = (0..2)
+            .map(|_| {
+                let store = store.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.acquire_writer_lock(&peer).map(|_| ())
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        for contender in contenders {
+            assert!(matches!(
+                contender.join().expect("writer contender thread"),
+                Err(RnError::WriterBusy)
+            ));
+        }
+
+        // A separately spawned test process sees the same filesystem lock.
+        let status = Command::new(std::env::current_exe().expect("test executable"))
+            .arg("--exact")
+            .arg("wire_rn::tests::rn_session_writer_lock_child_process")
+            .arg("--nocapture")
+            .env("OSL_RN_WRITER_LOCK_CHILD_DIR", &store.dir)
+            .status()
+            .expect("spawn writer-lock child process");
+        assert!(status.success(), "child process must receive WriterBusy");
+
+        drop(held_lock);
+
+        let state = crate::AppState::new();
+        state.set_rn_wire_in_enabled(true);
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(0xc5);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (identity, _) = x25519_keypair(&mut rng);
+        let session = Session::initiate(&identity, &bundle, SessionParams::default(), &mut rng)
+            .expect("initiate");
+        let session_peer = *bundle.identity.as_bytes();
+        store
+            .save_session_with_sealer(&session_peer, &session, &sealer)
+            .expect("seed session");
+
+        let held_lock = store
+            .acquire_writer_lock(&session_peer)
+            .expect("hold lock for send");
+        assert!(matches!(
+            send_rn_for_state(
+                &state,
+                &store,
+                &sealer,
+                &session_peer,
+                7,
+                b"must not seal while busy"
+            ),
+            Err(RnError::WriterBusy)
+        ));
+        drop(held_lock);
+
+        assert!(
+            send_rn_for_state(
+                &state,
+                &store,
+                &sealer,
+                &session_peer,
+                7,
+                b"fresh writer after release"
+            )
+            .is_ok(),
+            "a new writer may only send after it acquires fresh state"
         );
     }
 
