@@ -58,6 +58,7 @@ pub mod pro_context_cover;
 pub mod proprietary_module_boundary;
 pub mod proprietary_module_lifecycle;
 pub mod scrub_evidence_manifest;
+pub mod scrub_erasure_tracker;
 pub mod scrub_erasure_queue;
 pub mod service_host;
 #[cfg(feature = "core")]
