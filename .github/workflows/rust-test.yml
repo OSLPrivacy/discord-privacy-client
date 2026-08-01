@@ -24,9 +24,14 @@ jobs:
       # out PR feedback latency once Phase F adds new crates.
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
         with:
+          # t8-a3 caches BOTH workspaces (apps/osl-hub is a separate manifest,
+          # not a workspace member, so it needs its own entry); t8-a4 restricts
+          # cache SAVES to main so PR runs read the cache without each writing
+          # their own. Independent settings -- keep both.
           workspaces: |
             . -> target
             apps/osl-hub -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
