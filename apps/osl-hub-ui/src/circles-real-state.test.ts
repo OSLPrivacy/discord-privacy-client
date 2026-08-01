@@ -40,9 +40,13 @@ const inventedNames = ["Close friends", "Family", "Book club", "Work", "Neighbor
 describe("OSL Circles reflects real trust state", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("shows nobody on a fresh account with no verified people", async () => {
+    // A shipping account must remain empty even if an old development-only
+    // demo switch is present in its environment.
+    vi.stubEnv("VITE_OSL_CIRCLE_DEMO_AUDIENCES", "1");
     const { __oslHubUiTest } = await loadUi();
     // A brand-new unlocked account: no friends, no services, nothing verified.
     __oslHubUiTest.reset({ route: "inbox", coreReady: true, hubPeople: [], services: [] });
