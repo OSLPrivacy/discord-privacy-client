@@ -1,0 +1,15 @@
+{
+  "version": "0.1.0",
+  "notes": "Signed OSL Privacy candidate. It remains a draft until the two-clean-VM QA gate passes.",
+  "pub_date": "2026-07-31T17:22:46.011Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUVTZGaVljK1JxTzlzRElMMHFrRzJnSFlZcUp6VWZhZ1VSM3B4TlZTZUVwazUrVWduRnBIYmJOaUhFMHBya1hXM2IzWkFGNHkyWUR0cWZKdi9IZ0p2L3ZsaTY3UlRnbWdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NTE4NTYzCWZpbGU6T1NMIFByaXZhY3lfMC4xLjBfeDY0LXNldHVwLmV4ZQpVZDlwaXRqMDh5TmZKY1NEZUw2aTBBaUlPMzd1UzFoODhrWHcxUHZDQm9MendFejVJQXJQUm9sbFd6WHprZlV0ZGc3NFY4d0Q5M0NvSXZYdzU1TkZCZz09Cg==",
+      "url": "https://api.github.com/repos/OSLPrivacy/discord-privacy-client/releases/assets/496957256"
+    },
+    "windows-x86_64-nsis": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUVTZGaVljK1JxTzlzRElMMHFrRzJnSFlZcUp6VWZhZ1VSM3B4TlZTZUVwazUrVWduRnBIYmJOaUhFMHBya1hXM2IzWkFGNHkyWUR0cWZKdi9IZ0p2L3ZsaTY3UlRnbWdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NTE4NTYzCWZpbGU6T1NMIFByaXZhY3lfMC4xLjBfeDY0LXNldHVwLmV4ZQpVZDlwaXRqMDh5TmZKY1NEZUw2aTBBaUlPMzd1UzFoODhrWHcxUHZDQm9MendFejVJQXJQUm9sbFd6WHprZlV0ZGc3NFY4d0Q5M0NvSXZYdzU1TkZCZz09Cg==",
+      "url": "https://api.github.com/repos/OSLPrivacy/discord-privacy-client/releases/assets/496957256"
+    }
+  }
+}

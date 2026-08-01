@@ -142,6 +142,7 @@ export {
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
+import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { parseCircleAudience, type CircleAudience } from "./osl-collab";
 import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, type FriendVerificationCopy } from "./ui-behavior";
 import { BurnGuaranteeCopy, type BurnGuaranteeState } from "./two-step-burn";
@@ -459,7 +460,6 @@ let activeOslChatContext: ManualPeerContext | null = null;
 let oslChatDraft = "";
 let oslChatViewOnce = false;
 let oslChatBusy = false;
-let oslChatBackgroundBusy = false;
 let oslChatOperationEpoch = 0;
 const oslChatMessages = new Map<string, OslChatMessage[]>();
 const oslChatUnread = new Map<string, number>();
@@ -3819,7 +3819,13 @@ export function inboxDestinationContent(): string {
     }
     return `<article class="inbox-surface-card" data-inbox-osl-surface="${id}"><strong>${label}</strong><small>${protection}</small><p>${detail}</p></article>`;
   }).join("");
-  return `<main class="content-viewport inbox-destination" id="route-heading" tabindex="-1"><header class="destination-header"><div><p class="eyebrow">Inbox</p><h1>Conversations</h1><p>Optional views for OSL messages and connected accounts. OSL shows only supported conversations and refuses protected send when the conversation cannot be verified.</p></div><button class="button primary" data-inbox-start-private type="button">Start a private conversation</button></header><nav class="inbox-filter-tabs" aria-label="Inbox filters">${["All", "OSL", "Connected", "Requests"].map((label, index) => `<button type="button" data-inbox-filter="${label.toLowerCase()}" ${index === 0 ? 'aria-pressed="true"' : ""}>${label}</button>`).join("")}</nav><section class="inbox-grid"><section class="inbox-panel" aria-labelledby="inbox-osl-heading"><h2 id="inbox-osl-heading">OSL</h2><div class="inbox-surface-grid">${surfaceCards}</div>${chatRows}</section><section class="inbox-panel" aria-labelledby="inbox-connected-heading"><h2 id="inbox-connected-heading">Connected</h2>${connectedRows}</section><section class="inbox-panel" aria-labelledby="inbox-requests-heading"><h2 id="inbox-requests-heading">Requests</h2>${requestRows}</section></section>${publicPostGuardCarrierPreviewMarkup("Public platforms")}</main>`;
+  // `id="route-heading"` sat on this <main>, not on its heading, so the landmark
+  // had no accessible name and the post-navigation focus move (see the
+  // `#route-heading` focus call in the render path) landed on an unnamed region:
+  // a screen reader announced nothing at all on arriving at Inbox. Every other
+  // destination puts the id on its own <h1> and names the landmark with
+  // aria-labelledby; Inbox now matches.
+  return `<main class="content-viewport inbox-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Inbox</p><h1 id="route-heading" tabindex="-1">Conversations</h1><p>Optional views for OSL messages and connected accounts. OSL shows only supported conversations and refuses protected send when the conversation cannot be verified.</p></div><button class="button primary" data-inbox-start-private type="button">Start a private conversation</button></header><nav class="inbox-filter-tabs" aria-label="Inbox filters">${["All", "OSL", "Connected", "Requests"].map((label, index) => `<button type="button" data-inbox-filter="${label.toLowerCase()}" ${index === 0 ? 'aria-pressed="true"' : ""}>${label}</button>`).join("")}</nav><section class="inbox-grid"><section class="inbox-panel" aria-labelledby="inbox-osl-heading"><h2 id="inbox-osl-heading">OSL</h2><div class="inbox-surface-grid">${surfaceCards}</div>${chatRows}</section><section class="inbox-panel" aria-labelledby="inbox-connected-heading"><h2 id="inbox-connected-heading">Connected</h2>${connectedRows}</section><section class="inbox-panel" aria-labelledby="inbox-requests-heading"><h2 id="inbox-requests-heading">Requests</h2>${requestRows}</section></section>${publicPostGuardCarrierPreviewMarkup("Public platforms")}</main>`;
 }
 
 export interface ActivityPrimaryActionPlan {
@@ -4457,7 +4463,13 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
 
 function settingsContent(): string {
   const items: Array<[SettingsSection, string]> = [["account", "Account"], ["apps", "Apps"], ["scrub", "Scrub"], ["cleanup", "Cleanup"], ["notifications", "Notifications"], ["appearance", "Appearance"], ["about", "About"]];
-  return `<main class="content-viewport settings-page"><nav class="settings-sidebar" aria-label="Settings"><h1 id="route-heading" tabindex="-1">Settings</h1>${items.map(([id, label]) => `<button data-settings="${id}" class="${settingsSection === id ? "active" : ""}" ${settingsSection === id ? 'aria-current="page"' : ""}>${label}</button>`).join("")}</nav><section class="settings-detail">${settingsSectionContent()}</section></main>`;
+  // These buttons pick a section WITHIN Settings, so they are not `page`.
+  // Settings itself is the page, and the primary sidebar already marks it
+  // `aria-current="page"`; marking a section button the same way put two
+  // "current page" markers in one document and left a screen-reader user with no
+  // way to tell which one was the destination. `aria-current="true"` is the
+  // generic "this one is current in its own set".
+  return `<main class="content-viewport settings-page" aria-labelledby="route-heading"><nav class="settings-sidebar" aria-label="Settings"><h1 id="route-heading" tabindex="-1">Settings</h1>${items.map(([id, label]) => `<button data-settings="${id}" class="${settingsSection === id ? "active" : ""}" ${settingsSection === id ? 'aria-current="true"' : ""}>${label}</button>`).join("")}</nav><section class="settings-detail">${settingsSectionContent()}</section></main>`;
 }
 
 function settingsSectionContent(): string {
@@ -4497,7 +4509,7 @@ export function privacyDestinationContent(): string {
   const protectionReview = privacyProtectionReviewOpen
     ? `<section class="privacy-review-card" data-privacy-protection-review><div><span class="privacy-local-mark">PROTECTION REVIEW</span><h2>Review or change protection</h2><p>Check the Balanced policy, app exceptions, cleanup limits, and local warning choices before OSL changes anything.</p></div><button class="button compact" data-route="settings" data-settings="scrub" type="button">Open detailed review</button></section>`
     : "";
-  return `<main class="content-viewport privacy-destination"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action data-route="${primary.route}" data-review-target="${primary.reviewTarget}" type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">Balanced</h2><p>Basic account health plus local before-send warnings, attachment cleaning, monthly cleanup review, and private OSL suggestions for verified contacts.</p></div><button class="button compact" type="button" disabled>Change preset</button></section><section class="privacy-policy-stack" id="privacy-protection-review" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from Balanced until you make an exception.</p></div>${statusTag("Deletion off")}</header><p class="privacy-policy-path">Balanced preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be scanned, shown, previewed, confirmed, executed, and checked.</small></span>${statusTag("No auto delete")}</div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span>${statusTag("Limit shown")}</div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span>${statusTag(screenshotProtectionEnabled ? "Active" : "Unavailable")}</div></section></main>`;
+  return `<main class="content-viewport privacy-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action data-route="${primary.route}" data-review-target="${primary.reviewTarget}" type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">Balanced</h2><p>Basic account health plus local before-send warnings, attachment cleaning, monthly cleanup review, and private OSL suggestions for verified contacts.</p></div><button class="button compact" type="button" disabled>Change preset</button></section><section class="privacy-policy-stack" id="privacy-protection-review" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from Balanced until you make an exception.</p></div>${statusTag("Deletion off")}</header><p class="privacy-policy-path">Balanced preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be scanned, shown, previewed, confirmed, executed, and checked.</small></span>${statusTag("No auto delete")}</div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span>${statusTag("Limit shown")}</div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span>${statusTag(screenshotProtectionEnabled ? "Active" : "Unavailable")}</div></section></main>`;
 }
 
 function massCleanupActionLabel(action: string): string {
@@ -7039,43 +7051,48 @@ function commitOslChatBatch(personId: string, batch: NativeDiscordOverlayOpenedB
   }
 }
 
-async function syncOslChatsInBackground(): Promise<void> {
-  if (oslChatBackgroundBusy || route !== "home" || activeContextToken || activeOslChatPersonId || activeNativeHostId || activeEmbeddedHost || !core.readiness.identityLoaded) return;
-  const people = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange).slice(0, 32);
-  if (!people.length) return;
-  oslChatBackgroundBusy = true;
-  try {
-    // A sender can require capture protection. Apply it before asking any
-    // approved friend inbox to return plaintext, even for background sync.
-    if (!await setScreenshotProtection(true)) return;
-    screenshotProtectionEnabled = true;
-    for (const person of people) {
-      if (route !== "home" || activeOslChatPersonId || activeContextToken || activeNativeHostId || activeEmbeddedHost) break;
-      const context = await activateOslChatContext(person.personId);
-      if (!context) continue;
-      try {
-        if (!context.scopeApproved) continue;
-        const batch = await openOslChatText();
-        if (batch) commitOslChatBatch(person.personId, batch, true);
-        const history = await listOslChatHistory();
-        if (history) {
-          const existingViewOnce = (oslChatMessages.get(person.personId) ?? []).filter((message) => message.state === "opened");
-          oslChatMessages.set(person.personId, [...history.slice().reverse().map((row) => ({
-            messageId: row.messageId,
-            direction: row.senderOslUserId === context.peerOslUserId ? "incoming" as const : "outgoing" as const,
-            body: row.plaintext,
-            state: row.senderOslUserId === context.peerOslUserId ? "received" as const : "sent" as const,
-            timestampLabel: new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(row.decryptedAt * 1_000)),
-          })), ...existingViewOnce].slice(-200));
-        }
-      } finally {
-        await closeOslChatContext();
-      }
-    }
-  } finally {
-    oslChatBackgroundBusy = false;
-  }
+// Delivery lives in ./osl-chat-runtime (T14-A0). This object is the only thing
+// main.ts still owns of it: the binding between the runtime and this module's
+// state. Note what is NOT in the preconditions — the route. A message must
+// arrive on any screen (T14-B2); the remaining checks are session ownership of
+// the single active OSL Chat context, not "the user is looking at Home".
+const oslChatDeliveryHost: OslChatDeliveryHost = {
+  identityLoaded: () => core.readiness.identityLoaded,
+  foreignContextActive: () => Boolean(activeContextToken || activeNativeHostId || activeEmbeddedHost),
+  openConversationId: () => activeOslChatPersonId,
+  conversationBusy: () => oslChatBusy,
+  friends: () => hubPeople,
+  requestCaptureProtection: async () => {
+    const applied = await setScreenshotProtection(true);
+    if (applied) screenshotProtectionEnabled = true;
+    return applied;
+  },
+  activateContext: async (personId) => {
+    const context = await activateOslChatContext(personId);
+    return context ? { personId, peerOslUserId: context.peerOslUserId, scopeApproved: context.scopeApproved } : null;
+  },
+  closeContext: () => closeOslChatContext(),
+  drainInbox: () => openOslChatText(),
+  loadHistory: () => listOslChatHistory(),
+  commitBatch: (personId, batch, background) => {
+    commitOslChatBatch(personId, batch, background);
+    // A conversation drained while the user is reading it renders in place.
+    if (!background && batch.messages.length) renderWhenIdle();
+  },
+  commitHistory: (personId, rows, context) => {
+    const openedViewOnce = (oslChatMessages.get(personId) ?? []).filter((message) => message.state === "opened");
+    oslChatMessages.set(personId, mergeOslChatTimeline(
+      oslChatHistoryMessages(rows, context, oslChatHistoryTimestamp),
+      openedViewOnce,
+    ));
+  },
+};
+
+function oslChatHistoryTimestamp(epochSeconds: number): string {
+  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(epochSeconds * 1_000));
 }
+
+const oslChatDelivery = createOslChatDeliveryRuntime(oslChatDeliveryHost);
 
 async function toggleOslChatPermission(): Promise<void> {
   const context = activeOslChatContext;
@@ -7732,13 +7749,13 @@ function clearServiceGuide(): void {
 function updateBannerMarkup(): string {
   if (route === "service") return "";
   if (updateStatus.state !== "available" && updateStatus.state !== "installing") return "";
-  return `<aside class="update-banner" role="status"><span><strong>OSL ${escapeHtml(updateStatus.next)} is available</strong><small>Signed update · installation requires your click</small></span><div><button class="button compact" data-update-read>Read more on GitHub</button><button class="button compact primary" data-update-modal ${updateStatus.state === "installing" ? "disabled" : ""}>Install</button></div></aside>`;
+  return `<aside class="update-banner" role="status"><span><strong>OSL ${escapeHtml(updateStatus.next)} is available</strong><small>Verified against OSL's updater key · installation requires your click</small></span><div><button class="button compact" data-update-read>Read more on GitHub</button><button class="button compact primary" data-update-modal ${updateStatus.state === "installing" ? "disabled" : ""}>Install</button></div></aside>`;
 }
 
 function updateDialogMarkup(): string {
   if (updateStatus.state !== "available" && updateStatus.state !== "installing") return "";
   const notes = updateStatus.notes ? escapeHtml(updateStatus.notes) : "No release notes were provided.";
-  return `<dialog class="unlock-dialog update-dialog" id="update-dialog" aria-labelledby="update-dialog-title"><div class="unlock-card"><p class="eyebrow">Signed OSL update</p><h2 id="update-dialog-title">Install ${escapeHtml(updateStatus.next)}?</h2><p class="update-notes">${notes}</p><p class="quiet-note">OSL will download, verify, install, and restart. Unsaved work may be lost. Nothing installs until you click Install & restart.</p><div class="control-row unlock-actions"><button class="button ghost" data-update-close>Not now</button><button class="button" data-update-read>Read more on GitHub</button><button class="button primary" data-update-install ${updateStatus.state === "installing" ? "disabled" : ""}>${updateStatus.state === "installing" ? "Installing…" : "Install & restart"}</button></div></div></dialog>`;
+  return `<dialog class="unlock-dialog update-dialog" id="update-dialog" aria-labelledby="update-dialog-title"><div class="unlock-card"><p class="eyebrow">OSL update</p><h2 id="update-dialog-title">Install ${escapeHtml(updateStatus.next)}?</h2><p class="update-notes">${notes}</p><p class="quiet-note">OSL will download, verify, install, and restart. Unsaved work may be lost. Nothing installs until you click Install & restart.</p><div class="control-row unlock-actions"><button class="button ghost" data-update-close>Not now</button><button class="button" data-update-read>Read more on GitHub</button><button class="button primary" data-update-install ${updateStatus.state === "installing" ? "disabled" : ""}>${updateStatus.state === "installing" ? "Installing…" : "Install & restart"}</button></div></div></dialog>`;
 }
 
 function updateSettingsContent(): string {
@@ -7750,7 +7767,7 @@ function updateSettingsContent(): string {
     : updateStatus.state === "error" ? "Update check failed"
     : "Updater backend unavailable";
   const actions = updateStatus.state === "available" ? `<button class="button" data-update-read>Read more on GitHub</button><button class="button primary" data-update-modal>Install</button>` : "";
-  return `<h2>About</h2><div class="update-status-card"><span class="dot"></span><div><strong>${status}</strong><small>Signed local updater · no UI telemetry</small></div></div><div class="settings-actions"><button class="button ${updateStatus.state === "available" ? "" : "primary"}" data-update-check ${updateStatus.state === "checking" || updateStatus.state === "installing" ? "disabled" : ""}>Check for updates</button>${actions}</div><details class="settings-disclosure update-details"><summary>Update privacy</summary><p>Checks and installs use the trusted local updater. Release notes are plain text; remote HTML is never rendered.</p></details>${developerSettingsContent()}<details class="device-diagnostics settings-disclosure"><summary><span><strong>Device status</strong><small>${deviceReady ? "Ready" : "Needs attention"}</small></span></summary><p>${escapeHtml(coreReadinessLabel(core.readiness))}</p></details>`;
+  return `<h2>About</h2><div class="update-status-card"><span class="dot"></span><div><strong>${status}</strong><small>Updates verified against OSL's own key · no UI telemetry</small></div></div><div class="settings-actions"><button class="button ${updateStatus.state === "available" ? "" : "primary"}" data-update-check ${updateStatus.state === "checking" || updateStatus.state === "installing" ? "disabled" : ""}>Check for updates</button>${actions}</div><details class="settings-disclosure update-details"><summary>Update privacy</summary><p>Checks and installs use the trusted local updater. Every update package is verified against OSL's own signing key before it installs. Release notes are plain text; remote HTML is never rendered.</p><p>OSL is not code-signed by a publisher Windows recognises, so Windows may warn you about the installer. That is separate from the update check above, which does not rely on Windows.</p></details>${developerSettingsContent()}<details class="device-diagnostics settings-disclosure"><summary><span><strong>Device status</strong><small>${deviceReady ? "Ready" : "Needs attention"}</small></span></summary><p>${escapeHtml(coreReadinessLabel(core.readiness))}</p></details>`;
 }
 
 function bindUpdateControls(): void {
@@ -8613,9 +8630,7 @@ function scheduleNativeHostRealignment(): void {
   });
 }
 function scheduleOslChatBackgroundSync(delayMs = 30_000): void {
-  window.setTimeout(() => {
-    void syncOslChatsInBackground().finally(() => scheduleOslChatBackgroundSync());
-  }, delayMs);
+  oslChatDelivery.start(delayMs);
 }
 
 type OslHubUiTestStatePatch = {
@@ -8738,6 +8753,24 @@ export const __oslHubUiTest = {
   },
   persistOslChatNotifications(): void {
     persistOslChatNotifications();
+  },
+  /** Run one OSL Chat delivery tick, exactly as the cadence would. */
+  deliverOslChats(): Promise<void> {
+    return oslChatDelivery.sync();
+  },
+  /** The rendered timeline for one conversation. */
+  oslChatConversation(personId: string): OslChatMessage[] {
+    return [...(oslChatMessages.get(personId) ?? [])];
+  },
+  oslChatUnreadCount(personId: string): number {
+    return oslChatUnread.get(personId) ?? 0;
+  },
+  openOslChatConversation(personId: string): Promise<void> {
+    return openOslChat(personId);
+  },
+  /** Stand in for a live Discord-overlay / native-host protected context. */
+  setForeignProtectedContextForTest(token: string | null): void {
+    activeContextToken = token;
   },
   snapshot(): {
     route: Route;

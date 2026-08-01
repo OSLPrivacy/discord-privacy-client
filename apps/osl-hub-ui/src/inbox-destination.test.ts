@@ -16,7 +16,7 @@ describe("Inbox destination content", () => {
 
   it("renders the conversation destination with the required filters", () => {
     expect(inbox).toContain('class="content-viewport inbox-destination"');
-    expect(inbox).toContain("<h1>Conversations</h1>");
+    expect(inbox).toContain('<h1 id="route-heading" tabindex="-1">Conversations</h1>');
     expect(inbox).toContain('data-inbox-filter="${label.toLowerCase()}"');
     for (const filter of ['"All"', '"OSL"', '"Connected"', '"Requests"']) {
       expect(inbox).toContain(filter);
