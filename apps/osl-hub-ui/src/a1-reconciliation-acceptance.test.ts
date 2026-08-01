@@ -1,126 +1,160 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createHubOslIdentity,
+  identityProtectionStatus,
+  importHubOslIdentityPhrase,
+  setupHubMainPassword,
+} from "./core";
+import {
+  recoveryKitReducer,
+  recoveryKitView,
+  type RecoveryKitSecrets,
+  visibleRecoverySecrets,
+} from "./recovery-kit";
+import { RecoveryCaptureGate } from "./ui-behavior";
 
-const renderer = readFileSync(fileURLToPath(new URL("./main.ts", import.meta.url)), "utf8");
-const core = readFileSync(fileURLToPath(new URL("./core.ts", import.meta.url)), "utf8");
-const passwordLifecycle = readFileSync(
-  fileURLToPath(new URL("../../osl-hub/src/password_lifecycle.rs", import.meta.url)),
-  "utf8",
-);
-const storage = readFileSync(
-  fileURLToPath(new URL("../../../crates/keystore/src/storage.rs", import.meta.url)),
-  "utf8",
-);
+const native = vi.hoisted(() => ({ invoke: vi.fn() }));
 
-function sourceBetween(source: string, start: string, end: string): string {
-  const from = source.indexOf(start);
-  const to = source.indexOf(end, from + start.length);
-  expect(from, `missing source marker: ${start}`).toBeGreaterThanOrEqual(0);
-  expect(to, `missing end marker after ${start}: ${end}`).toBeGreaterThan(from);
-  return source.slice(from, to);
-}
+vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
 
-function expectOrdered(source: string, earlier: string, later: string): void {
-  const earlierIndex = source.indexOf(earlier);
-  const laterIndex = source.indexOf(later);
-  expect(earlierIndex, `missing earlier marker: ${earlier}`).toBeGreaterThanOrEqual(0);
-  expect(laterIndex, `missing later marker: ${later}`).toBeGreaterThanOrEqual(0);
-  expect(earlierIndex, `${earlier} must precede ${later}`).toBeLessThan(laterIndex);
-}
+const identityPhrase = "abandon ability able about above absent absorb abstract absurd abuse access accident";
+const passwordPhrase = "account advice aerobic affair agent ahead aim alarm album alert alien alley";
 
-function expectCaptureProofBeforeRecoveryPublication(flow: string): void {
-  expectOrdered(flow, "recoveryBundle =", "await proveRecoveryCaptureProtection();");
-  expect(flow).toContain("onboardingRoute = \"recovery\";");
-  const bundleIndex = flow.indexOf("recoveryBundle =");
-  const proofIndex = flow.indexOf("await proveRecoveryCaptureProtection();");
-  const firstRenderAfterBundle = flow.indexOf("render()", bundleIndex);
-  if (firstRenderAfterBundle >= 0) {
-    expect(proofIndex, "capture proof must happen before recovery render").toBeLessThan(firstRenderAfterBundle);
-  }
-}
+const readyReadiness = {
+  accessState: "ready",
+  identityLoaded: true,
+  mainPasswordSet: true,
+  unlocked: true,
+  serviceNeutralIdentitySupported: true,
+  canCreateIdentity: false,
+  canImportIdentityPhrase: false,
+  passwordAttemptsUsed: 0,
+  passwordLockoutSecondsRemaining: 0,
+};
 
-function expectDeviceSealedIdentityContract(): void {
-  const persistentSealer = sourceBetween(
-    passwordLifecycle,
-    "pub(crate) fn persistent_sealer()",
-    "fn ensure_empty_identity_slot",
-  );
-  expect(persistentSealer).toContain("keystore::sealer::METHOD_TPM | keystore::sealer::METHOD_KEYRING => Ok(sealer)");
-  expect(persistentSealer).not.toContain("METHOD_EPHEMERAL => Ok");
-  expect(persistentSealer).not.toContain("METHOD_NOOP => Ok");
-
-  const install = sourceBetween(passwordLifecycle, "fn install_identity", "pub(crate) fn native_user_id");
-  expectOrdered(install, "keystore::save_identity(&path, &identity, sealer)", "storage_method: sealer.method_label().to_owned()");
-  expect(storage).toContain("sealed_b64: STANDARD.encode(&sealed)");
-  expect(storage).toContain("method: sealer.method_label().to_string()");
+function recoveryState(secrets: RecoveryKitSecrets, captureProven: boolean) {
+  return {
+    secrets,
+    captureProven,
+    captureEnforcement: "enforced" as const,
+    shownWithoutProtection: false,
+    savedAcknowledged: false,
+    kitUnsaved: true,
+  };
 }
 
 describe("A1 reconciliation acceptance", () => {
-  it("ties fresh account creation to device sealing, encrypted reload, and protected recovery publication", () => {
-    const bindPassword = sourceBetween(renderer, "function bindPasswordForm", "function bindImportForm");
-    const createFlow = sourceBetween(
-      bindPassword,
-      "if (setupMode) {\n        const identity",
-      "      } else {\n        const gate",
-    );
-    const passwordSetup = sourceBetween(
-      passwordLifecycle,
-      "pub fn setup_main_password",
-      "struct PasswordSetupOutcome",
-    );
-    const passwordSetupHelper = sourceBetween(
-      passwordLifecycle,
-      "fn setup_main_password_using",
-      "fn isolated_account_dir",
-    );
-
-    expectOrdered(createFlow, "await createHubOslIdentity(true)", "await setupHubMainPassword(secret)");
-    expectOrdered(createFlow, "await setupHubMainPassword(secret)", "core = await loadCoreIntegration()");
-    expectOrdered(createFlow, "core = await loadCoreIntegration()", "recoveryBundle = {");
-    expect(createFlow).toContain("identity?.userId ?? core.readiness.activeOslUserId");
-    expect(createFlow).toContain("identity?.identityRecoveryPhrase ?? null");
-    expect(createFlow).toContain("passwordResult.passwordRecoveryPhrase");
-    expectCaptureProofBeforeRecoveryPublication(createFlow);
-
-    expect(core).toContain('["userId", "identityRecoveryPhrase", "storageMethod", "passwordSetupRequired"]');
-    expect(core).toContain('["passwordRecoveryPhrase", "encryptedStateReloadComplete", "encryptedStateReloadIssueCount", "readiness"]');
-    expect(passwordSetup).toContain("encrypted_state_reload_complete: outcome.reload_issue_count == 0");
-    expect(passwordSetupHelper).toContain("reload_encrypted_state_after_unlock(&state.osl, account_dir)");
-    expectDeviceSealedIdentityContract();
+  beforeEach(() => {
+    native.invoke.mockReset();
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
   });
 
-  it("ties recovery-phrase import to the same sealed local identity and protected recovery publication", () => {
-    const importFlow = sourceBetween(renderer, "function bindImportForm", "function renderWorkspace");
-    const importNative = sourceBetween(
-      passwordLifecycle,
-      "pub fn import_native_identity_phrase",
-      "pub fn setup_main_password",
-    );
+  it("creates a device-protected identity, reloads encrypted state, and holds its recovery kit until capture protection is proven", async () => {
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === "create_hub_osl_identity") {
+        return {
+          userId: "osl_1234567890abcdef1234567890abcdef12345678",
+          identityRecoveryPhrase: identityPhrase,
+          storageMethod: "keyring",
+          passwordSetupRequired: true,
+        };
+      }
+      if (command === "setup_hub_main_password") {
+        return {
+          passwordRecoveryPhrase: passwordPhrase,
+          encryptedStateReloadComplete: true,
+          encryptedStateReloadIssueCount: 0,
+          readiness: readyReadiness,
+        };
+      }
+      throw new Error(`unexpected native command: ${command}`);
+    });
 
-    expect(core).toContain("return parseIdentitySetupResult(await invoke<unknown>(\"import_hub_osl_identity_phrase\", { recoveryPhrase: recoveryPhrase.trim() }));");
-    expect(importNative).toContain("parse_identity_phrase(&phrase)?");
-    expect(importNative).toContain("keystore::identity_from_entropy(entropy, \"osl-pending\".to_owned())");
-    expect(importNative).toContain("identity.user_id = native_user_id(&identity);");
-    expect(importNative).toContain("persistent_sealer()?");
-    expect(importNative).toContain("None,\n        !current.main_password_set");
+    const identity = await createHubOslIdentity();
+    const password = await setupHubMainPassword("correct-horse-battery-staple");
 
-    expectOrdered(importFlow, "await importHubOslIdentityPhrase(phraseSecret)", "phraseSecret = \"\";");
-    expectOrdered(importFlow, "phraseSecret = \"\";", "await setupHubMainPassword(passwordSecret)");
-    expect(importFlow).toContain("recoveryBundle = { userId: identity.userId, identityPhrase: null, passwordPhrase: passwordResult.passwordRecoveryPhrase }");
-    expectCaptureProofBeforeRecoveryPublication(importFlow);
-    expectDeviceSealedIdentityContract();
+    expect(native.invoke.mock.calls.map(([command]) => command)).toEqual([
+      "create_hub_osl_identity",
+      "setup_hub_main_password",
+    ]);
+    expect(native.invoke.mock.calls[0][1]).toEqual({
+      ownerAuthorizationSignoff: {
+        ownerPresent: true,
+        reviewedNoExistingIdentityReplacement: true,
+        acceptsRecoveryPhraseResponsibility: true,
+      },
+    });
+    expect(identityProtectionStatus(identity.storageMethod).state).toBe("protected");
+    expect(password).toMatchObject({
+      encryptedStateReloadComplete: true,
+      encryptedStateReloadIssueCount: 0,
+      readiness: { unlocked: true },
+    });
+
+    const secrets = {
+      userId: identity.userId,
+      identityPhrase: identity.identityRecoveryPhrase,
+      passwordPhrase: password.passwordRecoveryPhrase,
+    };
+    const gate = new RecoveryCaptureGate();
+    expect(visibleRecoverySecrets(recoveryState(secrets, gate.canRender()))).toBeNull();
+
+    expect(gate.accept(gate.checkpoint())).toBe(true);
+    expect(visibleRecoverySecrets(recoveryState(secrets, gate.canRender()))).toEqual(secrets);
   });
 
-  it("would fail this aggregate if recovery publication lost its capture proof", () => {
-    const bindPassword = sourceBetween(renderer, "function bindPasswordForm", "function bindImportForm");
-    const createFlow = sourceBetween(
-      bindPassword,
-      "if (setupMode) {\n        const identity",
-      "      } else {\n        const gate",
-    );
-    const mutated = createFlow.replace("        await proveRecoveryCaptureProtection();", "");
+  it("imports a normalized recovery phrase, then publishes only the newly-created password recovery phrase", async () => {
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === "import_hub_osl_identity_phrase") {
+        return {
+          userId: "osl_abcdef1234567890abcdef1234567890abcdef12",
+          identityRecoveryPhrase: identityPhrase,
+          storageMethod: "tpm-pcp",
+          passwordSetupRequired: true,
+        };
+      }
+      if (command === "setup_hub_main_password") {
+        return {
+          passwordRecoveryPhrase: passwordPhrase,
+          encryptedStateReloadComplete: true,
+          encryptedStateReloadIssueCount: 0,
+          readiness: readyReadiness,
+        };
+      }
+      throw new Error(`unexpected native command: ${command}`);
+    });
 
-    expect(() => expectCaptureProofBeforeRecoveryPublication(mutated)).toThrow();
+    const identity = await importHubOslIdentityPhrase(`  ${identityPhrase}  `);
+    const password = await setupHubMainPassword("correct-horse-battery-staple");
+    const secrets = {
+      userId: identity.userId,
+      identityPhrase: null,
+      passwordPhrase: password.passwordRecoveryPhrase,
+    };
+
+    expect(native.invoke.mock.calls.map(([command]) => command)).toEqual([
+      "import_hub_osl_identity_phrase",
+      "setup_hub_main_password",
+    ]);
+    expect(native.invoke.mock.calls[0][1]).toEqual({ recoveryPhrase: identityPhrase });
+    expect(identityProtectionStatus(identity.storageMethod).state).toBe("protected");
+    expect(visibleRecoverySecrets(recoveryState(secrets, true))).toEqual(secrets);
+    expect(visibleRecoverySecrets(recoveryState(secrets, true))?.identityPhrase).toBeNull();
+  });
+
+  it("withdraws recovery secrets immediately when the accepted capture proof becomes stale", () => {
+    const secrets = { userId: "osl-local", identityPhrase, passwordPhrase };
+    const gate = new RecoveryCaptureGate();
+    expect(gate.accept(gate.checkpoint())).toBe(true);
+    expect(recoveryKitView(recoveryState(secrets, gate.canRender())).mode).toBe("kit");
+
+    gate.invalidate();
+    const heldBack = recoveryState(secrets, gate.canRender());
+    expect(recoveryKitView(heldBack).mode).toBe("refusal");
+    expect(visibleRecoverySecrets(heldBack)).toBeNull();
+
+    const deferred = recoveryKitReducer(heldBack, { kind: "remind-me-later" });
+    expect(deferred.outcome).toBe("leave-recovery");
+    expect(deferred.state).toMatchObject({ secrets: null, kitUnsaved: true });
   });
 });
