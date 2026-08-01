@@ -65,11 +65,13 @@ use rusqlite::{params, Connection, Transaction};
 ///   v8 — Removes plaintext `burned_at` from message and attachment audit
 ///        stubs. The terminal `burned` bit remains queryable, but an offline
 ///        reader no longer learns the exact time of destructive activity.
-pub(crate) const SCHEMA_VERSION: u32 = 8;
+///   v9 — Adds receipt lifecycle fields and per-device acknowledgement rows.
+pub(crate) const SCHEMA_VERSION: u32 = 9;
 const PRIVACY_SCHEMA_VERSION: u32 = 4;
 const MESSAGE_ENVELOPE_SCHEMA_VERSION: u32 = 5;
 const ATTACHMENT_ENVELOPE_SCHEMA_VERSION: u32 = 6;
 const ATTACHMENT_MANIFEST_SCHEMA_VERSION: u32 = 7;
+const BURN_TIMESTAMP_PRIVACY_SCHEMA_VERSION: u32 = 8;
 
 /// Fixed canary plaintext. Hard-coded so a wrong-key unseal that
 /// happens to produce non-error garbage still fails the
@@ -105,6 +107,10 @@ CREATE TABLE IF NOT EXISTS messages (
     content_version INTEGER NOT NULL DEFAULT 1,
     wrapped_key_nonce BLOB,
     wrapped_key BLOB,
+    delivered_at BLOB,
+    opened_at BLOB,
+    destroyed_at BLOB,
+    destruct_reason BLOB,
 
     -- Null downgrade-guard columns. The exact final v3 reader (adff4e45)
     -- creates its legacy indexes before checking schema_version. Keeping the
@@ -126,6 +132,18 @@ CREATE INDEX IF NOT EXISTS idx_messages_chan_seq
     ON messages(chan_bi, seq DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_channel
     ON messages(channel_id, decrypted_at DESC);
+
+CREATE TABLE IF NOT EXISTS message_device_acks (
+    mid_bi BLOB NOT NULL,
+    device_bi BLOB NOT NULL,
+    ack_kind TEXT NOT NULL CHECK (ack_kind IN (
+        'delivered', 'opened', 'destroyed', 'already_absent', 'never_held'
+    )),
+    acknowledged_at BLOB NOT NULL,
+    destruct_reason BLOB,
+    PRIMARY KEY (mid_bi, device_bi, ack_kind),
+    FOREIGN KEY (mid_bi) REFERENCES messages(mid_bi) ON DELETE CASCADE
+);
 
 CREATE TABLE IF NOT EXISTS attachments (
     ck_bi BLOB PRIMARY KEY,
@@ -262,19 +280,26 @@ pub(crate) fn migrate(
             run_pending_vacuum(conn)?;
             return Ok(());
         }
+        Some(BURN_TIMESTAMP_PRIVACY_SCHEMA_VERSION) => {
+            migrate_v8_to_v9(conn)?;
+            return Ok(());
+        }
         Some(MESSAGE_ENVELOPE_SCHEMA_VERSION) => {
             migrate_v5_to_v6(conn, key, index_key)?;
             migrate_v6_to_v7(conn, key)?;
             migrate_v7_to_v8(conn)?;
+            migrate_v8_to_v9(conn)?;
             return Ok(());
         }
         Some(ATTACHMENT_ENVELOPE_SCHEMA_VERSION) => {
             migrate_v6_to_v7(conn, key)?;
             migrate_v7_to_v8(conn)?;
+            migrate_v8_to_v9(conn)?;
             return Ok(());
         }
         Some(ATTACHMENT_MANIFEST_SCHEMA_VERSION) => {
             migrate_v7_to_v8(conn)?;
+            migrate_v8_to_v9(conn)?;
             return Ok(());
         }
         Some(PRIVACY_SCHEMA_VERSION) => {
@@ -282,6 +307,7 @@ pub(crate) fn migrate(
             migrate_v5_to_v6(conn, key, index_key)?;
             migrate_v6_to_v7(conn, key)?;
             migrate_v7_to_v8(conn)?;
+            migrate_v8_to_v9(conn)?;
             return Ok(());
         }
         _ => {}
@@ -303,6 +329,7 @@ pub(crate) fn migrate(
     migrate_v5_to_v6(conn, key, index_key)?;
     migrate_v6_to_v7(conn, key)?;
     migrate_v7_to_v8(conn)?;
+    migrate_v8_to_v9(conn)?;
     Ok(())
 }
 
@@ -1184,6 +1211,34 @@ fn migrate_v7_to_v8(conn: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Add receipt lifecycle fields and the independent per-device acknowledgement
+/// ledger. Receipt metadata is stored as opaque blobs: the receipt writer owns
+/// sealing and no wall-clock event time or destruction reason is exposed to an
+/// offline SQLite reader.
+fn migrate_v8_to_v9(conn: &Connection) -> Result<(), StoreError> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "ALTER TABLE messages ADD COLUMN delivered_at BLOB;
+         ALTER TABLE messages ADD COLUMN opened_at BLOB;
+         ALTER TABLE messages ADD COLUMN destroyed_at BLOB;
+         ALTER TABLE messages ADD COLUMN destruct_reason BLOB;
+         CREATE TABLE IF NOT EXISTS message_device_acks (
+             mid_bi BLOB NOT NULL,
+             device_bi BLOB NOT NULL,
+             ack_kind TEXT NOT NULL CHECK (ack_kind IN (
+                 'delivered', 'opened', 'destroyed', 'already_absent', 'never_held'
+             )),
+             acknowledged_at BLOB NOT NULL,
+             destruct_reason BLOB,
+             PRIMARY KEY (mid_bi, device_bi, ack_kind),
+             FOREIGN KEY (mid_bi) REFERENCES messages(mid_bi) ON DELETE CASCADE
+         );",
+    )?;
+    write_meta_u32(&tx, "schema_version", SCHEMA_VERSION)?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Apply the semantic v7→v8 step inside a caller-owned transaction.
 ///
 /// The anchored migration coordinator uses this to make the schema version,
@@ -1197,7 +1252,7 @@ pub(crate) fn apply_v7_to_v8_tx(tx: &Transaction<'_>) -> Result<(), StoreError> 
     tx.execute(
         "INSERT INTO _meta(key, value) VALUES ('schema_version', ?1) \
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![SCHEMA_VERSION.to_le_bytes().to_vec()],
+        params![BURN_TIMESTAMP_PRIVACY_SCHEMA_VERSION.to_le_bytes().to_vec()],
     )?;
     tx.execute(
         "INSERT INTO _meta(key, value) VALUES (?1, ?2) \
@@ -1506,5 +1561,61 @@ pub(crate) fn check_canary(conn: &Connection, key: &aead::Key) -> Result<(), Sto
         _ => Err(StoreError::Schema(
             "canary partially present (nonce or ct missing)".to_string(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v8_to_v9_adds_receipt_fields_and_per_device_ack_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _meta (key TEXT PRIMARY KEY, value BLOB);
+             CREATE TABLE messages (mid_bi BLOB PRIMARY KEY);",
+        )
+        .unwrap();
+        write_meta_u32(
+            &conn,
+            "schema_version",
+            BURN_TIMESTAMP_PRIVACY_SCHEMA_VERSION,
+        )
+        .unwrap();
+
+        migrate_v8_to_v9(&conn).unwrap();
+
+        let columns = existing_columns(&conn, "messages").unwrap();
+        for column in [
+            "delivered_at",
+            "opened_at",
+            "destroyed_at",
+            "destruct_reason",
+        ] {
+            assert!(columns.iter().any(|existing| existing == column));
+        }
+        assert!(table_exists(&conn, "message_device_acks").unwrap());
+        assert_eq!(
+            read_meta_u32(&conn, "schema_version").unwrap(),
+            Some(SCHEMA_VERSION)
+        );
+
+        let message = vec![0xA1];
+        let device = vec![0xB2];
+        conn.execute("INSERT INTO messages(mid_bi) VALUES (?1)", params![message])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO message_device_acks(
+                mid_bi, device_bi, ack_kind, acknowledged_at, destruct_reason
+             ) VALUES (?1, ?2, 'destroyed', ?3, ?4)",
+            params![vec![0xA1], device, vec![0xC3], vec![0xD4]],
+        )
+        .unwrap();
+        let acknowledgements: i64 = conn
+            .query_row("SELECT COUNT(*) FROM message_device_acks", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(acknowledgements, 1);
     }
 }
