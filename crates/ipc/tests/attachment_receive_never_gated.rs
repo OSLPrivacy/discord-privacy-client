@@ -57,10 +57,14 @@ fn free_recipient(
         .as_ref()
         .expect("sender identity present")
         .x25519_public;
-    let mut peers = state.peer_map.lock().expect("peer map mutex poisoned");
-    let sender = peers.entry(PRO_SENDER_DID.to_owned()).or_default();
-    sender.pubkey = Some(STANDARD.encode(sender_public.as_bytes()));
-    sender.discord_id = Some(PRO_SENDER_DID.to_owned());
+    // Scope the guard: it borrows `state.peer_map`, and returning `state` moves
+    // out of `state` while that borrow is still live at the end of the function.
+    {
+        let mut peers = state.peer_map.lock().expect("peer map mutex poisoned");
+        let sender = peers.entry(PRO_SENDER_DID.to_owned()).or_default();
+        sender.pubkey = Some(STANDARD.encode(sender_public.as_bytes()));
+        sender.discord_id = Some(PRO_SENDER_DID.to_owned());
+    }
     state
 }
 
