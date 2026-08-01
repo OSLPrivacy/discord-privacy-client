@@ -5,6 +5,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 
 import {
   burnNativeDiscordOverlayChat,
+  createSurfaceAdapterClient,
   getNativeDiscordOverlayQaDiagnostic,
   getNativeDiscordOverlayState,
   openNativeDiscordOverlayText,
@@ -37,6 +38,40 @@ describe("native overlay narrow adapter", () => {
     mocks.invoke.mockReset();
     clearBackendFailures();
     setBackendFailureConsole(false);
+  });
+
+  it("routes every surface-adapter IPC request to its selected app", async () => {
+    const signal = createSurfaceAdapterClient("signal");
+    const stateDto = { generation: 7 };
+    const destinationDto = { status: "attested" };
+    const preparedDto = { carrier: "osl://pointer" };
+    const placementDto = { status: "placed" };
+    const sendDto = { outcome: "notSent" };
+    const paintTargets = [{ carrierSha256: "a".repeat(64) }];
+    mocks.invoke
+      .mockResolvedValueOnce(stateDto)
+      .mockResolvedValueOnce(destinationDto)
+      .mockResolvedValueOnce(preparedDto)
+      .mockResolvedValueOnce(placementDto)
+      .mockResolvedValueOnce(sendDto)
+      .mockResolvedValueOnce(paintTargets);
+
+    await expect(signal.state()).resolves.toEqual(stateDto);
+    await expect(signal.destination()).resolves.toEqual(destinationDto);
+    await expect(signal.prepare("draft", false)).resolves.toEqual(preparedDto);
+    await expect(signal.place("osl://pointer", "atomic")).resolves.toEqual(placementDto);
+    await expect(signal.commit(placementDto)).resolves.toEqual(sendDto);
+    await expect(signal.paintTargets()).resolves.toEqual(paintTargets);
+
+    expect(signal.app).toBe("signal");
+    expect(mocks.invoke.mock.calls).toEqual([
+      ["surface_adapter_state", { app: "signal" }],
+      ["surface_adapter_destination", { app: "signal" }],
+      ["surface_adapter_prepare", { app: "signal", plaintext: "draft", viewOnce: false }],
+      ["surface_adapter_place", { app: "signal", carrier: "osl://pointer", mode: "atomic" }],
+      ["surface_adapter_commit", { app: "signal", placed: placementDto }],
+      ["surface_adapter_paint_targets", { app: "signal" }],
+    ]);
   });
 
   it("uses only token-free overlay commands and exact camelCase security args", async () => {
