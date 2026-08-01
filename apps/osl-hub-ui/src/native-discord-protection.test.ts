@@ -9,7 +9,6 @@ const nativeOverlay = readFileSync(fileURLToPath(new URL("../../osl-hub/src/nati
 
 describe("native Discord protected overlay routing", () => {
   it("offers Protect for native Discord while leaving the in-window sheet embedded-only", () => {
-    expect(source).toContain('(activeEmbeddedHost || activeNativeHostId === "discord")');
     expect(source).toContain("localProtectedSheet.open || peerProtectedSheet.open || nativeDiscordProtectionActive");
     expect(source).toMatch(/const protectedSheet = activeEmbeddedHost\s+\? protectedSheetMode/);
     expect(source).toContain("${nativeDiscordProtectPickerMarkup()}");

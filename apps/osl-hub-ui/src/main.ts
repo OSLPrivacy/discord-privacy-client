@@ -8999,6 +8999,17 @@ export const __oslHubUiTest = {
     route = destination;
     return destination === "onboarding" ? onboardingShellMarkup() : workspaceShellMarkup();
   },
+  /** Render the real service header without needing a companion window. */
+  renderServiceHeader(service: LinkedService, homeAppId: HomeAppId): string {
+    route = "service";
+    activeService = service;
+    activeHomeAppId = homeAppId;
+    activeEmbeddedHost = null;
+    activeNativeHostId = null;
+    activeNativeHostMode = null;
+    activeDefaultBrowserCompanion = false;
+    return trustedHeader();
+  },
   /** D80: the rendered onboarding screen, markup only, for the unlock-screen
    * advertisement audit in `unlock-screen-single-credential.test.ts`. */
   renderOnboardingRoute(destination: OnboardingRoute): string {
