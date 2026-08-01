@@ -18,6 +18,7 @@ import {
   type SetupState,
 } from "./state";
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
+import { continueFromProOnboarding, proOnboardingStepContract } from "./onboarding-sequence";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import {
   escapeHtml,
@@ -1648,7 +1649,10 @@ function welcomeOnboardingContent(): string {
 function proSetupContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   if (pro) return `<section class="pro-setup" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><button class="button primary" data-onboarding="sending" type="button">Continue</button></section>`;
-  return `<section class="pro-setup" aria-labelledby="route-heading"><p class="eyebrow">Optional</p><h1 id="route-heading" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Continue</button></form><button class="text-button" data-onboarding="sending" type="button">Skip</button></section>`;
+  const skip = proOnboardingStepContract.skippable
+    ? `<button class="text-button" data-onboarding="privacy" type="button">Skip</button>`
+    : "";
+  return `<section class="pro-setup" aria-labelledby="route-heading"><p class="eyebrow">Optional</p><h1 id="route-heading" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Continue</button></form>${skip}</section>`;
 }
 
 function tutorialContent(): string {
@@ -7687,11 +7691,16 @@ async function activatePro(event: SubmitEvent): Promise<void> {
   if (submit) { submit.disabled = true; submit.textContent = "Activating…"; }
   try {
     licenseState = await validateHubActivationCode(activationCode);
-    if (route === "onboarding" && onboardingRoute === "pro" && licenseState.access !== "free") onboardingRoute = "privacy";
+    if (route === "onboarding" && onboardingRoute === "pro") {
+      onboardingRoute = continueFromProOnboarding(licenseState.access === "free" ? "failed" : "activated").route;
+    }
     render();
     showToast(licenseState.access === "free" ? "This code does not include active Pro access" : "Pro activated on this device");
   } catch (failure) {
-    if (submit) { submit.disabled = false; submit.textContent = route === "onboarding" && onboardingRoute === "pro" ? "Continue" : "Activate Pro"; }
+    if (route === "onboarding" && onboardingRoute === "pro") {
+      onboardingRoute = continueFromProOnboarding("failed").route;
+      render();
+    }
     showToast(localActionError(failure, "Activation failed. Check the code and try again."));
   }
 }
