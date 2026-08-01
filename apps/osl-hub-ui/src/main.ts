@@ -3860,33 +3860,13 @@ function workspaceContent(): string {
   return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary">${homeDestinationContent()}<section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile" title="${escapeHtml(profileName)}"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong></button></main>`;
 }
 
-// A Circle audience is real trust state: it names the people a post would
-// actually reach. Nothing on this device can enumerate audiences yet — there
-// is no backend command behind them — so on a real account the only honest
-// value is "none", and the surface has to say so rather than showing anyone.
-//
-// Demo audiences exist only for local design work. `import.meta.env.DEV` is
-// statically false for every `vite build` (the default `main` mode plus the
-// `discord-qa` and `signal-qa` modes), so the records below cannot reach any
-// shipped bundle even if the opt-in variable were set at build time.
-const circleDemoAudiencesEnabled = import.meta.env.DEV === true
-  && import.meta.env.VITE_OSL_CIRCLE_DEMO_AUDIENCES === "1";
-
-function demoCircleAudienceRecords(): unknown[] {
-  if (!circleDemoAudiencesEnabled) return [];
-  return [
-    { audienceId: "c".repeat(32), name: "Demo audience A", memberCount: 1, membershipVisibility: "visible", visibleMembers: [{ memberId: "1".repeat(32), name: "Demo member", verified: true }], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: true },
-    { audienceId: "f".repeat(32), name: "Demo audience B", memberCount: 1, membershipVisibility: "count-only", visibleMembers: [], consentGranted: false, boundToCurrentCircle: true, postingAuthorized: true },
-  ];
-}
-
 function parsedCircleAudiences(records: unknown[]): CircleAudience[] {
   return records
     .map((record) => parseCircleAudience(record))
     .filter((audience): audience is CircleAudience => audience !== null);
 }
 
-let privateCircleAudiences: CircleAudience[] = parsedCircleAudiences(demoCircleAudienceRecords());
+let privateCircleAudiences: CircleAudience[] = [];
 
 function circleAudienceMembershipDetail(audience: CircleAudience): string {
   if (audience.membershipVisibility === "visible") {
@@ -8958,7 +8938,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   hubIdentities = patch.hubIdentities ?? [];
   hubIdentitiesLoad = patch.hubIdentitiesLoad ?? (patch.hubIdentities ? "loaded" : "pending");
   identityListRefreshInFlight = false;
-  privateCircleAudiences = parsedCircleAudiences(patch.circleAudienceRecords ?? demoCircleAudienceRecords());
+  privateCircleAudiences = parsedCircleAudiences(patch.circleAudienceRecords ?? []);
   notificationsEnabled = patch.notificationsEnabled ?? false;
   notificationPreviewContent = patch.notificationPreviewContent ?? true;
   appNotifications = patch.appNotifications ?? [];
