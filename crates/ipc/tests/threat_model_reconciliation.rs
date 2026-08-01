@@ -1,5 +1,8 @@
 use std::collections::BTreeMap;
 
+use ipc::state::AppState;
+use std::sync::atomic::Ordering;
+
 const THREAT_MODEL: &str = include_str!("../../../docs/THREAT_MODEL.md");
 
 fn unquote_code_cell(value: &str) -> &str {
@@ -42,23 +45,26 @@ fn reconciliation_table() -> BTreeMap<String, String> {
 }
 
 #[test]
-fn v5_sender_keys_enabled_default_false_rationale_is_documented() {
-    let status = reconciliation_table();
+fn v5_sender_key_ipc_default_matches_the_reconciliation_record() {
+    let (_, json) = THREAT_MODEL
+        .split_once("```json threat-model-reconciliation-v1\n")
+        .expect("reconciliation JSON block starts");
+    let (json, _) = json
+        .split_once("\n```")
+        .expect("reconciliation JSON block ends");
+    let record: serde_json::Value = serde_json::from_str(json).expect("valid reconciliation JSON");
+
     assert_eq!(
-        status
-            .get("sender_keys_enabled_default")
-            .map(String::as_str),
-        Some("false")
+        record["v5_sender_keys"]["ipc_owner_switch_default"],
+        serde_json::Value::Bool(true),
+        "THREAT_MODEL must record the IPC sender-key default"
     );
     assert_eq!(
-        status.get("default_false_reason").map(String::as_str),
-        Some("account_scoped_sender_key_state_can_desync_across_devices")
-    );
-    assert_eq!(
-        status
-            .get("required_sender_key_remediation")
-            .map(String::as_str),
-        Some("bind_chains_to_explicit_physical_device_identity")
+        AppState::new().sender_keys_enabled.load(Ordering::Acquire),
+        record["v5_sender_keys"]["ipc_owner_switch_default"]
+            .as_bool()
+            .expect("IPC sender-key default is a boolean"),
+        "THREAT_MODEL IPC default and AppState initializer disagree"
     );
 }
 
