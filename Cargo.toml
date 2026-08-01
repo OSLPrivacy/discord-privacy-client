@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/adapter-profile",
     "crates/cover-draft",
+    "crates/cover-ai",
     "crates/crypto",
     "crates/stego",
     "crates/transport",
@@ -49,6 +50,7 @@ rand = "0.8"
 rand_core = "0.6"
 hkdf = "0.12"
 sha2 = "0.10"
+encoding_rs = "0.8"
 hex = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
