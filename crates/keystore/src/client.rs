@@ -190,6 +190,15 @@ pub fn reg_msg(
 /// Mirrors `RN_CAP_WIRE_RN` in `keyserver-cf/src/lib/signed-request.ts`.
 pub const RN_CAP_WIRE_RN: u32 = 1;
 
+/// Bit 1 — this build has its OSL-RN (`0x10`) production wire fuse open.
+///
+/// Bit 0 cannot carry this meaning: existing identities already advertise it,
+/// including builds that must still refuse to emit or accept the RN wire. New
+/// selection code must require this bit; bit 0 remains the sticky pinning
+/// capability for backwards compatibility. Mirrors `RN_CAP_WIRE_RN_LIVE` in
+/// `keyserver-cf/src/lib/signed-request.ts`.
+pub const RN_CAP_WIRE_RN_LIVE: u32 = 1 << 1;
+
 /// Upper bound on the bitmap, mirroring `RN_CAP_MAX`. Unknown bits
 /// inside the bound are ignored, not rejected: a peer newer than this
 /// build may advertise capabilities this build has no name for.
@@ -200,10 +209,25 @@ pub const RN_CAP_MAX: u32 = 0xffff;
 /// the same helper makes the client-side advertisement monotone: a rotation can
 /// change keys, but it cannot silently lower this build's protocol capability
 /// floor.
-pub const CLIENT_RN_CAPABILITY_FLOOR: u32 = RN_CAP_WIRE_RN;
+pub const CLIENT_RN_CAPABILITY_FLOOR: u32 = rn_capabilities_for_wire_in(false);
 /// Compatibility name for callers/tests that refer to the signed capability
 /// bitmap directly. It must stay tied to the floor.
 pub const CLIENT_RN_CAPABILITIES: u32 = CLIENT_RN_CAPABILITY_FLOOR;
+
+/// Capability bitmap a build must sign for its OSL-RN wire state.
+///
+/// The compile-time wire fuse lives in `ipc`, which depends on this crate, so
+/// this helper takes the fuse state instead of creating a dependency cycle.
+/// The fuse-flip task must set [`CLIENT_RN_CAPABILITY_FLOOR`] from the `true`
+/// branch in the same change that opens the fuse.
+pub const fn rn_capabilities_for_wire_in(wire_in_enabled: bool) -> u32 {
+    RN_CAP_WIRE_RN
+        | if wire_in_enabled {
+            RN_CAP_WIRE_RN_LIVE
+        } else {
+            0
+        }
+}
 
 /// REG_MSG bytes for a record that advertises a capability bitmap.
 ///
@@ -270,6 +294,15 @@ impl PeerCapabilities {
     /// Does this peer verifiably speak OSL-RN?
     pub fn supports_rn(self) -> bool {
         self.bitmap() & RN_CAP_WIRE_RN != 0
+    }
+
+    /// Does this peer verifiably advertise an OSL-RN wire-in-capable build?
+    ///
+    /// This is deliberately distinct from [`Self::supports_rn`]: the latter
+    /// remains the sticky bit-0 check used by pinning, while send selection
+    /// must require bit 1 to avoid routing `0x10` to a fuse-closed build.
+    pub fn supports_rn_live(self) -> bool {
+        self.bitmap() & RN_CAP_WIRE_RN_LIVE != 0
     }
 }
 
@@ -2467,6 +2500,19 @@ mod tests {
                 "remaining_opk_count": 41,
             }))
             .unwrap()
+        }
+
+        #[test]
+        fn rn_live_capability_tracks_the_wire_fuse_state() {
+            let fuse_closed = rn_capabilities_for_wire_in(false);
+            let fuse_open = rn_capabilities_for_wire_in(true);
+
+            assert_eq!(fuse_closed, RN_CAP_WIRE_RN);
+            assert_eq!(fuse_open, RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE);
+            assert!(!PeerCapabilities::Verified(fuse_closed).supports_rn_live());
+            assert!(PeerCapabilities::Verified(fuse_open).supports_rn_live());
+            assert!(PeerCapabilities::Verified(fuse_open).supports_rn());
+            assert!(!PeerCapabilities::Unverified.supports_rn_live());
         }
 
         #[test]

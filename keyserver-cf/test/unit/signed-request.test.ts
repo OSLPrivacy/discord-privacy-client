@@ -3,10 +3,25 @@ import {
   buildRegMsg,
   buildRotMsg,
   ed25519SelfTest,
+  parseRnCapabilities,
+  RN_CAP_WIRE_RN,
+  RN_CAP_WIRE_RN_LIVE,
   verifySignedRequest,
 } from "../../src/lib/signed-request.js";
 
 const dec = new TextDecoder();
+
+describe("RN capability allocation", () => {
+  it("reserves bit 1 for a fuse-open OSL-RN build", () => {
+    expect(RN_CAP_WIRE_RN).toBe(1);
+    expect(RN_CAP_WIRE_RN_LIVE).toBe(2);
+    expect(parseRnCapabilities(RN_CAP_WIRE_RN)).toEqual({ present: true, value: 1 });
+    expect(parseRnCapabilities(RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE)).toEqual({
+      present: true,
+      value: 3,
+    });
+  });
+});
 
 describe("REG_MSG / ROT_MSG byte format (MIRRORED with client.rs)", () => {
   // This EXACT vector is pinned in
