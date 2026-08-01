@@ -14750,10 +14750,19 @@ const OSL_EXPORT_FILES: &[&str] = &[
     "membership.json",
     "scope_ttl.json",
     "scope_blobs.json",
+    crate::space_roster::SPACE_ROSTER_FILE,
     "store/messages.sqlite",
     "store/messages.sqlite-wal",
     "store/messages.sqlite-shm",
 ];
+
+/// Account-relative files carried by an encrypted identity export.
+///
+/// Consumers that own another account lifecycle sweep use this to prove a
+/// durable file was registered everywhere it must travel.
+pub fn osl_export_files() -> &'static [&'static str] {
+    OSL_EXPORT_FILES
+}
 
 const OSL_EXPORT_STORE_FILES: &[&str] = &[
     "store/messages.sqlite",

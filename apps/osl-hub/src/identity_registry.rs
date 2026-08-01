@@ -36,6 +36,7 @@ const ACCOUNT_ARTIFACTS: &[&str] = &[
     "membership.json",
     "scope_ttl.json",
     "scope_blobs.json",
+    ipc::space_roster::SPACE_ROSTER_FILE,
     "pending_rotation.json",
     "pending_invitations.json",
     "hub_local_protected.json",
@@ -44,6 +45,10 @@ const ACCOUNT_ARTIFACTS: &[&str] = &[
     "hub_security_preferences.json",
     "store",
 ];
+
+pub(crate) fn account_artifacts() -> &'static [&'static str] {
+    ACCOUNT_ARTIFACTS
+}
 
 #[derive(Debug, Default)]
 pub struct HubIdentityRegistryState {
@@ -1019,6 +1024,23 @@ mod tests {
         std::fs::rename(marker_path(&base), marker_path(&base).with_extension("bak")).unwrap();
         assert_eq!(read_active_marker(&base).as_deref(), Some(slot.as_str()));
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn space_roster_file_is_registered_in_every_account_lifecycle_sweep() {
+        let roster = ipc::space_roster::SPACE_ROSTER_FILE;
+        assert!(
+            account_artifacts().contains(&roster),
+            "{roster} is missing from the identity-switch artifact sweep"
+        );
+        assert!(
+            crate::password_lifecycle::account_state_files().contains(&roster),
+            "{roster} is missing from the password lifecycle sweep"
+        );
+        assert!(
+            ipc::commands::osl_export_files().contains(&roster),
+            "{roster} is missing from encrypted identity export"
+        );
     }
 
     /// The renderer validates `list_hub_identities` against an exact key set
