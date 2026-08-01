@@ -72,6 +72,11 @@ pub mod scope_ttl_file;
 pub mod secure_local_store;
 pub mod sender_attribution_proof;
 pub mod sender_key_state;
+// A7: the session lock that actually locks. Supersedes
+// `main_password::lock_main_password_session` (which had zero non-test
+// callers) and the file-key-only inactivity timer (which left the identity,
+// peer map, whitelist, sender chains and MessageStore live and decrypting).
+pub mod session_lock;
 pub mod state;
 pub mod state_reload;
 pub mod tier_gate;

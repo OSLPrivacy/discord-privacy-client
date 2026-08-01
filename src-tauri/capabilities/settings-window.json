@@ -18,6 +18,7 @@
     "allow-osl-unburn-scope",
     "allow-osl-list-burned-scopes",
     "allow-osl-get-self-user-id",
+    "allow-osl-lock-session",
     "allow-osl-password-status",
     "allow-osl-set-main-password",
     "allow-osl-change-main-password",

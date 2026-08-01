@@ -1,0 +1,7 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# A7: manual "Lock now".
+[[permission]]
+identifier = "allow-osl-lock-session"
+description = "Permits a trusted local window to invoke `osl_lock_session`, which drops every live secret this process holds (identity, prekeys, peer map including persisted ratchet state, whitelist, sender-key chains, the file storage key) and closes the open MessageStore. Destructive only to in-memory session state — nothing on disk is deleted — but it does end the session, so it stays off the Discord remote origin."
+commands.allow = ["osl_lock_session"]

@@ -294,6 +294,11 @@ description = "Set a strong local main passphrase once for an already-loaded iso
 commands.allow = ["setup_hub_main_password"]
 
 [[permission]]
+identifier = "allow-lock-hub-session"
+description = "A7: manual \"Lock now\". Drops every live secret this process holds (identity, prekeys, peer map including persisted ratchet state, whitelist, sender-key chains, the file storage key) and closes the open MessageStore. Nothing on disk is deleted; the session simply requires the main password again."
+commands.allow = ["lock_hub_session"]
+
+[[permission]]
 identifier = "allow-get-hub-password-role-status"
 description = "Read whether trusted-local stealth and burn password roles are configured without returning hashes or marker contents."
 commands.allow = ["get_hub_password_role_status"]

@@ -1311,6 +1311,25 @@ async fn setup_hub_main_password(
     .map_err(|_| "OSL password setup worker failed".to_string())?
 }
 
+/// A7: manual "Lock now" from the trusted OSL Privacy UI.
+///
+/// Locking is not a UI flag. This drops the identity secret, the prekey pool,
+/// the peer map (zeroizing any persisted ratchet state on the way out), the
+/// whitelist, the sender-key chains and the file storage key, and closes the
+/// open `MessageStore`. Every secret-bearing IPC command then refuses until the
+/// password gate runs again.
+#[tauri::command]
+async fn lock_hub_session(
+    app: tauri::AppHandle,
+) -> Result<ipc::commands::SessionLockDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<HubCoreState>();
+        ipc::commands::cmd_osl_lock_session(&state.osl)
+    })
+    .await
+    .map_err(|_| "OSL session lock worker failed".to_string())?
+}
+
 #[cfg(feature = "whatsapp-qa-shell")]
 fn bootstrap_whatsapp_qa_device_identity(
     state: &HubCoreState,

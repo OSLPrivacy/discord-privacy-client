@@ -457,6 +457,10 @@ where
         .map_err(|_| {
             "OSL password was set, but encrypted state reload could not start".to_owned()
         })?;
+    // A7: setting a main password leaves the session unlocked. Start the
+    // inactivity clock here too, otherwise the very first session after setup
+    // is the one session that never auto-locks.
+    ipc::session_lock::arm_idle_lock();
     let issue_count = report.errors.len();
     Ok(PasswordSetupOutcome {
         password_recovery_phrase: phrase,
