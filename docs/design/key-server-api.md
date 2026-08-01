@@ -416,6 +416,31 @@ public; signature verification is the only authenticity check.
 In v2.2, the manifest is additionally mirrored across the 5
 jurisdictions; the CDN remains as a third tier.
 
+### T3-B5 integration handoff
+
+`crates/selectors` supplies T3-B5 a **ManifestSource-backed provider**:
+the primary key-server source and CDN-mirror source feed one
+`ManifestFetcher`, which refreshes at launch and each hourly refresh.
+The provider is responsible for turning the verified selector manifest
+into the same signed adapter-profile representation used by the
+compiled-in profile.
+
+Only a validated `ManifestState::Loaded` may yield that fetched profile
+to the boot path. `NotYetFetched` and `FailClosed` withhold
+selector-driven encryption and require the existing fail-closed banner;
+they must not reuse an expired or unverified profile. This gate is
+separate from the compiled-in fallback so an unavailable or invalid
+manifest cannot silently re-enable selector-dependent encryption.
+
+T3-B5 passes the resulting fetched profile through
+`load_signed_adapter_profile_or_compiled_in` alongside the compiled-in
+profile. The function's signature must not change when selectors is
+wired in: the provider supplies its existing cached-profile input, and
+the loader remains the single adapter-profile verification/selection
+boundary. The fetched `ProfilePayload` must be byte-identical in shape to the
+compiled-in profile; a schema change belongs in `crates/adapter-profile`,
+not in a second selector-specific format.
+
 ## Open questions
 
 - **Rate limiting.** Per-IP, per-user, per-token? With Tor + Privacy
