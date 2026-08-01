@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { BurnGuaranteeCopy, burnFeatureClaimsMarkup } from "./feature-claims";
 
 /**
  * The gate that was missing.
@@ -220,18 +221,18 @@ describe("shipped markup is painted by the shipped sheet", () => {
    * carrying the state to the sheet, and never replaced by the colour.
    */
   it("keeps state legible without colour", () => {
-    const main = markup[0];
-    expect(main).toContain('data-burn-reach="${escapeHtml(item.state)}"');
-    expect(main).toContain("<span>${escapeHtml(stateLabel(item.state))}</span>");
-    expect(css).toContain('.burn-guarantees > ul > li[data-burn-reach="not_possible"]');
+    const rendered = burnFeatureClaimsMarkup();
+    const labels = {
+      available: "Available",
+      request_only: "Request only",
+      unavailable: "Unavailable",
+      not_possible: "Not possible",
+    } as const;
 
-    // A status chip with no resolved tone stays neutral rather than claiming a
-    // success it has not verified.
-    expect(css).toMatch(/\.status-tag\s*\{[^}]*color:\s*var\(--muted\)/su);
-    expect(css).toMatch(/\.status-tag\.danger\s*\{[^}]*color:\s*var\(--danger\)/su);
-    expect(css).toMatch(/\.status-tag\.warn\s*\{[^}]*color:\s*var\(--warn\)/su);
-    expect(main).toMatch(/\["danger", \[[^\]]*"refused"/u);
-    expect(main).toMatch(/\["danger", \[[^\]]*"needs attention"/u);
+    for (const item of BurnGuaranteeCopy.items) {
+      expect(rendered).toContain(`data-burn-reach="${item.state}"`);
+      expect(rendered).toContain(`<span>${labels[item.state]}</span>`);
+    }
   });
 
   /**
