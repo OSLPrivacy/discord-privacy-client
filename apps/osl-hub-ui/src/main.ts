@@ -102,7 +102,7 @@ import {
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
@@ -145,6 +145,8 @@ import { OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatsViewMarkup, type O
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { parseCircleAudience, type CircleAudience } from "./osl-collab";
 import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
+import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
+import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, recoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
 import { BurnGuaranteeCopy, type BurnGuaranteeState } from "./two-step-burn";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -348,6 +350,12 @@ let toastTimer: number | undefined;
 let updateStatus: UpdateStatus = { state: "unavailable" };
 let recoveryBundle: { userId: string; identityPhrase: string | null; passwordPhrase: string } | null = null;
 let recoverySavedAcknowledged = false;
+// T15-A7: the owner typed the acknowledgement and asked to see the kit even
+// though capture resistance is not proven. In-memory only, and reset the
+// moment the recovery step is left.
+let recoveryShownWithoutProtection = false;
+let recoveryRevealError: string | null = null;
+let recoveryRevealBusy = false;
 // Unit a11: at-rest storage protection for the ACTIVE identity, known only
 // when this session itself created, imported, or switched into it (the
 // backend never echoes it back on a plain unlock). Fail honest: `null`
@@ -977,20 +985,16 @@ export function desktopCtaHandoffRoute(surface: DesktopCtaSurface): DesktopCtaRo
   return surface === "mobile-companion" ? "phone-companion" : "desktop-app";
 }
 
+/**
+ * T15-A8: the allow-list this used to inline did not contain `recovery`, so a
+ * relaunch resumed at `pro` and the recovery step was skipped in silence —
+ * with the phrases, which only ever lived in a module-local `let`, already
+ * gone. The policy now lives in `onboarding-resume.ts` where it is tested, and
+ * an unsaved recovery kit outranks every other pending step.
+ */
 function pendingOnboardingRoute(): OnboardingRoute | null {
-  const pending = localStorage.getItem(onboardingResumeStorageKey);
-  if (pending === "pro"
-    || pending === "privacy"
-    || pending === "defaults"
-    || pending === "sending"
-    || pending === "cover"
-    || pending === "passwords"
-    || pending === "burnpass"
-    || pending === "mullvad"
-    || pending === "browser"
-    || pending === "tutorial") return onboardingRouteForBuild(pending);
-  if (pending !== null) localStorage.removeItem(onboardingResumeStorageKey);
-  return null;
+  const resumed = resumeOnboardingRoute(localStorage, onboardingResumeStorageKey);
+  return resumed === null ? null : onboardingRouteForBuild(resumed);
 }
 
 function persistCurrentOnboardingRoute(): void {
@@ -2280,15 +2284,119 @@ async function proveRecoveryCaptureProtection(): Promise<boolean> {
   return proven;
 }
 
-function recoveryProtectionRefusalContent(): string {
-  return `<h1 id="route-heading" tabindex="-1">Recovery secrets hidden</h1><section class="setup-surface recovery-surface" role="alert"><p>${RECOVERY_PROTECTION_REFUSAL}.</p><button class="button primary" id="retry-recovery-protection" type="button">Retry protection</button></section>`;
+/**
+ * T15-A7/A8 — the live inputs to the recovery-kit state machine.
+ *
+ * `captureProven` is the runtime latch; `captureEnforcement` is the separate
+ * question of whether this platform has any capture-protection primitive at
+ * all. They were conflated before, which is how a Linux build ended up
+ * claiming Windows capture resistance over a completely unprotected window.
+ */
+function recoveryKitStateNow(): RecoveryKitState {
+  return {
+    secrets: recoveryBundle,
+    captureProven: recoveryCaptureGate.canRender(),
+    captureEnforcement: captureProtectionEnforced() ? "enforced" : "unenforced",
+    shownWithoutProtection: recoveryShownWithoutProtection,
+    savedAcknowledged: recoverySavedAcknowledged,
+    kitUnsaved: recoveryKitUnsaved(localStorage),
+  };
+}
+
+function applyRecoveryKitAction(action: RecoveryKitAction): "none" | "rejected" | "leave-recovery" {
+  const { state, outcome } = recoveryKitReducer(recoveryKitStateNow(), action);
+  if (outcome === "rejected") return outcome;
+  recoveryBundle = state.secrets;
+  recoveryShownWithoutProtection = state.shownWithoutProtection;
+  recoverySavedAcknowledged = state.savedAcknowledged;
+  if (state.kitUnsaved) markRecoveryKitUnsaved(localStorage);
+  else clearRecoveryKitUnsaved(localStorage);
+  return outcome;
+}
+
+function recoveryProtectionNoticeMarkup(view: RecoveryKitView): string {
+  return `<p class="recovery-protection-notice" data-recovery-claim="${view.claim}">${escapeHtml(view.notice)}</p>`;
+}
+
+function recoveryExitsMarkup(view: RecoveryKitView): string {
+  return view.exits.map((exit) => {
+    if (exit.id === "retry-protection") {
+      return `<button class="button" id="retry-recovery-protection" type="button">${escapeHtml(exit.label)}</button>`;
+    }
+    if (exit.id === "show-anyway") {
+      return `<div class="recovery-show-anyway"><label for="recovery-show-anyway-ack">${escapeHtml(view.acknowledgementPrompt ?? "")}</label><input id="recovery-show-anyway-ack" type="text" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false"/><button class="button primary" id="recovery-show-anyway" type="button">${escapeHtml(exit.label)}</button></div>`;
+    }
+    if (exit.id === "remind-me-later") {
+      return `<button class="button" id="recovery-remind-later" type="button">${escapeHtml(exit.label)}</button>`;
+    }
+    return `<form class="setup-surface recovery-reveal-form" id="recovery-reveal-form" novalidate><label for="recovery-reveal-password">Your password</label><div class="password-input-row"><input id="recovery-reveal-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" required/><button class="password-eye" type="button" data-password-toggle="recovery-reveal-password" aria-controls="recovery-reveal-password" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="recovery-reveal-error" role="alert">${recoveryRevealError ? escapeHtml(recoveryRevealError) : ""}</p><button class="button primary" type="submit" ${recoveryRevealBusy ? "disabled" : ""}>${escapeHtml(exit.label)}</button></form>`;
+  }).join("");
+}
+
+/**
+ * The refusal screen. It used to be a dead end: one heading, one sentence, one
+ * "Retry protection" button, and a backend that hid the window on the way in,
+ * which read as a crash. Losing a recovery phrase forever is a worse outcome
+ * than showing it on a screen that might be captured, so the owner now always
+ * has a way through — and a way to defer that is remembered.
+ */
+function recoveryProtectionRefusalContent(view: RecoveryKitView): string {
+  return `<h1 id="route-heading" tabindex="-1">Recovery secrets are being held back</h1><section class="setup-surface recovery-surface" role="alert">${recoveryProtectionNoticeMarkup(view)}<p>Your recovery kit has not been lost. Choose how you want to continue.</p>${recoveryExitsMarkup(view)}</section>`;
+}
+
+function recoveryRevealContent(view: RecoveryKitView): string {
+  return `<h1 id="route-heading" tabindex="-1">Finish saving your recovery kit</h1><section class="setup-surface recovery-surface">${recoveryProtectionNoticeMarkup(view)}${recoveryExitsMarkup(view)}</section>`;
 }
 
 function recoveryContent(): string {
-  if (!recoveryBundle) return `<p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="pro">Continue</button>`;
-  if (!recoveryCaptureGate.canRender()) return recoveryProtectionRefusalContent();
-  const accountRecovery = recoveryBundle.identityPhrase ? `<code>${escapeHtml(recoveryBundle.identityPhrase)}</code>` : `<p>Keep using the account recovery phrase you imported.</p>`;
-  return `<h1 id="route-heading" tabindex="-1" class="recovery-heading">Save your recovery kit</h1><section class="setup-surface recovery-surface"><article class="recovery-kit-item"><span>1</span><div><strong>Account recovery</strong>${accountRecovery}</div></article><article class="recovery-kit-item"><span>2</span><div><strong>Password recovery</strong><code>${escapeHtml(recoveryBundle.passwordPhrase)}</code></div></article>${secureRecoveryOnboardingContent()}<details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(recoveryBundle.userId)}</code></details><button class="button" id="copy-recovery-kit" type="button">Copy recovery kit</button><label class="check"><input id="recovery-saved" type="checkbox" ${recoverySavedAcknowledged ? "checked" : ""}/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" ${recoverySavedAcknowledged ? "" : "disabled"}>Continue</button></section>`;
+  const state = recoveryKitStateNow();
+  const view = recoveryKitView(state);
+  if (view.mode === "reveal-required") return recoveryRevealContent(view);
+  if (view.mode === "refusal") return recoveryProtectionRefusalContent(view);
+  const secrets = visibleRecoverySecrets(state);
+  if (!secrets) return `<p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="pro">Continue</button>`;
+  const accountRecovery = secrets.identityPhrase ? `<code>${escapeHtml(secrets.identityPhrase)}</code>` : `<p>Keep using the account recovery phrase you imported.</p>`;
+  return `<h1 id="route-heading" tabindex="-1" class="recovery-heading">Save your recovery kit</h1><section class="setup-surface recovery-surface">${recoveryProtectionNoticeMarkup(view)}<article class="recovery-kit-item"><span>1</span><div><strong>Account recovery</strong>${accountRecovery}</div></article><article class="recovery-kit-item"><span>2</span><div><strong>Password recovery</strong><code>${escapeHtml(secrets.passwordPhrase)}</code></div></article>${secureRecoveryOnboardingContent()}<details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(secrets.userId)}</code></details><button class="button" id="copy-recovery-kit" type="button">Copy recovery kit</button><label class="check"><input id="recovery-saved" type="checkbox" ${recoverySavedAcknowledged ? "checked" : ""}/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" ${recoverySavedAcknowledged ? "" : "disabled"}>Continue</button></section>`;
+}
+
+/**
+ * T15-A3/A4 + A8 — read the kit back after a restart.
+ *
+ * This is what makes "Remind me later" safe and what makes the resume policy
+ * possible at all: the phrase is not held anywhere in this layer, it is
+ * decrypted out of the password marker by the backend against the password the
+ * owner types here, and it lands in memory only.
+ */
+async function revealRecoveryKit(event: SubmitEvent): Promise<void> {
+  event.preventDefault();
+  if (recoveryRevealBusy) return;
+  const password = document.querySelector<HTMLInputElement>("#recovery-reveal-password")?.value ?? "";
+  if (!password) return;
+  recoveryRevealBusy = true;
+  recoveryRevealError = null;
+  render();
+  try {
+    await proveRecoveryCaptureProtection();
+    const passwordPhrase = await viewHubRecoveryPhrase(password);
+    if (!passwordPhrase) {
+      recoveryRevealError = "That password did not open your recovery kit. Nothing was shown.";
+      return;
+    }
+    applyRecoveryKitAction({
+      kind: "revealed",
+      secrets: {
+        userId: core.readiness.activeOslUserId ?? "Local OSL identity",
+        // The 12-word ACCOUNT phrase is shown once at creation and is not
+        // re-derivable from the password marker. Saying so is the honest
+        // answer; pretending this screen restores it would not be.
+        identityPhrase: null,
+        passwordPhrase,
+      },
+    });
+  } finally {
+    recoveryRevealBusy = false;
+    render();
+  }
 }
 
 function secureRecoveryOnboardingContent(): string {
@@ -2439,17 +2547,39 @@ function bindOnboarding(): void {
     }
   });
   recoverySaved?.addEventListener("change", () => {
-    recoverySavedAcknowledged = recoverySaved.checked;
+    applyRecoveryKitAction({ kind: "set-saved-acknowledged", acknowledged: recoverySaved.checked });
     if (recoveryContinue) recoveryContinue.disabled = !recoverySavedAcknowledged;
   });
   recoveryContinue?.addEventListener("click", () => {
-    recoveryBundle = null;
-    recoverySavedAcknowledged = false;
+    if (applyRecoveryKitAction({ kind: "continue" }) !== "leave-recovery") {
+      showToast("Confirm you saved your recovery kit first");
+      return;
+    }
+    resetOnboardingBranch();
+    resetOnboardingConnections();
+    // The kit is saved, so the flag is cleared and this resolves to whatever
+    // step the owner was actually on before the restart.
+    onboardingRoute = pendingOnboardingRoute() ?? onboardingRouteForBuild("pro");
+    render();
+  });
+  // T15-A7: the two exits that make the refusal escapable.
+  document.querySelector<HTMLButtonElement>("#recovery-show-anyway")?.addEventListener("click", () => {
+    const typed = document.querySelector<HTMLInputElement>("#recovery-show-anyway-ack")?.value ?? "";
+    if (applyRecoveryKitAction({ kind: "show-anyway", acknowledgement: typed }) === "rejected") {
+      showToast(`Type “${RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT}” exactly to see your recovery kit without proven capture resistance`);
+      return;
+    }
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#recovery-remind-later")?.addEventListener("click", () => {
+    applyRecoveryKitAction({ kind: "remind-me-later" });
+    showToast("OSL will ask again every time it opens until you save your recovery kit");
     resetOnboardingBranch();
     resetOnboardingConnections();
     onboardingRoute = onboardingRouteForBuild("pro");
     render();
   });
+  document.querySelector<HTMLFormElement>("#recovery-reveal-form")?.addEventListener("submit", (event) => void revealRecoveryKit(event));
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-app-choice]").forEach((button) => button.addEventListener("click", () => {
     const appId = button.dataset.onboardingAppChoice as HomeAppId;
     if (selectedOnboardingApps.has(appId)) selectedOnboardingApps.delete(appId);
@@ -2809,6 +2939,10 @@ function bindPasswordForm(): void {
           passwordPhrase: passwordResult.passwordRecoveryPhrase,
         };
         recoverySavedAcknowledged = false;
+        recoveryShownWithoutProtection = false;
+        // T15-A8: from this instant a kit exists that nobody has confirmed
+        // saving. Until they do, every launch comes back here.
+        markRecoveryKitUnsaved(localStorage);
         onboardingRoute = "recovery";
         await proveRecoveryCaptureProtection();
       } else {
@@ -2869,7 +3003,10 @@ function bindPasswordForm(): void {
         core = await loadCoreIntegration();
         services = await loadLinkedServices().catch(() => services);
         passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
-        if (onboardingComplete) {
+        // T15-A8: an unsaved recovery kit outranks a "finished" onboarding.
+        // Deferring the kit used to be indistinguishable from never having
+        // been offered it, because nothing survived the unlock.
+        if (onboardingComplete && !recoveryKitUnsaved(localStorage)) {
           route = "home";
           void openMullvadOnStartup();
           void refreshUpdateStatus();
@@ -2877,7 +3014,10 @@ function bindPasswordForm(): void {
           void loadFriendProfile().then((profile) => { friendCode = profile?.friendCode ?? null; friendDisplayId = profile?.oslUserId ?? null; if (route === "home") render(); });
           void listHubPeople().then((people) => { hubPeople = people ?? []; if (route === "home") render(); });
         }
-        else onboardingRoute = pendingOnboardingRoute() ?? onboardingRouteForBuild("pro");
+        else {
+          route = "onboarding";
+          onboardingRoute = pendingOnboardingRoute() ?? onboardingRouteForBuild("pro");
+        }
       }
       secret = "";
       duressSecret = "";
@@ -2997,6 +3137,8 @@ function bindImportForm(): void {
       services = await loadLinkedServices().catch(() => services);
       recoveryBundle = { userId: identity.userId, identityPhrase: null, passwordPhrase: passwordResult.passwordRecoveryPhrase };
       recoverySavedAcknowledged = false;
+      recoveryShownWithoutProtection = false;
+      markRecoveryKitUnsaved(localStorage);
       onboardingRoute = "recovery";
       await proveRecoveryCaptureProtection();
       render();
@@ -8459,8 +8601,12 @@ async function bootstrap(): Promise<void> {
       onboardingRoute = "unlock";
       route = "onboarding";
     } else {
-      route = preferences.onboardingComplete ? "home" : "onboarding";
-      if (!preferences.onboardingComplete) onboardingRoute = pendingOnboardingRoute() ?? onboardingRouteForBuild("pro");
+      // T15-A8: "Remind me later" is a real state, not a dismissal. While a
+      // recovery kit is unsaved the launch lands back on the recovery step
+      // even for an account that already finished onboarding.
+      const recoveryKitOutstanding = recoveryKitUnsaved(localStorage);
+      route = preferences.onboardingComplete && !recoveryKitOutstanding ? "home" : "onboarding";
+      if (route === "onboarding") onboardingRoute = pendingOnboardingRoute() ?? onboardingRouteForBuild("pro");
     }
     // startDiscordQaShell paints the service route after loading only the two
     // catalogs it needs. Until then, retain the neutral loading screen rather

@@ -986,10 +986,51 @@ export async function setNotificationsEnabled(enabled: boolean): Promise<boolean
   catch (error) { recordBackendFailure("set_hub_notifications_enabled", error); return false; }
 }
 
+// T15: the backend now answers a second, separate question — whether this
+// build actually enforces capture resistance at all. `Ok` from the protection
+// call is NOT that answer: off Windows the primitive is a no-op stub that
+// always succeeds, so treating success as proof of protection put a false
+// claim in front of the recovery secrets. It stays false until a call comes
+// back with the platform saying otherwise.
+let captureProtectionEnforcedByPlatform = false;
+
+/**
+ * Whether OSL can actually make a window capture-resistant on this platform.
+ * Any surface that claims capture resistance must gate the claim on this.
+ */
+export function captureProtectionEnforced(): boolean {
+  return captureProtectionEnforcedByPlatform;
+}
+
 export async function setScreenshotProtection(enabled: boolean): Promise<boolean> {
-  if (!isTauriRuntime()) return false;
-  try { await invoke("set_hub_screenshot_protection", { enabled }); return true; }
-  catch (error) { recordBackendFailure("set_hub_screenshot_protection", error); return false; }
+  if (!isTauriRuntime()) { captureProtectionEnforcedByPlatform = false; return false; }
+  try {
+    const enforced = await invoke<unknown>("set_hub_screenshot_protection", { enabled });
+    captureProtectionEnforcedByPlatform = enforced === true;
+    return true;
+  }
+  catch (error) {
+    captureProtectionEnforcedByPlatform = false;
+    recordBackendFailure("set_hub_screenshot_protection", error);
+    return false;
+  }
+}
+
+/**
+ * T15-A3/A4 — read the password-recovery phrase back after onboarding.
+ *
+ * The backend verifies `current` against the stored marker before it decrypts
+ * anything, so this is a re-authentication, not a bypass. The phrase is
+ * returned in memory only; nothing here writes it anywhere.
+ */
+export async function viewHubRecoveryPhrase(current: string): Promise<string | null> {
+  if (!isTauriRuntime() || !safePlaintext(current, 128)) return null;
+  try {
+    const phrase = await invoke<unknown>("view_hub_recovery_phrase", { current });
+    return checkedBackendResponse("view_hub_recovery_phrase",
+      typeof phrase === "string" && phrase.length > 0 && phrase.length <= 512 ? phrase : null,
+      "the recovery phrase did not match the expected shape");
+  } catch (error) { recordBackendFailure("view_hub_recovery_phrase", error); return null; }
 }
 
 export async function listHubIdentities(): Promise<HubIdentitySlot[] | null> {

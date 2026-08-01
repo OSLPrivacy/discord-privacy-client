@@ -15,7 +15,12 @@ function functionSource(name: string, nextName: string): string {
 describe("secure recovery onboarding", () => {
   it("adds optional Mullvad and Android next steps only after recovery protection passes", () => {
     const recovery = functionSource("recoveryContent", "secureRecoveryOnboardingContent");
-    expect(recovery).toMatch(/if \(!recoveryCaptureGate\.canRender\(\)\) return recoveryProtectionRefusalContent\(\);[\s\S]*?secureRecoveryOnboardingContent\(\)/);
+    // T15-A7: the refusal branch still short-circuits before any secret or
+    // next step is emitted; it just no longer dead-ends, and the latch is read
+    // through the recovery-kit state rather than inline.
+    expect(functionSource("recoveryKitStateNow", "applyRecoveryKitAction"))
+      .toContain("captureProven: recoveryCaptureGate.canRender()");
+    expect(recovery).toMatch(/if \(view\.mode === "refusal"\) return recoveryProtectionRefusalContent\(view\);[\s\S]*?secureRecoveryOnboardingContent\(\)/);
     expect(recovery).toContain('id="copy-recovery-kit"');
     expect(recovery).toContain('id="recovery-continue"');
   });

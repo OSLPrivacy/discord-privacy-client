@@ -281,6 +281,14 @@ describe("bundled preview security boundary", () => {
       "allow-create-hub-osl-identity",
       "allow-import-hub-osl-identity-phrase",
       "allow-setup-hub-main-password",
+      // T15-A3/A4: re-read the password-recovery phrase after onboarding.
+      // Local and read-only, and it is not a bypass: the Rust handler calls
+      // `main_password::view_recovery_phrase`, which verifies the owner's
+      // CURRENT main password against the marker before it will decrypt the
+      // phrase, and returns it in memory only. Without this grant the phrase
+      // is shown exactly once, and an owner who misses that one screen has an
+      // account nobody can ever recover.
+      "allow-view-hub-recovery-phrase",
       "allow-get-hub-password-role-status",
       "allow-set-hub-stealth-password",
       "allow-remove-hub-stealth-password",

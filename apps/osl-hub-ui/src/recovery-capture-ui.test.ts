@@ -6,7 +6,10 @@ const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
 describe("recovery-secret capture ordering", () => {
   it("keeps recovery text and clipboard output behind the current proof latch", () => {
-    expect(source).toContain("if (!recoveryCaptureGate.canRender()) return recoveryProtectionRefusalContent()");
+    // T15-A7: the latch is read once into the recovery-kit state, which is
+    // what the refusal branch and `visibleRecoverySecrets` both consult.
+    expect(source).toContain("captureProven: recoveryCaptureGate.canRender()");
+    expect(source).toContain('if (view.mode === "refusal") return recoveryProtectionRefusalContent(view)');
     expect(source).toContain("if (!recoveryBundle || !recoveryCaptureGate.canRender()) return");
     expect(source).toContain("recoveryCaptureGate.invalidate()");
     expect(source).toContain("await proveRecoveryCaptureProtection()");

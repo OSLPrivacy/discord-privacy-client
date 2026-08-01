@@ -584,8 +584,15 @@ fn get_onboarding_preferences(
     state.get()
 }
 
+/// Returns whether this build *actually* enforces capture resistance, not
+/// whether the call returned without error.
+///
+/// T15: off Windows `apply_to_window` bottoms out in a no-op stub that always
+/// succeeds, so `Ok(())` used to be read by the UI as "this window is capture
+/// resistant" on platforms where no such protection exists. The boolean is the
+/// honest answer, and the recovery screen's claim is derived from it.
 #[tauri::command]
-fn set_hub_screenshot_protection(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+fn set_hub_screenshot_protection(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     if !enabled {
         native_discord_overlay::clear_and_hide(&app);
     }
@@ -598,10 +605,13 @@ fn set_hub_screenshot_protection(app: tauri::AppHandle, enabled: bool) -> Result
         runtime::ScreenshotProtection::Off
     };
     if screenshot::apply_to_window(&window, protection).is_ok() {
-        return Ok(());
+        return Ok(runtime::capture_protection_is_enforced());
     }
     if enabled {
-        let _ = window.hide();
+        // T15-A7/A12: the window is deliberately NOT hidden here any more.
+        // Hiding it read as a crash, and the restart it provoked used to skip
+        // the recovery step outright, leaving an account nobody could recover.
+        // The refusal event is enough: the UI renders an escapable screen.
         let _ = window.emit(MAIN_WINDOW_CAPTURE_REFUSED_EVENT, ());
     }
     Err("Windows capture resistance could not be changed".to_owned())
@@ -1309,6 +1319,26 @@ async fn setup_hub_main_password(
     })
     .await
     .map_err(|_| "OSL password setup worker failed".to_string())?
+}
+
+/// T15-A3/A4: read the password-recovery phrase back after onboarding.
+///
+/// `cmd_osl_view_recovery_phrase` existed in `crates/ipc` but was registered
+/// only in the excluded legacy `src-tauri` shell, so in the shipping app there
+/// was no way to see the phrase again after the one-shot onboarding screen. A
+/// user who closed that screen — or whose window failed the capture gate — had
+/// an account they could never recover.
+///
+/// The phrase is never persisted in the clear by this path: it is decrypted
+/// from the password marker, in memory, only against the owner's current
+/// password, which `view_recovery_phrase` verifies before decrypting.
+#[tauri::command]
+async fn view_hub_recovery_phrase(current: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ipc::commands::cmd_osl_view_recovery_phrase(current)
+    })
+    .await
+    .map_err(|_| "OSL recovery phrase worker failed".to_string())?
 }
 
 /// A7: manual "Lock now" from the trusted OSL Privacy UI.
