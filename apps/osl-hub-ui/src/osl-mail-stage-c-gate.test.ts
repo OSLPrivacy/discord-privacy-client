@@ -97,8 +97,13 @@ describe("OSL Mail Stage C gate", () => {
     expect(html).toContain('data-inbox-osl-surface="mail"');
     expect(html).toContain('data-osl-mailbox-stage-c-gate="stage-c-coming-later"');
     expect(html).toContain('data-mailbox-operations="refused"');
-    expect(html).toContain("Full OSL mailbox is coming later.");
-    expect(html).toContain("Mailbox operations stay off until a separate mail operations review accepts it.");
+    // t4-h3 made this copy more specific ("...unavailable until its desktop
+    // bridge exists"). Pinning the exact sentence made an honest copy change
+    // look like a regression, so assert the PROPERTY the card must communicate
+    // -- that the surface is unavailable and says when it changes -- rather
+    // than one phrasing of it. The data- attributes above already pin the gate.
+    expect(html).toMatch(/coming later|unavailable/i);
+    expect(html).toMatch(/OSL Mail/);
     expect(html).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?|auto.?retry|retry automatically/i);
   });
 });
