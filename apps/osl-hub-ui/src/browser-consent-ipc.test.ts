@@ -34,7 +34,7 @@ describe("browser consent IPC contract", () => {
     native.invoke.mockResolvedValue({
       browserId,
       profile,
-      sourceAccount: account,
+      account,
       scope: "history-footprint",
       runId: "run-1",
       observationCount: 1,
@@ -46,6 +46,21 @@ describe("browser consent IPC contract", () => {
       profile,
       scope: "history-footprint",
     });
+  });
+
+  it("sends the native scan request envelope", async () => {
+    native.invoke.mockResolvedValue({
+      browserId,
+      profile,
+      account,
+      scope: "history-footprint",
+      runId: "run-1",
+      observationCount: 1,
+      snapshotDeleted: true,
+    });
+
+    await scanConsentedBrowserProfile(browserId, profile, grantId);
+
     expect(native.invoke).toHaveBeenCalledWith("scan_consented_browser_profile", {
       request: { browserId, profile },
       grantId,

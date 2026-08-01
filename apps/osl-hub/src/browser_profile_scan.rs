@@ -84,7 +84,7 @@ pub struct BrowserProfileObservation {
 pub struct BrowserProfileScanReceipt {
     pub browser_id: BrowserImportId,
     pub profile: String,
-    pub source_account: &'static str,
+    pub account: &'static str,
     pub scope: &'static str,
     pub run_id: String,
     pub observation_count: usize,
@@ -346,7 +346,7 @@ fn scan_resolved_profile_with_commit(
     Ok(BrowserProfileScanReceipt {
         browser_id,
         profile: profile.to_owned(),
-        source_account: HISTORY_SOURCE_ACCOUNT,
+        account: HISTORY_SOURCE_ACCOUNT,
         scope: HISTORY_SCOPE,
         run_id: receipt_run_id(browser_id, profile, &observations),
         observation_count: observations.len(),
@@ -1137,7 +1137,7 @@ mod tests {
         .unwrap();
         assert_eq!(receipt.browser_id, BrowserImportId::Chrome);
         assert_eq!(receipt.profile, "Default");
-        assert_eq!(receipt.source_account, HISTORY_SOURCE_ACCOUNT);
+        assert_eq!(receipt.account, HISTORY_SOURCE_ACCOUNT);
         assert_eq!(receipt.scope, HISTORY_SCOPE);
         assert_eq!(receipt.observation_count, MAX_SNAPSHOT_ROWS);
         assert!(receipt.snapshot_deleted);

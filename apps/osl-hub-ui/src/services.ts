@@ -535,6 +535,24 @@ function parseNativeBrowserImportReceipt(raw: unknown): NativeBrowserImportRecei
   return raw as unknown as NativeBrowserImportReceipt;
 }
 
+function parseBrowserProfileScanReceipt(raw: unknown): NativeBrowserImportReceipt {
+  if (!isExactRecord(raw, [
+    "browserId", "profile", "account", "scope", "runId", "observationCount", "snapshotDeleted",
+  ])
+    || !browserImportIds.includes(raw.browserId as BrowserImportId)
+    || !boundedReceiptText(raw.profile, 120)
+    || !boundedReceiptText(raw.account, 254)
+    || raw.scope !== "history-footprint"
+    || !boundedReceiptText(raw.runId, 96)
+    || !Number.isSafeInteger(raw.observationCount)
+    || Number(raw.observationCount) < 0
+    || Number(raw.observationCount) > 256
+    || raw.snapshotDeleted !== true) {
+    throw new Error("invalid browser profile scan receipt");
+  }
+  return raw as unknown as NativeBrowserImportReceipt;
+}
+
 function parseBrowserFootprintObservation(raw: unknown): BrowserFootprintObservation {
   if (!isExactRecord(raw, [
     "service", "site", "observedHandle", "sourceBrowser", "sourceProfile", "sourceAccount", "confidence",
@@ -684,7 +702,7 @@ export async function scanConsentedBrowserProfile(
     || !sha256Pattern.test(grantId)) {
     throw new Error("native browser profile scan unavailable");
   }
-  const receipt = parseNativeBrowserImportReceipt(await invoke<unknown>(
+  const receipt = parseBrowserProfileScanReceipt(await invoke<unknown>(
     "scan_consented_browser_profile",
     { browserId, profile, grantId },
   ));
