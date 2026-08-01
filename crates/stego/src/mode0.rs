@@ -1,6 +1,8 @@
-//! Mode 0: base64 placeholder stego.
+//! Mode 0: internal base64 envelope.
 //!
-//! See the crate-level docs for the wire format and the rationale.
+//! This is not a carrier transport. It re-wraps ciphertext retrieved through
+//! the pointer-only transport so the established decrypt pipeline can consume
+//! it as `DPC0::<base64>`.
 
 use crate::{Error, Result};
 use base64::engine::general_purpose::STANDARD;
@@ -13,29 +15,8 @@ pub const MODE0_PREFIX: &str = "DPC0::";
 /// Mode 0 magic prefix as bytes.
 pub const MODE0_PREFIX_BYTES: &[u8] = MODE0_PREFIX.as_bytes();
 
-/// Discord's per-message text limit is 2000 characters for normal
-/// users and 4000 for Nitro. The prototype caps Mode 0 raw input
-/// length so a caller can't accidentally produce a stego payload that
-/// blows past the limit. The cap is on the *raw* ciphertext bytes;
-/// base64 inflates by 4/3, and the prefix adds 6 chars.
-///
-/// 1400-byte cap = 1400 * 4 / 3 + ceiling-pad ≈ 1868 base64 chars +
-/// 6 prefix chars = 1874 chars on the wire — comfortably under 2000.
-pub const MODE0_MAX_RAW_LEN: usize = 1400;
-
-/// Encode raw ciphertext bytes as a Mode 0 stego message.
-///
-/// Returns `Err(Error::Mode0TooLong)` if the ciphertext exceeds
-/// [`MODE0_MAX_RAW_LEN`]. Larger payloads should split across multiple
-/// stego'd messages (per-message-independence requirement is unaffected
-/// — each split chunk is its own self-contained AEAD ciphertext).
+/// Wrap raw ciphertext bytes in the internal Mode 0 envelope.
 pub fn encode_mode0(ciphertext: &[u8]) -> Result<String> {
-    if ciphertext.len() > MODE0_MAX_RAW_LEN {
-        return Err(Error::Mode0TooLong {
-            got: ciphertext.len(),
-            max: MODE0_MAX_RAW_LEN,
-        });
-    }
     let body = STANDARD.encode(ciphertext);
     let mut out = String::with_capacity(MODE0_PREFIX.len() + body.len());
     out.push_str(MODE0_PREFIX);

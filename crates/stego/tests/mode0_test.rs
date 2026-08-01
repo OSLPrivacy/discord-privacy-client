@@ -1,4 +1,4 @@
-use stego::{decode_mode0, encode_mode0, is_mode0, Error, MODE0_MAX_RAW_LEN, MODE0_PREFIX};
+use stego::{decode_mode0, encode_mode0, is_mode0, Error, MODE0_PREFIX};
 
 #[test]
 fn round_trip_empty_payload() {
@@ -18,22 +18,13 @@ fn round_trip_arbitrary_bytes() {
 }
 
 #[test]
-fn round_trip_at_max_raw_len() {
-    let payload = vec![0xCDu8; MODE0_MAX_RAW_LEN];
+fn round_trip_above_retired_discord_transport_cap() {
+    // Mode 0 is now an internal post-fetch envelope. Its old 1,400-byte
+    // Discord carrier cap must never constrain the stored payload.
+    let payload = vec![0xCDu8; 1_401];
     let wire = encode_mode0(&payload).unwrap();
     let recovered = decode_mode0(&wire).unwrap();
     assert_eq!(recovered, payload);
-}
-
-#[test]
-fn rejects_oversized_payload() {
-    let payload = vec![0u8; MODE0_MAX_RAW_LEN + 1];
-    let res = encode_mode0(&payload);
-    assert!(matches!(
-        res,
-        Err(Error::Mode0TooLong { got, max })
-            if got == MODE0_MAX_RAW_LEN + 1 && max == MODE0_MAX_RAW_LEN
-    ));
 }
 
 #[test]
@@ -75,19 +66,6 @@ fn discord_safe_charset() {
             "Mode 0 emitted non-Discord-safe char {c:?}"
         );
     }
-}
-
-#[test]
-fn fits_under_discord_2000_char_limit() {
-    // Worst case: encode the cap; verify wire length stays under
-    // Discord's 2000-char message limit.
-    let payload = vec![0xEEu8; 1400];
-    let wire = encode_mode0(&payload).unwrap();
-    assert!(
-        wire.chars().count() < 2000,
-        "Mode 0 wire {} chars exceeds Discord's 2000-char limit",
-        wire.chars().count()
-    );
 }
 
 #[test]

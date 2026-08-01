@@ -19,6 +19,24 @@ Status: Living document. Updated as features ship.
 > (`implemented-unwired` / `test-proven-only`), not a runtime one — no statement in
 > this file is `verified-live` on a named release build.
 >
+
+## Transport boundary
+
+Protected-message carriers are **pointer-only**. The cover contains an opaque
+capability for the cipher-store blob; the encrypted payload stays in that blob
+and is fetched eagerly on receipt for offline reading. There is no inline
+payload path or fallback: making one available would let a blocked store
+downgrade server-enforced burn, expiry, and view-once to an unenforced carrier.
+
+```json transport-boundary-v1
+{
+  "carrier": "opaque_pointer_only",
+  "payload": "cipher_store_blob",
+  "inline_fallback": false,
+  "payload_fetch": "eager"
+}
+```
+
 > **What actually carries traffic today:** one stateless scheme, wire `v=3`
 > (`crates/ipc/src/wire_v2.rs:685`). The send dispatcher checks the sealed
 > OSL-RN version pin before allowing that legacy `v=3` path, but this is a
