@@ -9012,6 +9012,10 @@ export const __oslHubUiTest = {
     onboardingRoute = onboardingRouteForBuild(destination);
     return onboardingContent();
   },
+  /** Seed detected browser areas before rendering the consent route in UI tests. */
+  setBrowserProfilesForTest(profiles: BrowserProfileDescriptor[]): void {
+    setBrowserProfiles(profiles);
+  },
   /** D80: binds the real unlock form handler against a caller-supplied DOM so
    * the credential path can be driven end to end rather than string-matched. */
   bindUnlockForm(): void {

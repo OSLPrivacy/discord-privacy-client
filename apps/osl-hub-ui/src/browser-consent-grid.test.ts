@@ -1,16 +1,35 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
+vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
+vi.mock("./logos", () => ({ browserLogo: (id: string) => `<span>${id}</span>`, providerLogo: (id: string) => `<span>${id}</span>`, serviceLogo: (id: string) => `<span>${id}</span>` }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: mocks.getCurrentWindow }));
 
 /**
  * The browser-consent grid: the screen on which the user grants OSL permission
- * to read a browser profile. Everything asserted here is read out of
- * styles.css, the file the WebView loads. None of it is read out of main.ts:
- * the shipped CSP is `style-src 'self'`, so styling that exists only as a
- * string inside a TypeScript function renders nothing while a source-text test
- * happily passes.
+ * to read a browser profile. Its layout rules are read from styles.css, the
+ * stylesheet the WebView loads; consent-grid markup is asserted through the
+ * rendered onboarding route below.
  */
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
-const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+
+async function loadUi() {
+  vi.resetModules();
+  const store = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => { store.set(key, value); },
+    removeItem: (key: string) => { store.delete(key); },
+  });
+  vi.stubGlobal("document", { querySelector: vi.fn(() => null), createElement: vi.fn(() => ({})), documentElement: { classList: { add: vi.fn() }, dataset: {} }, addEventListener: vi.fn(), visibilityState: "visible" });
+  vi.stubGlobal("window", { addEventListener: vi.fn(), matchMedia: vi.fn(() => ({ matches: false, addEventListener: vi.fn() })), setTimeout, confirm: vi.fn(() => false) });
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
+  return import("./main");
+}
 
 function rule(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -20,6 +39,9 @@ function rule(selector: string): string {
 }
 
 describe("browser consent grid", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
   it("lets the row's text column shrink inside its own grid track", () => {
     // A flex item's min-width is `auto`, i.e. its min-content width. Without
     // this the <span> refused to shrink below the longest browser-and-profile
@@ -91,13 +113,23 @@ describe("browser consent grid", () => {
     expect(rule(".browser-detected-item")).toMatch(/padding:\s*10px 12px/u);
   });
 
-  it("is the grid the consent markup actually builds", () => {
-    // Guards the selectors above against a markup rename that would leave every
-    // rule in this file live but attached to nothing.
-    expect(source).toContain('<fieldset class="browser-detected-sources"');
-    expect(source).toContain("<legend>Choose saved browser areas</legend>");
-    expect(source).toContain('<div class="browser-detected-list">');
-    expect(source).toMatch(/<label class="browser-detected-item">\$\{browserLogo\([^)]*\)\}<span><strong>/u);
-    expect(source).toMatch(/<\/span><input type="checkbox" data-browser-profile=/u);
+  it("renders one individually selectable consent row for every detected browser area", async () => {
+    const { __oslHubUiTest } = await loadUi();
+    __oslHubUiTest.reset();
+    __oslHubUiTest.setBrowserProfilesForTest([
+      { browserId: "chrome", profile: "Default", displayName: "Personal" },
+      { browserId: "firefox", profile: "work", displayName: "Work" },
+    ]);
+
+    const markup = __oslHubUiTest.renderOnboardingRoute("browser");
+    const controls = [...markup.matchAll(/<input type="checkbox" data-browser-profile="([^"]+)"/gu)];
+
+    // A fieldset and legend give the profile choices a shared accessible name;
+    // each detected area is represented by its own labelled checkbox.
+    expect(markup).toMatch(/<fieldset\b[^>]*>\s*<legend>/u);
+    expect(controls.map((control) => control[1])).toEqual(["chrome:Default", "firefox:work"]);
+    expect(markup).toContain("Chrome · Personal");
+    expect(markup).toContain("Firefox · Work");
+    expect(markup.match(/<label\b[^>]*browser-detected-item/gu)).toHaveLength(2);
   });
 });
