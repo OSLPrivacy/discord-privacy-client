@@ -21,6 +21,7 @@ REQUIRED_SUCCESS_LANES = {
     ),
     "public-audit": ("PUBLIC_AUDIT_RESULT", "Public audit"),
 }
+TS_MATRIX_LANES = {"webview", "osl-hub-ui", "workers", "legacy-keyserver"}
 
 
 def _yaml_scalar(value: str) -> str:
@@ -48,6 +49,9 @@ def _workflow() -> dict[str, Any]:
     in_needs = False
     in_steps = False
     in_step_env = False
+    in_step_with = False
+    in_strategy = False
+    in_matrix = False
     current_step: dict[str, Any] | None = None
     run_indent: int | None = None
     run_lines: list[str] = []
@@ -74,10 +78,41 @@ def _workflow() -> dict[str, Any]:
             in_needs = False
             in_steps = False
             in_step_env = False
+            in_step_with = False
+            in_strategy = False
+            in_matrix = False
             current_step = None
             continue
 
         if current_job is None:
+            continue
+
+        if in_matrix:
+            lane_match = re.fullmatch(r"        lane: \[(.*)\]", raw_line)
+            if lane_match:
+                strategy = current_job.setdefault("strategy", {})
+                assert isinstance(strategy, dict)
+                strategy["matrix"] = {
+                    "lane": [lane.strip() for lane in lane_match.group(1).split(",")]
+                }
+                continue
+            if not raw_line.startswith("        "):
+                in_matrix = False
+
+        if in_strategy:
+            if raw_line == "      matrix:":
+                in_matrix = True
+                continue
+            if not raw_line.startswith("      "):
+                in_strategy = False
+
+        if raw_line == "    strategy:":
+            current_job["strategy"] = {}
+            in_strategy = True
+            in_steps = False
+            in_step_env = False
+            in_step_with = False
+            current_step = None
             continue
 
         if raw_line == "    needs:":
@@ -85,6 +120,7 @@ def _workflow() -> dict[str, Any]:
             in_needs = True
             in_steps = False
             in_step_env = False
+            in_step_with = False
             current_step = None
             continue
         if in_needs:
@@ -97,6 +133,7 @@ def _workflow() -> dict[str, Any]:
         if raw_line == "    steps:":
             in_steps = True
             in_step_env = False
+            in_step_with = False
             current_step = None
             continue
 
@@ -113,7 +150,17 @@ def _workflow() -> dict[str, Any]:
             current_step = {step_start.group(1): _yaml_scalar(step_start.group(2))}
             current_job["steps"].append(current_step)
             in_step_env = False
+            in_step_with = False
             continue
+        if in_step_with and current_step is not None:
+            if raw_line.startswith("          "):
+                with_field = re.fullmatch(r"          ([A-Za-z0-9_-]+): ?(.*)", raw_line)
+                if with_field:
+                    with_values = current_step.setdefault("with", {})
+                    assert isinstance(with_values, dict)
+                    with_values[with_field.group(1)] = _yaml_scalar(with_field.group(2))
+                continue
+            in_step_with = False
         if in_step_env and current_step is not None:
             env_field = re.fullmatch(r"          ([A-Za-z0-9_]+): (.+)", raw_line)
             if env_field:
@@ -129,12 +176,19 @@ def _workflow() -> dict[str, Any]:
                 run_indent = 10
                 run_lines = []
                 in_step_env = False
+                in_step_with = False
             elif key == "env" and value == "":
                 current_step["env"] = {}
                 in_step_env = True
+                in_step_with = False
+            elif key == "with" and value == "":
+                current_step["with"] = {}
+                in_step_env = False
+                in_step_with = True
             else:
                 current_step[key] = _yaml_scalar(value)
                 in_step_env = False
+                in_step_with = False
 
     finish_run()
     return {"jobs": jobs}
@@ -301,6 +355,30 @@ def _audit_claim_gate(workflow: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _audit_ts_matrix(workflow: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    test_job = _job(workflow, "ts-test")
+    strategy = test_job.get("strategy", {})
+    matrix = strategy.get("matrix", {}) if isinstance(strategy, dict) else {}
+    lanes = matrix.get("lane", []) if isinstance(matrix, dict) else []
+    if set(lanes) != TS_MATRIX_LANES or len(lanes) != len(TS_MATRIX_LANES):
+        errors.append("ts-test must run exactly the four TypeScript matrix lanes")
+
+    steps = test_job.get("steps", [])
+    if not isinstance(steps, list):
+        return [*errors, "test job must have steps"]
+    setup_node_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("uses", "").startswith("actions/setup-node@")
+    ]
+    setup_node_with = setup_node_steps[0].get("with", {}) if len(setup_node_steps) == 1 else {}
+    if not isinstance(setup_node_with, dict) or setup_node_with.get("cache") != "npm":
+        errors.append("matrix TypeScript job must enable setup-node's npm cache")
+    return errors
+
+
 def _claim_gate_step_index(workflow: dict[str, Any]) -> int:
     steps = _job(workflow, "ts-test")["steps"]
     return next(
@@ -315,6 +393,7 @@ def ts_success_gate_contract() -> None:
     workflow = _workflow()
     testcase = unittest.TestCase()
     testcase.assertEqual(_audit_success_gate(workflow), [])
+    testcase.assertEqual(_audit_ts_matrix(workflow), [])
 
     missing_public_audit = copy.deepcopy(workflow)
     missing_public_audit["jobs"]["success"]["needs"].remove("public-audit")
