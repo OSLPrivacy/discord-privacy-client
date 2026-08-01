@@ -1530,6 +1530,11 @@ pub const AT_REST_STATE_FILES: &[&str] = &[
     "scope_blobs.json",
     "control_inbox_dead_letter.json",
     "friend_request_state.json",
+    // Sealed by `save_pending_friend_requests` (commands.rs). Omitting it here
+    // would let a password change re-key the ten files above and leave this one
+    // sealed under the OLD key -- the exact defect burned_scopes.json already
+    // caused once.
+    "pending_friend_requests.json",
 ];
 
 /// Names from `AT_REST_STATE_FILES` that currently exist in `dir`. Used to
