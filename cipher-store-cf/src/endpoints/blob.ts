@@ -191,7 +191,9 @@ export async function handleFetch(
   hex: string
 ): Promise<Response> {
   const id = hexToId(hex);
-  if (!id) return error(400, "bad_id", "id must be 16 hex chars");
+  // A malformed id must look exactly like an absent id. Otherwise the
+  // 400/404 distinction turns this public route into an existence oracle.
+  if (!id) return notFound();
   const row = await env.DB.prepare(
     "SELECT data, expires_at, fetch_token FROM blobs WHERE id = ? LIMIT 1"
   )
