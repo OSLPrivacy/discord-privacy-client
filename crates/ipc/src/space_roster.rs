@@ -4,6 +4,7 @@
 //! module owns only its at-rest boundary: a roster is never created or
 //! overwritten without the unlocked file-storage key, and writes are atomic.
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use std::path::Path;
 
 /// The single account-relative path for the Space roster.
@@ -12,6 +13,51 @@ use std::path::Path;
 /// Space roster contains membership state and must move with an identity,
 /// survive password changes, and be present in an encrypted data export.
 pub const SPACE_ROSTER_FILE: &str = "space_roster.json";
+
+/// A 256-bit opaque bearer capability used to redeem or revoke a Space invite.
+///
+/// These are deliberately not Space ids and carry no identity data. The
+/// distributed invite contains only a redemption capability; callers retain
+/// the paired revocation capability locally until it is no longer needed.
+pub const SPACE_INVITE_CAPABILITY_BYTES: usize = 32;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpaceInviteCapability([u8; SPACE_INVITE_CAPABILITY_BYTES]);
+
+#[derive(Debug, thiserror::Error, Eq, PartialEq)]
+pub enum SpaceInviteCapabilityError {
+    #[error("space invite capability is not unpadded base64url")]
+    InvalidEncoding,
+    #[error("space invite capability must be exactly 256 bits")]
+    WrongLength,
+}
+
+impl SpaceInviteCapability {
+    pub fn from_bytes(bytes: [u8; SPACE_INVITE_CAPABILITY_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn parse(value: &str) -> Result<Self, SpaceInviteCapabilityError> {
+        let decoded = URL_SAFE_NO_PAD
+            .decode(value)
+            .map_err(|_| SpaceInviteCapabilityError::InvalidEncoding)?;
+        let bytes: [u8; SPACE_INVITE_CAPABILITY_BYTES] = decoded
+            .try_into()
+            .map_err(|_| SpaceInviteCapabilityError::WrongLength)?;
+        Ok(Self(bytes))
+    }
+
+    pub fn to_base64url(&self) -> String {
+        URL_SAFE_NO_PAD.encode(self.0)
+    }
+}
+
+/// The capability that may be sent to a prospective member out of band.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DistributedSpaceInvite {
+    pub redemption_capability: SpaceInviteCapability,
+    pub expires_at_unix_seconds: u64,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum SpaceRosterFileError {

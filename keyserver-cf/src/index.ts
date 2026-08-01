@@ -47,6 +47,11 @@ import { handleHealthz } from "./endpoints/healthz.js";
 import { handleWindowsDownload } from "./endpoints/download.js";
 import { handleLicenseValidate } from "./endpoints/license.js";
 import { handleLinkGrant } from "./endpoints/link-grant.js";
+import {
+  handleSpaceInviteConsume,
+  handleSpaceInviteIssue,
+  handleSpaceInviteRevoke,
+} from "./endpoints/space-invite.js";
 import { handleBillingPortal } from "./endpoints/portal.js";
 import {
   handlePrekeyBundleGet,
@@ -263,6 +268,7 @@ export default {
         env.DB.prepare("DELETE FROM link_grant_quota WHERE day < ?").bind(
           Math.floor(now / (24 * 60 * 60)),
         ),
+        env.DB.prepare("DELETE FROM space_invites WHERE expires_at <= ?").bind(now),
       ]);
     } catch {
       console.error("[cron] link grant sweep failed");
@@ -428,6 +434,10 @@ async function dispatch(
       }
       return await handleLinkGrant(request, env);
     }
+    if (path === "/v1/space-invite") return await handleSpaceInviteIssue(request, env);
+    if (path === "/v1/space-invite/consume") {
+      return await handleSpaceInviteConsume(request, env);
+    }
     if (path === "/v1/checkout-session") {
       return withCors(await handleCheckout(request, env), request);
     }
@@ -473,6 +483,7 @@ async function dispatch(
     const compBatchId = matchParam(path, /^\/v1\/internal\/comp\/batches\/([^/]+)$/);
     if (compBatchId) return await handleCompBatchRevoke(request, env, compBatchId);
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysDelete(request, env);
+    if (path === "/v1/space-invite") return await handleSpaceInviteRevoke(request, env);
     const unregUserId = matchParam(path, /^\/v1\/pubkeys\/([^/]+)$/);
     if (unregUserId) return await handleUnregister(request, env, unregUserId);
     const inboxId = matchParam(path, /^\/v1\/control-inbox\/([^/]+)$/);
