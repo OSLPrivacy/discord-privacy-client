@@ -18,6 +18,7 @@ pub mod browser_footprint;
 #[cfg(feature = "core")]
 pub mod browser_profile_scan;
 pub mod burn_contract;
+pub mod burn_authorize;
 pub mod carrier_placement;
 pub mod cloud_autoscrub_authority;
 pub mod cloud_autoscrub_consent;
