@@ -35,6 +35,7 @@ jobs:
         id: hub-version
         shell: pwsh
         run: |
+          python scripts/check_version_consistency.py
           $config = Get-Content apps/osl-hub/tauri.conf.json | ConvertFrom-Json
           $tag = "hub-v$($config.version)"
           if ("${{ github.ref }}" -notlike "refs/tags/hub-v*") {
