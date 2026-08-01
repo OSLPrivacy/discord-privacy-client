@@ -1646,7 +1646,13 @@ describe("bundled preview security boundary", () => {
     expect(mainProduction).toContain(
       "startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)",
     );
-    expect(mainProduction).toContain("startup_gate::verify_duress_pin");
+    // D80: there is no second verifier any more. `verify_duress_pin` and the
+    // `duress_pin` command argument that fed it are deleted -- an IPC schema
+    // that names a duress field advertises the mechanism to anything that can
+    // enumerate the command surface, and two verifiers doing different work
+    // made the choice between them observable by response time.
+    expect(mainProduction).not.toMatch(/verify_duress_pin/u);
+    expect(mainProduction).not.toMatch(/duress_pin/u);
     expect(mainProduction).toContain("VerifiedGateRole::Duress => {");
     expect(mainProduction).toContain("HubGateUnlockResult::duress(verification)");
     expect(mainProduction).toContain("VerifiedGateRole::Burn => {");

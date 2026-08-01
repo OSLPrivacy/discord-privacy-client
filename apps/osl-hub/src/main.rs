@@ -1184,19 +1184,25 @@ async fn clear_hub_activation_code(app: tauri::AppHandle) -> Result<HubLicenseSt
 }
 
 #[tauri::command]
+// D80: ONE credential argument, ONE verifier. This command used to take a
+// second duress-PIN argument fed by a second, labelled input on the unlock
+// screen, and dispatched to a separate duress-only verify routine. Both are
+// gone. The duress advertisement was not only the visible label: a command
+// whose published schema names a duress field tells anyone enumerating the IPC
+// surface that the mechanism exists, and two verifiers doing different work
+// meant the choice of verifier was observable in the response time. What is
+// left is `verify_password_role`, which runs one Argon2 derivation and then
+// compares the result against the main, stealth, duress and burn hashes in
+// constant time regardless of which one matches (`verify_gate_password_with_marker`).
 async fn unlock_hub_password_gate(
     app: tauri::AppHandle,
     session: State<'_, HubAccountSessionState>,
     password: String,
-    duress_pin: Option<String>,
 ) -> Result<HubGateUnlockResult, String> {
     let _session = session.transition.lock().await;
     let verify_app = app.clone();
-    let verification = tauri::async_runtime::spawn_blocking(move || match duress_pin {
-        Some(pin) if !pin.is_empty() => {
-            startup_gate::verify_duress_pin(&verify_app.state::<HubCoreState>(), pin)
-        }
-        _ => startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password),
+    let verification = tauri::async_runtime::spawn_blocking(move || {
+        startup_gate::verify_password_role(&verify_app.state::<HubCoreState>(), password)
     })
     .await
     .map_err(|_| "OSL password-gate worker failed".to_owned())??;
