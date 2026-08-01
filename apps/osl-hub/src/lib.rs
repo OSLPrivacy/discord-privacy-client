@@ -107,6 +107,10 @@ pub mod mass_cleanup;
 // `store` (local plaintext cache), so it lives behind `core` like they do.
 #[cfg(feature = "core")]
 pub mod message_expiry;
+// View-once payloads are opened only after the native viewer proves capture
+// protection; the module is dependency-free so its ordering tests run on all
+// supported build hosts.
+pub mod view_once_open;
 #[cfg(feature = "core")]
 pub mod password_lifecycle;
 // The pure half of the headless QA self-test driver in `main.rs`. It lives here
