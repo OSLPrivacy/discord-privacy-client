@@ -14,6 +14,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -85,6 +86,29 @@ class UpdateFeedAcceptanceTests(unittest.TestCase):
             acceptance_check(manifest, self.pubkey, self.payload),
             "https://example.invalid/a.exe",
         )
+
+    def test_rejects_an_http_platform_url_before_downloading(self) -> None:
+        manifest = self.manifest(
+            minisign_signature(self.private, self.payload),
+            url="http://example.invalid/a.exe",
+        )
+        with patch("verify_update_feed_acceptance.urllib.request.urlopen") as urlopen:
+            with self.assertRaisesRegex(SystemExit, "URL must be https"):
+                acceptance_check(manifest, self.pubkey)
+        urlopen.assert_not_called()
+
+    def test_accepts_an_https_platform_url_when_all_else_is_equal(self) -> None:
+        manifest = self.manifest(minisign_signature(self.private, self.payload))
+        response = MagicMock(status=200)
+        response.read.return_value = self.payload
+        urlopen = MagicMock()
+        urlopen.return_value.__enter__.return_value = response
+        with patch("verify_update_feed_acceptance.urllib.request.urlopen", urlopen):
+            self.assertEqual(
+                acceptance_check(manifest, self.pubkey),
+                "https://example.invalid/a.exe",
+            )
+        urlopen.assert_called_once_with("https://example.invalid/a.exe", timeout=120)
 
     def test_accepts_the_legacy_non_prehashed_algorithm(self) -> None:
         manifest = self.manifest(minisign_signature(self.private, self.payload, prehashed=False))
