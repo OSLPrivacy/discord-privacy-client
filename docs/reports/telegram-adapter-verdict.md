@@ -2,16 +2,17 @@
 
 Anchor: TelegramSupportVerdict
 
-Date recorded: 2026-07-30
+Date re-issued: 2026-08-01
 
 ## Verdict
 
 Telegram Desktop remains `externally blocked` for the protected native adapter release gate.
 
-This is not an `unsupported` product decision for Telegram as a service. It is the current adapter
-verdict for the minimal-touch native Windows surface: OSL cannot mark Telegram Desktop as
-`supported` until the signed-client bench proves stable, text-exposed message rows through Windows
-UI Automation.
+This is not an `unsupported` product decision for Telegram as a service. The earlier probe reached
+only a login surface, so it did not measure message-row accessibility and cannot establish that
+the adapter is technically blocked. The public release label nevertheless remains externally
+blocked: OSL cannot mark Telegram Desktop as `supported` until a signed-client bench proves stable,
+text-exposed message rows through Windows UI Automation.
 
 ## Evidence
 
@@ -23,6 +24,11 @@ UI Automation.
   `/home/<user>/osl-telegram-qa/infra/azure/telegram-qa/inspect-telegram-login-ui.ps1` at commit
   `0ee282e`. The probe emits only bounded row counts, control-type counts, timing, and a verdict:
   `supported`, `externally blocked`, or `unsupported`.
+- That recorded run was on a login wall, not an actual conversation surface. It therefore supplies
+  no candidate-row or text-exposure measurement and does not clear the promotion rule.
+- Telegram Desktop has since shipped upstream message-list accessibility, but this is not a
+  substitute for the required signed-client measurement. The re-measurement must use a current
+  (at least 6.8.3), logged-in Telegram Desktop build and the UI Automation backend.
 
 ## Promotion Rule
 
