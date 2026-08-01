@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { BurnGuaranteeCopy, burnFeatureClaimsMarkup } from "./feature-claims";
+import { freshStartCleanupPresentation } from "./fresh-start";
 import { friendVerificationCopy } from "./ui-behavior";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
@@ -96,24 +97,19 @@ describe("truthful Burn UI", () => {
     expect(dialog).toContain('<input type="checkbox" disabled/>');
   });
 
-  it("uses real local commands, guards repeats, and reports partial results inline", () => {
-    const dialog = functionSource("burnDialogMarkup", "ownedConfirmationMarkup");
-    const execute = functionSource("executeBurn", "ttlSeconds");
-    const burnUi = `${dialog}\n${execute}`;
-    expect(execute).toContain("burnBusy");
-    expect(execute).toContain("burnActiveHubContext(contextToken)");
-    expect(execute).toContain("burnHubServiceAccount");
-    expect(execute).toContain("readiness?.coverageComplete");
-    expect(execute).toContain("Local approval, display, and expiry settings");
-    expect(execute).toContain("Sent relay cleanup was acknowledged");
-    expect(execute).toContain("Login profile, cookies, provider history, and other copies remain");
-    expect(execute).not.toContain("Local decrypt keys for this app + friend");
-    expect(execute).not.toContain("Local OSL decrypt material and caches for ${result.scopesBurned}");
-    expect(execute).toContain("executeHubFullCleanup()");
-    expect(execute).toContain("localCleanupComplete");
-    expect(execute).toContain("no remote deletion success is being claimed");
-    expect(burnUi).not.toContain("window.confirm");
-    expect(burnUi).not.toContain("window.alert");
+  it("reports an unacknowledged remote cleanup as incomplete", () => {
+    const presentation = freshStartCleanupPresentation({
+      localCleanupComplete: true,
+      removedTargets: ["hub_core"],
+      failedTargets: [],
+      remoteUnregister: { identitiesFound: 1, succeeded: 0, failed: 0, unavailable: 1 },
+      restartRequired: true,
+      originalDiscordDataUntouched: true,
+    });
+
+    expect(presentation).toMatchObject({ tone: "warning", complete: false });
+    expect(presentation.message).toMatch(/remote unregister was not acknowledged/iu);
+    expect(presentation.message).toMatch(/no remote deletion success is being claimed/iu);
   });
 
   it("keeps uninstall separate and uses square scope cards", () => {

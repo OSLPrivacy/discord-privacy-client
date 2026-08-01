@@ -1,17 +1,41 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const source = readFileSync(fileURLToPath(new URL("./main.ts", import.meta.url)), "utf8");
 const nativeMain = readFileSync(fileURLToPath(new URL("../../osl-hub/src/main.rs", import.meta.url)), "utf8");
 const nativeAdapter = readFileSync(fileURLToPath(new URL("../../osl-hub/src/native_discord_adapter.rs", import.meta.url)), "utf8");
 const nativeOverlay = readFileSync(fileURLToPath(new URL("../../osl-hub/src/native_discord_overlay.rs", import.meta.url)), "utf8");
 
+async function loadUi() {
+  vi.resetModules();
+  vi.stubGlobal("localStorage", {
+    getItem: () => null,
+    setItem: () => undefined,
+    removeItem: () => undefined,
+    clear: () => undefined,
+  });
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
+  return import("./main");
+}
+
+afterEach(() => vi.unstubAllGlobals());
+
 describe("native Discord protected overlay routing", () => {
-  it("offers Protect for native Discord while leaving the in-window sheet embedded-only", () => {
-    expect(source).toContain("localProtectedSheet.open || peerProtectedSheet.open || nativeDiscordProtectionActive");
-    expect(source).toMatch(/const protectedSheet = activeEmbeddedHost\s+\? protectedSheetMode/);
-    expect(source).toContain("${nativeDiscordProtectPickerMarkup()}");
+  it("offers Protect for native Discord while leaving the in-window sheet embedded-only", async () => {
+    const { __oslHubUiTest } = await loadUi();
+    __oslHubUiTest.reset({
+      hubPeople: [{ personId: "verified-friend", alias: "Rose", safetyNumberVerified: true }],
+    });
+    __oslHubUiTest.useNativeDiscordProtectionForTest();
+
+    await __oslHubUiTest.openLocalProtection();
+    const rendered = __oslHubUiTest.renderProtectedSheets();
+    expect(rendered).toContain('id="native-protect-friend-dialog"');
+    expect(rendered).toContain('data-native-protect-person="verified-friend"');
+    expect(rendered).not.toContain('id="local-protected-title"');
+    expect(rendered).not.toContain('id="peer-protected-title"');
   });
 
   it("keeps Discord privacy controls in the trusted OSL header, not the composer overlay", () => {
@@ -132,10 +156,16 @@ describe("native Discord protected overlay routing", () => {
     expect(source).not.toContain("nativeProtectFailureNotice = failure");
   });
 
-  it("never opens the WebView geometry sheet for the native branch", () => {
-    const nativeBranch = source.slice(source.indexOf('if (activeNativeHostId === "discord")'), source.indexOf("if (!activeEmbeddedHost) return;"));
-    expect(nativeBranch).toContain("setNativeDiscordProtectedOverlayOpen");
-    expect(nativeBranch).not.toContain("setLocalProtectedSheetOpen");
+  it("never opens the WebView geometry sheet for the native branch", async () => {
+    const { __oslHubUiTest } = await loadUi();
+    __oslHubUiTest.reset();
+    __oslHubUiTest.useNativeDiscordProtectionForTest();
+
+    await __oslHubUiTest.openLocalProtection();
+    const rendered = __oslHubUiTest.renderProtectedSheets();
+    expect(rendered).toContain('id="native-protect-friend-dialog"');
+    expect(rendered).not.toContain('id="local-context-form"');
+    expect(rendered).not.toContain('id="peer-protected-title"');
   });
 
   it("allows verified OSL relay in the background while keeping Discord placement foreground-gated", () => {

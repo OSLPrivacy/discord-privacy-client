@@ -8989,6 +8989,17 @@ export const __oslHubUiTest = {
   openLocalProtection(): Promise<void> {
     return toggleLocalProtectedSheet();
   },
+  /** Configure the native Discord branch for routing tests without a window. */
+  useNativeDiscordProtectionForTest(): void {
+    activeEmbeddedHost = null;
+    activeNativeHostId = "discord";
+    activeNativeHostMode = "dedicated";
+    activeDefaultBrowserCompanion = false;
+    nativeDiscordProtectionActive = false;
+    nativeProtectPickerOpen = false;
+    localProtectedSheet = blankLocalProtectedModel();
+    peerProtectedSheet = blankPeerProtectedModel();
+  },
   startLocalProtection(label: string): Promise<void> {
     return startLocalProtectedContextForLabel(label);
   },
