@@ -75,3 +75,4 @@ store = { path = "../store" }
 
 [dev-dependencies]
 tempfile = "=3.13"
+message-lifecycle = { path = "../message-lifecycle" }
