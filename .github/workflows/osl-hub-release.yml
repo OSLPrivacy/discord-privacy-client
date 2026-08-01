@@ -64,6 +64,14 @@ jobs:
           python -m unittest scripts/audit_hub_release.py
           python -m unittest scripts/test_verify_hub_vm_qa_attestation.py
 
+      - name: Extract human-written release notes
+        id: changelog
+        shell: bash
+        run: |
+          python scripts/extract_changelog_section.py \
+            --tag "${{ steps.hub-version.outputs.tag }}" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Build signed draft installer and updater manifest
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f
         env:
@@ -74,8 +82,8 @@ jobs:
           projectPath: apps/osl-hub
           tagName: hub-v__VERSION__
           releaseName: OSL Privacy __VERSION__
-          releaseBody: Signed OSL Privacy candidate. It remains a draft until the two-clean-VM QA gate passes.
-          generateReleaseNotes: true
+          releaseBody: ${{ steps.changelog.outputs.release_body }}
+          generateReleaseNotes: false
           releaseDraft: true
           prerelease: false
           uploadUpdaterJson: true

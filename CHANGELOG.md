@@ -4,7 +4,9 @@ All notable changes to `discord-privacy-client` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project follows semver.
 
-## [Unreleased] — v1 alpha foundation
+## [Unreleased]
+
+## [0.1.0] - 2026-07-31 — v1 alpha foundation
 
 ### Added
 
