@@ -5,6 +5,7 @@ import {
   resumeOnboardingRoute,
   type OnboardingResumeStorage,
 } from "./onboarding-resume";
+import { onboardingPaintDecision } from "./ui-behavior";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
@@ -733,11 +734,32 @@ describe("fresh-account continuation", () => {
   it("does not replace a focused onboarding control during an unchanged background refresh", () => {
     const rendering = functionSource("renderOnboarding", "onboardingContent");
     const bootstrap = source.slice(source.indexOf("async function bootstrap"));
-    expect(rendering).toContain("lastOnboardingMarkup === markup");
-    expect(rendering).toContain('root.querySelector(".onboarding-shell")');
-    expect(rendering).toContain("sensitiveEditInProgress");
-    expect(rendering).toContain('input[type="password"]');
-    expect(rendering.indexOf("return;")).toBeLessThan(rendering.indexOf("root.innerHTML = markup"));
+    // An identical repaint nobody asked for is skipped, and a changed one that
+    // would land on top of a half-typed password is deferred until it will not.
+    expect(onboardingPaintDecision({
+      markupUnchanged: true,
+      shellMounted: true,
+      sameRouteAsRendered: true,
+      passwordEditInProgress: false,
+      forced: false,
+    })).toBe("skip-unchanged");
+    expect(onboardingPaintDecision({
+      markupUnchanged: false,
+      shellMounted: true,
+      sameRouteAsRendered: true,
+      passwordEditInProgress: true,
+      forced: false,
+    })).toBe("defer-sensitive-edit");
+    // A step change is painted even mid-typing: the field being guarded belongs
+    // to a screen that is going away.
+    expect(onboardingPaintDecision({
+      markupUnchanged: false,
+      shellMounted: true,
+      sameRouteAsRendered: false,
+      passwordEditInProgress: true,
+      forced: false,
+    })).toBe("paint");
+    expect(rendering).toContain("onboardingPaintDecision(");
     expect(bootstrap).toContain("renderWhenIdle();");
     expect(bootstrap).not.toContain('route === "onboarding" ? render() : renderWhenIdle()');
   });

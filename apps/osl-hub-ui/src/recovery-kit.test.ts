@@ -104,7 +104,12 @@ describe("T15-A7 the capture refusal is escapable", () => {
     const view = recoveryKitView(initialRecoveryKitState(null, true));
 
     expect(view.mode).toBe("reveal-required");
-    expect(view.exits.map((exit) => exit.id)).toEqual(["reveal-with-password"]);
+    // The reveal is offered first, but never alone: it depends on a backend
+    // round trip, and this screen is reached on every launch until the kit is
+    // saved, so a round trip that does not come back must not be the only way
+    // off it. See recovery-reveal-deadend.test.ts for the hang itself.
+    expect(view.exits.map((exit) => exit.id)).toEqual(["reveal-with-password", "remind-me-later"]);
+    expect(view.exits.every((exit) => !exit.requiresAcknowledgement)).toBe(true);
   });
 
   it("stays out of the way when there is no kit and nothing outstanding", () => {
