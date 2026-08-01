@@ -9,7 +9,7 @@
 > the claim-eligibility half of master §20.2 and §8.2.
 > Authority: [`osl-master-decision-2026-07-26.md`](osl-master-decision-2026-07-26.md).
 > Status vocabulary: master §0.3. Evidence detail: [`../THREAT_MODEL.md`](../THREAT_MODEL.md).
-> Claim-gate source SHA-256: `251c1268e6ee907e77a20d40e22f48a7af6659905b2cbb192a6589f0841e3631`
+> Claim-gate source SHA-256: `e6e0adc4b1bdeb7e160f895aea1ce462186a9ed8e498a8ff2cdaad1ce8e60d3a`
 
 ## How to use it
 
@@ -131,6 +131,15 @@ cautious user actually wants — the product refuses to act rather than acting o
 | **Evidence** | `crates/keystore/src/client.rs:213`, whose own comment states the principle exactly: *"the keyserver is a carrier for the bundle, not its integrity authority."* |
 | **Required alongside** | **Do not read this as identity binding.** It stops the key server altering keys *inside* a bundle. It does **not** stop a substituted bundle under a different identity key, because the safety number binds only Ed25519 (THREAT_MODEL, MITM row) — full-bundle identity binding is still open (master §2 P0-1). Claiming this closes key substitution would be the exact overclaim this file exists to prevent. |
 
+### A15 · Device Transfer moves one encrypted account copy
+
+| | |
+|---|---|
+| **Permitted wording** | "Device Transfer can move one encrypted account export to a replacement device. It includes the account identity and saved local account data; it does not transfer device-specific preferences or messages that have not yet arrived on the old device. After the import is confirmed, you choose whether to keep or destroy the old device's copy." |
+| **Status** | `test-proven-only` → **`Beta`** badge. The export/import path and the mandatory old-device decision have automated coverage, but this is not evidence for simultaneous multi-device delivery or an `Available` release claim. |
+| **Evidence** | The export is sealed with an AEAD key derived from the 12-word recovery entropy in `crates/ipc/src/commands.rs:15199-15265`; import requires the matching phrase and validates the account binding before replacing state at `:15285-15353`. `OSL_EXPORT_FILES` deliberately excludes device-specific keyserver, license, password/lockout and UI-preference files at `:14738-14754`. The UI decision model cannot complete until the owner explicitly chooses keep or destroy after confirmed import: `apps/osl-hub-ui/src/device-transfer-source.ts:38-96`, covered by `apps/osl-hub-ui/src/device-transfer-source.test.ts`. |
+| **Required alongside** | "This replaces or copies one device; it is not a claim that OSL delivers to all your devices at once. The transfer carries the account's identity keys, and pending inbound messages that have not reached the old device do not move." Never imply a silent clone, a server-mediated transfer, or automatic deletion of the old copy. |
+
 ### Candidates NOT added — cited evidence did not check out
 
 Two further suggestions were rejected on verification, recorded so nobody re-derives them:
@@ -210,6 +219,7 @@ Each is listed with why, so nobody re-derives it and reintroduces the phrase.
 | **"Supports Gmail" / "Supports Discord" / "Supports Signal" / "Supports WhatsApp" / "Supports Telegram" / "Supports Outlook"** | A generic `supports` phrase hides the capability boundary: protected send, protected receive, attachments, deletion, browser/email import, and account lifecycle each need their own row. Discord has only narrow QA-build evidence; the others are not generally available. |
 | **"Available on Gmail" / "Available on Discord" / "Available on Signal" / "Available on WhatsApp" / "Available on Telegram" / "Available on Outlook"** | `Available` is a badge reserved for `verified-live` rows. None of these service-level claims has that status in the support matrix. |
 | **"Signal support is available" / "WhatsApp support is available" / "OSL supports Signal" / "OSL supports WhatsApp" / "works on Signal" / "works on WhatsApp"** | Signal and WhatsApp have signed profile evidence rows, but the public support matrix still marks both `coming_soon` with `claim_allowed: false`. Public app-support wording must follow the exact versioned matrix row, not the existence of a profile, logo, prototype or test fixture. |
+| **"Use OSL on all your devices"** | Device Transfer is a deliberate encrypted export/import for one replacement or copied device, not an evidenced multi-device delivery mechanism. It carries account identity keys rather than independently provisioning per-device keys, and messages still pending for the old device do not move. Use A15's limitation with any transfer claim. |
 | **"Provider-tested" / "verified by Discord" / "works with Discord's approval"** | No provider has tested, reviewed, or approved anything. The opposite is closer to true: master §5 and THREAT_MODEL "Discord ToS" note that using OSL may violate Discord's Terms of Service and may get the account banned. Implying provider sanction is both false and harmful to users making a risk decision. |
 | **"Audited" / "independently verified" / broad security "reviewed" claims** | No third-party cryptographic audit has been commissioned. THREAT_MODEL "Audit status" requires the *opposite* disclosure in onboarding: the construction is custom and unaudited. The narrow b90 exception is eligible only as: "A narrow SESSION_RESET ratchet remediation was independently reviewed and signed off." It must be paired with: "This was source review of one remediation, not a third-party cryptographic audit of OSL." Evidence: `docs/reports/ratchet-lane-2026-07-26.md` section "Reviewer Sign-Off: b15-b20 Findings Closed", `apps/osl-hub/tests/ratchet_lane_signoff_b36.rs`, and `crates/ipc/src/commands.rs` test `remediate_independent_review_findings`. Do not turn that into a provider, outside-firm, independent-verification, penetration-test, or product-wide audit claim. |
 | **"Military-grade" / "unbreakable" / "NSA-proof"** | Meaningless or false. THREAT_MODEL "Out of scope": OSL is explicitly *not* intended to resist targeted federal investigation, and points such users to Signal, Briar or Cwtch. |
