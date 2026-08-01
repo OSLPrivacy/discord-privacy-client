@@ -5,13 +5,9 @@
 ///   - Upload size: 1..=65536 bytes (64 KB cap).
 ///   - TTL header `X-OSL-TTL-Seconds`: must be one of
 ///       3600 (1h), 86400 (24h), 259200 (72h), 604800 (7d).
-///   - Fetch-token header `X-OSL-Fetch-Token`: 32 hex chars (16 bytes).
-///     Required on upload and delete, with no exceptions. A stored
-///     row whose `fetch_token` is NULL (only reachable for rows written
-///     before migration 0002) is treated as absent by delete. This opaque
-///     token is not an identity or sender-authentication credential, and it
-///     is deliberately carried in a HEADER: the blob id travels in the URL
-///     path and the platform records request paths by default.
+///   - Fetch- and manage-token headers: 32 hex chars (16 bytes). Both are
+///     required on upload. Fetch remains an open retrieval capability; manage
+///     is the separate capability required to delete.
 ///   - ID path param: 16 hex chars.
 
 import type { Env } from "../env.js";
@@ -39,6 +35,15 @@ const FETCH_TOKEN_HEX_RE = /^[0-9a-f]{32}$/;
 
 function readFetchToken(request: Request): string | null {
   const raw = request.headers.get("x-osl-fetch-token");
+  if (raw === null) return null;
+  const lower = raw.trim().toLowerCase();
+  if (lower.length !== FETCH_TOKEN_HEX_LEN) return null;
+  if (!FETCH_TOKEN_HEX_RE.test(lower)) return null;
+  return lower;
+}
+
+function readManageToken(request: Request): string | null {
+  const raw = request.headers.get("x-osl-manage-token");
   if (raw === null) return null;
   const lower = raw.trim().toLowerCase();
   if (lower.length !== FETCH_TOKEN_HEX_LEN) return null;
@@ -91,6 +96,18 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
     );
   }
 
+  // The sender generates this independently from the fetch capability. It is
+  // never returned by the store, so a recipient able to retrieve ciphertext
+  // cannot burn it.
+  const manageToken = readManageToken(request);
+  if (manageToken === null) {
+    return error(
+      400,
+      "bad_manage_token",
+      "X-OSL-Manage-Token must be 32 hex chars (16 bytes)"
+    );
+  }
+
   const body = await readBoundedBody(request, MAX_BLOB_BYTES);
   if (body.status === "too_large") {
     return error(413, "too_large", `blob exceeds ${MAX_BLOB_BYTES} bytes`);
@@ -119,8 +136,8 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
       // collision still raises a constraint error and is handled below, so
       // zero affected rows here means exactly one thing: at capacity.
       const inserted = await env.DB.prepare(
-        `INSERT INTO blobs (id, data, size_bytes, expires_at, created_at, fetch_token)
-         SELECT ?, ?, ?, ?, ?, ?
+        `INSERT INTO blobs (id, data, size_bytes, expires_at, created_at, fetch_token, manage_token)
+         SELECT ?, ?, ?, ?, ?, ?, ?
           WHERE (SELECT COUNT(*) FROM blobs) < ?
             AND COALESCE((SELECT SUM(size_bytes) FROM blobs), 0) <= ? - ?`
       )
@@ -131,6 +148,7 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
           expiresAt,
           now,
           fetchToken,
+          manageToken,
           MAX_LIVE_BLOB_ROWS,
           MAX_LIVE_BLOB_BYTES,
           data.length,
@@ -258,39 +276,34 @@ export async function handleDelete(
 ): Promise<Response> {
   const id = hexToId(hex);
   if (!id) return error(400, "bad_id", "id must be 16 hex chars");
-  // Phase 6: DELETE is gated the same way as FETCH. Without this an
-  // caller with only blob_id cannot delete a current blob. The client
-  // currently derives this token from public scope metadata, so this is
-  // capability separation rather than strong conversation membership.
-  //
-  // D81: a NULL-capability legacy row is treated as absent here too. It used
-  // to accept ANY delete, so knowing the path-logged id was enough to destroy
-  // a stranger's undelivered ciphertext. See the matching note in
-  // `handleFetch`.
+  // DELETE deliberately requires the sender-held manage capability, not the
+  // recipient-held fetch capability. Legacy rows without a manage capability
+  // are treated as absent, rather than allowing their path-logged id to burn
+  // a stranger's undelivered ciphertext.
   //
   // The answer is 204 with no deletion, not 404: this route already answers
   // 204 for an id that was never stored, and diverging would turn the refusal
   // into an existence oracle for legacy rows. Nothing is lost -- the row is
   // unreachable by every path and expires on its own clock.
   const row = await env.DB.prepare(
-    "SELECT fetch_token FROM blobs WHERE id = ? LIMIT 1"
+    "SELECT manage_token FROM blobs WHERE id = ? LIMIT 1"
   )
     .bind(id)
-    .first<{ fetch_token: string | null }>();
-  if (row && row.fetch_token === null) {
+    .first<{ manage_token: string | null }>();
+  if (row && row.manage_token === null) {
     return new Response(null, { status: 204 });
   }
   if (row) {
-    const presented = readFetchToken(request);
+    const presented = readManageToken(request);
     if (presented === null) {
       return error(
-        401,
-        "fetch_token_required",
-        "X-OSL-Fetch-Token header required to delete this blob"
+        403,
+        "manage_token_mismatch",
+        "manage token does not match"
       );
     }
-    if (!constantTimeEqual(row.fetch_token!, presented)) {
-      return error(403, "fetch_token_mismatch", "fetch token does not match");
+    if (!constantTimeEqual(row.manage_token!, presented)) {
+      return error(403, "manage_token_mismatch", "manage token does not match");
     }
   }
   await env.DB.prepare("DELETE FROM blobs WHERE id = ?").bind(id).run();
