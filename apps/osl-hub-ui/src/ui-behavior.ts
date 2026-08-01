@@ -78,6 +78,38 @@ export function friendTrustAction(
   return safetyNumberVerified && !pendingKeyChange ? "verified" : "verify";
 }
 
+export interface FriendVerificationCopy {
+  readonly heading: string;
+  readonly code: string;
+  readonly instruction: string;
+  readonly consequence: string;
+  readonly invalidationNotice: string;
+}
+
+/**
+ * The words the safety-number ceremony puts on screen.
+ *
+ * The number is derived from BOTH identities, so the two devices display the
+ * same digits and the operator's job is to *compare* them. The previous copy
+ * told the operator to read their own code aloud and type back what their
+ * friend read to them — an instruction that, followed literally, made the
+ * ceremony fail, because each device could only ever accept the value already
+ * on its own screen. Returned as data rather than markup so the instruction can
+ * be checked against what the ceremony actually accepts.
+ */
+export function friendVerificationCopy(
+  alias: string | null,
+  safetyNumber: string | null,
+): FriendVerificationCopy {
+  return {
+    heading: `Your verification code for ${alias ?? "this friend"}. Their device shows this same code:`,
+    code: safetyNumber && safetyNumber.length > 0 ? safetyNumber : "Unavailable",
+    instruction: "Ask your friend to read out the code on their screen, over a channel that is not this app, and type it here",
+    consequence: "The codes match only if you are talking to the device OSL holds keys for. Accepting lets OSL encrypt to that key. It does not turn on decryption in any chat or approve any conversation.",
+    invalidationNotice: "Verifications recorded by earlier versions of OSL have been cleared. Those compared a code OSL generated against itself, so they proved nothing; every friend has to be verified again.",
+  };
+}
+
 export function shouldClearRemovedFriendChat(
   activePersonId: string | null,
   removedPersonId: string,

@@ -77,10 +77,12 @@ describe("optional OSL Privacy adapters", () => {
     const profile = {
       friendCode: "OSLFR1.ABCDEFGHIJKLMNOP",
       oslUserId: "osl-user-1",
-      safetyNumber: "1234 5678",
     };
     expect(parseFriendProfile(profile)).toEqual(profile);
     expect(parseFriendProfile({ ...profile, friendCode: "bad code", extra: true })).toBeNull();
+    // An invite has no counterparty, so it can carry no safety number. A
+    // backend that offers one is not the backend this build talks to.
+    expect(parseFriendProfile({ ...profile, safetyNumber: "1234 5678" })).toBeNull();
     expect(parseNotifications([{ id: "1", title: "Update", detail: "Ready", createdAt: "2026-07-16" }])).toHaveLength(1);
     expect(parseNotifications([{ id: "1", title: "<script>", detail: "Ready", createdAt: "now" }])).toBeNull();
   });

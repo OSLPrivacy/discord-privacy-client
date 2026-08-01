@@ -1388,7 +1388,6 @@ struct Peer {
     security: osl_privacy_hub::security::HubSecurityState,
     broker: osl_privacy_hub::broker::HubBrokerState,
     friend_code: String,
-    safety_number: String,
 }
 
 impl Peer {
@@ -1413,7 +1412,6 @@ impl Peer {
             security: osl_privacy_hub::security::HubSecurityState::default(),
             broker: osl_privacy_hub::broker::HubBrokerState::default(),
             friend_code: exported.friend_code,
-            safety_number: exported.safety_number,
         }
     }
 
@@ -1424,7 +1422,7 @@ impl Peer {
     /// Add + verify the other side and open an OSL chat context against them,
     /// with decrypted display enabled and a 1 hour scope TTL (3600 is one of
     /// the four TTLs the cipher-store allowlist accepts).
-    fn open_context_to(&self, other_code: &str, other_safety: &str) {
+    fn open_context_to(&self, other_code: &str) {
         self.activate();
         let friend = osl_privacy_hub::security::add_friend_code(
             &self.core,
@@ -1437,7 +1435,8 @@ impl Peer {
             &self.core,
             &self.security,
             friend.person_id.clone(),
-            other_safety.to_owned(),
+            // Pair-derived, so this is the same value the peer's device shows.
+            friend.safety_number.clone(),
         )
         .expect("verify safety number");
         let binding = osl_privacy_hub::security::manual_peer_binding(&self.core, friend.person_id)
@@ -1467,8 +1466,8 @@ impl Peer {
 fn verified_pair(storage: &TestStorage, relay: &RelayServer) -> (Peer, Peer) {
     let alice = Peer::new(storage, "alice", relay);
     let bob = Peer::new(storage, "bob", relay);
-    alice.open_context_to(&bob.friend_code, &bob.safety_number);
-    bob.open_context_to(&alice.friend_code, &alice.safety_number);
+    alice.open_context_to(&bob.friend_code);
+    bob.open_context_to(&alice.friend_code);
     (alice, bob)
 }
 

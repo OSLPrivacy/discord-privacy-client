@@ -19,7 +19,16 @@ import {
 
 export type { HubRevocationStatus, HubScopeBurnOutcome };
 
-export interface FriendProfile { friendCode: string; oslUserId: string; safetyNumber: string; }
+/**
+ * The invite this device hands out.
+ *
+ * Carries no safety number by design. A safety number is a comparison between
+ * two identities, and an invite has not met its counterparty yet; the field
+ * used to carry a hash of this device's own keys, which no second device could
+ * ever reproduce. The real, shared number appears on both screens once the
+ * friend is added (`HubPerson.safetyNumber`).
+ */
+export interface FriendProfile { friendCode: string; oslUserId: string; }
 export interface AppNotification { id: string; title: string; detail: string; createdAt: string; }
 export type SupportMatrixPublicStatus = "available" | "beta" | "coming_soon" | "externally_blocked" | "unsupported";
 export type SupportMatrixInputEvidenceStatus = "qualified_profile" | "runtime_proven" | "qa_foundations_only" | "separate_qa_required" | "externally_blocked" | "unsupported" | "unknown";
@@ -1615,10 +1624,10 @@ function parseIdentitySlot(raw: unknown): HubIdentitySlot | null {
 }
 
 export function parseFriendProfile(raw: unknown): FriendProfile | null {
-  if (!isRecord(raw) || !exact(raw, ["friendCode", "oslUserId", "safetyNumber"])) return null;
+  if (!isRecord(raw) || !exact(raw, ["friendCode", "oslUserId"])) return null;
   if (typeof raw.friendCode !== "string" || !/^OSLFR1\.[A-Za-z0-9_-]{16,8192}$/.test(raw.friendCode)) return null;
-  if (!safe(raw.oslUserId, 180) || !safe(raw.safetyNumber, 180)) return null;
-  return { friendCode: raw.friendCode, oslUserId: raw.oslUserId, safetyNumber: raw.safetyNumber };
+  if (!safe(raw.oslUserId, 180)) return null;
+  return { friendCode: raw.friendCode, oslUserId: raw.oslUserId };
 }
 
 export function parseNotifications(raw: unknown): AppNotification[] | null {

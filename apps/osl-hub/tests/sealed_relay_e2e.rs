@@ -678,7 +678,8 @@ fn two_verified_identities_complete_sealed_relay_open_ack_and_replay_rejection()
         &alice,
         &alice_security,
         bob_friend.person_id.clone(),
-        bob_code.safety_number,
+        // Pair-derived, so this is the same value Bob's device displays.
+        bob_friend.safety_number.clone(),
     )
     .unwrap();
     let alice_binding = manual_peer_binding(&alice, bob_friend.person_id.clone()).unwrap();
@@ -708,7 +709,7 @@ fn two_verified_identities_complete_sealed_relay_open_ack_and_replay_rejection()
         &bob,
         &bob_security,
         alice_friend.person_id.clone(),
-        alice_code.safety_number,
+        alice_friend.safety_number.clone(),
     )
     .unwrap();
     let bob_binding = manual_peer_binding(&bob, alice_friend.person_id.clone()).unwrap();

@@ -143,7 +143,7 @@ export {
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 import { parseCircleAudience, type CircleAudience } from "./osl-collab";
-import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat } from "./ui-behavior";
+import { bindFriendRemovalControls, bindMainWindowFocusChanges, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, type FriendVerificationCopy } from "./ui-behavior";
 import { BurnGuaranteeCopy, type BurnGuaranteeState } from "./two-step-burn";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -4367,6 +4367,10 @@ function burnDialogMarkup(): string {
   return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card"><header><h2 id="burn-dialog-title">Burn local data</h2><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><div class="burn-scope-grid" aria-label="Burn scope">${scopeCards}</div>${burnGuaranteeMarkup(effects)}<details class="burn-more"><summary>Other options</summary><div class="burn-options"><label class="setting-line unavailable"><span><strong>Provider messages</strong><small>Not removed. Burn changes only indexed local OSL data and sent relay records.</small></span><input type="checkbox" disabled/></label><label class="setting-line unavailable"><span><strong>Burn for friends · Pro</strong><small>${pro ? "Requires every recipient’s prior signed consent and an acknowledgment from each device." : "A Pro initiator may request this for Free recipients only after each recipient gives signed consent."} The consent-and-acknowledgment workflow is unavailable in this build.</small></span><input type="checkbox" disabled/></label>${burnScope === "account" ? `<label class="setting-line interactive"><span><strong>Uninstall after burn</strong><small>After a successful local burn, open Windows installed apps.</small></span><input id="burn-uninstall" type="checkbox"/></label>` : ""}</div></details><form id="burn-confirm-form" class="burn-confirm"><label for="burn-confirm-input">Type <code>${phrase}</code> to continue</label><input id="burn-confirm-input" autocomplete="off" autocapitalize="characters" spellcheck="false" ${selectedReason ? "disabled" : ""}/><p class="form-status" id="burn-form-status" role="status">${selectedReason ? escapeHtml(selectedReason) : "This cannot be undone."}</p><footer><button class="button ghost" type="button" data-close-burn>Cancel</button><button class="button danger" id="burn-confirm-submit" type="submit" disabled>${burnBusy ? "Burning…" : "Burn now"}</button></footer></form></section></dialog>`;
 }
 
+function verificationDialogMarkup(copy: FriendVerificationCopy): string {
+  return `<p>${escapeHtml(copy.heading)}</p><code class="verification-code" aria-label="Shared verification code for this friend">${escapeHtml(copy.code)}</code><label class="owned-confirmation-entry" for="friend-verification-input"><span>${escapeHtml(copy.instruction)}</span><input id="friend-verification-input" autocomplete="off" spellcheck="false" inputmode="numeric" autocapitalize="none" maxlength="96" placeholder="Spaces and grouping do not matter"/></label><p>${escapeHtml(copy.consequence)}</p><p>${escapeHtml(copy.invalidationNotice)}</p>`;
+}
+
 function ownedConfirmationMarkup(): string {
   if (!ownedConfirmation) return "";
   const request = ownedConfirmation;
@@ -4375,7 +4379,7 @@ function ownedConfirmationMarkup(): string {
   const person = verifying || removing ? hubPeople.find((candidate) => candidate.personId === request.personId) ?? null : null;
   const title = verifying ? "Verify this friend's key?" : removing ? "Remove friend?" : "Clear Pro activation?";
   const detail = request.kind === "verifyFriend"
-    ? `<p>This device's verification code for ${escapeHtml(person?.alias ?? "this friend")}. Read it aloud to your friend:</p><code class="verification-code" aria-label="Your local verification code">${escapeHtml(person?.safetyNumber ?? "Unavailable")}</code><label class="owned-confirmation-entry" for="friend-verification-input"><span>Enter the code your friend read back to you over a channel that is not this app</span><input id="friend-verification-input" autocomplete="off" spellcheck="false" inputmode="numeric" autocapitalize="none" maxlength="96" placeholder="Spaces and grouping do not matter"/></label><p>Accept only after you compare the codes outside OSL. Accepting lets OSL encrypt to the key it holds for this friend. It does not turn on decryption in any chat or approve any conversation.</p>`
+    ? verificationDialogMarkup(friendVerificationCopy(person?.alias ?? null, person?.safetyNumber ?? null))
     : request.kind === "removeFriend"
       ? `<p>Removing ${escapeHtml(person?.alias ?? "this friend")} deletes this friend's keys from this device and withdraws every conversation approval they hold.</p><p>This cannot be undone.</p>`
     : `<p>Pro features will be unavailable on this device until you activate again.</p>`;

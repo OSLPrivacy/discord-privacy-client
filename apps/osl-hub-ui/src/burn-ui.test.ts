@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { BurnGuaranteeCopy } from "./two-step-burn";
+import { friendVerificationCopy } from "./ui-behavior";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
@@ -132,9 +133,11 @@ describe("truthful Burn UI", () => {
 
 describe("OSL-owned confirmations", () => {
   it("uses plain verification-code language for local friend approval", () => {
-    const dialog = functionSource("ownedConfirmationMarkup", "serviceContent");
-    expect(dialog).toContain("verification code");
-    expect(dialog).toContain("does not turn on decryption in any chat");
-    expect(dialog).not.toContain("safety number");
+    const copy = friendVerificationCopy("Rosalind", "12345 67890 12345 67890 12345 67890");
+    const shown = [copy.heading, copy.instruction, copy.consequence, copy.invalidationNotice].join(" ");
+    expect(shown).toContain("verification code");
+    expect(shown).toContain("does not turn on decryption in any chat");
+    // "safety number" is the protocol's name for it, not the operator's.
+    expect(shown.toLowerCase()).not.toContain("safety number");
   });
 });

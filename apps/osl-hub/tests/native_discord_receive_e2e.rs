@@ -804,7 +804,6 @@ struct Peer {
     host: ServiceHostState,
     account_id: String,
     friend_code: String,
-    safety_number: String,
     /// The scope of the most recently activated context, so a test can flip a
     /// per-conversation security setting without re-deriving it.
     scope: Mutex<Option<ipc::scope::ScopeInput>>,
@@ -839,7 +838,6 @@ impl Peer {
             // `NativeWindowHostState::current_discord_service_host` produces.
             account_id: format!("native-discord-{account_suffix}"),
             friend_code: exported.friend_code,
-            safety_number: exported.safety_number,
             scope: Mutex::new(None),
         }
     }
@@ -850,7 +848,7 @@ impl Peer {
 
     /// Add + verify `other` as a friend and open a native Discord protected
     /// context against them, with decrypted display enabled.
-    fn open_native_context_to(&self, other_code: &str, other_safety: &str) -> String {
+    fn open_native_context_to(&self, other_code: &str) -> String {
         self.activate();
         let friend = add_friend_code(
             &self.core,
@@ -859,11 +857,17 @@ impl Peer {
             Some("fixture peer".to_owned()),
         )
         .expect("add friend code");
+        // The safety number is derived from both identities, so the value this
+        // device just derived is byte-identical to the one the peer displays;
+        // an operator completing the real ceremony types exactly this. That
+        // property is what `security.rs`'s two-device test proves — this
+        // fixture is about native Discord receive, and only needs a verified
+        // friend to exist.
         verify_friend_safety_number(
             &self.core,
             &self.security,
             friend.person_id.clone(),
-            other_safety.to_owned(),
+            friend.safety_number.clone(),
         )
         .expect("verify safety number");
         self.reopen_native_context(&friend.person_id)
@@ -936,8 +940,8 @@ fn p1_sends_encrypted_message_into_live_conversation() {
 
     let alice = Peer::new(&storage, "alice", &relay_url, "a1a15050");
     let bob = Peer::new(&storage, "bob", &relay_url, "b2b25050");
-    alice.open_native_context_to(&bob.friend_code, &bob.safety_number);
-    bob.open_native_context_to(&alice.friend_code, &alice.safety_number);
+    alice.open_native_context_to(&bob.friend_code);
+    bob.open_native_context_to(&alice.friend_code);
 
     const FIXTURE: &str = "P1 native Discord protected send fixture";
     alice.activate();
@@ -1045,8 +1049,8 @@ fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_
     // conversation with Bob is opened. Activating a new manual peer context
     // invalidates the previous lease, which is exactly the ordering a real
     // operator produces by switching conversations.
-    alice.open_native_context_to(&charlie.friend_code, &charlie.safety_number);
-    charlie.open_native_context_to(&alice.friend_code, &alice.safety_number);
+    alice.open_native_context_to(&charlie.friend_code);
+    charlie.open_native_context_to(&alice.friend_code);
     alice.activate();
     prepare_native_discord_overlay_text(
         &alice.core,
@@ -1059,8 +1063,8 @@ fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_
     let misaddressed = relay.posted_row(&alice.identity_id, &charlie.identity_id);
 
     // The live conversation.
-    alice.open_native_context_to(&bob.friend_code, &bob.safety_number);
-    bob.open_native_context_to(&alice.friend_code, &alice.safety_number);
+    alice.open_native_context_to(&bob.friend_code);
+    bob.open_native_context_to(&alice.friend_code);
 
     // 1. Empty inbox. This must be an explicit empty batch, never an error and
     //    never a refusal that reads like "nothing to do".
@@ -1385,8 +1389,8 @@ fn view_once_list_appears_on_b() {
 
     let alice = Peer::new(&storage, "alice", &relay_url, "b68a5050");
     let bob = Peer::new(&storage, "bob", &relay_url, "b68b5050");
-    alice.open_native_context_to(&bob.friend_code, &bob.safety_number);
-    bob.open_native_context_to(&alice.friend_code, &alice.safety_number);
+    alice.open_native_context_to(&bob.friend_code);
+    bob.open_native_context_to(&alice.friend_code);
 
     const FIXTURE: &str = "B68 native Discord view-once fixture";
     alice.activate();
@@ -1464,8 +1468,8 @@ fn reveal_once_consumes_on_b() {
 
     let alice = Peer::new(&storage, "alice", &relay_url, "b74a5050");
     let bob = Peer::new(&storage, "bob", &relay_url, "b74b5050");
-    alice.open_native_context_to(&bob.friend_code, &bob.safety_number);
-    bob.open_native_context_to(&alice.friend_code, &alice.safety_number);
+    alice.open_native_context_to(&bob.friend_code);
+    bob.open_native_context_to(&alice.friend_code);
 
     const FIXTURE: &str = "B74 native Discord reveal-once fixture";
     alice.activate();
@@ -1575,8 +1579,8 @@ fn native_discord_multi_chunk_message_reassembles_exactly_once() {
 
     let alice = Peer::new(&storage, "alice", &relay_url, "dddd4444");
     let bob = Peer::new(&storage, "bob", &relay_url, "eeee5555");
-    alice.open_native_context_to(&bob.friend_code, &bob.safety_number);
-    bob.open_native_context_to(&alice.friend_code, &alice.safety_number);
+    alice.open_native_context_to(&bob.friend_code);
+    bob.open_native_context_to(&alice.friend_code);
 
     // Just over two 40 KiB carrier chunks, with a multi-byte character placed
     // where a naive byte split would cut it in half.
@@ -1680,8 +1684,8 @@ fn native_discord_chunk_group_survives_reversed_and_split_arrival() {
 
     let alice = Peer::new(&storage, "alice", &relay_url, "ffff6666");
     let bob = Peer::new(&storage, "bob", &relay_url, "00007777");
-    alice.open_native_context_to(&bob.friend_code, &bob.safety_number);
-    bob.open_native_context_to(&alice.friend_code, &alice.safety_number);
+    alice.open_native_context_to(&bob.friend_code);
+    bob.open_native_context_to(&alice.friend_code);
 
     let fixture = format!("{}\u{1f642}{}", "q".repeat(40_960), "z".repeat(40_960));
     alice.activate();
@@ -1853,11 +1857,10 @@ fn sender_filtered_text_and_attachment_drains_bypass_64_foreign_rows_and_preserv
     let sender_a = Peer::new(&storage, "sender-a", &relay_url, "11118888");
     let receiver = Peer::new(&storage, "receiver", &relay_url, "22229999");
     let sender_b = Peer::new(&storage, "sender-b", &relay_url, "33330000");
-    sender_a.open_native_context_to(&receiver.friend_code, &receiver.safety_number);
-    sender_b.open_native_context_to(&receiver.friend_code, &receiver.safety_number);
-    let receiver_b_person =
-        receiver.open_native_context_to(&sender_b.friend_code, &sender_b.safety_number);
-    receiver.open_native_context_to(&sender_a.friend_code, &sender_a.safety_number);
+    sender_a.open_native_context_to(&receiver.friend_code);
+    sender_b.open_native_context_to(&receiver.friend_code);
+    let receiver_b_person = receiver.open_native_context_to(&sender_b.friend_code);
+    receiver.open_native_context_to(&sender_a.friend_code);
 
     const B_FIXTURE: &str = "independently drainable sender B fixture";
     sender_b.activate();
@@ -2061,8 +2064,8 @@ fn assert_text_and_attachment_refuse_reply(reply: ControlInboxGetReply) {
     let relay_url = relay.base_url();
     let sender = Peer::new(&storage, "refusal-sender", &relay_url, "44441111");
     let receiver = Peer::new(&storage, "refusal-receiver", &relay_url, "55552222");
-    sender.open_native_context_to(&receiver.friend_code, &receiver.safety_number);
-    receiver.open_native_context_to(&sender.friend_code, &sender.safety_number);
+    sender.open_native_context_to(&receiver.friend_code);
+    receiver.open_native_context_to(&sender.friend_code);
 
     sender.activate();
     prepare_native_discord_overlay_text(

@@ -5,6 +5,7 @@ import {
   FRIEND_REMOVAL_SELECTOR,
   friendRemovalButtonMarkup,
   friendTrustAction,
+  friendVerificationCopy,
   removeHubFriend,
   shouldClearRemovedFriendChat,
   type FriendRemovalControl,
@@ -32,15 +33,40 @@ class RenderedFriendRemovalButton extends EventTarget implements FriendRemovalCo
 }
 
 describe("friend trust UI", () => {
-  it("requires a peer-entered verification code and cannot round-trip the displayed code", () => {
+  it("tells the operator to compare with the friend's screen, never to relay their own code", () => {
+    const copy = friendVerificationCopy("Rosalind", "12345 67890 12345 67890 12345 67890");
+    const spoken = `${copy.heading} ${copy.instruction}`;
+
+    // The number is shared, so the instruction must send the operator to the
+    // other device's screen. It is the only place a value OSL can accept lives.
+    expect(copy.heading).toContain("Rosalind");
+    expect(copy.heading).toMatch(/same code/i);
+    expect(copy.instruction).toMatch(/on their screen/i);
+    expect(copy.instruction).toMatch(/not this app/i);
+    expect(copy.code).toBe("12345 67890 12345 67890 12345 67890");
+
+    // The ceremony that never worked: read your own code out, type back what
+    // you hear. Following that literally makes verification fail.
+    expect(spoken).not.toMatch(/read (it|this|the code) aloud/i);
+    expect(spoken).not.toMatch(/read back/i);
+
+    // The upgrade is a trust regression and has to be said out loud.
+    expect(copy.invalidationNotice).toMatch(/cleared/i);
+    expect(copy.invalidationNotice).toMatch(/verified again/i);
+    expect(copy.consequence).toMatch(/does not turn on decryption/i);
+
+    // No number yet is stated, never faked with placeholder digits.
+    expect(friendVerificationCopy(null, null).code).toBe("Unavailable");
+    expect(friendVerificationCopy(null, "").code).toBe("Unavailable");
+    expect(friendVerificationCopy(null, null).heading).toContain("this friend");
+  });
+
+  it("requires a typed verification code before the ceremony can be submitted", () => {
     const people = functionSource("peopleListMarkup", "peopleDialogMarkup");
-    const dialog = functionSource("ownedConfirmationMarkup", "serviceContent");
+    const dialog = functionSource("verificationDialogMarkup", "ownedConfirmationMarkup");
     const binding = functionSource("bindOwnedConfirmation", "resetLocalProtectedSheet");
     expect(dialog).toContain('id="friend-verification-input"');
     expect(dialog).toContain('autocomplete="off" spellcheck="false" inputmode="numeric"');
-    expect(dialog).toContain("person?.safetyNumber");
-    expect(dialog).toContain("over a channel that is not this app");
-    expect(dialog).toContain("lets OSL encrypt to the key it holds for this friend");
     expect(people).not.toContain("data-safety-number");
     expect(binding).toContain("input.value.length === 0");
     expect(binding).toContain("ownedConfirmationBusy");
