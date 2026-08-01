@@ -12,14 +12,12 @@ members = [
     "crates/message-lifecycle",
     "crates/runtime",
     "crates/store",
-    # Isolated research crate, UNWIRED at the product level. `crates/ipc`
-    # declares the dependency (crates/ipc/Cargo.toml:73) and the adapter
-    # crates/ipc/src/wire_rn.rs genuinely uses it - but nothing uses
-    # wire_rn: its only non-test reference is the module declaration
-    # `pub mod wire_rn;` at crates/ipc/src/lib.rs:76. There is still no
-    # production call path, so the status remains implemented-unwired. See
-    # crates/osl-ratchet-next/DESIGN.md - unreviewed, must not carry
-    # real traffic before external cryptographic review.
+    # OSL-RN is integrated through `crates/ipc/src/wire_rn.rs`, including
+    # production version-selection and session-state paths. Encrypting or
+    # decrypting OSL-RN traffic is gated by the compile-time
+    # `RN_WIRE_IN_ENABLED = false` fuse. See
+    # crates/osl-ratchet-next/DESIGN.md — unreviewed, must not carry real
+    # traffic before external cryptographic review.
     "crates/osl-ratchet-next",
 ]
 exclude = [
