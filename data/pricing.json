@@ -459,6 +459,16 @@
       "public_note": "A drawing, not a measurement. The homepage comparison summarises published agency and company practice. It is not a scan of your device, and this site never shows a live protection score."
     },
     {
+      "id": "website-scrub",
+      "name": "Website Scrub",
+      "status": "Illustration",
+      "evidence": "T11-F1 decision in docs/design/website-scrub-boundary.md: no live public username check is approved. The website remains a rendered username-only demo and must not receive browser or local account data.",
+      "surfaces": [],
+      "verified_on": "2026-07-31",
+      "sellable": false,
+      "public_note": "Illustration only. The website does not scan browser history, read browser data, or access local account data."
+    },
+    {
       "id": "product-animations",
       "name": "Product animations",
       "status": "Illustration",
@@ -729,6 +739,26 @@
     "unhackable",
     "100% private",
     "cannot be traced"
+  ],
+  "forbidden_claims": [
+    {
+      "id": "website-scrub-browser-history",
+      "scope": "website-scrub",
+      "pattern": "\\b(?:we|this site|the website|osl)\\s+(?:scan|scans|scanning)\\s+(?:your\\s+)?browser\\s+history\\b",
+      "reason": "Website Scrub is a rendered username-only demo. It must never receive browser data."
+    },
+    {
+      "id": "website-scrub-browser-data",
+      "scope": "website-scrub",
+      "pattern": "\\b(?:we|this site|the website|osl)\\s+(?:read|reads|collect|collects|access|accesses|receive|receives|upload|uploads|import|imports)\\s+(?:your\\s+)?(?:browser\\s+(?:data|profile|cookies)|cookies)\\b",
+      "reason": "Website Scrub must never receive browser data, browser profiles, or cookies."
+    },
+    {
+      "id": "website-scrub-local-account-data",
+      "scope": "website-scrub",
+      "pattern": "\\b(?:we|this site|the website|osl)\\s+(?:read|reads|collect|collects|access|accesses|receive|receives|upload|uploads|import|imports)\\s+(?:your\\s+)?(?:local\\s+(?:account\\s+)?(?:data|inventory)|native-app\\s+data|passwords?)\\b",
+      "reason": "Website Scrub must never receive local account inventory, native-app data, or passwords."
+    }
   ],
   "$forbidden_note": "Two families. (1) Billing wording that is now wrong in BOTH directions: the old permanent one-time framing ('$5 once', 'No renewal', 'one-time $5 purchase') AND any subscription framing ('Renews monthly', 'subscription', 'cancel any time') -- because a prepaid code neither renews nor is cancellable. Plus the 'unlimited messages' positioning Zhao replaced with Scrub. (2) Security/marketing claims master 7.11, 8.2 and 8.4 forbid until the audited live path earns them. The crawler fails on any hit outside data/ and scripts/.",
   "required_disclosures": {

@@ -531,6 +531,49 @@ function evidenceForChannel(channel, files) {
   throw new Error(`unknown public claim channel: ${channel}`);
 }
 
+function validateWebsiteScrubBoundary(pricing, files) {
+  const errors = [];
+  const websiteScrub = list(pricing.capability_registry).find((capability) => capability?.id === 'website-scrub');
+  if (!websiteScrub || websiteScrub.status !== 'Illustration' || websiteScrub.sellable !== false) {
+    errors.push('WEBSITE_SCRUB_REGISTRY: website-scrub must remain an unsellable Illustration');
+  }
+
+  const rules = list(pricing.forbidden_claims).filter((claim) => claim?.scope === 'website-scrub');
+  if (rules.length < 3) {
+    errors.push('WEBSITE_SCRUB_RULE_FLOOR: at least three Website Scrub boundary rules are required');
+  }
+  for (const [index, rule] of rules.entries()) {
+    const label = isNonempty(rule?.id) ? rule.id : `forbidden_claims[${index}]`;
+    if (!isNonempty(rule?.id) || !isNonempty(rule?.pattern) || !isNonempty(rule?.reason)) {
+      errors.push(`WEBSITE_SCRUB_RULE_SCHEMA: ${label} must have id, pattern, and reason`);
+      continue;
+    }
+    let pattern;
+    try {
+      pattern = new RegExp(rule.pattern, 'i');
+    } catch {
+      errors.push(`WEBSITE_SCRUB_RULE_PATTERN: ${label} must be a valid regular expression`);
+      continue;
+    }
+    for (const file of files.all) {
+      if (pattern.test(file.text)) {
+        errors.push(`WEBSITE_SCRUB_BOUNDARY: ${file.entry} matches ${label}: ${rule.reason}`);
+      }
+    }
+  }
+  return errors;
+}
+
+function runWebsiteScrubSelfTest(pricing) {
+  const safeFixture = { all: [{ entry: 'self-test.html', text: 'This site accepts only a username supplied by the visitor.' }] };
+  const unsafeFixture = { all: [{ entry: 'self-test.html', text: 'We scan your browser history before checking a username.' }] };
+  const safe = validateWebsiteScrubBoundary(pricing, safeFixture);
+  const unsafe = validateWebsiteScrubBoundary(pricing, unsafeFixture);
+  const caught = safe.length === 0 && unsafe.some((error) => error.startsWith('WEBSITE_SCRUB_BOUNDARY:'));
+  console.log(`  ${caught ? 'caught ' : 'MISSED '} browser-history collection claim`);
+  if (!caught) throw new Error('check-claims self-test: Website Scrub boundary fixture failed');
+}
+
 function run() {
   const manifest = readManifest();
   const html = manifest.html.map(readEntry);
@@ -567,10 +610,16 @@ function run() {
   if (g1Failures.length > 0) {
     throw new Error(`G1 messenger comparison schema failed:\n${g1Failures.join('\n')}`);
   }
+  const websiteScrubFailures = validateWebsiteScrubBoundary(pricing, files);
+  console.log(`  website-scrub-boundary ${websiteScrubFailures.length === 0 ? 'pass' : 'FAIL'}`);
+  if (websiteScrubFailures.length > 0) {
+    throw new Error(`Website Scrub boundary failed:\n${websiteScrubFailures.join('\n')}`);
+  }
   if (SELF_TEST) {
     console.log(`\ncheck-claims self-test (H7 DeleteMe manifest, as of ${asOf}):`);
     runH7SelfTest(pricing, asOf);
     runG1MessengerSelfTest(pricing, asOf);
+    runWebsiteScrubSelfTest(pricing);
   }
   console.log('\ncheck-claims: complete.');
 }
