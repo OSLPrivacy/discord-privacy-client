@@ -4310,7 +4310,7 @@ fn drain_peer_inbox_text(
             && !payload.view_once
             && ipc::commands::cmd_osl_persist_inbound(
                 &core.osl,
-                context.conversation_id.clone(),
+                manual.scope.storage_key(),
                 payload.message_id.clone(),
                 manual.peer_osl_user_id.clone(),
                 payload.plaintext.clone(),
@@ -4473,7 +4473,7 @@ fn drain_peer_inbox_text(
             && !logical.view_once
             && ipc::commands::cmd_osl_persist_inbound(
                 &core.osl,
-                context.conversation_id.clone(),
+                manual.scope.storage_key(),
                 logical.message_id.clone(),
                 manual.peer_osl_user_id.clone(),
                 logical.plaintext.clone(),
@@ -4561,10 +4561,9 @@ pub fn load_osl_chat_history(
         &manual.service_id,
         &manual.account_id,
         manual.person_id,
-        manual.scope,
+        manual.scope.clone(),
     )?;
-    let context = broker.context_for(&context_token)?;
-    ipc::commands::cmd_osl_load_channel_history(&core.osl, context.conversation_id, Some(200))
+    ipc::commands::cmd_osl_load_channel_history(&core.osl, manual.scope.storage_key(), Some(200))
 }
 
 pub fn begin_native_overlay_attachment(
