@@ -421,6 +421,73 @@ fn membership_change_triggers_rotation_on_next_send() {
 }
 
 #[test]
+fn joiner_receives_rotated_chain_and_cannot_decrypt_prejoin_content() {
+    let (alice, _bob, _carol) = setup_three_member_gc();
+
+    // This content belongs to the original chain, before Dave exists in the
+    // granted recipient set.
+    let pre_join_wire = send_from(&alice, ALICE_DID, "before dave joined");
+
+    let dave_did = "1000000000000000004";
+    let dave = fresh_state("dave");
+    install_self(&dave, dave_did);
+    let dave_pub = pubkeys_of(dave.identity.lock().unwrap().as_ref().unwrap());
+    let alice_pub = pubkeys_of(alice.identity.lock().unwrap().as_ref().unwrap());
+    install_peer(&alice, dave_did, &dave_pub);
+    install_peer(&dave, ALICE_DID, &alice_pub);
+    install_gc_full_whitelist(&alice, GC_ID, &[ALICE_DID, BOB_DID, CAROL_DID, dave_did]);
+    install_gc_full_whitelist(&dave, GC_ID, &[ALICE_DID, BOB_DID, CAROL_DID, dave_did]);
+    cmd_osl_membership_update(
+        &alice,
+        GC_ID.to_string(),
+        vec![
+            ALICE_DID.to_string(),
+            BOB_DID.to_string(),
+            CAROL_DID.to_string(),
+            dave_did.to_string(),
+        ],
+    )
+    .unwrap();
+
+    // A new recipient must trigger rotation before the SKDM bundle is made.
+    // Deliver the actual bundle returned from this send, rather than directly
+    // installing state, so this catches an SKDM accidentally emitted with the
+    // old chain root.
+    let post_join = cmd_osl_encrypt_message_v2_wire(
+        &alice,
+        "after dave joined".to_string(),
+        ScopeInput::from(&Scope::gc(GC_ID)),
+        vec![
+            ALICE_DID.to_string(),
+            BOB_DID.to_string(),
+            CAROL_DID.to_string(),
+            dave_did.to_string(),
+        ],
+        ALICE_DID.to_string(),
+    )
+    .expect("post-join encrypt");
+    assert_eq!(
+        post_join.control_messages.len(),
+        1,
+        "rotation must emit an SKDM"
+    );
+    assert_eq!(
+        decrypt_at(&dave, ALICE_DID, &post_join.control_messages[0]).unwrap(),
+        OSL_RESULT_SKDM_APPLIED
+    );
+
+    let old_err = decrypt_at(&dave, ALICE_DID, &pre_join_wire[0]).unwrap_err();
+    assert!(
+        old_err.contains("chain") || old_err.contains("receiver"),
+        "joiner decrypts a message sent before they joined: {old_err}"
+    );
+    assert_eq!(
+        decrypt_at(&dave, ALICE_DID, &post_join.content).unwrap(),
+        "after dave joined"
+    );
+}
+
+#[test]
 fn tampered_v5_ciphertext_rejected() {
     let (alice, bob, _carol) = setup_three_member_gc();
     let scope_key = Scope::gc(GC_ID).storage_key();
