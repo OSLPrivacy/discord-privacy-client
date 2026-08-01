@@ -11,6 +11,7 @@ members = [
     "crates/ipc",
     "crates/message-lifecycle",
     "crates/runtime",
+    "crates/sensitive-classify",
     "crates/store",
     # OSL-RN is integrated through `crates/ipc/src/wire_rn.rs`, including
     # production version-selection and session-state paths. Encrypting or
