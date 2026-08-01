@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod monotonic;
+
 /// Bumped to v2 when the manifest began binding the relative open clock as
 /// well as the absolute deadline. Both clocks decide when content dies, so
 /// neither may sit outside the content-bound manifest. No stored manifest
