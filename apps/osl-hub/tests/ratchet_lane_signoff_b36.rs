@@ -148,12 +148,13 @@ fn reviewer_signoff_confirms_ratchet_remediations_closed() {
     );
     assert!(
         wire_rn.contains("pub const RN_WIRE_IN_ENABLED: bool = true;")
-            && state.contains("rn_wire_in_enabled: AtomicBool::new(true)")
+            && state.contains("rn_wire_in_enabled: AtomicBool::new(false)")
+            && state.contains("pub fn set_rn_wire_in_enabled")
             && keystore_client.contains(
                 "CLIENT_RN_CAPABILITY_FLOOR: u32 = rn_capabilities_for_wire_in(true)"
             )
             && wire_rn.contains("pub const RN_SESSION_DIR: &str = \"rn_sessions\"")
             && wire_rn.contains(".create_new(true)"),
-        "RN wire-in must stay open only with live capability advertisement, one session directory, and writer locking"
+        "RN build capability requires live advertisement, one session directory, and writer locking; runtime activation remains explicitly closed until D41's desync proof"
     );
 }
