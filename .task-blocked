@@ -1,0 +1,1 @@
+T12-I2 is missing: apps/osl-hub/src/imap_client.rs (connect/auth path) does not exist, so T12-I3 cannot add its enumerate path.
