@@ -63,6 +63,9 @@ import {
 // Keeping this re-export beside the default Worker entry makes the binding in
 // wrangler.toml part of the deployed module graph rather than a dead file.
 export { PushConnection } from "./realtime/connection.js";
+// T1's anonymous connection imports this narrow storage-side matching seam;
+// it exposes only opaque rotating tags and blob pointers.
+export { findDeliveryMatches } from "./lib/delivery-tag.js";
 
 export default {
   async fetch(
