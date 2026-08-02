@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T12-C1 is blocked: T12-E1's scrub reachability tests and T12-E2's docs/legal/scrub-provider-routes-2026-07-31.md evidence artifact do not exist; both are owned by T12 Stage E.
