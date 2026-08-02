@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing verified installed-profile registry/capability derivation for all native services; T3-A3 does not provide it and adapter-profile currently has only Signal/WhatsApp defaults.
