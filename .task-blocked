@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+MAIL-PATTERN and WEB-CONFORMANCE do not exist; T4-M1..M5 own MAIL-PATTERN and its WEB-W3 conformance prerequisite.
