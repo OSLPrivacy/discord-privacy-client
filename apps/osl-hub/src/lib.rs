@@ -109,6 +109,7 @@ pub mod scrub_hosted {
     pub mod friction;
     pub mod ordering;
     pub mod verify_surface;
+    pub mod x_web;
 }
 pub mod scrub_hosted_port;
 #[cfg(all(feature = "core", feature = "desktop"))]
