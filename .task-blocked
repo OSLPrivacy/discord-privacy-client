@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T3-B4 exposes no public SurfaceBinding constructor or test fixture: its required scope_binding_hash is crate-private, so apps/osl-hub/tests/adapter_tier_admissibility.rs cannot construct or mock a binding without changing adapter source outside T3-F2's owned scope.
