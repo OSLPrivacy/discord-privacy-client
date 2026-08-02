@@ -1,1 +1,0 @@
-Missing a stable Cargo mechanism for release-profile-only rustflags; Cargo 1.88 only permits target-wide rustflags, which violates X12. T8-B6 (toolchain update) or an owner-approved release-only build wrapper must unblock T8-C1.
