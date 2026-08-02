@@ -24,6 +24,7 @@ import { groupOnboardingApps } from "./onboarding-app-groups";
 import { peopleDestinationHeaderMarkup } from "./people-destination-header";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import { unlockAttemptWarning } from "./unlock-attempts";
+import { chatPreviewHidingVisible } from "./entitlement-gates";
 import {
   escapeHtml,
   closeEmbeddedServiceHost,
@@ -4155,7 +4156,7 @@ function oslChatContent(): string {
       verified: person.safetyNumberVerified && !person.pendingKeyChange,
       ready: person.personId === activeOslChatPersonId && activeOslChatContext?.scopeApproved === true,
       preview: last?.body ?? null,
-      previewVisible: !pro || oslChatPreviewsVisible,
+      previewVisible: chatPreviewHidingVisible(oslChatPreviewsVisible),
       unreadCount: oslChatUnread.get(person.personId) ?? 0,
       handshakeConfirmed: oslChatHandshakeConfirmed(messages),
     };
@@ -4164,7 +4165,7 @@ function oslChatContent(): string {
     ? `<div class="osl-chat-approval"><span><strong>Turn on this encrypted chat</strong><small>Approves only this OSL friend.</small></span><button class="button primary compact" id="osl-chat-approve" type="button" ${oslChatBusy ? "disabled" : ""}>Enable</button></div>`
     : "";
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
-  const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson, pro) : "";
+  const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
   const attachments = activeOslChatContext?.scopeApproved && pro
     ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
@@ -4179,11 +4180,11 @@ function oslChatContent(): string {
   })}${attachments}${settings}</main>`;
 }
 
-function oslChatFriendSettingsMarkup(person: HubPerson, pro: boolean): string {
+function oslChatFriendSettingsMarkup(person: HubPerson): string {
   const isActive = activeOslChatPersonId === person.personId;
   const approved = isActive && activeOslChatContext?.scopeApproved === true;
   const muted = oslChatMutedPeople.has(person.personId);
-  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list"><label class="setting-line interactive"><span><strong>Mute notifications</strong><small>Messages still arrive without creating a local alert.</small></span><input id="osl-chat-mute-toggle" type="checkbox" ${muted ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Message previews</strong><small>${pro ? "Hide previews on this device." : "Preview hiding is available with Pro."}</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${!pro || oslChatPreviewsVisible ? "checked" : ""} ${pro ? "" : "disabled"}/></label><div class="setting-line"><span><strong>Chat permission</strong><small>${approved ? "This friend may exchange encrypted OSL messages with you." : "Open this friend to configure its exact chat permission."}</small></span>${isActive ? `<button class="button compact ${approved ? "danger" : "primary"}" id="osl-chat-permission-toggle" type="button" ${oslChatBusy ? "disabled" : ""}>${approved ? "Revoke" : "Enable"}</button>` : `<button class="button compact" data-osl-chat-open="${escapeHtml(person.personId)}" type="button">Open chat</button>`}</div></div></div></dialog>`;
+  return `<dialog class="friends-dialog osl-chat-settings-dialog" id="osl-chat-settings-dialog" aria-labelledby="osl-chat-settings-title"><div class="friends-dialog-card"><header><div><span>Encrypted chat</span><h2 id="osl-chat-settings-title">${escapeHtml(person.alias ?? "Verified friend")}</h2></div><button class="icon-button" id="osl-chat-settings-close" type="button" aria-label="Close chat settings">×</button></header><div class="settings-list"><label class="setting-line interactive"><span><strong>Mute notifications</strong><small>Messages still arrive without creating a local alert.</small></span><input id="osl-chat-mute-toggle" type="checkbox" ${muted ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>Message previews</strong><small>Hide previews on this device.</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${chatPreviewHidingVisible(oslChatPreviewsVisible) ? "checked" : ""}/></label><div class="setting-line"><span><strong>Chat permission</strong><small>${approved ? "This friend may exchange encrypted OSL messages with you." : "Open this friend to configure its exact chat permission."}</small></span>${isActive ? `<button class="button compact ${approved ? "danger" : "primary"}" id="osl-chat-permission-toggle" type="button" ${oslChatBusy ? "disabled" : ""}>${approved ? "Revoke" : "Enable"}</button>` : `<button class="button compact" data-osl-chat-open="${escapeHtml(person.personId)}" type="button">Open chat</button>`}</div></div></div></dialog>`;
 }
 
 function oslServersContent(): string {
@@ -5094,15 +5095,14 @@ function notificationSettingsContent(): string {
 }
 
 function oslChatNotificationSettings(): string {
-  const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   const muted = [...oslChatMutedPeople].flatMap((personId) => {
     const person = hubPeople.find((candidate) => candidate.personId === personId);
     return person ? [`<div class="setting-line"><span><strong>${escapeHtml(person.alias ?? "Verified friend")}</strong><small>Messages still arrive without a local alert.</small></span><button class="button compact" data-osl-chat-unmute="${escapeHtml(personId)}" type="button">Unmute</button></div>`] : [];
   }).join("");
-  const previewsChecked = !pro || oslChatPreviewsVisible;
-  const previewText = pro ? "Hide message previews on this device." : "Preview hiding is available with Pro.";
+  const previewsChecked = chatPreviewHidingVisible(oslChatPreviewsVisible);
+  const previewText = "Hide message previews on this device.";
   const mutedDetails = muted ? `<details class="settings-disclosure" open><summary><span><strong>Muted OSL Chats</strong><small>${oslChatMutedPeople.size.toLocaleString("en-US")} muted</small></span></summary><div class="settings-list">${muted}</div></details>` : "";
-  return `<section class="settings-list osl-chat-notification-settings" aria-label="OSL Chat controls"><label class="setting-line interactive"><span><strong>Encrypted chat alerts</strong><small>New-message activity from unmuted OSL friends.</small></span><input id="notification-chat-activity" type="checkbox" ${notificationChatActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>OSL Chat previews</strong><small>${previewText}</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${previewsChecked ? "checked" : ""} ${pro ? "" : "disabled"}/></label></section>${mutedDetails}`;
+  return `<section class="settings-list osl-chat-notification-settings" aria-label="OSL Chat controls"><label class="setting-line interactive"><span><strong>Encrypted chat alerts</strong><small>New-message activity from unmuted OSL friends.</small></span><input id="notification-chat-activity" type="checkbox" ${notificationChatActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>OSL Chat previews</strong><small>${previewText}</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${previewsChecked ? "checked" : ""}/></label></section>${mutedDetails}`;
 }
 
 function visibleAppNotifications(): AppNotification[] {
@@ -6295,8 +6295,6 @@ function bindWorkspace(): void {
     render();
   });
   document.querySelector<HTMLInputElement>("#osl-chat-preview-toggle")?.addEventListener("change", (event) => {
-    const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-    if (!pro) return;
     oslChatPreviewsVisible = (event.currentTarget as HTMLInputElement).checked;
     persistOslChatPreviewVisibility();
     render();
