@@ -4,6 +4,17 @@ export type UiProGate = Readonly<{
   reason: string;
 }>;
 
+export type AiCarrier = "word-bank" | "local-ai" | "cloud";
+export type AiCarrierRequest = Exclude<AiCarrier, "word-bank">;
+export type CloudGenerationConsent = "granted" | "declined" | "unavailable";
+
+export interface AiCarrierEntitlement {
+  readonly access: "free" | "pro" | "offlineGrace";
+  readonly requestedCarrier: AiCarrierRequest;
+  readonly localModelAvailable: boolean;
+  readonly cloudConsent: CloudGenerationConsent;
+}
+
 /**
  * The UI may advertise a Pro capability only when this inventory says whether
  * native code enforces it. Cosmetic entries are deliberately unavailable, not
@@ -35,6 +46,11 @@ export const uiProGates = [
     enforcement: "cosmetic",
     reason: "The consent-and-acknowledgment workflow is unavailable in this build.",
   },
+  {
+    id: "aiCarrier",
+    enforcement: "cosmetic",
+    reason: "AI generation is not built; aiCarrierForEntitlement preserves the word-bank floor for its future caller.",
+  },
 ] as const satisfies readonly UiProGate[];
 
 export function uiProGateProblems(gates: readonly UiProGate[] = uiProGates): string[] {
@@ -51,4 +67,20 @@ export function uiProGateProblems(gates: readonly UiProGate[] = uiProGates): str
 // D69: hiding local message previews is a free privacy control.
 export function chatPreviewHidingVisible(previewsVisible: boolean): boolean {
   return previewsVisible;
+}
+
+/**
+ * The sole entitlement seam for the AI carrier.  Sending must always retain a
+ * usable word-bank path: Free, lapsed, declined, and unavailable AI all land
+ * there rather than preventing encryption or delivery.
+ */
+export function aiCarrierForEntitlement(input: AiCarrierEntitlement): AiCarrier {
+  const hasProEntitlement = input.access === "pro" || input.access === "offlineGrace";
+  if (!hasProEntitlement) return "word-bank";
+
+  if (input.requestedCarrier === "local-ai") {
+    return input.localModelAvailable ? "local-ai" : "word-bank";
+  }
+
+  return input.cloudConsent === "granted" ? "cloud" : "word-bank";
 }
