@@ -427,6 +427,13 @@ describe("bundled preview security boundary", () => {
       // references) - reports whether a LOCAL cover model is ready. No network,
       // no keyserver, no shell.
       "allow-ai-carrier-status",
+      // Local component store only: components.rs performs no network I/O (the
+      // download_bytes fields are recorded metadata, not a fetch) and every
+      // install is minisign-verified before it lands. File operations on a
+      // local directory, so they stay inside the local main-window boundary.
+      "allow-list-components",
+      "allow-install-component",
+      "allow-remove-component",
     ];
     expect(new Set(capability.permissions)).toEqual(new Set(expectedPermissions));
     expect(capability.permissions).toHaveLength(expectedPermissions.length);
