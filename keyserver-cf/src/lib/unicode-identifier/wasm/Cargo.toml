@@ -1,0 +1,12 @@
+[package]
+name = "osl-uts39-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+unicode-security = "=0.1.2"
+wasm-bindgen = "=0.2.106"
