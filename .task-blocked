@@ -38,3 +38,10 @@ Blocked: T20-E5 requires the T20-B5 baseline and an interactive Windows VM
 with a borrowed surface.  Neither is integrated into this worktree; keyboard
 snap measurement must use that real surface and cannot be asserted honestly
 from a synthetic script on this Linux host.
+
+# T6-R3
+
+Blocked: T6-R3 depends on T6-R2, but the reachable R2 commit is not integrated
+and `prose_token.rs` still uses the explicitly named `legacy_scope_fetch_key`.
+Changing only this caller would make sender and receiver capability contracts
+diverge, not close the public-scope authority finding.
