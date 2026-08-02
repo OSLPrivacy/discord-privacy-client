@@ -175,6 +175,7 @@ import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revoca
 import { senderReceiptStatus } from "./receipt-status";
 import { attachmentProgressMarkup, parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
 import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
+import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslConnectionState } from "./offline-capability-status";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
 import { listOslChatAttachments, openOslChatAttachment, selectOslChatAttachment } from "./native-overlay-adapter";
@@ -4212,6 +4213,7 @@ function oslChatContent(): string {
   const receipt = activeOslChatPersonId
     ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])
     : "";
+  const offlineStatus = oslRelayConnectionState() === "offline" ? offlineCapabilitiesMarkup() : "";
   return `<main class="content-viewport osl-chat-page"><header class="osl-chat-page-header"><button class="text-button" id="osl-chat-back" type="button" ${oslChatBusy ? "disabled" : ""}>Back</button><h1 id="route-heading" tabindex="-1">OSL Chats</h1><button class="text-button" id="osl-chat-refresh" type="button" ${activeOslChatContext?.scopeApproved && !oslChatBusy ? "" : "disabled"}>Refresh</button></header>${approval}${oslChatsViewMarkup({
     friends,
     activePersonId: activeOslChatPersonId,
@@ -4220,7 +4222,34 @@ function oslChatContent(): string {
     busy: oslChatBusy,
     viewOnce: oslChatViewOnce,
     homeLogoUrl: oslVectorLogoUrl,
-  })}${receipt}${attachments}${settings}</main>`;
+  })}${offlineStatus}${receipt}${attachments}${settings}</main>`;
+}
+
+const OFFLINE_CAPABILITIES: readonly OfflineUnavailableCapability[] = [
+  "receiveNewMessages",
+  "sendMessage",
+  "lookUpNewContactKey",
+  "confirmBurnOnServer",
+  "enforceExpiryOnServer",
+  "enforceViewOnceOnServer",
+];
+
+/** Browser offline is a reliable negative signal; any other state stays unknown. */
+function oslRelayConnectionState(): OslConnectionState {
+  return typeof navigator !== "undefined" && navigator.onLine === false ? "offline" : "unknown";
+}
+
+function offlineCapabilitiesMarkup(): string {
+  return `<section class="setting-line unavailable" data-osl-relay="offline" role="status"><span><strong>OSL is offline</strong>${OFFLINE_CAPABILITIES.map((capability) => {
+    const status = offlineCapabilityStatus(capability, "offline");
+    return `<small data-offline-capability="${capability}"><strong>${status.title}</strong> ${status.detail}</small>`;
+  }).join("")}</span></section>`;
+}
+
+function refuseOfflineCapability(capability: OfflineUnavailableCapability): boolean {
+  if (oslRelayConnectionState() !== "offline") return false;
+  showToast(offlineCapabilityStatus(capability, "offline").detail);
+  return true;
 }
 
 function attachmentProgressMarkupForActiveChat(): string {
@@ -7492,7 +7521,7 @@ async function approveOslChat(): Promise<void> {
 async function refreshOslChat(): Promise<void> {
   const context = activeOslChatContext;
   const personId = activeOslChatPersonId;
-  if (!context?.scopeApproved || !personId || oslChatBusy) return;
+  if (!context?.scopeApproved || !personId || oslChatBusy || refuseOfflineCapability("receiveNewMessages")) return;
   const epoch = oslChatOperationEpoch;
   oslChatBusy = true;
   render();
@@ -7545,7 +7574,7 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
   const context = activeOslChatContext;
   const personId = activeOslChatPersonId;
   const draft = oslChatDraft;
-  if (!context?.scopeApproved || !personId || oslChatBusy || !isHubPlaintext(draft)) return;
+  if (!context?.scopeApproved || !personId || oslChatBusy || !isHubPlaintext(draft) || refuseOfflineCapability("sendMessage")) return;
   const epoch = oslChatOperationEpoch;
   oslChatBusy = true;
   render();
@@ -7607,6 +7636,10 @@ async function submitFriendCode(event: SubmitEvent): Promise<void> {
   const button = document.querySelector<HTMLButtonElement>("#add-friend-form button");
   const status = document.querySelector<HTMLElement>("#friend-form-status");
   const code = input?.value.trim() ?? "";
+  if (refuseOfflineCapability("lookUpNewContactKey")) {
+    if (status) status.textContent = offlineCapabilityStatus("lookUpNewContactKey", "offline").detail;
+    return;
+  }
   if (!/^OSLFR1\.[A-Za-z0-9_-]{16,8192}$/.test(code)) {
     if (status) status.textContent = "Enter a valid OSL invite.";
     input?.focus();
