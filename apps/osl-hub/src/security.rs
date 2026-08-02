@@ -1765,7 +1765,13 @@ pub fn manual_peer_scope_id(
     person_id: &str,
 ) -> Result<String, String> {
     validate_manual_peer_service_account(service_id, account_id)?;
-    validate_person_id(person_id)?;
+    // This derives an opaque, account-qualified storage namespace; it does
+    // not grant access to that namespace.  The authorization paths resolve a
+    // `ManualPeerBinding` and validate its canonical `hub-person-*` identity
+    // before calling this helper.  Keeping derivation independent from that
+    // representation lets a previously persisted peer scope be burned even
+    // when its relay peer identifier is not a roster person id.
+    validate_manual_peer_scope_component(person_id)?;
     let mut hash = Sha256::new();
     for part in [
         "OSL-MANUAL-LOCAL-SCOPE-v2",
@@ -3762,6 +3768,18 @@ fn validate_person_id(value: &str) -> Result<(), String> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
         return Err("OSL person id is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_manual_peer_scope_component(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 80
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+    {
+        return Err("OSL peer scope id is invalid".to_owned());
     }
     Ok(())
 }
