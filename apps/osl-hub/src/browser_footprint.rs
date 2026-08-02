@@ -154,8 +154,17 @@ fn same_scope(a: &NativeBrowserImportBinding, b: &NativeBrowserImportBinding) ->
 
 fn load_state(path: &Path) -> Result<BrowserFootprintState, BrowserFootprintRefusal> {
     match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice::<BrowserFootprintState>(&bytes)
-            .map_err(|_| BrowserFootprintRefusal::Malformed),
+        Ok(sealed) => {
+            if !ipc::main_password::has_enc_magic(&sealed) {
+                return Err(BrowserFootprintRefusal::Malformed);
+            }
+            let key = ipc::main_password::get_file_storage_key()
+                .ok_or(BrowserFootprintRefusal::Malformed)?;
+            let plaintext = ipc::main_password::decrypt_at_rest(&sealed, &key)
+                .map_err(|_| BrowserFootprintRefusal::Malformed)?;
+            serde_json::from_slice::<BrowserFootprintState>(&plaintext)
+                .map_err(|_| BrowserFootprintRefusal::Malformed)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Ok(BrowserFootprintState::empty())
         }
@@ -167,14 +176,43 @@ fn store_state(path: &Path, state: &BrowserFootprintState) -> Result<(), Browser
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|_| BrowserFootprintRefusal::Malformed)?;
     }
-    let encoded = serde_json::to_vec(state).map_err(|_| BrowserFootprintRefusal::Malformed)?;
-    fs::write(path, encoded).map_err(|_| BrowserFootprintRefusal::Malformed)
+    let plaintext = serde_json::to_vec(state).map_err(|_| BrowserFootprintRefusal::Malformed)?;
+    let key =
+        ipc::main_password::get_file_storage_key().ok_or(BrowserFootprintRefusal::Malformed)?;
+    let sealed = ipc::main_password::encrypt_at_rest(&plaintext, &key)
+        .map_err(|_| BrowserFootprintRefusal::Malformed)?;
+    fs::write(path, sealed).map_err(|_| BrowserFootprintRefusal::Malformed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    const TEST_FILE_KEY: [u8; 32] = [0x7c; 32];
+
+    struct FileStorageKeyHarness {
+        previous_key: Option<[u8; 32]>,
+        _serial: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl FileStorageKeyHarness {
+        fn new() -> Self {
+            let serial = crate::global_keystore_test_lock();
+            let previous_key = ipc::main_password::get_file_storage_key();
+            ipc::main_password::set_file_storage_key(Some(TEST_FILE_KEY));
+            Self {
+                previous_key,
+                _serial: serial,
+            }
+        }
+    }
+
+    impl Drop for FileStorageKeyHarness {
+        fn drop(&mut self) {
+            ipc::main_password::set_file_storage_key(self.previous_key);
+        }
+    }
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -246,6 +284,7 @@ mod tests {
 
     #[test]
     fn browser_footprint_commit_rereads_and_hydrates_only_explicit_consent() {
+        let _key = FileStorageKeyHarness::new();
         let path = temp_path("reread");
         let stale_view = BrowserFootprintStore::at(path.clone());
         let writer = BrowserFootprintStore::at(path.clone());
@@ -268,6 +307,43 @@ mod tests {
         ));
         let _ = fs::remove_file(path);
         let _ = fs::remove_file(no_consent_path);
+    }
+
+    #[test]
+    fn browser_footprint_store_seals_observations_on_disk_and_refuses_plaintext() {
+        let _key = FileStorageKeyHarness::new();
+        let path = temp_path("sealed");
+        let store = BrowserFootprintStore::at(path.clone());
+
+        store.grant(binding()).expect("grant is sealed locally");
+        assert!(matches!(
+            store.commit(observation()),
+            Ok(BrowserFootprintCommit::Hydrated(rows)) if rows == vec![observation()]
+        ));
+        let sealed = fs::read(&path).expect("sealed footprint exists on disk");
+        assert!(ipc::main_password::has_enc_magic(&sealed));
+        assert!(
+            !sealed
+                .windows(b"owner-a".len())
+                .any(|window| window == b"owner-a"),
+            "the owner identifier must not be present in the on-disk bytes"
+        );
+
+        assert_eq!(
+            store.load().expect("sealed footprint reloads").bindings,
+            vec![binding()]
+        );
+
+        fs::write(
+            &path,
+            serde_json::to_vec(&BrowserFootprintState::empty()).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            store.load(),
+            Err(BrowserFootprintRefusal::Malformed)
+        ));
+        let _ = fs::remove_file(path);
     }
 
     #[test]
