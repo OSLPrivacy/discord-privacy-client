@@ -1206,7 +1206,6 @@ fn migrate_v7_to_v8(conn: &Connection) -> Result<(), StoreError> {
     let tx = conn.unchecked_transaction()?;
     apply_v7_to_v8_tx(&tx)?;
     tx.commit()?;
-    conn.execute_batch(SCHEMA_CURRENT)?;
     run_pending_vacuum(conn)?;
     Ok(())
 }
@@ -1216,13 +1215,22 @@ fn migrate_v7_to_v8(conn: &Connection) -> Result<(), StoreError> {
 /// sealing and no wall-clock event time or destruction reason is exposed to an
 /// offline SQLite reader.
 fn migrate_v8_to_v9(conn: &Connection) -> Result<(), StoreError> {
+    let added_columns = missing_columns(
+        conn,
+        "messages",
+        &[
+            "ALTER TABLE messages ADD COLUMN delivered_at BLOB",
+            "ALTER TABLE messages ADD COLUMN opened_at BLOB",
+            "ALTER TABLE messages ADD COLUMN destroyed_at BLOB",
+            "ALTER TABLE messages ADD COLUMN destruct_reason BLOB",
+        ],
+    )?;
     let tx = conn.unchecked_transaction()?;
+    for sql in added_columns {
+        tx.execute(sql, [])?;
+    }
     tx.execute_batch(
-        "ALTER TABLE messages ADD COLUMN delivered_at BLOB;
-         ALTER TABLE messages ADD COLUMN opened_at BLOB;
-         ALTER TABLE messages ADD COLUMN destroyed_at BLOB;
-         ALTER TABLE messages ADD COLUMN destruct_reason BLOB;
-         CREATE TABLE IF NOT EXISTS message_device_acks (
+        "CREATE TABLE IF NOT EXISTS message_device_acks (
              mid_bi BLOB NOT NULL,
              device_bi BLOB NOT NULL,
              ack_kind TEXT NOT NULL CHECK (ack_kind IN (
@@ -1259,16 +1267,6 @@ pub(crate) fn apply_v7_to_v8_tx(tx: &Transaction<'_>) -> Result<(), StoreError> 
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![VACUUM_PENDING_KEY, vec![1u8]],
     )?;
-    Ok(())
-}
-
-/// Add the current-schema indexes and manifest table within an existing
-/// migration transaction. This is deliberately separate from the ordinary
-/// idempotent migration path so an anchored step cannot publish a digest for a
-/// table shape that changes afterwards.
-pub(crate) fn install_current_schema_tx(tx: &Transaction<'_>) -> Result<(), StoreError> {
-    tx.execute_batch(SCHEMA_CURRENT)?;
-    tx.execute_batch(SCHEMA_ATTACHMENT_MANIFESTS)?;
     Ok(())
 }
 
@@ -1357,7 +1355,9 @@ pub(crate) fn refuse_ambiguous_legacy_wrappers(conn: &Connection) -> Result<(), 
     if table_exists(conn, "attachment_manifests")?
         && !matches!(
             on_disk,
-            Some(ATTACHMENT_MANIFEST_SCHEMA_VERSION) | Some(SCHEMA_VERSION)
+            Some(ATTACHMENT_MANIFEST_SCHEMA_VERSION)
+                | Some(BURN_TIMESTAMP_PRIVACY_SCHEMA_VERSION)
+                | Some(SCHEMA_VERSION)
         )
     {
         return Err(StoreError::Schema(
@@ -1401,6 +1401,7 @@ pub(crate) fn refuse_ambiguous_legacy_wrappers(conn: &Connection) -> Result<(), 
                     on_disk,
                     Some(ATTACHMENT_ENVELOPE_SCHEMA_VERSION)
                         | Some(ATTACHMENT_MANIFEST_SCHEMA_VERSION)
+                        | Some(BURN_TIMESTAMP_PRIVACY_SCHEMA_VERSION)
                         | Some(SCHEMA_VERSION)
                 ))
         {
@@ -1426,8 +1427,20 @@ pub(crate) fn refuse_ambiguous_legacy_wrappers(conn: &Connection) -> Result<(), 
 /// statement text, which is safe because every statement is a hard-coded
 /// constant in this file.
 fn apply_columns(conn: &Connection, table: &str, statements: &[&str]) -> Result<(), StoreError> {
+    for sql in missing_columns(conn, table, statements)? {
+        conn.execute(sql, [])?;
+    }
+    Ok(())
+}
+
+fn missing_columns<'a>(
+    conn: &Connection,
+    table: &str,
+    statements: &'a [&'a str],
+) -> Result<Vec<&'a str>, StoreError> {
     let existing = existing_columns(conn, table)?;
     let prefix = format!("ALTER TABLE {table} ADD COLUMN ");
+    let mut missing = Vec::new();
     for sql in statements {
         let after = sql.strip_prefix(prefix.as_str()).ok_or_else(|| {
             StoreError::Schema(format!("internal: unexpected column SQL shape: {sql}"))
@@ -1438,9 +1451,9 @@ fn apply_columns(conn: &Connection, table: &str, statements: &[&str]) -> Result<
         if existing.iter().any(|c| c == name) {
             continue;
         }
-        conn.execute(sql, [])?;
+        missing.push(*sql);
     }
-    Ok(())
+    Ok(missing)
 }
 
 /// Return the set of column names on a given table via
@@ -1567,6 +1580,41 @@ pub(crate) fn check_canary(conn: &Connection, key: &aead::Key) -> Result<(), Sto
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v8_manifest_schema_is_not_an_ambiguous_pre_v7_state() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _meta (key TEXT PRIMARY KEY, value BLOB);
+             CREATE TABLE attachment_manifests (mid_bi BLOB PRIMARY KEY);",
+        )
+        .unwrap();
+        write_meta_u32(
+            &conn,
+            "schema_version",
+            BURN_TIMESTAMP_PRIVACY_SCHEMA_VERSION,
+        )
+        .unwrap();
+
+        refuse_ambiguous_legacy_wrappers(&conn).unwrap();
+    }
+
+    #[test]
+    fn pre_v7_manifest_schema_remains_refused() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _meta (key TEXT PRIMARY KEY, value BLOB);
+             CREATE TABLE attachment_manifests (mid_bi BLOB PRIMARY KEY);",
+        )
+        .unwrap();
+        write_meta_u32(&conn, "schema_version", ATTACHMENT_ENVELOPE_SCHEMA_VERSION).unwrap();
+
+        let error = refuse_ambiguous_legacy_wrappers(&conn).unwrap_err();
+        assert!(
+            matches!(&error, StoreError::Schema(message) if message.contains("ambiguous partial migration state")),
+            "unexpected pre-v7 manifest result: {error}"
+        );
+    }
 
     #[test]
     fn v8_to_v9_adds_receipt_fields_and_per_device_ack_rows() {

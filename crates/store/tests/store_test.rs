@@ -656,7 +656,7 @@ fn reopen_with_correct_secret_migration_idempotent() {
     let store2 = MessageStore::open(tmp.path(), SECRET_A).unwrap();
     assert_migrated_rows(&store2, &rows);
     let second_open_version = schema_version(tmp.path());
-    assert_eq!(first_open_version, 8);
+    assert_eq!(first_open_version, 9);
     assert_eq!(second_open_version, first_open_version);
     store2
         .put(&sample(
@@ -697,7 +697,7 @@ fn reopen_with_future_schema_version_refuses() {
     // A normal reopen before the future stamp is the nonempty valid-schema
     // positive control. It rejects a test that only observes a refusal from a
     // database that was never valid under this binary.
-    assert_eq!(schema_version(&path), 8);
+    assert_eq!(schema_version(&path), 9);
     let baseline = MessageStore::open(&path, SECRET_A).unwrap();
     assert!(baseline.get("current-schema-positive").unwrap().is_some());
     drop(baseline);

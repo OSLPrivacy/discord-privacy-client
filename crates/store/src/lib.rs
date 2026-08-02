@@ -607,7 +607,13 @@ impl MessageStore {
             }
             None => None,
         };
-        if existing_anchor.is_some() && !matches!(inspected_version, Some(7) | Some(8) | Some(9)) {
+        // A range against SCHEMA_VERSION rather than a hardcoded Some(7)|Some(8)|
+        // Some(9): the literal list silently stops matching the moment the schema
+        // advances, which is exactly how this refusal started firing on databases
+        // it was never meant to reject.
+        if existing_anchor.is_some()
+            && !matches!(inspected_version, Some(7..=schema::SCHEMA_VERSION))
+        {
             return Err(StoreError::Anchor(
                 "anchored migration before v7 is not journal-supported; refusing mutation"
                     .to_string(),
@@ -674,6 +680,9 @@ impl MessageStore {
                         provider,
                     )?)
                 }
+                // An existing v9 binding was reconciled before this open and
+                // needs no migration.
+                (Some(schema::SCHEMA_VERSION), Some(binding)) => Some(binding),
                 // The pre-mutation guard above returns for an existing
                 // pre-v7 anchor.  An absent local/provider record remains the
                 // explicitly distinct unanchored compatibility path.
