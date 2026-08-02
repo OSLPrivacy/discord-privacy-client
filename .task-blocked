@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T21-G2 per-recipient-device Space fan-out and T1+T6's jointly frozen recipient-isolated delivery_tag derivation (owned by T21-G2 and T1/T6 §6b).
