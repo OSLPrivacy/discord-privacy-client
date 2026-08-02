@@ -10,6 +10,7 @@ rust-version.workspace = true
 # `cover_draft` so `use cover_draft::...` call sites stay valid.
 cover-draft = { path = "../cover-draft", package = "osl-cover-draft" }
 encoding_rs.workspace = true
+rand.workspace = true
 # The adapter reads raw logits directly; it needs neither llama.cpp's sampler
 # nor the optional `common` helper library used for grammar support.
 # OPTIONAL, behind the `local-model` feature. It compiles llama.cpp from source
