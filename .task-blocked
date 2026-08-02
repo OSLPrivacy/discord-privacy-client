@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite: T21-C9 has not implemented a Space removal/delivery path (including per-sender rotation), so T21-F5 cannot prove that removal stops future delivery; T21-C9 owns it.
