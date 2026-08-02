@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing per-bucket assignment for T10-R2; the T10 dispatch/plan owner must designate a disjoint crate and bucket.
