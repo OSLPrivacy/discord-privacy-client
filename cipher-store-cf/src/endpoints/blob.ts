@@ -6,21 +6,12 @@ import { applyBurn } from "../lib/burn-policy.js";
 import { constantTimeEqualHex, sha256Hex } from "../lib/digest.js";
 import { error, json, notFound } from "../lib/http.js";
 import { R2PayloadStore } from "../lib/payload-store.js";
+import { parseUploadTtl } from "../lib/ttl.js";
 
 export const MAX_BLOB_BYTES = 64 * 1024;
 const CAP_RE = /^[0-9a-f]{32}$/;
 const DIGEST_RE = /^[0-9a-f]{64}$/;
 const ID_RE = /^[0-9a-f]{32}$/;
-
-function ttl(raw: string | null): number | null {
-  switch (raw) {
-    case "3600": return 3600;
-    case "86400": return 86400;
-    case "259200": return 259200;
-    case "604800": return 604800;
-    default: return null;
-  }
-}
 
 function hexHeader(request: Request, name: string, re: RegExp): string | null {
   const value = request.headers.get(name)?.trim().toLowerCase();
@@ -45,8 +36,8 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
     return error(400, "bad_content_length", "Content-Length must be an unsigned integer");
   }
   if (length !== null && Number(length) > MAX_BLOB_BYTES) return error(413, "too_large", `blob exceeds ${MAX_BLOB_BYTES} bytes`);
-  const lifetime = ttl(request.headers.get("x-osl-ttl-seconds"));
-  if (lifetime === null) return error(400, "bad_ttl", "X-OSL-TTL-Seconds must be 3600 (1h), 86400 (24h), 259200 (72h), or 604800 (7d)");
+  const ttl = parseUploadTtl(request.headers.get("x-osl-ttl-seconds"), request.headers.get("x-osl-expiry-mode"));
+  if (ttl === null) return error(400, "bad_ttl", "X-OSL-TTL-Seconds must be 3600 (1h), 86400 (24h), 259200 (72h), or 604800 (7d); default mode requires 604800");
   const headers = uploadHeaders(request);
   if (!headers) return error(400, "bad_blob_metadata", "blob id, capability digests, class, and delivery tag are required");
   const body = await readBoundedBody(request, MAX_BLOB_BYTES);
@@ -55,7 +46,7 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
   if (!isPadmeLength(body.bytes.byteLength)) return error(400, "invalid_padding", "blob length must be Padmé-padded");
 
   const now = Math.floor(Date.now() / 1000);
-  const expiresAt = now + lifetime;
+  const expiresAt = now + ttl.ttl;
   const existing = await env.DB.prepare("SELECT 1 FROM blob_capability_index WHERE blob_id = ? LIMIT 1").bind(headers.blobId).first();
   if (existing) return error(409, "blob_id_collision", "blob id is already in use");
   const capacity = await env.DB.prepare(

@@ -160,7 +160,7 @@ describe("cipher upload body bounds", () => {
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({
         error: "bad_ttl",
-        message: "X-OSL-TTL-Seconds must be 3600 (1h), 86400 (24h), 259200 (72h), or 604800 (7d)",
+        message: "X-OSL-TTL-Seconds must be 3600 (1h), 86400 (24h), 259200 (72h), or 604800 (7d); default mode requires 604800",
       });
     },
   );
