@@ -537,6 +537,13 @@ describe("fresh-account continuation", () => {
     expect(recovery).not.toContain('class="compact-lead"');
   });
 
+  it("uses the shared centred layout for the empty recovery screen", () => {
+    const recovery = functionSource("recoveryContent", "identityPasswordForm");
+    expect(recovery).toMatch(/No recovery secret is available[\s\S]*?\/section>/);
+    expect(recovery).toContain('class="onboarding-centered-step recovery-empty"');
+    expect(styles).toMatch(/\.onboarding-centered-step\s*\{[^}]*width:\s*min\(440px,\s*100%\);[^}]*margin:\s*auto;[^}]*text-align:\s*center;/s);
+  });
+
   it("continues from saved recovery material into optional Pro setup", () => {
     const recovery = functionSource("recoveryContent", "identityPasswordForm");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
@@ -662,6 +669,13 @@ describe("fresh-account continuation", () => {
     expect(activation).toContain('onboardingRoute === "pro"');
     expect(content).not.toMatch(/localStorage|sessionStorage/);
     expect(bootstrap).toContain('onboardingRoute = "welcome"');
+  });
+
+  it("makes the optional Pro Skip control explicitly advance to privacy", () => {
+    const content = functionSource("proSetupContent", "tutorialContent");
+    const binding = functionSource("bindOnboarding", "completeOnboarding");
+    expect(content).toContain('id="skip-pro-setup"');
+    expect(binding).toMatch(/#skip-pro-setup[\s\S]*?addEventListener\("click"[\s\S]*?continueFromProOnboarding\("skipped"\)\.route[\s\S]*?render\(\)/);
   });
 
   it("offers an optional fixed Mullvad handoff without claiming tunnel access", () => {

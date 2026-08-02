@@ -21,7 +21,7 @@ import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } 
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
 import { chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type TorOnboardingState } from "./onboarding-tor";
 import { renderRecoveryStatesSettings } from "./recovery-states";
-import { previousOnboardingRoute } from "./onboarding-sequence";
+import { continueFromProOnboarding, previousOnboardingRoute } from "./onboarding-sequence";
 import { componentPickerScreen } from "./component-picker";
 import { componentManagerFromOnboarding } from "./component-manager";
 import { autoScrubConsentPrompt, decideAutoScrubInstall } from "./component-consent";
@@ -1721,8 +1721,8 @@ function welcomeOnboardingContent(): string {
 
 function proSetupContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  if (pro) return `<section class="pro-setup" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><button class="button primary" data-onboarding="sending" type="button">Continue</button></section>`;
-  return `<section class="pro-setup" aria-labelledby="route-heading"><p class="eyebrow">Optional</p><h1 id="route-heading" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Continue</button></form><button class="text-button" data-onboarding="sending" type="button">Skip</button></section>`;
+  if (pro) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><button class="button primary" data-onboarding="sending" type="button">Continue</button></section>`;
+  return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading"><p class="eyebrow">Optional</p><h1 id="route-heading" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Continue</button></form><button class="text-button" id="skip-pro-setup" type="button">Skip</button></section>`;
 }
 
 function tutorialContent(): string {
@@ -2442,7 +2442,7 @@ function recoveryContent(): string {
   if (view.mode === "reveal-required") return recoveryRevealContent(view);
   if (view.mode === "refusal") return recoveryProtectionRefusalContent(view);
   const secrets = visibleRecoverySecrets(state);
-  if (!secrets) return `<p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="pro">Continue</button>`;
+  if (!secrets) return `<section class="onboarding-centered-step recovery-empty" aria-labelledby="route-heading"><p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="pro">Continue</button></section>`;
   return `<h1 id="route-heading" tabindex="-1" class="recovery-heading">Save your recovery kit</h1><section class="setup-surface recovery-surface">${recoveryProtectionNoticeMarkup(view)}${recoveryKitSecretCardsMarkup(secrets, escapeHtml)}${secureRecoveryOnboardingContent()}<details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(secrets.userId)}</code></details><button class="button" id="copy-recovery-kit" type="button">Copy recovery kit</button><label class="check"><input id="recovery-saved" type="checkbox" ${recoverySavedAcknowledged ? "checked" : ""}/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" ${recoverySavedAcknowledged ? "" : "disabled"}>Continue</button></section>`;
 }
 
@@ -2594,6 +2594,10 @@ function previousSetupRoute(current: OnboardingRoute): OnboardingRoute {
 
 function bindOnboarding(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = onboardingRouteForBuild(button.dataset.onboarding as OnboardingRoute); render(); }));
+  document.querySelector<HTMLButtonElement>("#skip-pro-setup")?.addEventListener("click", () => {
+    onboardingRoute = onboardingRouteForBuild(continueFromProOnboarding("skipped").route);
+    render();
+  });
   document.querySelector<HTMLFormElement>("#activation-form")?.addEventListener("submit", (event) => void activatePro(event));
   bindSavedAccountControls();
   bindBrowserImportControls();
