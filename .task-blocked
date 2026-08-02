@@ -1,0 +1,1 @@
+Hydration/revoke response reconciliation is blocked: live IPC signatures in apps/osl-hub/src/main.rs return Vec and (), while the required parser/envelope repair belongs to T20-F4 (apps/osl-hub-ui/src/services.ts); T20-F3 only owns browser_footprint.rs.
