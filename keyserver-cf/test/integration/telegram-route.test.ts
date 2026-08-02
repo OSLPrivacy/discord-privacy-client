@@ -559,9 +559,9 @@ describe("Telegram operator webhook route", () => {
     expect(telegramBody.text).toContain("/osl status: current coordination state");
     expect(telegramBody.text).toContain("/osl progress: project progress block");
     expect(telegramBody.text).toContain("/osl payments: Stripe and Pro license summary");
-    expect(telegramBody.text).toContain("OSL progress  unavailable");
-    expect(telegramBody.text).toContain("ETA: unknown");
-    expect(telegramBody.text).toContain("Updated:");
+    expect(telegramBody.text).toContain("OSL progress (internal checklist)");
+    expect(telegramBody.text).toContain("Provisional verified progress: 100 / 303 points = 33%");
+    expect(telegramBody.text).toContain("Source: docs/design/osl-internal-build-checklist.md#1599e3823ef8");
   });
 
   it("Implement the Telegram /osl command hierarchy with progress and suggestions.", async () => {
@@ -581,8 +581,8 @@ describe("Telegram operator webhook route", () => {
     expect(helpBody.text).toContain("/osl stats: live commerce summary");
     expect(helpBody.text).toContain("/osl payments: Stripe and Pro license summary");
     expect(helpBody.text).toContain("/osl downloads: download requests");
-    expect(helpBody.text).toContain("OSL progress  unavailable");
-    expect(helpBody.text).toContain("ETA: unknown");
+    expect(helpBody.text).toContain("OSL progress (internal checklist)");
+    expect(helpBody.text).toContain("Provisional verified progress: 100 / 303 points = 33%");
 
     const paymentsFetcher = outboundFetcher();
     const paymentsResponse = await handleTelegramWebhook(
@@ -600,7 +600,7 @@ describe("Telegram operator webhook route", () => {
     ) as { text: string };
     expect(paymentsBody.text).toContain("Payments:");
     expect(paymentsBody.text).toContain("Stripe available: $12.50");
-    expect(paymentsBody.text).toContain("OSL progress  unavailable");
+    expect(paymentsBody.text).toContain("OSL progress (internal checklist)");
 
     const typoFetcher = outboundFetcher();
     const typoResponse = await handleTelegramWebhook(
@@ -614,7 +614,7 @@ describe("Telegram operator webhook route", () => {
     ) as { text: string };
     expect(typoBody.text).toContain("Unknown /osl command.");
     expect(typoBody.text).toContain("Suggestion: /osl payments");
-    expect(typoBody.text).toContain("OSL progress  unavailable");
+    expect(typoBody.text).toContain("OSL progress (internal checklist)");
     expect(typoBody.text).not.toContain("paymnts");
     expect(typoBody.text).not.toContain("secret-extra");
   });
@@ -637,7 +637,7 @@ describe("Telegram operator webhook route", () => {
     ) as { text: string };
     expect(telegramBody.text).toContain("Payments:");
     expect(telegramBody.text).toContain("Stripe available: $12.50");
-    expect(telegramBody.text).toContain("OSL progress  unavailable");
+    expect(telegramBody.text).toContain("OSL progress (internal checklist)");
   });
 
   it("suggests the closest safe /osl command without echoing unknown text", async () => {
@@ -673,7 +673,7 @@ describe("Telegram operator webhook route", () => {
     expect(telegramBody.text).toContain("Cannot change /osl coordination state here.");
     expect(telegramBody.text).toContain("Owner binding is required");
     expect(telegramBody.text).not.toContain("tab-7");
-    expect(telegramBody.text).toContain("OSL progress  unavailable");
+    expect(telegramBody.text).toContain("OSL progress (internal checklist)");
   });
 
   it("telegram'", async () => {
@@ -696,7 +696,7 @@ describe("Telegram operator webhook route", () => {
     expect(hierarchyBody.text).toContain("/osl stats: live commerce summary");
     expect(hierarchyBody.text).toContain("/osl payments: Stripe and Pro license summary");
     expect(hierarchyBody.text).toContain("/osl downloads: download requests");
-    expect(hierarchyBody.text).toContain("OSL progress  unavailable");
+    expect(hierarchyBody.text).toContain("OSL progress (internal checklist)");
 
     const progressFetcher = outboundFetcher();
     const progressResponse = await handleTelegramWebhook(
@@ -711,9 +711,9 @@ describe("Telegram operator webhook route", () => {
       String(vi.mocked(progressFetcher).mock.calls[0]?.[1]?.body),
     ) as { chat_id: string; text: string };
     expect(progressBody.chat_id).toBe(ADMIN_CHAT_ID);
-    expect(progressBody.text).toContain("OSL progress  unavailable");
-    expect(progressBody.text).toContain("ETA: unknown");
-    expect(progressBody.text).toContain("Updated:");
+    expect(progressBody.text).toContain("OSL progress (internal checklist)");
+    expect(progressBody.text).toContain("Provisional verified progress: 100 / 303 points = 33%");
+    expect(progressBody.text).toContain("Source: docs/design/osl-internal-build-checklist.md#1599e3823ef8");
     expect(progressBody.text).not.toContain("OSL operator commands");
 
     const acceptedFetcher = outboundFetcher();
@@ -791,7 +791,7 @@ describe("Telegram operator webhook route", () => {
     expect(typoBody.chat_id).toBe(ADMIN_CHAT_ID);
     expect(typoBody.text).toContain("Unknown /osl command.");
     expect(typoBody.text).toContain("Suggestion: /osl payments");
-    expect(typoBody.text).toContain("OSL progress  unavailable");
+    expect(typoBody.text).toContain("OSL progress (internal checklist)");
     expect(typoBody.text).not.toContain("paymnts");
     expect(typoBody.text).not.toContain("private-note");
 
@@ -811,7 +811,7 @@ describe("Telegram operator webhook route", () => {
     expect(controlBody.chat_id).toBe(viewerChatId);
     expect(controlBody.text).toContain("Cannot change /osl coordination state from this chat.");
     expect(controlBody.text).toContain("Try /osl status");
-    expect(controlBody.text).toContain("OSL progress  unavailable");
+    expect(controlBody.text).toContain("OSL progress (internal checklist)");
     expect(controlBody.text).not.toContain("owner-secret");
   });
 
@@ -897,8 +897,8 @@ describe("Telegram operator webhook route", () => {
     expect(helpBody.text).toContain("/osl status: current coordination state");
     expect(helpBody.text).toContain("/osl progress: project progress block");
     expect(helpBody.text).toContain("/osl on|off|quiet|bind|unbind");
-    expect(helpBody.text).toContain("OSL progress  unavailable");
-    expect(helpBody.text).toContain("ETA: unknown");
+    expect(helpBody.text).toContain("OSL progress (internal checklist)");
+    expect(helpBody.text).toContain("Provisional verified progress: 100 / 303 points = 33%");
 
     const typoFetcher = outboundFetcher();
     const typoResponse = await handleTelegramWebhook(

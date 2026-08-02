@@ -317,9 +317,12 @@ def audit_text(text: str, release_text: str | None = None) -> list[str]:
         errors.extend(_audit_unreleased_proof(model))
     except AssertionError as exc:
         errors.append(str(exc))
+    # Reproduction validates bytes that have actually shipped.  It intentionally
+    # runs for release tags (plus the scheduled/manual recovery paths), not every
+    # main push; the companion workflow contract asserts this trigger shape.
     require(
-        "push:\n    branches:\n      - main\n    tags:\n      - \"hub-v*\"" in text,
-        "workflow must run on main pushes and hub-v* tags",
+        "push:\n    tags:\n      - \"hub-v*\"" in text,
+        "workflow must run on hub-v* release-tag pushes",
         errors,
     )
     require("candidate_tag:" in text, "manual dispatch must accept an explicit candidate tag", errors)

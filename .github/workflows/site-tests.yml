@@ -1,0 +1,24 @@
+name: Website Evidence Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  website-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Check accessibility matrix
+        run: node scripts/check-a11y.mjs
+      - name: Check build identity contract
+        run: node scripts/test-build-identity.mjs
+      - name: Test deterministic website screenshot matrix controls
+        run: node --test scripts/screenshot-matrix.test.mjs
