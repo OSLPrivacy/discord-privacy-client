@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisites: T1-37 has not created crates/ipc/src/group_manifest.rs (the manifest and per-recipient sealed capabilities), and T18-C1 has not created crates/ipc/src/group_send.rs; T1 and T18-C1 respectively own them.
