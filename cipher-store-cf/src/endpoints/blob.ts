@@ -219,15 +219,31 @@ export async function handleFetch(
   // 400/404 distinction turns this public route into an existence oracle.
   if (!id) return notFound();
   const row = await env.DB.prepare(
-    "SELECT data, expires_at FROM blobs WHERE id = ? LIMIT 1"
+    "SELECT data, expires_at, fetch_token FROM blobs WHERE id = ? LIMIT 1"
   )
     .bind(id)
-    .first<{ data: unknown; expires_at: number }>();
+    .first<{ data: unknown; expires_at: number; fetch_token: string | null }>();
   if (!row) return notFound();
   const now = Math.floor(Date.now() / 1000);
   if (row.expires_at < now) {
     // Expired but the sweep hasn't run yet. Treat as gone.
     return notFound();
+  }
+  // RESTORED. t1-11 removed this check, which made the blob_id ALONE sufficient
+  // to fetch. The re-frozen transport contract is explicit that fetch is
+  // addressed by "blob_id path + fetch_cap header", precisely because request
+  // PATHS are logged by default (Cloudflare retains ClientRequestURI) while
+  // headers are not -- so "a log dump yields blob_ids, which are useless
+  // without fetch_cap". Without this, a log dump is live fetch authority over
+  // every unexpired blob.
+  //
+  // A missing or wrong token answers exactly like an absent blob: this route is
+  // public, so a 401/403 would turn it into an existence oracle.
+  {
+    const presented = readFetchToken(request);
+    if (row.fetch_token === null) return notFound();      // legacy rows: treat as gone
+    if (presented === null) return notFound();
+    if (!constantTimeEqual(row.fetch_token, presented)) return notFound();
   }
   // D1's BLOB return type is officially ArrayBuffer but in practice
   // varies by runtime version (Uint8Array, plain string, or even an
