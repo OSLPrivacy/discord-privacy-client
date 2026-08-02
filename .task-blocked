@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing: an operator-provisioned Windows WebView2 QA environment with authorized test accounts and interactive sign-in access for all 12 surfaces; T4-E3 owns the measurement, while account provisioning is not assigned to any plan task.
