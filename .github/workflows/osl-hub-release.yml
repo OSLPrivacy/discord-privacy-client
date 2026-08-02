@@ -31,7 +31,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
-          toolchain: 1.88.0
+          toolchain: 1.97.1
 
       - name: Resolve and verify the app release version
         id: hub-version

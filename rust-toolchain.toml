@@ -7,6 +7,6 @@
 # History: 1.78 → 1.82 in the crypto-foundation bring-up (ml-kem 0.2
 # / hybrid-array 0.2 needed 1.81+). 1.82 → 1.88 here for the Tauri
 # integration in Layer 8.
-channel = "1.88.0"
+channel = "1.97.1"
 components = ["rustfmt", "clippy"]
 profile = "minimal"
