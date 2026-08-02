@@ -5758,7 +5758,15 @@ fn lookup_username(username: &str) -> Result<Option<String>, String> {
     if !valid_osl_username(username) {
         return Err("OSL username is invalid".to_owned());
     }
-    Ok(None)
+    let directory = keystore::osl_config_dir()
+        .map_err(|error| format!("OSL username directory configuration is unavailable: {error}"))?;
+    let client =
+        keystore::KeyServerClient::new(ipc::commands::resolve_keyserver_base_url(&directory))
+            .map_err(|error| format!("OSL username directory is unavailable: {error}"))?;
+    client
+        .resolve_username(username)
+        .map(|resolved| resolved.map(|identity| identity.user_id))
+        .map_err(|error| format!("OSL username lookup failed: {error}"))
 }
 
 fn claim_username<T>(_identity: &T, username: &str) -> Result<HubUsernameClaim, String>

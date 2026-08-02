@@ -1,6 +1,7 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use keystore::username::{ResolvedIdentity, Resolver, UsernameResolveError};
+use keystore::KeyServerClient;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -65,6 +66,31 @@ fn resolves_a_matching_suffix_after_requesting_its_four_hex_bucket() {
     let (base_url, server) = fixture_server(bucket_for(name, expected_key));
 
     let resolved = Resolver::new(base_url).unwrap().resolve(name).unwrap();
+
+    assert_eq!(
+        resolved,
+        Some(ResolvedIdentity {
+            user_id: "osl_match".into(),
+            ed25519_public: expected_key,
+        })
+    );
+    let request = server.join().unwrap();
+    assert!(request.starts_with(&format!(
+        "GET /v1/username-bucket/{} HTTP/1.1",
+        &digest_hex(name)[..4]
+    )));
+}
+
+#[test]
+fn shipping_keyserver_client_routes_username_lookup_through_the_bucket_resolver() {
+    let name = "alice_01";
+    let expected_key = [9_u8; 32];
+    let (base_url, server) = fixture_server(bucket_for(name, expected_key));
+
+    let resolved = KeyServerClient::new(base_url)
+        .unwrap()
+        .resolve_username(name)
+        .unwrap();
 
     assert_eq!(
         resolved,

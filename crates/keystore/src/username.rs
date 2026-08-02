@@ -95,6 +95,18 @@ impl Resolver {
         })
     }
 
+    /// Construct a resolver with a caller-owned HTTP client.
+    ///
+    /// The keyserver client uses this to keep username resolution on the same
+    /// pinned-origin and transport-policy path as the rest of the shipping
+    /// directory traffic.
+    pub(crate) fn with_client(base_url: &str, client: reqwest::blocking::Client) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_owned(),
+            client,
+        }
+    }
+
     /// Resolve `name` through its k-anonymity bucket.
     pub fn resolve(&self, name: &str) -> Result<Option<ResolvedIdentity>> {
         let digest = username_digest(name);

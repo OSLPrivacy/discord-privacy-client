@@ -20,12 +20,12 @@
 //! Tokio runtime under the hood; that's fine — the outer Tauri
 //! runtime stays unblocked.
 
+use crate::account_ownership_proof::AccountOwnershipProof;
 use crate::burn::{sign_burn, BurnScope};
 use crate::control_inbox::{
     sign_control_inbox_delete, sign_control_inbox_get, sign_control_inbox_get_filtered,
     sign_control_inbox_post_lane, sign_sender_filter_floor_get,
 };
-use crate::account_ownership_proof::AccountOwnershipProof;
 use crate::identity::Identity;
 use crate::prekeys::{
     sign_replenish_batch, OpkEntry, PrekeyState, ReplenishOpk, ReplenishSpk, SpkEntry,
@@ -37,6 +37,7 @@ use crate::sender_filter_rollout::{
 };
 use crate::signed_get::{sign_prekey_bundle_get, sign_wrapped_key_get};
 use crate::unregister::sign_unregister;
+use crate::username::{ResolvedIdentity, Resolver};
 use crate::wrapped_key::{sign_wrapped_key_post, WrappedKeyUpload};
 use crate::{Error, Result};
 
@@ -926,6 +927,17 @@ impl KeyServerClient {
     /// client bearer is deliberately discarded and never placed on the wire.
     pub fn with_client_token(self, _token: Option<String>) -> Self {
         self
+    }
+
+    /// Resolve a username through its fixed-size k-anonymity bucket.
+    ///
+    /// This deliberately shares this client's already-validated origin and
+    /// HTTP policy. Callers receive only the bucket row and must still verify
+    /// that any subsequently fetched key bundle binds to its Ed25519 key.
+    pub fn resolve_username(&self, name: &str) -> Result<Option<ResolvedIdentity>> {
+        Resolver::with_client(&self.base_url, self.client.clone())
+            .resolve(name)
+            .map_err(|error| Error::Transport(format!("username resolution: {error}")))
     }
 
     /// Build the registration request body for `identity`, signed
