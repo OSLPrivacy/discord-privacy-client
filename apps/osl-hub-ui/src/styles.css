@@ -4259,6 +4259,23 @@ code {
 
 .scrub-local-promise strong { color: var(--text); }
 
+.scrub-route { margin: 16px 0; border: 1px solid var(--line); background: var(--panel); }
+.scrub-route-progress { margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--line); display: flex; gap: 14px; list-style: none; color: var(--subtle); font-size: 11px; }
+.scrub-route-progress-step.active { color: var(--text); font-weight: 600; }
+.scrub-route-progress-step.complete { color: var(--brand); }
+.scrub-route-panel { padding: 16px; }
+.scrub-route-panel h2 { margin: 0; font-size: 16px; }
+.scrub-route-panel > p { margin: 7px 0 14px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.scrub-route-panel fieldset { margin: 0 0 14px; padding: 0; border: 0; }
+.scrub-route-panel legend { margin-bottom: 6px; color: var(--text); font-size: 12px; font-weight: 600; }
+.scrub-route-choice-list { display: grid; gap: 6px; }
+.scrub-route-choice { min-height: 48px; padding: 8px 10px; border: 1px solid var(--line); display: flex; align-items: center; gap: 9px; cursor: pointer; }
+.scrub-route-choice:has(input:checked) { border-left: 3px solid var(--brand); background: var(--panel-2); }
+.scrub-route-choice strong, .scrub-route-choice small { display: block; }
+.scrub-route-choice strong { font-size: 12px; }
+.scrub-route-choice small, .scrub-route-status { color: var(--muted); font-size: 11px; }
+.scrub-route-panel .button + .button { margin-left: 8px; }
+
 .scrub-category-picker {
   margin: 0 0 16px;
   padding: 0;
