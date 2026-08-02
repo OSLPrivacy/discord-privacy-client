@@ -6911,8 +6911,7 @@ pub fn cmd_osl_decrypt_message_v2(
             tracing::debug!(wire_version = "rn", "OSL-RN bootstrap decode dispatched");
             let peer = osl_ratchet_next::peek_bootstrap_initiator_identity(&content)
                 .ok()
-                .flatten()
-                .map(|identity| *identity.as_bytes());
+                .flatten();
             let recovered = match accept_rn_bootstrap_inbound_unknown(
                 state,
                 &content,
@@ -6925,6 +6924,7 @@ pub fn cmd_osl_decrypt_message_v2(
                         // A wire from an RN-pinned peer that cannot open is a
                         // real symptom. The durable detector decides whether
                         // it is a single bad packet or a desync.
+                        let peer = peer.as_bytes();
                         let _ = record_rn_receive_failure(config_dir.as_deref(), peer);
                     }
                     return Err(error);
@@ -6933,7 +6933,7 @@ pub fn cmd_osl_decrypt_message_v2(
             // A successful authenticated RN decrypt is the only event allowed
             // to clear a durable desync diagnosis for this peer.
             let peer = peer.ok_or_else(|| "OSL: secure message could not be opened".to_string())?;
-            record_rn_successful_decrypt(config_dir.as_deref(), &peer)?;
+            record_rn_successful_decrypt(config_dir.as_deref(), peer.as_bytes())?;
             recovered
         }
         _ => {
