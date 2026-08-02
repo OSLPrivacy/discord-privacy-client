@@ -59,6 +59,11 @@ import {
   sweepExpiredLinks,
 } from "./lib/sweep.js";
 
+// Wrangler resolves Durable Object classes from the Worker module's exports.
+// Keeping this re-export beside the default Worker entry makes the binding in
+// wrangler.toml part of the deployed module graph rather than a dead file.
+export { PushConnection } from "./realtime/connection.js";
+
 export default {
   async fetch(
     request: Request,
