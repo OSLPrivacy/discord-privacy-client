@@ -20,6 +20,7 @@ pub mod adapter_profile_boot;
 // failed to resolve `tauri` in every non-desktop build of the product lib.
 #[cfg(feature = "desktop")]
 pub mod ai_carrier;
+pub mod ai_consent;
 pub mod adapters;
 pub mod attended_imap;
 #[cfg(feature = "core")]
