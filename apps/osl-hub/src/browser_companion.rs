@@ -592,7 +592,7 @@ mod windows {
             previous_placement: placement,
             attached: false,
         };
-        if !unsafe { present(&mut hosted) } {
+        if !unsafe { present(&mut hosted, true) } {
             unsafe { restore_and_close(hosted) };
             return BrowserCompanionAction::failed(BrowserCompanionReason::WindowOperationRejected);
         }
@@ -620,7 +620,10 @@ mod windows {
             return BrowserCompanionAction::failed(BrowserCompanionReason::NotHosted);
         };
         hosted.trusted_parent = trusted_parent;
-        if !hosted_window_is_valid(hosted) || !unsafe { present(hosted) } {
+        // Geometry maintenance must never take foreground ownership from the
+        // window the user is interacting with.  Activation is deliberately
+        // reserved for the explicit focus command below.
+        if !hosted_window_is_valid(hosted) || !unsafe { present(hosted, false) } {
             return BrowserCompanionAction::failed(BrowserCompanionReason::WindowIdentityChanged);
         }
         BrowserCompanionAction::success(
@@ -642,7 +645,7 @@ mod windows {
         let Some(hosted) = guard.as_mut() else {
             return BrowserCompanionAction::failed(BrowserCompanionReason::NotHosted);
         };
-        if !hosted_window_is_valid(hosted) || !unsafe { present(hosted) } {
+        if !hosted_window_is_valid(hosted) || !unsafe { present(hosted, true) } {
             return BrowserCompanionAction::failed(BrowserCompanionReason::WindowIdentityChanged);
         }
         BrowserCompanionAction::success(
@@ -961,7 +964,10 @@ mod windows {
         })
     }
 
-    unsafe fn present(hosted: &mut HostedBrowserWindow) -> bool {
+    /// Apply containment geometry.  Only an explicit focus request is allowed
+    /// to activate the borrowed browser; resize/realignment passes use
+    /// `SWP_NOACTIVATE` so dragging OSL cannot steal focus.
+    unsafe fn present(hosted: &mut HostedBrowserWindow, activate: bool) -> bool {
         if !hosted_window_is_valid(hosted) {
             return false;
         }
@@ -988,14 +994,16 @@ mod windows {
             target.top,
             target.right - target.left,
             target.bottom - target.top,
-            SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+            SWP_FRAMECHANGED | SWP_SHOWWINDOW | if activate { 0 } else { SWP_NOACTIVATE },
         ) == 0
         {
             return false;
         }
         hosted.attached = true;
-        let _ = BringWindowToTop(hosted.window as HWND);
-        let _ = SetForegroundWindow(hosted.window as HWND);
+        if activate {
+            let _ = BringWindowToTop(hosted.window as HWND);
+            let _ = SetForegroundWindow(hosted.window as HWND);
+        }
         true
     }
 
