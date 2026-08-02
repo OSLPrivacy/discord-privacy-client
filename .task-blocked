@@ -1,0 +1,1 @@
+Archive routes require the Archive Durable Object binding, but owner decision D77 forbids registering/deploying that class; owner decision D77 must be lifted before T6-K2 can proceed.
