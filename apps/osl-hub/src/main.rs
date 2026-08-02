@@ -6006,7 +6006,7 @@ async fn prepare_local_protected_text_with_policy(
         let broker_state = app.state::<HubBrokerState>();
         let owner = active_unlocked_osl_user_id(&core)?;
         let origin = broker_state.validate_local_protected_origin(&context_token, &owner)?;
-        if origin == broker::ProtectedContextOrigin::EmbeddedHost {
+        if local_protected_origin_requires_host_revalidation(&origin) {
             let active = app
                 .state::<ServiceHostState>()
                 .current()
@@ -6025,7 +6025,7 @@ async fn prepare_local_protected_text_with_policy(
         })?;
         let still_active_origin =
             broker_state.validate_local_protected_origin(&context_token, &owner)?;
-        if still_active_origin == broker::ProtectedContextOrigin::EmbeddedHost {
+        if local_protected_origin_requires_host_revalidation(&still_active_origin) {
             let still_active = app
                 .state::<ServiceHostState>()
                 .current()
@@ -6037,6 +6037,15 @@ async fn prepare_local_protected_text_with_policy(
     })
     .await
     .map_err(|error| format!("OSL protected worker failed: {error}"))?
+}
+
+/// Only embedded service pages have a live `ServiceHostState` generation to
+/// re-prove. Native and standalone L1 contexts are instead bound to the
+/// owner-selected account and opaque broker lease.
+fn local_protected_origin_requires_host_revalidation(
+    origin: &broker::ProtectedContextOrigin,
+) -> bool {
+    matches!(origin, broker::ProtectedContextOrigin::EmbeddedHost)
 }
 
 #[tauri::command]
@@ -6132,20 +6141,29 @@ async fn decrypt_local_protected_capsule(
     tauri::async_runtime::spawn_blocking(move || {
         let core = app.state::<HubCoreState>();
         let broker_state = app.state::<HubBrokerState>();
-        let host_state = app.state::<ServiceHostState>();
-        let active = host_state
-            .current()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "OSL broker requires an active service host".to_owned())?;
-        broker_state.validate_active_host(&context_token, &active)?;
+        let owner = active_unlocked_osl_user_id(&core)?;
+        let origin = broker_state.validate_local_protected_origin(&context_token, &owner)?;
+        if local_protected_origin_requires_host_revalidation(&origin) {
+            let active = app
+                .state::<ServiceHostState>()
+                .current()
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "OSL broker requires an active service host".to_owned())?;
+            broker_state.validate_active_host(&context_token, &active)?;
+        }
         let decrypted = with_indexed_context_write(&app, &broker_state, &context_token, || {
             broker::decrypt_local_protected_capsule(&core, &broker_state, &context_token, capsule)
         })?;
-        let still_active = host_state
-            .current()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "OSL broker service host closed during decryption".to_owned())?;
-        broker_state.validate_active_host(&context_token, &still_active)?;
+        let still_active_origin =
+            broker_state.validate_local_protected_origin(&context_token, &owner)?;
+        if local_protected_origin_requires_host_revalidation(&still_active_origin) {
+            let still_active = app
+                .state::<ServiceHostState>()
+                .current()
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "OSL broker service host closed during decryption".to_owned())?;
+            broker_state.validate_active_host(&context_token, &still_active)?;
+        }
         Ok(decrypted)
     })
     .await
@@ -8897,6 +8915,29 @@ macro_rules! hub_tauri_generate_handler {
     ($($(#[$meta:meta])* $command:ident),* $(,)?) => {
         tauri::generate_handler![$($(#[$meta])* $command,)*]
     };
+}
+
+#[cfg(test)]
+mod local_protected_context_tests {
+    use super::local_protected_origin_requires_host_revalidation;
+    use osl_privacy_hub::broker::ProtectedContextOrigin;
+
+    #[test]
+    fn hostless_l1_origins_do_not_require_an_embedded_service_host() {
+        assert!(!local_protected_origin_requires_host_revalidation(
+            &ProtectedContextOrigin::NativeApp {
+                app_id: "signal".to_owned(),
+            }
+        ));
+        assert!(!local_protected_origin_requires_host_revalidation(
+            &ProtectedContextOrigin::Standalone {
+                service_id: "instagram".to_owned(),
+            }
+        ));
+        assert!(local_protected_origin_requires_host_revalidation(
+            &ProtectedContextOrigin::EmbeddedHost
+        ));
+    }
 }
 
 #[cfg(test)]
