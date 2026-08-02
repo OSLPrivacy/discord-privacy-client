@@ -60,14 +60,16 @@ describe("review defaults onboarding", () => {
     expect(review).not.toMatch(/keyserver|ratchet|receipt|browser profile|provider adapter/iu);
   });
 
-  it("is wired between protection presets and send setup", async () => {
+  it("is wired between protection presets, the explicit Tor choice, and send setup", async () => {
     const branches = { detected: false, install: false };
     const { reviewDefaultsOnboardingContent, sendingSetupContent } = await loadUi();
 
     expect(nextOnboardingRoute("privacy", branches)).toBe("defaults");
     expect(previousOnboardingRoute("defaults", branches)).toBe("privacy");
-    expect(nextOnboardingRoute("defaults", branches)).toBe("sending");
-    expect(previousOnboardingRoute("sending", branches)).toBe("defaults");
+    expect(nextOnboardingRoute("defaults", branches)).toBe("tor");
+    expect(previousOnboardingRoute("tor", branches)).toBe("defaults");
+    expect(nextOnboardingRoute("tor", branches)).toBe("sending");
+    expect(previousOnboardingRoute("sending", branches)).toBe("tor");
     expect(reviewDefaultsOnboardingContent()).toContain('id="continue-defaults-review"');
     expect(sendingSetupContent()).toContain("Choose how to send");
   });

@@ -9,6 +9,7 @@ export const ONBOARDING_SEQUENCE = [
   "pro",
   "privacy",
   "defaults",
+  "tor",
   "sending",
   "cover",
   "passwords",

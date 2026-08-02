@@ -19,6 +19,7 @@ import {
 } from "./state";
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
+import { chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type TorOnboardingState } from "./onboarding-tor";
 import { renderRecoveryStatesSettings } from "./recovery-states";
 import { previousOnboardingRoute } from "./onboarding-sequence";
 import { componentPickerScreen } from "./component-picker";
@@ -253,7 +254,7 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT = "osl://native-discord-composer
 // warning.
 const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-focus", "session-ended"] as const;
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
-type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "cover" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
+type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "tor" | "cover" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
 type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
@@ -313,6 +314,7 @@ let passwordRoleStatus: HubPasswordRoleStatus | null = null;
 let setup: SetupState = parseSetupState(null);
 let route: Route = "onboarding";
 let onboardingRoute: OnboardingRoute = "welcome";
+let torOnboarding: TorOnboardingState = initialTorOnboardingState();
 // A cache only. The authority is encrypted account state in the native hub;
 // WebView storage is deliberately not consulted because burn/duress erase it.
 let recoveryKitUnsavedDurable = false;
@@ -1637,7 +1639,7 @@ function dockOnboardingBackControl(): void {
 function renderOnboarding(): void {
   onboardingRoute = onboardingRouteForBuild(onboardingRoute);
   persistCurrentOnboardingRoute();
-  const setupScreen = ["pro", "privacy", "defaults", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
+  const setupScreen = ["pro", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
   const setupNavigation = setupScreen
     ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
     : "";
@@ -1686,6 +1688,7 @@ function onboardingContent(): string {
   if (onboardingRoute === "browser") return browserImportContent();
   if (onboardingRoute === "mullvad") return mullvadSetupContent();
   if (onboardingRoute === "defaults") return reviewDefaultsOnboardingContent();
+  if (onboardingRoute === "tor") return onboardingTorMarkup(torOnboarding);
   if (onboardingRoute === "cover") return coverDraftSetupContent();
   if (onboardingRoute === "passwords") return onboardingPasswordRoleContent("stealth");
   if (onboardingRoute === "burnpass") return onboardingPasswordRoleContent("burn");
@@ -2751,7 +2754,18 @@ function bindOnboarding(): void {
     onboardingRoute = "cover";
     render();
   });
-  document.querySelector("#continue-defaults-review")?.addEventListener("click", () => { onboardingRoute = "sending"; render(); });
+  document.querySelector("#continue-defaults-review")?.addEventListener("click", () => { onboardingRoute = "tor"; render(); });
+  document.querySelectorAll<HTMLInputElement>('input[name="tor-route"]').forEach((input) => input.addEventListener("change", () => {
+    if (input.checked && (input.value === "tor" || input.value === "direct")) {
+      torOnboarding = chooseTorRoute(torOnboarding, input.value);
+      render();
+    }
+  }));
+  document.querySelector<HTMLButtonElement>("[data-tor-choice-continue]")?.addEventListener("click", () => {
+    if (torOnboarding.choice === null) return;
+    onboardingRoute = "sending";
+    render();
+  });
   document.querySelector("#continue-cover-draft")?.addEventListener("click", () => { onboardingRoute = "passwords"; render(); });
   bindOnboardingPasswordRole();
   document.querySelectorAll<HTMLButtonElement>("button[data-password-role-next]").forEach((button) => button.addEventListener("click", () => {
