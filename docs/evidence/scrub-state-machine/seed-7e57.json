@@ -1,0 +1,8 @@
+{
+  "proof": "SCRUB-STATE-MACHINE-PROOF",
+  "build": "osl-hub Cargo package 0.1.0",
+  "seed": "0x7e57",
+  "redaction": "fixture identifiers only; no account content or credentials",
+  "trace": ["open", "step", "duplicate-step", "owner-stop", "prepare-after-stop", "stale-step"],
+  "oracle": "a halted run has no pending delete authority; stale/reordered events cannot revive it or produce a receipt"
+}
