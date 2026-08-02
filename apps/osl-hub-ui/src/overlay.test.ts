@@ -577,7 +577,7 @@ describe("trusted composer overlay", () => {
     // The handle is held to the id shape the rest of this path already uses.
     expect(parseNativeDiscordOverlayOpened({ ...opened, messageId: "not-a-peer-id" })).toBeNull();
     const pendingViewOnce = { messageId: "peer-0123456789abcdef0123456789abcdef", expiresAt: prepared.expiresAt, personToPersonE2ee: true };
-    const batch = { messages: [opened], pendingViewOnce: [pendingViewOnce], acknowledgments: [acknowledgment], fetched: 2, decryptDisplayEnabled: true, deferredRows: 0 };
+    const batch = { messages: [opened], pendingViewOnce: [pendingViewOnce], acknowledgments: [acknowledgment], fetched: 2, decryptDisplayEnabled: true, deferredRows: 0, unrecognizedWireRows: 0 };
     expect(parseNativeDiscordOverlayOpenedBatch(batch)).toEqual(batch);
     // A batch that cannot say whether opening was switched on, or how many rows it
     // deferred, is the ambiguous shape this parser now refuses: those two states
@@ -586,9 +586,13 @@ describe("trusted composer overlay", () => {
     expect(parseNativeDiscordOverlayOpenedBatch(batchWithoutDisplay)).toBeNull();
     const { deferredRows: _deferred, ...batchWithoutDeferred } = batch;
     expect(parseNativeDiscordOverlayOpenedBatch(batchWithoutDeferred)).toBeNull();
+    const { unrecognizedWireRows: _unrecognized, ...batchWithoutUnrecognized } = batch;
+    expect(parseNativeDiscordOverlayOpenedBatch(batchWithoutUnrecognized)).toBeNull();
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, decryptDisplayEnabled: false })?.decryptDisplayEnabled).toBe(false);
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, deferredRows: 3 })?.deferredRows).toBe(3);
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, deferredRows: -1 })).toBeNull();
+    expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, unrecognizedWireRows: 1 })?.unrecognizedWireRows).toBe(1);
+    expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, unrecognizedWireRows: -1 })).toBeNull();
     expect(parseNativeDiscordOverlayState({ ...state, scopeApproved: false })).toBeNull();
     const { discordMarkerAvailable: _marker, ...stateWithoutMarkerAvailability } = state;
     expect(parseNativeDiscordOverlayState(stateWithoutMarkerAvailability)).toBeNull();

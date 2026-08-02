@@ -1,11 +1,10 @@
 //! Phase 9-A3 Task 1: persistence round-trip for sender-keys state.
 //!
 //! Mirror-struct invariants verified here:
-//! - Persisted-then-reloaded sender chain keeps pairing with its
-//!   counterpart receiver: a message encrypted by the reloaded sender
-//!   still decrypts on the never-restarted receiver, and vice versa.
-//! - Skipped-key cache entries survive the round trip.
-//! - `chain_started_at` and `last_known_members` round-trip exactly.
+//! - Reloading a sender chain starts a fresh chain, which must be
+//!   distributed before it can pair with an existing receiver.
+//! - Skipped-key cache entries do not survive the round trip.
+//! - Sender metadata resets with the fresh post-restart chain.
 //! - Serde JSON round-trip is lossless.
 //! - On-disk version byte stamps to the documented constant.
 //! - An empty receivers map round-trips cleanly.
@@ -66,16 +65,28 @@ fn mirror_roundtrip_preserves_send_decrypt_pairing() {
     let disk = SenderKeyStateOnDisk::from(&state);
     let reloaded: SenderKeyState = disk.try_into().expect("reload");
 
-    // The reloaded state can still encrypt to its receiver chain
-    // (self-loopback through peer-x — confirms ck_n + chain_id survived).
+    // A restart deliberately advances to a fresh root instead of restoring
+    // the old root from disk. Applying that root is the receiver side of the
+    // mandatory post-restart SKDM distribution.
     let mut reloaded = reloaded;
+    let (chain_id, root, device) = {
+        let sender = reloaded.sender_chain().unwrap();
+        (
+            sender.current_chain_id(),
+            sender.rotation_root_bytes(),
+            sender.physical_device_id(),
+        )
+    };
+    reloaded
+        .rotate_receiver(b"peer-x", chain_id, &root, device)
+        .unwrap();
     let m_after = reloaded.encrypt(b"after restart", &c).unwrap();
     let plain = reloaded.decrypt_from(b"peer-x", &m_after, &c).unwrap();
     assert_eq!(plain, b"after restart");
 }
 
 #[test]
-fn mirror_roundtrip_preserves_skipped_keys() {
+fn mirror_roundtrip_drops_skipped_keys() {
     let (mut sender, mut receiver, c) = pair();
     // Send 3 messages; receiver gets them out of order → skipped cache.
     let m0 = sender.encrypt(b"m0", &c).unwrap();
@@ -102,8 +113,6 @@ fn mirror_roundtrip_preserves_skipped_keys() {
     // skipped keys (no public swap API; we mimic by re-installing).
     let _ = state;
     // Direct check: round-trip the receiver inside a fresh state.
-    let cached_count = receiver.skipped_count();
-
     let state2 = SenderKeyState::new();
     // Sidestep: build the SenderKeyStateOnDisk manually with the
     // out-of-order receiver as a peer entry.
@@ -117,49 +126,27 @@ fn mirror_roundtrip_preserves_skipped_keys() {
     let chain = reloaded.receiver_chain(b"peer-out-of-order").unwrap();
     assert_eq!(
         chain.skipped_count(),
-        cached_count,
-        "skipped cache must survive serde round trip"
+        0,
+        "skipped message keys must not persist"
     );
 
-    // And the cached entry must still decrypt the original m0.
+    // The prior skipped key cannot be recovered after a restart.
     let mut reloaded = reloaded;
-    let plain = reloaded
+    assert!(reloaded
         .decrypt_from(b"peer-out-of-order", &m0, &c)
-        .unwrap();
-    assert_eq!(plain, b"m0");
+        .is_err());
     let _ = state2;
 }
 
 #[test]
-fn mirror_roundtrip_preserves_chain_started_at() {
+fn mirror_roundtrip_resets_sender_chain_metadata() {
     let mut state = SenderKeyState::new();
     state.install_sender().unwrap();
-    let before = state.sender_chain().unwrap().chain_started_at();
     let disk = SenderKeyStateOnDisk::from(&state);
     let reloaded: SenderKeyState = disk.try_into().expect("reload");
-    let after = reloaded.sender_chain().unwrap().chain_started_at();
-    assert_eq!(after, before, "chain_started_at must round-trip");
-}
-
-#[test]
-fn mirror_roundtrip_preserves_last_known_members() {
-    let mut state = SenderKeyState::new();
-    state.install_sender().unwrap();
-    state
-        .sender_chain_mut()
-        .unwrap()
-        .set_last_known_members(vec![b"alice".to_vec(), b"bob".to_vec()]);
-
-    let disk = SenderKeyStateOnDisk::from(&state);
-    let reloaded: SenderKeyState = disk.try_into().expect("reload");
-    let members = reloaded
-        .sender_chain()
-        .unwrap()
-        .last_known_members()
-        .to_vec();
-    assert_eq!(members.len(), 2);
-    assert!(members.iter().any(|m| m == b"alice"));
-    assert!(members.iter().any(|m| m == b"bob"));
+    let sender = reloaded.sender_chain().unwrap();
+    assert!(sender.chain_started_at() > 0);
+    assert!(sender.last_known_members().is_empty());
 }
 
 #[test]
@@ -183,7 +170,7 @@ fn mirror_version_byte_present_and_correct() {
     let state = SenderKeyState::new();
     let disk = SenderKeyStateOnDisk::from(&state);
     assert_eq!(disk.version, SENDER_KEY_STATE_ON_DISK_VERSION);
-    assert_eq!(disk.version, 0x02);
+    assert_eq!(disk.version, 0x03);
 }
 
 #[test]

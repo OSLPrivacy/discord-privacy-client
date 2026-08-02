@@ -10,6 +10,41 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::wire_rn::{RnError, RN_SESSION_DIR};
 
+/// Return the stable reset-ledger key for a complete, newly observed TOFU
+/// bundle.  This is deliberately distinct from `TofuOutcome`: an unaccepted
+/// `Changed` outcome can recur for every send, while its bundle digest must
+/// cause only one session reset.
+pub fn tofu_bundle_digest(bundle: &crate::tofu::KeyBundle) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"OSL-RN/v1/tofu-reset-bundle/");
+    for component in [
+        Some(bundle.ed25519_pub.as_bytes()),
+        Some(bundle.x25519_pub.as_bytes()),
+        Some(bundle.mlkem768_pub.as_bytes()),
+        bundle.ratchet_initial_pub.as_deref().map(str::as_bytes),
+    ] {
+        match component {
+            Some(bytes) => {
+                hasher.update([1]);
+                hasher.update((bytes.len() as u64).to_be_bytes());
+                hasher.update(bytes);
+            }
+            None => hasher.update([0]),
+        }
+    }
+    hasher.finalize().into()
+}
+
+/// The pending key-change alert is the reset-once ledger.  It stores the
+/// digest that has already invalidated the old session; repeated observations
+/// of that digest must leave a freshly bootstrapped session intact.
+pub fn tofu_change_needs_session_reset(
+    pending: Option<&crate::tofu::KeyBundle>,
+    fetched: &crate::tofu::KeyBundle,
+) -> bool {
+    pending.is_none_or(|bundle| tofu_bundle_digest(bundle) != tofu_bundle_digest(fetched))
+}
+
 const HEALTH_BLOB_VERSION: u32 = 1;
 const MAX_HEALTH_FILE_BYTES: u64 = 16 * 1024;
 static NEXT_TEMP_SUFFIX: AtomicU64 = AtomicU64::new(0);
@@ -21,6 +56,16 @@ pub enum RnSessionHealth {
     Degraded,
     Desynced,
     Unrecoverable,
+}
+
+/// An explicit, safe action offered for a degraded RN session.
+///
+/// A skip-limit refusal means the receiver deliberately declined an
+/// impractically large gap. It is not authentication evidence, so the
+/// caller must offer a fresh handshake instead of reporting tampering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RnRecoveryOffer {
+    ReestablishSession,
 }
 
 /// A receive-side symptom that can prove an RN-pinned session has diverged.
@@ -61,6 +106,17 @@ impl RnPeerHealth {
         self.consecutive_auth_failures
     }
 
+    /// The explicit recovery action for a state that cannot process an
+    /// otherwise valid RN message.
+    pub fn recovery_offer(&self) -> Option<RnRecoveryOffer> {
+        match self.health {
+            RnSessionHealth::Degraded | RnSessionHealth::Desynced => {
+                Some(RnRecoveryOffer::ReestablishSession)
+            }
+            RnSessionHealth::Healthy | RnSessionHealth::Unrecoverable => None,
+        }
+    }
+
     /// A successful authenticated decrypt is the sole way to clear a
     /// desynchronisation diagnosis.
     pub fn successful_decrypt(&mut self) {
@@ -74,8 +130,9 @@ impl RnPeerHealth {
     /// Record a real receive-side symptom from an RN-pinned peer.
     ///
     /// The detector's authentication-failure threshold is frozen at three.
-    /// A missing session or a per-message skip-bound refusal are immediate
-    /// proofs that the pinned session cannot process this wire message.
+    /// A missing session is immediate proof that the pinned session cannot
+    /// process this wire message. A per-message skip-bound refusal is a
+    /// recoverable availability limit, not evidence of authentication failure.
     /// Once desynchronised, later symptoms retain that state; they cannot make
     /// the UI look healthy again.
     pub fn observe_pinned_symptom(&mut self, symptom: RnDesyncSymptom) {
@@ -94,8 +151,11 @@ impl RnPeerHealth {
                     RnSessionHealth::Degraded
                 };
             }
-            RnDesyncSymptom::MissingSession | RnDesyncSymptom::MaxSkipPerMessageRefused => {
+            RnDesyncSymptom::MissingSession => {
                 self.health = RnSessionHealth::Desynced;
+            }
+            RnDesyncSymptom::MaxSkipPerMessageRefused => {
+                self.health = RnSessionHealth::Degraded;
             }
         }
     }

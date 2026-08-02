@@ -37,6 +37,7 @@ const ACCOUNT_ARTIFACTS: &[&str] = &[
     "scope_ttl.json",
     "scope_blobs.json",
     ipc::space_roster::SPACE_ROSTER_FILE,
+    ipc::tombstone_file::TOMBSTONE_FILE,
     "pending_rotation.json",
     "pending_invitations.json",
     "hub_local_protected.json",
@@ -1027,20 +1028,24 @@ mod tests {
     }
 
     #[test]
-    fn space_roster_file_is_registered_in_every_account_lifecycle_sweep() {
-        let roster = ipc::space_roster::SPACE_ROSTER_FILE;
-        assert!(
-            account_artifacts().contains(&roster),
-            "{roster} is missing from the identity-switch artifact sweep"
-        );
-        assert!(
-            crate::password_lifecycle::account_state_files().contains(&roster),
-            "{roster} is missing from the password lifecycle sweep"
-        );
-        assert!(
-            ipc::commands::osl_export_files().contains(&roster),
-            "{roster} is missing from encrypted identity export"
-        );
+    fn durable_state_files_are_registered_in_every_account_lifecycle_sweep() {
+        for durable_file in [
+            ipc::space_roster::SPACE_ROSTER_FILE,
+            ipc::tombstone_file::TOMBSTONE_FILE,
+        ] {
+            assert!(
+                account_artifacts().contains(&durable_file),
+                "{durable_file} is missing from the identity-switch artifact sweep"
+            );
+            assert!(
+                crate::password_lifecycle::account_state_files().contains(&durable_file),
+                "{durable_file} is missing from the password lifecycle sweep"
+            );
+            assert!(
+                ipc::commands::osl_export_files().contains(&durable_file),
+                "{durable_file} is missing from encrypted identity export"
+            );
+        }
     }
 
     /// The renderer validates `list_hub_identities` against an exact key set

@@ -127,6 +127,11 @@ export interface NativeDiscordOverlayOpenedBatch {
    * soon", which is exactly what an empty batch used to hide.
    */
   deferredRows: number;
+  /**
+   * Rows retained because their encrypted wire format needs a newer compatible
+   * app. This is not retryable network debt: the receiver must update OSL.
+   */
+  unrecognizedWireRows: number;
 }
 
 export interface NativeDiscordOverlayPendingViewOnce {
@@ -406,7 +411,7 @@ export function overlayExpiryDelayMs(expiresAtSeconds: number, nowMs: number): n
 }
 
 export function parseNativeDiscordOverlayOpenedBatch(value: unknown): NativeDiscordOverlayOpenedBatch | null {
-  if (!exactRecord(value, ["messages", "pendingViewOnce", "acknowledgments", "fetched", "decryptDisplayEnabled", "deferredRows"])
+  if (!exactRecord(value, ["messages", "pendingViewOnce", "acknowledgments", "fetched", "decryptDisplayEnabled", "deferredRows", "unrecognizedWireRows"])
     || !Array.isArray(value.messages)
     || !Array.isArray(value.pendingViewOnce) || !Array.isArray(value.acknowledgments) || value.acknowledgments.length > 64
     || value.pendingViewOnce.length > 64
@@ -423,13 +428,15 @@ export function parseNativeDiscordOverlayOpenedBatch(value: unknown): NativeDisc
     // cannot affect what is displayed.
     || typeof value.decryptDisplayEnabled !== "boolean"
     || !Number.isSafeInteger(value.deferredRows)
-    || Number(value.deferredRows) < 0) return null;
+    || Number(value.deferredRows) < 0
+    || !Number.isSafeInteger(value.unrecognizedWireRows)
+    || Number(value.unrecognizedWireRows) < 0) return null;
   const messages = value.messages.map(parseNativeDiscordOverlayOpened);
   const pendingViewOnce = value.pendingViewOnce.map(parseNativeDiscordOverlayPendingViewOnce);
   const acknowledgments = value.acknowledgments.map(parseNativeDiscordOverlayAcknowledgment);
   if (messages.some((message) => message === null) || pendingViewOnce.some((message) => message === null)
     || acknowledgments.some((receipt) => receipt === null)) return null;
-  return { messages: messages as NativeDiscordOverlayOpened[], pendingViewOnce: pendingViewOnce as NativeDiscordOverlayPendingViewOnce[], acknowledgments: acknowledgments as NativeDiscordOverlayAcknowledgment[], fetched: value.fetched as number, decryptDisplayEnabled: value.decryptDisplayEnabled as boolean, deferredRows: value.deferredRows as number };
+  return { messages: messages as NativeDiscordOverlayOpened[], pendingViewOnce: pendingViewOnce as NativeDiscordOverlayPendingViewOnce[], acknowledgments: acknowledgments as NativeDiscordOverlayAcknowledgment[], fetched: value.fetched as number, decryptDisplayEnabled: value.decryptDisplayEnabled as boolean, deferredRows: value.deferredRows as number, unrecognizedWireRows: value.unrecognizedWireRows as number };
 }
 
 function validAttachmentId(value: unknown): value is string {
