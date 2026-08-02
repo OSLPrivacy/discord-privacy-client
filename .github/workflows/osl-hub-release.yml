@@ -45,6 +45,7 @@ jobs:
             throw "Tag ${{ github.ref_name }} does not match OSL Privacy version tag $tag"
           }
           "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$($config.version)" >> $env:GITHUB_OUTPUT
 
       - name: Build and test trusted OSL Privacy frontend
         working-directory: apps/osl-hub-ui
@@ -129,7 +130,7 @@ jobs:
             --manifest candidate/latest.json \
             --installer "candidate/$installer_name"
 
-      - name: Publish signed release checksums
+      - name: Publish signed release checksums and build-hash manifest
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -141,11 +142,23 @@ jobs:
           rm -rf release-assets
           mkdir release-assets
           gh release download "$CANDIDATE_TAG" --dir release-assets --clobber
-          mapfile -t assets < <(find release-assets -maxdepth 1 -type f \
-            ! -name SHA256SUMS.txt ! -name SHA256SUMS.txt.minisig -printf '%f\n' | sort)
-          test "${#assets[@]}" -gt 0
           npm install --global @tauri-apps/cli@2.11.4
+          installer_name="$(find release-assets -maxdepth 1 -type f -name '*.exe' -printf '%f\n' | sort | head -n 1)"
+          test -n "$installer_name"
+          test "$(find release-assets -maxdepth 1 -type f -name '*.exe' | wc -l)" -eq 1
+          python scripts/build_hash_manifest.py \
+            --output release-assets/build-hashes.json \
+            --version "${{ steps.hub-version.outputs.version }}" \
+            --tag "$CANDIDATE_TAG" \
+            --commit "${{ github.sha }}" \
+            --installer "release-assets/$installer_name" \
+            --sign
+          mapfile -t assets < <(find release-assets -maxdepth 1 -type f \
+            ! -name SHA256SUMS.txt ! -name SHA256SUMS.txt.minisig ! -name build-hashes.json.sig \
+            -printf '%f\n' | sort)
+          test "${#assets[@]}" -gt 0
           python scripts/publish_release_checksums.py --sign --output release-assets/SHA256SUMS.txt \
             "${assets[@]/#/release-assets/}"
           gh release upload "$CANDIDATE_TAG" release-assets/SHA256SUMS.txt \
-            release-assets/SHA256SUMS.txt.minisig --clobber
+            release-assets/SHA256SUMS.txt.minisig \
+            release-assets/build-hashes.json release-assets/build-hashes.json.sig --clobber
