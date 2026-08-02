@@ -52,3 +52,10 @@ Blocked: T6-R4 requires both T6-R2's capability upload contract and T6-K6's
 device roster surface. Neither is integrated here. The locally added T2-52
 view-once helper is not a transport send path and cannot stand in for the
 required per-device upload/ack behaviour.
+
+# T6-R5
+
+Blocked: T6-R5 requires T6-R2 and T6-R7. Neither prerequisite is integrated;
+there is no receive-path cipher-store ACK emission seam in `broker.rs` to own.
+Adding a second acknowledgement path would violate the task's one-emission
+point requirement and risk acknowledgement before durable persistence.
