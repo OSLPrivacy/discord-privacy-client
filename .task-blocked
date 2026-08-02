@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T21-G7: `apps/osl-hub/src/spaces.rs` has no stale-roster refusal or Space send/fan-out implementation; T21-G7 owns that dependency. T2 burn tasks and T18-D2 must also provide the burn/outbox and per-member acknowledgement interfaces before `apps/osl-hub/tests/space_burn.rs` can be written.
