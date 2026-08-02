@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T3-B4 lacks serializable receipt/refusal/digest outputs and public opaque-fixture construction needed by apps/osl-hub/tests/adapter_no_text_leak.rs; its current C10 is only a source-text-style debug check.
