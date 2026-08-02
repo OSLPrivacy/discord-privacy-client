@@ -569,11 +569,8 @@ fn reset_account_scoped_state(state: &AppState) {
         .recovery_guard
         .lock()
         .expect("recovery_guard poisoned") = Default::default();
-    state
-        .mode1_reassembly
-        .lock()
-        .expect("mode1_reassembly poisoned")
-        .clear();
+    // mode1_reassembly was deleted with mode1 chunking in t1-42; the field no
+    // longer exists on AppState, so clearing it here stopped the desktop build.
     *state
         .recovery_token
         .lock()
