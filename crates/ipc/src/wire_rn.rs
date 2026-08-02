@@ -98,7 +98,9 @@ pub const RN_SESSION_DIR: &str = "rn_sessions";
 pub const RN_CONTEXT_DISCORD_MANUAL: &[u8] = b"osl-hub/discord-manual-peer/v1";
 
 /// State-blob format version for the sealed session file.
-const SESSION_BLOB_VERSION: u32 = 1;
+const SESSION_BLOB_VERSION: u32 = 2;
+/// Format version for the separately persisted send-counter high-water mark.
+const SESSION_SEND_FLOOR_VERSION: u32 = 1;
 /// State-blob format version for the pin file.
 const PIN_BLOB_VERSION: u32 = 1;
 
@@ -117,6 +119,8 @@ const MAX_SESSION_FILE_BYTES: u64 = 1024 * 1024;
 
 /// Ceiling on the pin file. A pin is two small integers.
 const MAX_PIN_FILE_BYTES: u64 = 4 * 1024;
+/// Ceiling on the small, unsealed send-counter floor record.
+const MAX_SESSION_SEND_FLOOR_FILE_BYTES: u64 = 4 * 1024;
 
 /// Ceiling on how many peers we hold sealed ratchet state for.
 ///
@@ -176,6 +180,11 @@ pub enum RnError {
     /// and let its outbox retry from a freshly loaded state later.
     #[error("OSL-RN session for this peer is busy with another writer")]
     WriterBusy,
+
+    /// A restored session state would reuse one or more deterministic
+    /// message-key nonces that this device has already consumed.
+    #[error("refusing rolled-back OSL-RN session blob: send counter {blob_counter} is below persisted high-water mark {high_water}")]
+    RolledBackSession { blob_counter: u32, high_water: u32 },
 
     /// The active sealer would write the session state in plaintext.
     /// Refused: the export contains every secret the session holds.
@@ -625,7 +634,16 @@ impl std::fmt::Debug for RnSessionStore {
 struct SealedBlob {
     version: u32,
     method: String,
+    /// Duplicates the authenticated session counter so it can be compared to
+    /// the durable high-water mark before the session is used.
+    sending_counter: u32,
     sealed_b64: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SessionSendFloor {
+    version: u32,
+    high_water: u32,
 }
 
 impl RnSessionStore {
@@ -756,6 +774,16 @@ impl RnSessionStore {
         ))
     }
 
+    /// This file is deliberately separate from the restorable session blob.
+    /// Replacing a `.session` with an old backup therefore cannot lower the
+    /// last locally consumed send counter.
+    fn send_floor_path(&self, peer_identity_x25519: &[u8; 32]) -> PathBuf {
+        self.dir.join(format!(
+            "{}.send-floor",
+            Self::peer_key(peer_identity_x25519)
+        ))
+    }
+
     // ---- session state ----
 
     /// Persist a session, sealed.
@@ -796,6 +824,7 @@ impl RnSessionStore {
         let blob = SealedBlob {
             version: SESSION_BLOB_VERSION,
             method: sealer.method_label().to_string(),
+            sending_counter: session.sending_counter(),
             sealed_b64: b64(&sealed),
         };
         let json = serde_json::to_vec(&blob)
@@ -820,6 +849,9 @@ impl RnSessionStore {
                 });
             }
         }
+        // Persist the floor first. If the subsequent session write fails, the
+        // old blob is refused rather than allowed to reissue a nonce.
+        self.persist_send_floor(peer_identity_x25519, blob.sending_counter)?;
         atomic_write(&path, &json)
     }
 
@@ -881,6 +913,14 @@ impl RnSessionStore {
                 blob.version
             )));
         }
+        if let Some(high_water) = self.load_send_floor(peer_identity_x25519)? {
+            if blob.sending_counter < high_water {
+                return Err(RnError::RolledBackSession {
+                    blob_counter: blob.sending_counter,
+                    high_water,
+                });
+            }
+        }
         // Constant-time compare of the method label: it is not secret,
         // but comparing it in constant time costs nothing and keeps the
         // "no data-dependent branches on stored blob fields" habit.
@@ -904,6 +944,12 @@ impl RnSessionStore {
         plain.zeroize();
         let session = session.map_err(RnError::from)?;
 
+        if session.sending_counter() != blob.sending_counter {
+            return Err(RnError::Storage(
+                "session blob send counter does not match sealed session state".into(),
+            ));
+        }
+
         // The blob dictates the skipped-key caps it was exported with.
         // Refuse one that would raise this build's memory ceiling.
         let claimed = session.skip_params().max_total_keys;
@@ -914,6 +960,45 @@ impl RnSessionStore {
             });
         }
         Ok(Some(session))
+    }
+
+    fn load_send_floor(&self, peer_identity_x25519: &[u8; 32]) -> Result<Option<u32>, RnError> {
+        let path = self.send_floor_path(peer_identity_x25519);
+        let Some(bytes) = read_bounded(&path, MAX_SESSION_SEND_FLOOR_FILE_BYTES, "send floor")?
+        else {
+            return Ok(None);
+        };
+        let floor: SessionSendFloor = serde_json::from_slice(&bytes)
+            .map_err(|e| RnError::Storage(format!("parse send floor: {e}")))?;
+        if floor.version != SESSION_SEND_FLOOR_VERSION {
+            return Err(RnError::Storage(format!(
+                "send floor version {} != {SESSION_SEND_FLOOR_VERSION}",
+                floor.version
+            )));
+        }
+        Ok(Some(floor.high_water))
+    }
+
+    fn persist_send_floor(
+        &self,
+        peer_identity_x25519: &[u8; 32],
+        sending_counter: u32,
+    ) -> Result<(), RnError> {
+        if let Some(high_water) = self.load_send_floor(peer_identity_x25519)? {
+            if sending_counter < high_water {
+                return Err(RnError::RolledBackSession {
+                    blob_counter: sending_counter,
+                    high_water,
+                });
+            }
+        }
+        let floor = SessionSendFloor {
+            version: SESSION_SEND_FLOOR_VERSION,
+            high_water: sending_counter,
+        };
+        let json = serde_json::to_vec(&floor)
+            .map_err(|e| RnError::Storage(format!("serialize send floor: {e}")))?;
+        atomic_write(&self.send_floor_path(peer_identity_x25519), &json)
     }
 
     /// Delete a peer's session, forcing a clean re-handshake.
@@ -3659,6 +3744,49 @@ mod tests {
             bob.decrypt(&wire2, &mut rng).expect("decrypt").plaintext,
             b"after restart"
         );
+    }
+
+    #[test]
+    fn a_restored_session_blob_below_the_send_high_water_is_refused_before_a_wire_is_produced() {
+        let (_d, store) = fresh_store();
+        let sealer = MemorySealer::new();
+        let mut rng = seeded_rng(0xA6);
+        let (_prekeys, bundle) = fresh_bundle(&mut rng);
+        let (identity, _) = x25519_keypair(&mut rng);
+        let session = Session::initiate(&identity, &bundle, SessionParams::default(), &mut rng)
+            .expect("initiate");
+        let peer = *bundle.identity.as_bytes();
+        store
+            .save_session_with_sealer(&peer, &session, &sealer)
+            .expect("save initial session");
+        let rollback_blob = store_file_bytes(&store.session_path(&peer));
+
+        with_wire_in_enabled_for_test(true, || {
+            for i in 0..5 {
+                send_rn_with_sealer(&store, &sealer, &peer, 7, format!("message {i}").as_bytes())
+                    .expect("advance and persist session");
+            }
+
+            std::fs::write(store.session_path(&peer), &rollback_blob)
+                .expect("restore earlier session blob");
+            let before_refused_send = store_file_bytes(&store.session_path(&peer));
+            let refused = send_rn_with_sealer(&store, &sealer, &peer, 7, b"must not produce wire");
+            assert!(
+                matches!(
+                    refused,
+                    Err(RnError::RolledBackSession {
+                        blob_counter: 0,
+                        high_water: 5
+                    })
+                ),
+                "a restored session blob must fail closed before encryption, got {refused:?}"
+            );
+            assert_eq!(
+                store_file_bytes(&store.session_path(&peer)),
+                before_refused_send,
+                "a refused send must not replace the restored blob or produce a new persisted state"
+            );
+        });
     }
 
     #[test]
