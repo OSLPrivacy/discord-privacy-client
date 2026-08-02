@@ -114,6 +114,7 @@ pub mod mass_cleanup;
 // `store` (local plaintext cache), so it lives behind `core` like they do.
 #[cfg(feature = "core")]
 pub mod message_expiry;
+pub mod expiry_clock;
 // View-once payloads are opened only after the native viewer proves capture
 // protection; the module is dependency-free so its ordering tests run on all
 // supported build hosts.
