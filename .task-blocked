@@ -1,0 +1,1 @@
+T1-71 is not complete: crates/transport/src/tor.rs exists but has no consumer in apps/osl-hub, so T1-72 has no authoritative tunnel-status or send-routing boundary to gate; T1-71/T1 owns that prerequisite.
