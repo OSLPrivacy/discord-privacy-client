@@ -5,6 +5,8 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::account_recovery;
 use osl_privacy_hub::ai_carrier::{ai_carrier_status_for, AiCarrierState};
+use osl_privacy_hub::build_integrity::{check_current, BuildIntegrity};
+use osl_privacy_hub::chat_capture_protection::ChatCaptureProtectionState;
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
     OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, PreparedCoreMessage,
@@ -5420,6 +5422,7 @@ async fn activate_osl_chat_context(
     broker: State<'_, HubBrokerState>,
     core: State<'_, HubCoreState>,
     session: State<'_, HubAccountSessionState>,
+    capture_protection: State<'_, ChatCaptureProtectionState>,
     person_id: String,
 ) -> Result<ManualPeerContextLease, String> {
     if caller.label() != "main" {
@@ -5428,6 +5431,9 @@ async fn activate_osl_chat_context(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     let binding = security::manual_peer_binding(&core, person_id)?;
+    // A newly whitelisted chat never inherits capture protection from another
+    // conversation. Both independently authored preferences start off.
+    capture_protection.ensure_conversation(&binding.person_id);
     let activated = broker::activate_owned_osl_chat_context(&broker, &owner, binding)?;
     let scope_approved = security::manual_peer_scope_approved(
         &core,
@@ -8931,6 +8937,11 @@ fn ai_carrier_status(state: tauri::State<'_, AiCarrierState>) -> osl_privacy_hub
     ai_carrier_status_for(&state)
 }
 
+#[tauri::command]
+fn build_integrity_status(state: tauri::State<'_, BuildIntegrity>) -> BuildIntegrity {
+    *state.inner()
+}
+
 macro_rules! hub_tauri_generate_handler {
     ($($(#[$meta:meta])* $command:ident),* $(,)?) => {
         tauri::generate_handler![$($(#[$meta])* $command,)*]
@@ -9324,6 +9335,10 @@ fn main() {
         app.manage(LocalCoverState::default());
         startup_breadcrumb("setup_step_31_local_cover_state_managed"); // STARTUP-TRACE
         app.manage(AiCarrierState::default());
+        app.manage(ChatCaptureProtectionState::default());
+        // Evaluate the bundled signed manifest once per launch, before the UI
+        // can present a local integrity verdict.
+        app.manage(check_current());
         app.manage(OverlaySessionState::default());
         startup_breadcrumb("setup_step_32_overlay_session_state_managed"); // STARTUP-TRACE
         app.manage(native_surface_capture::NativeSurfaceCaptureState::default());
@@ -9870,6 +9885,13 @@ mod tauri_command_acl_tests {
     #[test]
     fn t13_td8_ai_carrier_command_is_reachable_from_the_shipping_binary() {
         assert_registered_and_acl_granted(&["ai_carrier_status"]);
+    }
+
+    #[test]
+    fn t10_t9_build_integrity_is_checked_at_startup_and_exposed_to_the_shipping_ui() {
+        assert_registered_and_acl_granted(&["build_integrity_status"]);
+        let source = include_str!("main.rs");
+        assert!(source.contains("app.manage(check_current());"));
     }
 
     fn test_checked_host() -> CheckedHost {
