@@ -1,1 +1,0 @@
-T15-F3 exposes volume removal as Fn() without a volume identifier (it discards DEV_BROADCAST_VOLUME.dbcv_unitmask); T15-F3/T20 must provide an identified removal callback before T15-F4 can bind and filter a specific stick.
