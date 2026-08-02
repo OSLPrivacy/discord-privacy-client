@@ -47,6 +47,7 @@ import { handleCryptoSettlement, sweepAnonymousCryptoInvoices } from "./endpoint
 import { handleCryptoStatus } from "./endpoints/crypto-status.js";
 import { handleHealthz } from "./endpoints/healthz.js";
 import { handleWindowsDownload } from "./endpoints/download.js";
+import { handleDevices } from "./endpoints/devices.js";
 import { handleLicenseRedeem } from "./endpoints/license-redeem.js";
 import { handleLicenseValidate } from "./endpoints/license.js";
 import { handleLinkGrant } from "./endpoints/link-grant.js";
@@ -341,6 +342,8 @@ async function dispatch(
     if (usernameBucket !== null) return await handleUsernameBucket(request, env, usernameBucket);
     const pubkeysUserId = matchParam(path, /^\/v1\/pubkeys\/([^/]+)$/);
     if (pubkeysUserId !== null) return await handlePubkeys(env, pubkeysUserId);
+    const devicesUserId = matchParam(path, /^\/v1\/devices\/([^/]+)$/);
+    if (devicesUserId !== null) return await handleDevices(env, devicesUserId);
     const wrappedContentId = matchParam(path, /^\/v1\/wrapped-keys\/([^/]+)$/);
     if (wrappedContentId !== null) {
       return await handleWrappedKeysGet(request, env, wrappedContentId);
