@@ -4,6 +4,7 @@
 //! bundled UI can only learn whether local AI selection is currently ready.
 
 use crate::ai_consent::AiCloudConsent;
+use crate::credits::{unavailable_balance, BalanceDisplay};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -31,6 +32,10 @@ impl AiCarrierState {
             local_model_ready,
             word_bank_fallback: !local_model_ready,
             cloud_consent_granted: self.cloud_consent.is_granted(),
+            cloud_credit_balance: match unavailable_balance() {
+                BalanceDisplay::Current(balance) | BalanceDisplay::Stale(balance) => Some(balance.0),
+                BalanceDisplay::Unknown => None,
+            },
         }
     }
 }
@@ -44,6 +49,8 @@ pub struct AiCarrierStatus {
     /// Separate from Pro entitlement. A future cloud sender must still check
     /// `AiCloudConsent::permits_cloud_send` at the send boundary.
     pub cloud_consent_granted: bool,
+    /// `None` is an explicit unknown, never a fabricated zero balance.
+    pub cloud_credit_balance: Option<u64>,
 }
 
 // The #[tauri::command] wrapper lives in main.rs with every other command:
@@ -82,5 +89,10 @@ mod tests {
             !state.status().cloud_consent_granted,
             "revocation must be visible through the shipping carrier status without restart"
         );
+    }
+
+    #[test]
+    fn shipping_carrier_status_reports_an_unavailable_credit_ledger_as_unknown() {
+        assert_eq!(AiCarrierState::default().status().cloud_credit_balance, None);
     }
 }
