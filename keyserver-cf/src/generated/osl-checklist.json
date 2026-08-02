@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "source": "docs/design/osl-internal-build-checklist.md",
+  "source_sha256": "1599e3823ef85f3b99fc193bdeb7bfee974408ae409294c1e29c87044609f13e",
+  "progress": "Provisional verified progress: 100 / 303 points = 33%",
+  "confidence": "low (several dirty concurrent worktrees and exact-build rechecks remain)",
+  "critical_path": "security identity/attribution → reviewed ratchet → two-identity proof → finish Discord adapter contract → qualify every offered app → integration/release",
+  "parallel_paths": "Scrub/AutoScrub · website truth/demo · Notes minimum · test/mirror infrastructure",
+  "blockers": "Current exact-build and runtime rechecks remain required; this projection does not promote test-only work."
+}

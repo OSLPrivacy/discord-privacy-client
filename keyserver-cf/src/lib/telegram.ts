@@ -5,6 +5,7 @@ import {
   type VerifiedDonation,
 } from "./donations.js";
 import { isLiveStripeSecretKey, type StripeEvent } from "./stripe.js";
+import checklistProjection from "../generated/osl-checklist.json";
 
 interface TelegramUpdate {
   message?: {
@@ -19,6 +20,19 @@ interface StripeBalance {
 }
 
 type TelegramChatRole = "operator" | "viewer";
+
+type ChecklistProjection = Readonly<{
+  schema_version: 1;
+  source: "docs/design/osl-internal-build-checklist.md";
+  source_sha256: string;
+  progress: string;
+  confidence: string;
+  critical_path: string;
+  parallel_paths: string;
+  blockers: string;
+}>;
+
+const CHECKLIST = checklistProjection as ChecklistProjection;
 
 type TelegramChatConfiguration =
   | Readonly<{
@@ -400,15 +414,14 @@ export async function handleTelegramCommand(
   fetcher: typeof fetch = fetch,
 ): Promise<"accepted" | "ignored"> {
   const progressBlock = (): string => {
-    const updated = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
     return [
-      "OSL progress  unavailable",
-      "Verified work: unavailable until the checklist source is connected",
-      "Velocity: unavailable",
-      "ETA: unknown",
-      "Critical path: unavailable",
-      "Blocked/excluded: project coordination is not active here",
-      `Updated: ${updated}`,
+      "OSL progress (internal checklist)",
+      CHECKLIST.progress,
+      `Confidence: ${CHECKLIST.confidence}`,
+      `Critical path: ${CHECKLIST.critical_path}`,
+      `Parallel paths: ${CHECKLIST.parallel_paths}`,
+      `Blockers: ${CHECKLIST.blockers}`,
+      `Source: ${CHECKLIST.source}#${CHECKLIST.source_sha256.slice(0, 12)}`,
     ].join("\n");
   };
   const withProgress = (body: string): string => `${body}\n\n${progressBlock()}`;
@@ -670,7 +683,7 @@ function registerTelegramSourceTests(vitest: TelegramSourceVitest): void {
       ).resolves.toBe("accepted");
       expect(help.sent[0]?.text).toContain("OSL operator commands");
       expect(help.sent[0]?.text).toContain("/osl progress: project progress block");
-      expect(help.sent[0]?.text).toContain("OSL progress  unavailable");
+      expect(help.sent[0]?.text).toContain("OSL progress (internal checklist)");
 
       const progress = captureTelegramSends();
       await expect(
@@ -681,9 +694,11 @@ function registerTelegramSourceTests(vitest: TelegramSourceVitest): void {
         ),
       ).resolves.toBe("accepted");
       expect(progress.sent[0]?.text).toContain(
-        "Verified work: unavailable until the checklist source is connected",
+        "Provisional verified progress: 100 / 303 points = 33%",
       );
-      expect(progress.sent[0]?.text).toContain("Updated:");
+      expect(progress.sent[0]?.text).toContain(
+        "Source: docs/design/osl-internal-build-checklist.md#1599e3823ef8",
+      );
 
       const typo = captureTelegramSends();
       await expect(
@@ -695,7 +710,7 @@ function registerTelegramSourceTests(vitest: TelegramSourceVitest): void {
       ).resolves.toBe("accepted");
       expect(typo.sent[0]?.text).toContain("Unknown /osl command.");
       expect(typo.sent[0]?.text).toContain("Suggestion: /osl progress");
-      expect(typo.sent[0]?.text).toContain("OSL progress  unavailable");
+      expect(typo.sent[0]?.text).toContain("OSL progress (internal checklist)");
     });
   });
 }
