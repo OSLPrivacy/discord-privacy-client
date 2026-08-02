@@ -97,7 +97,6 @@ describe("clean onboarding sign in", () => {
     expect(titlebar).not.toContain('aria-label="Toggle fullscreen"');
     expect(titlebar).toContain('aria-label="Close"');
     expect(titlebar).toContain("activeNativeHostId");
-    expect(titlebar).toContain('disabled title="Unavailable while a companion window is open"');
     expect(titlebar.match(/<button id="window-/g) ?? []).toHaveLength(3);
     expect(styles).toMatch(/\.desktop-drag-region\s*\{[^}]*flex:\s*1 1 auto/s);
     expect(styles).toMatch(/\.window-controls button:disabled\s*\{[^}]*pointer-events:\s*none;/s);

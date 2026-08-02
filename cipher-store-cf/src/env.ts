@@ -15,6 +15,8 @@ export interface Env {
   DB: D1Database;
   /** Opaque, end-to-end encrypted attachment bodies. No object metadata. */
   ATTACHMENTS: R2Bucket;
+  /** Opaque, end-to-end encrypted message payloads, addressed by capability digest. */
+  PAYLOADS: R2Bucket;
   /** Read-bucket rate limiting only. Mutation buckets count in `DB`. */
   RATE_LIMIT: KVNamespace;
   /** Server-only key used to make short-lived rate-limit identifiers opaque. */

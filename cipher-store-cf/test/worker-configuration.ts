@@ -5,6 +5,7 @@ declare namespace Cloudflare {
   interface Env {
     DB: D1Database;
     ATTACHMENTS: R2Bucket;
+    PAYLOADS: R2Bucket;
     RATE_LIMIT: KVNamespace;
     RATE_LIMIT_HASH_KEY: string;
     LINK_GRANT_PUBKEY_B64?: string;

@@ -1,7 +1,6 @@
-//! Telegram Desktop adapter through the locate/read-state ABI half.
+//! Telegram Desktop adapter through the native accessibility ABI.
 //!
-//! Commit and paint targets are left closed until their respective Telegram
-//! tasks supply their proofs. Destination attestation is deliberately bounded
+//! Destination attestation is deliberately bounded
 //! to live account, conversation, and participant-set evidence: a window
 //! title alone cannot be adapted into a destination identity.
 
@@ -38,8 +37,10 @@ pub trait TelegramBackend: Send + Sync {
         &self,
         binding: &SurfaceBinding,
     ) -> Result<TelegramDestinationEvidence, AdapterRefusal>;
-    /// Place only. Sending is deliberately not part of the L2 backend surface.
+    /// Placement remains separate from the explicit L3 send commit.
     fn place(&self, binding: &SurfaceBinding, carrier: &Carrier) -> PlacementReceipt;
+    fn commit(&self, binding: &SurfaceBinding, placed: &PlacementReceipt) -> SendReceipt;
+    fn paint_targets(&self, binding: &SurfaceBinding) -> Result<Vec<PaintTarget>, AdapterRefusal>;
 }
 
 pub struct TelegramSurfaceAdapter<B> {
@@ -180,18 +181,52 @@ impl<B: TelegramBackend> SurfaceAdapter for TelegramSurfaceAdapter<B> {
 
     fn commit(
         &self,
-        _: &SurfaceBinding,
-        _: &SendAuthorization,
-        _: &PlacementReceipt,
+        binding: &SurfaceBinding,
+        authorization: &SendAuthorization,
+        placed: &PlacementReceipt,
     ) -> SendReceipt {
-        SendReceipt {
+        let refused = || SendReceipt {
             outcome: SendOutcome::NotSent,
             elapsed_ms: 0,
+        };
+        if !self.validates_binding(binding)
+            || !is_send_evidence_admissible(&binding.evidence)
+            || !same_scope(
+                &binding.scope_binding_hash,
+                &authorization.scope_binding_hash,
+            )
+            || !self.supports(adapter_profile::Capability::SendProtectedPayload)
+            || placed.status != PlacementStatus::Placed
+            || placed.placed_sha256.is_none()
+        {
+            return refused();
         }
+        let destination = match self.destination(binding) {
+            Ok(destination) => destination,
+            Err(_) => return refused(),
+        };
+        if destination.status != DestinationStatus::Attested
+            || !same_scope(&binding.scope_binding_hash, &destination.scope_binding_hash)
+            || !is_send_evidence_admissible(&destination.evidence)
+        {
+            return refused();
+        }
+        self.backend.commit(binding, placed)
     }
 
-    fn paint_targets(&self, _: &SurfaceBinding) -> Result<Vec<PaintTarget>, AdapterRefusal> {
-        Err(AdapterRefusal::AccessibilityUnavailable)
+    fn paint_targets(&self, binding: &SurfaceBinding) -> Result<Vec<PaintTarget>, AdapterRefusal> {
+        if !self.validates_binding(binding) {
+            return Err(AdapterRefusal::GenerationStale);
+        }
+        let targets = self.backend.paint_targets(binding)?;
+        if matches!(binding.evidence, BindingEvidence::Pixel)
+            && targets
+                .iter()
+                .any(|target| target.confidence == PaintConfidence::Exact)
+        {
+            return Err(AdapterRefusal::AccessibilityUnavailable);
+        }
+        Ok(targets)
     }
 }
 
@@ -213,7 +248,9 @@ mod tests {
     struct Backend {
         complete: bool,
         placements: AtomicUsize,
+        commits: AtomicUsize,
         destination_evidence: TelegramDestinationEvidence,
+        paint_targets: Vec<PaintTarget>,
     }
 
     fn binding(generation: u64) -> SurfaceBinding {
@@ -242,6 +279,7 @@ mod tests {
                 adapter_profile::Capability::InspectVisibleComposer,
                 adapter_profile::Capability::InspectVisibleTranscript,
                 adapter_profile::Capability::PlaceProtectedPayload,
+                adapter_profile::Capability::SendProtectedPayload,
             ]
             .into_iter()
             .collect()
@@ -273,6 +311,16 @@ mod tests {
                 elapsed_ms: 1,
             }
         }
+        fn commit(&self, _: &SurfaceBinding, _: &PlacementReceipt) -> SendReceipt {
+            self.commits.fetch_add(1, Ordering::SeqCst);
+            SendReceipt {
+                outcome: SendOutcome::Sent,
+                elapsed_ms: 1,
+            }
+        }
+        fn paint_targets(&self, _: &SurfaceBinding) -> Result<Vec<PaintTarget>, AdapterRefusal> {
+            Ok(self.paint_targets.clone())
+        }
     }
 
     fn destination_evidence() -> TelegramDestinationEvidence {
@@ -295,7 +343,9 @@ mod tests {
         let adapter = TelegramSurfaceAdapter::new(Backend {
             complete: false,
             placements: AtomicUsize::new(0),
+            commits: AtomicUsize::new(0),
             destination_evidence: destination_evidence(),
+            paint_targets: vec![],
         });
         let target = SurfaceTarget {
             app: AdapterAppId::Telegram,
@@ -316,7 +366,9 @@ mod tests {
         let adapter = TelegramSurfaceAdapter::new(Backend {
             complete: true,
             placements: AtomicUsize::new(0),
+            commits: AtomicUsize::new(0),
             destination_evidence: destination_evidence(),
+            paint_targets: vec![],
         });
         let binding = binding(1);
         let placed = adapter.place(
@@ -343,7 +395,9 @@ mod tests {
         let adapter = TelegramSurfaceAdapter::new(Backend {
             complete: true,
             placements: AtomicUsize::new(0),
+            commits: AtomicUsize::new(0),
             destination_evidence: destination_evidence(),
+            paint_targets: vec![],
         });
         let identity = adapter.destination(&binding(1)).unwrap();
         assert_eq!(identity.status, DestinationStatus::Attested);
@@ -355,14 +409,73 @@ mod tests {
         let adapter = TelegramSurfaceAdapter::new(Backend {
             complete: true,
             placements: AtomicUsize::new(0),
+            commits: AtomicUsize::new(0),
             destination_evidence: TelegramDestinationEvidence {
                 participant_set_sha256: [0; 32],
                 ..destination_evidence()
             },
+            paint_targets: vec![],
         });
         assert_eq!(
             adapter.destination(&binding(1)),
             Err(AdapterRefusal::DestinationUnattested)
         );
+    }
+
+    #[test]
+    fn t3_t24_commits_only_an_attested_accessibility_binding_and_rejects_exact_pixel_paint() {
+        let target = PaintTarget {
+            carrier_sha256: "carrier-digest".into(),
+            rect: Bounds {
+                x: 10,
+                y: 20,
+                width: 300,
+                height: 40,
+            },
+            clipped_by: None,
+            confidence: PaintConfidence::Exact,
+        };
+        let adapter = TelegramSurfaceAdapter::new(Backend {
+            complete: true,
+            placements: AtomicUsize::new(0),
+            commits: AtomicUsize::new(0),
+            destination_evidence: destination_evidence(),
+            paint_targets: vec![target.clone()],
+        });
+        let accessibility = binding(1);
+        let placed = adapter.place(
+            &accessibility,
+            &PlacementAuthorization::for_scope("scope-a"),
+            &Carrier("carrier".into()),
+        );
+
+        assert_eq!(
+            adapter
+                .commit(
+                    &accessibility,
+                    &SendAuthorization::for_scope("scope-a"),
+                    &placed,
+                )
+                .outcome,
+            SendOutcome::Sent
+        );
+        assert_eq!(adapter.backend.commits.load(Ordering::SeqCst), 1);
+        assert_eq!(adapter.paint_targets(&accessibility), Ok(vec![target]));
+
+        let pixel = SurfaceBinding {
+            evidence: BindingEvidence::Pixel,
+            ..accessibility
+        };
+        assert_eq!(
+            adapter.paint_targets(&pixel),
+            Err(AdapterRefusal::AccessibilityUnavailable)
+        );
+        assert_eq!(
+            adapter
+                .commit(&pixel, &SendAuthorization::for_scope("scope-a"), &placed,)
+                .outcome,
+            SendOutcome::NotSent
+        );
+        assert_eq!(adapter.backend.commits.load(Ordering::SeqCst), 1);
     }
 }

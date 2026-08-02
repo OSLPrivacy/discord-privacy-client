@@ -41,8 +41,10 @@ downgrade server-enforced burn, expiry, and view-once to an unenforced carrier.
 > (`crates/ipc/src/wire_v2.rs:685`). The send dispatcher checks the sealed
 > OSL-RN version pin before allowing that legacy `v=3` path, but this is a
 > downgrade-refusal guard, not RN traffic: `RN_WIRE_IN_ENABLED` remains `false`.
-> Both the retired Double Ratchet DM path (`v=4`) and the group sender-keys path
-> (`v=5`) are present in source and switched off for production sends.
+> The retired Double Ratchet DM path (`v=4`) is switched off for production
+> sends. The group sender-keys path (`v=5`) is enabled in the IPC core, but the
+> shipping app constructs only direct-message conversations and therefore cannot
+> select it.
 >
 > **`osl-ratchet-next` has no production encrypt/decrypt path.** The crate is a
 > workspace member (`Cargo.toml:29`) and `crates/ipc/Cargo.toml:73` declares the
@@ -84,7 +86,7 @@ Briar, or Cwtch. Onboarding states this explicitly.
 | Threat | v1 protection | Notes |
 | --- | --- | --- |
 | Discord reads message contents (DM) | Strong (confidentiality only) | **Stateless hybrid, not a ratchet.** Every normal DM uses wire `v=3`: a fresh per-message sender ephemeral X25519 plus an ML-KEM-768 encapsulation to the recipient's *long-term* key, HKDF-combined to wrap a fresh AES-256-GCM body key (`crates/ipc/src/wire_v2.rs:685-760`, `crates/crypto/src/pqxdh.rs:141-195`). Before `v=3` send, the dispatcher checks each non-self recipient's sealed RN version pin and refuses instead of downgrading if the peer is pinned to RN while RN wire-in is disabled (`crates/ipc/src/commands.rs:3284-3320`). The retired Double Ratchet DM path is compiled but dead: `crates/ipc/src/commands.rs:3170` sets `let v4_dm_enabled = false;` so the `if` on `:3171` never runs. See "Forward secrecy" below for exactly which compromise this survives. |
-| Discord reads message contents (group) | Strong (confidentiality only) | **Sender keys are off.** Groups use the same stateless `v=3` scheme as DMs unless the RN pin guard refuses legacy send for a previously pinned peer. The `v=5` sender-keys router at `crates/ipc/src/commands.rs:3268-3282` is gated on `AppState::sender_keys_enabled`, whose declaration at `crates/ipc/src/state.rs:279-284` documents it as defaulting false in production; no production code enables it (only tests do). `apps/osl-hub/src/core_bridge.rs:269` reports `group_sender_keys_enabled: false` to the UI. |
+| Discord reads message contents (group) | Not applicable in the shipping app | **The shipping app has no group conversations.** Its production conversation construction uses `HubConversationKind::Dm`, and its manual-peer route explicitly creates `ScopeKind::Dm` (`apps/osl-hub/src/broker.rs:322-330`, `:340-378`). Sender keys are instead enabled in the IPC core: the send path reads the enabled switch before selecting `SenderKeysV5` (`crates/ipc/src/commands.rs:4619-4637`), the router selects that path for a group/server scope with a non-self peer (`crates/ipc/src/commands.rs:5452-5465`), and `AppState::new` initializes the switch to `true` (`crates/ipc/src/state.rs:285-288`, `crates/ipc/src/state.rs:413`). The Hub bridge reports that core switch and separately reports that it is unreachable from this product surface (`apps/osl-hub/src/core_bridge.rs:285-290`). |
 | Discord reads image / file contents | Planned (source exists, unproven end-to-end) | Streaming XChaCha20-Poly1305 with bucketed padding exists (`crates/ipc/src/attachment_wire.rs:4`), but there is no "message-chain key" to wrap under — no chain exists. Master §10 finding 4 (non-image attachments staged as durable plaintext) is open, so the no-plaintext-at-rest promise is not met. |
 | Discord runs CSAM scanning on uploaded images | Defeated | Discord sees random AEAD ciphertext on its CDN |
 | Discord traffic-analyzes timing / sizes | Partial | Padding always on; jitter and cover traffic opt-in (v2.1) |
@@ -96,8 +98,8 @@ Briar, or Cwtch. Onboarding states this explicitly.
 | Modified client on recipient side | None | Document; cannot mitigate |
 | Hardware capture device | None | Document; cannot mitigate |
 | Endpoint malware | Partial | TPM seal helps; cannot fully prevent |
-| Past group messages outside current rotation window | **None** | Planned. There is no rotation window because sender keys are off (row 2 above). Every group message is an independent stateless `v=3` message, so a recipient's long-term keys decrypt all of them. Even when `v=5` is enabled the implemented triggers are **24 h or a membership change** (`SENDER_KEY_ROTATE_AFTER_SECS = 24 * 60 * 60` at `crates/ipc/src/commands.rs:3348-3349`; `sender_key_needs_rotation` at `:3367-3383`). No 500-message trigger and no suspicious-event trigger exist anywhere in the tree. |
-| One-time RAM dump of group sender / recipient | None | Planned. Depends on the rotation window above, which does not exist. |
+| Past group messages outside current rotation window | Not applicable in the shipping app | There are no shipping product group chats. The enabled core construction rotates a sender chain after **24 h** or a membership-set change (`SENDER_KEY_ROTATE_AFTER_SECS` and `sender_key_needs_rotation` at `crates/ipc/src/commands.rs:5602-5636`), but that construction is unreachable from the app. No 500-message or suspicious-event trigger exists. |
+| One-time RAM dump of group sender / recipient | Not applicable in the shipping app | There are no shipping product group chats. A future group surface must not promise a memory-dump bound beyond the implemented rotation behaviour. |
 | Casual hands-on access to unlocked device | **None (unwired)** | Planned. The primitives exist and are test-proven: threshold 10 (`DEFAULT_FAILED_ATTEMPT_THRESHOLD` at `crates/keystore/src/password.rs:62`) returns `VerifyOutcome::DuressByThreshold` (`:283-288`), and `InactivityTimer` defaults to 900 s. But **no production code calls them.** `verify_against_record`, `VerifyOutcome` and `InactivityTimer` are referenced only by the `crates/keystore/src/lib.rs:58-59` re-export and `crates/keystore/tests/password_test.rs`. `crates/keystore/src/duress.rs` likewise has no caller outside `crates/keystore/`. Nothing in `apps/osl-hub` or `crates/ipc` invokes the lockout, the duress flow, or the timer. |
 | Forced unlock under coercion | **None (unwired)** | Planned. `crates/keystore/src/duress.rs` implements the strip/wipe sequence and is test-proven (`crates/keystore/tests/duress_test.rs`), but no production caller exists — nothing outside `crates/keystore/` references it. There is no shipping path from typing a duress password to the flow running. When it is wired, the residual-forensics limits below still apply. |
 | Forensic disk analysis of stripped device post-duress | None | Stripped state retains OPSEC artifacts (binary code paths, installer cache, FS journaling, SSD wear-leveling, restore points). Documented honestly. |
@@ -157,19 +159,23 @@ previously claimed, it is restated below as `Planned` with the reason.
   `RN_WIRE_IN_ENABLED` is still `false`, so RN send/receive refuses before any
   state load or crypto operation. A compromised recipient stays compromised
   until they rotate identity keys out of band.
-- **Post-compromise security (group) — `Planned`.** Same reason; additionally
-  the sender-keys lane is off (`crates/ipc/src/commands.rs:3268-3282`, gated on
-  `AppState::sender_keys_enabled`, documented as defaulting false at
-  `crates/ipc/src/state.rs:279-284`). The stated reason there is multi-device
-  safety: the chain key carries no device id, so one account on two machines
-  desynchronizes. Remediation is protocol-level: carry a signed device id and
-  key receiver chains by `(account, device)` before treating `v=5` as a product
-  guarantee.
-- **Bounded group blast radius / rotation window — `Planned`.** Does not exist
-  today. When `v=5` is enabled the implemented triggers are 24 h
-  (`SENDER_KEY_ROTATE_AFTER_SECS`, `crates/ipc/src/commands.rs:3348-3349`) or a
-  membership change (`sender_key_needs_rotation`,
-  `crates/ipc/src/commands.rs:3367-3383`). The "≤ 1 h", "500 msgs", and
+- **Post-compromise security (group) — `Planned`.** The sender-key router is
+  enabled in the IPC core, not disabled: it selects `SenderKeysV5` for an
+  eligible group/server scope when `sender_keys_enabled` is true
+  (`crates/ipc/src/commands.rs:4619-4637`,
+  `crates/ipc/src/commands.rs:5452-5465`), and the owner switch
+  initializes true (`crates/ipc/src/state.rs:285-288`,
+  `crates/ipc/src/state.rs:413`). The shipping
+  app cannot form that scope because its live conversation constructors are DM
+  only (`apps/osl-hub/src/broker.rs:322-330`, `:340-378`). It therefore provides
+  no product group post-compromise-security guarantee. In addition, SKDM
+  distribution uses stateless v=3, so compromise of a recipient's long-term
+  keys can expose future distributions until the recipient rotates keys.
+- **Bounded group blast radius / rotation window — `Planned` for the product.**
+  The enabled core construction has only two rotation triggers: 24 h
+  (`SENDER_KEY_ROTATE_AFTER_SECS`) and a membership-set change
+  (`sender_key_needs_rotation`, `crates/ipc/src/commands.rs:5602-5636`). The
+  shipping app cannot reach that construction. The "≤ 1 h", "500 msgs", and
   "suspicious event" triggers were never implemented.
 - **Sender attribution — `open-security-finding`.** The generic receive path
   authenticates an in-band key but attributes the plaintext to a
@@ -196,7 +202,8 @@ Verification units:
   "v5_sender_keys": {
     "public_product_default": false,
     "ipc_owner_switch_default": true,
-    "default_false_rationale": "account_scoped_chain_state_is_not_device_bound",
+    "shipping_app_group_conversations": false,
+    "product_unreachable_reason": "shipping_app_constructs_direct_message_scopes_only",
     "remediation": [
       "device_bound_sender_key_chains",
       "multi_device_ordering_tests",
@@ -213,42 +220,36 @@ Verification units:
 | Reconciliation field | Status |
 | --- | --- |
 | `v4_shipping_status` | `retired_due_to_ratchet_desync` |
-| `v5_shipping_status` | `disabled_default_false_uses_stateless_v3` |
-| `sender_keys_enabled_default` | `false` |
-| `default_false_reason` | `account_scoped_sender_key_state_can_desync_across_devices` |
-| `v5_pairwise_dependency` | `no_current_proven_pairwise_distribution_channel` |
-| `ratchet_limit_status` | `planned_until_atomic_state_reset_authority_and_cross_device_tests` |
-| `required_sender_key_remediation` | `bind_chains_to_explicit_physical_device_identity` |
+| `v5_shipping_status` | `enabled_in_core_unreachable_in_shipping_app` |
+| `sender_keys_enabled_default` | `true_in_ipc_core` |
+| `product_group_conversations` | `false` |
+| `product_unreachable_reason` | `shipping_app_constructs_direct_message_scopes_only` |
+| `v5_distribution_status` | `stateless_v3_skdm_distribution` |
+| `ratchet_limit_status` | `no_product_group_guarantee_until_group_surface_exists` |
+| `required_sender_key_remediation` | `build_group_conversation_surface_before_product_claim` |
 | `unsupported_group_blast_radius_claims` | `one_hour_500_messages_suspicious_event_current_rotation_only` |
 
-The retired `v=4` pairwise Double Ratchet path and the disabled `v=5`
-sender-key path must be read together. `v=4` is not merely waiting for a UI
-switch; it was removed from the shipping send path because real deployments
-hit recurring ratchet desynchronization failures. That retirement means `v=5`
-cannot inherit a proven pairwise distribution channel from the current
-product. Sender-key setup and rotation messages may exist in source, but the
-shipping route remains stateless `v=3`.
+The retired `v=4` pairwise Double Ratchet path and the enabled-in-core `v=5`
+sender-key path must be read separately. `v=4` was removed from the shipping
+send path because real deployments hit recurring ratchet desynchronization
+failures. `v=5` is not a disabled feature flag: its IPC owner switch initializes
+true, and eligible group/server scopes route to it. The product still has no
+group conversation surface, so that route is unreachable from the shipping app.
 
-The product-facing default must stay false as a safety property, not as a
-feature flag awaiting marketing approval. The current sender-key state is
-account-scoped rather than bound to a distinct physical device, so one account
-used on two machines can advance or receive chain state in an order the other
-machine cannot prove. Enabling it by default would trade the known
-stateless-v3 limitation for a harder-to-debug group desynchronization and
-misdelivery class. There is a source-level mismatch to resolve before any public
-claim changes: `apps/osl-hub/src/core_bridge.rs` reports group sender keys off,
-but the lower-level IPC `AppState::sender_keys_enabled` owner switch currently
-initializes true. Treat the safe product default as off until the IPC default,
-capability advertisement, UI status, and live walkthrough all agree.
+The product-facing group capability is unavailable because the app constructs
+only DM scopes, not because the IPC switch is false. The Hub bridge now reports
+the true core-switch value and a separate `group_sender_keys_reachable: false`
+value (`apps/osl-hub/src/core_bridge.rs:285-290`). Any future group surface must
+document the two implemented rotation triggers and the limits of its stateless
+v=3 SKDM distribution before making a group-security claim.
 
 Remediation before changing any threat-model row from `Planned`:
 
 - Reintroduce a pairwise ratchet only behind a state format with atomic commit,
   skipped-key bounds, reset authority, and cross-device tests that prove no
   stale session silently decrypts or encrypts.
-- Bind sender-key chains to an explicit physical-device identity and prove
-  multi-device send/receive ordering, rotation, and recovery across two live
-  devices for the same account.
+- Build and test a group conversation surface before claiming sender-key
+  protection in the shipping app.
 - Add sender-key rotation triggers beyond the implemented 24-hour and
   membership-change paths if the product wants to claim a smaller blast radius;
   until then, do not claim one-hour, 500-message, suspicious-event, or

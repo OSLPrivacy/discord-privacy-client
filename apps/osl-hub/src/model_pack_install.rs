@@ -67,6 +67,61 @@ pub enum ModelPackInstallOutcome {
     WordBankFallback(InstallFallback),
 }
 
+/// The only disclosure emitted when a user removes the optional AI model.
+///
+/// This is an event, rather than an "AI installed" preference bit: callers
+/// show it for the completed removal and do not repeat it on later sends.
+/// Later sends discover availability from the artifact on disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WordBankFallbackNotice;
+
+impl WordBankFallbackNotice {
+    pub const MESSAGE: &'static str =
+        "Local AI cover text was removed. Future sends will use the word-bank carrier.";
+}
+
+/// The result of removing the optional model artifact.
+///
+/// A failed removal is deliberately not reported as a fallback: the artifact
+/// may still be usable, and claiming otherwise would be misleading.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ModelPackRemovalOutcome {
+    Removed {
+        word_bank_notice: WordBankFallbackNotice,
+    },
+    Retained {
+        error_kind: io::ErrorKind,
+    },
+}
+
+/// Whether the optional model can be selected for a send.
+///
+/// This consults the artifact itself instead of an installed flag. In
+/// particular, a successful removal cannot leave later sends believing the
+/// model exists.
+pub fn model_pack_available(destination: &Path) -> bool {
+    fs::metadata(destination).is_ok_and(|metadata| metadata.is_file())
+}
+
+/// Remove the optional model without affecting the always-available carrier.
+///
+/// On success the returned event tells the UI, once and plainly, that the next
+/// send uses the word bank. If deletion fails (for example, a locked file),
+/// report that honestly and leave selection to `model_pack_available`.
+pub fn remove_or_keep_word_bank(destination: &Path) -> ModelPackRemovalOutcome {
+    match fs::remove_file(destination) {
+        Ok(()) => ModelPackRemovalOutcome::Removed {
+            word_bank_notice: WordBankFallbackNotice,
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => ModelPackRemovalOutcome::Removed {
+            word_bank_notice: WordBankFallbackNotice,
+        },
+        Err(error) => ModelPackRemovalOutcome::Retained {
+            error_kind: error.kind(),
+        },
+    }
+}
+
 /// Download (or resume), verify, then atomically promote an optional model.
 ///
 /// Interrupted downloads remain as `destination.part`; integrity failures
@@ -309,5 +364,42 @@ mod tests {
         );
         assert!(!destination.exists());
         assert!(!partial_path(&destination).exists());
+    }
+
+    #[test]
+    fn removal_makes_the_next_send_use_the_word_bank_with_one_plain_notice() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("model.gguf");
+        fs::write(&destination, b"installed model bytes").unwrap();
+        assert!(model_pack_available(&destination));
+
+        let outcome = remove_or_keep_word_bank(&destination);
+
+        assert_eq!(
+            outcome,
+            ModelPackRemovalOutcome::Removed {
+                word_bank_notice: WordBankFallbackNotice,
+            }
+        );
+        assert_eq!(
+            WordBankFallbackNotice::MESSAGE,
+            "Local AI cover text was removed. Future sends will use the word-bank carrier."
+        );
+        assert!(
+            !model_pack_available(&destination),
+            "selection must read the artifact, not a stale installed flag"
+        );
+    }
+
+    #[test]
+    fn failed_removal_does_not_falsely_claim_a_word_bank_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("model.gguf");
+        fs::create_dir(&destination).unwrap();
+
+        let outcome = remove_or_keep_word_bank(&destination);
+
+        assert!(matches!(outcome, ModelPackRemovalOutcome::Retained { .. }));
+        assert!(destination.exists());
     }
 }
