@@ -3485,7 +3485,7 @@ function nativeDiscordHeaderControls(): string {
   // attribute: the shipped CSP is `style-src 'self'` with no `'unsafe-inline'`,
   // which drops inline style attributes too, so the inline copy styled nothing.
   const whitelistWarningNotice = nativeDiscordProtectionActive && verifiedPeer && !scopeApproved
-    ? `<span class="discord-qa-whitelist-warning in-dom-tooltip-anchor" id="discord-qa-whitelist-warning" role="status" data-whitelist-state="revoked">Encryption revoked for this chat — sends will fail until you allow it again${inDomTooltipMarkup("Press the + button to allow this chat again. Until then, every message you send in it will fail to send.")}</span>`
+    ? '<span class="discord-qa-whitelist-warning" id="discord-qa-whitelist-warning" role="status" data-whitelist-state="revoked">Encryption revoked for this chat — sends will fail until you allow it again. Press the + button to allow this chat again. Until then, every message you send in it will fail to send.</span>'
     : "";
   const transcriptVisible = peerProtectedSheet.decryptDisplayEnabled;
   const flame = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.4 2.8c.5 3.6-2.6 4.8-2.6 7.4 0 1.1.7 2 1.8 2.4-.2-1.8.8-3.2 2.3-4.4 2.4 1.8 4 4.2 4 7.1A6.9 6.9 0 0 1 12 22a6.9 6.9 0 0 1-6.9-6.7c0-3.8 2.3-7.2 6.9-10.3-.1 2.5.6 3.3 1.4 4.1.8-1.8 1-3.9 0-6.3Z"/></svg>`;
@@ -3520,7 +3520,7 @@ function nativeDiscordHeaderControls(): string {
   const transcriptNotice = transcriptFailed || transcriptUnapplied
     ? `<span class="discord-qa-visibility-notice" id="discord-qa-transcript-visibility-notice" role="status" data-transcript-state="${transcriptOutcome}">${transcriptFailed ? "Eye failed — transcript unchanged" : "Eye saved — no display surface open"}</span>`
     : "";
-  const transcriptVisibilityControl = `<button class="discord-qa-icon-control in-dom-tooltip-anchor ${transcriptVisible ? "visible" : "hidden"}${transcriptFailed ? " transcript-failed" : ""}" id="discord-qa-transcript-visibility" type="button" aria-pressed="${transcriptVisible}" data-transcript-mode="${transcriptMode}" data-transcript-state="${transcriptOutcome}" ${transcriptFailed ? 'aria-invalid="true" ' : ""}aria-label="${transcriptVisible ? "Hide protected transcript" : "Show protected transcript"}" ${!verifiedPeer || visibilityBusy ? "disabled" : ""}>${eye}${inDomTooltipMarkup(transcriptTitle)}</button>`;
+  const transcriptVisibilityControl = `<button class="discord-qa-icon-control ${transcriptVisible ? "visible" : "hidden"}${transcriptFailed ? " transcript-failed" : ""}" id="discord-qa-transcript-visibility" type="button" aria-pressed="${transcriptVisible}" data-transcript-mode="${transcriptMode}" data-transcript-state="${transcriptOutcome}" ${transcriptFailed ? 'aria-invalid="true" ' : ""}aria-label="${transcriptVisible ? "Hide protected transcript" : "Show protected transcript"}" title="${transcriptTitle}" ${!verifiedPeer || visibilityBusy ? "disabled" : ""}>${eye}</button>`;
   const lock = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="${nativeDiscordProtectionActive ? "M8 10V7a4 4 0 0 1 8 0v3" : "M8 10V7a4 4 0 0 1 7.7-1.5"}"/></svg>`;
   // "Refused" only survives while protection is still off: an open composer
   // answers the question the refusal was asking. The four states are otherwise
@@ -3541,7 +3541,7 @@ function nativeDiscordHeaderControls(): string {
     : composerLockState === "busy"
       ? "Protected composer opening…"
       : composerRefusal
-        ? `Protected composer refused — ${composerRefusal.message} (${composerRefusal.reason})`
+        ? `Protected composer refused — ${escapeHtml(composerRefusal.message)} (${escapeHtml(composerRefusal.reason)})`
         : "Protected composer off — open";
   // Shape, not colour: a refused lock carries a bang mark, so the state reads
   // the same way with any theme or colour vision. Its `position: absolute` and
@@ -3557,14 +3557,14 @@ function nativeDiscordHeaderControls(): string {
   // false; the lock is hidden there. Protection already open stays shown so it
   // always has a control to turn back off, even if the view changes under it.
   const composerControl = discordMarkerAvailable || nativeDiscordProtectionActive
-    ? `<button class="discord-qa-icon-control in-dom-tooltip-anchor composer ${nativeDiscordProtectionActive ? "locked" : "unlocked"}${composerRefusal ? " composer-refused" : ""}" id="discord-qa-toggle-composer" type="button" aria-pressed="${nativeDiscordProtectionActive}" aria-label="${escapeHtml(composerProtectionLabel)}" ${discordQaComposerBusy ? "disabled" : ""} data-lock-state="${composerLockState}"${composerRefusal ? ' aria-invalid="true"' : ""}>${lock}${composerRefusedMark}${inDomTooltipMarkup(composerProtectionLabel)}</button>`
+    ? `<button class="discord-qa-icon-control composer ${nativeDiscordProtectionActive ? "locked" : "unlocked"}${composerRefusal ? " composer-refused" : ""}" id="discord-qa-toggle-composer" type="button" aria-pressed="${nativeDiscordProtectionActive}" aria-label="${composerProtectionLabel}" title="${composerProtectionLabel}" ${discordQaComposerBusy ? "disabled" : ""} data-lock-state="${composerLockState}"${composerRefusal ? ' aria-invalid="true"' : ""}>${lock}${composerRefusedMark}</button>`
     : "";
   // Persistent, plain-language refusal in the header strip — the one surface
   // that draws above the borrowed native Discord window. It stays until the
   // next operator attempt or a successful open, so a reason can no longer be
   // produced and lost, and it is never populated by an automatic retry.
   const composerRefusalNotice = composerRefusal
-    ? `<span class="discord-qa-composer-refusal in-dom-tooltip-anchor" id="discord-qa-composer-refusal" role="status" data-lock-state="refused">${escapeHtml(composerRefusal.message)}${inDomTooltipMarkup(composerRefusal.reason)}</span>`
+    ? `<span class="discord-qa-composer-refusal" id="discord-qa-composer-refusal" role="status" data-lock-state="refused">${escapeHtml(composerRefusal.message)} — ${escapeHtml(composerRefusal.reason)}</span>`
     : "";
   const rowProofLabel = discordQaRowProofState === "accepted"
     ? "Row proof passed"
@@ -3575,7 +3575,7 @@ function nativeDiscordHeaderControls(): string {
         : rowProofBusy
           ? "Checking row proof…"
           : "Check row proof";
-  const rowProofControl = `<button class="discord-qa-control in-dom-tooltip-anchor" id="discord-qa-row-proof" type="button" data-runtime-proof="${discordQaRowProofState}" aria-label="${rowProofLabel}" ${!nativeDiscordProtectionActive || !verifiedPeer || rowProofBusy ? "disabled" : ""}>Proof${inDomTooltipMarkup(rowProofLabel)}</button>`;
+  const rowProofControl = `<button class="discord-qa-control" id="discord-qa-row-proof" type="button" data-runtime-proof="${discordQaRowProofState}" aria-label="${rowProofLabel}" title="${rowProofLabel}" ${!nativeDiscordProtectionActive || !verifiedPeer || rowProofBusy ? "disabled" : ""}>Proof</button>`;
   return `<div class="native-discord-header-controls discord-qa-header-controls" aria-label="Discord QA privacy controls"><div class="discord-qa-header-left"><button class="discord-qa-control danger icon-only in-dom-tooltip-anchor" data-open-burn="account" type="button" aria-label="Account Burn">${accountBurnIcon}${inDomTooltipMarkup("Open Account Burn confirmation")}</button></div><button class="discord-qa-control danger icon-only discord-qa-discord-burn in-dom-tooltip-anchor" data-open-burn="app" type="button" aria-label="Discord Burn">${discordBurnIcon}${inDomTooltipMarkup("Open Discord Burn confirmation")}</button><div class="discord-qa-header-right">${rowProofControl}<div class="discord-qa-whitelist" role="group" aria-label="Connected verified peer whitelist"><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-roster" type="button" aria-haspopup="dialog" aria-expanded="${whitelistRosterOpen}" ${discordQaHeaderBusy ? "disabled" : ""}>Whitelist${inDomTooltipMarkup("Review who is whitelisted and where")}</button><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-add" type="button" aria-label="Allow this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || scopeApproved || whitelistBusy ? "disabled" : ""}>+${inDomTooltipMarkup("Allow this verified peer scope")}</button><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-remove" type="button" aria-label="Revoke this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || !scopeApproved || whitelistBusy ? "disabled" : ""}>−${inDomTooltipMarkup("Revoke this verified peer scope")}</button></div><button class="discord-qa-control danger icon-only chat-burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive} aria-label="Chat Burn">${flame}${inDomTooltipMarkup("Open Chat Burn confirmation")}</button>${composerUnreachableNotice}${composerRefusalNotice}${transcriptNotice}${transcriptVisibilityControl}${composerControl}${whitelistWarningNotice}</div></div>`;
 }
 
