@@ -59,3 +59,10 @@ Blocked: T6-R5 requires T6-R2 and T6-R7. Neither prerequisite is integrated;
 there is no receive-path cipher-store ACK emission seam in `broker.rs` to own.
 Adding a second acknowledgement path would violate the task's one-emission
 point requirement and risk acknowledgement before durable persistence.
+
+# T7-72
+
+Blocked: T7-72 requires T7-70 and T7-71 plus a freshly built binary and full
+14-screen capture set. T7-70 is itself recorded as blocked in reachable
+history, T7-71 is absent, and this batch expressly prohibits building or
+running the desktop app. No visual closure verdict can be honestly generated.
