@@ -477,6 +477,31 @@ describe("bundled preview security boundary", () => {
     }
   });
 
+  it("pins the trusted main window's explicit OSL network surface", () => {
+    const capability = JSON.parse(readRelative("../../osl-hub/capabilities/osl-network.json")) as {
+      local: boolean;
+      webviews: string[];
+      permissions: string[];
+      remote?: unknown;
+    };
+
+    expect(capability.local).toBe(true);
+    expect(capability.webviews).toEqual(["main"]);
+    expect(capability).not.toHaveProperty("windows");
+    expect(capability).not.toHaveProperty("remote");
+    // Both mail commands issue reqwest requests to the configured keyserver;
+    // SESSION_RESET also posts to the authenticated control inbox. Keep them
+    // outside hub-local, whose exact set is deliberately local-only.
+    const expectedPermissions = [
+      "allow-osl-mail-get-status",
+      "allow-osl-mail-provision",
+      "allow-emit-active-session-reset",
+    ];
+    expect(new Set(capability.permissions)).toEqual(new Set(expectedPermissions));
+    expect(capability.permissions).toHaveLength(expectedPermissions.length);
+    expect(capability.permissions).toHaveLength(new Set(capability.permissions).size);
+  });
+
   it("keeps every QA browser-profile verb explicitly fail-closed", () => {
     const source = readRelative("../../osl-hub/src/main.rs");
     const criteria = source.slice(

@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "osl-network",
+  "description": "Explicit network-reachable OSL commands for the trusted main window: signed OSL Mail capability/provisioning requests and authenticated SESSION_RESET delivery.",
+  "webviews": ["main"],
+  "local": true,
+  "permissions": [
+    "allow-osl-mail-get-status",
+    "allow-osl-mail-provision",
+    "allow-emit-active-session-reset"
+  ]
+}

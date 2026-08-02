@@ -11183,15 +11183,23 @@ mod tests {
         );
 
         let permissions = include_str!("../permissions/hub.toml");
-        let capability: serde_json::Value =
-            serde_json::from_str(include_str!("../capabilities/hub.json"))
-                .expect("Hub capability is valid JSON");
-        let granted = capability["permissions"]
-            .as_array()
-            .expect("Hub capability has a permissions array")
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .collect::<std::collections::BTreeSet<_>>();
+        let granted = [
+            include_str!("../capabilities/hub.json"),
+            include_str!("../capabilities/osl-network.json"),
+        ]
+        .into_iter()
+        .flat_map(|source| {
+            let capability: serde_json::Value =
+                serde_json::from_str(source).expect("Hub capability is valid JSON");
+            capability["permissions"]
+                .as_array()
+                .expect("Hub capability has a permissions array")
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
 
         for command in commands {
             let identifier = format!("allow-{}", command.replace('_', "-"));
@@ -11207,7 +11215,7 @@ mod tests {
             );
             assert!(
                 granted.contains(identifier.as_str()),
-                "renderer command {command} is declared but not granted to hub-local"
+                "renderer command {command} is declared but not granted to a main-window capability"
             );
         }
     }
