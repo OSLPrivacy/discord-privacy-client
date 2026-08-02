@@ -25,6 +25,11 @@ screenshot check. Run `python3 scripts/vmqa/test-space-removal.py` before a
 leased Windows run. The bridge must be provisioned on all three VMs or the run
 fails closed.
 
+`space-join-history.ps1` is the T21-K3 proof. It crosses the five-minute key
+re-emit interval, requires pre-join corpus, and requires exactly one rendered
+post-join message. Validate its sabotage guard with
+`python3 scripts/vmqa/test-space-join-history.py` before the VM run.
+
 Use the scratch directory for fast, disposable experiments. When an experiment
 becomes repeatable release coverage, move or reimplement the driver and its
 assertions in `scripts/vmqa/`. Do not copy a release verdict back into the
