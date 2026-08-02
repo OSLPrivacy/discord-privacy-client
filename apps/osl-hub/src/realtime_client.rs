@@ -10,6 +10,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::realtime_decoy::DecoyFetch;
+
 /// Exact text-frame size accepted by `cipher-store-cf/src/realtime/connection.ts`.
 pub const FRAME_BYTES: usize = 2_048;
 /// The protocol's fixed client cadence. This is not a backoff or work queue delay.
@@ -89,12 +91,12 @@ impl CarrierPointer {
 }
 
 /// A fetch that was authorized by a pre-existing carrier pointer, not by a wakeup.
-pub struct ScheduledFetch {
+pub struct AuthorizedFetch {
     pub blob_id: BlobId,
     pointer: CarrierPointer,
 }
 
-impl ScheduledFetch {
+impl AuthorizedFetch {
     /// Invoke the normal bearer-authorized fetch path when its own schedule permits.
     pub fn fetch_with<F, E>(&self, fetch: F) -> Result<(), E>
     where
@@ -102,6 +104,14 @@ impl ScheduledFetch {
     {
         fetch(self.blob_id, self.pointer.bearer_capability())
     }
+}
+
+/// Exactly one fetch-shaped action follows every realtime reply.  A matching
+/// carrier pointer authorizes the real fetch; all other replies produce the
+/// ordinary capability-negative decoy instead.
+pub enum ScheduledFetch {
+    Authorized(AuthorizedFetch),
+    Decoy(DecoyFetch),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -196,7 +206,11 @@ impl RealtimeClient {
         let wakeup = parse_wakeup(frame)?;
         // T1-51's empty response is a zero/zero decoy. It is not a wakeup,
         // even if a caller accidentally retained a pointer with an all-zero id.
+        // It still schedules a capability-negative fetch so a fetch after a
+        // reply cannot reveal whether that reply matched a local pointer.
         if wakeup.0 == [0; ID_BYTES] && wakeup.1.is_zero() {
+            self.scheduled_fetches
+                .push_back(ScheduledFetch::Decoy(DecoyFetch::random()));
             return Ok(());
         }
         let key = WakeupKey {
@@ -210,15 +224,18 @@ impl RealtimeClient {
         // `blob_id` is an unauthorised hint. Only a pointer already held before
         // this frame turns it into locally scheduled bearer-authenticated work.
         if let Some(pointer) = self.pointers.get(&wakeup.1).cloned() {
-            self.scheduled_fetches.push_back(ScheduledFetch {
+            self.scheduled_fetches.push_back(ScheduledFetch::Authorized(AuthorizedFetch {
                 blob_id: wakeup.1,
                 pointer,
-            });
+            }));
+        } else {
+            self.scheduled_fetches
+                .push_back(ScheduledFetch::Decoy(DecoyFetch::random()));
         }
         Ok(())
     }
 
-    pub fn take_scheduled_fetch(&mut self) -> Option<ScheduledFetch> {
+    pub fn take_fetch_work(&mut self) -> Option<ScheduledFetch> {
         self.scheduled_fetches.pop_front()
     }
 }
