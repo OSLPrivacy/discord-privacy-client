@@ -2801,8 +2801,13 @@ function bindOnboarding(): void {
   }));
   document.querySelector<HTMLButtonElement>("[data-tor-choice-continue]")?.addEventListener("click", () => {
     if (torOnboarding.choice === null) return;
-    onboardingRoute = "sending";
-    render();
+    void invoke("set_tor_preference", { preference: torOnboarding.choice }).then(() => {
+      onboardingRoute = "sending";
+      render();
+    }).catch(() => {
+      // Do not advance: without native persistence the send boundary remains
+      // fail-closed, and showing the next step would imply otherwise.
+    });
   });
   document.querySelector("#continue-cover-draft")?.addEventListener("click", () => { onboardingRoute = "passwords"; render(); });
   bindOnboardingPasswordRole();

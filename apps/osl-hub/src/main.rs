@@ -71,6 +71,7 @@ use osl_privacy_hub::password_lifecycle::{
 };
 use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::PreviewState;
+use osl_privacy_hub::tor_pref::{TorPreference, TorPreferenceState};
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
 use osl_privacy_hub::revocation_drain_timer;
@@ -632,6 +633,18 @@ fn save_onboarding_preferences(
     preferences: OnboardingPreferences,
 ) -> Result<OnboardingPreferences, String> {
     state.save(preferences)
+}
+
+/// Persist the explicit connection route selected during onboarding.
+///
+/// This is separate from renderer storage: the native send boundary reads this
+/// state, so clearing WebView data cannot turn a Tor choice into direct sends.
+#[tauri::command]
+fn set_tor_preference(
+    state: State<'_, TorPreferenceState>,
+    preference: TorPreference,
+) -> Result<TorPreference, String> {
+    state.set_preference(preference)
 }
 
 #[tauri::command]
@@ -4804,6 +4817,7 @@ async fn prepare_osl_chat_text(
     }
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
+        app.state::<TorPreferenceState>().authorize_store()?;
         broker::prepare_osl_chat_text(
             &app.state::<HubCoreState>(),
             &app.state::<HubSecurityState>(),
@@ -5503,6 +5517,7 @@ async fn prepare_peer_prose_text(
 ) -> Result<PreparedPeerProseMessage, String> {
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
+        app.state::<TorPreferenceState>().authorize_store()?;
         let core = app.state::<HubCoreState>();
         let security_state = app.state::<HubSecurityState>();
         let broker_state = app.state::<HubBrokerState>();
@@ -9288,6 +9303,9 @@ fn main() {
             config_dir.join("preview-preferences.json"),
         ));
         startup_breadcrumb("setup_step_14_preview_state_managed"); // STARTUP-TRACE
+        app.manage(TorPreferenceState::load(
+            config_dir.join("tor-preference.json"),
+        ));
         app.manage(ServiceRegistryState::load(
             config_dir.join("service-registry.json"),
         ));

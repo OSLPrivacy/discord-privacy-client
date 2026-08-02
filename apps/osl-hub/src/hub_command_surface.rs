@@ -377,6 +377,7 @@ macro_rules! hub_tauri_commands {
             set_hub_notifications_enabled,
             set_hub_screenshot_protection,
             save_onboarding_preferences,
+            set_tor_preference,
             scan_local_privacy,
             open_hosted_session_scan,
             request_hosted_session_scan,
