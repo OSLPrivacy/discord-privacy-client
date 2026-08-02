@@ -43,11 +43,24 @@
  */
 export const NATIVE_REALIGNMENT_PACING_MS = 120;
 
+/**
+ * A deliberately low-rate escape hatch for an animation frame that is paused
+ * while its window is occluded or minimised. It is not a geometry poll: it is
+ * armed only for an already-requested frame, and stops as soon as that frame
+ * is serviced.
+ */
+export const NATIVE_REALIGNMENT_HEARTBEAT_MS = 1_000;
+
 export interface CoalescedRealignmentOptions {
   /** Minimum interval between consecutive passes. 0 disables pacing. */
   readonly pacingMs?: number;
   /** Injectable clock delay, for tests. */
   readonly wait?: (ms: number) => Promise<void>;
+  /** Delay before retrying a request whose animation frame is paused. */
+  readonly heartbeatMs?: number;
+  /** Injectable timer functions, so the paused-frame path is testable. */
+  readonly setHeartbeatTimer?: (callback: () => void, ms: number) => unknown;
+  readonly clearHeartbeatTimer?: (timer: unknown) => void;
 }
 
 function defaultWait(ms: number): Promise<void> {
@@ -67,6 +80,10 @@ export class CoalescedRealignment {
   private running = 0;
   private readonly pacingMs: number;
   private readonly wait: (ms: number) => Promise<void>;
+  private readonly heartbeatMs: number;
+  private readonly setHeartbeatTimer: (callback: () => void, ms: number) => unknown;
+  private readonly clearHeartbeatTimer: (timer: unknown) => void;
+  private heartbeatTimer: unknown | undefined;
 
   /** Passes actually executed. Diagnostic counters only; never persisted. */
   passes = 0;
@@ -81,6 +98,9 @@ export class CoalescedRealignment {
   ) {
     this.pacingMs = options.pacingMs ?? NATIVE_REALIGNMENT_PACING_MS;
     this.wait = options.wait ?? defaultWait;
+    this.heartbeatMs = options.heartbeatMs ?? NATIVE_REALIGNMENT_HEARTBEAT_MS;
+    this.setHeartbeatTimer = options.setHeartbeatTimer ?? ((callback, ms) => globalThis.setTimeout(callback, ms));
+    this.clearHeartbeatTimer = options.clearHeartbeatTimer ?? ((timer) => globalThis.clearTimeout(timer as ReturnType<typeof globalThis.setTimeout>));
   }
 
   get active(): boolean {
@@ -89,6 +109,29 @@ export class CoalescedRealignment {
 
   get trailingPassOwed(): boolean {
     return this.pending;
+  }
+
+  /**
+   * Backstop one scheduled animation-frame request. A browser may pause rAF
+   * indefinitely while a native child is still attached; the timer reuses
+   * `request`, so its work remains coalesced and paced rather than becoming an
+   * independent source of native calls.
+   */
+  armHeartbeat(): void {
+    if (this.heartbeatTimer !== undefined) return;
+    const beat = (): void => {
+      this.heartbeatTimer = undefined;
+      void this.request();
+      this.armHeartbeat();
+    };
+    this.heartbeatTimer = this.setHeartbeatTimer(beat, this.heartbeatMs);
+  }
+
+  /** Stop the backstop once the animation-frame callback finally runs. */
+  acknowledgeAnimationFrame(): void {
+    if (this.heartbeatTimer === undefined) return;
+    this.clearHeartbeatTimer(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
   }
 
   /**

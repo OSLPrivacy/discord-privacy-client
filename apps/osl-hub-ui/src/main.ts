@@ -8874,8 +8874,10 @@ async function validateNativeSurfaces(): Promise<void> {
 
 function scheduleNativeHostRealignment(): void {
   if ((!activeNativeHostId && !activeDefaultBrowserCompanion && !mullvadWindowHosted) || nativeHostResizeFrame) return;
+  nativeHostRealignment.armHeartbeat();
   nativeHostResizeFrame = requestAnimationFrame(() => {
     nativeHostResizeFrame = 0;
+    nativeHostRealignment.acknowledgeAnimationFrame();
     void validateNativeSurfaces();
   });
 }
