@@ -5,7 +5,7 @@
 //! - [`launch_classify`] — synchronous, cache-only. Called from
 //!   `bootstrap::run_autostart` before the webview comes up.
 //!   Loads `<config_dir>/license.json` (sealed), classifies via
-//!   [`keystore::LicenseStateDto::from_cache`], stamps
+//!   [`keystore::LicenseStateDto::from_cache_at`], stamps
 //!   [`AppState::license_state`]. **No network.** A paid user
 //!   reads `Paid` from the very first render; a never-licensed
 //!   user reads `Free/"Unconfigured"`. This is the
@@ -118,7 +118,7 @@ impl std::fmt::Debug for LicenseScopedModuleAccess {
 /// [`AppState::license_state`] without touching the network.
 ///
 /// Three branches:
-///   - cache loads cleanly → `LicenseStateDto::from_cache(&inner)`
+///   - cache loads cleanly → `LicenseStateDto::from_cache_at(&inner, now)`
 ///   - cache absent OR malformed OR sealer-rejected →
 ///     `LicenseStateDto::unconfigured()`
 ///
@@ -129,7 +129,7 @@ pub fn launch_classify(state: &AppState, dir: &Path) {
     let sealer = select_best_sealer();
     let cache_path = dir.join("license.json");
     let dto = match load_license_cache(&cache_path, sealer.as_ref()) {
-        Ok(inner) => LicenseStateDto::from_cache(&inner),
+        Ok(inner) => LicenseStateDto::from_cache_at(&inner, unix_seconds_now()),
         Err(_) => LicenseStateDto::unconfigured(),
     };
     *state
@@ -293,6 +293,9 @@ pub fn refresh_license_state_with_url(
 /// authoritative durable response. All failure classes share this ceiling so
 /// stale Pro authority cannot survive indefinitely behind a broken endpoint.
 pub fn offline_grace_from_cache(cache: &LicenseCacheInner, now: i64) -> LicenseStateDto {
+    if keystore::is_license_expired(cache.expires_at, now) {
+        return LicenseStateDto::from_cache_at(cache, now);
+    }
     let within_grace = cache.last_validated_at + SEVEN_DAYS_SECONDS > now;
     let is_paid_status = matches!(
         cache.last_validated_status.as_str(),

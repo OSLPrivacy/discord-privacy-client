@@ -28,6 +28,7 @@ pub mod identity;
 pub mod identity_bundle;
 pub mod keystore_anchor;
 pub mod license_cache;
+pub mod license_expiry;
 pub mod password;
 pub mod pending_rotation;
 pub mod prekeys;
@@ -77,6 +78,7 @@ pub use license_cache::{
     classify_state, load_license_cache, save_license_cache, LicenseCacheInner, LicenseCacheOnDisk,
     LicenseState, LicenseStateDto,
 };
+pub use license_expiry::is_license_expired;
 pub use password::{
     load_password_record, save_password_record, validate_password, validate_setup_pair,
     verify_against_record, Argon2Params, InactivityTimer, PasswordError, PasswordHash,
