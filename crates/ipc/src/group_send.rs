@@ -77,7 +77,14 @@ pub(crate) fn encrypt_v5_send(
 
     // Load (or initialize) the per-scope SenderKeyState. We work on
     // a clone to keep the lock window short; persist back after.
-    let mut sks: SenderKeyState = {
+    let mut sks: SenderKeyState = if let Some(live) = state
+        .sender_key_live_state
+        .lock()
+        .expect("sender_key_live_state mutex poisoned")
+        .remove(&scope_key)
+    {
+        live
+    } else {
         let g = state
             .sender_key_state
             .lock()
@@ -224,13 +231,14 @@ pub(crate) fn encrypt_v5_send(
     // wire goes out but persistence dies between send + crash, we'd
     // be in a position where peers think we've installed and we
     // don't.
+    let disk = SenderKeyStateOnDisk::from(&sks);
     {
         let mut g = state
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned");
         g.states
-            .insert(scope_key.clone(), SenderKeyStateOnDisk::from(&sks));
+            .insert(scope_key.clone(), disk);
         g.version = 1;
     }
     persist_sender_key_state_now(state);
@@ -351,6 +359,11 @@ pub(crate) fn encrypt_v5_send(
         }
     }
 
+    state
+        .sender_key_live_state
+        .lock()
+        .expect("sender_key_live_state mutex poisoned")
+        .insert(scope_key.clone(), sks);
     Ok(EncryptWire {
         content: wire,
         control_messages: skdm_wires,
@@ -719,10 +732,12 @@ pub(crate) fn apply_skdm_recv(
             .lock()
             .expect("sender_key_state mutex poisoned");
         let entry = g.states.entry(scope_key.clone()).or_default();
-        let mut live: SenderKeyState = entry
-            .clone()
-            .try_into()
-            .map_err(|e| format!("OSL: SKDM: load existing state: {e}"))?;
+        let mut live: SenderKeyState = state
+            .sender_key_live_state
+            .lock()
+            .expect("sender_key_live_state mutex poisoned")
+            .remove(&scope_key)
+            .unwrap_or_else(|| entry.clone().try_into().expect("sender-key disk state already validated"));
         let peer_bytes = sender_discord_id.as_bytes().to_vec();
         let physical_device_id = PhysicalDeviceId::from_bytes(payload.physical_device_id)
             .map_err(|e| format!("OSL: SKDM: physical_device_id binding invalid or absent: {e}"))?;
@@ -747,6 +762,7 @@ pub(crate) fn apply_skdm_recv(
             .map_err(|e| format!("OSL: SKDM: install_receiver: {e}"))?;
         }
         *entry = SenderKeyStateOnDisk::from(&live);
+        state.sender_key_live_state.lock().expect("sender_key_live_state mutex poisoned").insert(scope_key.clone(), live);
         g.version = 1;
     }
     persist_sender_key_state_now(state);
@@ -814,7 +830,14 @@ pub(crate) fn decrypt_v5_recv(
 
     // Load the per-scope SenderKeyState. If absent → no SKDM has
     // arrived yet → return a clear retry-worthy error.
-    let mut sks: SenderKeyState = {
+    let mut sks: SenderKeyState = if let Some(live) = state
+        .sender_key_live_state
+        .lock()
+        .expect("sender_key_live_state mutex poisoned")
+        .remove(&scope_key)
+    {
+        live
+    } else {
         let g = state
             .sender_key_state
             .lock()
@@ -858,15 +881,17 @@ pub(crate) fn decrypt_v5_recv(
         .map_err(|e| format!("OSL: v=5 decode: decrypt_from: {e}"))?;
 
     // Persist updated state.
+    let disk = SenderKeyStateOnDisk::from(&sks);
     {
         let mut g = state
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned");
         g.states
-            .insert(scope_key.clone(), SenderKeyStateOnDisk::from(&sks));
+            .insert(scope_key.clone(), disk);
         g.version = 1;
     }
+    state.sender_key_live_state.lock().expect("sender_key_live_state mutex poisoned").insert(scope_key.clone(), sks);
     persist_sender_key_state_now(state);
 
     // 9-C1: permissive decrypt — no per-scope accept gate. The
