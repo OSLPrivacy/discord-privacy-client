@@ -158,6 +158,7 @@ pub mod discord_qa_identity;
 #[cfg(all(feature = "core", feature = "discord-qa-shell"))]
 pub mod discord_qa_inbound_receipt;
 #[cfg(feature = "core")]
+pub mod eager_fetch;
 pub mod identity_binding_verifier;
 #[cfg(feature = "core")]
 pub mod identity_registry;
