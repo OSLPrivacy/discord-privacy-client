@@ -417,6 +417,10 @@ describe("bundled preview security boundary", () => {
       // Read-only: whether the burn notices already queued for one scope have
       // been acknowledged. Without it a queued revocation renders as a success.
       "allow-get-hub-revocation-status",
+      // Reads/writes the encrypted local recovery_kit_status.json only
+      // (account_recovery.rs). No network, no keyserver, no shell - it stays
+      // inside the local main-window boundary this test protects.
+      "allow-recovery-kit-status",
     ];
     expect(new Set(capability.permissions)).toEqual(new Set(expectedPermissions));
     expect(capability.permissions).toHaveLength(expectedPermissions.length);

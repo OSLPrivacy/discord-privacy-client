@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("./preferences", () => ({ isTauriRuntime: mocks.isTauriRuntime }));
 
-import { captureProtectionEnforced, setScreenshotProtection, viewHubRecoveryPhrase } from "./adapters";
+import { captureProtectionEnforced, loadHubRecoveryKitUnsaved, setHubRecoveryKitUnsaved, setScreenshotProtection, viewHubRecoveryPhrase } from "./adapters";
 
 const PHRASE = "mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray";
 
@@ -42,6 +42,16 @@ describe("T15-A3/A4 the recovery phrase can be read back later", () => {
     mocks.invoke.mockResolvedValue({ phrase: PHRASE });
 
     await expect(viewHubRecoveryPhrase("correct horse battery")).resolves.toBeNull();
+  });
+});
+
+describe("T15-A9 durable recovery-kit gate", () => {
+  it("uses shipping backend commands rather than WebView storage", async () => {
+    mocks.invoke.mockResolvedValueOnce(true).mockResolvedValueOnce(undefined);
+    await expect(loadHubRecoveryKitUnsaved()).resolves.toBe(true);
+    await expect(setHubRecoveryKitUnsaved(false)).resolves.toBe(true);
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "get_hub_recovery_kit_unsaved");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "set_hub_recovery_kit_unsaved", { unsaved: false });
   });
 });
 

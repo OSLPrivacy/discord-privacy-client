@@ -21,11 +21,19 @@ import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } 
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
 import { renderRecoveryStatesSettings } from "./recovery-states";
 import { previousOnboardingRoute } from "./onboarding-sequence";
+import { componentPickerScreen } from "./component-picker";
+import { componentManagerFromOnboarding } from "./component-manager";
+import { autoScrubConsentPrompt, decideAutoScrubInstall } from "./component-consent";
+import { deviceTransferManifestScreen } from "./device-transfer";
+import { initialOldDeviceCopyDecision, oldDeviceCopyDecisionView } from "./device-transfer-source";
+import { renderDeadmanScreen, selectDeadmanAction } from "./deadman";
 import { groupOnboardingApps } from "./onboarding-app-groups";
 import { peopleDestinationHeaderMarkup } from "./people-destination-header";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import { unlockAttemptWarning } from "./unlock-attempts";
 import { chatPreviewHidingVisible } from "./entitlement-gates";
+import { entitlementCopy } from "./entitlement-copy";
+import { entitlementView } from "./entitlement-view";
 import {
   escapeHtml,
   closeEmbeddedServiceHost,
@@ -110,7 +118,7 @@ import {
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
@@ -169,9 +177,14 @@ import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusC
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { initialAccountRecoveryFlow, recoveryScreenMarkup } from "./account-recovery";
 import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
-import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, recoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
+import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
+import { loadHubRecoveryKitUnsaved, setHubRecoveryKitUnsaved } from "./adapters";
 import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
+import { senderReceiptStatus } from "./receipt-status";
+import { attachmentProgressMarkup, parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
+import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
+import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslConnectionState } from "./offline-capability-status";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
 import { listOslChatAttachments, openOslChatAttachment, selectOslChatAttachment } from "./native-overlay-adapter";
@@ -247,6 +260,7 @@ type BurnResult = {
   tone: "success" | "warning" | "error";
   message: string;
   showUninstall: boolean;
+  destructServerStatus?: ServerDestructStatus;
   /**
    * Peer-acknowledgement half of a chat burn, shown as its own line. Absent for
    * the burn scopes that queue no peer revocation, so nothing is implied about
@@ -298,6 +312,9 @@ let passwordRoleStatus: HubPasswordRoleStatus | null = null;
 let setup: SetupState = parseSetupState(null);
 let route: Route = "onboarding";
 let onboardingRoute: OnboardingRoute = "welcome";
+// A cache only. The authority is encrypted account state in the native hub;
+// WebView storage is deliberately not consulted because burn/duress erase it.
+let recoveryKitUnsavedDurable = false;
 let settingsSection: SettingsSection = "account";
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
@@ -499,6 +516,7 @@ let oslChatPreviewsVisible = true;
 let oslChatMutedPeople = new Set<string>();
 let oslChatSettingsPersonId: string | null = null;
 let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
+const attachmentProgressByContext = new Map<string, AttachmentProgressEvent>();
 let privacyScanResult: LocalPrivacyScanResult | PersistedLocalPrivacyScanResult | null = null;
 let privacyScanFileName: string | null = null;
 let privacyScanBusy = false;
@@ -1033,8 +1051,21 @@ export function desktopCtaHandoffRoute(surface: DesktopCtaSurface): DesktopCtaRo
  * an unsaved recovery kit outranks every other pending step.
  */
 function pendingOnboardingRoute(): OnboardingRoute | null {
-  const resumed = resumeOnboardingRoute(localStorage, onboardingResumeStorageKey);
+  const resumed = recoveryKitUnsavedDurable
+    ? "recovery"
+    : resumeOnboardingRoute(localStorage, onboardingResumeStorageKey);
   return resumed === null ? null : onboardingRouteForBuild(resumed);
+}
+
+async function persistRecoveryKitUnsaved(unsaved: boolean): Promise<boolean> {
+  const persisted = await setHubRecoveryKitUnsaved(unsaved);
+  if (!persisted) return false;
+  recoveryKitUnsavedDurable = unsaved;
+  // Keep this compatibility cache in step only; it is never consulted for the
+  // launch/resume decision.
+  if (unsaved) markRecoveryKitUnsaved(localStorage);
+  else clearRecoveryKitUnsaved(localStorage);
+  return true;
 }
 
 function persistCurrentOnboardingRoute(): void {
@@ -2351,7 +2382,7 @@ function recoveryKitStateNow(): RecoveryKitState {
     captureEnforcement: captureProtectionEnforced() ? "enforced" : "unenforced",
     shownWithoutProtection: recoveryShownWithoutProtection,
     savedAcknowledged: recoverySavedAcknowledged,
-    kitUnsaved: recoveryKitUnsaved(localStorage),
+    kitUnsaved: recoveryKitUnsavedDurable,
   };
 }
 
@@ -2361,8 +2392,7 @@ function applyRecoveryKitAction(action: RecoveryKitAction): "none" | "rejected" 
   recoveryBundle = state.secrets;
   recoveryShownWithoutProtection = state.shownWithoutProtection;
   recoverySavedAcknowledged = state.savedAcknowledged;
-  if (state.kitUnsaved) markRecoveryKitUnsaved(localStorage);
-  else clearRecoveryKitUnsaved(localStorage);
+  void persistRecoveryKitUnsaved(state.kitUnsaved);
   return outcome;
 }
 
@@ -2980,7 +3010,7 @@ function bindPasswordForm(): void {
         recoveryShownWithoutProtection = false;
         // T15-A8: from this instant a kit exists that nobody has confirmed
         // saving. Until they do, every launch comes back here.
-        markRecoveryKitUnsaved(localStorage);
+        if (!await persistRecoveryKitUnsaved(true)) throw new Error("OSL could not save the recovery-kit reminder");
         onboardingRoute = "recovery";
         await proveRecoveryCaptureProtection();
       } else {
@@ -3064,7 +3094,7 @@ function bindPasswordForm(): void {
         // T15-A8: an unsaved recovery kit outranks a "finished" onboarding.
         // Deferring the kit used to be indistinguishable from never having
         // been offered it, because nothing survived the unlock.
-        if (onboardingComplete && !recoveryKitUnsaved(localStorage)) {
+        if (onboardingComplete && !recoveryKitUnsavedDurable) {
           route = "home";
           void openMullvadOnStartup();
           void refreshUpdateStatus();
@@ -3222,7 +3252,7 @@ function bindImportForm(): void {
       recoveryBundle = { userId: identity.userId, identityPhrase: null, passwordPhrase: passwordResult.passwordRecoveryPhrase };
       recoverySavedAcknowledged = false;
       recoveryShownWithoutProtection = false;
-      markRecoveryKitUnsaved(localStorage);
+      if (!await persistRecoveryKitUnsaved(true)) throw new Error("OSL could not save the recovery-kit reminder");
       onboardingRoute = "recovery";
       await proveRecoveryCaptureProtection();
       render();
@@ -4026,7 +4056,7 @@ export function publicPostGuardCarrierPreviewMarkup(platform = "Public platforms
 }
 
 export function inboxDestinationContent(): string {
-  const verifiedPeople = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
+  const verifiedPeople = hubPeople.filter(peerIsVerified);
   const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
   const connectedApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch" && app.linked);
   const connectedRows = connectedApps.length
@@ -4202,8 +4232,12 @@ function oslChatContent(): string {
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
   const attachments = activeOslChatContext?.scopeApproved && pro
-    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
+    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
+  const receipt = activeOslChatPersonId
+    ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])
+    : "";
+  const offlineStatus = oslRelayConnectionState() === "offline" ? offlineCapabilitiesMarkup() : "";
   return `<main class="content-viewport osl-chat-page"><header class="osl-chat-page-header"><button class="text-button" id="osl-chat-back" type="button" ${oslChatBusy ? "disabled" : ""}>Back</button><h1 id="route-heading" tabindex="-1">OSL Chats</h1><button class="text-button" id="osl-chat-refresh" type="button" ${activeOslChatContext?.scopeApproved && !oslChatBusy ? "" : "disabled"}>Refresh</button></header>${approval}${oslChatsViewMarkup({
     friends,
     activePersonId: activeOslChatPersonId,
@@ -4212,7 +4246,61 @@ function oslChatContent(): string {
     busy: oslChatBusy,
     viewOnce: oslChatViewOnce,
     homeLogoUrl: oslVectorLogoUrl,
-  })}${attachments}${settings}</main>`;
+  })}${offlineStatus}${receipt}${attachments}${settings}</main>`;
+}
+
+const OFFLINE_CAPABILITIES: readonly OfflineUnavailableCapability[] = [
+  "receiveNewMessages",
+  "sendMessage",
+  "lookUpNewContactKey",
+  "confirmBurnOnServer",
+  "enforceExpiryOnServer",
+  "enforceViewOnceOnServer",
+];
+
+/** Browser offline is a reliable negative signal; any other state stays unknown. */
+function oslRelayConnectionState(): OslConnectionState {
+  return typeof navigator !== "undefined" && navigator.onLine === false ? "offline" : "unknown";
+}
+
+function offlineCapabilitiesMarkup(): string {
+  return `<section class="setting-line unavailable" data-osl-relay="offline" role="status"><span><strong>OSL is offline</strong>${OFFLINE_CAPABILITIES.map((capability) => {
+    const status = offlineCapabilityStatus(capability, "offline");
+    return `<small data-offline-capability="${capability}"><strong>${status.title}</strong> ${status.detail}</small>`;
+  }).join("")}</span></section>`;
+}
+
+function refuseOfflineCapability(capability: OfflineUnavailableCapability): boolean {
+  if (oslRelayConnectionState() !== "offline") return false;
+  showToast(offlineCapabilityStatus(capability, "offline").detail);
+  return true;
+}
+
+function attachmentProgressMarkupForActiveChat(): string {
+  return [...attachmentProgressByContext.values()]
+    .map((event) => attachmentProgressMarkup(event))
+    .join("");
+}
+
+function bindAttachmentProgressEvents(): void {
+  void listen<unknown>("osl://attachment-progress", (event) => {
+    const progress = parseAttachmentProgressEvent(event.payload);
+    if (!progress) return;
+    attachmentProgressByContext.set(progress.contextId, progress);
+    if (route === "osl-chat") renderWhenIdle();
+  });
+}
+
+/** The sender sees only a receipt the peer app actually reported. */
+export function oslChatSenderReceiptMarkup(messages: readonly OslChatMessage[]): string {
+  const latestOutgoing = [...messages].reverse().find((message) => message.direction === "outgoing");
+  const receipt = senderReceiptStatus(
+    latestOutgoing?.state === "delivered" ? "Delivered"
+      : latestOutgoing?.state === "opened" ? "Opened"
+        : latestOutgoing?.state === "expired" ? "Destroyed"
+          : "Prepared",
+  );
+  return `<p class="setting-line osl-chat-receipt-status" data-osl-chat-receipt-confirmed="${receipt.confirmed}"><span><strong>Delivery receipt</strong><small>${receipt.label}</small></span></p>`;
 }
 
 function oslChatFriendSettingsMarkup(person: HubPerson): string {
@@ -4365,7 +4453,7 @@ function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): str
 }
 
 function peopleDestinationContent(): string {
-  const verified = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
+  const verified = hubPeople.filter(peerIsVerified);
   const needsReview = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
   const reVerificationNotice = peopleReverificationNoticeMarkup(hubPeople.some((person) => !person.safetyNumberVerified && !person.pendingKeyChange));
   const approvedChats = verified.reduce((total, person) => total + person.whitelistCount, 0);
@@ -4574,7 +4662,10 @@ function burnGuaranteeMarkup(effects: string): string {
 function burnDialogMarkup(): string {
   if (!burnDialogOpen) return "";
   if (burnResult) {
-    return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card burn-result"><header><div><p class="eyebrow">Burn</p><h2 id="burn-dialog-title">${burnResult.tone === "success" ? "Finished" : burnResult.tone === "warning" ? "Needs attention" : "Nothing was claimed"}</h2></div><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><p class="burn-result-message ${burnResult.tone}" role="status">${escapeHtml(burnResult.message)}</p>${burnRevocationMarkup(burnResult.revocation)}${burnResult.showUninstall ? `<div class="burn-uninstall"><strong>Uninstall is separate</strong><p>Your local OSL cleanup finished. Windows controls removal of the app itself.</p><a class="button" href="ms-settings:appsfeatures">Open Windows installed apps</a></div>` : ""}<footer><button class="button primary" data-close-burn>Done</button></footer></section></dialog>`;
+    const destructStatus = burnResult.destructServerStatus
+      ? destructStatusMarkup({ action: "burn", local: "complete", server: burnResult.destructServerStatus })
+      : "";
+    return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card burn-result"><header><div><p class="eyebrow">Burn</p><h2 id="burn-dialog-title">${burnResult.tone === "success" ? "Finished" : burnResult.tone === "warning" ? "Needs attention" : "Nothing was claimed"}</h2></div><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><p class="burn-result-message ${burnResult.tone}" role="status">${escapeHtml(burnResult.message)}</p>${destructStatus}${burnRevocationMarkup(burnResult.revocation)}${burnResult.showUninstall ? `<div class="burn-uninstall"><strong>Uninstall is separate</strong><p>Your local OSL cleanup finished. Windows controls removal of the app itself.</p><a class="button" href="ms-settings:appsfeatures">Open Windows installed apps</a></div>` : ""}<footer><button class="button primary" data-close-burn>Done</button></footer></section></dialog>`;
   }
 
   const cards: Array<{ scope: BurnScope; title: string; detail: string }> = [
@@ -4702,12 +4793,25 @@ function settingsContent(): string {
 
 function settingsSectionContent(): string {
   if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
-  if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${sendingSettingsContent()}`;
+  if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}`;
   if (settingsSection === "scrub") return privacySettingsContent();
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
   if (settingsSection === "appearance") return appearanceSettingsContent();
   return updateSettingsContent();
+}
+
+function optionalComponentsSettingsContent(): string {
+  const components = [
+    { id: "local-ai-model", displayName: "Local AI model", measuredSizeBytes: 1_879_048_192, withoutIt: "The word-bank carrier still works." },
+    { id: "tor", displayName: "Tor", measuredSizeBytes: 31_457_280, withoutIt: "OSL connects directly, without an anonymity layer." },
+  ] as const;
+  const picker = componentPickerScreen(components);
+  const manager = componentManagerFromOnboarding(components.map(({ id, displayName, withoutIt }) => ({ id, featureName: displayName, fallback: withoutIt })), []);
+  const scrub = decideAutoScrubInstall("autoscrub", null);
+  const transfer = deviceTransferManifestScreen();
+  const sourceChoice = oldDeviceCopyDecisionView(initialOldDeviceCopyDecision({ importConfirmed: false }));
+  return `<details class="settings-disclosure" data-optional-components><summary><span><strong>${picker.title}</strong><small>${picker.introductoryCopy}</small></span></summary><div class="settings-list">${picker.components.map((item) => `<div class="setting-line"><span><strong>${escapeHtml(item.displayName)} · ${escapeHtml(item.size)}</strong><small>${escapeHtml(item.withoutIt)}</small></span></div>`).join("")}<p>${escapeHtml(autoScrubConsentPrompt("each service"))}</p><p data-autoscrub-install="${scrub.allowed ? "allowed" : "blocked"}">AutoScrub installation is blocked until separate explicit consent is recorded.</p>${manager.features.map((feature) => `<p>${escapeHtml(feature.detail)}</p>`).join("")}<h3>${escapeHtml(transfer.title)}</h3>${transfer.sections.map((section) => `<p><strong>${escapeHtml(section.heading)}:</strong> ${escapeHtml(section.items.join(", "))}</p>`).join("")}<p>${sourceChoice.mode === "unavailable" ? "Transfer source-copy choice appears only after a confirmed import." : ""}</p>${renderDeadmanScreen(selectDeadmanAction("lock", ""))}</div></details>`;
 }
 
 export function privacyDestinationContent(): string {
@@ -5292,14 +5396,14 @@ function identityListMarkup(): string {
 
 function activationSettingsContent(): string {
   if (discordQaShell) return "";
-  const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  const accessLabel = licenseState.access === "offlineGrace" ? "Pro, offline grace" : pro ? "Pro active" : "Free";
+  const entitlement = entitlementView(licenseState, Math.floor(Date.now() / 1_000));
+  const copy = entitlementCopy(entitlement);
+  const pro = entitlement.tier === "pro" || entitlement.tier === "offlineGrace";
   const moduleAccess = pro
     ? "Optional Pro module: separately installed and licensed on this device."
     : "Optional Pro module: separate install and license required; base OSL stays available.";
-  const period = licenseState.currentPeriodEnd === null ? "" : `<small>${licenseState.status === "CANCELLED" ? "Access through" : "Current period ends"} ${formatUnixDate(licenseState.currentPeriodEnd)}</small>`;
   const clear = licenseState.status === "UNCONFIGURED" ? "" : `<button class="button compact" id="clear-activation-code" type="button">Clear activation</button>`;
-  return `<details class="license-card settings-disclosure"><summary><span><strong>Plan</strong><small>${accessLabel}</small>${period}</span>${statusTag(escapeHtml(licenseState.status === "UNCONFIGURED" ? "Free" : licenseState.status), pro ? "active" : "")}</summary><div><p>Paste the activation code shown after checkout. No email is required.</p><p class="quiet-note">${moduleAccess}</p><form id="activation-form" class="license-form"><label for="activation-code">Activation code</label><div><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Activate Pro</button>${clear}</div></form></div></details>`;
+  return `<details class="license-card settings-disclosure"><summary><span><strong>Plan</strong><small>${escapeHtml(copy.title)}</small></span>${statusTag(escapeHtml(licenseState.status === "UNCONFIGURED" ? "Free" : licenseState.status), pro ? "active" : "")}</summary><div data-entitlement-banner="${entitlement.banner}" data-entitlement-cta="${entitlement.cta}"><p>${escapeHtml(copy.detail)}</p><p>Paste the activation code shown after checkout. No email is required.</p><p class="quiet-note">${moduleAccess}</p><form id="activation-form" class="license-form"><label for="activation-code">Activation code</label><div><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Activate Pro</button>${clear}</div></form></div></details>`;
 }
 
 function formatUnixDate(seconds: number): string {
@@ -5758,6 +5862,7 @@ async function toggleDiscordQaTranscriptVisibility(): Promise<void> {
 }
 
 if (!runningUnderVitest) {
+  bindAttachmentProgressEvents();
   void listen<void>(MAIN_WINDOW_CAPTURE_REFUSED_EVENT, () => {
     recoveryCaptureGate.invalidate();
     screenshotProtectionEnabled = false;
@@ -7216,7 +7321,7 @@ function toggleHomeTile(id: string): void {
 }
 
 export function inboxPrimaryAction(): void {
-  const first = hubPeople.find((person) => person.safetyNumberVerified && !person.pendingKeyChange);
+  const first = hubPeople.find(peerIsVerified);
   if (first) {
     friendsDialogOpen = false;
     void openOslChat(first.personId);
@@ -7255,7 +7360,7 @@ function oslChatTimestamp(): string {
 
 async function openOslChat(personId: string): Promise<void> {
   const person = hubPeople.find((candidate) => candidate.personId === personId);
-  if (!person?.safetyNumberVerified || person.pendingKeyChange || oslChatBusy) return;
+  if (!person || !peerIsVerified(person) || oslChatBusy) return;
   const queuedViewOnce = (oslChatUnread.get(personId) ?? 0) > 0
     ? (oslChatMessages.get(personId) ?? []).filter((message) => message.state === "opened")
     : [];
@@ -7453,7 +7558,7 @@ async function approveOslChat(): Promise<void> {
 async function refreshOslChat(): Promise<void> {
   const context = activeOslChatContext;
   const personId = activeOslChatPersonId;
-  if (!context?.scopeApproved || !personId || oslChatBusy) return;
+  if (!context?.scopeApproved || !personId || oslChatBusy || refuseOfflineCapability("receiveNewMessages")) return;
   const epoch = oslChatOperationEpoch;
   oslChatBusy = true;
   render();
@@ -7506,7 +7611,7 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
   const context = activeOslChatContext;
   const personId = activeOslChatPersonId;
   const draft = oslChatDraft;
-  if (!context?.scopeApproved || !personId || oslChatBusy || !isHubPlaintext(draft)) return;
+  if (!context?.scopeApproved || !personId || oslChatBusy || !isHubPlaintext(draft) || refuseOfflineCapability("sendMessage")) return;
   const epoch = oslChatOperationEpoch;
   oslChatBusy = true;
   render();
@@ -7568,14 +7673,25 @@ async function submitFriendCode(event: SubmitEvent): Promise<void> {
   const button = document.querySelector<HTMLButtonElement>("#add-friend-form button");
   const status = document.querySelector<HTMLElement>("#friend-form-status");
   const code = input?.value.trim() ?? "";
-  if (!/^OSLFR1\.[A-Za-z0-9_-]{16,8192}$/.test(code)) {
-    if (status) status.textContent = "Enter a valid OSL invite.";
+  // Offline refusal stays FIRST: a username add needs a key lookup, so letting
+  // the username branch run while offline would attempt exactly the capability
+  // this guard exists to refuse.
+  if (refuseOfflineCapability("lookUpNewContactKey")) {
+    if (status) status.textContent = offlineCapabilityStatus("lookUpNewContactKey", "offline").detail;
+    return;
+  }
+  const username = isNormalizedOslUsername(code) ? code : null;
+  if (!username && !/^OSLFR1\.[A-Za-z0-9_-]{16,8192}$/.test(code)) {
+    if (status) status.textContent = "Enter a valid OSL invite or username.";
     input?.focus();
     return;
   }
   if (button) button.disabled = true;
-  if (status) status.textContent = "Saving request locally…";
-  const outcome = await addOslFriend(code, nicknameInput?.value ?? "");
+  if (status) status.textContent = username ? "Resolving username…" : "Saving request locally…";
+  const resolved = username ? await addOslFriendByUsername(username, nicknameInput?.value ?? "") : null;
+  const outcome = username
+    ? (resolved ? { added: true, reason: null } : { added: false, reason: "username lookup was refused" })
+    : await addOslFriend(code, nicknameInput?.value ?? "");
   if (button) button.disabled = false;
   if (!outcome.added) {
     if (status) status.textContent = addFriendFailureStatus(outcome.reason);
@@ -7927,6 +8043,7 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
       message: localLine,
       showUninstall: false,
       revocation,
+      destructServerStatus: revocation.acknowledged ? "confirmed" : "not-confirmed",
     };
     render();
     return;
@@ -7955,6 +8072,7 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
         ? `Local OSL settings and caches for ${result.scopesBurned} indexed ${result.scopesBurned === 1 ? "scope was" : "scopes were"} removed. Sent relay cleanup was acknowledged. Login profile, cookies, provider history, and other copies remain.`
         : `Local OSL settings and caches for ${result.scopesBurned} indexed ${result.scopesBurned === 1 ? "scope was" : "scopes were"} removed, but ${result.remoteBlobDeletionsFailed} sent relay blob ${result.remoteBlobDeletionsFailed === 1 ? "deletion was" : "deletions were"} not acknowledged. Login profile, cookies, provider history, and other copies remain.`,
       showUninstall: false,
+      destructServerStatus: result.remoteCleanupComplete ? "confirmed" : "not-confirmed",
     };
     render();
     return;
@@ -8750,6 +8868,7 @@ async function bootstrap(): Promise<void> {
       showPlaintextPreview: true,
       windowCaptureEnabled: true,
     };
+    recoveryKitUnsavedDurable = await loadHubRecoveryKitUnsaved().catch(() => null) ?? false;
     if (attempt !== bootstrapEpoch) return;
     setup = preferences.setup;
     windowCaptureEnabled = preferences.windowCaptureEnabled;
@@ -8771,7 +8890,7 @@ async function bootstrap(): Promise<void> {
       // T15-A8: "Remind me later" is a real state, not a dismissal. While a
       // recovery kit is unsaved the launch lands back on the recovery step
       // even for an account that already finished onboarding.
-      const recoveryKitOutstanding = recoveryKitUnsaved(localStorage);
+      const recoveryKitOutstanding = recoveryKitUnsavedDurable;
       route = preferences.onboardingComplete && !recoveryKitOutstanding ? "home" : "onboarding";
       if (route === "onboarding") onboardingRoute = pendingOnboardingRoute() ?? onboardingRouteForBuild("pro");
     }

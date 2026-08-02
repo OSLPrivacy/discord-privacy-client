@@ -52,9 +52,21 @@ migrations_dir = "migrations"
 name = "MAILBOX"
 class_name = "Mailbox"
 
+[[durable_objects.bindings]]
+name = "ARCHIVE"
+class_name = "Archive"
+
 [[migrations]]
 tag = "osl-mail-v1"
 new_sqlite_classes = ["Mailbox"]
+
+[[migrations]]
+tag = "osl-archive-v1"
+new_sqlite_classes = ["Archive"]
+
+[[r2_buckets]]
+binding = "ARCHIVE_PAYLOADS"
+bucket_name = "osl-retained-archive-payloads-prod"
 
 # Native abuse-control counters. Cloudflare documents these as
 # permissive/eventually consistent, so identity signatures and D1

@@ -407,6 +407,8 @@ macro_rules! hub_tauri_commands {
             import_hub_osl_identity_phrase,
             setup_hub_main_password,
             view_hub_recovery_phrase,
+            get_hub_recovery_kit_unsaved,
+            set_hub_recovery_kit_unsaved,
             lock_hub_session,
             emit_active_session_reset,
             get_hub_password_role_status,
@@ -1335,6 +1337,15 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["view_hub_recovery_phrase"],
+        );
+    }
+
+    #[test]
+    fn recovery_kit_status_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers, &permissions, &capability,
+            &["get_hub_recovery_kit_unsaved", "set_hub_recovery_kit_unsaved"],
         );
     }
 

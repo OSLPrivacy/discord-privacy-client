@@ -2,6 +2,7 @@
 /// capability digests and lifecycle metadata.
 import type { Env } from "../env.js";
 import { isPadmeLength, MAX_LIVE_BLOB_BYTES, MAX_LIVE_BLOB_ROWS } from "../lib/blob-limits.js";
+import { applyBurn } from "../lib/burn-policy.js";
 import { constantTimeEqualHex, sha256Hex } from "../lib/digest.js";
 import { error, json, notFound } from "../lib/http.js";
 import { R2PayloadStore } from "../lib/payload-store.js";
@@ -123,10 +124,24 @@ export async function handleFetch(request: Request, env: Env, blobId: string): P
 }
 
 export async function handleDelete(request: Request, env: Env, blobId: string): Promise<Response> {
-  const manageCap = hexHeader(request, "x-osl-manage-cap", CAP_RE);
-  const row = await liveRow(env, blobId);
-  if (!manageCap || !row || !constantTimeEqualHex(await sha256Hex(manageCap), row.manage_digest_sha256_hex)) return new Response(null, { status: 204 });
-  await new R2PayloadStore(env.PAYLOADS).deleteByDigest(row.fetch_digest_sha256_hex);
-  await env.DB.prepare("DELETE FROM blob_capability_index WHERE blob_id = ?").bind(blobId).run();
-  return new Response(null, { status: 204 });
+  return applyBurn({
+    async manageCapabilityDigestFor(id) {
+      if (!ID_RE.test(id)) return null;
+      const row = await env.DB.prepare(
+        "SELECT manage_digest_sha256_hex FROM blob_capability_index WHERE blob_id = ? LIMIT 1",
+      ).bind(id).first<{ manage_digest_sha256_hex: string }>();
+      return row?.manage_digest_sha256_hex ?? null;
+    },
+    async destroy(id) {
+      // Read the digest as part of deletion, rather than trusting the caller's
+      // authority or relying on freshness. This also cleans a row that expired
+      // just before its scheduled sweep.
+      const row = await env.DB.prepare(
+        "SELECT fetch_digest_sha256_hex FROM blob_capability_index WHERE blob_id = ? LIMIT 1",
+      ).bind(id).first<{ fetch_digest_sha256_hex: string }>();
+      if (!row) return;
+      await new R2PayloadStore(env.PAYLOADS).deleteByDigest(row.fetch_digest_sha256_hex);
+      await env.DB.prepare("DELETE FROM blob_capability_index WHERE blob_id = ?").bind(id).run();
+    },
+  }, blobId, request.headers.get("x-osl-manage-cap"));
 }

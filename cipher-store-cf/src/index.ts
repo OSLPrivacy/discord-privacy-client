@@ -51,12 +51,18 @@ import { handleLanding, handleRobots } from "./lib/landing.js";
 import { clientIp, error, notFound, serverError } from "./lib/http.js";
 import { rateLimit, sweepRateCounters } from "./lib/rate-limit.js";
 import { CYCLE_MARKER } from "./lib/d2-proof-contract.js";
+import { verifyStorageGrant } from "./lib/storage-grant.js";
 import {
   sweepExpired,
   sweepExpiredAttachments,
   sweepExpiredLinkGrantConsumptions,
   sweepExpiredLinks,
 } from "./lib/sweep.js";
+
+// Wrangler resolves Durable Object classes from the Worker module's exports.
+// Keeping this re-export beside the default Worker entry makes the binding in
+// wrangler.toml part of the deployed module graph rather than a dead file.
+export { PushConnection } from "./realtime/connection.js";
 
 export default {
   async fetch(
@@ -175,6 +181,10 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
   // ------------------------------------------------------------------
 
   if (path === "/v1/blob" && request.method === "PUT") {
+    // Admission is checked before rate limiting, body reads, R2, or D1 blob
+    // state.  There must be no route around this one-time anonymous grant.
+    const grant = await verifyStorageGrant(request, env);
+    if (!grant.ok) return error(grant.status, grant.code, grant.message);
     const rl = await rateLimit(env, clientIp(request), "upload");
     if (!rl.allowed) {
       return error(429, "rate_limited", "upload rate limit hit");

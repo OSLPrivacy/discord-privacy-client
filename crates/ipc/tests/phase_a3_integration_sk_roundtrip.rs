@@ -421,6 +421,52 @@ fn membership_change_triggers_rotation_on_next_send() {
 }
 
 #[test]
+fn removal_rotates_without_reemitting_the_chain_root_to_the_removed_member() {
+    let (alice, bob, carol) = setup_three_member_gc();
+    let scope = Scope::gc(GC_ID);
+    let scope_key = scope.storage_key();
+
+    // Establish a chain that Bob legitimately holds before removal.
+    let _ = send_from(&alice, ALICE_DID, "before bob was removed");
+    deliver_skdm_synthetically(&alice, ALICE_DID, &bob, &scope_key);
+    deliver_skdm_synthetically(&alice, ALICE_DID, &carol, &scope_key);
+
+    // The membership oracle observes the removal before Alice's next send.
+    // The next emission must use this resolved set for both the rotation
+    // decision and the SKDM bundle; retaining the old sender-chain members
+    // here would hand Bob the newly rotated root.
+    let remaining = vec![ALICE_DID.to_string(), CAROL_DID.to_string()];
+    cmd_osl_membership_update(&alice, GC_ID.to_string(), remaining.clone()).unwrap();
+    let after_removal = cmd_osl_encrypt_message_v2_wire(
+        &alice,
+        "after bob was removed".to_string(),
+        ScopeInput::from(&scope),
+        remaining,
+        ALICE_DID.to_string(),
+    )
+    .expect("encrypt after removal");
+
+    assert_eq!(
+        after_removal.control_messages.len(),
+        1,
+        "the rotated chain must be distributed to the remaining member"
+    );
+    assert_eq!(
+        decrypt_at(&carol, ALICE_DID, &after_removal.control_messages[0]).unwrap(),
+        OSL_RESULT_SKDM_APPLIED,
+        "a current member receives the replacement root"
+    );
+    assert!(
+        decrypt_at(&bob, ALICE_DID, &after_removal.control_messages[0]).is_err(),
+        "a removed member received the replacement chain root"
+    );
+    assert!(
+        decrypt_at(&bob, ALICE_DID, &after_removal.content).is_err(),
+        "a removed member decrypted content from the replacement chain"
+    );
+}
+
+#[test]
 fn joiner_receives_rotated_chain_and_cannot_decrypt_prejoin_content() {
     let (alice, _bob, _carol) = setup_three_member_gc();
 

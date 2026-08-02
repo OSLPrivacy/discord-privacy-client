@@ -1,3 +1,4 @@
+import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import {
   enforceArchiveByteBudget,
@@ -14,6 +15,13 @@ const entry = (
 ): ArchiveEntry => ({ id, objectKey: `archive/${id}`, receivedAt, expiresAt, byteLength });
 
 describe("Archive retained-pool policy", () => {
+  it("is registered as a shipping Durable Object and its binding invokes the real class", async () => {
+    const archive = env.ARCHIVE.getByName(`t6-k1-${crypto.randomUUID()}`);
+    const result = await archive.store(entry("live", Date.now(), Date.now() + 60_000, 4), 8);
+
+    expect(result).toEqual({ evicted: [] });
+  });
+
   it("evicts the oldest entries first, retaining the new entry when a byte budget is exceeded", () => {
     const oldest = entry("oldest", 100, 10_000, 4);
     const middle = entry("middle", 200, 10_000, 4);

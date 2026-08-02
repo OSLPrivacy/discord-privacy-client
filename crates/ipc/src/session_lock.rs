@@ -303,6 +303,11 @@ pub fn lock_session(state: &AppState, trigger: SessionLockTrigger) -> SessionLoc
         report.sender_key_chains_cleared = sk.states.len();
         *sk = crate::sender_key_state::SenderKeyStateFile::default();
     }
+    state
+        .sender_key_rotation
+        .lock()
+        .expect("sender_key_rotation mutex poisoned")
+        .clear();
 
     // 5. Policy state. Not key material, but it is the user's private social
     //    graph and their encrypt/burn policy; leaving it readable in a locked

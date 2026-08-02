@@ -68,6 +68,37 @@ pub enum RnRecoveryOffer {
     ReestablishSession,
 }
 
+/// Stable, user-visible state for every RN failure.  This is deliberately an
+/// exhaustive match: adding an `RnError` requires choosing what the user sees.
+pub fn user_state_for_rn_error(error: &RnError) -> &'static str {
+    match error {
+        RnError::WireInDisabled => "Secure messaging is unavailable in this build.",
+        RnError::PinnedToRn | RnError::RecoveryRequiresRnPin => {
+            "Secure session needs re-establishing."
+        }
+        RnError::RnRequiredButUnsupported => "This peer cannot use the required secure session.",
+        RnError::WriterBusy => "Secure session is busy; message remains queued for retry.",
+        RnError::RolledBackSession { .. } | RnError::RolledBackSessionGeneration => {
+            "Secure session state was restored from an unsafe backup."
+        }
+        RnError::PlaintextSealerRefused => {
+            "Secure session cannot be saved until protected storage is available."
+        }
+        RnError::BadPeerKemKey | RnError::PrekeyAdapter(_) => {
+            "Peer secure-message setup is invalid."
+        }
+        RnError::Protocol(_) => "Secure message could not be authenticated; recovery is available.",
+        // The T19 wiring added these two. The match is deliberately exhaustive
+        // so that a new RnError forces a decision about what the user sees;
+        // both are the same class of problem as StateTooLarge -- session
+        // storage has hit a bound -- so they share its wording.
+        RnError::StateTooLarge { .. }
+        | RnError::StoreFull { .. }
+        | RnError::SkippedCacheTooLarge { .. }
+        | RnError::Storage(_) => "Secure session storage needs attention.",
+    }
+}
+
 /// A receive-side symptom that can prove an RN-pinned session has diverged.
 ///
 /// Callers may report these only after the peer's RN pin has been verified.
@@ -382,5 +413,30 @@ mod tests {
         assert_eq!(record.health(), RnSessionHealth::Unrecoverable);
         record.remediation_completed();
         assert_eq!(record.health(), RnSessionHealth::Healthy);
+    }
+
+    #[test]
+    fn every_rn_error_has_nonempty_user_visible_state() {
+        let errors = [
+            RnError::WireInDisabled,
+            RnError::PinnedToRn,
+            RnError::RecoveryRequiresRnPin,
+            RnError::RnRequiredButUnsupported,
+            RnError::WriterBusy,
+            RnError::RolledBackSession {
+                blob_counter: 1,
+                high_water: 2,
+            },
+            RnError::RolledBackSessionGeneration,
+            RnError::PlaintextSealerRefused,
+            RnError::BadPeerKemKey,
+            RnError::PrekeyAdapter("bad"),
+            RnError::Protocol("bad".into()),
+            RnError::StateTooLarge { got: 2, max: 1 },
+            RnError::Storage("bad".into()),
+        ];
+        assert!(errors
+            .iter()
+            .all(|error| !user_state_for_rn_error(error).is_empty()));
     }
 }

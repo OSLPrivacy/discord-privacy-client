@@ -123,6 +123,11 @@ export interface HubIdentityCreation { identity: HubIdentitySlot; identityRecove
 export interface ScopeSecurity { storageKey: string; ttlSeconds: number; decryptDisplayEnabled: boolean; }
 export interface HubPersonWhitelistScope { kind: "dm" | "group" | "channel" | "space"; contextId: string | null; storageKey: string; userSpecific: boolean; }
 export interface HubPerson { personId: string; oslUserId: string; alias: string | null; safetyNumber: string; safetyNumberVerified: boolean; whitelistCount: number; whitelistedScopes: HubPersonWhitelistScope[]; whitelistedScopesTruncated: boolean; pendingKeyChange: boolean; reachBroadened: boolean; reachBroadenedAt: string | null; reachNarrowedScopes: string[]; }
+
+/** The UI mirror of the Hub's sole bilateral-peer trust predicate. */
+export function peerIsVerified(person: Pick<HubPerson, "safetyNumberVerified" | "pendingKeyChange">): boolean {
+  return person.safetyNumberVerified && !person.pendingKeyChange;
+}
 export interface HubUsernameClaim { username: string; oslUserId: string; }
 export interface HubUsernameStatus { username: string; ownedByActiveIdentity: boolean; }
 export interface HubAddFriendResult {
@@ -478,7 +483,7 @@ async function verifiedStableOslChatPerson(personId: string): Promise<HubPerson 
   const people = await listHubPeople();
   if (!people) return null;
   const person = people.find((candidate) => candidate.personId === personId) ?? null;
-  return person?.safetyNumberVerified && !person.pendingKeyChange ? person : null;
+  return person && peerIsVerified(person) ? person : null;
 }
 
 export async function closeOslChatContext(): Promise<boolean> {
@@ -1078,6 +1083,21 @@ export async function viewHubRecoveryPhrase(current: string): Promise<string | n
       typeof phrase === "string" && phrase.length > 0 && phrase.length <= 512 ? phrase : null,
       "the recovery phrase did not match the expected shape");
   } catch (error) { recordBackendFailure("view_hub_recovery_phrase", error); return null; }
+}
+
+export async function loadHubRecoveryKitUnsaved(): Promise<boolean | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    const value = await invoke<unknown>("get_hub_recovery_kit_unsaved");
+    return checkedBackendResponse("get_hub_recovery_kit_unsaved", typeof value === "boolean" ? value : null,
+      "the recovery-kit status did not match the expected shape");
+  } catch (error) { recordBackendFailure("get_hub_recovery_kit_unsaved", error); return null; }
+}
+
+export async function setHubRecoveryKitUnsaved(unsaved: boolean): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try { await invoke("set_hub_recovery_kit_unsaved", { unsaved }); return true; }
+  catch (error) { recordBackendFailure("set_hub_recovery_kit_unsaved", error); return false; }
 }
 
 export async function listHubIdentities(): Promise<HubIdentitySlot[] | null> {
