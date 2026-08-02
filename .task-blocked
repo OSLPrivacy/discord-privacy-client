@@ -13,3 +13,4 @@ T16-B10 — Blocked: T16-B9a's subscription/account lifecycle remains in the pre
 T16-G4 — Blocked: T16-B10 remains correctly false, so changing the three manifest keys would publish redemption-start timing before the required live acceptance proof.
 T17-B5 — Blocked: T17-B4 has not landed: the release workflow has no Azure OIDC login or Artifact Signing configuration. Adding placeholder signCommand values would make releases fail without signing either artifact.
 T17-B6 — Blocked: T17-B5 has not produced a signed installer and no clean-VM signed artifact is available. Capturing an unsigned-only run cannot satisfy the required signed-versus-unsigned evidence.
+T17-D4 — Blocked: T17-D3 has not landed and `apps/osl-hub/src/update_safety.rs` is absent. There is no established update-in-flight safety seam to extend with an exit quiesce hook.
