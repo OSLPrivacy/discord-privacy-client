@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T7-02 is blocked: T7-01 has not produced an admissible fresh Windows-binary identity, so T7-02 has no UI Automation verdict on status-tag tones; T7-01/T7-02 own the missing evidence.
