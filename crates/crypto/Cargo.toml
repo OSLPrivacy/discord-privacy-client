@@ -47,5 +47,9 @@ thiserror = { workspace = true }
 base64 = "0.22"
 
 [dev-dependencies]
+# tests/sender_keys_forgery_test.rs uses keystore::generate_identity. keystore is
+# its own crate, not a crypto module, so the test target failed to compile and
+# blocked `cargo test --workspace` entirely.
+keystore = { path = "../keystore" }
 hex = { workspace = true }
 serde_json = { workspace = true }
