@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing docs/design/osl-spaces-visibility.md, which is owned by prerequisite T21-A3.
