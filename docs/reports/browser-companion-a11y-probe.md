@@ -23,7 +23,7 @@ On a Windows VM:
 1. Start Chromium with a normal user profile before OSL starts.
 2. Launch a companion service using `BrowserAccountMode::ExistingBrowser` and
    use UI Automation to enumerate its renderer tree. Record that the expected
-   document text is absent.
+   document sentinel is absent.
 3. Launch the same fixed local document via `BrowserAccountMode::IsolatedOsl`.
    Enumerate after a warm-up pass and record that its sentinel text is present.
 4. Repeat the isolated profile run in Firefox and record the actual result of

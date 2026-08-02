@@ -23,8 +23,8 @@ pub trait WebSurfaceBackend: Send + Sync {
         now_unix_seconds: u64,
     ) -> CapabilitySet;
     fn is_current_generation(&self, generation: u64) -> bool;
-    /// Give Chromium/WebView accessibility a chance to populate before a
-    /// selector walk.  A backend that cannot wake the tree must fail closed.
+    /// Wake Chromium/WebView accessibility before a selector walk. A backend
+    /// that cannot populate a complete tree must fail closed, never fall back.
     fn wake_accessibility(&self) -> Result<(), AdapterRefusal>;
     fn locate(
         &self,

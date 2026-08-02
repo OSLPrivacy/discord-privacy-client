@@ -10,8 +10,9 @@ particular, it does not change B1, B5, G9, or any cap.
 
 ## Required run
 
-Use a fresh Space for each row, send exactly one protected message from a
-member, and snapshot the real store after all fan-out writes have settled. The
+Use a fresh Space for each row, send exactly one uniquely tagged protected
+message from a member, and snapshot the real store after all fan-out writes
+have settled. Repeat each cohort three times and record the median; the
 collector must record the following values from that snapshot, not from client
 side estimates:
 
@@ -25,7 +26,8 @@ For every row, retain the request nonce, Space ID, raw store listing, PUT audit
 records, grant records, manifest object bytes, collection timestamps, deployed
 store revision, and the tool version used to collect it. The evidence bundle
 must identify one run per N and be immutable enough for a second operator to
-recount rows and bytes.
+recount rows and bytes. Counters must be reset or attributed to the run so
+background PUTs and grant refreshes are excluded with their evidence retained.
 
 ## Acceptance and follow-up
 

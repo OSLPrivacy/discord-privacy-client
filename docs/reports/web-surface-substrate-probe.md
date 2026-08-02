@@ -21,7 +21,8 @@ Run the desktop shell on a Windows VM for each row below.  Start with a fresh
 OSL-owned embedded-host profile, attempt a real sign-in that the account owner
 performs, and record the exact visible refusal/error text (or the reached
 inbox).  Do not substitute a normal browser result, an HTTP request, or an
-assumption about the provider's OAuth policy.
+assumption about the provider's OAuth policy. Retain the UI Automation and log
+evidence for each row.
 
 | Surface | Embedded URL | Result | Exact refusal / observed degradation |
 | --- | --- | --- | --- |
