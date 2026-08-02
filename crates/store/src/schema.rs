@@ -1600,15 +1600,21 @@ mod tests {
             Some(SCHEMA_VERSION)
         );
 
-        let message = vec![0xA1];
-        let device = vec![0xB2];
+        // Annotated as bytes: an unannotated `vec![0xA1]` infers Vec<i32>, which
+        // has no ToSql impl, so this test target failed to compile -- and a
+        // single uncompilable test target makes `cargo test --workspace`
+        // produce no results at all, for every crate.
+        let message: Vec<u8> = vec![0xA1];
+        let device: Vec<u8> = vec![0xB2];
+        let acked_at: Vec<u8> = vec![0xC3];
+        let reason: Vec<u8> = vec![0xD4];
         conn.execute("INSERT INTO messages(mid_bi) VALUES (?1)", params![message])
             .unwrap();
         conn.execute(
             "INSERT INTO message_device_acks(
                 mid_bi, device_bi, ack_kind, acknowledged_at, destruct_reason
              ) VALUES (?1, ?2, 'destroyed', ?3, ?4)",
-            params![vec![0xA1], device, vec![0xC3], vec![0xD4]],
+            params![message, device, acked_at, reason],
         )
         .unwrap();
         let acknowledgements: i64 = conn
