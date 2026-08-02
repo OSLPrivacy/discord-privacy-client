@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T21-F1 role model in crates/ipc/src/space_roster.rs (member/moderator/admin roles and their channel-capability mapping); T21-F1 owns this prerequisite.
