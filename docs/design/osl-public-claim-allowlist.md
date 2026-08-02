@@ -9,7 +9,7 @@
 > the claim-eligibility half of master §20.2 and §8.2.
 > Authority: [`osl-master-decision-2026-07-26.md`](osl-master-decision-2026-07-26.md).
 > Status vocabulary: master §0.3. Evidence detail: [`../THREAT_MODEL.md`](../THREAT_MODEL.md).
-> Claim-gate source SHA-256: `5bad9cfd2b2e95aebf1b63da9f222da62ed46664159d783b76eed0d3a4ac6b3c`
+> Claim-gate source SHA-256: `c4f25244bbc2c0bec01b2e8fca10394bda16a0139089a218a884dde74a0c432d`
 
 ## How to use it
 
@@ -230,6 +230,7 @@ Each is listed with why, so nobody re-derives it and reintroduces the phrase.
 | **"Post-quantum authentication"** | Factually wrong. ML-KEM-768 provides *confidentiality* only (`crates/ipc/src/wire_v2.rs:731`). Sender authentication is classical X25519/Ed25519. Additionally, attribution is an open critical finding (master §10 finding 2) — the receive path authenticates one key and attributes the plaintext to a caller-supplied identity. So authentication is neither post-quantum nor currently sound. |
 | **"Forward secrecy in groups" / "bounded blast radius"** | Sender keys are implemented and enabled in the IPC core, but the shipping app cannot construct a group conversation. More importantly, a sender-key chain is shared: a group member holding a sender's chain can impersonate that sender cryptographically, and a removed member can read messages sent before that sender's next rotation. Do not describe either property as a present capability; in particular, do not use "bounded blast radius" as a present-tense claim. See the group sender-keys row in section B. |
 | **"Private communities"** | OSL Spaces do not exist in the shipping product. D68 allows only the explicit planned framing in the OSL Spaces row in section B; a present-tense private-community claim is not earned. |
+| **"OSL servers are available now" / "OSL communities are available now" / "encrypted Circles are available now"** | D66 puts OSL servers and communities in v1, but D68 prohibits shipping a capability claim before the capability ships. The present release has no evidenced OSL server, community, or encrypted-Circles surface. Planned-language references remain allowed only with the OSL Spaces row's explicit framing: "OSL Spaces are planned. They are not in the current release." |
 | **"Space administrators cannot read messages" / "Space admins cannot read messages"** | This cannot be claimed before Spaces F1-F3 land with exact evidence. Until then there is no Space implementation, and an administrator-visibility promise would conceal the missing membership, sender-authentication, delivery, and history guarantees. |
 | **"OSL Spaces moderation" / "Space moderation keeps communities safe"** | Moderation is not an eligible Spaces claim. It must not be marketed before a concrete, separately evidenced design and implementation exist; no moderation wording is sanctioned by the OSL Spaces row. |
 | **"Cryptographic burn"** | Burn is policy and state deletion, not destruction of decryption capability. `MessageStore::put` (`crates/store/src/lib.rs:194-206`) never writes the `wrapped_key` column, so the burn paths that set `wrapped_key = NULL` (`:298`, `:342`, `:350`, `:560`) null a column that was already null. Burn zeroblobs the *local* cached ciphertext — real, and sayable — but the ciphertext on Discord's CDN stays decryptable by any holder of the recipient's long-term keys. |
