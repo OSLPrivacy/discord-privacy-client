@@ -430,6 +430,7 @@ describe("bundled preview security boundary", () => {
       // references) - reports whether a LOCAL cover model is ready. No network,
       // no keyserver, no shell.
       "allow-ai-carrier-status",
+      "allow-set-ai-carrier-preview-enabled",
       // Local component store only: components.rs performs no network I/O (the
       // download_bytes fields are recorded metadata, not a fetch) and every
       // install is minisign-verified before it lands. File operations on a

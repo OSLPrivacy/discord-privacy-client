@@ -9,6 +9,11 @@ description = "Read only whether the optional local AI carrier is ready; this ex
 commands.allow = ["ai_carrier_status"]
 
 [[permission]]
+identifier = "allow-set-ai-carrier-preview-enabled"
+description = "Set the session-only, per-conversation opt-in for optional AI carrier preview; it never types text or bypasses the native trusted-process check."
+commands.allow = ["set_ai_carrier_preview_enabled"]
+
+[[permission]]
 identifier = "allow-compose-scrub-erasure-request"
 description = "Compose a local GDPR/CCPA erasure request for the user to review and send themselves; it performs no network operation."
 commands.allow = ["compose_scrub_erasure_request"]
