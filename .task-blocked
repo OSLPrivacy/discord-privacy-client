@@ -1,1 +1,2 @@
 Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T19-A4: the required frozen 03-CONTRACTS/ratchet.md contract does not exist, so T19-E6 has no approved ratchet epoch-secret/export boundary to measure.
