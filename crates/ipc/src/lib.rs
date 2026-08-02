@@ -42,6 +42,7 @@ pub mod commands;
 pub mod control_inbox_dead_letter;
 pub mod control_messages;
 pub mod decoy_mp4;
+pub mod destruct_ack;
 pub mod fresh_start;
 pub mod friend_request;
 pub mod license_lifecycle;
