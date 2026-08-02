@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T21-G9 is blocked pending the measured member cap from T21-B1/B5/K4 and T18-E3; T21-H1 cannot build its UI against a missing cap.
