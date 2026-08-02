@@ -267,6 +267,9 @@ pub(crate) fn same_scope(actual: &str, expected: &str) -> bool {
     !actual.is_empty() && actual == expected
 }
 
-pub(crate) fn is_send_evidence_admissible(evidence: &BindingEvidence) -> bool {
+/// Whether binding evidence is strong enough to authorize an L3 send.
+/// Pixel observations may guide an overlay but never authorize plaintext
+/// delivery; every native adapter applies this predicate before committing.
+pub fn is_send_evidence_admissible(evidence: &BindingEvidence) -> bool {
     !matches!(evidence, BindingEvidence::Pixel)
 }
