@@ -31,6 +31,17 @@ enabled = false
 head_sampling_rate = 0
 persist = false
 
+# Realtime wakeups use one hibernatable, SQLite-backed Durable Object per
+# anonymous connection. This class name and backend are immutable after a
+# deployment, so recovery is roll-forward only.
+[[durable_objects.bindings]]
+name = "PUSH_CONNECTION"
+class_name = "PushConnection"
+
+[[migrations]]
+tag = "osl-push-connection-v1"
+new_sqlite_classes = ["PushConnection"]
+
 # D1 database — create with:
 #   wrangler d1 create osl-cipher-store-prod
 # then paste the database_id below.
