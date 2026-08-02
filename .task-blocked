@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T21-G3's recipient-private Space delivery-tag implementation and T6's separate Space undelivered pool (the release-blocking pool split); both are required before a DM-lane backpressure proof can be authored.
