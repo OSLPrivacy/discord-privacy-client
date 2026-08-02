@@ -53,6 +53,7 @@ pub mod native_attachment_jobs;
 pub mod native_attachment_jobs_bridge;
 pub mod native_discord_adapter;
 pub mod native_signal_adapter;
+pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
 pub mod native_window_host;
 #[cfg(feature = "core")]

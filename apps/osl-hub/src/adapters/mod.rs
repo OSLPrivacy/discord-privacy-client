@@ -8,6 +8,7 @@
 use std::collections::BTreeSet;
 
 pub mod discord;
+pub mod telegram;
 
 pub const ADAPTER_ABI_VERSION: u32 = 1;
 
