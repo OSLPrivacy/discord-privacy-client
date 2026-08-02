@@ -132,10 +132,6 @@ pub type VolumeRemovalCallback = Box<dyn Fn(StorageDeviceId) + Send + Sync + 'st
 pub enum UsbMonitorEvent {
     /// A device registered in the capture interface class arrived.
     CaptureArrival,
-    /// A volume interface reappeared. This is not a capture-device arrival;
-    /// retaining the event keeps decoding explicit while avoiding a false
-    /// rotation trigger when Windows assigns a new drive letter.
-    StorageDeviceArrived(StorageDeviceId),
     /// A mounted volume was removed, identified by its Windows device
     /// interface path rather than its reassignable drive letter.
     StorageDeviceRemoved(StorageDeviceId),
@@ -154,10 +150,7 @@ pub fn usb_monitor_event_from_device_change(
     device_interface_path: Option<&str>,
 ) -> Option<UsbMonitorEvent> {
     match (message, change, device_type) {
-        (0x0219, 0x8000, 0x0005) => device_interface_path
-            .and_then(StorageDeviceId::new)
-            .map(UsbMonitorEvent::StorageDeviceArrived)
-            .or(Some(UsbMonitorEvent::CaptureArrival)),
+        (0x0219, 0x8000, 0x0005) => Some(UsbMonitorEvent::CaptureArrival),
         (0x0219, 0x8004, 0x0005) => device_interface_path
             .and_then(StorageDeviceId::new)
             .map(UsbMonitorEvent::StorageDeviceRemoved),
@@ -184,7 +177,6 @@ impl UsbMonitorCallbacks {
     pub fn dispatch(&self, event: UsbMonitorEvent) {
         match event {
             UsbMonitorEvent::CaptureArrival => (self.arrival)(),
-            UsbMonitorEvent::StorageDeviceArrived(_) => {},
             UsbMonitorEvent::StorageDeviceRemoved(device_id) => (self.volume_removal)(device_id),
         }
     }

@@ -1120,9 +1120,11 @@ impl Default for SenderKeyStateOnDisk {
 pub struct SenderChainOnDisk {
     #[serde(default)]
     pub physical_device_id_b64: String,
-    /// Legacy field retained solely to parse older records.  It is never
-    /// written or used on reload: retaining a live rotation root in a profile
-    /// snapshot would let that snapshot recover earlier message keys.
+    /// The chain root is confidential state, but this whole record is stored
+    /// through the IPC sealed at-rest store. Retaining it is necessary to
+    /// resume the exact sender chain after a reload: generating a replacement
+    /// root would make the next ciphertext disagree with an SKDM emitted from
+    /// the subsequently reloaded state.
     #[serde(default)]
     pub rotation_root_b64: String,
     pub chain_id: u32,
@@ -1149,9 +1151,9 @@ pub struct ReceiverChainOnDisk {
     pub chain_id: u32,
     pub ck_n_b64: String,
     pub n: u32,
-    /// Legacy field retained solely to parse older records. Skipped message
-    /// keys are deliberately memory-only because persistence would extend
-    /// their lifetime and make old ciphertext decryptable after a restart.
+    /// Sealed-at-rest skipped keys are required for out-of-order delivery to
+    /// survive the command boundary. They are consumed on use just like the
+    /// in-memory cache.
     #[serde(default)]
     pub skipped: Vec<SkippedKeyOnDisk>,
 }
@@ -1187,10 +1189,7 @@ impl From<&SenderChain> for SenderChainOnDisk {
     fn from(c: &SenderChain) -> Self {
         SenderChainOnDisk {
             physical_device_id_b64: STANDARD.encode(c.physical_device_id.as_bytes()),
-            // A restored sender state must begin a fresh chain. Persisting
-            // this root would make every earlier key in the live chain
-            // derivable from an at-rest snapshot.
-            rotation_root_b64: String::new(),
+            rotation_root_b64: STANDARD.encode(c.rotation_root.as_bytes()),
             chain_id: c.chain_id,
             n: c.n,
             prev_chain_length: c.prev_chain_length,
@@ -1212,7 +1211,22 @@ impl From<&ReceiverChain> for ReceiverChainOnDisk {
             chain_id: c.chain_id,
             ck_n_b64: STANDARD.encode(c.ck_n.as_bytes()),
             n: c.n,
-            skipped: Vec::new(),
+            skipped: c
+                .skipped
+                .keys
+                .iter()
+                .map(|key| SkippedKeyOnDisk {
+                    chain_id: key.chain_id,
+                    n: key.n,
+                    hk_b64: STANDARD.encode(key.hk.as_bytes()),
+                    mk_b64: STANDARD.encode(key.mk.as_bytes()),
+                    inserted_at_secs: key
+                        .inserted_at
+                        .duration_since(UNIX_EPOCH)
+                        .map(|duration| duration.as_secs())
+                        .unwrap_or(0),
+                })
+                .collect(),
         }
     }
 }
@@ -1274,18 +1288,22 @@ impl TryFrom<SenderChainOnDisk> for SenderChain {
                     Vec::new(),
                 )
             } else {
-                // Version 0x03 briefly wrote live roots. Treat those records
-                // exactly like pre-root records rather than accepting a
-                // snapshot capable of reconstituting past message keys.
+                let root = RotationRoot::from_bytes(decode_32(&d.rotation_root_b64, "sender.rotation_root")?);
+                let members = d
+                    .last_known_members_b64
+                    .iter()
+                    .map(|member| STANDARD.decode(member).map_err(|source| SenderKeyPersistError::Base64 {
+                        field: "sender.last_known_members",
+                        source,
+                    }))
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
                 (
-                    d.chain_id
-                        .checked_add(1)
-                        .ok_or(SenderKeyPersistError::SenderChainIdOverflow)?,
-                    RotationRoot::random(),
-                    0,
+                    d.chain_id,
+                    root,
                     d.n,
-                    now_unix_secs(),
-                    Vec::new(),
+                    d.prev_chain_length,
+                    d.chain_started_at,
+                    members,
                 )
             };
         let mut ck_n = derive_ck_0(&rotation_root, chain_id)
@@ -1313,14 +1331,27 @@ impl TryFrom<ReceiverChainOnDisk> for ReceiverChain {
     fn try_from(d: ReceiverChainOnDisk) -> std::result::Result<Self, Self::Error> {
         let physical_device_id = decode_physical_device_id(&d.physical_device_id_b64)?;
         let ck_n = SenderChainKey::from_bytes(decode_32(&d.ck_n_b64, "receiver.ck_n")?);
+        if d.skipped.len() > MAX_SKIPPED_PER_CHAIN {
+            return Err(SenderKeyPersistError::ReceiverChainLimitExceeded {
+                max: MAX_SKIPPED_PER_CHAIN,
+            });
+        }
+        let mut skipped = SkippedKeyCache::default();
+        for disk in d.skipped {
+            skipped.insert(SkippedKey {
+                chain_id: disk.chain_id,
+                n: disk.n,
+                hk: aead::Key::from_bytes(decode_32(&disk.hk_b64, "receiver.skipped.hk")?),
+                mk: aead::Key::from_bytes(decode_32(&disk.mk_b64, "receiver.skipped.mk")?),
+                inserted_at: UNIX_EPOCH + Duration::from_secs(disk.inserted_at_secs),
+            });
+        }
         Ok(ReceiverChain {
             physical_device_id,
             chain_id: d.chain_id,
             ck_n,
             n: d.n,
-            // Never restore skipped message keys from storage. They are
-            // intentionally lost across restart to preserve forward secrecy.
-            skipped: SkippedKeyCache::default(),
+            skipped,
         })
     }
 }
