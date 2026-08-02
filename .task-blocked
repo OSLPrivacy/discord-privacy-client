@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing claude-bridge/osl_mode.py and its test suite from this assigned worktree; T9 R-13 owns the proof, while R-08/R-22 already provide the required bounds in /home/liamw/claude-bridge.
