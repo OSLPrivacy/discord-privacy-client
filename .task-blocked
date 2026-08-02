@@ -1,1 +1,0 @@
-Missing the shared permissive UTS #39 username normalizer required by OWNER DECISION D19; T5-C6 currently provides only the k-anonymity bucket client, so the prerequisite named by T5-C8 does not exist. T5-K1/T5-K2 own the necessary UTS #39 grammar work.
