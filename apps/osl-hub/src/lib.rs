@@ -106,7 +106,11 @@ pub mod scrub_evidence_manifest;
 pub mod tor_pref;
 pub mod scrub_hosted {
     pub mod checkpoint;
+    pub mod friction;
+    pub mod ordering;
+    pub mod verify_surface;
 }
+pub mod scrub_hosted_port;
 #[cfg(all(feature = "core", feature = "desktop"))]
 pub mod revocation_drain_timer;
 #[cfg(feature = "core")]
