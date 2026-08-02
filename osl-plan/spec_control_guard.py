@@ -9,6 +9,7 @@ def validate(change:dict)->None:
  source=change.get('first_authority')
  if source not in RANK:raise SpecControlError('planned work needs a recognized first applicable authority')
  for conflict in change.get('conflicts',[]):
+  if not conflict.get('claim_a') or not conflict.get('claim_b'):raise SpecControlError('conflict must cite both claims')
   if conflict.get('proposed_authority') not in RANK or conflict.get('controlling_authority') not in RANK:raise SpecControlError('conflict has unknown authority')
   if RANK[conflict['proposed_authority']] > RANK[conflict['controlling_authority']]:raise SpecControlError('lower-ranked source cannot override product intent')
   if set(conflict.get('affected_artifacts',()))-set(conflict.get('closed_artifacts',())):raise SpecControlError('conflict has unclosed affected artifact')
