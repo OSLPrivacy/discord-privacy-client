@@ -10,6 +10,8 @@ export interface PayloadStore {
   put(fetchCap: string, bytes: Uint8Array): Promise<void>;
   get(fetchCap: string): Promise<Uint8Array | null>;
   delete(fetchCap: string): Promise<void>;
+  putByDigest(fetchDigest: string, bytes: Uint8Array): Promise<void>;
+  deleteByDigest(fetchDigest: string): Promise<void>;
 }
 
 /** Cloudflare R2 implementation of the payload-byte store. */
@@ -28,6 +30,14 @@ export class R2PayloadStore implements PayloadStore {
 
   async delete(fetchCap: string): Promise<void> {
     await this.bucket.delete(await this.objectKey(fetchCap));
+  }
+
+  async putByDigest(fetchDigest: string, bytes: Uint8Array): Promise<void> {
+    await this.bucket.put(fetchDigest, bytes);
+  }
+
+  async deleteByDigest(fetchDigest: string): Promise<void> {
+    await this.bucket.delete(fetchDigest);
   }
 
   private objectKey(fetchCap: string): Promise<string> {
