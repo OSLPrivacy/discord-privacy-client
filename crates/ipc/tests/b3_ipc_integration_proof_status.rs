@@ -45,8 +45,8 @@ fn table_after_heading(markdown: &str, heading: &str) -> BTreeMap<String, String
 #[allow(clippy::assertions_on_constants)]
 fn b3_ipc_integration_proof_status() {
     assert!(
-        !RN_WIRE_IN_ENABLED,
-        "B3 proof documentation must not enable the RN production fuse"
+        RN_WIRE_IN_ENABLED,
+        "the production RN fuse is live once its delivery preconditions land"
     );
 
     let status = table_after_heading(

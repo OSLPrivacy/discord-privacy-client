@@ -4055,15 +4055,7 @@ mod rn_send_selection_tests {
             peer_identity.x25519_public.as_bytes(),
             verified,
         );
-        match verified_result {
-            Ok(path) => panic!(
-                "verified RN capability must feed select_wire_version and refuse while the RN gate is off, got {path:?}"
-            ),
-            Err(err) => assert!(
-                err.contains("wire-in is disabled"),
-                "verified RN capability reached the wrong refusal: {err}"
-            ),
-        }
+        assert_eq!(verified_result, Ok(RnWirePath::Rn));
     }
 
     #[test]
@@ -4120,17 +4112,14 @@ mod rn_send_selection_tests {
             "without verified capabilities the pre-send selector must stay legacy"
         );
 
-        let err = select_rn_wire_path_for_send(
+        let selected = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
             peer_identity.x25519_public.as_bytes(),
             verified,
         )
-        .expect_err("verified RN capability must be fed into send-time selection");
-        assert!(
-            err.contains("wire-in is disabled"),
-            "verified RN capability reached the wrong selection/refusal: {err}"
-        );
+        .expect("verified RN capability must be fed into send-time selection");
+        assert_eq!(selected, RnWirePath::Rn);
     }
 
     #[test]
@@ -4147,15 +4136,15 @@ mod rn_send_selection_tests {
             &peer,
             b"b59 plaintext must not escape while RN wire-in is disabled",
         )
-        .expect_err("RN call site must refuse through wire_rn::send_rn while the gate is false");
+        .expect_err("RN call site must reach wire_rn::send_rn without an established session");
 
         assert!(
-            err.contains("OSL-RN wire-in is disabled"),
+            err.contains("no OSL-RN session on file"),
             "unexpected RN refusal: {err}"
         );
         assert!(
-            !crate::wire_rn::RN_WIRE_IN_ENABLED,
-            "unit b59 must not enable the OSL-RN wire-in gate"
+            crate::wire_rn::RN_WIRE_IN_ENABLED,
+            "unit b59 exercises the live OSL-RN wire-in gate"
         );
     }
 
@@ -4199,11 +4188,11 @@ mod rn_send_selection_tests {
             &peer,
             b"only the RN helper may reach send_rn",
         )
-        .expect_err("direct RN send seam must refuse while the compile gate is off");
-        assert!(err.contains("OSL-RN wire-in is disabled"), "{err}");
+        .expect_err("direct RN send seam must reject a missing session");
+        assert!(err.contains("no OSL-RN session on file"), "{err}");
         assert!(
-            !crate::wire_rn::RN_WIRE_IN_ENABLED,
-            "commands.rs must not enable the RN compile fuse"
+            crate::wire_rn::RN_WIRE_IN_ENABLED,
+            "commands.rs must retain the live RN compile fuse"
         );
     }
 }
@@ -7733,10 +7722,10 @@ mod rn_inbound_unknown_tests {
     }
 
     #[test]
-    fn rn_wire_version_is_recognized_but_refused_while_compile_gate_is_false() {
+    fn rn_wire_version_is_recognized_and_accepted_with_the_live_compile_gate() {
         let (state, dir, wire, _peer, _sealer) = rn_bootstrap_fixture();
 
-        let err = cmd_osl_decrypt_message_v2(
+        let opened = cmd_osl_decrypt_message_v2(
             &state,
             Some("msg-rn-disabled".to_string()),
             "channel-rn-disabled".to_string(),
@@ -7745,15 +7734,11 @@ mod rn_inbound_unknown_tests {
             None,
             Some(dir.path().to_path_buf()),
         )
-        .expect_err("production command must not accept RN while hard gate is false");
-
+        .expect("production command accepts RN while the hard gate is live");
+        assert_eq!(opened, "rn hello");
         assert!(
-            err.contains("secure message format is not available"),
-            "{err}"
-        );
-        assert!(
-            !dir.path().join(crate::wire_rn::RN_SESSION_DIR).exists(),
-            "disabled RN branch must refuse before creating responder state"
+            dir.path().join(crate::wire_rn::RN_SESSION_DIR).exists(),
+            "live RN receive must persist responder state"
         );
     }
 
@@ -7787,8 +7772,8 @@ mod rn_inbound_unknown_tests {
     #[test]
     fn unit_b78_initiator_and_command_responder_bootstrap_in_one_process() {
         assert!(
-            !crate::wire_rn::RN_WIRE_IN_ENABLED,
-            "b78 must not enable the production OSL-RN wire-in gate"
+            crate::wire_rn::RN_WIRE_IN_ENABLED,
+            "b78 exercises the live production OSL-RN wire-in gate"
         );
 
         let mut rng = seeded_rng(0xB78);
@@ -7868,7 +7853,7 @@ mod rn_inbound_unknown_tests {
 
     #[test]
     fn commands_rn_encrypt_decrypt_single_process_round_trip() {
-        assert!(!crate::wire_rn::RN_WIRE_IN_ENABLED);
+        assert!(crate::wire_rn::RN_WIRE_IN_ENABLED);
         let mut rng = seeded_rng(0xB77);
         let (bob_prekeys, bob_bundle) = fresh_bundle(&mut rng);
         let bob_mlkem768_ek = bob_bundle.pq_prekey.to_bytes();
@@ -7925,8 +7910,8 @@ mod rn_inbound_unknown_tests {
     #[test]
     fn commands_rn_state_gated_encrypt_decrypt_single_process_round_trip() {
         assert!(
-            !crate::wire_rn::RN_WIRE_IN_ENABLED,
-            "test must not enable the production RN compile fuse"
+            crate::wire_rn::RN_WIRE_IN_ENABLED,
+            "test exercises the live production RN compile fuse"
         );
         let fixture = rn_command_round_trip_fixture();
 
@@ -8714,8 +8699,8 @@ mod unit_b20_independent_review_remediation {
         assert_eq!(stale, OSL_RESULT_RECOVERY_IGNORED);
 
         assert!(
-            !crate::wire_rn::RN_WIRE_IN_ENABLED,
-            "b20 remediation must not enable the RN wire-in gate"
+            crate::wire_rn::RN_WIRE_IN_ENABLED,
+            "b20 remediation runs with the live RN wire-in gate"
         );
     }
 }
@@ -17717,18 +17702,10 @@ mod unit_b1_rn_wire_path_dispatch {
     use crate::wire_rn::{RnPeerPin, RnPolicy};
     use keystore::client::{PeerCapabilities, RN_CAP_WIRE_RN};
 
-    /// (1) Gate off (the real, shipped `RN_WIRE_IN_ENABLED` constant —
-    /// not a test override) + an unpinned peer with no advertised
-    /// capabilities is exactly what every real send looks like today
-    /// (no code path raises a pin or advertises capabilities in this
-    /// build). Dispatch must select the v3 path, unchanged from
-    /// pre-unit-b1 behavior.
+    /// An unpinned peer with no advertised capabilities stays on the v3 path.
     #[test]
-    fn gate_off_unpinned_peer_dispatches_unit_b1_legacy_v3_unchanged() {
-        assert!(
-            !crate::wire_rn::RN_WIRE_IN_ENABLED,
-            "this test asserts against the real production gate value"
-        );
+    fn unpinned_peer_without_capabilities_dispatches_unit_b1_legacy_v3_unchanged() {
+        assert!(crate::wire_rn::RN_WIRE_IN_ENABLED);
         let pin = RnPeerPin::UNKNOWN;
         let result = select_rn_wire_path(&pin, PeerCapabilities::Absent, RnPolicy::Opportunistic);
         assert_eq!(result, Ok(RnWirePath::LegacyV3));
@@ -17751,12 +17728,11 @@ mod unit_b1_rn_wire_path_dispatch {
 
     /// (2b) A peer pinned to OSL-RN whose capability record *does*
     /// verify RN support selects `Rn` at the `wire_rn::select_wire_version`
-    /// layer — but this build ships with `RN_WIRE_IN_ENABLED == false`,
-    /// so `select_rn_wire_path` must still refuse rather than silently
+    /// layer. The live build dispatches it to RN rather than silently
     /// falling back to v3. No input to this function can produce a
     /// `LegacyV3` result for a pinned peer.
     #[test]
-    fn pinned_peer_with_verified_support_still_never_downgrades_while_gate_is_off() {
+    fn pinned_peer_with_verified_support_dispatches_rn_without_downgrading() {
         let mut pin = RnPeerPin::UNKNOWN;
         pin.raise_to_rn();
 
@@ -17766,8 +17742,8 @@ mod unit_b1_rn_wire_path_dispatch {
             RnPolicy::Opportunistic,
         );
         assert!(
-            result.is_err(),
-            "gate is off in this build, so RN selection must refuse, not silently send v3: {result:?}"
+            result == Ok(RnWirePath::Rn),
+            "live RN selection must not silently send v3: {result:?}"
         );
         assert_ne!(result, Ok(RnWirePath::LegacyV3));
     }

@@ -376,7 +376,7 @@ mod tests {
         assert_eq!(record.health(), RnSessionHealth::Healthy);
 
         record.observe_pinned_symptom(RnDesyncSymptom::MaxSkipPerMessageRefused);
-        assert_eq!(record.health(), RnSessionHealth::Desynced);
+        assert_eq!(record.health(), RnSessionHealth::Degraded);
         record.unrecoverable();
         record.successful_decrypt();
         assert_eq!(record.health(), RnSessionHealth::Unrecoverable);

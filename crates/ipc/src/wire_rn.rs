@@ -1008,6 +1008,16 @@ impl RnSessionStore {
             Some(b) => b,
             None => return Ok(None),
         };
+        // Reject an explicitly versioned legacy blob before deserializing the
+        // current shape.  Otherwise a v4 record that lacks new fields is
+        // reported as a generic parse error, obscuring the migration refusal.
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            if value.get("version").and_then(serde_json::Value::as_u64) == Some(4) {
+                return Err(RnError::Storage(format!(
+                    "session blob version 4 != {SESSION_BLOB_VERSION}",
+                )));
+            }
+        }
         let blob: SealedBlob = match serde_json::from_slice(&bytes) {
             Ok(blob) => blob,
             Err(_) if looks_like_legacy_v4_session_blob(&bytes) => {
@@ -2165,7 +2175,8 @@ mod tests {
         let mut bob_state =
             keystore::PrekeyState::new(&bob_id, keystore::PrekeyConfig::default(), 90);
         let fetched_opk_id = bob_state.opk_pool[0].id;
-        let bob_identity_bundle = b5_identity_bundle(&bob_id, RN_CAP_WIRE_RN, 11);
+        let bob_identity_bundle =
+            b5_identity_bundle(&bob_id, RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE, 11);
         let response = b5_response(&bob_id, &bob_state, Some(0));
         assert_eq!(response.opk.as_ref().expect("opk").id, fetched_opk_id);
         let (base_url, _rx) = one_shot_prekey_server(prekey_response_json(&response));
@@ -2251,7 +2262,8 @@ mod tests {
         let alice_id = b5_identity(46, "alice-fetch-rn");
         let bob_id = b5_identity(47, "bob-fetch-rn");
         let bob_state = keystore::PrekeyState::new(&bob_id, keystore::PrekeyConfig::default(), 50);
-        let bob_identity_bundle = b5_identity_bundle(&bob_id, RN_CAP_WIRE_RN, 7);
+        let bob_identity_bundle =
+            b5_identity_bundle(&bob_id, RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE, 7);
         let response = b5_response(&bob_id, &bob_state, Some(0));
         let expected_remaining = response.remaining_opk_count;
         let (base_url, rx) = one_shot_prekey_server(prekey_response_json(&response));
@@ -2305,7 +2317,8 @@ mod tests {
         let mut bob_state =
             keystore::PrekeyState::new(&bob_id, keystore::PrekeyConfig::default(), 83);
         let fetched_opk_id = bob_state.opk_pool[0].id;
-        let bob_identity_bundle = b5_identity_bundle(&bob_id, RN_CAP_WIRE_RN, 83);
+        let bob_identity_bundle =
+            b5_identity_bundle(&bob_id, RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE, 83);
         let response = b5_response(&bob_id, &bob_state, Some(0));
         let (base_url, rx) = one_shot_prekey_server(prekey_response_json(&response));
         let client = keystore::KeyServerClient::new(base_url).expect("client");
@@ -2362,7 +2375,8 @@ mod tests {
         let alice_id = b5_identity(53, "alice-b30");
         let bob_id = b5_identity(54, "bob-b30");
         let bob_state = keystore::PrekeyState::new(&bob_id, keystore::PrekeyConfig::default(), 70);
-        let bob_identity_bundle = b5_identity_bundle(&bob_id, RN_CAP_WIRE_RN, 9);
+        let bob_identity_bundle =
+            b5_identity_bundle(&bob_id, RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE, 9);
         let response = b5_response(&bob_id, &bob_state, Some(0));
         let (base_url, _rx) = one_shot_prekey_server(prekey_response_json(&response));
         let client = keystore::KeyServerClient::new(base_url).expect("client");
@@ -2497,7 +2511,8 @@ mod tests {
         let attacker_id = b5_identity(52, "attacker-substitute");
         let attacker_state =
             keystore::PrekeyState::new(&attacker_id, keystore::PrekeyConfig::default(), 60);
-        let bob_identity_bundle = b5_identity_bundle(&bob_id, RN_CAP_WIRE_RN, 3);
+        let bob_identity_bundle =
+            b5_identity_bundle(&bob_id, RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE, 3);
         let substituted_response = b5_response(&attacker_id, &attacker_state, Some(0));
         let (base_url, _rx) = one_shot_prekey_server(prekey_response_json(&substituted_response));
         let client = keystore::KeyServerClient::new(base_url).expect("client");

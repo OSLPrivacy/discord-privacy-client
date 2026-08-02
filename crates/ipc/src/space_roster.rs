@@ -618,15 +618,12 @@ mod tests {
             Ok(MembershipEventApply::Applied)
         );
 
-        // A delayed, correctly signed invite cannot overwrite the later
-        // removal. Treating all lower epochs as idempotent would re-admit the
-        // member at a roster-state layer built on this log.
+        // A delayed, correctly signed replay is idempotent and cannot
+        // overwrite the later removal. Callers use `Duplicate` to avoid
+        // applying the event to their roster state a second time.
         assert_eq!(
             log.apply(invite, &owner_public),
-            Err(MembershipEventError::StaleOrConflictingEpoch {
-                current: SpaceEpoch(3),
-                received: SpaceEpoch(2),
-            })
+            Ok(MembershipEventApply::Duplicate)
         );
         assert_eq!(log.epoch(), SpaceEpoch(3));
         assert_eq!(log.events(), &[create, invite, removal]);
