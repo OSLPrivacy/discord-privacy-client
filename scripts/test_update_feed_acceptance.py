@@ -121,6 +121,20 @@ class UpdateFeedAcceptanceTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "does not verify over the downloaded artifact"):
             acceptance_check(manifest, self.pubkey, bytes(tampered))
 
+    def test_t17_t17_verification_and_sha256_both_reject_a_tampered_installer(self) -> None:
+        """The public verification procedure must reject altered installer bytes."""
+        manifest = self.manifest(minisign_signature(self.private, self.payload))
+        expected_sha256 = hashlib.sha256(self.payload).hexdigest()
+
+        acceptance_check(manifest, self.pubkey, self.payload)
+        self.assertEqual(hashlib.sha256(self.payload).hexdigest(), expected_sha256)
+
+        tampered = bytearray(self.payload)
+        tampered[-1] ^= 0x01
+        with self.assertRaisesRegex(SystemExit, "does not verify over the downloaded artifact"):
+            acceptance_check(manifest, self.pubkey, bytes(tampered))
+        self.assertNotEqual(hashlib.sha256(tampered).hexdigest(), expected_sha256)
+
     def test_rejects_a_signature_from_a_key_the_app_does_not_ship(self) -> None:
         attacker = Ed25519PrivateKey.generate()
         manifest = self.manifest(minisign_signature(attacker, self.payload))
