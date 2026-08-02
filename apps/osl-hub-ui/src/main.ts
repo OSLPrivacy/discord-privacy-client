@@ -19,6 +19,7 @@ import {
 } from "./state";
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
+import { renderRecoveryStatesSettings } from "./recovery-states";
 import { previousOnboardingRoute } from "./onboarding-sequence";
 import { groupOnboardingApps } from "./onboarding-app-groups";
 import { peopleDestinationHeaderMarkup } from "./people-destination-header";
@@ -4682,7 +4683,7 @@ function settingsContent(): string {
 }
 
 function settingsSectionContent(): string {
-  if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}`;
+  if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
   if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${sendingSettingsContent()}`;
   if (settingsSection === "scrub") return privacySettingsContent();
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
