@@ -38,13 +38,13 @@ fn rn_wire_is_reported_by_the_command_dispatcher_and_overlay_drain() {
     // on its exact drop arm: removing B5's counter increment (or restoring a
     // bare `continue`) makes this assertion fail.
     let drain = BROKER_SOURCE
-        .split_once("let mut unrecognized_wire_rows = 0u32;")
+        .split_once("if !ipc::wire_v2::is_native_overlay_relay_bundle(&bundle) {")
         .and_then(|(_, tail)| tail.split_once("let wire = format!(\"DPC0::{}\", STANDARD.encode(&bundle));"))
         .map(|(drain, _)| drain)
         .expect("overlay drain's unknown-wire branch must remain present");
     assert!(
-        drain.contains("if !ipc::wire_v2::is_native_overlay_relay_bundle(&bundle)"),
-        "0x10 must reach the overlay unknown-wire decision"
+        BROKER_SOURCE.contains("let mut unrecognized_wire_rows = 0u32;"),
+        "the drain must expose a named unrecognised-wire report counter"
     );
     assert!(
         drain.contains("unrecognized_wire_rows = unrecognized_wire_rows.saturating_add(1);"),
