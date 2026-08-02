@@ -114,6 +114,39 @@
 
 * { box-sizing: border-box; }
 
+/* Native title tooltips create a separate Chromium window that capture
+   protection cannot cover. Keep the equivalent copy in this document instead. */
+.in-dom-tooltip-anchor {
+  position: relative;
+}
+
+.in-dom-tooltip {
+  display: none;
+  position: absolute;
+  z-index: 40;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  width: max-content;
+  max-width: min(22rem, calc(100vw - 2rem));
+  padding: .45rem .6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-3);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-size: .78rem;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+  transform: translateX(-50%);
+}
+
+.in-dom-tooltip-anchor:hover > .in-dom-tooltip,
+.in-dom-tooltip-anchor:focus-within > .in-dom-tooltip {
+  display: block;
+}
+
 :root {
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }

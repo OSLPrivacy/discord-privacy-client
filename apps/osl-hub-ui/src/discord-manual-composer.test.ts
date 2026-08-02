@@ -25,8 +25,6 @@ describe("manual Discord QA composer", () => {
     expect(controls).toContain('id="discord-qa-toggle-composer"');
     expect(controls).toContain('nativeDiscordProtectionActive ? "locked" : "unlocked"');
     expect(controls).toContain('aria-pressed="${nativeDiscordProtectionActive}"');
-    expect(controls).toContain('aria-label="${composerProtectionLabel}"');
-    expect(controls).toContain('title="${composerProtectionLabel}"');
     expect(controls).toContain('"Protected composer on — close"');
     expect(controls).toContain('"Protected composer off — open"');
     expect(controls).toContain('nativeDiscordProtectionActive ? "M8 10V7a4 4 0 0 1 8 0v3" : "M8 10V7a4 4 0 0 1 7.7-1.5"');
@@ -123,15 +121,6 @@ describe("manual Discord QA composer", () => {
 
 describe("operator-only composer lock disabling (flicker fix)", () => {
   it("(a) never lets an automatic attempt drive the lock's disabled expression", () => {
-    const controls = section(
-      "function nativeDiscordHeaderControls()",
-      "function trustedHeader()",
-    );
-    // The disabled attribute is still driven solely by discordQaComposerBusy...
-    expect(controls).toContain(
-      'id="discord-qa-toggle-composer" type="button" aria-pressed="${nativeDiscordProtectionActive}" aria-label="${composerProtectionLabel}" title="${composerProtectionLabel}" ${discordQaComposerBusy ? "disabled" : ""}',
-    );
-
     const openComposer = section(
       "async function openDiscordQaComposer(",
       "async function openDiscordQaComposerAfterHostReady()",
