@@ -9,6 +9,8 @@ pub trait TelegramBackend: Send + Sync {
     fn capabilities(&self, now_unix_seconds: u64) -> CapabilitySet;
     fn locate(&self, target: &SurfaceTarget) -> Result<SurfaceBinding, AdapterRefusal>;
     fn read_state(&self, binding: &SurfaceBinding) -> Result<SurfaceState, AdapterRefusal>;
+    /// Place only. Sending is deliberately not part of the L2 backend surface.
+    fn place(&self, binding: &SurfaceBinding, carrier: &Carrier) -> PlacementReceipt;
 }
 
 pub struct TelegramSurfaceAdapter<B> {
@@ -22,6 +24,10 @@ impl<B> TelegramSurfaceAdapter<B> {
 }
 
 impl<B: TelegramBackend> TelegramSurfaceAdapter<B> {
+    fn supports(&self, capability: adapter_profile::Capability) -> bool {
+        self.backend.capabilities(u64::MAX).contains(&capability)
+    }
+
     fn validates_binding(&self, binding: &SurfaceBinding) -> bool {
         binding.app == AdapterAppId::Telegram && binding.generation != 0
     }
@@ -65,14 +71,34 @@ impl<B: TelegramBackend> SurfaceAdapter for TelegramSurfaceAdapter<B> {
 
     fn place(
         &self,
-        _: &SurfaceBinding,
-        _: &PlacementAuthorization,
-        _: &Carrier,
+        binding: &SurfaceBinding,
+        authorization: &PlacementAuthorization,
+        carrier: &Carrier,
     ) -> PlacementReceipt {
-        PlacementReceipt {
+        let refused = || PlacementReceipt {
             status: PlacementStatus::NotPlaced,
             placed_sha256: None,
             elapsed_ms: 0,
+        };
+        if !self.validates_binding(binding)
+            || !same_scope(
+                &binding.scope_binding_hash,
+                &authorization.scope_binding_hash,
+            )
+            || !self.supports(adapter_profile::Capability::PlaceProtectedPayload)
+        {
+            return refused();
+        }
+        match self.read_state(binding) {
+            Ok(state)
+                if state.composer_is_empty
+                    && !state.composer_is_password_field
+                    && state.focused
+                    && !state.occluded =>
+            {
+                self.backend.place(binding, carrier)
+            }
+            _ => refused(),
         }
     }
 
@@ -96,9 +122,11 @@ impl<B: TelegramBackend> SurfaceAdapter for TelegramSurfaceAdapter<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Backend {
         complete: bool,
+        placements: AtomicUsize,
     }
 
     fn binding(generation: u64) -> SurfaceBinding {
@@ -126,6 +154,7 @@ mod tests {
             [
                 adapter_profile::Capability::InspectVisibleComposer,
                 adapter_profile::Capability::InspectVisibleTranscript,
+                adapter_profile::Capability::PlaceProtectedPayload,
             ]
             .into_iter()
             .collect()
@@ -143,11 +172,22 @@ mod tests {
                 read_was_complete: self.complete,
             })
         }
+        fn place(&self, _: &SurfaceBinding, _: &Carrier) -> PlacementReceipt {
+            self.placements.fetch_add(1, Ordering::SeqCst);
+            PlacementReceipt {
+                status: PlacementStatus::Placed,
+                placed_sha256: Some("carrier-digest".into()),
+                elapsed_ms: 1,
+            }
+        }
     }
 
     #[test]
     fn t3_t21_locate_and_read_preserve_an_incomplete_empty_transcript() {
-        let adapter = TelegramSurfaceAdapter::new(Backend { complete: false });
+        let adapter = TelegramSurfaceAdapter::new(Backend {
+            complete: false,
+            placements: AtomicUsize::new(0),
+        });
         let target = SurfaceTarget {
             app: AdapterAppId::Telegram,
             surface: SurfaceKind::InstalledNativeClient,
@@ -160,5 +200,31 @@ mod tests {
             adapter.read_state(&binding(0)),
             Err(AdapterRefusal::GenerationStale)
         );
+    }
+
+    #[test]
+    fn t3_t22_places_only_with_a_focused_empty_composer_and_never_exposes_send() {
+        let adapter = TelegramSurfaceAdapter::new(Backend {
+            complete: true,
+            placements: AtomicUsize::new(0),
+        });
+        let binding = binding(1);
+        let placed = adapter.place(
+            &binding,
+            &PlacementAuthorization::for_scope("scope-a"),
+            &Carrier("carrier".into()),
+        );
+
+        assert_eq!(placed.status, PlacementStatus::Placed);
+        assert_eq!(placed.placed_sha256.as_deref(), Some("carrier-digest"));
+        assert_eq!(adapter.backend.placements.load(Ordering::SeqCst), 1);
+
+        let refused = adapter.place(
+            &binding,
+            &PlacementAuthorization::for_scope("other-scope"),
+            &Carrier("carrier".into()),
+        );
+        assert_eq!(refused.status, PlacementStatus::NotPlaced);
+        assert_eq!(adapter.backend.placements.load(Ordering::SeqCst), 1);
     }
 }
