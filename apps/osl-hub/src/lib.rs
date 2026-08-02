@@ -20,6 +20,8 @@ pub mod browser_profile_scan;
 pub mod burn_contract;
 pub mod burn_authorize;
 #[cfg(feature = "core")]
+pub mod burn_journal_bridge;
+#[cfg(feature = "core")]
 pub mod burn_server;
 pub mod carrier_placement;
 pub mod cloud_autoscrub_authority;
