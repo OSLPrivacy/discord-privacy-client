@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T4-P6 CHAT-PATTERN and T4-W3 WEB-CONFORMANCE: the web_surface_adapter module and adapter-profile defaults_web.rs do not exist yet; T4-F3 cannot implement Messenger until those T4 prerequisites land.
