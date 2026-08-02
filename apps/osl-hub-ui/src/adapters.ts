@@ -1080,6 +1080,21 @@ export async function viewHubRecoveryPhrase(current: string): Promise<string | n
   } catch (error) { recordBackendFailure("view_hub_recovery_phrase", error); return null; }
 }
 
+export async function loadHubRecoveryKitUnsaved(): Promise<boolean | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    const value = await invoke<unknown>("get_hub_recovery_kit_unsaved");
+    return checkedBackendResponse("get_hub_recovery_kit_unsaved", typeof value === "boolean" ? value : null,
+      "the recovery-kit status did not match the expected shape");
+  } catch (error) { recordBackendFailure("get_hub_recovery_kit_unsaved", error); return null; }
+}
+
+export async function setHubRecoveryKitUnsaved(unsaved: boolean): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  try { await invoke("set_hub_recovery_kit_unsaved", { unsaved }); return true; }
+  catch (error) { recordBackendFailure("set_hub_recovery_kit_unsaved", error); return false; }
+}
+
 export async function listHubIdentities(): Promise<HubIdentitySlot[] | null> {
   if (!isTauriRuntime()) return null;
   try {

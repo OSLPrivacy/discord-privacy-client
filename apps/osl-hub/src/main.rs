@@ -1392,6 +1392,24 @@ async fn view_hub_recovery_phrase(current: String) -> Result<String, String> {
     .map_err(|_| "OSL recovery phrase worker failed".to_string())?
 }
 
+#[tauri::command]
+async fn get_hub_recovery_kit_unsaved() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(account_recovery::recovery_kit_unsaved)
+        .await
+        .map_err(|_| "OSL recovery-kit status worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn set_hub_recovery_kit_unsaved(unsaved: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || if unsaved {
+        account_recovery::mark_recovery_kit_unsaved()
+    } else {
+        account_recovery::clear_recovery_kit_unsaved()
+    })
+    .await
+    .map_err(|_| "OSL recovery-kit status worker failed".to_owned())?
+}
+
 /// A7: manual "Lock now" from the trusted OSL Privacy UI.
 ///
 /// Locking is not a UI flag. This drops the identity secret, the prekey pool,

@@ -21,6 +21,12 @@ import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } 
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
 import { renderRecoveryStatesSettings } from "./recovery-states";
 import { previousOnboardingRoute } from "./onboarding-sequence";
+import { componentPickerScreen } from "./component-picker";
+import { componentManagerFromOnboarding } from "./component-manager";
+import { autoScrubConsentPrompt, decideAutoScrubInstall } from "./component-consent";
+import { deviceTransferManifestScreen } from "./device-transfer";
+import { initialOldDeviceCopyDecision, oldDeviceCopyDecisionView } from "./device-transfer-source";
+import { renderDeadmanScreen, selectDeadmanAction } from "./deadman";
 import { groupOnboardingApps } from "./onboarding-app-groups";
 import { peopleDestinationHeaderMarkup } from "./people-destination-header";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
@@ -169,7 +175,8 @@ import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusC
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { initialAccountRecoveryFlow, recoveryScreenMarkup } from "./account-recovery";
 import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
-import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, recoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
+import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
+import { loadHubRecoveryKitUnsaved, setHubRecoveryKitUnsaved } from "./adapters";
 import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -298,6 +305,9 @@ let passwordRoleStatus: HubPasswordRoleStatus | null = null;
 let setup: SetupState = parseSetupState(null);
 let route: Route = "onboarding";
 let onboardingRoute: OnboardingRoute = "welcome";
+// A cache only. The authority is encrypted account state in the native hub;
+// WebView storage is deliberately not consulted because burn/duress erase it.
+let recoveryKitUnsavedDurable = false;
 let settingsSection: SettingsSection = "account";
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
@@ -1033,8 +1043,21 @@ export function desktopCtaHandoffRoute(surface: DesktopCtaSurface): DesktopCtaRo
  * an unsaved recovery kit outranks every other pending step.
  */
 function pendingOnboardingRoute(): OnboardingRoute | null {
-  const resumed = resumeOnboardingRoute(localStorage, onboardingResumeStorageKey);
+  const resumed = recoveryKitUnsavedDurable
+    ? "recovery"
+    : resumeOnboardingRoute(localStorage, onboardingResumeStorageKey);
   return resumed === null ? null : onboardingRouteForBuild(resumed);
+}
+
+async function persistRecoveryKitUnsaved(unsaved: boolean): Promise<boolean> {
+  const persisted = await setHubRecoveryKitUnsaved(unsaved);
+  if (!persisted) return false;
+  recoveryKitUnsavedDurable = unsaved;
+  // Keep this compatibility cache in step only; it is never consulted for the
+  // launch/resume decision.
+  if (unsaved) markRecoveryKitUnsaved(localStorage);
+  else clearRecoveryKitUnsaved(localStorage);
+  return true;
 }
 
 function persistCurrentOnboardingRoute(): void {
@@ -2351,7 +2374,7 @@ function recoveryKitStateNow(): RecoveryKitState {
     captureEnforcement: captureProtectionEnforced() ? "enforced" : "unenforced",
     shownWithoutProtection: recoveryShownWithoutProtection,
     savedAcknowledged: recoverySavedAcknowledged,
-    kitUnsaved: recoveryKitUnsaved(localStorage),
+    kitUnsaved: recoveryKitUnsavedDurable,
   };
 }
 
@@ -2361,8 +2384,7 @@ function applyRecoveryKitAction(action: RecoveryKitAction): "none" | "rejected" 
   recoveryBundle = state.secrets;
   recoveryShownWithoutProtection = state.shownWithoutProtection;
   recoverySavedAcknowledged = state.savedAcknowledged;
-  if (state.kitUnsaved) markRecoveryKitUnsaved(localStorage);
-  else clearRecoveryKitUnsaved(localStorage);
+  void persistRecoveryKitUnsaved(state.kitUnsaved);
   return outcome;
 }
 
@@ -2980,7 +3002,7 @@ function bindPasswordForm(): void {
         recoveryShownWithoutProtection = false;
         // T15-A8: from this instant a kit exists that nobody has confirmed
         // saving. Until they do, every launch comes back here.
-        markRecoveryKitUnsaved(localStorage);
+        if (!await persistRecoveryKitUnsaved(true)) throw new Error("OSL could not save the recovery-kit reminder");
         onboardingRoute = "recovery";
         await proveRecoveryCaptureProtection();
       } else {
@@ -3064,7 +3086,7 @@ function bindPasswordForm(): void {
         // T15-A8: an unsaved recovery kit outranks a "finished" onboarding.
         // Deferring the kit used to be indistinguishable from never having
         // been offered it, because nothing survived the unlock.
-        if (onboardingComplete && !recoveryKitUnsaved(localStorage)) {
+        if (onboardingComplete && !recoveryKitUnsavedDurable) {
           route = "home";
           void openMullvadOnStartup();
           void refreshUpdateStatus();
@@ -3222,7 +3244,7 @@ function bindImportForm(): void {
       recoveryBundle = { userId: identity.userId, identityPhrase: null, passwordPhrase: passwordResult.passwordRecoveryPhrase };
       recoverySavedAcknowledged = false;
       recoveryShownWithoutProtection = false;
-      markRecoveryKitUnsaved(localStorage);
+      if (!await persistRecoveryKitUnsaved(true)) throw new Error("OSL could not save the recovery-kit reminder");
       onboardingRoute = "recovery";
       await proveRecoveryCaptureProtection();
       render();
@@ -4702,12 +4724,25 @@ function settingsContent(): string {
 
 function settingsSectionContent(): string {
   if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
-  if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${sendingSettingsContent()}`;
+  if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}`;
   if (settingsSection === "scrub") return privacySettingsContent();
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
   if (settingsSection === "appearance") return appearanceSettingsContent();
   return updateSettingsContent();
+}
+
+function optionalComponentsSettingsContent(): string {
+  const components = [
+    { id: "local-ai-model", displayName: "Local AI model", measuredSizeBytes: 1_879_048_192, withoutIt: "The word-bank carrier still works." },
+    { id: "tor", displayName: "Tor", measuredSizeBytes: 31_457_280, withoutIt: "OSL connects directly, without an anonymity layer." },
+  ] as const;
+  const picker = componentPickerScreen(components);
+  const manager = componentManagerFromOnboarding(components.map(({ id, displayName, withoutIt }) => ({ id, featureName: displayName, fallback: withoutIt })), []);
+  const scrub = decideAutoScrubInstall("autoscrub", null);
+  const transfer = deviceTransferManifestScreen();
+  const sourceChoice = oldDeviceCopyDecisionView(initialOldDeviceCopyDecision({ importConfirmed: false }));
+  return `<details class="settings-disclosure" data-optional-components><summary><span><strong>${picker.title}</strong><small>${picker.introductoryCopy}</small></span></summary><div class="settings-list">${picker.components.map((item) => `<div class="setting-line"><span><strong>${escapeHtml(item.displayName)} · ${escapeHtml(item.size)}</strong><small>${escapeHtml(item.withoutIt)}</small></span></div>`).join("")}<p>${escapeHtml(autoScrubConsentPrompt("each service"))}</p><p data-autoscrub-install="${scrub.allowed ? "allowed" : "blocked"}">AutoScrub installation is blocked until separate explicit consent is recorded.</p>${manager.features.map((feature) => `<p>${escapeHtml(feature.detail)}</p>`).join("")}<h3>${escapeHtml(transfer.title)}</h3>${transfer.sections.map((section) => `<p><strong>${escapeHtml(section.heading)}:</strong> ${escapeHtml(section.items.join(", "))}</p>`).join("")}<p>${sourceChoice.mode === "unavailable" ? "Transfer source-copy choice appears only after a confirmed import." : ""}</p>${renderDeadmanScreen(selectDeadmanAction("lock", ""))}</div></details>`;
 }
 
 export function privacyDestinationContent(): string {
@@ -8750,6 +8785,7 @@ async function bootstrap(): Promise<void> {
       showPlaintextPreview: true,
       windowCaptureEnabled: true,
     };
+    recoveryKitUnsavedDurable = await loadHubRecoveryKitUnsaved().catch(() => null) ?? false;
     if (attempt !== bootstrapEpoch) return;
     setup = preferences.setup;
     windowCaptureEnabled = preferences.windowCaptureEnabled;
@@ -8771,7 +8807,7 @@ async function bootstrap(): Promise<void> {
       // T15-A8: "Remind me later" is a real state, not a dismissal. While a
       // recovery kit is unsaved the launch lands back on the recovery step
       // even for an account that already finished onboarding.
-      const recoveryKitOutstanding = recoveryKitUnsaved(localStorage);
+      const recoveryKitOutstanding = recoveryKitUnsavedDurable;
       route = preferences.onboardingComplete && !recoveryKitOutstanding ? "home" : "onboarding";
       if (route === "onboarding") onboardingRoute = pendingOnboardingRoute() ?? onboardingRouteForBuild("pro");
     }

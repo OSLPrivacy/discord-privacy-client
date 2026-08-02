@@ -309,6 +309,11 @@ description = "Allow only the trusted main OSL window to decrypt and re-read thi
 commands.allow = ["view_hub_recovery_phrase"]
 
 [[permission]]
+identifier = "allow-recovery-kit-status"
+description = "Read or update only the encrypted, account-scoped recovery-kit saved acknowledgement used to prevent recovery onboarding from being bypassed after WebView storage is cleared."
+commands.allow = ["get_hub_recovery_kit_unsaved", "set_hub_recovery_kit_unsaved"]
+
+[[permission]]
 identifier = "allow-lock-hub-session"
 description = "A7: manual \"Lock now\". Drops every live secret this process holds (identity, prekeys, peer map including persisted ratchet state, whitelist, sender-key chains, the file storage key) and closes the open MessageStore. Nothing on disk is deleted; the session simply requires the main password again."
 commands.allow = ["lock_hub_session"]
