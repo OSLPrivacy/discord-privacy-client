@@ -13,7 +13,8 @@
     "build": "tsc --noEmit && vite build",
     "build:discord-qa": "tsc --noEmit && vite build --mode discord-qa",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run && node --test screenshots/*.test.mjs",
+    "test:node": "node --test screenshots/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.15.30",

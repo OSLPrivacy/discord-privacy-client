@@ -11,6 +11,12 @@ export default defineConfig(({ mode }) => ({
     ...discordQaRendererDefine(mode),
     "import.meta.env.VITE_OSL_SIGNAL_QA_SHELL": JSON.stringify(mode === "signal-qa" ? "1" : "0"),
   },
+  // screenshots/*.test.mjs are node:test files, not vitest. Vitest counted them
+  // as a failing file ("No test suite found") while NOTHING actually ran them;
+  // `npm test` now runs them with `node --test`.
+  test: {
+    exclude: ["**/node_modules/**", "**/dist/**", "screenshots/**"],
+  },
   build: {
     outDir: "dist",
     emptyOutDir: true,
