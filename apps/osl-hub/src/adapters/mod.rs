@@ -58,6 +58,13 @@ pub struct SurfaceTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NodeRef(pub(crate) u64);
 
+impl NodeRef {
+    /// Creates an opaque node reference from a host-owned accessibility handle.
+    pub fn for_claimed_node(handle: u64) -> Self {
+        Self(handle)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SurfaceBinding {
     pub app: AdapterAppId,
@@ -69,6 +76,34 @@ pub struct SurfaceBinding {
     pub bound_at_ms: u64,
     /// Opaque, host-derived scope-binding hash; never provider identity text.
     pub(crate) scope_binding_hash: String,
+}
+
+impl SurfaceBinding {
+    /// Constructs a binding from the host's already-claimed native surface.
+    ///
+    /// The scope value is deliberately opaque: adapters may compare it with an
+    /// authorization but must never derive it from provider text.
+    pub fn for_claimed_surface(
+        app: AdapterAppId,
+        generation: u64,
+        evidence: BindingEvidence,
+        composer: NodeRef,
+        transcript: Option<NodeRef>,
+        bounds: Bounds,
+        bound_at_ms: u64,
+        scope_binding_hash: impl Into<String>,
+    ) -> Self {
+        Self {
+            app,
+            generation,
+            evidence,
+            composer,
+            transcript,
+            bounds,
+            bound_at_ms,
+            scope_binding_hash: scope_binding_hash.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
