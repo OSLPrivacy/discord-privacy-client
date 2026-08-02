@@ -4,6 +4,11 @@ description = "Read the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["get_onboarding_preferences"]
 
 [[permission]]
+identifier = "allow-ai-carrier-status"
+description = "Read only whether the optional local AI carrier is ready; this exposes no model, cover, message, capability, or conversation data."
+commands.allow = ["ai_carrier_status"]
+
+[[permission]]
 identifier = "allow-osl-mail-get-status"
 description = "Read the signed OSL Mail availability and this unlocked identity's local mailbox status."
 commands.allow = ["osl_mail_get_status"]

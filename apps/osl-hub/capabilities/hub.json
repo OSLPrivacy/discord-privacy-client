@@ -13,6 +13,7 @@
     "core:window:allow-toggle-maximize",
     "core:event:allow-emit-to",
     "core:event:allow-listen",
+    "allow-ai-carrier-status",
     "allow-get-onboarding-preferences",
     "allow-list-hub-app-notifications",
     "allow-set-hub-notifications-enabled",

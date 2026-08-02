@@ -372,6 +372,7 @@ macro_rules! hub_tauri_commands {
     ($callback:ident) => {
         $callback! {
             get_onboarding_preferences,
+            ai_carrier_status,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
             set_hub_screenshot_protection,
