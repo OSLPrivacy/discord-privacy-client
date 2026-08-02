@@ -3,6 +3,8 @@
   "schema_version": 1,
   "manifest_id": "osl-public-surface",
   "html": [
+    "docs/compare.html",
+    "docs/faq.html",
     "docs/prototypes/osl-chats-lab/index.html",
     "docs/prototypes/osl-hub/index.html"
   ],
