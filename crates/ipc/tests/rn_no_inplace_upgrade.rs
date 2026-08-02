@@ -37,9 +37,11 @@ fn v3_history_stays_v3_and_decryptable_until_a_fresh_rn_bootstrap() {
     assert_eq!(raw.first(), Some(&3), "fixture must be a v3 wire");
 
     let live_caps = PeerCapabilities::Verified(RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE);
-    assert_eq!(
-        select_wire_version(&RnPeerPin::UNKNOWN, live_caps, RnPolicy::Opportunistic),
-        Ok(SelectedVersion::Rn),
+    assert!(
+        matches!(
+            select_wire_version(&RnPeerPin::UNKNOWN, live_caps, RnPolicy::Opportunistic),
+            Ok(SelectedVersion::Rn)
+        ),
         "bit 1 makes a *fresh* RN bootstrap eligible"
     );
 
