@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { createCheckoutSession } from "../../src/lib/stripe.js";
+import { PREPAID_PRO_GRANT_SECONDS } from "../../src/lib/stripe-checkout-claims.js";
 
 describe("privacy-minimal one-time Stripe Checkout", () => {
+  it("defines card purchases as an unredeemed one-month grant", () => {
+    expect(PREPAID_PRO_GRANT_SECONDS).toBe(30 * 24 * 60 * 60);
+  });
   it("creates a payment session without subscription, email, or saved-payment fields", async () => {
     const fetcher = vi.fn<typeof fetch>(async (_input, init) => {
       const form = new URLSearchParams(String(init?.body));

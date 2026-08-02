@@ -9,6 +9,8 @@ import { revokeLicensesForSubscription } from "./subscriptions.js";
 
 export const STRIPE_CLAIM_LIFETIME_SECONDS = 24 * 60 * 60;
 export const COMPLETED_STRIPE_CLAIM_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
+/** A one-time card purchase is a redeemable month, not a lifetime entitlement. */
+export const PREPAID_PRO_GRANT_SECONDS = 30 * 24 * 60 * 60;
 
 export interface StripeCheckoutClaimRow {
   session_id: string;
@@ -207,12 +209,13 @@ export async function completeOneTimeStripeCheckoutClaim(
     ).bind(input.paymentIntentId, initialStatus, now, now),
     db.prepare(
       `INSERT OR IGNORE INTO licenses (
-         license_hash, subscription_id, issued_at, revoked_at, revoked_reason
-       ) VALUES (?, ?, ?, ?, ?)`,
+         license_hash, subscription_id, issued_at, grant_seconds, revoked_at, revoked_reason
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
     ).bind(
       claim.license_hash,
       input.paymentIntentId,
       now,
+      PREPAID_PRO_GRANT_SECONDS,
       initialRevokedAt,
       initialRevokedReason,
     ),
