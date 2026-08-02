@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite: T1-30/T1-31 (T1-3x) transport changes have not landed; T1 owns the inline commands.rs send/receive regions this extraction must follow.
