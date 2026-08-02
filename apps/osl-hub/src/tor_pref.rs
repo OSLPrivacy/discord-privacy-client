@@ -209,4 +209,24 @@ mod tests {
             Err("Tor is selected, but its tunnel is unavailable; no message was sent".to_owned())
         );
     }
+
+    #[test]
+    fn shipping_store_sends_are_gated_before_the_broker_is_called() {
+        let source = include_str!("main.rs");
+        for (command, send) in [
+            ("async fn prepare_osl_chat_text(", "broker::prepare_osl_chat_text("),
+            (
+                "async fn prepare_peer_prose_text(",
+                "broker::prepare_peer_prose_text_with_capture(",
+            ),
+        ] {
+            let body = &source[source.find(command).expect("shipping send command must exist")..];
+            assert!(
+                body.find("app.state::<TorPreferenceState>().authorize_store()?;")
+                    .expect("Tor choice must gate the store send")
+                    < body.find(send).expect("shipping store send must exist"),
+                "the Tor gate must run before encrypted store traffic is constructed"
+            );
+        }
+    }
 }
