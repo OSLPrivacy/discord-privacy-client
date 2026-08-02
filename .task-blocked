@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T4-W3 (WEB-CONFORMANCE): apps/osl-hub/src/web_surface_adapter/mod.rs, crates/adapter-profile/src/defaults_web.rs, and apps/osl-hub/tests/web_surface_conformance.rs do not exist; T4-W1 through T4-W3 own them. S1-A11Y-VIABLE is present, but P1 cannot implement the shared adapter contract independently.
