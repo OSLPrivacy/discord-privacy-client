@@ -24,12 +24,10 @@
 ///      can never precede the identity it binds to.
 ///
 /// D1 retains commitments only. The clear Discord snowflake and the clear OSL
-/// owner id travel in the request so the server can recompute
-/// `sha256(canonical binding)`; neither the snowflake nor the raw nonce is
-/// stored. A single hex digit of difference anywhere in the binding tuple
-/// (account, owner, nonce, issued_at, expires_at) fails the lookup, which is
-/// what makes "proof bound to a different account" unrepresentable rather
-/// than merely refused.
+/// owner id travel in the request so the server can recompute commitments;
+/// neither the snowflake nor the raw nonce is stored. A unique
+/// `(service, sha256(account))` index makes a previously admitted account
+/// unavailable to every other owner.
 
 import type { Env } from "../env.js";
 import {
@@ -131,6 +129,9 @@ export async function handleAccountOwnershipProof(
   }
   const serviceAccountId = body.service_account_id;
   const ownerUserId = body.owner_user_id;
+  const serviceAccountSha256 = await sha256Hex(
+    new TextEncoder().encode(serviceAccountId),
+  );
 
   // A missing proof is refused here rather than being routed into the
   // verifier, so "no proof presented" can never be mistaken for "verified".
@@ -269,13 +270,14 @@ export async function handleAccountOwnershipProof(
       ).bind(spentAt, nonceSha256),
       env.DB.prepare(
         `INSERT INTO account_ownership_proof_bindings (
-           binding_sha256, nonce_sha256, owner_user_id, service,
+           binding_sha256, nonce_sha256, owner_user_id, service, service_account_sha256,
            proof_type, verified_at_unix_seconds
-         ) VALUES (?, ?, ?, 'discord', ?, ?)`,
+         ) VALUES (?, ?, ?, 'discord', ?, ?, ?)`,
       ).bind(
         bindingSha256,
         nonceSha256,
         ownerUserId,
+        serviceAccountSha256,
         account.ownership_proof?.proof_type ?? "",
         spentAt,
       ),
