@@ -8,8 +8,13 @@ fn main() {
     ] {
         println!("cargo:rerun-if-env-changed={variable}");
         let destination = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join(output);
+        // Discard fs::copy's byte count so both arms are (); otherwise the
+        // match arms have incompatible types (u64 vs ()) and the BUILD SCRIPT
+        // fails, which stops the product binary compiling at all.
         match std::env::var_os(variable) {
-            Some(source) => std::fs::copy(source, destination).expect("copy signed build-hash asset"),
+            Some(source) => {
+                std::fs::copy(source, destination).expect("copy signed build-hash asset");
+            }
             None => std::fs::write(destination, []).expect("write empty build-hash asset"),
         }
     }

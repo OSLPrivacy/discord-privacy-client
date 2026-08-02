@@ -89,8 +89,10 @@ fn published_hash_status_from_assets(
 }
 
 fn updater_public_key() -> Option<String> {
-    let encoded = serde_json::from_str::<serde_json::Value>(UPDATER_CONFIG)
-        .ok()?
+    // Bind the parsed Value first: chaining straight into as_str() borrowed a
+    // temporary that was dropped at the end of the statement.
+    let config = serde_json::from_str::<serde_json::Value>(UPDATER_CONFIG).ok()?;
+    let encoded = config
         .get("plugins")?
         .get("updater")?
         .get("pubkey")?

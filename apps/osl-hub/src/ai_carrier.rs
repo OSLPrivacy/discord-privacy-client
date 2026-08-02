@@ -33,8 +33,10 @@ pub struct AiCarrierStatus {
     pub word_bank_fallback: bool,
 }
 
-#[tauri::command]
-pub fn ai_carrier_status(state: tauri::State<'_, AiCarrierState>) -> AiCarrierStatus {
+// The #[tauri::command] wrapper lives in main.rs with every other command:
+// the macro generates __cmd__* helpers that must be in the same crate as the
+// invoke_handler, so declaring it here left main.rs unable to resolve them.
+pub fn ai_carrier_status_for(state: &AiCarrierState) -> AiCarrierStatus {
     state.status()
 }
 

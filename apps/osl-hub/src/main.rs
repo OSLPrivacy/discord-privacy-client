@@ -3,7 +3,8 @@
 #[cfg(feature = "whatsapp-qa-shell")]
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
-use osl_privacy_hub::ai_carrier::{ai_carrier_status, AiCarrierState};
+use osl_privacy_hub::account_recovery;
+use osl_privacy_hub::ai_carrier::{ai_carrier_status_for, AiCarrierState};
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
     OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, PreparedCoreMessage,
@@ -8923,6 +8924,11 @@ fn spawn_lifecycle_tick(app: tauri::AppHandle, local_data_dir: std::path::PathBu
 /*
     ]);
 */
+
+#[tauri::command]
+fn ai_carrier_status(state: tauri::State<'_, AiCarrierState>) -> osl_privacy_hub::ai_carrier::AiCarrierStatus {
+    ai_carrier_status_for(&state)
+}
 
 macro_rules! hub_tauri_generate_handler {
     ($($(#[$meta:meta])* $command:ident),* $(,)?) => {

@@ -15,6 +15,10 @@ pub mod attachment_thumbnail;
 #[cfg(feature = "core")]
 pub mod attachment_thumbnail_policy;
 pub mod adapter_profile_boot;
+// ai_carrier declares a #[tauri::command]. tauri is an optional dependency
+// pulled in by the `desktop` feature (NOT `core`), so an ungated declaration
+// failed to resolve `tauri` in every non-desktop build of the product lib.
+#[cfg(feature = "desktop")]
 pub mod ai_carrier;
 pub mod adapters;
 pub mod attended_imap;
