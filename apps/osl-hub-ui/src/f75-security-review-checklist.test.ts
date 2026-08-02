@@ -101,12 +101,16 @@ describe("f75 security-review checklist acceptance artifact", () => {
     expect(userLanguage).toContain("Do not fabricate ban-risk percentages");
   });
 
-  it("anchors RN wire-in as disabled in both checklist and source", () => {
-    const boundary = section("Boundary Requirements");
-    expect(boundary).toContain("`RN_WIRE_IN_ENABLED` must stay `false`");
-
+  it("requires all RN wire-in delivery preconditions", () => {
     const rnSource = readRelative("../../../crates/ipc/src/wire_rn.rs");
-    expect(rnSource).toMatch(/pub const RN_WIRE_IN_ENABLED: bool = false;/u);
+    const stateSource = readRelative("../../../crates/ipc/src/state.rs");
+    const clientSource = readRelative("../../../crates/keystore/src/client.rs");
+
+    expect(rnSource).toMatch(/pub const RN_WIRE_IN_ENABLED: bool = true;/u);
+    expect(stateSource).toContain("rn_wire_in_enabled: AtomicBool::new(true)");
+    expect(clientSource).toContain("CLIENT_RN_CAPABILITY_FLOOR: u32 = rn_capabilities_for_wire_in(true)");
+    expect(rnSource).toContain('pub const RN_SESSION_DIR: &str = "rn_sessions"');
+    expect(rnSource).toContain(".create_new(true)");
   });
 
   it("records release-blocking checklist items for a human security review", () => {

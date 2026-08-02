@@ -79,10 +79,10 @@ pub const LEGACY_WIRE_VERSION_V3: u8 = 0x03;
 
 /// Single switch that turns OSL-RN send/receive wire-in on.
 ///
-/// This must stay off until flipping it has passed the external
-/// cryptographic review required by `crates/osl-ratchet-next/DESIGN.md`
-/// and master 7.11.
-pub const RN_WIRE_IN_ENABLED: bool = false;
+/// The stronger wire is enabled after its delivery preconditions landed:
+/// live-capability advertisement, one canonical session directory, and a
+/// per-peer writer lock.
+pub const RN_WIRE_IN_ENABLED: bool = true;
 
 /// Canonical subdirectory for sealed OSL-RN session state.
 ///
@@ -1425,7 +1425,7 @@ pub fn fetch_prekey_bundle_and_initiate_first_contact(
 /// Encrypt with a persisted OSL-RN session.
 ///
 /// The gate is checked before any state load or crypto operation. When
-/// enabled in a reviewed future build, the ordering is load, encrypt
+/// enabled, the ordering is load, encrypt
 /// (advancing the session), save the advanced session, then return the
 /// wire. If saving fails, the wire is not returned.
 pub fn send_rn(
@@ -1494,7 +1494,7 @@ fn send_rn_after_gate(
 /// Decrypt with a persisted OSL-RN session.
 ///
 /// The gate is checked before any state load or crypto operation. When
-/// enabled in a reviewed future build, the receive-side ratchet advance
+/// enabled, the receive-side ratchet advance
 /// is persisted before the opened plaintext is returned.
 pub fn receive_rn(
     store: &RnSessionStore,
@@ -1867,10 +1867,10 @@ mod tests {
     }
 
     #[test]
-    fn rn_wire_in_flag_remains_hard_false() {
+    fn rn_wire_in_flag_is_open() {
         assert!(
-            !RN_WIRE_IN_ENABLED,
-            "this unit must not enable the OSL-RN wire-in gate"
+            RN_WIRE_IN_ENABLED,
+            "the OSL-RN wire-in gate must stay open once its delivery preconditions land"
         );
     }
 
@@ -3107,14 +3107,16 @@ mod tests {
         let sealer = MemorySealer::new();
         let peer = [31u8; 32];
 
-        assert!(matches!(
-            send_rn_with_sealer(&store, &sealer, &peer, 7, b"blocked"),
-            Err(RnError::WireInDisabled)
-        ));
-        assert!(matches!(
-            receive_rn_with_sealer(&store, &sealer, &peer, "not touched"),
-            Err(RnError::WireInDisabled)
-        ));
+        with_wire_in_enabled_for_test(false, || {
+            assert!(matches!(
+                send_rn_with_sealer(&store, &sealer, &peer, 7, b"blocked"),
+                Err(RnError::WireInDisabled)
+            ));
+            assert!(matches!(
+                receive_rn_with_sealer(&store, &sealer, &peer, "not touched"),
+                Err(RnError::WireInDisabled)
+            ));
+        });
 
         assert_eq!(
             snapshot_files(&store.dir),
@@ -3128,25 +3130,24 @@ mod tests {
         let (_d, store) = fresh_store();
         let peer = [30u8; 32];
 
-        assert!(matches!(
-            send_rn(&store, &peer, 7, b"default send wrapper"),
-            Err(RnError::WireInDisabled)
-        ));
-        assert!(matches!(
-            receive_rn(&store, &peer, "not touched"),
-            Err(RnError::WireInDisabled)
-        ));
+        with_wire_in_enabled_for_test(false, || {
+            assert!(matches!(
+                send_rn(&store, &peer, 7, b"default send wrapper"),
+                Err(RnError::WireInDisabled)
+            ));
+            assert!(matches!(
+                receive_rn(&store, &peer, "not touched"),
+                Err(RnError::WireInDisabled)
+            ));
+        });
     }
 
     #[test]
-    fn app_state_runtime_gate_is_separate_from_the_compile_time_fuse() {
+    fn app_state_runtime_gate_starts_open_with_the_compile_time_fuse() {
         let state = crate::AppState::new();
 
-        assert!(
-            !RN_WIRE_IN_ENABLED,
-            "the build fuse must remain off in this unit"
-        );
-        assert!(!app_state_wire_in_enabled(&state));
+        assert!(RN_WIRE_IN_ENABLED, "the build fuse must be open");
+        assert!(app_state_wire_in_enabled(&state));
 
         state.set_rn_wire_in_enabled(true);
         assert!(
@@ -3156,8 +3157,9 @@ mod tests {
     }
 
     #[test]
-    fn app_state_runtime_gate_refuses_state_aware_send_and_receive_by_default() {
+    fn app_state_runtime_gate_can_refuse_state_aware_send_and_receive_when_closed() {
         let state = crate::AppState::new();
+        state.set_rn_wire_in_enabled(false);
         let (_d, store) = fresh_store();
         std::fs::create_dir_all(&store.dir).expect("mkdir");
         std::fs::write(store.dir.join("sentinel"), b"unchanged").expect("sentinel");
@@ -3218,18 +3220,9 @@ mod tests {
             .save_session_with_sealer(&peer, &session, &sealer)
             .expect("save");
 
-        assert!(
-            !RN_WIRE_IN_ENABLED,
-            "the compile-time fuse must remain off while AppState controls the test path"
-        );
-        assert!(matches!(
-            send_rn_for_state(&state, &store, &sealer, &peer, 73, b"blocked"),
-            Err(RnError::WireInDisabled)
-        ));
-
-        state.set_rn_wire_in_enabled(true);
+        assert!(RN_WIRE_IN_ENABLED, "the compile-time fuse must be open");
         let wire = send_rn_for_state(&state, &store, &sealer, &peer, 73, b"allowed")
-            .expect("enabled AppState gate sends");
+            .expect("open AppState gate sends");
         assert_eq!(
             osl_ratchet_next::peek_wire_version(&wire),
             Some(WIRE_VERSION_RN)

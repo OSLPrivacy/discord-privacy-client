@@ -289,9 +289,8 @@ pub struct AppState {
 
     /// Runtime gate for OSL-RN wire-in.
     ///
-    /// Defaults false, is in-memory only, and is separate from
-    /// `wire_rn::RN_WIRE_IN_ENABLED`, which remains the compile-time review
-    /// fuse for builds that still must not wire OSL-RN into production flows.
+    /// Defaults true, is in-memory only, and tracks the compile-time
+    /// `wire_rn::RN_WIRE_IN_ENABLED` fuse for production OSL-RN traffic.
     pub rn_wire_in_enabled: AtomicBool,
 
     /// Phase 9-A3: in-memory cache of the current channel-member set
@@ -422,9 +421,9 @@ impl Default for AppState {
             recovery_guard: Mutex::new(crate::recovery::RecoveryGuard::default()),
             scope_membership: Mutex::new(crate::membership::ScopeMembership::default()),
             production_duress_engine: Mutex::new(None),
-            // RN starts unwired. wire_rn::RN_WIRE_IN_ENABLED is the compile-time
-            // fuse; this runtime flag must never default to a more permissive value.
-            rn_wire_in_enabled: AtomicBool::new(false),
+            // Keep the runtime gate aligned with the compile-time fuse so a
+            // production state never silently disables the live RN wire.
+            rn_wire_in_enabled: AtomicBool::new(true),
         }
     }
 }
@@ -764,10 +763,10 @@ mod tests {
     }
 
     #[test]
-    fn rn_wire_in_runtime_gate_defaults_to_refusal() {
+    fn rn_wire_in_runtime_gate_defaults_to_open() {
         let state = AppState::new();
 
-        assert!(!state.rn_wire_in_enabled());
+        assert!(state.rn_wire_in_enabled());
     }
 
     #[test]

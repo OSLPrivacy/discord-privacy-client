@@ -212,8 +212,15 @@ describe("SecureLocalStore integration contracts", () => {
     expect(commands).toContain("deferring membership persist");
   });
 
-  it("does not enable the RN wire-in gate", () => {
+  it("requires all RN wire-in delivery preconditions", () => {
     const wireRn = readRelative("../../../crates/ipc/src/wire_rn.rs");
-    expect(wireRn).toContain("pub const RN_WIRE_IN_ENABLED: bool = false;");
+    const state = readRelative("../../../crates/ipc/src/state.rs");
+    const client = readRelative("../../../crates/keystore/src/client.rs");
+
+    expect(wireRn).toContain("pub const RN_WIRE_IN_ENABLED: bool = true;");
+    expect(state).toContain("rn_wire_in_enabled: AtomicBool::new(true)");
+    expect(client).toContain("CLIENT_RN_CAPABILITY_FLOOR: u32 = rn_capabilities_for_wire_in(true)");
+    expect(wireRn).toContain('pub const RN_SESSION_DIR: &str = "rn_sessions"');
+    expect(wireRn).toContain(".create_new(true)");
   });
 });

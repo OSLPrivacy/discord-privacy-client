@@ -213,7 +213,7 @@ pub const RN_CAP_MAX: u32 = 0xffff;
 /// the same helper makes the client-side advertisement monotone: a rotation can
 /// change keys, but it cannot silently lower this build's protocol capability
 /// floor.
-pub const CLIENT_RN_CAPABILITY_FLOOR: u32 = rn_capabilities_for_wire_in(false);
+pub const CLIENT_RN_CAPABILITY_FLOOR: u32 = rn_capabilities_for_wire_in(true);
 /// Compatibility name for callers/tests that refer to the signed capability
 /// bitmap directly. It must stay tied to the floor.
 pub const CLIENT_RN_CAPABILITIES: u32 = CLIENT_RN_CAPABILITY_FLOOR;

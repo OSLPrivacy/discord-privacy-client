@@ -1203,7 +1203,13 @@ describe("bundled preview security boundary", () => {
     expect(wireRnProduction).toContain(
       "accept_b5_prekey_state_and_persist_with_sealer",
     );
-    expect(wireRnProduction).toContain("pub const RN_WIRE_IN_ENABLED: bool = false;");
+    expect(wireRnProduction).toContain("pub const RN_WIRE_IN_ENABLED: bool = true;");
+    expect(state).toContain("rn_wire_in_enabled: AtomicBool::new(true)");
+    expect(keystoreClient).toContain(
+      "CLIENT_RN_CAPABILITY_FLOOR: u32 = rn_capabilities_for_wire_in(true)",
+    );
+    expect(wireRnProduction).toContain('pub const RN_SESSION_DIR: &str = "rn_sessions"');
+    expect(wireRnProduction).toContain(".create_new(true)");
     expect(rustProductionPrefix(productionRust)).toMatch(/\bconsume_opk\s*\(/u);
 
     const assertWiredPrekeyTruth = (source: string): void => {

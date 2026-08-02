@@ -98,6 +98,10 @@ fn reviewer_signoff_confirms_ratchet_remediations_closed() {
         .expect("read IPC commands source");
     let wire_rn =
         fs::read_to_string(root.join("crates/ipc/src/wire_rn.rs")).expect("read RN gate source");
+    let state = fs::read_to_string(root.join("crates/ipc/src/state.rs"))
+        .expect("read RN runtime gate source");
+    let keystore_client = fs::read_to_string(root.join("crates/keystore/src/client.rs"))
+        .expect("read RN capability source");
 
     assert!(
         b15_report.contains("| b20_session_reset_symptom_deadlock | high | open | b20 |"),
@@ -143,7 +147,13 @@ fn reviewer_signoff_confirms_ratchet_remediations_closed() {
         "b20 proof must cover no-symptom apply plus replay/stale refusal"
     );
     assert!(
-        wire_rn.contains("pub const RN_WIRE_IN_ENABLED: bool = false;"),
-        "re-review must not enable RN"
+        wire_rn.contains("pub const RN_WIRE_IN_ENABLED: bool = true;")
+            && state.contains("rn_wire_in_enabled: AtomicBool::new(true)")
+            && keystore_client.contains(
+                "CLIENT_RN_CAPABILITY_FLOOR: u32 = rn_capabilities_for_wire_in(true)"
+            )
+            && wire_rn.contains("pub const RN_SESSION_DIR: &str = \"rn_sessions\"")
+            && wire_rn.contains(".create_new(true)"),
+        "RN wire-in must stay open only with live capability advertisement, one session directory, and writer locking"
     );
 }
