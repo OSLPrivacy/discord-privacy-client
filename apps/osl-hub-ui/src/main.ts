@@ -21,6 +21,12 @@ import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } 
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
 import { renderRecoveryStatesSettings } from "./recovery-states";
 import { previousOnboardingRoute } from "./onboarding-sequence";
+import { componentPickerScreen } from "./component-picker";
+import { componentManagerFromOnboarding } from "./component-manager";
+import { autoScrubConsentPrompt, decideAutoScrubInstall } from "./component-consent";
+import { deviceTransferManifestScreen } from "./device-transfer";
+import { initialOldDeviceCopyDecision, oldDeviceCopyDecisionView } from "./device-transfer-source";
+import { renderDeadmanScreen, selectDeadmanAction } from "./deadman";
 import { groupOnboardingApps } from "./onboarding-app-groups";
 import { peopleDestinationHeaderMarkup } from "./people-destination-header";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
@@ -4718,12 +4724,25 @@ function settingsContent(): string {
 
 function settingsSectionContent(): string {
   if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
-  if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${sendingSettingsContent()}`;
+  if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}`;
   if (settingsSection === "scrub") return privacySettingsContent();
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
   if (settingsSection === "appearance") return appearanceSettingsContent();
   return updateSettingsContent();
+}
+
+function optionalComponentsSettingsContent(): string {
+  const components = [
+    { id: "local-ai-model", displayName: "Local AI model", measuredSizeBytes: 1_879_048_192, withoutIt: "The word-bank carrier still works." },
+    { id: "tor", displayName: "Tor", measuredSizeBytes: 31_457_280, withoutIt: "OSL connects directly, without an anonymity layer." },
+  ] as const;
+  const picker = componentPickerScreen(components);
+  const manager = componentManagerFromOnboarding(components.map(({ id, displayName, withoutIt }) => ({ id, featureName: displayName, fallback: withoutIt })), []);
+  const scrub = decideAutoScrubInstall("autoscrub", null);
+  const transfer = deviceTransferManifestScreen();
+  const sourceChoice = oldDeviceCopyDecisionView(initialOldDeviceCopyDecision({ importConfirmed: false }));
+  return `<details class="settings-disclosure" data-optional-components><summary><span><strong>${picker.title}</strong><small>${picker.introductoryCopy}</small></span></summary><div class="settings-list">${picker.components.map((item) => `<div class="setting-line"><span><strong>${escapeHtml(item.displayName)} · ${escapeHtml(item.size)}</strong><small>${escapeHtml(item.withoutIt)}</small></span></div>`).join("")}<p>${escapeHtml(autoScrubConsentPrompt("each service"))}</p><p data-autoscrub-install="${scrub.allowed ? "allowed" : "blocked"}">AutoScrub installation is blocked until separate explicit consent is recorded.</p>${manager.features.map((feature) => `<p>${escapeHtml(feature.detail)}</p>`).join("")}<h3>${escapeHtml(transfer.title)}</h3>${transfer.sections.map((section) => `<p><strong>${escapeHtml(section.heading)}:</strong> ${escapeHtml(section.items.join(", "))}</p>`).join("")}<p>${sourceChoice.mode === "unavailable" ? "Transfer source-copy choice appears only after a confirmed import." : ""}</p>${renderDeadmanScreen(selectDeadmanAction("lock", ""))}</div></details>`;
 }
 
 export function privacyDestinationContent(): string {
