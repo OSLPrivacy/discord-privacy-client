@@ -1,25 +1,58 @@
 //! Telegram Desktop adapter through the locate/read-state ABI half.
 //!
-//! Placement, destination attestation, commit, and paint targets are left
-//! closed until their respective Telegram tasks supply their proofs.
+//! Commit and paint targets are left closed until their respective Telegram
+//! tasks supply their proofs. Destination attestation is deliberately bounded
+//! to live account, conversation, and participant-set evidence: a window
+//! title alone cannot be adapted into a destination identity.
 
 use super::*;
+use crate::signal_destination_binding::{
+    monotonic_now_ms, SignalBindingStatus, SignalDestinationBindingGuard, SignalDestinationEvidence,
+};
+use std::sync::Mutex;
+
+/// Opaque, live identity evidence captured from Telegram's claimed surface.
+///
+/// All provider-derived values are already SHA-256 digests. The backend must
+/// provide the account, conversation, and exact recipient-set bindings; the
+/// adapter intentionally has no title-only input.
+#[derive(Clone, Eq, PartialEq)]
+pub struct TelegramDestinationEvidence {
+    pub window_identity_sha256: [u8; 32],
+    pub account_binding_sha256: [u8; 32],
+    pub conversation_binding_sha256: [u8; 32],
+    pub participant_set_sha256: [u8; 32],
+    pub composer_identity_sha256: [u8; 32],
+    pub attestation_nonce_sha256: [u8; 32],
+    pub observed_at_ms: u64,
+    pub window_foreground: bool,
+    pub composer_focused: bool,
+    pub conversation_stable: bool,
+}
 
 pub trait TelegramBackend: Send + Sync {
     fn capabilities(&self, now_unix_seconds: u64) -> CapabilitySet;
     fn locate(&self, target: &SurfaceTarget) -> Result<SurfaceBinding, AdapterRefusal>;
     fn read_state(&self, binding: &SurfaceBinding) -> Result<SurfaceState, AdapterRefusal>;
+    fn destination_evidence(
+        &self,
+        binding: &SurfaceBinding,
+    ) -> Result<TelegramDestinationEvidence, AdapterRefusal>;
     /// Place only. Sending is deliberately not part of the L2 backend surface.
     fn place(&self, binding: &SurfaceBinding, carrier: &Carrier) -> PlacementReceipt;
 }
 
 pub struct TelegramSurfaceAdapter<B> {
     backend: B,
+    destination_guard: Mutex<SignalDestinationBindingGuard>,
 }
 
 impl<B> TelegramSurfaceAdapter<B> {
     pub fn new(backend: B) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            destination_guard: Mutex::new(SignalDestinationBindingGuard::default()),
+        }
     }
 }
 
@@ -65,8 +98,51 @@ impl<B: TelegramBackend> SurfaceAdapter for TelegramSurfaceAdapter<B> {
         self.backend.read_state(binding)
     }
 
-    fn destination(&self, _: &SurfaceBinding) -> Result<DestinationIdentity, AdapterRefusal> {
-        Err(AdapterRefusal::DestinationUnattested)
+    fn destination(&self, binding: &SurfaceBinding) -> Result<DestinationIdentity, AdapterRefusal> {
+        if !self.validates_binding(binding) {
+            return Err(AdapterRefusal::GenerationStale);
+        }
+        if !matches!(
+            &binding.evidence,
+            BindingEvidence::Accessibility { .. } | BindingEvidence::Win32Structural
+        ) {
+            return Err(AdapterRefusal::DestinationUnattested);
+        }
+        let evidence = self.backend.destination_evidence(binding)?;
+        let mut guard = self
+            .destination_guard
+            .lock()
+            .map_err(|_| AdapterRefusal::DestinationUnattested)?;
+        guard.claim_window(binding.generation, evidence.window_identity_sha256);
+        let receipt = guard.attest(
+            SignalDestinationEvidence {
+                host_generation: binding.generation,
+                window_identity_sha256: evidence.window_identity_sha256,
+                account_binding_sha256: evidence.account_binding_sha256,
+                conversation_binding_sha256: evidence.conversation_binding_sha256,
+                participant_set_sha256: evidence.participant_set_sha256,
+                composer_identity_sha256: evidence.composer_identity_sha256,
+                attestation_nonce_sha256: evidence.attestation_nonce_sha256,
+                observed_at_ms: evidence.observed_at_ms,
+                window_foreground: evidence.window_foreground,
+                composer_focused: evidence.composer_focused,
+                conversation_stable: evidence.conversation_stable,
+            },
+            monotonic_now_ms(),
+        );
+        if receipt.status != SignalBindingStatus::Accepted {
+            return Err(AdapterRefusal::DestinationUnattested);
+        }
+        Ok(DestinationIdentity {
+            status: DestinationStatus::Attested,
+            account_digest: hex_digest(evidence.account_binding_sha256),
+            conversation_digest: hex_digest(evidence.conversation_binding_sha256),
+            recipients_digest: hex_digest(evidence.participant_set_sha256),
+            scope_binding_hash: binding.scope_binding_hash.clone(),
+            evidence: binding.evidence.clone(),
+            attested_at_ms: evidence.observed_at_ms,
+            ttl_ms: receipt.valid_for_ms,
+        })
     }
 
     fn place(
@@ -119,6 +195,16 @@ impl<B: TelegramBackend> SurfaceAdapter for TelegramSurfaceAdapter<B> {
     }
 }
 
+fn hex_digest(digest: [u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(64);
+    for byte in digest {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,6 +213,7 @@ mod tests {
     struct Backend {
         complete: bool,
         placements: AtomicUsize,
+        destination_evidence: TelegramDestinationEvidence,
     }
 
     fn binding(generation: u64) -> SurfaceBinding {
@@ -172,6 +259,12 @@ mod tests {
                 read_was_complete: self.complete,
             })
         }
+        fn destination_evidence(
+            &self,
+            _: &SurfaceBinding,
+        ) -> Result<TelegramDestinationEvidence, AdapterRefusal> {
+            Ok(self.destination_evidence.clone())
+        }
         fn place(&self, _: &SurfaceBinding, _: &Carrier) -> PlacementReceipt {
             self.placements.fetch_add(1, Ordering::SeqCst);
             PlacementReceipt {
@@ -182,11 +275,27 @@ mod tests {
         }
     }
 
+    fn destination_evidence() -> TelegramDestinationEvidence {
+        TelegramDestinationEvidence {
+            window_identity_sha256: [1; 32],
+            account_binding_sha256: [2; 32],
+            conversation_binding_sha256: [3; 32],
+            participant_set_sha256: [4; 32],
+            composer_identity_sha256: [5; 32],
+            attestation_nonce_sha256: [6; 32],
+            observed_at_ms: monotonic_now_ms(),
+            window_foreground: true,
+            composer_focused: true,
+            conversation_stable: true,
+        }
+    }
+
     #[test]
     fn t3_t21_locate_and_read_preserve_an_incomplete_empty_transcript() {
         let adapter = TelegramSurfaceAdapter::new(Backend {
             complete: false,
             placements: AtomicUsize::new(0),
+            destination_evidence: destination_evidence(),
         });
         let target = SurfaceTarget {
             app: AdapterAppId::Telegram,
@@ -207,6 +316,7 @@ mod tests {
         let adapter = TelegramSurfaceAdapter::new(Backend {
             complete: true,
             placements: AtomicUsize::new(0),
+            destination_evidence: destination_evidence(),
         });
         let binding = binding(1);
         let placed = adapter.place(
@@ -226,5 +336,33 @@ mod tests {
         );
         assert_eq!(refused.status, PlacementStatus::NotPlaced);
         assert_eq!(adapter.backend.placements.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn t3_t23_attests_only_a_complete_live_destination_identity() {
+        let adapter = TelegramSurfaceAdapter::new(Backend {
+            complete: true,
+            placements: AtomicUsize::new(0),
+            destination_evidence: destination_evidence(),
+        });
+        let identity = adapter.destination(&binding(1)).unwrap();
+        assert_eq!(identity.status, DestinationStatus::Attested);
+        assert_eq!(identity.account_digest, "02".repeat(32));
+        assert_eq!(identity.conversation_digest, "03".repeat(32));
+        assert_eq!(identity.recipients_digest, "04".repeat(32));
+        assert!(identity.ttl_ms > 0);
+
+        let adapter = TelegramSurfaceAdapter::new(Backend {
+            complete: true,
+            placements: AtomicUsize::new(0),
+            destination_evidence: TelegramDestinationEvidence {
+                participant_set_sha256: [0; 32],
+                ..destination_evidence()
+            },
+        });
+        assert_eq!(
+            adapter.destination(&binding(1)),
+            Err(AdapterRefusal::DestinationUnattested)
+        );
     }
 }
