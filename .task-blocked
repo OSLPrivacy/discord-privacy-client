@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Mail.com fan-out requires MAIL-PATTERN (T4-M1..T4-M5), WEB-CONFORMANCE, and predecessor T4-F8 (GMX); no web_surface_adapter implementation or mail-pattern proof exists yet.
