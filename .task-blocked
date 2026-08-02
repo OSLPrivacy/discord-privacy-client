@@ -1,1 +1,0 @@
-Missing prerequisite T17-C1: scripts/qa/measure-uninstall-residue.ps1 must produce the VM-measured residue list before T17-C2 can state deletion behavior.
