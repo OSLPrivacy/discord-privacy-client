@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T21-K3 is missing: /home/liamw/osl-plan/vmqa/space_join_history.ps1 has not been created, so its required real-store join-history proof cannot provide the prerequisite fixture for T21-K4's measured fan-out run.
