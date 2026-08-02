@@ -6,7 +6,7 @@
 
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 /// Opaque, client-generated identity for a Space.
 ///
@@ -14,7 +14,7 @@ use std::path::Path;
 /// founder input, so creating multiple Spaces cannot create an account-derived
 /// identifier that a relay could use to group their memberships. This is local
 /// roster state only: delivery routing uses independent rotating tags.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct SpaceId([u8; Self::LENGTH]);
 
 impl SpaceId {
@@ -66,6 +66,112 @@ impl SpaceEpoch {
 pub enum SpaceEpochError {
     #[error("space membership epoch is exhausted")]
     Exhausted,
+}
+
+/// Opaque local reference to a member's identity key.
+///
+/// A Space roster records members as identity-key digests, not account names
+/// or delivery addresses. The value is meaningful only to the client that
+/// holds this encrypted roster; routing is deliberately a separate concern.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SpaceMemberId([u8; Self::LENGTH]);
+
+impl SpaceMemberId {
+    pub const LENGTH: usize = 32;
+
+    /// Creates a local roster member reference from an identity-key digest.
+    pub fn from_identity_key_digest(digest: [u8; Self::LENGTH]) -> Result<Self, SpaceRosterError> {
+        if digest == [0_u8; Self::LENGTH] {
+            return Err(SpaceRosterError::InvalidMemberId);
+        }
+        Ok(Self(digest))
+    }
+
+    pub fn as_bytes(&self) -> &[u8; Self::LENGTH] {
+        &self.0
+    }
+}
+
+/// Membership state for one Space, held only in the encrypted local roster.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct LocalSpaceRoster {
+    space_id: SpaceId,
+    epoch: SpaceEpoch,
+    members: BTreeSet<SpaceMemberId>,
+}
+
+impl LocalSpaceRoster {
+    pub fn space_id(&self) -> SpaceId {
+        self.space_id
+    }
+
+    pub fn epoch(&self) -> SpaceEpoch {
+        self.epoch
+    }
+
+    pub fn members(&self) -> impl ExactSizeIterator<Item = SpaceMemberId> + '_ {
+        self.members.iter().copied()
+    }
+}
+
+/// Authoritative membership state for every locally known Space.
+///
+/// This type intentionally has no transport, keyserver, account, or delivery
+/// address fields. The relay never receives this map: event distribution is a
+/// later, encrypted client-to-client concern.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SpaceRoster {
+    spaces: Vec<LocalSpaceRoster>,
+}
+
+impl SpaceRoster {
+    /// Adds a newly learned local Space membership snapshot.
+    ///
+    /// Signed, ordered membership events are applied by T21-C4. This C3
+    /// operation only establishes the locally held state container they will
+    /// update; replacing an existing Space is refused.
+    pub fn insert(
+        &mut self,
+        space_id: SpaceId,
+        epoch: SpaceEpoch,
+        members: impl IntoIterator<Item = SpaceMemberId>,
+    ) -> Result<(), SpaceRosterError> {
+        if self.get(space_id).is_some() {
+            return Err(SpaceRosterError::SpaceAlreadyExists);
+        }
+
+        let members = members.into_iter().collect();
+        self.spaces.push(LocalSpaceRoster {
+            space_id,
+            epoch,
+            members,
+        });
+        Ok(())
+    }
+
+    /// Returns local membership state for one Space.
+    pub fn get(&self, space_id: SpaceId) -> Option<&LocalSpaceRoster> {
+        self.spaces
+            .iter()
+            .find(|local_roster| local_roster.space_id == space_id)
+    }
+
+    /// Returns the number of locally known Spaces.
+    pub fn len(&self) -> usize {
+        self.spaces.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.spaces.is_empty()
+    }
+}
+
+#[derive(Debug, thiserror::Error, Eq, PartialEq)]
+pub enum SpaceRosterError {
+    #[error("a space member identity digest must not be all zeroes")]
+    InvalidMemberId,
+    #[error("space roster already contains this Space")]
+    SpaceAlreadyExists,
 }
 
 /// The single account-relative path for the Space roster.
