@@ -88,9 +88,14 @@ pub fn user_state_for_rn_error(error: &RnError) -> &'static str {
             "Peer secure-message setup is invalid."
         }
         RnError::Protocol(_) => "Secure message could not be authenticated; recovery is available.",
-        RnError::StateTooLarge { .. } | RnError::Storage(_) => {
-            "Secure session storage needs attention."
-        }
+        // The T19 wiring added these two. The match is deliberately exhaustive
+        // so that a new RnError forces a decision about what the user sees;
+        // both are the same class of problem as StateTooLarge -- session
+        // storage has hit a bound -- so they share its wording.
+        RnError::StateTooLarge { .. }
+        | RnError::StoreFull { .. }
+        | RnError::SkippedCacheTooLarge { .. }
+        | RnError::Storage(_) => "Secure session storage needs attention.",
     }
 }
 
