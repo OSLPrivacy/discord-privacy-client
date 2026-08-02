@@ -84,7 +84,8 @@ describe("Rust preference conversion", () => {
       sendMode: "single",
       placementMode: "compatibility",
       showPlaintextPreview: false,
-      windowCaptureEnabled: true,
+    windowCaptureEnabled: true,
+    forwardSecrecyMode: "keepGroupDelivery",
       acknowledgeExperimentalSendRisk: true,
     })).toEqual({
       onboardingComplete: true,
@@ -96,6 +97,7 @@ describe("Rust preference conversion", () => {
       },
       showPlaintextPreview: false,
       windowCaptureEnabled: true,
+      forwardSecrecyMode: "keepGroupDelivery",
     });
   });
 
@@ -117,6 +119,7 @@ describe("Rust preference conversion", () => {
       placementMode: "atomic",
       showPlaintextPreview: true,
       windowCaptureEnabled: true,
+      forwardSecrecyMode: "keepGroupDelivery",
       acknowledgeExperimentalSendRisk: false,
       silentlyEnableAutomation: true,
     }).onboardingComplete).toBe(false);
@@ -133,6 +136,7 @@ describe("Rust preference conversion", () => {
       },
       showPlaintextPreview: true,
       windowCaptureEnabled: true,
+      forwardSecrecyMode: "keepGroupDelivery",
     });
     expect(serialized.acknowledgeExperimentalSendRisk).toBe(false);
     expect(serialized.onboardingComplete).toBe(false);

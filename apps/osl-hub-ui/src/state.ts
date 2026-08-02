@@ -213,7 +213,10 @@ export interface OnboardingPreferences {
   setup: SetupState;
   showPlaintextPreview: boolean;
   windowCaptureEnabled: boolean;
+  forwardSecrecyMode: ForwardSecrecyMode;
 }
+
+export type ForwardSecrecyMode = "protectPast" | "keepGroupDelivery";
 
 export interface RustOnboardingPreferences {
   onboardingComplete: boolean;
@@ -221,6 +224,7 @@ export interface RustOnboardingPreferences {
   placementMode: PlacementMode;
   showPlaintextPreview: boolean;
   windowCaptureEnabled: boolean;
+  forwardSecrecyMode: ForwardSecrecyMode;
   acknowledgeExperimentalSendRisk: boolean;
 }
 
@@ -236,10 +240,12 @@ export const defaultOnboardingPreferences: OnboardingPreferences = {
   setup: { ...defaultSetup },
   showPlaintextPreview: true,
   windowCaptureEnabled: true,
+  forwardSecrecyMode: "keepGroupDelivery",
 };
 
 const sendModeValues: readonly SendMode[] = ["manual", "clipboard", "double", "single"];
 const placementModeValues: readonly PlacementMode[] = ["atomic", "compatibility"];
+const forwardSecrecyModeValues: readonly ForwardSecrecyMode[] = ["protectPast", "keepGroupDelivery"];
 const firstRunOnboardingStepValues: readonly FirstRunOnboardingStep[] = firstRunOnboardingStepOrder;
 
 export function parseFirstRunOnboardingStep(raw: unknown): FirstRunOnboardingStep {
@@ -345,6 +351,7 @@ export function parseRustOnboardingPreferences(raw: unknown): OnboardingPreferen
     "placementMode",
     "showPlaintextPreview",
     "windowCaptureEnabled",
+    "forwardSecrecyMode",
     "acknowledgeExperimentalSendRisk",
   ]);
   if (Object.keys(raw).length !== allowedKeys.size || Object.keys(raw).some((key) => !allowedKeys.has(key))) {
@@ -358,6 +365,7 @@ export function parseRustOnboardingPreferences(raw: unknown): OnboardingPreferen
     || typeof raw.onboardingComplete !== "boolean"
     || typeof raw.showPlaintextPreview !== "boolean"
     || typeof raw.windowCaptureEnabled !== "boolean"
+    || !forwardSecrecyModeValues.includes(raw.forwardSecrecyMode as ForwardSecrecyMode)
     || typeof raw.acknowledgeExperimentalSendRisk !== "boolean"
   ) return cloneDefaultPreferences();
 
@@ -374,6 +382,7 @@ export function parseRustOnboardingPreferences(raw: unknown): OnboardingPreferen
     },
     showPlaintextPreview: raw.showPlaintextPreview,
     windowCaptureEnabled: raw.windowCaptureEnabled,
+    forwardSecrecyMode: raw.forwardSecrecyMode as ForwardSecrecyMode,
   };
 }
 
@@ -389,6 +398,7 @@ export function toRustOnboardingPreferences(preferences: OnboardingPreferences):
     placementMode: parsedSetup.placementMode,
     showPlaintextPreview: preferences.showPlaintextPreview === true,
     windowCaptureEnabled: preferences.windowCaptureEnabled === true,
+    forwardSecrecyMode: forwardSecrecyModeValues.includes(preferences.forwardSecrecyMode) ? preferences.forwardSecrecyMode : "keepGroupDelivery",
     acknowledgeExperimentalSendRisk: acknowledged,
   };
 }
@@ -403,6 +413,7 @@ function cloneDefaultPreferences(): OnboardingPreferences {
     setup: { ...defaultSetup },
     showPlaintextPreview: true,
     windowCaptureEnabled: true,
+    forwardSecrecyMode: "keepGroupDelivery",
   };
 }
 

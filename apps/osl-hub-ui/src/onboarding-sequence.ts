@@ -10,6 +10,7 @@ export const ONBOARDING_SEQUENCE = [
   "privacy",
   "defaults",
   "tor",
+  "forward-secrecy",
   "sending",
   "cover",
   "passwords",
