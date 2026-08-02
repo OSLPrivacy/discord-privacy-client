@@ -7,6 +7,10 @@ import { constantTimeEqualHex, sha256Hex } from "../lib/digest.js";
 import { error, json, notFound } from "../lib/http.js";
 import { R2PayloadStore } from "../lib/payload-store.js";
 import { parseUploadTtl } from "../lib/ttl.js";
+import {
+  isOhttpReadyBlobFetch,
+  ohttpBlobFetchResponse,
+} from "./blob-request-profile.js";
 
 export const MAX_BLOB_BYTES = 64 * 1024;
 const CAP_RE = /^[0-9a-f]{32}$/;
@@ -106,12 +110,15 @@ async function liveRow(env: Env, blobId: string): Promise<BlobRow | null> {
 }
 
 export async function handleFetch(request: Request, env: Env, blobId: string): Promise<Response> {
+  // Preserve the header-only bearer boundary and the one-shot OHTTP shape
+  // before touching storage. Its negative surface remains the shared 404.
+  if (!isOhttpReadyBlobFetch(request)) return notFound();
   const fetchCap = hexHeader(request, "x-osl-fetch-cap", CAP_RE);
   const row = await liveRow(env, blobId);
   if (!fetchCap || !row || !constantTimeEqualHex(await sha256Hex(fetchCap), row.fetch_digest_sha256_hex)) return notFound();
   const bytes = await new R2PayloadStore(env.PAYLOADS).get(fetchCap);
   if (!bytes) return notFound();
-  return new Response(bytes, { status: 200, headers: { "content-type": "application/octet-stream", "cache-control": "no-store", "content-length": String(bytes.byteLength) } });
+  return ohttpBlobFetchResponse(bytes);
 }
 
 export async function handleDelete(request: Request, env: Env, blobId: string): Promise<Response> {
