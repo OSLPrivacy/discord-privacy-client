@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T12-I6: apps/osl-hub/src/scrub_imap_commands.rs and the ACL-registered scrub_imap_prepare_delete/scrub_imap_delete commands do not exist, so the AutoScrub ledger cannot safely consume an engine deletion step.
