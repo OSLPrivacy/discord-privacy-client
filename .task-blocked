@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T1-37's `crates/ipc/src/group_manifest.rs` implementation and T18-E2's group-manifest/sender-key composition proof; T1 and T18 own those prerequisites. T21-F9 is present.
