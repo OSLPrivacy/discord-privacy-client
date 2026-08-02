@@ -11,3 +11,10 @@ Blocked: T20-C5 needs T20-C1's BORROW-CORE.  No
 `borrowed_window_lifecycle.rs` implementation is reachable from this branch;
 moving WhatsApp QA onto a newly invented private lifecycle would violate the
 single-engine requirement the task exists to enforce.
+
+# T20-D1
+
+Blocked: T20-D1 owns the monitor module of T20-C1's absent BORROW-CORE.  The
+current browser companion is a separate legacy implementation, so adding a
+fourth monitor clamp there would not provide the required all-substrate
+guarantee or TW-9 proof.
