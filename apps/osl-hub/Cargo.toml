@@ -24,6 +24,7 @@ adapter-profile = { path = "../../crates/adapter-profile" }
 cover-draft = { path = "../../crates/cover-draft", package = "osl-cover-draft" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
+minisign-verify = "=0.2.5"
 tauri = { version = "=2.11.1", features = ["unstable"], optional = true }
 tauri-plugin-updater = { version = "=2.9.0", optional = true }
 tauri-plugin-single-instance = { version = "=2.4.2", optional = true }
