@@ -1,0 +1,1 @@
+Per-message expiry dial is missing; T2-30 (T2 §8.9a) owns the backend contract that T14-D2 must consume.
