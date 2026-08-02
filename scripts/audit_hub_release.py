@@ -23,6 +23,10 @@ HUB_CONFIG = ROOT / "apps" / "osl-hub" / "tauri.conf.json"
 ORIGINAL_CONFIG = ROOT / "src-tauri" / "tauri.conf.json"
 PINNED_ACTION = re.compile(r"^\s*-?\s*uses:\s*[^\s@]+@([0-9a-f]{40})\s*$", re.MULTILINE)
 ANY_ACTION = re.compile(r"^\s*-?\s*uses:\s*[^\s@]+@([^\s#]+)", re.MULTILINE)
+AZURE_LONG_LIVED_SECRET = re.compile(
+    r"\b(?:AZURE_(?:CLIENT_SECRET|CLIENT_CERTIFICATE|PASSWORD)|ARM_CLIENT_SECRET)\b",
+    re.IGNORECASE,
+)
 
 
 def require(condition: bool, message: str) -> None:
@@ -64,6 +68,10 @@ def audit_release_policy(
     original: dict[str, object],
     root: Path,
 ) -> None:
+    require(
+        not AZURE_LONG_LIVED_SECRET.search(workflow + "\n" + promotion),
+        "OSL Privacy release workflows must not contain Azure client secrets; use tag-scoped OIDC when code signing is enabled",
+    )
     refs = ANY_ACTION.findall(workflow + "\n" + promotion)
     pins = PINNED_ACTION.findall(workflow + "\n" + promotion)
     require(refs and len(refs) == len(pins), "OSL Privacy release actions must use full commit SHAs")
@@ -232,6 +240,12 @@ jobs:
         workflow, promotion, hub, original, root = self.fixture()
         workflow = workflow.replace("          ref: ${{ github.ref }}\n", "")
         with self.assertRaises(SystemExit):
+            audit_release_policy(workflow, promotion, hub, original, root)
+
+    def test_rejects_azure_client_secret_in_release_workflow(self) -> None:
+        workflow, promotion, hub, original, root = self.fixture()
+        workflow += "\n        env:\n          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}"
+        with self.assertRaisesRegex(SystemExit, "Azure client secrets"):
             audit_release_policy(workflow, promotion, hub, original, root)
 
     def test_rejects_candidate_workflow_that_publishes_directly(self) -> None:
