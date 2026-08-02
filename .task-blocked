@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Channel model and lifecycle from T21-E1 through T21-E3 are absent; T21-E3 owns the immediate prerequisite for channel-scoped membership.
