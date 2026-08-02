@@ -3,6 +3,25 @@
 **Status:** frozen by T21-F1. This contract defines the v1 Enclaves role
 model. It uses the owner’s final product name, **Enclaves** (D84).
 
+## Space event transport (T21-C1)
+
+Membership propagation is a ciphertext-only, rotating-tag lane.  Its envelope
+and capability rules are those of [`transport.md`](transport.md) §6b; this
+contract only assigns the Space-specific route names and fields.  In
+particular, it does not introduce an account-addressed control inbox.
+
+`POST /v1/space-events` accepts `{ recipient_tag, ciphertext, expires_at }`.
+`recipient_tag` is a 32-byte opaque rotating delivery tag encoded as base64;
+it is never an account identifier or a Space identifier.  `ciphertext` is an
+opaque encrypted membership event.  `GET /v1/space-events/:recipient_tag`
+returns and consumes only records addressed to that exact current tag.  The
+relay stores no roster, plaintext event, membership count, or account/Space
+mapping.  A sender chooses one envelope per recipient tag.
+
+The keyserver migration numbers `0041` through `0043` are reserved for this
+lane: event queue, invite capability state, and expiry/index hardening.  No
+unrelated schema may use that block.
+
 ## Boundary
 
 Roles grant governance capability, never visibility. An Enclave role does not

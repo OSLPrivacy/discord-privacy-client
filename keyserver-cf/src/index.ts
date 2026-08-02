@@ -89,6 +89,7 @@ import {
   handleSenderFilterRolloutRootProvision,
 } from "./endpoints/sender-filter-rollout-root.js";
 import { handleUpdateManifest } from "./endpoints/update-manifest.js";
+import { handleSpaceEventDrain, handleSpaceEventPost } from "./endpoints/space-events.js";
 import {
   handleWrappedKeysDelete,
   handleWrappedKeysGet,
@@ -282,6 +283,9 @@ async function dispatch(
 ): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
+  const spaceEventTag = matchParam(path, /^\/v1\/space-events\/([^/]+)$/);
+  if (request.method === "GET" && spaceEventTag) return await handleSpaceEventDrain(spaceEventTag, env);
+  if (request.method === "POST" && path === "/v1/space-events") return await handleSpaceEventPost(request, env);
   const method = request.method;
 
   if (method === "GET" && !PUBLIC_GET_INGRESS_EXEMPT_PATHS.has(path)) {
