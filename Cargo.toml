@@ -36,7 +36,7 @@ exclude = [
 version = "0.0.1"
 edition = "2021"
 license = "Apache-2.0"
-rust-version = "1.88"
+rust-version = "1.97.1"
 
 [workspace.dependencies]
 zeroize = { version = "1.7", features = ["derive"] }
@@ -99,7 +99,7 @@ windows = { version = "0.56", features = ["Win32_Foundation", "Win32_Security_Tp
 # Transport
 # `crates/transport` owns Tor routing. T1-70 chose a supervised Arti SOCKS5
 # subprocess instead of embedding `arti-client`: embedding requires Rust 1.91
-# and edition 2024, while this workspace remains on Rust 1.88 and edition 2021.
+# and edition 2024, while this workspace remains on Rust 1.97.1 and edition 2021.
 # See crates/transport/README.md.
 
 [profile.release]

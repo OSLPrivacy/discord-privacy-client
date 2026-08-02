@@ -18,7 +18,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           # Keep CI aligned with Cargo.toml's workspace rust-version.
-          toolchain: '1.88.0'
+          toolchain: '1.97.1'
           components: rustfmt, clippy
       # 9-TD1: rust-cache keeps cold-cache 5-7 min runs from blowing
       # out PR feedback latency once Phase F adds new crates.
