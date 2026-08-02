@@ -2,7 +2,7 @@
 
 Status: **DEFERRED**  
 Decision date: 2026-08-01  
-Applies to: cloud-hosted AutoScrub only. This does not defer the attended, local Pro AutoScrub path described in the Scrub contract.
+Applies to: cloud-hosted AutoScrub only. This does not defer local Pro AutoScrub: the owner reviews and explicitly launches its bounded plan, which may then continue without someone watching under its locked Stop/Revoke contract.
 
 ## Decision record
 
