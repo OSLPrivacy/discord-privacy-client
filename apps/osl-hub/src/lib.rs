@@ -7,6 +7,8 @@ pub mod account_identity_authority;
 pub mod account_recovery;
 #[cfg(feature = "core")]
 pub mod attachment_formats;
+#[cfg(feature = "core")]
+pub mod attachment_partial_guard;
 pub mod attachment_scan;
 pub mod adapters;
 pub mod attended_imap;

@@ -4,6 +4,7 @@
 //! paths, capabilities, keys, ciphertext, and plaintext bytes stay in Rust.
 
 use osl_privacy_hub::attachment_formats;
+use osl_privacy_hub::attachment_partial_guard::AttachmentPartialGuard;
 use osl_privacy_hub::broker::{
     self, HubBrokerState, PendingNativeOverlayAttachment, PreparedNativeOverlayAttachment,
 };
@@ -626,14 +627,15 @@ fn open_pending_inner(
     }
     let token = parse_token(&plan.fetch_token)?;
     let (download_path, mut download) = peer_attachment_io::create_download_file(&local_root)?;
-    let cleanup_download = |path: &Path| {
-        let _ = peer_attachment_io::remove_staging_path_in_root(&local_root, path);
-    };
+    let mut partial = AttachmentPartialGuard::new(
+        &local_root,
+        download_path,
+        peer_attachment_io::remove_staging_path_in_root,
+    );
     let fetched = match client.fetch_attachment_to_writer(&plan.object_id, &token, &mut download) {
         Ok(size) => size,
         Err(error) => {
             drop(download);
-            cleanup_download(&download_path);
             // A rejected capability is not an expiry, and being offline is
             // neither. Report which one actually happened.
             return Err(peer_attachment_io::describe_cipher_store_error(
@@ -644,16 +646,14 @@ fn open_pending_inner(
     };
     if fetched != plan.sealed_size || download.sync_all().is_err() {
         drop(download);
-        cleanup_download(&download_path);
         return Err("This private attachment has an invalid size".to_owned());
     }
     drop(download);
-    let (digest, size) = peer_attachment_io::sha256_file(&download_path)?;
+    let (digest, size) = peer_attachment_io::sha256_file(partial.path())?;
     if size != plan.sealed_size || lower_hex(&digest) != plan.ciphertext_sha256 {
-        cleanup_download(&download_path);
         return Err("This private attachment failed authentication".to_owned());
     }
-    let mut sealed = File::open(&download_path)
+    let mut sealed = File::open(partial.path())
         .map_err(|_| "This private attachment could not be opened".to_owned())?;
     sealed
         .seek(SeekFrom::Start(0))
@@ -666,12 +666,10 @@ fn open_pending_inner(
             crypto::aead::Key::from_bytes(plan.attachment_key),
         ) {
             Ok(opened) => opened,
-            Err(error) => {
-                cleanup_download(&download_path);
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         };
-        cleanup_download(&download_path);
+        drop(sealed);
+        partial.discard()?;
         if opened.len() as u64 != plan.plaintext_size {
             return Err("This private attachment has an invalid plaintext size".to_owned());
         }
@@ -713,12 +711,10 @@ fn open_pending_inner(
         crypto::aead::Key::from_bytes(plan.attachment_key),
     ) {
         Ok(opened) => opened,
-        Err(error) => {
-            cleanup_download(&download_path);
-            return Err(error);
-        }
+        Err(error) => return Err(error),
     };
-    cleanup_download(&download_path);
+    drop(sealed);
+    partial.discard()?;
     // `opened` is an RAII guard: every path below removes the decrypted file,
     // and the explicit `remove_now` calls also surface a removal that failed.
     if opened.plaintext_len() != plan.plaintext_size {
