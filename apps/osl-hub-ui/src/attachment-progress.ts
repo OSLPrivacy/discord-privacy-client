@@ -40,28 +40,37 @@ const isFailure = (value: unknown): value is AttachmentProgressFailure =>
 const isSafeText = (value: unknown, maximum: number): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= maximum && !/[\u0000-\u001f\u007f]/u.test(value);
 
+const isPositiveSafeInteger = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
+const isProgressStep = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && progressSteps.has(value);
+
 /** Reject malformed native events rather than rendering data from another boundary. */
 export function parseAttachmentProgressEvent(value: unknown): AttachmentProgressEvent | null {
   if (!isRecord(value) || !hasExactKeys(value, ["contextId", "job"]) || !isSafeText(value.contextId, 256) || !isRecord(value.job)) return null;
   const job = value.job;
   if (!hasExactKeys(job, ["jobId", "metadata", "caption", "viewOnce", "stage", "progress", "retryFrom", "failure"])
-    || !isSafeText(job.jobId, 128) || !isRecord(job.metadata)
-    || !hasExactKeys(job.metadata, ["filename", "mediaType", "size"])
-    || !isSafeText(job.metadata.filename, 255) || !isSafeText(job.metadata.mediaType, 127)
-    || !Number.isSafeInteger(job.metadata.size) || job.metadata.size <= 0
+    || !isSafeText(job.jobId, 128) || !isRecord(job.metadata)) return null;
+  const metadata = job.metadata;
+  const size = metadata.size;
+  const progress = job.progress;
+  if (!hasExactKeys(metadata, ["filename", "mediaType", "size"])
+    || !isSafeText(metadata.filename, 255) || !isSafeText(metadata.mediaType, 127)
+    || !isPositiveSafeInteger(size)
     || typeof job.caption !== "string" || job.caption.length > 4_096 || typeof job.viewOnce !== "boolean"
-    || !isStage(job.stage) || !Number.isInteger(job.progress) || !progressSteps.has(job.progress)
+    || !isStage(job.stage) || !isProgressStep(progress)
     || !(job.retryFrom === null || isStage(job.retryFrom)) || !(job.failure === null || isFailure(job.failure))) return null;
 
   return {
     contextId: value.contextId,
     job: {
       jobId: job.jobId,
-      metadata: { filename: job.metadata.filename, mediaType: job.metadata.mediaType, size: job.metadata.size },
+      metadata: { filename: metadata.filename, mediaType: metadata.mediaType, size },
       caption: job.caption,
       viewOnce: job.viewOnce,
       stage: job.stage,
-      progress: job.progress,
+      progress,
       retryFrom: job.retryFrom,
       failure: job.failure,
     },
