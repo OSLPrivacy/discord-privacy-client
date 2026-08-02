@@ -1,0 +1,1 @@
+Missing authenticated peer capture-protection confirmation exposed to the UI: T2-05 declares only view-once/expiry/receipts, and T2-45 verifies only the local window; the prerequisite is not owned by a current task/track.
