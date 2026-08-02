@@ -7,7 +7,7 @@ function url(bytes: Uint8Array): string { return btoa(String.fromCharCode(...byt
 async function bucket(name: string): Promise<{ prefix: string; suffix: string }> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`OSL-USERNAME-BUCKET-v1${name}`)));
   const value = Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
-  return { prefix: value.slice(0, 4), suffix: value.slice(4) };
+  return { prefix: value.slice(0, 4), suffix: value.slice(4, 32) };
 }
 async function claim(name: string, id: string, pair: { publicKeyB64: string; signingKey: CryptoKey }) {
   const payload = { version: 1, osl_user_id: id, x25519_public: STUB_X25519_PUB_B64, ed25519_public: pair.publicKeyB64, mlkem768_public: STUB_MLKEM_PUB_B64, ratchet_initial_public: STUB_RATCHET_PUB_B64 };

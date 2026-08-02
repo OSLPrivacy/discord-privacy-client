@@ -47,7 +47,7 @@ export async function handleUsernameBucket(request: Request, env: Env, prefix: s
   const real: BucketRow[] = [];
   for (const row of candidates.results) {
     const key = await digestUsername(row.username);
-    if (key.startsWith(prefix)) real.push({ suffix: key.slice(4), userId: row.user_id, ed25519: row.ik_ed25519_pub });
+    if (key.startsWith(prefix)) real.push({ suffix: key.slice(4, 32), userId: row.user_id, ed25519: row.ik_ed25519_pub });
   }
   // An overflow must not emit a short/partial bucket; operators must expand
   // the prefix width before admitting more than this fixed privacy floor.
