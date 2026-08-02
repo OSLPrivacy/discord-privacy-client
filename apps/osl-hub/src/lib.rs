@@ -39,6 +39,8 @@ pub mod burn_authorize;
 pub mod burn_journal_bridge;
 #[cfg(feature = "core")]
 pub mod burn_server;
+#[cfg(feature = "core")]
+pub mod burn_dispatch;
 pub mod carrier_placement;
 pub mod cloud_autoscrub_authority;
 pub mod cloud_autoscrub_consent;
