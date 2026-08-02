@@ -24,9 +24,19 @@ async function seedLicense(hash: string, subId: string): Promise<void> {
     .run();
 }
 
+async function markRedeemed(hash: string, expiresAt: number): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE licenses SET redeemed_at = ?, expires_at = ? WHERE license_hash = ?",
+  )
+    .bind(expiresAt - 60, expiresAt, hash)
+    .run();
+}
+
 async function validate(licenseKey: string): Promise<{
   status: string;
   current_period_end?: number;
+  redeemed_at?: number | null;
+  expires_at?: number | null;
   checksum_ok: boolean;
 }> {
   const res = await SELF.fetch("http://test/v1/license/validate", {
@@ -38,6 +48,8 @@ async function validate(licenseKey: string): Promise<{
   return (await res.json()) as {
     status: string;
     current_period_end?: number;
+    redeemed_at?: number | null;
+    expires_at?: number | null;
     checksum_ok: boolean;
   };
 }
@@ -70,10 +82,53 @@ describe("POST /v1/license/validate", () => {
     const subId = `sub_${crypto.randomUUID().slice(0, 8)}`;
     await seedSubscription(subId, "ACTIVE");
     await seedLicense(hash, subId);
+    await markRedeemed(hash, Math.floor(Date.now() / 1000) + 86400);
     const j = await validate(plaintext);
     expect(j.status).toBe("ACTIVE");
     expect(j.checksum_ok).toBe(true);
     expect(j.current_period_end).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+
+  it("reports an unredeemed code without starting its clock", async () => {
+    const { plaintext, hash } = await generateLicenseKey(HMAC);
+    const subId = `sub_${crypto.randomUUID().slice(0, 8)}`;
+    await seedSubscription(subId, "ACTIVE");
+    await seedLicense(hash, subId);
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const result = await validate(plaintext);
+      expect(result).toMatchObject({
+        status: "UNREDEEMED",
+        redeemed_at: null,
+        expires_at: null,
+        checksum_ok: true,
+      });
+    }
+
+    const stored = await env.DB.prepare(
+      "SELECT redeemed_at, expires_at FROM licenses WHERE license_hash = ?",
+    ).bind(hash).first<{ redeemed_at: number | null; expires_at: number | null }>();
+    expect(stored).toEqual({ redeemed_at: null, expires_at: null });
+  });
+
+  it("reports EXPIRED for a redeemed code past its expiry", async () => {
+    const { plaintext, hash } = await generateLicenseKey(HMAC);
+    const subId = `sub_${crypto.randomUUID().slice(0, 8)}`;
+    const redeemedAt = Math.floor(Date.now() / 1000) - 120;
+    const expiresAt = redeemedAt + 60;
+    await seedSubscription(subId, "ACTIVE");
+    await seedLicense(hash, subId);
+    await env.DB.prepare(
+      "UPDATE licenses SET redeemed_at = ?, expires_at = ? WHERE license_hash = ?",
+    ).bind(redeemedAt, expiresAt, hash).run();
+
+    const result = await validate(plaintext);
+    expect(result).toMatchObject({
+      status: "EXPIRED",
+      redeemed_at: redeemedAt,
+      expires_at: expiresAt,
+      checksum_ok: true,
+    });
   });
 
   it("returns REVOKED when the license row carries revoked_at", async () => {
@@ -88,7 +143,11 @@ describe("POST /v1/license/validate", () => {
       .bind(hash)
       .run();
     const j = await validate(plaintext);
-    expect(j.status).toBe("REVOKED");
+    expect(j).toMatchObject({
+      status: "REVOKED",
+      redeemed_at: null,
+      expires_at: null,
+    });
   });
 
   it("returns GRACE for a license whose subscription is GRACE", async () => {
@@ -96,6 +155,7 @@ describe("POST /v1/license/validate", () => {
     const subId = `sub_${crypto.randomUUID().slice(0, 8)}`;
     await seedSubscription(subId, "GRACE");
     await seedLicense(hash, subId);
+    await markRedeemed(hash, Math.floor(Date.now() / 1000) + 86400);
     const j = await validate(plaintext);
     expect(j.status).toBe("GRACE");
   });
@@ -105,6 +165,7 @@ describe("POST /v1/license/validate", () => {
     const subId = `sub_${crypto.randomUUID().slice(0, 8)}`;
     await seedSubscription(subId, "ACTIVE");
     await seedLicense(hash, subId);
+    await markRedeemed(hash, Math.floor(Date.now() / 1000) + 86400);
     const noisy = plaintext.toLowerCase().replace(/-/g, " ");
     const j = await validate(noisy);
     expect(j.status).toBe("ACTIVE");
