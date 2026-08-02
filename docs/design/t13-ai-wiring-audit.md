@@ -25,3 +25,9 @@ shipping IPC selector coerces Mode 1 to Mode 0.  Calling the table from that
 Mode-0 path would report a word-bank carrier while sending `DPC0::` text.
 That is a false safety signal, so this remains blocked on the T1 carrier
 revival rather than receiving a decorative call site.
+
+## T13-B1
+
+`crates/cover-ai/tests/floor_survives_uninstall.rs` is a Cargo integration
+test.  It deliberately compiles the codec and fallback table without an AI
+runtime; it is not a production module or endpoint.
