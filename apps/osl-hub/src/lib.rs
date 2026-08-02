@@ -146,6 +146,7 @@ pub mod inbound_receipts;
 #[cfg(feature = "core")]
 pub mod receipt_emit;
 pub mod realtime_client;
+pub mod realtime_resume;
 pub mod realtime_subscription;
 pub mod isolated_worker;
 #[cfg(feature = "core")]
