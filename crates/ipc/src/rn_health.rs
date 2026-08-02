@@ -10,6 +10,41 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::wire_rn::{RnError, RN_SESSION_DIR};
 
+/// Return the stable reset-ledger key for a complete, newly observed TOFU
+/// bundle.  This is deliberately distinct from `TofuOutcome`: an unaccepted
+/// `Changed` outcome can recur for every send, while its bundle digest must
+/// cause only one session reset.
+pub fn tofu_bundle_digest(bundle: &crate::tofu::KeyBundle) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"OSL-RN/v1/tofu-reset-bundle/");
+    for component in [
+        Some(bundle.ed25519_pub.as_bytes()),
+        Some(bundle.x25519_pub.as_bytes()),
+        Some(bundle.mlkem768_pub.as_bytes()),
+        bundle.ratchet_initial_pub.as_deref().map(str::as_bytes),
+    ] {
+        match component {
+            Some(bytes) => {
+                hasher.update([1]);
+                hasher.update((bytes.len() as u64).to_be_bytes());
+                hasher.update(bytes);
+            }
+            None => hasher.update([0]),
+        }
+    }
+    hasher.finalize().into()
+}
+
+/// The pending key-change alert is the reset-once ledger.  It stores the
+/// digest that has already invalidated the old session; repeated observations
+/// of that digest must leave a freshly bootstrapped session intact.
+pub fn tofu_change_needs_session_reset(
+    pending: Option<&crate::tofu::KeyBundle>,
+    fetched: &crate::tofu::KeyBundle,
+) -> bool {
+    pending.is_none_or(|bundle| tofu_bundle_digest(bundle) != tofu_bundle_digest(fetched))
+}
+
 const HEALTH_BLOB_VERSION: u32 = 1;
 const MAX_HEALTH_FILE_BYTES: u64 = 16 * 1024;
 static NEXT_TEMP_SUFFIX: AtomicU64 = AtomicU64::new(0);
