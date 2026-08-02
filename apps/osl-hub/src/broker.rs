@@ -8522,20 +8522,22 @@ mod tests {
         });
         assert!(!receipt.startup_allowed);
         assert!(!receipt.ready);
-        assert!(!receipt.ratchet_wire_in_enabled);
+        // T19 made the reviewed RN receive path live. The preflight must
+        // report the runtime we actually ship, rather than retaining the
+        // superseded "wire-in disabled" blocker.
+        assert!(receipt.ratchet_wire_in_enabled);
         assert_eq!(receipt.broker_relay_transport, "direct_manual_v3");
         assert_eq!(receipt.keyserver_origin, "production");
         assert_eq!(
             receipt.startup_blockers,
             [
-                "rn_wire_in_disabled",
                 "broker_relay_uses_direct_manual_v3",
                 "dedicated_qa_keyserver_not_configured",
                 "source_commit_unbound",
                 "server_deployment_identity_unbound",
             ]
         );
-        assert_eq!(receipt.blockers.len(), 12);
+        assert_eq!(receipt.blockers.len(), 11);
     }
 
     #[test]

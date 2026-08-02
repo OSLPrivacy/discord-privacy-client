@@ -162,7 +162,7 @@ mod tests {
     // keeps the test on the cryptographic verification path rather than a mock.
     const TEST_PUBLIC_KEY: &str =
         "untrusted comment: test\nRWQxMjM0NTY3OCslv3Koov09Jl3NBvNsBHzCFgomynJIU0sAdlI6QIJh";
-    const TEST_SIGNATURE: &str = "untrusted comment: test\nRUQxMjM0NTY3OOxIzrHTGVRKDNp9td93JLkhGeRapaKP1Q8RlVdIHb2TmkSEBH6DMcmrfem8idFWB5MpLtJw0gjhFAkF8PrqpgE=\ntrusted comment: timestamp:1555779966\\tfile:build-hashes.json\nnPQfnEwYG7SvVDHpUZgcjd1tG2k7SKT4FWOHcLFNvq7yhxO0ada/qcYf8FaYtzUKSPf9bzzBL7BoiuDxa/H8Dg==";
+    const TEST_SIGNATURE: &str = "untrusted comment: test\nRUQxMjM0NTY3OOxIzrHTGVRKDNp9td93JLkhGeRapaKP1Q8RlVdIHb2TmkSEBH6DMcmrfem8idFWB5MpLtJw0gjhFAkF8PrqpgE=\ntrusted comment: timestamp:1555779966\tfile:build-hashes.json\nnPQfnEwYG7SvVDHpUZgcjd1tG2k7SKT4FWOHcLFNvq7yhxO0ada/qcYf8FaYtzUKSPf9bzzBL7BoiuDxa/H8Dg==";
     const TEST_MANIFEST: &[u8] = br#"{"format":1,"builds":[{"exe_sha256":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}]}"#;
 
     #[test]
