@@ -1,0 +1,1 @@
+D1 contract selects no shelf life in v1; validation and cron tests keep unredeemed codes valid indefinitely.
