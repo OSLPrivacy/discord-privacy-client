@@ -394,6 +394,21 @@ description = "Start one fixed silent winget or Microsoft Store background insta
 commands.allow = ["install_native_app"]
 
 [[permission]]
+identifier = "allow-list-components"
+description = "List the fixed base component and signature-verified optional OSL component state."
+commands.allow = ["list_components"]
+
+[[permission]]
+identifier = "allow-install-component"
+description = "Install an optional OSL component only after its release-key minisign signature verifies."
+commands.allow = ["install_component"]
+
+[[permission]]
+identifier = "allow-remove-component"
+description = "Remove an installed optional OSL component; the base word-bank carrier cannot be removed."
+commands.allow = ["remove_component"]
+
+[[permission]]
 identifier = "allow-discord-marker-available"
 description = "Read only whether the current verified native Discord composer can accept OSL's fixed local carrier marker; performs no focus, placement, send, path, or account mutation."
 commands.allow = ["discord_marker_available"]

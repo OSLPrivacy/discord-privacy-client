@@ -1853,6 +1853,38 @@ fn install_mullvad() -> Result<MullvadActionResult, String> {
 #[tauri::command]
 fn open_mullvad() -> Result<MullvadActionResult, String> {
     native_apps::open_mullvad()
+fn component_store(app: &tauri::AppHandle) -> Result<components::ComponentStore, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|_| "OSL Privacy component storage is unavailable".to_owned())?;
+    Ok(components::ComponentStore::new(config_dir.join("components-v1")))
+}
+
+#[tauri::command]
+fn list_components(app: tauri::AppHandle) -> Result<Vec<components::ComponentStatus>, String> {
+    component_store(&app)?.list().map_err(|error| format!("could not list OSL components: {error:?}"))
+}
+
+#[tauri::command]
+fn install_component(
+    app: tauri::AppHandle,
+    artifact: components::ComponentArtifact,
+) -> Result<(), String> {
+    component_store(&app)?
+        .install(artifact)
+        .map_err(|error| format!("could not install OSL component: {error:?}"))
+}
+
+#[tauri::command]
+fn remove_component(app: tauri::AppHandle, component_id: String) -> Result<(), String> {
+    let component_id = components::ComponentId::parse(component_id)
+        .map_err(|_| "OSL component identifier is invalid".to_owned())?;
+    component_store(&app)?
+        .remove(&component_id)
+        .map_err(|error| format!("could not remove OSL component: {error:?}"))
+}
+
 }
 
 #[tauri::command]
