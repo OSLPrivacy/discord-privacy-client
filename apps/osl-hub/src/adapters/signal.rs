@@ -4,7 +4,7 @@
 //! tree into `SignalNode`s.  It deliberately does not discover windows, read
 //! accessible names or text, place input, or attest a destination.
 
-use super::AdapterRefusal;
+use super::*;
 use crate::native_signal_adapter::{
     discover_signal_composer, discover_signal_transcript, SignalNode, SignalRect, SignalRole,
     SignalSelectorError,
@@ -12,6 +12,128 @@ use crate::native_signal_adapter::{
 
 const MAX_SIGNAL_A11Y_NODES: usize = 4_096;
 const MAX_SIGNAL_A11Y_DEPTH: usize = 64;
+
+/// The L2-only operations supplied by Signal's native accessibility bridge.
+///
+/// Deliberately omits any send/submit operation: Signal placement writes a
+/// draft, while committing it is reserved for the later L3 task.
+pub trait SignalBackend: Send + Sync {
+    fn capabilities(&self, now_unix_seconds: u64) -> CapabilitySet;
+    fn locate(&self, target: &SurfaceTarget) -> Result<SurfaceBinding, AdapterRefusal>;
+    fn read_state(&self, binding: &SurfaceBinding) -> Result<SurfaceState, AdapterRefusal>;
+    fn place_without_submit(&self, binding: &SurfaceBinding, carrier: &Carrier)
+        -> PlacementReceipt;
+}
+
+/// Signal's native surface adapter through L2 placement.
+pub struct SignalSurfaceAdapter<B> {
+    backend: B,
+}
+
+impl<B> SignalSurfaceAdapter<B> {
+    pub fn new(backend: B) -> Self {
+        Self { backend }
+    }
+}
+
+impl<B: SignalBackend> SignalSurfaceAdapter<B> {
+    fn supports(&self, capability: adapter_profile::Capability) -> bool {
+        self.backend.capabilities(u64::MAX).contains(&capability)
+    }
+
+    fn validates_binding(&self, binding: &SurfaceBinding) -> bool {
+        binding.app == AdapterAppId::Signal && binding.generation != 0
+    }
+}
+
+impl<B: SignalBackend> SurfaceAdapter for SignalSurfaceAdapter<B> {
+    fn abi_version(&self) -> u32 {
+        ADAPTER_ABI_VERSION
+    }
+
+    fn app(&self) -> AdapterAppId {
+        AdapterAppId::Signal
+    }
+
+    fn surface(&self) -> SurfaceKind {
+        SurfaceKind::InstalledNativeClient
+    }
+
+    fn capabilities(&self, now_unix_seconds: u64) -> CapabilitySet {
+        self.backend.capabilities(now_unix_seconds)
+    }
+
+    fn locate(&self, target: &SurfaceTarget) -> Result<SurfaceBinding, AdapterRefusal> {
+        if target.app != self.app() || target.surface != self.surface() || target.generation == 0 {
+            return Err(AdapterRefusal::WindowGone);
+        }
+        let binding = self.backend.locate(target)?;
+        if !self.validates_binding(&binding) || binding.generation != target.generation {
+            return Err(AdapterRefusal::GenerationStale);
+        }
+        Ok(binding)
+    }
+
+    fn read_state(&self, binding: &SurfaceBinding) -> Result<SurfaceState, AdapterRefusal> {
+        if !self.validates_binding(binding) {
+            return Err(AdapterRefusal::GenerationStale);
+        }
+        self.backend.read_state(binding)
+    }
+
+    fn destination(&self, _: &SurfaceBinding) -> Result<DestinationIdentity, AdapterRefusal> {
+        Err(AdapterRefusal::DestinationUnattested)
+    }
+
+    fn place(
+        &self,
+        binding: &SurfaceBinding,
+        authorization: &PlacementAuthorization,
+        carrier: &Carrier,
+    ) -> PlacementReceipt {
+        let refused = || PlacementReceipt {
+            status: PlacementStatus::NotPlaced,
+            placed_sha256: None,
+            elapsed_ms: 0,
+        };
+        if !self.validates_binding(binding)
+            || !same_scope(
+                &binding.scope_binding_hash,
+                &authorization.scope_binding_hash,
+            )
+            || !self.supports(adapter_profile::Capability::PlaceProtectedPayload)
+        {
+            return refused();
+        }
+        match self.read_state(binding) {
+            Ok(state)
+                if state.composer_is_empty
+                    && !state.composer_is_password_field
+                    && state.focused
+                    && !state.occluded =>
+            {
+                self.backend.place_without_submit(binding, carrier)
+            }
+            _ => refused(),
+        }
+    }
+
+    fn commit(
+        &self,
+        _: &SurfaceBinding,
+        _: &SendAuthorization,
+        _: &PlacementReceipt,
+    ) -> SendReceipt {
+        SendReceipt {
+            outcome: SendOutcome::NotSent,
+            elapsed_ms: 0,
+        }
+    }
+
+    fn paint_targets(&self, _: &SurfaceBinding) -> Result<Vec<PaintTarget>, AdapterRefusal> {
+        Err(AdapterRefusal::AccessibilityUnavailable)
+    }
+}
 
 /// The result of one bounded read of the exact Signal accessibility root.
 #[derive(Clone)]
@@ -221,6 +343,67 @@ mod windows {
 mod tests {
     use super::*;
     use crate::native_signal_adapter::SignalNode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct PlacementBackend {
+        placements: AtomicUsize,
+    }
+
+    fn binding(generation: u64) -> SurfaceBinding {
+        SurfaceBinding {
+            app: AdapterAppId::Signal,
+            generation,
+            evidence: BindingEvidence::Accessibility {
+                tree: A11yTree::Uia,
+            },
+            composer: NodeRef(4),
+            transcript: Some(NodeRef(8)),
+            bounds: Bounds {
+                x: 0,
+                y: 0,
+                width: 1200,
+                height: 900,
+            },
+            bound_at_ms: 1,
+            scope_binding_hash: "scope-a".into(),
+        }
+    }
+
+    impl SignalBackend for PlacementBackend {
+        fn capabilities(&self, _: u64) -> CapabilitySet {
+            [
+                adapter_profile::Capability::InspectVisibleComposer,
+                adapter_profile::Capability::InspectVisibleTranscript,
+                adapter_profile::Capability::PlaceProtectedPayload,
+            ]
+            .into_iter()
+            .collect()
+        }
+
+        fn locate(&self, target: &SurfaceTarget) -> Result<SurfaceBinding, AdapterRefusal> {
+            Ok(binding(target.generation))
+        }
+
+        fn read_state(&self, _: &SurfaceBinding) -> Result<SurfaceState, AdapterRefusal> {
+            Ok(SurfaceState {
+                composer_text_sha256: "digest".into(),
+                composer_is_empty: true,
+                composer_is_password_field: false,
+                focused: true,
+                occluded: false,
+                read_was_complete: true,
+            })
+        }
+
+        fn place_without_submit(&self, _: &SurfaceBinding, _: &Carrier) -> PlacementReceipt {
+            self.placements.fetch_add(1, Ordering::SeqCst);
+            PlacementReceipt {
+                status: PlacementStatus::Placed,
+                placed_sha256: Some("carrier-digest".into()),
+                elapsed_ms: 1,
+            }
+        }
+    }
 
     fn rect(left: i32, top: i32, right: i32, bottom: i32) -> SignalRect {
         SignalRect {
@@ -268,5 +451,37 @@ mod tests {
         };
 
         assert_eq!(snapshot.locate(), Err(AdapterRefusal::ComposerNotFound));
+    }
+
+    #[test]
+    fn t3_t15_places_only_a_focused_empty_draft_and_never_submits() {
+        let adapter = SignalSurfaceAdapter::new(PlacementBackend {
+            placements: AtomicUsize::new(0),
+        });
+        let binding = binding(1);
+
+        let placed = adapter.place(
+            &binding,
+            &PlacementAuthorization::for_scope("scope-a"),
+            &Carrier("carrier".into()),
+        );
+        assert_eq!(placed.status, PlacementStatus::Placed);
+        assert_eq!(placed.placed_sha256.as_deref(), Some("carrier-digest"));
+        assert_eq!(adapter.backend.placements.load(Ordering::SeqCst), 1);
+
+        assert_eq!(
+            adapter
+                .commit(&binding, &SendAuthorization::for_scope("scope-a"), &placed)
+                .outcome,
+            SendOutcome::NotSent
+        );
+
+        let refused = adapter.place(
+            &binding,
+            &PlacementAuthorization::for_scope("other-scope"),
+            &Carrier("carrier".into()),
+        );
+        assert_eq!(refused.status, PlacementStatus::NotPlaced);
+        assert_eq!(adapter.backend.placements.load(Ordering::SeqCst), 1);
     }
 }
