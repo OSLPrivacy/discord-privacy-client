@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T4-N4: apps/osl-hub/src/osl_mail.rs (including osl_mail_send and the shared OSL Mail bridge) does not exist in this checkout; T4-N4 owns the required send path.
