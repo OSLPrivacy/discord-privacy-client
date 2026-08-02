@@ -282,6 +282,13 @@ pub struct AppState {
     /// per-(scope, sender) receiver chain.
     pub sender_key_state: Mutex<crate::sender_key_state::SenderKeyStateFile>,
 
+    /// Live rotation-policy state for each outbound sender-key scope. This is
+    /// deliberately in-memory: the durable sender-chain record remains the
+    /// cryptographic source of truth, while this registry drives the next-send
+    /// policy checks (time, message count, membership and suspicious events).
+    /// A controller is created lazily only when a scope actually sends v=5.
+    pub sender_key_rotation: Mutex<HashMap<String, runtime::RotationController>>,
+
     /// Owner go/no-go switch for v=5 group sender chains. Defaults enabled so
     /// group/server sends take the sender-key path unless a caller explicitly
     /// disables it for compatibility testing.
@@ -409,6 +416,7 @@ impl Default for AppState {
             stealth_active: Mutex::new(false),
             burned_scopes: Mutex::new(crate::burned_scopes_file::BurnedScopesFile::default()),
             sender_key_state: Mutex::new(crate::sender_key_state::SenderKeyStateFile::default()),
+            sender_key_rotation: Mutex::new(HashMap::new()),
             sender_keys_enabled: AtomicBool::new(true),
             channel_members: Mutex::new(HashMap::new()),
             app_preferences: Mutex::new(crate::app_preferences::AppPreferences::default()),

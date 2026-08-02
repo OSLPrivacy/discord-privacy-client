@@ -328,6 +328,15 @@ pub fn wipe_sender_keys_session_state(state: &AppState) -> Result<(), keystore::
         tracing::warn!("OSL: duress wipe cleared sender-key session state");
         persist_sender_key_state_now(state);
     }
+    state
+        .sender_key_rotation
+        .lock()
+        .map_err(|_| {
+            keystore::DuressError::Handler(
+                "sender_key_rotation mutex poisoned during duress wipe".to_owned(),
+            )
+        })?
+        .clear();
     Ok(())
 }
 
@@ -608,6 +617,13 @@ pub fn cmd_osl_reset_v5_sender_key(
     if v5_cleared {
         persist_sender_key_state_now(state);
     }
+    // The associated policy state must not survive an operator reset: a
+    // replacement sender chain starts a fresh rotation window.
+    state
+        .sender_key_rotation
+        .lock()
+        .expect("sender_key_rotation mutex poisoned")
+        .remove(&scope_key);
 
     // 2. Reset the PAIRED v=4 ratchet for every non-self peer the
     //    scope can encrypt to. Two-phase under one guard: collect
