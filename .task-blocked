@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T16-B5 (card issuance) and T16-B6 (crypto settlement) still issue lifetime ACTIVE licenses without grant_seconds, so a full purchase-to-redeem privacy cycle cannot reach redemption; those T16 tasks must land first.
