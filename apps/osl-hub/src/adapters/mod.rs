@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 pub mod discord;
 pub mod signal;
 pub mod telegram;
+pub mod whatsapp;
 
 pub const ADAPTER_ABI_VERSION: u32 = 1;
 
