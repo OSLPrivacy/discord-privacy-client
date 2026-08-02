@@ -5,3 +5,4 @@ T9-R-22 — Blocked: the owned `claude-bridge/osl_mode.py` authority is absent f
 T9-R-24 — Blocked: the owned shipping authority `claude-bridge/mirror_bot.py` is absent; declared prerequisites R-15/R-16 provide no usable implementation here. A disconnected command bridge would violate the reachability requirement.
 T9-R-25 — Blocked: R-24 is blocked and both declared routing authorities (`claude-bridge/mirror_bot.py`, `claude-bridge/osl_mode.py`) are absent. Exact-tab routing cannot be made reachable or tested in this checkout.
 T9-R-26 — Blocked: its declared `osl-plan/task_report.py` and `claude-bridge/mirror_bot.py` authorities are absent, and R-25 is blocked. No safe checkpoint or alert path exists to extend without inventing an unreachable subsystem.
+T9-R-27 — Blocked: declared `osl-plan/task_report.py` is absent and dependencies R-25/R-26 are blocked. The required same-task inspection and resume cannot be implemented or proven without the task-report authority.
