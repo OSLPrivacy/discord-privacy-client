@@ -240,6 +240,98 @@ pub enum RnError {
     Storage(String),
 }
 
+/// The non-silent user-facing outcome for an OSL-RN failure.
+///
+/// This intentionally contains no healthy or success state. Callers that
+/// receive an [`RnError`] must render this outcome, not treat the failed
+/// operation as a no-op or select a legacy wire version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RnUserVisibleState {
+    WireInDisabled,
+    LegacyDowngradeRefused,
+    RecoveryRequiresPinnedSession,
+    RequiredButUnsupported,
+    SessionBusy,
+    SessionRollbackRefused,
+    LocalSecureStorageRequired,
+    PeerKeyInvalid,
+    PrekeySetupFailed,
+    ProtocolMessageRefused,
+    SessionStateTooLarge,
+    SessionStoreFull,
+    SkippedKeyLimitExceeded,
+    SessionStorageFailed,
+}
+
+impl RnUserVisibleState {
+    /// Stable, user-facing copy for the failure state.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::WireInDisabled => "OSL-RN is unavailable in this build.",
+            Self::LegacyDowngradeRefused => {
+                "This conversation requires OSL-RN; sending a weaker message was refused."
+            }
+            Self::RecoveryRequiresPinnedSession => {
+                "This conversation cannot recover its secure session until OSL-RN is confirmed."
+            }
+            Self::RequiredButUnsupported => {
+                "This contact does not support the encryption required for this conversation."
+            }
+            Self::SessionBusy => "This conversation is already sending. Please try again.",
+            Self::SessionRollbackRefused => {
+                "An older secure-session backup was refused to protect this conversation."
+            }
+            Self::LocalSecureStorageRequired => {
+                "Secure local storage is required before this conversation can continue."
+            }
+            Self::PeerKeyInvalid => "This contact's encryption key is invalid.",
+            Self::PrekeySetupFailed => {
+                "Secure session setup failed. Verify the contact and try again."
+            }
+            Self::ProtocolMessageRefused => {
+                "A secure message could not be processed. Recovery is required."
+            }
+            Self::SessionStateTooLarge => "Secure-session data exceeded this app's safety limit.",
+            Self::SessionStoreFull => {
+                "The secure-session store is full; no existing conversation was removed."
+            }
+            Self::SkippedKeyLimitExceeded => {
+                "This secure session exceeded its message-recovery safety limit."
+            }
+            Self::SessionStorageFailed => {
+                "Secure-session storage failed; this conversation was not changed."
+            }
+        }
+    }
+}
+
+impl RnError {
+    /// Map every OSL-RN failure to a visible, non-success state.
+    ///
+    /// Keep this match exhaustive: a new error variant must choose a user
+    /// outcome before it can be returned to a caller.
+    pub fn user_visible_state(&self) -> RnUserVisibleState {
+        match self {
+            Self::WireInDisabled => RnUserVisibleState::WireInDisabled,
+            Self::PinnedToRn => RnUserVisibleState::LegacyDowngradeRefused,
+            Self::RecoveryRequiresRnPin => RnUserVisibleState::RecoveryRequiresPinnedSession,
+            Self::RnRequiredButUnsupported => RnUserVisibleState::RequiredButUnsupported,
+            Self::WriterBusy => RnUserVisibleState::SessionBusy,
+            Self::RolledBackSession { .. } | Self::RolledBackSessionGeneration => {
+                RnUserVisibleState::SessionRollbackRefused
+            }
+            Self::PlaintextSealerRefused => RnUserVisibleState::LocalSecureStorageRequired,
+            Self::BadPeerKemKey => RnUserVisibleState::PeerKeyInvalid,
+            Self::PrekeyAdapter(_) => RnUserVisibleState::PrekeySetupFailed,
+            Self::Protocol(_) => RnUserVisibleState::ProtocolMessageRefused,
+            Self::StateTooLarge { .. } => RnUserVisibleState::SessionStateTooLarge,
+            Self::StoreFull { .. } => RnUserVisibleState::SessionStoreFull,
+            Self::SkippedCacheTooLarge { .. } => RnUserVisibleState::SkippedKeyLimitExceeded,
+            Self::Storage(_) => RnUserVisibleState::SessionStorageFailed,
+        }
+    }
+}
+
 impl From<osl_ratchet_next::Error> for RnError {
     fn from(e: osl_ratchet_next::Error) -> Self {
         // `osl_ratchet_next::Error` is already scrubbed of key material
