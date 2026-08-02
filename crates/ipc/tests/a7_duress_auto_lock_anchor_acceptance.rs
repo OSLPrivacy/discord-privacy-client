@@ -1,6 +1,6 @@
 use crypto::ed25519;
+use ipc::commands::guard_backup_destination;
 use ipc::control_messages::RevocationNotice;
-use ipc::mandatory_storage_key_policy::MandatoryStorageKeyPolicy;
 use ipc::revocation::{
     accept_content, apply_inbound_revocation, burn_id, record_content_accepted, scope_commit_key,
     scope_commitment, ContentDecision, InboundDecision, RevocationLedger,
@@ -266,10 +266,8 @@ fn full_a7_duress_auto_lock_anchor_replay() {
         "auto-lock/no-key state must refuse without touching storage"
     );
     assert!(
-        MandatoryStorageKeyPolicy::new()
-            .authorize_write("peer_map.json", false)
-            .is_err(),
-        "mandatory encrypted files must refuse when no storage key is bound"
+        guard_backup_destination("store/messages.sqlite", false).is_err(),
+        "rollback backup writes must refuse when no encrypted destination is available"
     );
 
     let duress_dir = TempDir::new().unwrap();

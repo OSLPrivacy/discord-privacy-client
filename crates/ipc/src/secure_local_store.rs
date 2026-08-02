@@ -42,18 +42,6 @@
 //! file/localStorage write access cannot copy record A's ciphertext into
 //! record B's slot and have it open there.
 //!
-//! ## Seam with `a41`'s `MandatoryStorageKeyPolicy`
-//!
-//! A sibling unit (`a41`, `crates/ipc/src/mandatory_storage_key_policy.rs`)
-//! defines the *policy* question — given a logical file identity, is
-//! plaintext ever acceptable? This module is the *mechanism* that policy
-//! is meant to gate: something that wants to persist a `MandatoryEncrypt`
-//! identity should hold a `SecureLocalStore` (concretely, a keyed
-//! [`SealedStore`], never a plaintext-capable stand-in) and have no other
-//! way to write that identity to disk. Neither module depends on the
-//! other's crate items; the boundary is documentation-level by design so
-//! either can land independently.
-
 use crypto::aead::{self, Key as AeadKey, Nonce as AeadNonce};
 
 /// Fixed domain-separation label folded into every record's AAD ahead of
@@ -318,7 +306,6 @@ pub fn open_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mandatory_storage_key_policy::{MandatoryStorageKeyPolicy, StorageClass};
     use crate::wire_rn::{RnError, RnSessionStore};
     use keystore::sealer::NoOpSealer;
     use osl_ratchet_next::primitives::x25519_keypair;
@@ -518,20 +505,8 @@ mod tests {
     }
 
     #[test]
-    fn mandatory_file_storage_key_and_ui_session_storage_share_no_plaintext_fallback() {
-        let policy = MandatoryStorageKeyPolicy::new();
+    fn unkeyed_ui_session_storage_has_no_plaintext_fallback() {
         let file_secret = br#"{"peer":"must not be plaintext"}"#;
-        let file_refusal = policy
-            .authorize_write("peer_map.json", false)
-            .expect_err("mandatory IPC file writes must refuse when no key is available");
-        assert_eq!(file_refusal.file_id(), "peer_map.json");
-        assert_eq!(
-            policy
-                .authorize_write("peer_map.json", true)
-                .expect("keyed mandatory IPC file write is authorized"),
-            StorageClass::MandatoryEncrypt
-        );
-
         let ui_store = SealedStore::without_key(InMemoryBackend::default());
         let ui_id = RecordId::new("notification", "title-1");
         assert!(matches!(

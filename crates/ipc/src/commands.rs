@@ -14580,15 +14580,13 @@ pub fn guard_backup_destination(rel: &str, destination_encrypted: bool) -> Resul
     if !is_store_backup_file(rel) {
         return Ok(());
     }
-    crate::mandatory_storage_key_policy::MandatoryStorageKeyPolicy::new()
-        .authorize_write(rel, destination_encrypted)
-        .map_err(|_| {
-            format!(
-                "OSL: import: refusing to write {} backup for {rel} into {} without an encrypted destination",
-                crate::at_rest_boundary::AtRestBoundary::MessageStore,
-                crate::at_rest_boundary::AtRestBoundary::BackupRollbackCopies
-            )
-        })?;
+    if !destination_encrypted {
+        return Err(format!(
+            "OSL: import: refusing to write {} backup for {rel} into {} without an encrypted destination",
+            crate::at_rest_boundary::AtRestBoundary::MessageStore,
+            crate::at_rest_boundary::AtRestBoundary::BackupRollbackCopies
+        ));
+    }
     Ok(())
 }
 

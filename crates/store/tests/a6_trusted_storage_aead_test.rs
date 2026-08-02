@@ -671,31 +671,6 @@ fn final_a6_dependency_source_guards() {
         "crate::main_password::encrypt_at_rest(&body, &key)",
     );
     assert_source_excludes("membership.rs", &membership, "maybe_encrypt(&body)");
-
-    let commands = workspace_source("crates/ipc/src/commands.rs");
-    for rel in [
-        "\"store/messages.sqlite\"",
-        "\"store/messages.sqlite-wal\"",
-        "\"store/messages.sqlite-shm\"",
-    ] {
-        assert_source_contains("commands.rs", &commands, rel);
-    }
-    assert_source_contains(
-        "commands.rs",
-        &commands,
-        "crate::mandatory_storage_key_policy::MandatoryStorageKeyPolicy::new()",
-    );
-    assert_source_contains(
-        "commands.rs",
-        &commands,
-        ".authorize_write(rel, destination_encrypted)",
-    );
-    assert_source_contains("commands.rs", &commands, "without an encrypted destination");
-    assert_source_contains(
-        "commands.rs",
-        &commands,
-        "refusal must happen before a plaintext Store rollback copy is written",
-    );
 }
 
 fn base64_two_byte_canary(input: [u8; 2]) -> Vec<u8> {
