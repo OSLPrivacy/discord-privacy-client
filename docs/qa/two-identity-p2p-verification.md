@@ -90,6 +90,26 @@ anything that is not green.
 | `osl-p2p-pair.ps1` | copies each identity's `discord-qa-offer.v1.json` into the other's `discord-qa-peer-offer.v1.json`. Two file copies, nothing else. Refuses while either instance is running, and refuses if both offers carry the same `osl_user_id`. | `%TEMP%\osl-p2p-pair.json` |
 | `osl-launch-instance-b.ps1` | starts B with its own `TMP`/`TEMP`, reads back **which bundle actually started**, proves A was not touched, and relocates only B's window. | `%TEMP%\osl-launch-b.json` |
 | `osl-p2p-loop.ps1` | the six-step verification. | `%TEMP%\osl-p2p.json` |
+| `scripts/vmqa/t5-safety-number.ps1` | **T5-T18.** Reads the visible verification code with UIA, compares it byte-for-byte with the peer's UIA observation, types that peer value, and invokes the confirmation control. | caller-selected JSON receipt containing hashes only |
+
+### T5-T18: two VMs, one verification code
+
+Run the following only on the two isolated QA VMs after mutual pairing. Both confirmation dialogs
+must be visible at once. The coordinator relays each UIA-read value to the other VM over its
+protected QA channel on standard input; never put either code in an argument, transcript, screenshot
+or receipt. On each VM, the script receives the **other** VM's UIA observation on stdin:
+
+```powershell
+$peerCode | scripts\vmqa\t5-safety-number.ps1 -Side A -ProcessId $pidA `
+  -ReceiptPath C:\ProgramData\OSL-VMQA\t5-a.json -ReadPeerCodeFromStandardInput
+```
+
+Repeat with `-Side B`, `$pidB`, and A's value. Each invocation must exit zero and produce a receipt
+with `comparedByteForByte: true`; the two receipt digests must agree. A mismatch is a failure and
+the script must not type or confirm anything. To run the required sabotage control, use binaries
+from before T5-C1: the two UIA observations differ and the script must fail at
+`T5_SAFETY_NUMBER_MISMATCH` before either confirmation is invoked. This proof uses UIA/MSAA only;
+capture protection is expected to block screenshots and is not a test failure.
 
 ### Order of operations
 
