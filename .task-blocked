@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T18-C2 is missing: crates/ipc/src/group_send.rs has not been created by T18-C1, and no signed membership-change broadcast exists to force all member chains to rotate.
