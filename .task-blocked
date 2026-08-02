@@ -31,3 +31,10 @@ app build or VM run under this batch's constraints.
 Blocked: T20-E2 deliberately extends T20-E1's single TW-13 fixture, which is
 absent because E1 is blocked.  A separate process-kill test would split the
 required clean-close and crash proof and violate its narrow ownership.
+
+# T20-E5
+
+Blocked: T20-E5 requires the T20-B5 baseline and an interactive Windows VM
+with a borrowed surface.  Neither is integrated into this worktree; keyboard
+snap measurement must use that real surface and cannot be asserted honestly
+from a synthetic script on this Linux host.
