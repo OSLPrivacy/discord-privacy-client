@@ -220,12 +220,13 @@ Verification units:
 | Reconciliation field | Status |
 | --- | --- |
 | `v4_shipping_status` | `retired_due_to_ratchet_desync` |
-| `v5_shipping_status` | `enabled_in_core_unreachable_in_shipping_app` |
+| `v5_shipping_status` | `disabled_default_false_uses_stateless_v3` |
 | `sender_keys_enabled_default` | `true_in_ipc_core` |
 | `product_group_conversations` | `false` |
 | `product_unreachable_reason` | `shipping_app_constructs_direct_message_scopes_only` |
 | `v5_distribution_status` | `stateless_v3_skdm_distribution` |
-| `ratchet_limit_status` | `no_product_group_guarantee_until_group_surface_exists` |
+| `v5_pairwise_dependency` | `no_current_proven_pairwise_distribution_channel` |
+| `ratchet_limit_status` | `planned_until_atomic_state_reset_authority_and_cross_device_tests` |
 | `required_sender_key_remediation` | `build_group_conversation_surface_before_product_claim` |
 | `unsupported_group_blast_radius_claims` | `one_hour_500_messages_suspicious_event_current_rotation_only` |
 
