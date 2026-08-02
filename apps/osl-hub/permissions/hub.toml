@@ -792,3 +792,8 @@ commands.allow = ["burn_active_hub_context"]
 identifier = "allow-get-hub-revocation-status"
 description = "Read whether the burn notices already queued for one canonical OSL scope key have been acknowledged by the peers who had access; reads no message content and changes nothing."
 commands.allow = ["get_hub_revocation_status"]
+
+[[permission]]
+identifier = "allow-add-hub-friend-by-username"
+description = "Resolve one OSL username to its published key through the signed keyserver and store the resulting friend request locally. Network-touching, so it is granted through the separate osl-network capability rather than the local-only hub capability."
+commands.allow = ["add_hub_friend_by_username"]

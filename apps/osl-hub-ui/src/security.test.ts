@@ -506,6 +506,10 @@ describe("bundled preview security boundary", () => {
       "allow-osl-mail-get-status",
       "allow-osl-mail-provision",
       "allow-emit-active-session-reset",
+      // Resolves an OSL username against the signed keyserver before storing
+      // the friend request, so it belongs on the network surface rather than
+      // the local-only hub capability.
+      "allow-add-hub-friend-by-username",
     ];
     expect(new Set(capability.permissions)).toEqual(new Set(expectedPermissions));
     expect(capability.permissions).toHaveLength(expectedPermissions.length);
