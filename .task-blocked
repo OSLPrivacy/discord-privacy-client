@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisites: T12-H7 (HOSTED-VERIFY), T12-K4 (CONSENT-ENFORCED), and T12-E5 (SEEDED-PROVIDERS); T4 must also land the hosted-webview preload integration specified by T12-H2 before T12-H8 can safely implement Discord deletion.
