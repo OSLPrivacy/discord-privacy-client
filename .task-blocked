@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T18-C4 rotate-before-admit lifecycle API/implementation; T18 owns it. T21-C7 cannot safely admit a member until it exists.
