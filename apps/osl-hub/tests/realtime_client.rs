@@ -3,6 +3,7 @@ use std::time::Duration;
 use osl_privacy_hub::realtime_client::{ScheduledFetch, 
     BlobId, CarrierPointer, FrameError, RealtimeClient, RealtimeRoute, FRAME_BYTES, TICK_INTERVAL,
 };
+use osl_privacy_hub::realtime_subscription::DeliveryTag;
 
 fn id(byte: u8) -> BlobId {
     BlobId::from_bytes([byte; 16])
@@ -62,6 +63,24 @@ fn t1_t75_direct_and_tor_streams_each_hold_their_fixed_cadence() {
             previous = Some(at);
         }
     }
+}
+
+#[test]
+fn t1_t55_shipping_tick_rotates_the_opaque_subscription_window() {
+    let mut client = RealtimeClient::new(Duration::ZERO);
+    client.replace_subscription_tags((1..=33).map(|byte| {
+        DeliveryTag::try_from_bytes([byte; 16]).expect("non-padding delivery tag")
+    }));
+
+    let first = client.next_outbound_tick();
+    let second = client.next_outbound_tick();
+
+    assert_eq!(first.frame.len(), FRAME_BYTES);
+    assert_eq!(first.delivery_tags.len(), 32);
+    assert_eq!(second.delivery_tags.len(), 32);
+    assert_eq!(first.delivery_tags[0].as_bytes(), [1; 16]);
+    assert_eq!(second.delivery_tags[0].as_bytes(), [33; 16]);
+    assert!(second.delivery_tags.iter().all(|tag| tag.as_bytes() != [0; 16]));
 }
 
 #[test]

@@ -3164,6 +3164,7 @@ dependencies = [
  "rfd",
  "runtime",
  "rustls",
+ "sensitive-classify",
  "serde",
  "serde_json",
  "sha2",
@@ -4101,6 +4102,10 @@ dependencies = [
  "serde",
  "serde_core",
 ]
+
+[[package]]
+name = "sensitive-classify"
+version = "0.0.1"
 
 [[package]]
 name = "serde"
