@@ -5,7 +5,9 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::account_recovery;
 use osl_privacy_hub::components;
-use osl_privacy_hub::ai_carrier::{ai_carrier_status_for, AiCarrierState};
+use osl_privacy_hub::ai_carrier::{
+    ai_carrier_status_for, set_ai_carrier_preview_enabled_for, AiCarrierState,
+};
 use osl_privacy_hub::build_integrity::{check_current, BuildIntegrity};
 use osl_privacy_hub::chat_capture_protection::ChatCaptureProtectionState;
 use osl_privacy_hub::broker::{
@@ -9073,6 +9075,15 @@ fn ai_carrier_status(state: tauri::State<'_, AiCarrierState>) -> osl_privacy_hub
 }
 
 #[tauri::command]
+fn set_ai_carrier_preview_enabled(
+    state: tauri::State<'_, AiCarrierState>,
+    scope_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    set_ai_carrier_preview_enabled_for(&state, scope_id, enabled)
+}
+
+#[tauri::command]
 fn build_integrity_status(state: tauri::State<'_, BuildIntegrity>) -> BuildIntegrity {
     *state.inner()
 }
@@ -10022,7 +10033,7 @@ mod tauri_command_acl_tests {
 
     #[test]
     fn t13_td8_ai_carrier_command_is_reachable_from_the_shipping_binary() {
-        assert_registered_and_acl_granted(&["ai_carrier_status"]);
+        assert_registered_and_acl_granted(&["ai_carrier_status", "set_ai_carrier_preview_enabled"]);
     }
 
     #[test]
