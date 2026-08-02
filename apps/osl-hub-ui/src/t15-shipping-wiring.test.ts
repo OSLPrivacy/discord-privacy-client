@@ -19,6 +19,9 @@ describe("T15 shipped lifecycle UI wiring", () => {
     expect(shippingMain).toContain("initialOldDeviceCopyDecision({ importConfirmed: false })");
     expect(shippingMain).toContain("oldDeviceCopyDecisionView(");
   });
+  it("T15-F5 keeps the dead-man confirmation and limits in the shipping settings render", () => {
+    expect(shippingMain).toContain('renderDeadmanScreen(selectDeadmanAction("lock", ""))');
+  });
   it("renders optional downloads behind the AutoScrub consent gate in Settings", () => {
     expect(shippingMain).toContain('from "./component-consent"');
     expect(shippingMain).toContain('decideAutoScrubInstall("autoscrub", null)');
