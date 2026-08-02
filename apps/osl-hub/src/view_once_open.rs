@@ -23,10 +23,10 @@ pub trait ViewOnceOpenEffects {
     /// Unseal the already-held local payload.
     fn unseal_local_payload(&mut self) -> Result<Self::Plaintext, Self::Error>;
 
-    /// Render plaintext only into the verified viewer.
+    /// Begin rendering plaintext only into the verified viewer.
     fn render(&mut self, plaintext: &Self::Plaintext) -> Result<(), Self::Error>;
 
-    /// Record the local Opened event after the payload was rendered.
+    /// Record the local Opened event immediately before rendering begins.
     fn emit_opened(&mut self) -> Result<(), Self::Error>;
 
     /// Destroy the sealed local payload after a successful open.
@@ -42,8 +42,8 @@ pub fn open_view_once<E: ViewOnceOpenEffects>(effects: &mut E) -> Result<(), E::
     effects.open_viewer()?;
     effects.verify_protection()?;
     let plaintext = effects.unseal_local_payload()?;
-    effects.render(&plaintext)?;
     effects.emit_opened()?;
+    effects.render(&plaintext)?;
     effects.shred()
 }
 
@@ -56,7 +56,7 @@ mod tests {
         ViewerOpened,
         ProtectionVerified,
         PayloadUnsealed,
-        Rendered,
+        RenderStarted,
         OpenedEmitted,
         Shredded,
     }
@@ -65,6 +65,7 @@ mod tests {
         protection_available: bool,
         sealed_payload: Option<&'static [u8]>,
         rendered: Option<Vec<u8>>,
+        render_crashes: bool,
         opened_emitted: bool,
         shredded: bool,
         steps: Vec<Step>,
@@ -76,6 +77,7 @@ mod tests {
                 protection_available: true,
                 sealed_payload: Some(b"sealed payload"),
                 rendered: None,
+                render_crashes: false,
                 opened_emitted: false,
                 shredded: false,
                 steps: Vec::new(),
@@ -107,7 +109,13 @@ mod tests {
         }
 
         fn render(&mut self, plaintext: &Self::Plaintext) -> Result<(), Self::Error> {
-            self.steps.push(Step::Rendered);
+            if !self.opened_emitted {
+                return Err("Opened must be emitted when rendering starts");
+            }
+            self.steps.push(Step::RenderStarted);
+            if self.render_crashes {
+                return Err("viewer crashed mid-view");
+            }
             self.rendered = Some(plaintext.clone());
             Ok(())
         }
@@ -162,9 +170,32 @@ mod tests {
                 Step::ViewerOpened,
                 Step::ProtectionVerified,
                 Step::PayloadUnsealed,
-                Step::Rendered,
                 Step::OpenedEmitted,
+                Step::RenderStarted,
                 Step::Shredded,
+            ],
+        );
+    }
+
+    #[test]
+    fn render_crash_still_reports_opened_before_the_view_can_close() {
+        let mut effects = TestEffects {
+            render_crashes: true,
+            ..TestEffects::protected()
+        };
+
+        assert_eq!(open_view_once(&mut effects), Err("viewer crashed mid-view"));
+        assert!(effects.opened_emitted);
+        assert!(!effects.shredded);
+        assert_eq!(effects.sealed_payload, Some(b"sealed payload".as_slice()));
+        assert_eq!(
+            effects.steps,
+            vec![
+                Step::ViewerOpened,
+                Step::ProtectionVerified,
+                Step::PayloadUnsealed,
+                Step::OpenedEmitted,
+                Step::RenderStarted,
             ],
         );
     }
