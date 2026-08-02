@@ -22,7 +22,8 @@ describe("native browser footprint renderer handoff", () => {
     const consumeSelection = handoff.indexOf("selectedBrowserProfileKeys.clear()");
     const grant = handoff.indexOf("const grant = await grantBrowserProfileConsent(");
     const scan = handoff.indexOf("const receipt = await scanConsentedBrowserProfile(");
-    const durableCheck = handoff.indexOf("receipt.persistedCount !== receipt.immediateRereadCount");
+    const observationCheck = handoff.indexOf("receipt.observationCount < 1");
+    const snapshotDeletionCheck = handoff.indexOf("!receipt.snapshotDeleted");
     const pushReceipt = handoff.indexOf("scanReceipts.push(receipt)");
     const hydrate = handoff.indexOf("const hydration = await loadDetectedBrowserFootprint(scanReceipts)");
     const apply = handoff.indexOf("applyNativeBrowserFootprint(hydration)");
@@ -31,8 +32,9 @@ describe("native browser footprint renderer handoff", () => {
     expect(consumeSelection).toBeGreaterThan(selection);
     expect(grant).toBeGreaterThan(consumeSelection);
     expect(scan).toBeGreaterThan(grant);
-    expect(durableCheck).toBeGreaterThan(scan);
-    expect(pushReceipt).toBeGreaterThan(durableCheck);
+    expect(observationCheck).toBeGreaterThan(scan);
+    expect(snapshotDeletionCheck).toBeGreaterThan(observationCheck);
+    expect(pushReceipt).toBeGreaterThan(snapshotDeletionCheck);
     expect(hydrate).toBeGreaterThan(pushReceipt);
     expect(apply).toBeGreaterThan(hydrate);
     expect(handoff).toMatch(/grantBrowserProfileConsent\(\s*selectedProfile\.browserId,\s*selectedProfile\.profile,\s*\)/);
