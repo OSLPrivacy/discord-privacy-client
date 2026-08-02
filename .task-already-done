@@ -1,0 +1,1 @@
+The T1-62 control contract already rejects full queue and journal insertions without evicting live records.
