@@ -10,9 +10,7 @@ const ENTRYPOINT = join(SOURCE_ROOT, "main.ts");
 // not yet in the shipping graph. Stage R/I must replace entries here with a
 // reachable module, rather than letting the deletion lane disappear unnoticed.
 const KNOWN_ORPHANS = [
-  "autoscrub-flow.ts",
   "autoscrub-progress.ts",
-  "autoscrub-tier.ts",
   "scrub-attended-imap-run.ts",
   "scrub-confirm.ts",
   "scrub-coverage-view.ts",
