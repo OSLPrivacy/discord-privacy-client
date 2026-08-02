@@ -9,11 +9,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateAllowlistSync } from './check-allowlist-sync.mjs';
 
 const SCRIPTS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.dirname(SCRIPTS_DIR);
 const MANIFEST_PATH = path.join(REPO_ROOT, 'data', 'public-surface-manifest.json');
 const PRICING_PATH = path.join(REPO_ROOT, 'data', 'pricing.json');
+const ALLOWLIST_PATH = path.join(REPO_ROOT, 'docs', 'design', 'osl-public-claim-allowlist.md');
 const SELF_TEST = process.argv.includes('--self-test');
 const MIN_PUBLIC_CLAIM_CHANNELS = 9;
 const REQUIRED_CHANNELS = [
@@ -599,6 +601,11 @@ function run() {
   }
 
   const pricing = readPricing();
+  const allowlistFailures = validateAllowlistSync(readFileSync(ALLOWLIST_PATH, 'utf8'), pricing);
+  console.log(`  allowlist-evidence-sync ${allowlistFailures.length === 0 ? 'pass' : 'FAIL'}`);
+  if (allowlistFailures.length > 0) {
+    throw new Error(`Allowlist evidence sync failed:\n${allowlistFailures.join('\n')}`);
+  }
   const asOf = h7AsOf(pricing);
   const h7Failures = validateH7Comparison(pricing, asOf);
   console.log(`  h7-deleteme-source-refresh ${h7Failures.length === 0 ? 'pass' : 'FAIL'}`);
