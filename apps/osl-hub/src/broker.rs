@@ -4276,6 +4276,27 @@ fn drain_peer_inbox_text(
         if payload.message_id != notice.message_id {
             continue;
         }
+        let payload = if payload.version == PEER_PROTECTED_CHUNK_VERSION {
+            payload
+        } else {
+            crate::receipt_emit::materialize_then_emit(
+                || Ok::<_, ()>(payload),
+                |materialized| {
+                    let _ = send_delivered_privacy_receipt(
+                        core,
+                        &identity,
+                        &client,
+                        &verified,
+                        &manual,
+                        &context,
+                        &materialized.message_id,
+                        &scope_id,
+                    );
+                    Ok(())
+                },
+            )
+            .expect("a successfully authenticated payload is already materialized")
+        };
         if payload.version == PEER_PROTECTED_CHUNK_VERSION {
             let Some(group_key) = native_text_group_key(&payload) else {
                 continue;
@@ -4573,6 +4594,23 @@ fn drain_peer_inbox_text(
         let mut logical = group.template;
         logical.message_id = logical_message_id;
         logical.plaintext = plaintext;
+        let logical = crate::receipt_emit::materialize_then_emit(
+            || Ok::<_, ()>(logical),
+            |materialized| {
+                let _ = send_delivered_privacy_receipt(
+                    core,
+                    &identity,
+                    &client,
+                    &verified,
+                    &manual,
+                    &context,
+                    &materialized.message_id,
+                    &scope_id,
+                );
+                Ok(())
+            },
+        )
+        .expect("a successfully reassembled message is materialized");
         let now = ipc::main_password::now_unix_secs_pub();
         let received_already_sent = two_phase_view_once
             && broker
@@ -5336,6 +5374,53 @@ fn send_native_overlay_received_acknowledgment(
         .post_control_inbox(identity, &manual.peer_osl_user_id, scope_id, &bundle)
         .map(|_| ())
         .map_err(|_| "OSL could not acknowledge the protected message".to_owned())
+}
+
+fn send_delivered_privacy_receipt(
+    core: &HubCoreState,
+    identity: &keystore::Identity,
+    client: &keystore::KeyServerClient,
+    verified: &ManualPeerBinding,
+    manual: &ManualPeerContext,
+    context: &HubConversationContext,
+    message_id: &str,
+    scope_id: &str,
+) -> Result<(), String> {
+    let observed_at = u64::try_from(ipc::main_password::now_unix_secs_pub())
+        .map_err(|_| "OSL could not emit the delivery receipt".to_owned())?;
+    let receipt = crate::receipt_emit::sign_delivered(
+        message_id,
+        crate::inbound_receipts::conversation_commitment(&context.conversation_id),
+        observed_at,
+        &identity.ed25519_secret,
+    );
+    let wire = encrypt_direct_manual_v3_payload(
+        core,
+        verified,
+        ipc::receipt_wire::MSG_TYPE_PRIVACY_RECEIPT,
+        &receipt.encode(),
+    )?;
+    verify_manual_v3_type(
+        core,
+        verified,
+        &wire,
+        ManualWireSender::SelfIdentity,
+        ipc::receipt_wire::MSG_TYPE_PRIVACY_RECEIPT,
+    )
+    .map_err(|_| "OSL could not emit the delivery receipt".to_owned())?;
+    let body = wire
+        .strip_prefix("DPC0::")
+        .ok_or_else(|| "OSL could not emit the delivery receipt".to_owned())?;
+    let bundle = STANDARD
+        .decode(body)
+        .map_err(|_| "OSL could not emit the delivery receipt".to_owned())?;
+    if !crate::inbound_receipts::is_receipt_bundle(&bundle) || bundle.len() > 16 * 1024 {
+        return Err("OSL could not emit the delivery receipt".to_owned());
+    }
+    client
+        .post_control_inbox(identity, &manual.peer_osl_user_id, scope_id, &bundle)
+        .map(|_| ())
+        .map_err(|_| "OSL could not emit the delivery receipt".to_owned())
 }
 
 fn decode_overlay_relay_wire(wire: &str) -> Result<Vec<u8>, String> {
