@@ -28,6 +28,15 @@ pub enum PlacementMode {
     Compatibility,
 }
 
+/// The recovery/delivery policy explicitly selected during onboarding.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ForwardSecrecyMode {
+    ProtectPast,
+    #[default]
+    KeepGroupDelivery,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OnboardingPreferences {
@@ -38,6 +47,8 @@ pub struct OnboardingPreferences {
     #[serde(default = "default_true")]
     pub window_capture_enabled: bool,
     pub acknowledge_experimental_send_risk: bool,
+    #[serde(default)]
+    pub forward_secrecy_mode: ForwardSecrecyMode,
 }
 
 fn default_true() -> bool {
@@ -53,6 +64,7 @@ impl Default for OnboardingPreferences {
             show_plaintext_preview: true,
             window_capture_enabled: true,
             acknowledge_experimental_send_risk: false,
+            forward_secrecy_mode: ForwardSecrecyMode::default(),
         }
     }
 }
@@ -72,6 +84,8 @@ impl<'de> Deserialize<'de> for OnboardingPreferences {
             #[serde(default = "default_true")]
             window_capture_enabled: bool,
             acknowledge_experimental_send_risk: bool,
+            #[serde(default)]
+            forward_secrecy_mode: ForwardSecrecyMode,
         }
 
         let preferences = WirePreferences::deserialize(deserializer)?;
@@ -82,6 +96,7 @@ impl<'de> Deserialize<'de> for OnboardingPreferences {
             show_plaintext_preview: preferences.show_plaintext_preview,
             window_capture_enabled: preferences.window_capture_enabled,
             acknowledge_experimental_send_risk: preferences.acknowledge_experimental_send_risk,
+            forward_secrecy_mode: preferences.forward_secrecy_mode,
         }
         .fail_closed())
     }
