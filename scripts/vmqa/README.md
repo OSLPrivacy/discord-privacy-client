@@ -30,6 +30,11 @@ re-emit interval, requires pre-join corpus, and requires exactly one rendered
 post-join message. Validate its sabotage guard with
 `python3 scripts/vmqa/test-space-join-history.py` before the VM run.
 
+`space-offline.ps1` is the T21-K5 proof. It disables the adapter before
+checking local history, queued compose, and immediate local burn; reconnecting
+then must refuse the queued send after a roster change. Validate it with
+`python3 scripts/vmqa/test-space-offline.py` before the VM run.
+
 Use the scratch directory for fast, disposable experiments. When an experiment
 becomes repeatable release coverage, move or reimplement the driver and its
 assertions in `scripts/vmqa/`. Do not copy a release verdict back into the
