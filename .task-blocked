@@ -1,1 +1,2 @@
 Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T12-I6 is missing: no registered scrub_imap_prepare_delete/scrub_imap_delete command or tri-state receipt path exposes dropped connection, auth-epoch change, schema drift, rate limit, ambiguous readback, and prior Unknown for T12-V1 to sabotage.
