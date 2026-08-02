@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use osl_privacy_hub::realtime_client::{
-    BlobId, CarrierPointer, FrameError, RealtimeClient, FRAME_BYTES, TICK_INTERVAL,
+    BlobId, CarrierPointer, FrameError, RealtimeClient, RealtimeRoute, FRAME_BYTES, TICK_INTERVAL,
 };
 
 fn id(byte: u8) -> BlobId {
@@ -40,6 +40,27 @@ fn t1_t52_outbound_frames_are_constant_for_50_idle_and_busy_turns() {
         busy.receive_frame(&response(turn, 0xbb))
             .expect("valid wakeup");
         assert!(busy.take_scheduled_fetch().is_some());
+    }
+}
+
+#[test]
+fn t1_t75_direct_and_tor_streams_each_hold_their_fixed_cadence() {
+    for route in [RealtimeRoute::Direct, RealtimeRoute::Tor] {
+        let mut client = RealtimeClient::for_route(Duration::ZERO, route);
+        let mut previous = None;
+
+        for _ in 0..50 {
+            let (at, frame) = client.next_outbound_frame();
+            if let Some(previous) = previous {
+                assert_eq!(
+                    at - previous,
+                    route.tick_interval(),
+                    "a route's tick must not adapt between frames"
+                );
+            }
+            assert_eq!(frame.len(), FRAME_BYTES);
+            previous = Some(at);
+        }
     }
 }
 

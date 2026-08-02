@@ -17,6 +17,25 @@ pub const TICK_INTERVAL: Duration = Duration::from_secs(4);
 
 const ID_BYTES: usize = 16;
 
+/// The route selected before the realtime connection is opened.
+///
+/// Tor is an explicit privacy choice.  It may use a distinct cadence only in a
+/// negotiated protocol revision; v1 keeps the frozen four-second schedule for
+/// both routes.  Neither route accepts link-quality or work-queue input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RealtimeRoute {
+    Direct,
+    Tor,
+}
+
+impl RealtimeRoute {
+    pub const fn tick_interval(self) -> Duration {
+        match self {
+            Self::Direct | Self::Tor => TICK_INTERVAL,
+        }
+    }
+}
+
 /// Build the fixed tick frame required by the server.
 ///
 /// This allocation happens once per scheduled write; it is intentionally
@@ -105,11 +124,22 @@ pub enum FrameError {
 #[derive(Clone, Debug)]
 pub struct ConstantRateSchedule {
     next_tick: Duration,
+    interval: Duration,
 }
 
 impl ConstantRateSchedule {
     pub const fn from_start(start: Duration) -> Self {
-        Self { next_tick: start }
+        Self {
+            next_tick: start,
+            interval: TICK_INTERVAL,
+        }
+    }
+
+    pub const fn for_route(start: Duration, route: RealtimeRoute) -> Self {
+        Self {
+            next_tick: start,
+            interval: route.tick_interval(),
+        }
     }
 
     /// Return the next scheduled instant and advance by exactly one protocol interval.
@@ -117,7 +147,7 @@ impl ConstantRateSchedule {
         let when = self.next_tick;
         self.next_tick = self
             .next_tick
-            .checked_add(TICK_INTERVAL)
+            .checked_add(self.interval)
             .expect("tick schedule overflow");
         (when, tick_frame())
     }
@@ -134,8 +164,16 @@ pub struct RealtimeClient {
 
 impl RealtimeClient {
     pub fn new(start: Duration) -> Self {
+        Self::for_route(start, RealtimeRoute::Direct)
+    }
+
+    /// Start a constant-rate stream for the route selected at onboarding.
+    ///
+    /// The route only selects a frozen protocol policy. It never lets latency,
+    /// tunnel state, or queued work vary the tick schedule.
+    pub fn for_route(start: Duration, route: RealtimeRoute) -> Self {
         Self {
-            schedule: ConstantRateSchedule::from_start(start),
+            schedule: ConstantRateSchedule::for_route(start, route),
             pointers: BTreeMap::new(),
             pending: BTreeSet::new(),
             scheduled_fetches: VecDeque::new(),
