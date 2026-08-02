@@ -95,9 +95,9 @@ describe("native Discord protected overlay routing", () => {
     expect(recovery).toMatch(/activeHomeAppId = app\.id;[\s\S]*?activeService = service;[\s\S]*?route = "service";/);
 
     const bootstrap = source.slice(source.indexOf("async function bootstrap"));
-    expect(bootstrap.indexOf("if (linkedServices) services = linkedServices;")).toBeGreaterThanOrEqual(0);
+    expect(bootstrap.indexOf("if (linkedServices) {\n        services = linkedServices;")).toBeGreaterThanOrEqual(0);
     expect(bootstrap.indexOf("void recoverNativeHostAfterRendererLoad();")).toBeGreaterThan(
-      bootstrap.indexOf("if (linkedServices) services = linkedServices;"),
+      bootstrap.indexOf("if (linkedServices) {\n        services = linkedServices;"),
     );
   });
 

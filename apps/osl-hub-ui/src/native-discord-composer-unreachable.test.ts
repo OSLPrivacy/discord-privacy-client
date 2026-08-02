@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
+import { inDomTooltipMarkup } from "./in-dom-tooltip";
 
 /**
  * The hub half of `osl://native-discord-composer-unreachable`.
@@ -41,9 +42,10 @@ function renderNotice(protectionActive: boolean, unreachable: boolean, reason = 
     "nativeDiscordProtectionActive",
     "nativeDiscordComposerUnreachable",
     "nativeDiscordComposerUnreachableReason",
+    "inDomTooltipMarkup",
     noticeBody,
-  ) as (protectionActive: boolean, unreachable: boolean, reason: string) => string;
-  return build(protectionActive, unreachable, reason);
+  ) as (protectionActive: boolean, unreachable: boolean, reason: string, tooltip: typeof inDomTooltipMarkup) => string;
+  return build(protectionActive, unreachable, reason, inDomTooltipMarkup);
 }
 
 /**
@@ -209,7 +211,8 @@ describe("native Discord composer-unreachable warning", () => {
     const focus = renderNotice(true, true, "keyboard-focus");
     const zorder = renderNotice(true, true, "zorder-band");
     expect(focus).toContain("Windows refused OSL the keyboard");
-    expect(zorder).toContain("Discord is drawing above OSL's composer");
+    // Tooltip text is HTML-escaped because it is inserted into shipped markup.
+    expect(zorder).toContain("Discord is drawing above OSL&#39;s composer");
     for (const notice of [focus, zorder, renderNotice(true, true)]) {
       expect(notice).toContain("Your typing is going to Discord, not OSL — check the cyan ring");
       expect(notice).toContain("goes to Discord unencrypted");

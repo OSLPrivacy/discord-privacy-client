@@ -1248,8 +1248,8 @@ function applyNativeBrowserFootprint(hydration: BrowserFootprintHydration): void
   savedAccountsReady = hydration.imports.length > 0
     && hydration.observations.length > 0
     && hydration.imports.every((receipt) =>
-      receipt.persistedCount > 0
-      && receipt.persistedCount === receipt.immediateRereadCount);
+      receipt.observationCount > 0
+      && receipt.snapshotDeleted);
   if (!preferredBrowserId || !completedBrowserImportIds.has(preferredBrowserId)) {
     preferredBrowserId = hydration.imports[0]?.browserId ?? null;
   }
@@ -2121,7 +2121,7 @@ function bindBrowserImportControls(): void {
     browserImportFailureNotice = "";
     render();
     try {
-      await revokeDetectedBrowserFootprint(receipt.browserId, receipt.profile, receipt.account);
+      await revokeDetectedBrowserFootprint(receipt.browserId, receipt.profile, receipt.account, receipt.runId);
       const remaining = browserFootprintImports.filter((candidate) =>
         candidate.browserId !== receipt.browserId
         || candidate.profile !== receipt.profile
@@ -2193,11 +2193,11 @@ function bindBrowserImportControls(): void {
           grant.grantId,
         );
         if (runEpoch !== browserImportRunEpoch) return;
-        if (receipt.persistedCount < 1) {
+        if (receipt.observationCount < 1) {
           throw new Error("Nothing was imported from it");
         }
-        if (receipt.persistedCount !== receipt.immediateRereadCount) {
-          throw new Error("The saved browser account hints did not survive their immediate reread.");
+        if (!receipt.snapshotDeleted) {
+          throw new Error("The temporary browser snapshot was not deleted.");
         }
         scanReceipts.push(receipt);
         browserImportSourceSelected = true;
