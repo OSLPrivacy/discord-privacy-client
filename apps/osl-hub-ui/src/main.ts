@@ -176,7 +176,6 @@ import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, type OslChatDeliveryHost } from "./osl-chat-runtime";
-import { attachOslChatFrameDelivery } from "./osl-chat-delivery";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
 import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
@@ -7557,15 +7556,6 @@ function oslChatHistoryTimestamp(epochSeconds: number): string {
 
 const oslChatDelivery = createOslChatDeliveryRuntime(oslChatDeliveryHost);
 
-let stopOslChatFrameDelivery: (() => void) | null = null;
-
-async function startOslChatFrameDelivery(): Promise<void> {
-  if (stopOslChatFrameDelivery) return;
-  stopOslChatFrameDelivery = await attachOslChatFrameDelivery({
-    onWakeup: async (callback) => listen("osl-realtime-wakeup", callback),
-  }, oslChatDelivery);
-}
-
 async function toggleOslChatPermission(): Promise<void> {
   const context = activeOslChatContext;
   if (!context || oslChatBusy || oslChatSettingsPersonId !== context.personId) return;
@@ -9138,6 +9128,9 @@ function scheduleNativeHostRealignment(): void {
     void validateNativeSurfaces();
   });
 }
+function scheduleOslChatBackgroundSync(delayMs = 30_000): void {
+  oslChatDelivery.start(delayMs);
+}
 
 type OslHubUiTestStatePatch = {
   route?: Route;
@@ -9414,5 +9407,5 @@ if (!runningUnderVitest) {
   window.addEventListener("error", (event) => { event.preventDefault(); containBackgroundFailure(); });
   window.addEventListener("unhandledrejection", (event) => { event.preventDefault(); containBackgroundFailure(); });
   void bootstrap();
-  void startOslChatFrameDelivery();
+  scheduleOslChatBackgroundSync(1_000);
 }
