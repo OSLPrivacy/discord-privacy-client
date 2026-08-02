@@ -787,7 +787,8 @@ pub fn cmd_osl_build_skdm_request(
 /// local drop + the announcement are atomic from the caller's view
 /// (we reset first, then hand boot.js the wire to POST). Called by
 /// boot.js when a v=4 message from the peer keeps failing to decrypt
-/// (ratchet desync). Outbound-throttled; throttled call returns Err.
+/// (ratchet desync). The throttle is armed only after the transport confirms
+/// delivery; a throttled call returns Err.
 pub fn cmd_osl_build_session_reset(
     state: &AppState,
     peer_discord_id: String,
@@ -795,11 +796,11 @@ pub fn cmd_osl_build_session_reset(
     record_activity_on_command_entry();
     let now = now_unix_secs();
     {
-        let mut g = state
+        let g = state
             .recovery_guard
             .lock()
             .expect("recovery_guard mutex poisoned");
-        if !g.should_emit(
+        if !g.may_emit(
             &peer_discord_id,
             crate::recovery::RecoveryKind::SessionReset,
             now,
