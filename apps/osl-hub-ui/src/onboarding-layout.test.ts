@@ -537,6 +537,13 @@ describe("fresh-account continuation", () => {
     expect(recovery).not.toContain('class="compact-lead"');
   });
 
+  it("uses the shared centred layout for the empty recovery screen", () => {
+    const recovery = functionSource("recoveryContent", "identityPasswordForm");
+    expect(recovery).toMatch(/No recovery secret is available[\s\S]*?\/section>/);
+    expect(recovery).toContain('class="onboarding-centered-step recovery-empty"');
+    expect(styles).toMatch(/\.onboarding-centered-step\s*\{[^}]*width:\s*min\(440px,\s*100%\);[^}]*margin:\s*auto;[^}]*text-align:\s*center;/s);
+  });
+
   it("continues from saved recovery material into optional Pro setup", () => {
     const recovery = functionSource("recoveryContent", "identityPasswordForm");
     const binding = functionSource("bindOnboarding", "completeOnboarding");

@@ -1721,8 +1721,8 @@ function welcomeOnboardingContent(): string {
 
 function proSetupContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  if (pro) return `<section class="pro-setup" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><button class="button primary" data-onboarding="sending" type="button">Continue</button></section>`;
-  return `<section class="pro-setup" aria-labelledby="route-heading"><p class="eyebrow">Optional</p><h1 id="route-heading" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Continue</button></form><button class="text-button" id="skip-pro-setup" type="button">Skip</button></section>`;
+  if (pro) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><button class="button primary" data-onboarding="sending" type="button">Continue</button></section>`;
+  return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading"><p class="eyebrow">Optional</p><h1 id="route-heading" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Continue</button></form><button class="text-button" id="skip-pro-setup" type="button">Skip</button></section>`;
 }
 
 function tutorialContent(): string {
@@ -2442,7 +2442,7 @@ function recoveryContent(): string {
   if (view.mode === "reveal-required") return recoveryRevealContent(view);
   if (view.mode === "refusal") return recoveryProtectionRefusalContent(view);
   const secrets = visibleRecoverySecrets(state);
-  if (!secrets) return `<p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="pro">Continue</button>`;
+  if (!secrets) return `<section class="onboarding-centered-step recovery-empty" aria-labelledby="route-heading"><p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="pro">Continue</button></section>`;
   return `<h1 id="route-heading" tabindex="-1" class="recovery-heading">Save your recovery kit</h1><section class="setup-surface recovery-surface">${recoveryProtectionNoticeMarkup(view)}${recoveryKitSecretCardsMarkup(secrets, escapeHtml)}${secureRecoveryOnboardingContent()}<details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(secrets.userId)}</code></details><button class="button" id="copy-recovery-kit" type="button">Copy recovery kit</button><label class="check"><input id="recovery-saved" type="checkbox" ${recoverySavedAcknowledged ? "checked" : ""}/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" ${recoverySavedAcknowledged ? "" : "disabled"}>Continue</button></section>`;
 }
 

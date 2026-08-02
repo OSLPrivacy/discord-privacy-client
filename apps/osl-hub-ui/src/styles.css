@@ -5400,7 +5400,7 @@ code {
   0% { opacity: 0; transform: translateX(-4px); }
   45%, 100% { opacity: 1; transform: translateX(0); }
 }
-.pro-setup { width: min(440px, 100%); margin: auto; text-align: center; }
+.onboarding-centered-step { width: min(440px, 100%); margin: auto; text-align: center; }
 .pro-setup .status-tag { margin-bottom: 14px; }
 .pro-setup-form { display: grid; gap: 10px; }
 .pro-setup-form input {
