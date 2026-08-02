@@ -40,3 +40,12 @@ Exact targets without a carrier digest, but it is not evidence of an X row.
 On an isolated Windows VM, sign in to X, run the shipping binary's `WEB-W3`
 suite against a DM, capture the P1–P5 observations, and replace this status
 with the evidence and binary hash. Until then `CHAT-PATTERN` is unavailable.
+
+## T4-F1 — Instagram fan-out
+
+Not implemented: `CHAT-PATTERN` is deliberately unavailable above, so an
+Instagram selector profile or adapter would be unreachable at best and an
+unsupported L2/L3 availability claim at worst. The shipping web adapter has
+no Instagram capability grant. Build this fan-out only after the required X
+Windows proof exists, then run the same `WEB-W3` fixture with Instagram's
+live signed-in account and its deliberately-corrupted composer selector.
