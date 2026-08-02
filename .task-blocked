@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T21-K1: /home/liamw/osl-plan/vmqa/space_delivery.ps1 has not been created; T21-K2 depends on it for the three-VM delivery setup.
