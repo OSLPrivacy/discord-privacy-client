@@ -7,3 +7,13 @@ authoritative exception: AutoScrub UNATTENDED is correct and must not be
 relabeled attended.
 
 This is the detailed lifecycle reference named by the master source index.
+
+Resume here
+Current verified state:
+Exact build/worktree:
+Current owner and exclusive files:
+Next unblocked action:
+Command/scenario:
+Expected result:
+Known blocker/risk:
+Master/internal-checklist rows to update on completion:

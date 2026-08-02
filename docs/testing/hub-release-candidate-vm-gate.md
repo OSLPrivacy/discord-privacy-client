@@ -87,3 +87,13 @@ python scripts/verify_hub_vm_qa_attestation.py `
 Then upload the JSON to the draft release and manually run **Promote VM-tested
 OSL Privacy candidate**. Do not approve the `hub-vm-qa` environment unless
 the verifier is targeting the exact installer tested on both clean VMs.
+
+Resume here
+Current verified state:
+Exact build/worktree:
+Current owner and exclusive files:
+Next unblocked action:
+Command/scenario:
+Expected result:
+Known blocker/risk:
+Master/internal-checklist rows to update on completion:

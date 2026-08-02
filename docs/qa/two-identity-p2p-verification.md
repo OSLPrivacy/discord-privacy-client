@@ -336,3 +336,13 @@ To reset the **artefact surface only** (keep both identities):
 - **No plaintext, cover text, key material or conversation name is ever logged.**
   Only counts, fixed labels, hashes, booleans and opaque IDs are read out of
   artefacts, and only fixed strings are written into them.
+
+Resume here
+Current verified state:
+Exact build/worktree:
+Current owner and exclusive files:
+Next unblocked action:
+Command/scenario:
+Expected result:
+Known blocker/risk:
+Master/internal-checklist rows to update on completion:

@@ -22,11 +22,28 @@ export const DETAILED_SOURCES = [
   'docs/plans/scrub-detection-opus5-plan.md',
 ];
 
+export const RESUME_HERE_FIELDS = [
+  'Resume here',
+  'Current verified state:',
+  'Exact build/worktree:',
+  'Current owner and exclusive files:',
+  'Next unblocked action:',
+  'Command/scenario:',
+  'Expected result:',
+  'Known blocker/risk:',
+  'Master/internal-checklist rows to update on completion:',
+];
+
 export function validateDetailedSources(read = (file) => readFileSync(file, 'utf8')) {
   const missing = [];
   for (const relative of DETAILED_SOURCES) {
     const file = path.join(root, relative);
-    if (!existsSync(file) || read(file).trim().length < 80) missing.push(relative);
+    if (!existsSync(file)) {
+      missing.push(relative);
+      continue;
+    }
+    const source = read(file).trim();
+    if (source.length < 80 || !source.endsWith(RESUME_HERE_FIELDS.join('\n'))) missing.push(relative);
   }
   return missing;
 }

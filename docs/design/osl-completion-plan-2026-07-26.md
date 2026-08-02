@@ -96,3 +96,13 @@ painting rows OSL did not send.
 - `--features core` is mandatory for `apps/osl-hub` library tests, or the run is vacuous.
 - The bin cannot build on Linux (`rfd` backend), so `#[cfg(test)]` in bin modules never executes.
 - One cargo invocation at a time; rust-analyzer double-indexing OOMs the WSL VM.
+
+Resume here
+Current verified state:
+Exact build/worktree:
+Current owner and exclusive files:
+Next unblocked action:
+Command/scenario:
+Expected result:
+Known blocker/risk:
+Master/internal-checklist rows to update on completion:

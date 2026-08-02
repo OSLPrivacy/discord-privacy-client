@@ -887,3 +887,13 @@ Recorded rather than guessed.
 6. **Whether `rehydrate_native_discord_overlay_history` was deliberately unwired or the wiring was lost.** The command, its gate, its bounds, its privacy contract, and its every-row-in-one-row-out invariant are all fully built and carefully commented. Nothing in the tree explains why nothing calls it. This is the highest-value question in the whole map: it is the difference between "the eye was never built" and "the eye was built and one `invoke` is missing."
 
 7. **Whether the production build has ever been run end-to-end at all**, as opposed to the QA shell. Every capability that differs between the two flavours is broken on the production side, which is more consistent with "production was never exercised" than with "production regressed." I have no direct evidence either way.
+
+Resume here
+Current verified state:
+Exact build/worktree:
+Current owner and exclusive files:
+Next unblocked action:
+Command/scenario:
+Expected result:
+Known blocker/risk:
+Master/internal-checklist rows to update on completion:
