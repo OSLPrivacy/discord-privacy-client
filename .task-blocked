@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing owner decision for the PinnedToRn unpin policy (OQ-1); T19-E3 cannot design the ceremony until /home/liamw/osl-plan/plan/09-DECISIONS.md records the authorization, confirmation, and downgrade-resistance rules.
