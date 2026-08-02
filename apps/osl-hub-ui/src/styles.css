@@ -5195,6 +5195,11 @@ code {
   margin-inline: auto;
 }
 .onboarding-centered-copy { margin-right: auto; margin-left: auto; text-align: center; }
+.onboarding-tour {
+  width: min(100%, 620px);
+  margin-inline: auto;
+  text-align: center;
+}
 .setup-list { margin-top: 18px; border-top: 1px solid var(--line); }
 .setup-status-row {
   min-height: 64px;
