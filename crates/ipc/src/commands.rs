@@ -10328,68 +10328,9 @@ pub fn populate_peer_from_fetch_response(
 /// - pending alert, DIFFERENT key → yes (the key changed AGAIN: the old
 ///   session is invalid; drop)
 ///
-/// Pure so it is unit-tested without an `AppState`.
-fn tofu_change_is_newly_observed(
-    pending: Option<&crate::tofu::KeyBundle>,
-    fetched: &crate::tofu::KeyBundle,
-) -> bool {
-    match pending {
-        Some(bundle) => bundle != fetched,
-        None => true,
-    }
-}
-
 #[cfg(test)]
 mod tofu_change_idempotency_tests {
-    use super::{is_discord_snowflake_shaped, tofu_change_is_newly_observed as f};
-    use crate::tofu::KeyBundle;
-
-    fn bundle(x: &str) -> KeyBundle {
-        KeyBundle {
-            ed25519_pub: "ed".to_owned(),
-            x25519_pub: x.to_owned(),
-            mlkem768_pub: "mlkem".to_owned(),
-            ratchet_initial_pub: None,
-        }
-    }
-
-    #[test]
-    fn first_detection_no_pending_alert_is_newly_observed() {
-        // No alert yet → first detection → drop ratchet once.
-        assert!(f(None, &bundle("new")));
-    }
-
-    #[test]
-    fn same_pending_change_is_not_newly_observed() {
-        // The exact scenario that bricked DMs: every v=4 send
-        // re-fetches and re-observes the SAME changed key. Must NOT
-        // be treated as new (so the ratchet is not nuked every send).
-        let pending = bundle("new");
-        assert!(!f(Some(&pending), &pending));
-    }
-
-    #[test]
-    fn key_changed_again_is_newly_observed() {
-        // Pending alert was for KEY_A but the peer rotated AGAIN to
-        // KEY_B → the bootstrapped session is invalid → drop again.
-        assert!(f(Some(&bundle("a")), &bundle("b")));
-    }
-
-    #[test]
-    fn repeated_calls_drop_exactly_once() {
-        // Simulate the per-send refresh loop: first call drops, all
-        // subsequent identical calls do not.
-        let fetched = bundle("rotated");
-        let mut pending: Option<KeyBundle> = None;
-        let mut drops = 0;
-        for _ in 0..50 {
-            if f(pending.as_ref(), &fetched) {
-                drops += 1;
-                pending = Some(fetched.clone()); // alert now raised
-            }
-        }
-        assert_eq!(drops, 1, "ratchet must be dropped exactly once");
-    }
+    use super::is_discord_snowflake_shaped;
 
     #[test]
     fn discord_snowflake_shaped_true_for_17_through_20_digits() {
@@ -10487,7 +10428,8 @@ fn tofu_observe_peer(
                     .expect("key_change_alerts mutex poisoned");
                 g.get(discord_id).map(|a| a.pending_bundle.clone())
             };
-            let newly_observed = tofu_change_is_newly_observed(pending_same.as_ref(), fetched);
+            let newly_observed =
+                crate::rn_health::tofu_change_needs_session_reset(pending_same.as_ref(), fetched);
             if !newly_observed {
                 // Same change we already alerted on — do NOT re-nuke
                 // a (possibly freshly re-bootstrapped) ratchet, do
