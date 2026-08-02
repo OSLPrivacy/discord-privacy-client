@@ -47,6 +47,7 @@
     "allow-setup-hub-main-password",
     "allow-view-hub-recovery-phrase",
     "allow-lock-hub-session",
+    "allow-emit-active-session-reset",
     "allow-get-hub-password-role-status",
     "allow-set-hub-stealth-password",
     "allow-remove-hub-stealth-password",

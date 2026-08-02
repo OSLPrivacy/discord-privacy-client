@@ -1370,6 +1370,19 @@ async fn lock_hub_session(
     .map_err(|_| "OSL session lock worker failed".to_string())?
 }
 
+/// Send a ratchet-independent SESSION_RESET to the currently authorised peer
+/// conversation after local desync detection has requested recovery.
+#[tauri::command]
+async fn emit_active_session_reset(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let core = app.state::<HubCoreState>();
+        let broker = app.state::<HubBrokerState>();
+        osl_privacy_hub::rn_recovery::emit_active_session_reset(&core, &broker)
+    })
+    .await
+    .map_err(|_| "OSL session recovery worker failed".to_owned())?
+}
+
 #[cfg(feature = "whatsapp-qa-shell")]
 fn bootstrap_whatsapp_qa_device_identity(
     state: &HubCoreState,

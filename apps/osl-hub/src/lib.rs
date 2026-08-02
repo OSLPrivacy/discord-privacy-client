@@ -66,6 +66,8 @@ pub mod proprietary_module_lifecycle;
 pub mod scrub_evidence_manifest;
 pub mod scrub_erasure_tracker;
 pub mod scrub_erasure_queue;
+#[cfg(feature = "core")]
+pub mod rn_recovery;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;

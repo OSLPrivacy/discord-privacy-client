@@ -406,6 +406,7 @@ macro_rules! hub_tauri_commands {
             setup_hub_main_password,
             view_hub_recovery_phrase,
             lock_hub_session,
+            emit_active_session_reset,
             get_hub_password_role_status,
             set_hub_stealth_password,
             remove_hub_stealth_password,
@@ -1323,6 +1324,17 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["view_hub_recovery_phrase"],
+        );
+    }
+
+    #[test]
+    fn session_reset_emitter_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "emit_active_session_reset",
         );
     }
 
