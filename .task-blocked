@@ -1,0 +1,1 @@
+Missing prerequisite T13-E2: crates/cover-ai/tests/cloud_egress_allowlist.rs (the fail-closed cloud egress allowlist) has not been implemented; T13 owns it.
