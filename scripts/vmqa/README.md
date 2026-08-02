@@ -17,6 +17,14 @@ artifacts can satisfy a release gate.
 
 ## Keeping the split useful
 
+## Space negative proofs
+
+`space-removal.ps1` is the T21-K2 three-VM proof. It invokes the installed
+`C:\OSL\space.ps1` UIA bridge on each VM; it is deliberately not a health or
+screenshot check. Run `python3 scripts/vmqa/test-space-removal.py` before a
+leased Windows run. The bridge must be provisioned on all three VMs or the run
+fails closed.
+
 Use the scratch directory for fast, disposable experiments. When an experiment
 becomes repeatable release coverage, move or reimplement the driver and its
 assertions in `scripts/vmqa/`. Do not copy a release verdict back into the
