@@ -18,3 +18,10 @@ Blocked: T20-D1 owns the monitor module of T20-C1's absent BORROW-CORE.  The
 current browser companion is a separate legacy implementation, so adding a
 fourth monitor clamp there would not provide the required all-substrate
 guarantee or TW-9 proof.
+
+# T20-E1
+
+Blocked: T20-E1 needs T20-C1 and a live Windows borrowed-window fixture.  No
+shared lifecycle or `borrowed_window_death.rs` fixture exists in this branch,
+and the required crash/handle-reuse observation cannot be substituted with an
+app build or VM run under this batch's constraints.
