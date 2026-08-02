@@ -149,7 +149,7 @@ export {
   type AutoscrubUnattendedRunResult,
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
-import { OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
+import { firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
 import { parseCircleAudience, type CircleAudience } from "./osl-collab";
@@ -3886,6 +3886,10 @@ function circleAudienceStatus(audience: CircleAudience): { label: "Ready" | "Ref
 }
 
 function circlesDestinationContent(): string {
+  const circleSurface = firstPartyOslSurfaceContract("osl-circles");
+  if (circleSurface.state !== "available") {
+    return `<section class="inbox-surface-card circles-destination unavailable" data-inbox-osl-surface="circles" data-circle-state="${circleSurface.state}" aria-disabled="true"><strong>${escapeHtml(circleSurface.label)}</strong><small>Private audience feeds</small><p>${statusTag("Coming later")} ${escapeHtml(circleSurface.label)} is coming after small-group review. Private audience posts are unavailable.</p>${publicCirclesUnavailableMarkup()}</section>`;
+  }
   const audienceCards = privateCircleAudiences.map((audience) => {
     const status = circleAudienceStatus(audience);
     return `<article class="setting-line circle-audience-card ${audience.canPost ? "" : "unavailable"}" data-circle-audience="${escapeHtml(audience.audienceId)}" data-circle-posting="${audience.canPost ? "ready" : "refused"}" data-circle-refusal="${audience.refusal ?? "none"}" aria-disabled="${audience.canPost ? "false" : "true"}"><span><strong>${escapeHtml(audience.name)}</strong><small>${escapeHtml(circleAudienceMembershipDetail(audience))}</small></span>${statusTag(status.label)}<p>${escapeHtml(status.detail)}</p></article>`;
@@ -3894,7 +3898,7 @@ function circlesDestinationContent(): string {
   const audienceList = audienceCards
     ? `<div class="settings-list circle-audience-list" aria-label="Private Circle audiences">${audienceCards}</div><div class="circle-feed-list" aria-label="Chronological private Circle feeds">${feedItems}</div>`
     : `<div class="empty-state" data-circle-audiences="none"><strong>No Circle audiences yet</strong><p>An audience appears here after you create one on this device. Until then there is nobody to post to.</p></div>`;
-  return `<section class="inbox-surface-card circles-destination" data-inbox-osl-surface="circles" data-circle-feeds="private-audiences" data-circle-audience-count="${privateCircleAudiences.length}"><strong>OSL Circles</strong><small>Private audience feeds</small><p>${statusTag("Private")} Posts and comments are encrypted for the selected audience. Audience membership is shown before posting.</p>${audienceList}${publicCirclesUnavailableMarkup()}</section>`;
+  return `<section class="inbox-surface-card circles-destination" data-inbox-osl-surface="circles" data-circle-state="${circleSurface.state}" data-circle-feeds="private-audiences" data-circle-audience-count="${privateCircleAudiences.length}"><strong>OSL Circles</strong><small>Private audience feeds</small><p>${statusTag("Private")} Posts and comments are encrypted for the selected audience. Audience membership is shown before posting.</p>${audienceList}${publicCirclesUnavailableMarkup()}</section>`;
 }
 
 type OslMailboxStageCReview = {
