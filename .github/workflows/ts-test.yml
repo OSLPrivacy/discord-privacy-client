@@ -39,6 +39,8 @@ jobs:
         run: |
           node scripts/check-app-claims.mjs --self-test
           node scripts/check-app-claims.mjs
+      - name: Plan-governance-acceptance-gates
+        run: python3 scripts/validate-plan-governance.py
       - name: Install webview deps
         if: ${{ matrix.lane == 'webview' }}
         working-directory: webview
