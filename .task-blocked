@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T21-D2 Space sender-key send path and T21-B3 sender-authentication decision/design; both are prerequisites for T21-D3.
