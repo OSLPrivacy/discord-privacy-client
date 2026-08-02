@@ -29,6 +29,8 @@
 //! thread, registers for `KSCATEGORY_CAPTURE` device-interface
 //! arrivals via `RegisterDeviceNotificationW`, and invokes the
 //! user-supplied callback on each `WM_DEVICECHANGE / DBT_DEVICEARRIVAL`.
+//! It also registers for volume notifications and forwards
+//! `DBT_DEVICEREMOVECOMPLETE` for `DBT_DEVTYP_VOLUME` to a separate callback.
 //! On non-Windows targets [`UsbMonitor::start`] is a no-op stub so
 //! the rest of the binary compiles on Linux / macOS dev hosts.
 //!
@@ -90,6 +92,66 @@ pub type Result<T> = core::result::Result<T, UsbMonitorError>;
 /// a dedicated thread.
 pub type ArrivalCallback = Box<dyn Fn() + Send + Sync + 'static>;
 
+/// Callback invoked when Windows reports that a mounted volume was removed.
+/// This is deliberately separate from [`ArrivalCallback`]: capture-device
+/// arrivals continue to drive rotation, while a volume removal is consumed by
+/// the dead-man switch.
+pub type VolumeRemovalCallback = Box<dyn Fn() + Send + Sync + 'static>;
+
+/// USB monitor events forwarded from the platform-specific message pump.
+///
+/// Keeping this event boundary platform-independent lets callers and tests
+/// exercise the same callback routing without manufacturing a Win32 message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsbMonitorEvent {
+    /// A device registered in the capture interface class arrived.
+    CaptureArrival,
+    /// A mounted volume was removed.
+    VolumeRemoval,
+}
+
+/// Decodes the subset of `WM_DEVICECHANGE` messages consumed by this monitor.
+///
+/// The numeric values are Win32's `WM_DEVICECHANGE`, `DBT_DEVICEARRIVAL`,
+/// `DBT_DEVICEREMOVECOMPLETE`, `DBT_DEVTYP_DEVICEINTERFACE`, and
+/// `DBT_DEVTYP_VOLUME` respectively. Keeping this decoder independent of the
+/// Windows bindings makes the real message routing testable on every target.
+pub fn usb_monitor_event_from_device_change(
+    message: u32,
+    change: u32,
+    device_type: u32,
+) -> Option<UsbMonitorEvent> {
+    match (message, change, device_type) {
+        (0x0219, 0x8000, 0x0005) => Some(UsbMonitorEvent::CaptureArrival),
+        (0x0219, 0x8004, 0x0002) => Some(UsbMonitorEvent::VolumeRemoval),
+        _ => None,
+    }
+}
+
+/// The two independent consumers of USB monitor events.
+pub struct UsbMonitorCallbacks {
+    arrival: ArrivalCallback,
+    volume_removal: VolumeRemovalCallback,
+}
+
+impl UsbMonitorCallbacks {
+    /// Construct the callbacks used by [`UsbMonitor`].
+    pub fn new(arrival: ArrivalCallback, volume_removal: VolumeRemovalCallback) -> Self {
+        Self {
+            arrival,
+            volume_removal,
+        }
+    }
+
+    /// Forward a monitor event to its dedicated callback.
+    pub fn dispatch(&self, event: UsbMonitorEvent) {
+        match event {
+            UsbMonitorEvent::CaptureArrival => (self.arrival)(),
+            UsbMonitorEvent::VolumeRemoval => (self.volume_removal)(),
+        }
+    }
+}
+
 /// `KSCATEGORY_CAPTURE` GUID
 /// (`{65E8773D-8F56-11D0-A3B9-00A0C9223196}`). Webcams, USB capture
 /// cards, and HDMI capture devices register under this category.
@@ -104,7 +166,10 @@ pub const KSCATEGORY_CAPTURE_GUID_BYTES: [u8; 16] = [
 
 #[cfg(windows)]
 mod imp {
-    use super::{ArrivalCallback, Result, UsbMonitorError, KSCATEGORY_CAPTURE_GUID_BYTES};
+    use super::{
+        usb_monitor_event_from_device_change, Result, UsbMonitorCallbacks, UsbMonitorError,
+        UsbMonitorEvent, KSCATEGORY_CAPTURE_GUID_BYTES,
+    };
     use std::sync::Arc;
     use std::thread::JoinHandle;
     use windows::core::{w, GUID, PCWSTR};
@@ -113,10 +178,11 @@ mod imp {
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
         RegisterClassExW, RegisterDeviceNotificationW, SetWindowLongPtrW, TranslateMessage,
-        UnregisterClassW, UnregisterDeviceNotification, DBT_DEVICEARRIVAL,
-        DBT_DEVTYP_DEVICEINTERFACE, DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W,
-        DEV_BROADCAST_HDR, GWLP_USERDATA, HWND_MESSAGE, MSG, REGISTER_NOTIFICATION_FLAGS,
-        WINDOW_EX_STYLE, WM_DESTROY, WM_DEVICECHANGE, WM_QUIT, WNDCLASSEXW,
+        UnregisterClassW, UnregisterDeviceNotification, DBT_DEVTYP_DEVICEINTERFACE,
+        DBT_DEVTYP_VOLUME, DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W,
+        DEV_BROADCAST_HDR, DEV_BROADCAST_VOLUME, GWLP_USERDATA, HWND_MESSAGE, MSG,
+        REGISTER_NOTIFICATION_FLAGS, WINDOW_EX_STYLE, WM_DESTROY, WM_DEVICECHANGE, WM_QUIT,
+        WNDCLASSEXW,
     };
 
     fn ksc_capture_guid() -> GUID {
@@ -132,7 +198,7 @@ mod imp {
     /// Per-window state kept alive in HWND user data; reclaimed in
     /// `WM_DESTROY`.
     struct WindowState {
-        callback: Arc<ArrivalCallback>,
+        callbacks: Arc<UsbMonitorCallbacks>,
     }
 
     pub(super) struct Monitor {
@@ -160,8 +226,8 @@ mod imp {
         }
     }
 
-    pub(super) fn start(callback: ArrivalCallback) -> Result<Monitor> {
-        let cb = Arc::new(callback);
+    pub(super) fn start(callbacks: UsbMonitorCallbacks) -> Result<Monitor> {
+        let cb = Arc::new(callbacks);
         let cb_for_thread = cb.clone();
         let (tx, rx) = std::sync::mpsc::channel::<Result<u32>>();
 
@@ -221,6 +287,7 @@ mod imp {
     struct PumpState {
         hwnd: HWND,
         notify_handle: windows::Win32::UI::WindowsAndMessaging::HDEVNOTIFY,
+        volume_notify_handle: windows::Win32::UI::WindowsAndMessaging::HDEVNOTIFY,
         hinstance: HMODULE,
         // Stored boxed so we can null the user-data pointer on
         // destroy without freeing twice.
@@ -231,6 +298,7 @@ mod imp {
         fn drop(&mut self) {
             unsafe {
                 let _ = UnregisterDeviceNotification(self.notify_handle);
+                let _ = UnregisterDeviceNotification(self.volume_notify_handle);
                 let _ = DestroyWindow(self.hwnd);
                 let class_name = make_class_name();
                 let _ = UnregisterClassW(PCWSTR(class_name.as_ptr()), self.hinstance);
@@ -264,7 +332,7 @@ mod imp {
     /// `PostThreadMessageW(WM_QUIT)` in `drop` would be dropped on the
     /// floor and the pump would never be told to stop.
     fn run_pump(
-        callback: Arc<ArrivalCallback>,
+        callbacks: Arc<UsbMonitorCallbacks>,
         ready: std::sync::mpsc::Sender<Result<u32>>,
     ) -> Result<()> {
         unsafe {
@@ -288,7 +356,7 @@ mod imp {
             }
 
             let state = Box::into_raw(Box::new(WindowState {
-                callback: callback.clone(),
+                callbacks: callbacks.clone(),
             }));
 
             // windows 0.56.0: `CreateWindowExW` returns `HWND` directly
@@ -338,10 +406,36 @@ mod imp {
             )
             .map_err(|e| UsbMonitorError::Win32(format!("RegisterDeviceNotificationW: {e}")))?;
 
+            // Volume notifications are independent of the capture-interface
+            // registration above. Windows fills the volume metadata in each
+            // removal message; the dead-man consumer only needs the removal
+            // edge, so it receives the event through its dedicated callback.
+            let mut volume_filter = DEV_BROADCAST_VOLUME {
+                dbcv_size: std::mem::size_of::<DEV_BROADCAST_VOLUME>() as u32,
+                dbcv_devicetype: DBT_DEVTYP_VOLUME.0,
+                dbcv_reserved: 0,
+                dbcv_unitmask: 0,
+                dbcv_flags: Default::default(),
+            };
+            let volume_notify_handle = match RegisterDeviceNotificationW(
+                hwnd,
+                &mut volume_filter as *mut _ as *mut _,
+                REGISTER_NOTIFICATION_FLAGS(DEVICE_NOTIFY_WINDOW_HANDLE.0),
+            ) {
+                Ok(handle) => handle,
+                Err(e) => {
+                    let _ = UnregisterDeviceNotification(notify_handle);
+                    return Err(UsbMonitorError::Win32(format!(
+                        "RegisterDeviceNotificationW(volume): {e}"
+                    )));
+                }
+            };
+
             // Bundle for RAII cleanup on pump exit.
             let _bundle = PumpState {
                 hwnd,
                 notify_handle,
+                volume_notify_handle,
                 hinstance,
                 _state: state,
             };
@@ -369,29 +463,33 @@ mod imp {
     }
 
     /// `WndProc` for the hidden monitor window. Handles
-    /// `WM_DEVICECHANGE / DBT_DEVICEARRIVAL` and forwards to the
-    /// stored callback.
+    /// `WM_DEVICECHANGE` and forwards capture arrivals and volume removals to
+    /// their respective callbacks.
     unsafe extern "system" fn wnd_proc(
         hwnd: HWND,
         msg: u32,
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        if msg == WM_DEVICECHANGE && wparam.0 as u32 == DBT_DEVICEARRIVAL {
+        if msg == WM_DEVICECHANGE {
             let hdr = lparam.0 as *const DEV_BROADCAST_HDR;
             // windows 0.56.0 quirk: `DEV_BROADCAST_HDR.dbch_devicetype`
             // is the typed wrapper `DEV_BROADCAST_HDR_DEVICE_TYPE`,
             // whereas `DEV_BROADCAST_DEVICEINTERFACE_W.dbcc_devicetype`
-            // (used at registration time above) is raw u32. Same Win32
-            // constant, two struct field types — compare without `.0`
-            // here, with `.0` there.
-            if !hdr.is_null() && (*hdr).dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE {
+            // (used at registration time above) is raw u32. Decode the
+            // message using the raw value here.
+            if !hdr.is_null() {
                 let user_data =
                     windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(hwnd, GWLP_USERDATA);
                 if user_data != 0 {
-                    let state = &*(user_data as *const WindowState);
-                    let cb = state.callback.clone();
-                    cb();
+                    if let Some(event) = usb_monitor_event_from_device_change(
+                        msg,
+                        wparam.0 as u32,
+                        (*hdr).dbch_devicetype.0,
+                    ) {
+                        let state = &*(user_data as *const WindowState);
+                        state.callbacks.dispatch(event);
+                    }
                 }
             }
             return LRESULT(0);
@@ -408,19 +506,19 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    use super::{ArrivalCallback, Result};
+    use super::{Result, UsbMonitorCallbacks};
 
     /// Non-Windows stub. Returns a monitor that holds the callback
     /// and never fires it. A real macOS / Linux impl would hook
     /// `IOHIDManager` (macOS) / `udev` (Linux); both are out of
     /// scope for v1 alpha (Windows-only target).
     pub(super) struct Monitor {
-        _callback: ArrivalCallback,
+        _callbacks: UsbMonitorCallbacks,
     }
 
-    pub(super) fn start(callback: ArrivalCallback) -> Result<Monitor> {
+    pub(super) fn start(callbacks: UsbMonitorCallbacks) -> Result<Monitor> {
         Ok(Monitor {
-            _callback: callback,
+            _callbacks: callbacks,
         })
     }
 }
@@ -436,8 +534,19 @@ impl UsbMonitor {
     /// Start monitoring for capture-class USB device arrivals.
     /// `callback` is invoked once per arrival event.
     pub fn start(callback: ArrivalCallback) -> Result<Self> {
+        Self::start_with_volume_removal(callback, Box::new(|| {}))
+    }
+
+    /// Start monitoring for capture arrivals and mounted-volume removals.
+    ///
+    /// The capture callback keeps the established rotation behaviour; the
+    /// removal callback is reserved for the dead-man switch.
+    pub fn start_with_volume_removal(
+        arrival: ArrivalCallback,
+        volume_removal: VolumeRemovalCallback,
+    ) -> Result<Self> {
         Ok(UsbMonitor {
-            _inner: imp::start(callback)?,
+            _inner: imp::start(UsbMonitorCallbacks::new(arrival, volume_removal))?,
         })
     }
 }

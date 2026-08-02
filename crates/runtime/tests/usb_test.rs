@@ -1,4 +1,7 @@
-use runtime::{is_capture_device, ArrivalCallback, UsbDeviceDescriptor, UsbMonitor};
+use runtime::{
+    is_capture_device, usb_monitor_event_from_device_change, ArrivalCallback, UsbDeviceDescriptor,
+    UsbMonitor, UsbMonitorCallbacks,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -201,6 +204,52 @@ fn terminal_just_outside_external_range_is_not_capture() {
 }
 
 // ---- monitor stub (Linux/macOS) and Windows construction ----
+
+#[test]
+fn synthetic_volume_removal_reaches_only_the_removal_callback() {
+    let arrivals = Arc::new(AtomicUsize::new(0));
+    let removals = Arc::new(AtomicUsize::new(0));
+    let arrival_counter = arrivals.clone();
+    let removal_counter = removals.clone();
+    let callbacks = UsbMonitorCallbacks::new(
+        Box::new(move || {
+            arrival_counter.fetch_add(1, Ordering::SeqCst);
+        }),
+        Box::new(move || {
+            removal_counter.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
+
+    let event = usb_monitor_event_from_device_change(0x0219, 0x8004, 0x0002)
+        .expect("synthetic volume removal message is monitored");
+    callbacks.dispatch(event);
+
+    assert_eq!(arrivals.load(Ordering::SeqCst), 0);
+    assert_eq!(removals.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn synthetic_capture_arrival_still_reaches_only_the_arrival_callback() {
+    let arrivals = Arc::new(AtomicUsize::new(0));
+    let removals = Arc::new(AtomicUsize::new(0));
+    let arrival_counter = arrivals.clone();
+    let removal_counter = removals.clone();
+    let callbacks = UsbMonitorCallbacks::new(
+        Box::new(move || {
+            arrival_counter.fetch_add(1, Ordering::SeqCst);
+        }),
+        Box::new(move || {
+            removal_counter.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
+
+    let event = usb_monitor_event_from_device_change(0x0219, 0x8000, 0x0005)
+        .expect("synthetic capture-arrival message is monitored");
+    callbacks.dispatch(event);
+
+    assert_eq!(arrivals.load(Ordering::SeqCst), 1);
+    assert_eq!(removals.load(Ordering::SeqCst), 0);
+}
 
 #[test]
 fn monitor_start_with_callback_compiles_on_all_targets() {

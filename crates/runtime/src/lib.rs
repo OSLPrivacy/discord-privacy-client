@@ -37,5 +37,6 @@ pub use screenshot::{
     ScreenshotProtection,
 };
 pub use usb::{
-    is_capture_device, ArrivalCallback, UsbDeviceDescriptor, UsbMonitor, UsbMonitorError,
+    is_capture_device, usb_monitor_event_from_device_change, ArrivalCallback, UsbDeviceDescriptor,
+    UsbMonitor, UsbMonitorCallbacks, UsbMonitorError, UsbMonitorEvent, VolumeRemovalCallback,
 };
