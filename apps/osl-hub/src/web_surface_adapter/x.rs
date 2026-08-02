@@ -248,8 +248,30 @@ impl<D: XSurfaceDriver> WebSurfaceBackend for XWebBackend<D> {
         }
     }
 
-    fn paint_targets(&self, _: &SurfaceBinding) -> Result<Vec<PaintTarget>, AdapterRefusal> {
-        Ok(Vec::new())
+    fn paint_targets(&self, binding: &SurfaceBinding) -> Result<Vec<PaintTarget>, AdapterRefusal> {
+        let snapshot = self.snapshot()?;
+        // Virtualised X rows are recycled when scrolled.  Returning an old
+        // rectangle would paint plaintext over a different message, so a
+        // changed transcript epoch invalidates the request outright.
+        if snapshot.transcript_epoch != binding.bound_at_ms {
+            return Err(AdapterRefusal::ReadIncomplete);
+        }
+        Ok(snapshot
+            .rows
+            .into_iter()
+            .filter_map(|row| {
+                let carrier = row.carrier?;
+                if carrier.is_empty() {
+                    return None;
+                }
+                Some(PaintTarget {
+                    carrier_sha256: digest("x-carrier", &carrier),
+                    rect: row.rect,
+                    clipped_by: None,
+                    confidence: PaintConfidence::Exact,
+                })
+            })
+            .collect())
     }
 }
 
@@ -424,5 +446,52 @@ mod tests {
         let sent = backend.commit(&binding, &placed);
         assert_eq!(sent.outcome, SendOutcome::Sent);
         assert_eq!(backend.snapshot().unwrap().rows.len(), rows_before + 1);
+    }
+
+    #[test]
+    fn web_p5_exact_targets_have_carrier_digests_and_scroll_invalidates_them() {
+        let mut initial = snapshot("scope-a", Some("Alice"));
+        initial.rows.push(XTranscriptRow {
+            rect: Bounds {
+                x: 1,
+                y: 20,
+                width: 30,
+                height: 10,
+            },
+            carrier: Some("osl1_carrier".into()),
+        });
+        let backend = XWebBackend::new(Fixture(Mutex::new(initial)));
+        let binding = SurfaceBinding::for_claimed_surface(
+            AdapterAppId::X,
+            7,
+            BindingEvidence::Accessibility {
+                tree: A11yTree::WebAx,
+            },
+            NodeRef::for_claimed_node(1),
+            Some(NodeRef::for_claimed_node(2)),
+            Bounds {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4,
+            },
+            10,
+            "scope-a",
+        );
+        let targets = backend.paint_targets(&binding).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].confidence, PaintConfidence::Exact);
+        assert_eq!(
+            targets[0].carrier_sha256,
+            digest("x-carrier", "osl1_carrier")
+        );
+
+        // A scroll may recycle the same accessibility node at a new position;
+        // it must invalidate instead of moving the old target.
+        backend.driver.0.lock().unwrap().transcript_epoch = 11;
+        assert_eq!(
+            backend.paint_targets(&binding),
+            Err(AdapterRefusal::ReadIncomplete)
+        );
     }
 }
