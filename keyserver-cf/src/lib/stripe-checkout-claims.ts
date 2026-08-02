@@ -158,7 +158,7 @@ export async function completeStripeCheckoutClaim(
 }
 
 /**
- * Activate a lifetime Pro entitlement after a verified one-time payment.
+ * Issue a redeemable one-month code after a verified one-time payment.
  *
  * The legacy schema names the entitlement relation `subscriptions`, but this
  * path stores no customer id, email, billing profile, or expiry. The only
@@ -187,7 +187,10 @@ export async function completeOneTimeStripeCheckoutClaim(
   const priorObservation = await getLatestSubscriptionObservation(db, input.paymentIntentId);
   const priorTerminal = priorObservation?.status === "REVOKED" ||
     priorObservation?.status === "EXPIRED";
-  const initialStatus = priorTerminal ? priorObservation.status : "ACTIVE";
+  // A paid checkout is not an entitlement.  The code is deliberately inert
+  // until the holder redeems it; only then does license-redeem grant its
+  // bounded period.  PENDING is the existing non-entitled subscription state.
+  const initialStatus = priorTerminal ? priorObservation.status : "PENDING";
   const initialRevokedAt = priorTerminal ? now : null;
   const initialRevokedReason = priorTerminal
     ? observationRevocationReason(priorObservation.event_type)

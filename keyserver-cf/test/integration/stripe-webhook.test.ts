@@ -263,7 +263,7 @@ describe("POST /v1/stripe/webhook state machine", () => {
     });
   });
 
-  it("activates lifetime Pro from a paid one-time checkout without customer data", async () => {
+  it("T16-T05 issues an unredeemed one-month code from a paid one-time checkout", async () => {
     const sessionId = `cs_live_one_time_${crypto.randomUUID().replace(/-/g, "")}`;
     const paymentIntentId = `pi_${crypto.randomUUID().replace(/-/g, "")}`;
     const licenseHash = `license-${sessionId}`;
@@ -308,14 +308,24 @@ describe("POST /v1/stripe/webhook state machine", () => {
     expect(entitlement).toEqual({
       customer_id: "",
       customer_email: "",
-      status: "ACTIVE",
+      status: "PENDING",
       current_period_end: null,
       cancel_at_period_end: 0,
     });
     const license = await env.DB.prepare(
-      "SELECT subscription_id FROM licenses WHERE license_hash = ?",
-    ).bind(licenseHash).first<{ subscription_id: string }>();
-    expect(license?.subscription_id).toBe(paymentIntentId);
+      "SELECT subscription_id, redeemed_at, expires_at, grant_seconds FROM licenses WHERE license_hash = ?",
+    ).bind(licenseHash).first<{
+      subscription_id: string;
+      redeemed_at: number | null;
+      expires_at: number | null;
+      grant_seconds: number | null;
+    }>();
+    expect(license).toEqual({
+      subscription_id: paymentIntentId,
+      redeemed_at: null,
+      expires_at: null,
+      grant_seconds: 30 * 24 * 60 * 60,
+    });
     const metric = await env.DB.prepare(
       `SELECT amount_cents FROM commerce_events
         WHERE event_type = 'checkout.session.completed' AND stripe_object_id = ?`,
