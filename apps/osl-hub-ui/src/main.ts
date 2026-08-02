@@ -174,6 +174,7 @@ import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import { senderReceiptStatus } from "./receipt-status";
 import { attachmentProgressMarkup, parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
+import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
 import { listOslChatAttachments, openOslChatAttachment, selectOslChatAttachment } from "./native-overlay-adapter";
@@ -249,6 +250,7 @@ type BurnResult = {
   tone: "success" | "warning" | "error";
   message: string;
   showUninstall: boolean;
+  destructServerStatus?: ServerDestructStatus;
   /**
    * Peer-acknowledgement half of a chat burn, shown as its own line. Absent for
    * the burn scopes that queue no peer revocation, so nothing is implied about
@@ -4607,7 +4609,10 @@ function burnGuaranteeMarkup(effects: string): string {
 function burnDialogMarkup(): string {
   if (!burnDialogOpen) return "";
   if (burnResult) {
-    return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card burn-result"><header><div><p class="eyebrow">Burn</p><h2 id="burn-dialog-title">${burnResult.tone === "success" ? "Finished" : burnResult.tone === "warning" ? "Needs attention" : "Nothing was claimed"}</h2></div><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><p class="burn-result-message ${burnResult.tone}" role="status">${escapeHtml(burnResult.message)}</p>${burnRevocationMarkup(burnResult.revocation)}${burnResult.showUninstall ? `<div class="burn-uninstall"><strong>Uninstall is separate</strong><p>Your local OSL cleanup finished. Windows controls removal of the app itself.</p><a class="button" href="ms-settings:appsfeatures">Open Windows installed apps</a></div>` : ""}<footer><button class="button primary" data-close-burn>Done</button></footer></section></dialog>`;
+    const destructStatus = burnResult.destructServerStatus
+      ? destructStatusMarkup({ action: "burn", local: "complete", server: burnResult.destructServerStatus })
+      : "";
+    return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card burn-result"><header><div><p class="eyebrow">Burn</p><h2 id="burn-dialog-title">${burnResult.tone === "success" ? "Finished" : burnResult.tone === "warning" ? "Needs attention" : "Nothing was claimed"}</h2></div><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><p class="burn-result-message ${burnResult.tone}" role="status">${escapeHtml(burnResult.message)}</p>${destructStatus}${burnRevocationMarkup(burnResult.revocation)}${burnResult.showUninstall ? `<div class="burn-uninstall"><strong>Uninstall is separate</strong><p>Your local OSL cleanup finished. Windows controls removal of the app itself.</p><a class="button" href="ms-settings:appsfeatures">Open Windows installed apps</a></div>` : ""}<footer><button class="button primary" data-close-burn>Done</button></footer></section></dialog>`;
   }
 
   const cards: Array<{ scope: BurnScope; title: string; detail: string }> = [
@@ -7961,6 +7966,7 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
       message: localLine,
       showUninstall: false,
       revocation,
+      destructServerStatus: revocation.acknowledged ? "confirmed" : "not-confirmed",
     };
     render();
     return;
@@ -7989,6 +7995,7 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
         ? `Local OSL settings and caches for ${result.scopesBurned} indexed ${result.scopesBurned === 1 ? "scope was" : "scopes were"} removed. Sent relay cleanup was acknowledged. Login profile, cookies, provider history, and other copies remain.`
         : `Local OSL settings and caches for ${result.scopesBurned} indexed ${result.scopesBurned === 1 ? "scope was" : "scopes were"} removed, but ${result.remoteBlobDeletionsFailed} sent relay blob ${result.remoteBlobDeletionsFailed === 1 ? "deletion was" : "deletions were"} not acknowledged. Login profile, cookies, provider history, and other copies remain.`,
       showUninstall: false,
+      destructServerStatus: result.remoteCleanupComplete ? "confirmed" : "not-confirmed",
     };
     render();
     return;
