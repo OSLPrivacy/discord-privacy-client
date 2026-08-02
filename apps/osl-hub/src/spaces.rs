@@ -7,6 +7,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use ipc::space_roster::SpaceChannelId;
+use rand::{rngs::OsRng, RngCore};
+
 use crate::burn_authorize::{
     authorize_remote_friend_burn, BurnAuthorizationError, BurnScopeBindings,
 };
@@ -106,6 +109,50 @@ pub enum SpaceRole {
 pub struct Space {
     id: SpaceId,
     members: BTreeMap<SpaceMemberId, SpaceRole>,
+    channel_key_domains: BTreeMap<SpaceChannelId, ChannelKeyDomain>,
+}
+
+/// The locally held key-domain boundary for one channel.
+///
+/// A domain is minted once per channel, never once per Space.  The key bytes
+/// intentionally have no accessor: callers obtain the recipient set to drive
+/// the established sender-key distribution path, and must not substitute a
+/// Space-wide recipient list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChannelKeyDomain {
+    domain_id: [u8; 32],
+    recipients: BTreeSet<SpaceMemberId>,
+}
+
+impl ChannelKeyDomain {
+    fn mint(recipients: BTreeSet<SpaceMemberId>) -> Self {
+        let mut domain_id = [0_u8; 32];
+        OsRng.fill_bytes(&mut domain_id);
+        Self {
+            domain_id,
+            recipients,
+        }
+    }
+
+    /// A non-secret commitment useful for binding a sender-key state to this
+    /// exact channel domain. It must differ for separately created channels.
+    pub const fn domain_id(&self) -> &[u8; 32] {
+        &self.domain_id
+    }
+
+    pub fn recipients(&self) -> impl ExactSizeIterator<Item = SpaceMemberId> + '_ {
+        self.recipients.iter().copied()
+    }
+
+    pub fn admits(&self, member: SpaceMemberId) -> bool {
+        self.recipients.contains(&member)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChannelKeyDomainError {
+    UnknownSpaceMember,
+    ChannelAlreadyHasKeyDomain,
 }
 
 /// Creation can fail only when the supplied founder identity is invalid.
@@ -295,6 +342,7 @@ pub fn create_space(id: SpaceId, founder: SpaceMemberId) -> Result<Space, Create
     Ok(Space {
         id,
         members: BTreeMap::from([(founder, SpaceRole::Admin)]),
+        channel_key_domains: BTreeMap::new(),
     })
 }
 
@@ -322,6 +370,30 @@ impl Space {
     /// leaves; callers must not reject a membership event merely to prevent it.
     pub fn is_unowned(&self) -> bool {
         !self.members.values().any(|role| *role == SpaceRole::Admin)
+    }
+
+    /// Mints an independent key domain for a channel and scopes it to the
+    /// supplied current members. A member absent from this list must not be
+    /// given that channel's sender-key material.
+    pub fn create_channel_key_domain(
+        &mut self,
+        channel: SpaceChannelId,
+        recipients: impl IntoIterator<Item = SpaceMemberId>,
+    ) -> Result<(), ChannelKeyDomainError> {
+        if self.channel_key_domains.contains_key(&channel) {
+            return Err(ChannelKeyDomainError::ChannelAlreadyHasKeyDomain);
+        }
+        let recipients: BTreeSet<_> = recipients.into_iter().collect();
+        if recipients.iter().any(|member| !self.members.contains_key(member)) {
+            return Err(ChannelKeyDomainError::UnknownSpaceMember);
+        }
+        self.channel_key_domains
+            .insert(channel, ChannelKeyDomain::mint(recipients));
+        Ok(())
+    }
+
+    pub fn channel_key_domain(&self, channel: SpaceChannelId) -> Option<&ChannelKeyDomain> {
+        self.channel_key_domains.get(&channel)
     }
 }
 
@@ -371,6 +443,28 @@ mod tests {
             create_space(SpaceId::from_bytes([1; 20]), member(0)),
             Err(CreateSpaceError::EmptyFounderIdentity)
         );
+    }
+
+    #[test]
+    fn t21_t26_each_channel_has_its_own_key_domain_and_recipient_boundary() {
+        let alice = member(1);
+        let bob = member(2);
+        let carol = member(3);
+        let mut space = create_space(SpaceId::from_bytes([8; 20]), alice).unwrap();
+        space.members.insert(bob, SpaceRole::Member);
+        space.members.insert(carol, SpaceRole::Member);
+        let public = SpaceChannelId::from_bytes([1; SpaceChannelId::LENGTH]);
+        let private = SpaceChannelId::from_bytes([2; SpaceChannelId::LENGTH]);
+
+        space.create_channel_key_domain(public, [alice, bob, carol]).unwrap();
+        space.create_channel_key_domain(private, [alice, bob]).unwrap();
+
+        let public_domain = space.channel_key_domain(public).unwrap();
+        let private_domain = space.channel_key_domain(private).unwrap();
+        assert_ne!(public_domain.domain_id(), private_domain.domain_id());
+        assert!(public_domain.admits(carol));
+        assert!(!private_domain.admits(carol), "a non-member of #private receives no key domain");
+        assert_eq!(private_domain.recipients().collect::<Vec<_>>(), vec![alice, bob]);
     }
 
     #[test]
