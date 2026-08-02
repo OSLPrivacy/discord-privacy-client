@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite: T2's view-once viewer integration must wire the Windows four-prerequisite screenshot gate (OS build, top-level HWND, DWM composition, non-layered) and the ongoing re-verification/close loop into OSL Chat. Current open_osl_chat_text only applies generic screenshot affinity before drain, so t14-d3 cannot add a behavioral UI test for the required contract without asserting source text or mocking a true return.
