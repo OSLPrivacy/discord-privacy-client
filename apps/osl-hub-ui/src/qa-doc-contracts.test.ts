@@ -380,7 +380,10 @@ describe("QA documentation contracts", () => {
     });
 
     expect(output).toBe("");
-  }, 60_000);
+    // 60s was not enough: this shells out to a real build, and on a loaded
+    // machine it overran and failed intermittently while passing on its own.
+    // The assertion is unchanged - only the time budget.
+  }, 240_000);
 
   it("docs/design/osl-subjective-design-feel.md", () => {
     const primarySurface = reviewComplexityHidingSurface({
