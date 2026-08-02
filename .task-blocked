@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T4-P6's CHAT-PATTERN proof (docs/reports/web-chat-pattern-proof.md) and T4-E3's SUBSTRATE-MATRIX (docs/reports/web-surface-substrate-probe.md); both are prerequisites owned by T4, and the web_surface_adapter module they establish is absent.
