@@ -106,7 +106,7 @@ export type HubLicenseAccess = "free" | "pro" | "offlineGrace";
 
 export interface HubLicenseState {
   access: HubLicenseAccess;
-  status: "UNCONFIGURED" | "ACTIVE" | "CANCELLED" | "GRACE" | "EXPIRED" | "REVOKED" | "UNKNOWN" | "PENDING";
+  status: "UNCONFIGURED" | "ACTIVE" | "CANCELLED" | "GRACE" | "EXPIRED" | "REVOKED" | "UNKNOWN" | "PENDING" | "UNREDEEMED";
   currentPeriodEnd: number | null;
   lastValidatedAt: number | null;
 }
@@ -287,7 +287,7 @@ export async function clearHubActivationCode(): Promise<HubLicenseState> {
 export function parseHubLicenseState(raw: unknown): HubLicenseState {
   const keys = ["access", "status", "currentPeriodEnd", "lastValidatedAt"] as const;
   const accesses: readonly HubLicenseAccess[] = ["free", "pro", "offlineGrace"];
-  const statuses: readonly HubLicenseState["status"][] = ["UNCONFIGURED", "ACTIVE", "CANCELLED", "GRACE", "EXPIRED", "REVOKED", "UNKNOWN", "PENDING"];
+  const statuses: readonly HubLicenseState["status"][] = ["UNCONFIGURED", "ACTIVE", "CANCELLED", "GRACE", "EXPIRED", "REVOKED", "UNKNOWN", "PENDING", "UNREDEEMED"];
   if (!isExactRecord(raw, keys)
     || !accesses.includes(raw.access as HubLicenseAccess)
     || !statuses.includes(raw.status as HubLicenseState["status"])
