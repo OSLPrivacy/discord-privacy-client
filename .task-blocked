@@ -12,3 +12,4 @@ T14-G3 — Blocked: T14-C3 is absent (`apps/osl-hub/src/osl_chat_queue.rs`); the
 T16-B10 — Blocked: T16-B9a's subscription/account lifecycle remains in the prepaid path, so the required B2..B7 and T11-H2 green closure does not exist; readiness must remain source-owned false.
 T16-G4 — Blocked: T16-B10 remains correctly false, so changing the three manifest keys would publish redemption-start timing before the required live acceptance proof.
 T17-B5 — Blocked: T17-B4 has not landed: the release workflow has no Azure OIDC login or Artifact Signing configuration. Adding placeholder signCommand values would make releases fail without signing either artifact.
+T17-B6 — Blocked: T17-B5 has not produced a signed installer and no clean-VM signed artifact is available. Capturing an unsigned-only run cannot satisfy the required signed-versus-unsigned evidence.
