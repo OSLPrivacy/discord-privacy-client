@@ -70,6 +70,7 @@ import {
 } from "./endpoints/mail.js";
 import { handleInboundEmail } from "./mail/inbound.js";
 export { Mailbox } from "./mail/mailbox.js";
+export { Archive } from "./archive/archive.js";
 import { handleUsernameCoverage } from "./endpoints/username-coverage.js";
 import { handleUsernameClaim, handleUsernameLookup } from "./endpoints/usernames.js";
 import {

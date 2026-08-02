@@ -8,6 +8,10 @@ export interface Env {
   DB: D1Database;
   /** Strongly consistent, ciphertext-only per-identity OSL mailbox. */
   MAILBOX: DurableObjectNamespace<import("./mail/mailbox.js").Mailbox>;
+  /** Per-owner retained ciphertext pool; its DO owns eviction and expiry. */
+  ARCHIVE: DurableObjectNamespace<import("./archive/archive.js").Archive>;
+  /** Opaque retained-pool payload bytes, isolated from the control-plane D1. */
+  ARCHIVE_PAYLOADS: R2Bucket;
   RATE_LIMIT_5: RateLimit;
   RATE_LIMIT_10: RateLimit;
   RATE_LIMIT_120: RateLimit;

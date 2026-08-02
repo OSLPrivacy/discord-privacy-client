@@ -21,7 +21,8 @@ interface ArchiveRow extends Record<string, SqlStorageValue> {
  * Per-owner retained-pool metadata. Payload bytes stay in ARCHIVE_PAYLOADS;
  * this SQLite store contains only opaque object keys and lifecycle metadata.
  *
- * This class is intentionally not registered for deployment yet (D77).
+ * The Worker exports and Wrangler registers this class.  Archive endpoints
+ * select the per-owner instance through the ARCHIVE namespace.
  */
 export class Archive extends DurableObject<Env> {
   private readonly sql: SqlStorage;
