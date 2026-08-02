@@ -1,6 +1,6 @@
 # Web-surface substrate probe
 
-**Task:** T4-E3  
+**Task:** T4-E3
 **Status:** not measured — this is deliberately not a `SUBSTRATE-MATRIX` result.
 
 The required probe needs a Windows VM running the desktop shell with WebView2
