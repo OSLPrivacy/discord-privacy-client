@@ -103,6 +103,8 @@ pub mod identity_binding_verifier;
 pub mod identity_registry;
 #[cfg(feature = "core")]
 pub mod inbound_receipts;
+#[cfg(feature = "core")]
+pub mod receipt_emit;
 pub mod isolated_worker;
 #[cfg(feature = "core")]
 pub mod mass_cleanup;
