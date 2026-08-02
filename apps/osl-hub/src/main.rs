@@ -61,6 +61,7 @@ use osl_privacy_hub::native_window_host::{
     DiscordSessionMode, DiscordTakeover, NativeWindowHostReason, NativeWindowHostResult,
     NativeWindowHostState,
 };
+use osl_privacy_hub::osl_mail::{self, OslMailState, OslMailStatus};
 use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput};
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult, HubMainPasswordSetupResult,
@@ -69,6 +70,7 @@ use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::PreviewState;
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
+use osl_privacy_hub::revocation_drain_timer;
 use osl_privacy_hub::scrub_index::{
     ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexManifest, ScrubIndexState,
     ScrubIndexStatus,
@@ -1113,6 +1115,45 @@ fn list_core_features() -> Vec<CoreFeature> {
 #[tauri::command]
 fn get_hub_license_state(state: State<'_, HubCoreState>) -> Result<HubLicenseState, String> {
     core_bridge::license_state(&state)
+}
+
+#[tauri::command]
+async fn osl_mail_get_status(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<OslMailStatus, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read OSL Mail status".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::get_status(&app.state::<HubCoreState>(), &app.state::<OslMailState>())
+    })
+    .await
+    .map_err(|_| "OSL Mail status worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn osl_mail_provision(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    username: String,
+) -> Result<OslMailStatus, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may provision OSL Mail".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::provision(
+            &app.state::<HubCoreState>(),
+            &app.state::<OslMailState>(),
+            username,
+        )
+    })
+    .await
+    .map_err(|_| "OSL Mail provisioning worker failed".to_owned())?
 }
 
 fn require_active_pro_entitlement(core: &HubCoreState) -> Result<(), String> {
@@ -8873,10 +8914,16 @@ macro_rules! hub_tauri_command_names {
 #[cfg(feature = "signal-qa-shell")]
 fn main() {
     let builder = tauri::Builder::default().setup(|app| {
+        let profiles =
+            osl_privacy_hub::adapter_profile_boot::load_verified_adapter_profiles_at_boot()
+                .map_err(|_| {
+                    "OSL signed adapter profiles could not be verified at startup".to_owned()
+                })?;
         app.manage(HubCoreState::default());
         app.manage(HubAccountSessionState::default());
         app.manage(NativeWindowHostState::default());
         app.manage(NativeDiscordComposerState::default());
+        app.manage(profiles);
         app.manage(
             osl_privacy_hub::signal_destination_binding::SignalDestinationBindingState::default(),
         );
@@ -9074,6 +9121,11 @@ fn main() {
     startup_breadcrumb("setup_before"); // STARTUP-TRACE
     let builder = builder.setup(|app| {
         startup_breadcrumb("setup_enter"); // STARTUP-TRACE
+        let profiles =
+            osl_privacy_hub::adapter_profile_boot::load_verified_adapter_profiles_at_boot()
+                .map_err(|_| {
+                    "OSL signed adapter profiles could not be verified at startup".to_owned()
+                })?;
         let main_window = app
             .get_webview_window("main")
             .ok_or_else(|| "OSL main window is unavailable".to_owned())?;
@@ -9186,6 +9238,7 @@ fn main() {
         app.manage(HubBrokerState::default());
         startup_breadcrumb("setup_step_25_broker_state_managed"); // STARTUP-TRACE
         app.manage(security_state);
+        revocation_drain_timer::spawn(app.handle().clone());
         startup_breadcrumb("setup_step_26_security_state_managed"); // STARTUP-TRACE
         app.manage(HubIdentityRegistryState::default());
         startup_breadcrumb("setup_step_27_identity_registry_state_managed"); // STARTUP-TRACE
@@ -9197,6 +9250,7 @@ fn main() {
             osl_privacy_hub::signal_destination_binding::SignalDestinationBindingState::default(),
         );
         app.manage(NativeDiscordComposerState::default());
+        app.manage(profiles);
         startup_breadcrumb("setup_step_30_native_discord_composer_state_managed"); // STARTUP-TRACE
         app.manage(WhatsAppQaHostState::default());
         app.manage(WhatsAppQaProtectionState::default());
@@ -9222,6 +9276,7 @@ fn main() {
         startup_breadcrumb("setup_step_35_browser_footprint_store_managed"); // STARTUP-TRACE
         app.manage(HubAccountSessionState::default());
         startup_breadcrumb("setup_step_36_hub_account_session_state_managed"); // STARTUP-TRACE
+        app.manage(OslMailState::default());
         app.manage(MainWindowLifecycleState::default());
         startup_breadcrumb("setup_step_37_main_window_lifecycle_state_managed"); // STARTUP-TRACE
         app.manage(HubUpdaterState::default());

@@ -59,3 +59,9 @@ keyserver/keyserver.db-shm
 # Vendored read-only via git clone — not part of the build.
 reference/
 .wrangler/
+
+# Local dispatch signals -- NEVER commit these. Agents committed .task-blocked
+# to their branches and every one of ~190 task branches then conflicted on it,
+# stalling the entire harvest.
+.task-blocked
+.task-already-done

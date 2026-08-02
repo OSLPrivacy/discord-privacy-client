@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   acknowledgementAccepted,
   initialRecoveryKitState,
+  recoveryKitSecretCardsMarkup,
   RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT,
   recoveryKitReducer,
   recoveryKitView,
@@ -165,5 +166,20 @@ describe("T15 the capture-resistance claim tracks the platform, not the return v
     expect(view.exits.map((exit) => exit.id)).toEqual(
       expect.arrayContaining(["show-anyway", "remind-me-later"]),
     );
+  });
+});
+
+describe("T15-G3 recovery-kit secret explanations", () => {
+  it("renders each phrase in its own card with its distinct recovery purpose", () => {
+    const markup = recoveryKitSecretCardsMarkup(SECRETS, (value) => value);
+
+    const cards = [...markup.matchAll(/<article class="recovery-kit-item" data-recovery-secret="([^"]+)">([\s\S]*?)<\/article>/g)];
+    expect(cards).toHaveLength(2);
+    expect(cards.map(([, secret]) => secret)).toEqual(["identity", "password"]);
+    expect(cards[0][2]).toContain("Identity phrase");
+    expect(cards[0][2]).toContain("Your identity phrase brings back who you are.");
+    expect(cards[1][2]).toContain("Password phrase");
+    expect(cards[1][2]).toContain("Your password phrase brings back your data.");
+    expect(markup).toContain("You need both.");
   });
 });

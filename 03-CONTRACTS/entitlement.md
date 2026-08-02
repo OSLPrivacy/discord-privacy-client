@@ -146,6 +146,20 @@ a Pro user who declined or removed optional AI, retains the fully working
 word-bank carrier and encryption path.  Credits are a separate balance, not an
 entitlement, and must not renew, extend, or imply Pro.
 
+## AI tier
+
+The word-bank carrier always ships and is the carrier for every Free state,
+including a lapsed or revoked former Pro entitlement.  Local AI and cloud
+generation are Pro-only optional carriers.  Cloud generation additionally
+requires a separate, explicit consent; activating Pro is never cloud consent.
+
+AI selection must have one entitlement seam: when a requested AI carrier is
+not entitled, unavailable, or not consented, it selects the word-bank carrier
+instead of failing encryption, sending, or delivery.  Lapse never deletes an
+already-installed optional AI model; it merely removes its use until Pro is
+active again.  The user may remove that optional component, which has the same
+word-bank fallback.
+
 ## Publish gate
 
 The following `data/pricing.json` conditions are copied verbatim.  The claim
