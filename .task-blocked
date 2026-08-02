@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T18-C1's crates/ipc/src/group_send.rs extraction (and its T18-C2 rotation policy); T18-C6 owns only that module's SKDM emit gate, so it cannot safely implement the required one-resolution recipient-set change yet.
