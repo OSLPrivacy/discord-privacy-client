@@ -9,5 +9,9 @@ pub mod candidates;
 #[cfg(feature = "local-model")]
 pub mod local_model;
 pub mod scorer;
+pub mod warm_model;
+pub mod pool;
+pub mod pool_at_rest;
+pub mod progress;
 
 mod logit_selection;
