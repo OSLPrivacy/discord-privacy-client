@@ -1,0 +1,1 @@
+mirror_bot.py already raises StateLoadError on corrupt state, refuses the subsequent save, and rotates complete state to .bak.
