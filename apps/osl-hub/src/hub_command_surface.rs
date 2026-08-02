@@ -424,6 +424,9 @@ macro_rules! hub_tauri_commands {
             list_native_apps,
             install_native_app,
             get_mullvad_status,
+            list_components,
+            install_component,
+            remove_component,
             install_mullvad,
             open_mullvad,
             list_browser_imports,
@@ -1351,6 +1354,17 @@ mod tauri_registration_surface_tests {
     }
 
     #[test]
+    #[test]
+    fn component_lifecycle_commands_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["list_components", "install_component", "remove_component"],
+        );
+    }
+
     fn session_reset_emitter_is_registered_and_granted() {
         let (handlers, permissions, capability) = network_registration_inputs();
         assert_registered_and_granted(

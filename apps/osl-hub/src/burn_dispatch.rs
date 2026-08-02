@@ -20,6 +20,23 @@ pub struct BurnDispatch {
     pub queued_peer_instruction: QueuedBurn,
 }
 
+/// Run the irrevocable local part of a burn before either independently
+/// deliverable effect can be queued.
+///
+/// The Hub's scope-burn path owns the durable server-delete and peer-control
+/// queues because their record formats are transport-specific.  It must enter
+/// that path through this boundary so neither queue can become a prerequisite
+/// for removing the local copy.
+pub fn destroy_local_before_queuing<F, T>(destroy_local: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    let result = destroy_local();
+    #[cfg(test)]
+    SHIPPING_LOCAL_DESTROY_DISPATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    result
+}
+
 /// Derive the server-delete capability from material still held locally.
 ///
 /// Nothing accepted from a prior server response is retained here. A queued
@@ -41,7 +58,7 @@ pub fn dispatch_burn<F>(k_send: &[u8], blob_id: String, peer_instruction: Vec<u8
 where
     F: FnOnce(),
 {
-    destroy_local();
+    destroy_local_before_queuing(destroy_local);
     let queued = QueuedBurn {
         manage_cap: recompute_manage_cap(k_send, &blob_id),
         blob_id,
@@ -52,6 +69,19 @@ where
         queued_server_delete: queued.clone(),
         queued_peer_instruction: queued,
     }
+}
+
+#[cfg(test)]
+static SHIPPING_LOCAL_DESTROY_DISPATCHES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Test-only evidence that a shipping burn entered the dispatch boundary.
+///
+/// This is deliberately not a source-text assertion: a disconnected call site
+/// leaves this counter at zero when the real scope-burn behaviour runs.
+#[cfg(test)]
+pub(crate) fn take_shipping_local_destroy_dispatches() -> usize {
+    SHIPPING_LOCAL_DESTROY_DISPATCHES.swap(0, std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(test)]

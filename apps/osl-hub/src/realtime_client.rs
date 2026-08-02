@@ -11,6 +11,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::realtime_decoy::DecoyFetch;
+use crate::realtime_subscription::{DeliveryTag, SubscriptionWindowManager};
 
 /// Exact text-frame size accepted by `cipher-store-cf/src/realtime/connection.ts`.
 pub const FRAME_BYTES: usize = 2_048;
@@ -167,6 +168,7 @@ impl ConstantRateSchedule {
 /// handling a response cannot alter its cadence or its emitted size.
 pub struct RealtimeClient {
     schedule: ConstantRateSchedule,
+    subscriptions: SubscriptionWindowManager,
     pointers: BTreeMap<BlobId, CarrierPointer>,
     pending: BTreeSet<WakeupKey>,
     scheduled_fetches: VecDeque<ScheduledFetch>,
@@ -184,6 +186,7 @@ impl RealtimeClient {
     pub fn for_route(start: Duration, route: RealtimeRoute) -> Self {
         Self {
             schedule: ConstantRateSchedule::for_route(start, route),
+            subscriptions: SubscriptionWindowManager::default(),
             pointers: BTreeMap::new(),
             pending: BTreeSet::new(),
             scheduled_fetches: VecDeque::new(),
@@ -195,9 +198,30 @@ impl RealtimeClient {
         self.pointers.insert(blob_id, pointer);
     }
 
+    /// Replace the locally-derived delivery tags used by subsequent ticks.
+    ///
+    /// The realtime boundary accepts `DeliveryTag`, not an account or pointer,
+    /// so the outgoing subscription path cannot accidentally acquire an
+    /// account-identifier input.
+    pub fn replace_subscription_tags(&mut self, tags: impl IntoIterator<Item = DeliveryTag>) {
+        self.subscriptions.replace_tags(tags);
+    }
+
+    /// The one outbound realtime write: a constant-sized cover frame paired
+    /// with the rotating opaque tag window for the transport implementation.
+    pub fn next_outbound_tick(&mut self) -> OutboundRealtimeTick {
+        let (scheduled_at, frame) = self.schedule.next_frame();
+        OutboundRealtimeTick {
+            scheduled_at,
+            frame,
+            delivery_tags: self.subscriptions.next_window(),
+        }
+    }
+
     /// Emits exactly one constant-size tick at the next fixed scheduled instant.
     pub fn next_outbound_frame(&mut self) -> (Duration, String) {
-        self.schedule.next_frame()
+        let tick = self.next_outbound_tick();
+        (tick.scheduled_at, tick.frame)
     }
 
     /// Decode a server response and queue only fetches justified by local pointers.
@@ -238,6 +262,16 @@ impl RealtimeClient {
     pub fn take_fetch_work(&mut self) -> Option<ScheduledFetch> {
         self.scheduled_fetches.pop_front()
     }
+}
+
+/// Everything the shipping transport needs to write one realtime tick.
+///
+/// `frame` remains fixed-size cover traffic. `delivery_tags` is passed to the
+/// transport's TICK subscription field; it consists solely of opaque tags.
+pub struct OutboundRealtimeTick {
+    pub scheduled_at: Duration,
+    pub frame: String,
+    pub delivery_tags: Vec<DeliveryTag>,
 }
 
 fn parse_wakeup(frame: &str) -> Result<([u8; ID_BYTES], BlobId), FrameError> {
