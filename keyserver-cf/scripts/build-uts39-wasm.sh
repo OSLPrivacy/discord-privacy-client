@@ -57,7 +57,7 @@ command -v cargo >/dev/null || { echo "cargo is required to build the spike" >&2
 command -v wasm-bindgen >/dev/null || { echo "wasm-bindgen-cli is required (cargo install wasm-bindgen-cli --version 0.2.106)" >&2; exit 2; }
 
 rm -rf "$DIST_DIR" "$BUNDLE_DIR"
-cargo build --release --target wasm32-unknown-unknown --manifest-path "$SPIKE_DIR/wasm/Cargo.toml"
+flock /tmp/osl-cargo.lock cargo build --release --target wasm32-unknown-unknown --manifest-path "$SPIKE_DIR/wasm/Cargo.toml"
 wasm-bindgen "$SPIKE_DIR/wasm/target/wasm32-unknown-unknown/release/osl_uts39_wasm.wasm" \
   --target web --out-dir "$DIST_DIR" --no-typescript
 npx wrangler deploy --config "$SPIKE_DIR/spike-wrangler.toml" --dry-run --outdir "$BUNDLE_DIR"

@@ -6,6 +6,11 @@
 
 use crate::adapters::*;
 
+/// X's reviewed DM implementation.  Keeping this behind the common adapter
+/// means it receives the same generation, scope, and authorization checks as
+/// every other fixed-origin web surface.
+pub mod x;
+
 /// Accessibility and input implementation for one verified web profile.
 ///
 /// The backend is intentionally supplied by later service tasks. It may use the
