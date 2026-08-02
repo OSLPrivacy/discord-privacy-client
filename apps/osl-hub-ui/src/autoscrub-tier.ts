@@ -11,8 +11,8 @@ export interface AutoScrubTierStatus {
   readonly tier: ScrubTier;
   readonly label: string;
   readonly detail: string;
-  readonly unattendedExecutionAllowed: false;
-  readonly requiresHumanPresence: true;
+  readonly unattendedExecutionAllowed: boolean;
+  readonly requiresHumanPresence: boolean;
   readonly optionalProModuleInstalled: boolean;
 }
 
@@ -26,20 +26,23 @@ export interface AutoScrubConsentAuthority {
   checkLiveConsent(serviceId: string): Promise<Rank4ConsentCheck>;
 }
 
-export interface AttendedTieredRunOptions extends AutoScrubRunOptions {
+export interface TieredRunOptions extends AutoScrubRunOptions {
   readonly tier: ScrubTier;
   readonly optionalProModuleInstalled: boolean;
   readonly providerRiskRank: ScrubProviderRiskRank;
   readonly consentAuthority: AutoScrubConsentAuthority;
 }
 
-export type AttendedTieredRunResult =
-  | { readonly state: "refused"; readonly reason: "rank-4-live-consent-required" }
+export type TieredRunResult =
+  | { readonly state: "refused"; readonly reason: "pro-module-required" | "rank-4-live-consent-required" }
   | { readonly state: "completed"; readonly result: AutoScrubRunResult };
 
 /**
- * Both shipped tiers are attended. Pro may offer reviewed-plan replay, but it
- * never turns a destructive run into background or set-and-forget work.
+ * Free is a reviewed, one-time attended flow.  The optional Pro module is the
+ * only tier permitted to repeat an approved plan unattended, and only while
+ * its native authority, content bounds, pacing, and stop conditions remain
+ * live.  Do not collapse this distinction into an "attended Pro" label:
+ * owner decision D85 overrides the older master-spec wording.
  */
 export function autoScrubTierStatus(
   tier: ScrubTier,
@@ -55,27 +58,39 @@ export function autoScrubTierStatus(
       optionalProModuleInstalled,
     });
   }
+  if (!optionalProModuleInstalled) {
+    return Object.freeze({
+      tier,
+      label: "AutoScrub unavailable",
+      detail: "The optional Pro module is not installed. Free Scrub remains a reviewed one-time flow.",
+      unattendedExecutionAllowed: false,
+      requiresHumanPresence: false,
+      optionalProModuleInstalled,
+    });
+  }
   return Object.freeze({
     tier,
-    label: "Attended AutoScrub",
-    detail: "Repeat only a reviewed plan while you are present. It pauses on friction and never restarts itself.",
-    unattendedExecutionAllowed: false,
-    requiresHumanPresence: true,
+    label: "Unattended AutoScrub",
+    detail: "Repeat a reviewed plan unattended only while native authority, approved content bounds, pacing, and stop conditions remain satisfied. It never restarts after friction or Stop/Revoke.",
+    unattendedExecutionAllowed: true,
+    requiresHumanPresence: false,
     optionalProModuleInstalled,
   });
 }
 
 /**
- * Starts exactly one attended run. Rank-4 consent is read from native
+ * Starts exactly one tiered run. Rank-4 consent is read from native
  * authority for every invocation; the underlying flow then obtains its own
  * fresh step-up rather than accepting one captured when the plan was reviewed.
+ * The optional module owns unattended replay scheduling; this UI helper never
+ * pretends an attended launch is the Pro distinction.
  */
-export async function runAttendedTieredScrub(
-  options: AttendedTieredRunOptions,
-): Promise<AttendedTieredRunResult> {
+export async function runTieredScrub(
+  options: TieredRunOptions,
+): Promise<TieredRunResult> {
   const status = autoScrubTierStatus(options.tier, options.optionalProModuleInstalled);
-  if (status.unattendedExecutionAllowed || !status.requiresHumanPresence) {
-    throw new Error("AutoScrub tier contract must remain attended");
+  if (options.tier === "pro" && !status.optionalProModuleInstalled) {
+    return { state: "refused", reason: "pro-module-required" };
   }
   if (options.providerRiskRank === 4) {
     const consent = await options.consentAuthority.checkLiveConsent(options.target.providerId);
@@ -85,3 +100,6 @@ export async function runAttendedTieredScrub(
   }
   return { state: "completed", result: await runAutoScrubBatch(options) };
 }
+
+/** @deprecated Use `runTieredScrub`; Pro must not be described as attended. */
+export const runAttendedTieredScrub = runTieredScrub;

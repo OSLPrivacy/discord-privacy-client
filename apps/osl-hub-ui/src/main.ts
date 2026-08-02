@@ -25,6 +25,7 @@ import { continueFromProOnboarding, previousOnboardingRoute } from "./onboarding
 import { componentPickerScreen } from "./component-picker";
 import { componentManagerFromOnboarding } from "./component-manager";
 import { autoScrubConsentPrompt, decideAutoScrubInstall } from "./component-consent";
+import { autoScrubTierStatus } from "./autoscrub-tier";
 import { deviceTransferManifestScreen } from "./device-transfer";
 import { initialOldDeviceCopyDecision, oldDeviceCopyDecisionView } from "./device-transfer-source";
 import { renderDeadmanScreen, selectDeadmanAction } from "./deadman";
@@ -5121,12 +5122,16 @@ function privacySettingsContent(): string {
 }
 
 function autoScrubAssistantMarkup(proActive: boolean): string {
-  const autoScrubPlan = proActive ? "PRO ACTIVE · COMING SOON" : "PRO · COMING SOON";
+  // This is the shipping projection of the tier contract. The open-source
+  // build has no optional Pro module, so it must not call Pro "attended" or
+  // imply an unattended runner is present when it is not.
+  const tier = autoScrubTierStatus(proActive ? "pro" : "free", false);
+  const autoScrubPlan = tier.tier === "pro" ? "PRO MODULE NOT INSTALLED" : "FREE · REVIEWED ONE-TIME FLOW";
   const status = projectAutoScrubFleetStatus(autoScrubFleetStatus);
   const actions = status.stopAvailable
     ? `<button class="button compact" id="autoscrub-stop" type="button" ${autoScrubStopPending ? "disabled" : ""}>${autoScrubStopPending ? "Stopping…" : "Stop"}</button>`
     : `<button class="button compact" id="autoscrub-refresh" type="button" ${autoScrubStatusLoading ? "disabled" : ""}>${autoScrubStatusLoading ? "Checking…" : status.label}</button>`;
-  return `<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary><section class="autoscrub-card autoscrub-status-${status.tone}" aria-disabled="${status.stopAvailable ? "false" : "true"}"><header><div><span class="privacy-local-mark">LOCAL REVIEW</span><h3>${escapeHtml(status.label)}</h3></div>${actions}</header><p>${escapeHtml(status.detail)} Nothing happens until you review and confirm every batch.</p><details><summary>Automation risks</summary><p>Future paced actions must stop on limits, challenges, changed content, or failed checks. Automation may break an app’s rules or restrict an account. Treat removal as unconfirmed until the app shows it is gone.</p></details></section></details>`;
+  return `<details class="settings-disclosure autoscrub-disclosure"><summary><span><strong>AutoScrub assistant</strong><small>${autoScrubPlan}</small></span></summary><section class="autoscrub-card autoscrub-status-${status.tone}" aria-disabled="${status.stopAvailable ? "false" : "true"}"><header><div><span class="privacy-local-mark">LOCAL REVIEW</span><h3>${escapeHtml(status.label)}</h3></div>${actions}</header><p>${escapeHtml(tier.detail)} ${escapeHtml(status.detail)}</p><details><summary>Automation risks</summary><p>Future paced actions must stop on limits, challenges, changed content, or failed checks. Automation may break an app’s rules or restrict an account. Treat removal as unconfirmed until the app shows it is gone.</p></details></section></details>`;
 }
 
 function clearPrivacyScanState(): void {

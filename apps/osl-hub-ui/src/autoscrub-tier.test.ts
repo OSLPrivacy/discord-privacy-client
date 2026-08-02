@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   autoScrubTierStatus,
-  runAttendedTieredScrub,
+  runTieredScrub,
   type AutoScrubConsentAuthority,
   type Rank4ConsentCheck,
 } from "./autoscrub-tier";
@@ -35,7 +35,7 @@ function harness(stepUpAgeMs = 0) {
   return { adapter, bridge, consentAuthority };
 }
 
-function options(h: ReturnType<typeof harness>, overrides: Partial<Parameters<typeof runAttendedTieredScrub>[0]> = {}) {
+function options(h: ReturnType<typeof harness>, overrides: Partial<Parameters<typeof runTieredScrub>[0]> = {}) {
   return {
     tier: "free" as const,
     optionalProModuleInstalled: false,
@@ -52,28 +52,40 @@ function options(h: ReturnType<typeof harness>, overrides: Partial<Parameters<ty
   };
 }
 
-describe("attended AutoScrub tiers", () => {
-  it("keeps both labels honest and leaves the full attended free flow available without a Pro module", async () => {
+describe("AutoScrub tiers", () => {
+  it("D85: reserves unattended execution for the installed Pro module", async () => {
     const free = autoScrubTierStatus("free", false);
     const pro = autoScrubTierStatus("pro", true);
     expect(free).toMatchObject({ label: "Attended Scrub", unattendedExecutionAllowed: false, requiresHumanPresence: true, optionalProModuleInstalled: false });
-    expect(pro).toMatchObject({ label: "Attended AutoScrub", unattendedExecutionAllowed: false, requiresHumanPresence: true });
+    expect(pro).toMatchObject({ label: "Unattended AutoScrub", unattendedExecutionAllowed: true, requiresHumanPresence: false, optionalProModuleInstalled: true });
+    expect(autoScrubTierStatus("pro", false)).toMatchObject({
+      label: "AutoScrub unavailable",
+      unattendedExecutionAllowed: false,
+      requiresHumanPresence: false,
+    });
 
     const h = harness();
-    await expect(runAttendedTieredScrub(options(h))).resolves.toMatchObject({ state: "completed" });
+    await expect(runTieredScrub(options(h))).resolves.toMatchObject({ state: "completed" });
     expect(h.adapter.delete).toHaveBeenCalledOnce();
   });
 
   it("re-checks live, unrevoked rank-4 consent on every run before a fresh step-up", async () => {
     const h = harness();
     h.consentAuthority.checkLiveConsent = vi.fn(async (serviceId): Promise<Rank4ConsentCheck> => ({ serviceId, state: "revoked" }));
-    await expect(runAttendedTieredScrub(options(h))).resolves.toEqual({ state: "refused", reason: "rank-4-live-consent-required" });
+    await expect(runTieredScrub(options(h))).resolves.toEqual({ state: "refused", reason: "rank-4-live-consent-required" });
     expect(h.bridge.stepUp).not.toHaveBeenCalled();
 
     const stale = harness(300_001);
-    await expect(runAttendedTieredScrub(options(stale))).rejects.toThrow("live-session proof is not fresh");
+    await expect(runTieredScrub(options(stale))).rejects.toThrow("live-session proof is not fresh");
     expect(stale.consentAuthority.checkLiveConsent).toHaveBeenCalledWith("discord");
     expect(stale.bridge.stepUp).toHaveBeenCalledOnce();
     expect(stale.adapter.delete).not.toHaveBeenCalled();
+  });
+
+  it("refuses a Pro launch when the optional unattended module is absent", async () => {
+    const h = harness();
+    await expect(runTieredScrub(options(h, { tier: "pro", optionalProModuleInstalled: false })))
+      .resolves.toEqual({ state: "refused", reason: "pro-module-required" });
+    expect(h.bridge.stepUp).not.toHaveBeenCalled();
   });
 });
