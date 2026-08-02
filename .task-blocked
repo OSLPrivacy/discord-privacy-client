@@ -25,3 +25,9 @@ Blocked: T20-E1 needs T20-C1 and a live Windows borrowed-window fixture.  No
 shared lifecycle or `borrowed_window_death.rs` fixture exists in this branch,
 and the required crash/handle-reuse observation cannot be substituted with an
 app build or VM run under this batch's constraints.
+
+# T20-E2
+
+Blocked: T20-E2 deliberately extends T20-E1's single TW-13 fixture, which is
+absent because E1 is blocked.  A separate process-kill test would split the
+required clean-close and crash proof and violate its narrow ownership.
