@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T16-D5 cache-v2 implementation still persists current_period_end, but the frozen entitlement contract §5 permits only license_plaintext, last_validated_status, redeemed_at, expires_at, last_validated_at, and checksum_ok; T16-D5 (or its corrective follow-up) must align the cache before T16-D7 can add a green exact-set assertion.
