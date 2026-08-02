@@ -7,6 +7,14 @@ export interface FreshStartCleanupPresentation {
 }
 
 /**
+ * Fresh Start only reaches local OSL state. These limits are part of the
+ * irreversible-action contract and must be shown before its confirmation.
+ */
+export function freshStartLimitationsMarkup(): string {
+  return `<section class="burn-truth fresh-start-limitations" aria-labelledby="fresh-start-limits-title"><strong id="fresh-start-limits-title">What Fresh Start cannot remove</strong><ul><li>Messages already opened by another person remain on their device.</li><li>Server blobs whose deletion is still queued can remain available until OSL reconnects and the server confirms deletion.</li><li>Cover text already posted on a platform remains on that platform.</li></ul></section>`;
+}
+
+/**
  * A cleanup result is successful only when every local target and remote
  * unregister has been confirmed. Native completion alone is not proof.
  */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { freshStartCleanupPresentation } from "./fresh-start";
+import { freshStartCleanupPresentation, freshStartLimitationsMarkup } from "./fresh-start";
 
 const completeCleanup = {
   localCleanupComplete: true,
@@ -20,5 +20,24 @@ describe("Fresh Start cleanup result", () => {
     expect(presentation.tone).toBe("warning");
     expect(presentation.complete).toBe(false);
     expect(presentation.message).toMatch(/partial|not acknowledged/iu);
+  });
+});
+
+describe("Fresh Start limits", () => {
+  it("renders every limit before the account-burn confirmation control", () => {
+    const rendered = `${freshStartLimitationsMarkup()}<form id="burn-confirm-form"><button id="burn-confirm-submit">Burn now</button></form>`;
+    const confirmAt = rendered.indexOf('id="burn-confirm-submit"');
+    const limitations = [
+      "Messages already opened by another person",
+      "Server blobs whose deletion is still queued",
+      "Cover text already posted on a platform",
+    ];
+
+    expect(confirmAt).toBeGreaterThan(0);
+    for (const limitation of limitations) {
+      const limitationAt = rendered.indexOf(limitation);
+      expect(limitationAt).toBeGreaterThanOrEqual(0);
+      expect(limitationAt).toBeLessThan(confirmAt);
+    }
   });
 });
