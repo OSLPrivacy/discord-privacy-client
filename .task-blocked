@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing /home/liamw/osl-plan/plan/03-CONTRACTS/integrity.md; T10-I1 owns and must freeze this contract before T10-I8 can add its ack cross-reference.
