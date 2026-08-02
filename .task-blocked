@@ -16,3 +16,4 @@ T17-B6 — Blocked: T17-B5 has not produced a signed installer and no clean-VM s
 T17-D4 — Blocked: T17-D3 has not landed and `apps/osl-hub/src/update_safety.rs` is absent. There is no established update-in-flight safety seam to extend with an exit quiesce hook.
 T19-F6 — Blocked: T5-C5/C9 have no landed authenticated identity contract visible to the generic v3 materialize path. Binding display attribution now would duplicate or guess the trust predicate this task is required to consume.
 T19-G4 — Blocked: T19-G3's two-identity restart harness is absent, and T19-D2 has no proven re-handshake outbox seam. Offline delivery proof cannot be constructed from a single-host driver.
+T19-G5 — Blocked: T19-G3's live two-identity harness is absent, so RC1/RC3/RC4 cannot be injected into a pair or compared with a v3 control without fabricating the critical sabotage evidence.
