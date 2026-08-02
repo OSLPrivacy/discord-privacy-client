@@ -259,8 +259,8 @@ mod windows {
     use ::windows::Win32::UI::Accessibility::{
         CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTreeWalker,
         IUIAutomationValuePattern, UIA_ButtonControlTypeId, UIA_EditControlTypeId,
-        UIA_ListControlTypeId, UIA_PaneControlTypeId, UIA_TextControlTypeId, UIA_ValuePatternId,
-        UIA_WindowControlTypeId,
+        UIA_CONTROLTYPE_ID, UIA_ListControlTypeId, UIA_PaneControlTypeId,
+        UIA_TextControlTypeId, UIA_ValuePatternId, UIA_WindowControlTypeId,
     };
 
     struct ComGuard(bool);
@@ -320,14 +320,23 @@ mod windows {
         parent: &IUIAutomationElement,
     ) -> Result<Vec<IUIAutomationElement>, AdapterRefusal> {
         let mut children = Vec::new();
-        let mut current = unsafe { walker.GetFirstChildElement(parent) }
-            .map_err(|_| AdapterRefusal::AccessibilityUnavailable)?;
+        // UI Automation denotes the end of a sibling list with a successful
+        // call and a null COM pointer. `windows` 0.56 projects that as an
+        // empty (S_OK) error instead of `Option<IUIAutomationElement>`.
+        let mut current = match unsafe { walker.GetFirstChildElement(parent) } {
+            Ok(element) => Some(element),
+            Err(error) if error.code().0 == 0 => None,
+            Err(_) => return Err(AdapterRefusal::AccessibilityUnavailable),
+        };
         while let Some(element) = current {
             if children.len() >= MAX_SIGNAL_A11Y_NODES {
                 return Err(AdapterRefusal::AccessibilityUnavailable);
             }
-            current = unsafe { walker.GetNextSiblingElement(&element) }
-                .map_err(|_| AdapterRefusal::AccessibilityUnavailable)?;
+            current = match unsafe { walker.GetNextSiblingElement(&element) } {
+                Ok(next) => Some(next),
+                Err(error) if error.code().0 == 0 => None,
+                Err(_) => return Err(AdapterRefusal::AccessibilityUnavailable),
+            };
             children.push(element);
         }
         Ok(children)
@@ -368,7 +377,7 @@ mod windows {
         node.focusable = unsafe { element.CurrentIsKeyboardFocusable() }
             .map_err(|_| AdapterRefusal::AccessibilityUnavailable)?
             .as_bool();
-        node.editable = control_type == UIA_EditControlTypeId.0;
+        node.editable = control_type == UIA_EditControlTypeId;
         node.read_only = if node.editable {
             let value_pattern = unsafe {
                 element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
@@ -383,14 +392,14 @@ mod windows {
         Ok(node)
     }
 
-    fn role_from_control_type(control_type: i32) -> SignalRole {
+    fn role_from_control_type(control_type: UIA_CONTROLTYPE_ID) -> SignalRole {
         match control_type {
-            value if value == UIA_WindowControlTypeId.0 => SignalRole::Window,
-            value if value == UIA_PaneControlTypeId.0 => SignalRole::Pane,
-            value if value == UIA_ListControlTypeId.0 => SignalRole::List,
-            value if value == UIA_TextControlTypeId.0 => SignalRole::Text,
-            value if value == UIA_EditControlTypeId.0 => SignalRole::EditableText,
-            value if value == UIA_ButtonControlTypeId.0 => SignalRole::Button,
+            value if value == UIA_WindowControlTypeId => SignalRole::Window,
+            value if value == UIA_PaneControlTypeId => SignalRole::Pane,
+            value if value == UIA_ListControlTypeId => SignalRole::List,
+            value if value == UIA_TextControlTypeId => SignalRole::Text,
+            value if value == UIA_EditControlTypeId => SignalRole::EditableText,
+            value if value == UIA_ButtonControlTypeId => SignalRole::Button,
             _ => SignalRole::Unknown,
         }
     }
