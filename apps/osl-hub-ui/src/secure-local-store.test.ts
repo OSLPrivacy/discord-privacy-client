@@ -212,13 +212,14 @@ describe("SecureLocalStore integration contracts", () => {
     expect(commands).toContain("deferring membership persist");
   });
 
-  it("requires all RN wire-in delivery preconditions", () => {
+  it("requires RN delivery preconditions while leaving runtime activation closed", () => {
     const wireRn = readRelative("../../../crates/ipc/src/wire_rn.rs");
     const state = readRelative("../../../crates/ipc/src/state.rs");
     const client = readRelative("../../../crates/keystore/src/client.rs");
 
     expect(wireRn).toContain("pub const RN_WIRE_IN_ENABLED: bool = true;");
-    expect(state).toContain("rn_wire_in_enabled: AtomicBool::new(true)");
+    expect(state).toContain("rn_wire_in_enabled: AtomicBool::new(false)");
+    expect(state).toContain("pub fn set_rn_wire_in_enabled");
     expect(client).toContain("CLIENT_RN_CAPABILITY_FLOOR: u32 = rn_capabilities_for_wire_in(true)");
     expect(wireRn).toContain('pub const RN_SESSION_DIR: &str = "rn_sessions"');
     expect(wireRn).toContain(".create_new(true)");

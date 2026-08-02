@@ -1243,7 +1243,8 @@ describe("bundled preview security boundary", () => {
       "accept_b5_prekey_state_and_persist_with_sealer",
     );
     expect(wireRnProduction).toContain("pub const RN_WIRE_IN_ENABLED: bool = true;");
-    expect(state).toContain("rn_wire_in_enabled: AtomicBool::new(true)");
+    expect(state).toContain("rn_wire_in_enabled: AtomicBool::new(false)");
+    expect(state).toContain("pub fn set_rn_wire_in_enabled");
     expect(keystoreClient).toContain(
       "CLIENT_RN_CAPABILITY_FLOOR: u32 = rn_capabilities_for_wire_in(true)",
     );

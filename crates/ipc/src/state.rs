@@ -294,10 +294,12 @@ pub struct AppState {
     /// disables it for compatibility testing.
     pub sender_keys_enabled: AtomicBool,
 
-    /// Runtime gate for OSL-RN wire-in.
+    /// Runtime activation gate for OSL-RN traffic.
     ///
-    /// Defaults false, is in-memory only, and tracks the compile-time
-    /// `wire_rn::RN_WIRE_IN_ENABLED` fuse for production OSL-RN traffic.
+    /// The compile-time `wire_rn::RN_WIRE_IN_ENABLED` fuse says this build
+    /// has the delivery prerequisites. This separate, in-memory gate defaults
+    /// closed: D41 requires explicit activation only after desync recovery has
+    /// been proven for real traffic.
     pub rn_wire_in_enabled: AtomicBool,
 
     /// Phase 9-A3: in-memory cache of the current channel-member set
@@ -429,7 +431,7 @@ impl Default for AppState {
             recovery_guard: Mutex::new(crate::recovery::RecoveryGuard::default()),
             scope_membership: Mutex::new(crate::membership::ScopeMembership::default()),
             production_duress_engine: Mutex::new(None),
-            rn_wire_in_enabled: AtomicBool::new(true),
+            rn_wire_in_enabled: AtomicBool::new(false),
         }
     }
 }
