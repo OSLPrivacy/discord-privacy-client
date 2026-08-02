@@ -15,7 +15,8 @@ type Reconciliation = {
   v5_sender_keys: {
     public_product_default: boolean;
     ipc_owner_switch_default: boolean;
-    default_false_rationale: string;
+    shipping_app_group_conversations: boolean;
+    product_unreachable_reason: string;
     remediation: string[];
   };
   v5_rotation_limits: {
@@ -58,6 +59,10 @@ function coreBridgeReadsIpcSenderKeySwitch(source: string): boolean {
   );
 }
 
+function threatModelHasCitation(threatModel: string, citation: string): boolean {
+  return threatModel.includes(`\`${citation}\``);
+}
+
 describe("THREAT_MODEL reconciliation for retired v4 and v5 limits", () => {
   it("threat_model_reconciles_v4_retirement_and_v5_ratchet_limits", () => {
     const model = threatModelReconciliation();
@@ -82,7 +87,7 @@ describe("THREAT_MODEL reconciliation for retired v4 and v5 limits", () => {
     ]);
   });
 
-  it("v5_sender_key_defaults_agree_across_the_documented_core_and_bridge", () => {
+  it("v5_sender_key_status_matches_the_documented_core_and_product_surface", () => {
     const model = threatModelReconciliation();
     const state = readRepo("crates/ipc/src/state.rs");
     const coreBridge = readRepo("apps/osl-hub/src/core_bridge.rs");
@@ -93,8 +98,9 @@ describe("THREAT_MODEL reconciliation for retired v4 and v5 limits", () => {
       model.v5_sender_keys.ipc_owner_switch_default,
     );
     expect(coreBridgeReadsIpcSenderKeySwitch(coreBridge)).toBe(true);
-    expect(model.v5_sender_keys.default_false_rationale).toBe(
-      "account_scoped_chain_state_is_not_device_bound",
+    expect(model.v5_sender_keys.shipping_app_group_conversations).toBe(false);
+    expect(model.v5_sender_keys.product_unreachable_reason).toBe(
+      "shipping_app_constructs_direct_message_scopes_only",
     );
     expect(new Set(model.v5_sender_keys.remediation)).toEqual(
       new Set([
@@ -103,5 +109,16 @@ describe("THREAT_MODEL reconciliation for retired v4 and v5 limits", () => {
         "rotation_claims_limited_to_implemented_triggers",
       ]),
     );
+  });
+
+  it("group_sender_key_citations_resolve_to_the_live_router_and_initializer", () => {
+    const threatModel = readRepo("docs/THREAT_MODEL.md");
+
+    expect(threatModelHasCitation(threatModel, "crates/ipc/src/commands.rs:4619-4637")).toBe(true);
+    expect(threatModelHasCitation(threatModel, "crates/ipc/src/commands.rs:5452-5465")).toBe(true);
+    expect(threatModelHasCitation(threatModel, "crates/ipc/src/state.rs:285-288")).toBe(true);
+    expect(threatModelHasCitation(threatModel, "crates/ipc/src/state.rs:413")).toBe(true);
+    expect(threatModel).not.toContain("crates/ipc/src/commands.rs:3268-3282");
+    expect(threatModel).not.toContain("crates/ipc/src/state.rs:279-284");
   });
 });
