@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T12-H1 has not supplied the Rust hosted-session verification port/module boundary, and T12-I5's IMAP independent verification surface (VERIFY-SURFACE-PATTERN) is absent; both are prerequisites of T12-H7.
