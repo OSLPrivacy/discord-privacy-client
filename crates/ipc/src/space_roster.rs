@@ -4,6 +4,7 @@
 //! module owns only its at-rest boundary: a roster is never created or
 //! overwritten without the unlocked file-storage key, and writes are atomic.
 
+use crypto::ed25519;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::Path};
@@ -20,11 +21,22 @@ pub enum SpaceRole {
     Member,
     Moderator,
     Admin,
+    /// Compatibility role for signed membership events created before the
+    /// governance vocabulary standardized on `Admin`.
+    Owner,
 }
 
 impl SpaceRole {
     /// Every role that may be persisted or accepted from another client.
     pub const ALL: [Self; 3] = [Self::Member, Self::Moderator, Self::Admin];
+
+    fn to_wire(self) -> u8 {
+        match self {
+            Self::Member => 1,
+            Self::Moderator => 2,
+            Self::Admin | Self::Owner => 3,
+        }
+    }
 }
 
 /// A governance action that a role may request.
@@ -49,7 +61,7 @@ impl SpaceRole {
         match self {
             Self::Member => &[],
             Self::Moderator => &[SpaceGovernanceCapability::ModerateMembers],
-            Self::Admin => &[
+            Self::Admin | Self::Owner => &[
                 SpaceGovernanceCapability::ModerateMembers,
                 SpaceGovernanceCapability::ManageRoles,
                 SpaceGovernanceCapability::ManageChannels,
@@ -164,6 +176,126 @@ impl LocalSpaceRoster {
     }
 }
 
+const MEMBERSHIP_EVENT_DOMAIN: &[u8] = b"OSL/space-membership-event/v1";
+
+/// The membership operation authorized by a roster event.
+///
+/// The expected actor identity is intentionally supplied by the local roster
+/// when the event is accepted. A received event never gets to nominate the
+/// public key that verifies it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MembershipEventKind {
+    Create,
+    Invite,
+    Join,
+    Leave,
+    Remove,
+    RoleChange(SpaceRole),
+}
+
+impl MembershipEventKind {
+    fn wire_parts(self) -> (u8, u8) {
+        match self {
+            Self::Create => (1, 0),
+            Self::Invite => (2, 0),
+            Self::Join => (3, 0),
+            Self::Leave => (4, 0),
+            Self::Remove => (5, 0),
+            Self::RoleChange(role) => (6, role.to_wire()),
+        }
+    }
+}
+
+/// One membership transition, signed by the authorized actor's identity key.
+///
+/// `subject` is the member affected by the transition. For create, join, and
+/// leave it must be the signing actor; that invariant prevents a member from
+/// making another identity appear to join or leave.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SignedMembershipEvent {
+    pub space_id: SpaceId,
+    pub epoch: SpaceEpoch,
+    pub kind: MembershipEventKind,
+    pub subject: ed25519::PublicKey,
+    signature: [u8; ed25519::SIGNATURE_SIZE],
+}
+
+impl SignedMembershipEvent {
+    /// Signs the exact membership transition with the actor's identity key.
+    pub fn sign(
+        space_id: SpaceId,
+        epoch: SpaceEpoch,
+        kind: MembershipEventKind,
+        subject: ed25519::PublicKey,
+        actor: &ed25519::SecretKey,
+    ) -> Self {
+        let mut event = Self {
+            space_id,
+            epoch,
+            kind,
+            subject,
+            signature: [0; ed25519::SIGNATURE_SIZE],
+        };
+        event.signature = *ed25519::sign(actor, &event.signing_bytes()).as_bytes();
+        event
+    }
+
+    /// Verifies the event against the actor selected from the local roster.
+    ///
+    /// The identity key is caller-owned roster state, not wire metadata. This
+    /// keeps an attacker from pairing a valid signature from their own key
+    /// with an event claiming it came from an authorized actor.
+    pub fn verify(&self, actor: &ed25519::PublicKey) -> Result<(), MembershipEventError> {
+        if matches!(
+            self.kind,
+            MembershipEventKind::Create | MembershipEventKind::Join | MembershipEventKind::Leave
+        ) && self.subject != *actor
+        {
+            return Err(MembershipEventError::ActorSubjectMismatch);
+        }
+        let signature = ed25519::Signature::from_bytes(self.signature);
+        match ed25519::verify(actor, &self.signing_bytes(), &signature) {
+            Ok(true) => Ok(()),
+            Ok(false) | Err(_) => Err(MembershipEventError::InvalidSignature),
+        }
+    }
+
+    fn signing_bytes(&self) -> Vec<u8> {
+        let (kind, role) = self.kind.wire_parts();
+        let mut bytes = Vec::with_capacity(MEMBERSHIP_EVENT_DOMAIN.len() + 32 + 8 + 2 + 32);
+        bytes.extend_from_slice(MEMBERSHIP_EVENT_DOMAIN);
+        bytes.extend_from_slice(self.space_id.as_bytes());
+        bytes.extend_from_slice(&self.epoch.get().to_be_bytes());
+        bytes.push(kind);
+        bytes.push(role);
+        bytes.extend_from_slice(self.subject.as_bytes());
+        bytes
+    }
+}
+
+/// The replay-safe, ordered event history for one locally-held Space roster.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MembershipEventLog {
+    space_id: SpaceId,
+    epoch: SpaceEpoch,
+    events: Vec<SignedMembershipEvent>,
+}
+
+impl MembershipEventLog {
+    pub fn new(space_id: SpaceId) -> Self {
+        Self {
+            space_id,
+            epoch: SpaceEpoch::INITIAL,
+            events: Vec::new(),
+        }
+    }
+
+    pub fn epoch(&self) -> SpaceEpoch {
+        self.epoch
+    }
+
+}
+
 /// Authoritative membership state for every locally known Space.
 ///
 /// This type intentionally has no transport, keyserver, account, or delivery
@@ -222,6 +354,82 @@ pub enum SpaceRosterError {
     InvalidMemberId,
     #[error("space roster already contains this Space")]
     SpaceAlreadyExists,
+
+}
+
+impl MembershipEventLog {
+    pub fn events(&self) -> &[SignedMembershipEvent] {
+        &self.events
+    }
+
+    /// Verifies and records one transition. The only accepted new epoch is
+    /// exactly the successor of the local high-water mark; a gap is unsafe
+    /// because it could hide an intervening removal or key rotation.
+    pub fn apply(
+        &mut self,
+        event: SignedMembershipEvent,
+        actor: &ed25519::PublicKey,
+    ) -> Result<MembershipEventApply, MembershipEventError> {
+        if event.space_id != self.space_id {
+            return Err(MembershipEventError::WrongSpace);
+        }
+        event.verify(actor)?;
+
+        if event.epoch <= self.epoch {
+            return if self.events.iter().any(|known| known == &event) {
+                Ok(MembershipEventApply::Duplicate)
+            } else {
+                Err(MembershipEventError::StaleOrConflictingEpoch {
+                    current: self.epoch,
+                    received: event.epoch,
+                })
+            };
+        }
+
+        let expected = self
+            .epoch
+            .advance()
+            .map_err(|_| MembershipEventError::EpochExhausted)?;
+        if event.epoch != expected {
+            return Err(MembershipEventError::EpochGap {
+                expected,
+                received: event.epoch,
+            });
+        }
+        self.epoch = event.epoch;
+        self.events.push(event);
+        Ok(MembershipEventApply::Applied)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MembershipEventApply {
+    Applied,
+    Duplicate,
+}
+
+#[derive(Debug, thiserror::Error, Eq, PartialEq)]
+pub enum MembershipEventError {
+    #[error("membership event signature is invalid")]
+    InvalidSignature,
+    #[error("self-membership event subject does not match its actor")]
+    ActorSubjectMismatch,
+    #[error("membership event belongs to a different space")]
+    WrongSpace,
+    #[error(
+        "membership event epoch {received:?} is stale or conflicts with local epoch {current:?}"
+    )]
+    StaleOrConflictingEpoch {
+        current: SpaceEpoch,
+        received: SpaceEpoch,
+    },
+    #[error("membership event epoch gap: expected {expected:?}, received {received:?}")]
+    EpochGap {
+        expected: SpaceEpoch,
+        received: SpaceEpoch,
+    },
+    #[error("membership event epoch is exhausted")]
+    EpochExhausted,
 }
 
 /// The single account-relative path for the Space roster.
@@ -361,5 +569,102 @@ mod tests {
     fn an_exhausted_epoch_never_wraps_to_a_stale_value() {
         let exhausted = SpaceEpoch(u64::MAX);
         assert_eq!(exhausted.advance(), Err(SpaceEpochError::Exhausted));
+    }
+
+    #[test]
+    fn membership_events_are_signed_ordered_idempotent_and_replay_proof() {
+        let space = SpaceId::generate();
+        let (owner_secret, owner_public) = ed25519::generate_keypair();
+        let (_member_secret, member_public) = ed25519::generate_keypair();
+        let mut log = MembershipEventLog::new(space);
+
+        let create = SignedMembershipEvent::sign(
+            space,
+            SpaceEpoch(1),
+            MembershipEventKind::Create,
+            owner_public,
+            &owner_secret,
+        );
+        assert_eq!(
+            log.apply(create, &owner_public),
+            Ok(MembershipEventApply::Applied)
+        );
+        assert_eq!(
+            log.apply(create, &owner_public),
+            Ok(MembershipEventApply::Duplicate)
+        );
+
+        let invite = SignedMembershipEvent::sign(
+            space,
+            SpaceEpoch(2),
+            MembershipEventKind::Invite,
+            member_public,
+            &owner_secret,
+        );
+        assert_eq!(
+            log.apply(invite, &owner_public),
+            Ok(MembershipEventApply::Applied)
+        );
+
+        let removal = SignedMembershipEvent::sign(
+            space,
+            SpaceEpoch(3),
+            MembershipEventKind::Remove,
+            member_public,
+            &owner_secret,
+        );
+        assert_eq!(
+            log.apply(removal, &owner_public),
+            Ok(MembershipEventApply::Applied)
+        );
+
+        // A delayed, correctly signed invite cannot overwrite the later
+        // removal. Treating all lower epochs as idempotent would re-admit the
+        // member at a roster-state layer built on this log.
+        assert_eq!(
+            log.apply(invite, &owner_public),
+            Err(MembershipEventError::StaleOrConflictingEpoch {
+                current: SpaceEpoch(3),
+                received: SpaceEpoch(2),
+            })
+        );
+        assert_eq!(log.epoch(), SpaceEpoch(3));
+        assert_eq!(log.events(), &[create, invite, removal]);
+    }
+
+    #[test]
+    fn membership_events_fail_closed_on_a_gap_or_wrong_actor_signature() {
+        let space = SpaceId::generate();
+        let (owner_secret, owner_public) = ed25519::generate_keypair();
+        let (_other_secret, other_public) = ed25519::generate_keypair();
+        let mut log = MembershipEventLog::new(space);
+
+        let gap = SignedMembershipEvent::sign(
+            space,
+            SpaceEpoch(2),
+            MembershipEventKind::Create,
+            owner_public,
+            &owner_secret,
+        );
+        assert_eq!(
+            log.apply(gap, &owner_public),
+            Err(MembershipEventError::EpochGap {
+                expected: SpaceEpoch(1),
+                received: SpaceEpoch(2),
+            })
+        );
+
+        let wrong_actor = SignedMembershipEvent::sign(
+            space,
+            SpaceEpoch(1),
+            MembershipEventKind::Invite,
+            owner_public,
+            &owner_secret,
+        );
+        assert_eq!(
+            log.apply(wrong_actor, &other_public),
+            Err(MembershipEventError::InvalidSignature)
+        );
+        assert!(log.events().is_empty());
     }
 }
