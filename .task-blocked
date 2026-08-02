@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+CHAT-PATTERN (T4-C5) and WEB-CONFORMANCE (T4-A2) are missing; T4-F2 cannot create or validate the Snapchat adapter until both gates exist.
