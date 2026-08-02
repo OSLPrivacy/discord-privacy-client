@@ -417,10 +417,12 @@ describe("bundled preview security boundary", () => {
       // Read-only: whether the burn notices already queued for one scope have
       // been acknowledged. Without it a queued revocation renders as a success.
       "allow-get-hub-revocation-status",
-      // Reads/writes the encrypted local recovery_kit_status.json only
-      // (account_recovery.rs). No network, no keyserver, no shell - it stays
-      // inside the local main-window boundary this test protects.
-      "allow-recovery-kit-status",
+      // Encrypted local recovery_kit_status.json only (account_recovery.rs).
+      // No network, no keyserver, no shell. Split read from write: one
+      // permission per command is this codebase's rule, and a reader should
+      // not also be granted the write.
+      "allow-get-recovery-kit-unsaved",
+      "allow-set-recovery-kit-unsaved",
       // Reads in-memory AiCarrierState only (ai_carrier.rs has zero network
       // references) - reports whether a LOCAL cover model is ready. No network,
       // no keyserver, no shell.

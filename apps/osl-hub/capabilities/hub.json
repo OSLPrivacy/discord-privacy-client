@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "hub-local",
   "description": "Minimal permissions for the bundled local OSL Privacy UI and its isolated, capability-free service child views.",
-  "webviews": ["main"],
+  "webviews": [
+    "main"
+  ],
   "local": true,
   "permissions": [
     "core:window:allow-close",
@@ -47,7 +49,6 @@
     "allow-import-hub-osl-identity-phrase",
     "allow-setup-hub-main-password",
     "allow-view-hub-recovery-phrase",
-    "allow-recovery-kit-status",
     "allow-lock-hub-session",
     "allow-get-hub-password-role-status",
     "allow-set-hub-stealth-password",
@@ -152,6 +153,8 @@
     "allow-get-hub-service-burn-readiness",
     "allow-burn-hub-service-account",
     "allow-burn-active-hub-context",
-    "allow-get-hub-revocation-status"
+    "allow-get-hub-revocation-status",
+    "allow-get-recovery-kit-unsaved",
+    "allow-set-recovery-kit-unsaved"
   ]
 }

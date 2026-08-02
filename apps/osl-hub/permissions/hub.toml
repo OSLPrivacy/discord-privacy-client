@@ -314,9 +314,14 @@ description = "Allow only the trusted main OSL window to decrypt and re-read thi
 commands.allow = ["view_hub_recovery_phrase"]
 
 [[permission]]
-identifier = "allow-recovery-kit-status"
-description = "Read or update only the encrypted, account-scoped recovery-kit saved acknowledgement used to prevent recovery onboarding from being bypassed after WebView storage is cleared."
-commands.allow = ["get_hub_recovery_kit_unsaved", "set_hub_recovery_kit_unsaved"]
+identifier = "allow-get-recovery-kit-unsaved"
+description = "Read only the encrypted, account-scoped recovery-kit saved acknowledgement used to prevent recovery onboarding from being bypassed after WebView storage is cleared."
+commands.allow = ["get_hub_recovery_kit_unsaved"]
+
+[[permission]]
+identifier = "allow-set-recovery-kit-unsaved"
+description = "Update only the encrypted, account-scoped recovery-kit saved acknowledgement. Split from the read permission: one permission per command is the rule here, and bundling a read with a write grants more than a reader needs."
+commands.allow = ["set_hub_recovery_kit_unsaved"]
 
 [[permission]]
 identifier = "allow-lock-hub-session"
