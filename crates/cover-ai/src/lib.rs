@@ -1,6 +1,7 @@
 //! Local-only helpers for optional AI-assisted carrier selection.
 
 pub mod context;
+pub mod fallback;
 pub mod cold_start;
 pub mod candidates;
 // Gated with its runtime: this module is the only consumer of llama-cpp-2, and
