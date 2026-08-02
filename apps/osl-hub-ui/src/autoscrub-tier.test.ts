@@ -4,6 +4,7 @@ import {
   autoScrubTierStatus,
   runAttendedTieredScrub,
   type AutoScrubConsentAuthority,
+  type Rank4ConsentCheck,
 } from "./autoscrub-tier";
 import type {
   AutoScrubCapability,
@@ -29,7 +30,7 @@ function harness(stepUpAgeMs = 0) {
     stepUp: vi.fn(async () => ({ providerId: "discord", accountId: "acct-1", authEpoch: "epoch-1", authenticatedAt: now - stepUpAgeMs, expiresAt: now + 60_000 })),
   };
   const consentAuthority: AutoScrubConsentAuthority = {
-    checkLiveConsent: vi.fn(async (serviceId) => ({ serviceId, state: "live" })),
+    checkLiveConsent: vi.fn(async (serviceId): Promise<Rank4ConsentCheck> => ({ serviceId, state: "live" })),
   };
   return { adapter, bridge, consentAuthority };
 }
@@ -65,7 +66,7 @@ describe("attended AutoScrub tiers", () => {
 
   it("re-checks live, unrevoked rank-4 consent on every run before a fresh step-up", async () => {
     const h = harness();
-    h.consentAuthority.checkLiveConsent = vi.fn(async (serviceId) => ({ serviceId, state: "revoked" }));
+    h.consentAuthority.checkLiveConsent = vi.fn(async (serviceId): Promise<Rank4ConsentCheck> => ({ serviceId, state: "revoked" }));
     await expect(runAttendedTieredScrub(options(h))).resolves.toEqual({ state: "refused", reason: "rank-4-live-consent-required" });
     expect(h.bridge.stepUp).not.toHaveBeenCalled();
 

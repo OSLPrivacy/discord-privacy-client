@@ -9,7 +9,7 @@ export interface TorOnboardingState {
 
 export const initialTorOnboardingState = (): TorOnboardingState => ({ choice: null });
 
-export function chooseTorRoute(state: TorOnboardingState, choice: Exclude<TorChoice, null>): TorOnboardingState {
+export function chooseTorRoute(_state: TorOnboardingState, choice: Exclude<TorChoice, null>): TorOnboardingState {
   return { choice };
 }
 

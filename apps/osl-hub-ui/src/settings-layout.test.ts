@@ -38,7 +38,7 @@ describe("simplified truthful settings", () => {
 
   it("labels optional Pro module access as separately installed and licensed", () => {
     const start = source.indexOf("function activationSettingsContent");
-    const end = source.indexOf("function formatUnixDate", start);
+    const end = source.indexOf("function appearanceSettingsContent", start);
     const activation = source.slice(start, end);
     expect(activation).toContain("Optional Pro module");
     expect(activation).toContain("separately installed and licensed on this device");

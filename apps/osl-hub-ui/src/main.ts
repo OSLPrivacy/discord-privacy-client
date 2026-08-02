@@ -5417,10 +5417,6 @@ function activationSettingsContent(): string {
   return `<details class="license-card settings-disclosure"><summary><span><strong>Plan</strong><small>${escapeHtml(copy.title)}</small></span>${statusTag(escapeHtml(licenseState.status === "UNCONFIGURED" ? "Free" : licenseState.status), pro ? "active" : "")}</summary><div data-entitlement-banner="${entitlement.banner}" data-entitlement-cta="${entitlement.cta}"><p>${escapeHtml(copy.detail)}</p><p>Paste the activation code shown after checkout. No email is required.</p><p class="quiet-note">${moduleAccess}</p><form id="activation-form" class="license-form"><label for="activation-code">Activation code</label><div><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Activate Pro</button>${clear}</div></form></div></details>`;
 }
 
-function formatUnixDate(seconds: number): string {
-  return new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric" }).format(new Date(seconds * 1_000));
-}
-
 function appearanceSettingsContent(): string {
   return `<h2>Appearance</h2><p>Choose a theme. Arrange apps with Edit on Home.</p><div class="theme-grid">${(["system", "dark", "light"] as ThemeChoice[]).map((choice) => `<button class="theme-card ${themeChoice === choice ? "selected" : ""}" data-theme-choice="${choice}"><span class="theme-swatch ${choice}"></span><strong>${choice[0].toUpperCase()}${choice.slice(1)}</strong><small>${choice === "system" ? "Follow this device" : `${choice} interface`}</small></button>`).join("")}</div>`;
 }
@@ -7705,7 +7701,7 @@ async function submitFriendCode(event: SubmitEvent): Promise<void> {
     : await addOslFriend(code, nicknameInput?.value ?? "");
   if (button) button.disabled = false;
   if (!outcome.added) {
-    if (status) status.textContent = addFriendFailureStatus(outcome.reason);
+    if (status) status.textContent = addFriendFailureStatus(outcome.reason ?? "");
     return;
   }
   if (input) input.value = "";
