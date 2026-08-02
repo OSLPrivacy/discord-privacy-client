@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+The owned /home/liamw/osl-plan/report.py and notify.py (and RT-18 test surface) are outside this Git worktree; provision them in task/t9-r-18 or assign a writable tracked worktree.
