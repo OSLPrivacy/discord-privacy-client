@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing L3 commit implementations for WhatsApp, Signal, and Telegram: T3-C4, T3-D5, and T3-E5 are gated by T5-C1/T5-C3 under owner decision X7; the current commit ABI returns only SendReceipt, so it cannot refuse DestinationChanged as this task specifies.
