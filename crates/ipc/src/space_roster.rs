@@ -154,6 +154,69 @@ impl SpaceMemberId {
     }
 }
 
+/// Opaque client-generated identity of one channel within a Space.
+///
+/// The ID is local roster data, not a routing address.  In particular it is
+/// never derived from a display name: renaming a channel must not create a
+/// second key domain or silently change its kind.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SpaceChannelId([u8; Self::LENGTH]);
+
+impl SpaceChannelId {
+    pub const LENGTH: usize = 16;
+
+    /// Creates an unlinkable channel id from the operating-system CSPRNG.
+    pub fn generate() -> Self {
+        let mut bytes = [0_u8; Self::LENGTH];
+        OsRng.fill_bytes(&mut bytes);
+        Self(bytes)
+    }
+
+    pub const fn from_bytes(bytes: [u8; Self::LENGTH]) -> Self {
+        Self(bytes)
+    }
+
+    pub const fn as_bytes(&self) -> &[u8; Self::LENGTH] {
+        &self.0
+    }
+}
+
+/// The explicit semantic type of a Space channel.
+///
+/// There is deliberately no name-based fallback.  Voice has a stable wire
+/// representation even though voice delivery is not a v1 feature; clients
+/// must present it as unavailable until that separately gated work lands.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceChannelKind {
+    Text,
+    Voice,
+}
+
+/// A channel declaration replicated in the signed Space event log.
+///
+/// `position` is an explicit, converged ordering field.  Categories are not
+/// represented in v1, so a channel cannot acquire hidden hierarchy merely by
+/// a UI convention.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SpaceChannel {
+    pub id: SpaceChannelId,
+    pub kind: SpaceChannelKind,
+    pub position: u32,
+    pub name: String,
+}
+
+impl SpaceChannel {
+    pub fn new(id: SpaceChannelId, kind: SpaceChannelKind, position: u32, name: String) -> Self {
+        Self {
+            id,
+            kind,
+            position,
+            name,
+        }
+    }
+}
+
 /// Membership state for one Space, held only in the encrypted local roster.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LocalSpaceRoster {
