@@ -2,7 +2,8 @@
 //!
 //! This is deliberately a pure state machine. It does not inspect Signal,
 //! read its private storage, or grant authority from window geometry. A future
-//! Windows adapter must supply a fresh live-UIA observation of the exact
+//! Windows adapter must supply a fresh live-accessibility observation (UIA or
+//! MSAA, according to the measured provider) of the exact
 //! account, conversation, participant set, and message composer. Until that
 //! happens, no attestation exists and protected send remains unavailable.
 //!
@@ -162,6 +163,43 @@ impl SignalDestinationBindingState {
 
     pub fn invalidate_focus_transition(&self) -> SignalBindingReceipt {
         self.with_guard(SignalDestinationBindingGuard::focus_lost)
+    }
+
+    /// Native accessibility hook. A changed conversation or participant set
+    /// invalidates the previous one-shot authority before the new observation
+    /// can become attested.
+    pub fn attest_native_observation(
+        &self,
+        evidence: SignalDestinationEvidence,
+    ) -> SignalBindingReceipt {
+        self.with_guard(|guard| {
+            match guard.claimed_window.as_ref() {
+                Some(claimed)
+                    if claimed.host_generation == evidence.host_generation
+                        && claimed.window_identity_sha256 == evidence.window_identity_sha256 => {}
+                Some(_) => {
+                    guard.claim_window(evidence.host_generation, evidence.window_identity_sha256);
+                }
+                None => {
+                    guard.claim_window(evidence.host_generation, evidence.window_identity_sha256);
+                }
+            }
+
+            if let Some(active) = guard.active.as_ref() {
+                if active.evidence.account_binding_sha256 != evidence.account_binding_sha256
+                    || active.evidence.conversation_binding_sha256
+                        != evidence.conversation_binding_sha256
+                    || active.evidence.participant_set_sha256 != evidence.participant_set_sha256
+                {
+                    guard.conversation_changed();
+                } else if active.evidence.composer_identity_sha256
+                    != evidence.composer_identity_sha256
+                {
+                    guard.composer_changed();
+                }
+            }
+            guard.attest(evidence, monotonic_now_ms())
+        })
     }
 
     pub fn invalidate_window(&self) -> SignalBindingReceipt {
