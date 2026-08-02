@@ -178,7 +178,7 @@ describe("home workspace hierarchy", () => {
     expect(home).not.toContain('name: "Servers"');
     expect(home).toMatch(/class="[^"]*\bhome-dashboard\b/);
     expect(home).toMatch(/class="[^"]*\bhome-primary\b/);
-    expect(home).toContain('class="home-profile-dock"');
+    expect(home).toMatch(/class="[^"]*\bhome-profile-dock\b/);
   });
 
   it("uses compact square app launchers instead of a service dropdown", () => {
@@ -246,8 +246,8 @@ describe("home workspace hierarchy", () => {
   });
 
   it("uses the official OSL mark alone in the Home corner", () => {
-    const homeHeader = functionSource(source, "homeHeader", "settingsButtonMarkup");
-    expect(homeHeader).toContain('class="home-logo-button"');
+    const homeHeader = functionSource(source, "homeHeader", "homeCommandIcon");
+    expect(homeHeader).toMatch(/class="[^\"]*\bhome-logo-button\b/);
     expect(homeHeader).toContain('src="${oslVectorLogoUrl}"');
     expect(homeHeader).not.toContain("OSL Privacy</strong>");
     expect(homeHeader).not.toContain('src="${oslLogoUrl}"');
@@ -264,7 +264,7 @@ describe("home workspace hierarchy", () => {
   });
 
   it("keeps friends, notifications, settings, and profile at the screen edges", () => {
-    const homeHeader = functionSource(source, "homeHeader", "settingsButtonMarkup");
+    const homeHeader = functionSource(source, "homeHeader", "homeCommandIcon");
     expect(homeHeader).toContain("data-open-friends");
     expect(homeHeader).toContain("data-notification-settings");
     expect(homeHeader).toContain('data-route="settings"');
