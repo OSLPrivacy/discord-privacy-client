@@ -60,6 +60,12 @@ const ENC_MAGIC: &[u8; 8] = b"OSL-ENC1";
 pub const PASSWORD_MIN_LEN: usize = 6;
 pub const RECOMMENDED_PASSWORD_LEN: usize = 12;
 pub const PASSWORD_MAX_LEN: usize = 128;
+/// Automatic duress fires on the tenth consecutive wrong password attempt.
+///
+/// This is deliberately aligned with the unlock warning policy: attempts 7,
+/// 8, and 9 warn how many entries remain, while attempt 10 runs the production
+/// destruction path. A successful or explicit burn-code match resets the
+/// counter, so only consecutive wrong entries reach this boundary.
 pub const DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT: u32 = 10;
 pub const DURESS_FAILED_ATTEMPT_THRESHOLD: u32 = DURESS_WRONG_PASSWORD_ATTEMPT_LIMIT;
 const SALT_LEN: usize = 16;

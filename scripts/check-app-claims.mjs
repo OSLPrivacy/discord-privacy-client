@@ -115,6 +115,9 @@ const REQUIRED_GROUP_SENDER_KEY_BANS = [
 ];
 const REQUIRED_SPACES_CLAIM_BANS = [
   "private communities",
+  "osl servers are available now",
+  "osl communities are available now",
+  "encrypted circles are available now",
   "space administrators cannot read messages",
   "space admins cannot read messages",
   "osl spaces moderation",

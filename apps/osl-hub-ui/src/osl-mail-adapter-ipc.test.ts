@@ -46,6 +46,24 @@ beforeEach(() => {
 });
 
 describe("OSL Mail renderer IPC contract", () => {
+  it("accepts the bridge's unprovisioned identity status instead of treating it as an error", async () => {
+    mocks.invoke.mockResolvedValueOnce({
+      available: true,
+      provisioned: false,
+      address: null,
+      unreadCount: 0,
+      retentionSeconds: 604_800,
+    });
+
+    await expect(loadOslMailStatus()).resolves.toEqual({
+      available: true,
+      provisioned: false,
+      address: null,
+      unreadCount: 0,
+      retentionSeconds: 604_800,
+    });
+  });
+
   it("uses the seven frozen command names and camelCase argument shapes", async () => {
     await loadOslMailStatus();
     await provisionOslMail("member");

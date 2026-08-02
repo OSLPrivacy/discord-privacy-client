@@ -109,6 +109,28 @@ impl<S: SecureLocalStore> RnPlaintextCache<S> {
         }
     }
 
+    /// Durably seal an outbound application's payload before its carrier is
+    /// handed to transport.  A pairwise ratchet cannot open its own
+    /// ciphertext, so this is the sender-side counterpart to
+    /// [`render_or_decrypt`](Self::render_or_decrypt): after restart, the
+    /// sender renders this sealed copy instead of attempting self-decryption.
+    ///
+    /// Callers must treat an error as a failed send.  Sending first would
+    /// recreate the crash window where an acknowledged outbound message has
+    /// no transcript entry on its authoring device.
+    pub fn cache_outbound(
+        &self,
+        key: &RnPlaintextCacheKey,
+        plaintext: &[u8],
+    ) -> Result<(), RnPlaintextCacheError> {
+        let _guard = self
+            .miss_lock
+            .lock()
+            .expect("RN plaintext cache mutex poisoned");
+        self.store.put(&key.record_id(), plaintext)?;
+        Ok(())
+    }
+
     /// Destroy the locally cached copy for a carrier.  Policy code for burn,
     /// expiry, and view-once owns when this must be called.
     pub fn delete(&self, key: &RnPlaintextCacheKey) -> Result<(), RnPlaintextCacheError> {
@@ -229,6 +251,67 @@ mod tests {
         assert!(!blob
             .windows(plaintext.len())
             .any(|window| window == plaintext));
+    }
+
+    #[test]
+    fn t19_t30_sender_renders_five_outbound_messages_after_restart() {
+        let root = TempDir::new().expect("temporary cache directory");
+        let messages = [
+            (
+                b"outbound-rn-wire-1".as_slice(),
+                b"sender message 1".as_slice(),
+            ),
+            (
+                b"outbound-rn-wire-2".as_slice(),
+                b"sender message 2".as_slice(),
+            ),
+            (
+                b"outbound-rn-wire-3".as_slice(),
+                b"sender message 3".as_slice(),
+            ),
+            (
+                b"outbound-rn-wire-4".as_slice(),
+                b"sender message 4".as_slice(),
+            ),
+            (
+                b"outbound-rn-wire-5".as_slice(),
+                b"sender message 5".as_slice(),
+            ),
+        ];
+
+        {
+            let cache = RnPlaintextCache::new(SealedStore::new(
+                [0x51; 32],
+                FileBackend {
+                    root: root.path().to_path_buf(),
+                },
+            ));
+            for (carrier, plaintext) in messages {
+                cache
+                    .cache_outbound(&RnPlaintextCacheKey::from_carrier(carrier), plaintext)
+                    .expect("outbound transcript must be durable before send");
+            }
+        }
+
+        let cache = RnPlaintextCache::new(SealedStore::new(
+            [0x51; 32],
+            FileBackend {
+                root: root.path().to_path_buf(),
+            },
+        ));
+        let self_decrypt_attempts = AtomicUsize::new(0);
+        for (carrier, plaintext) in messages {
+            let rendered = cache
+                .render_or_decrypt(&RnPlaintextCacheKey::from_carrier(carrier), || {
+                    self_decrypt_attempts.fetch_add(1, Ordering::SeqCst);
+                    Err(RnPlaintextCacheError::Decrypt(
+                        "a sender cannot decrypt its own ratchet carrier".to_owned(),
+                    ))
+                })
+                .expect("sender transcript should render from its sealed outbound cache");
+            assert_eq!(rendered, plaintext);
+        }
+        assert_eq!(self_decrypt_attempts.load(Ordering::SeqCst), 0);
     }
 
     #[test]

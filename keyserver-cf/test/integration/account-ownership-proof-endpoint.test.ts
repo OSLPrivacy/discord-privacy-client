@@ -237,6 +237,46 @@ describe("POST /v1/account-ownership/proof", () => {
     expect(await bindingRows(ctx.challenge)).toHaveLength(1);
   });
 
+  it("lets the first owner bind a Discord account and refuses a second owner", async () => {
+    const first = await prepare();
+    const secondOwnerId = nextOwnerId();
+    const secondPair = await registerTestUser(SELF, secondOwnerId);
+    const secondChallenge = await issueChallenge(
+      first.serviceAccountId,
+      secondOwnerId,
+    );
+
+    expect(
+      (await submit({
+        service: "discord",
+        service_account_id: first.serviceAccountId,
+        owner_user_id: first.ownerUserId,
+        proof: await signProof({
+          challenge: first.challenge,
+          signingKey: first.pair.signingKey,
+        }),
+      })).status,
+    ).toBe(201);
+
+    expect(
+      (await submit({
+        service: "discord",
+        service_account_id: first.serviceAccountId,
+        owner_user_id: secondOwnerId,
+        proof: await signProof({
+          challenge: secondChallenge,
+          signingKey: secondPair.signingKey,
+        }),
+      })).status,
+    ).toBe(409);
+
+    expect(await bindingRows(first.challenge)).toHaveLength(1);
+    expect(await bindingRows(secondChallenge)).toHaveLength(0);
+    expect(
+      (await challengeRow(secondChallenge))?.spent_at_unix_seconds,
+    ).toBeNull();
+  });
+
   it("refuses a proof signed by a key other than the registered identity", async () => {
     const ctx = await prepare();
     const forger = await generateEd25519Pair();

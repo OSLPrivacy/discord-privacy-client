@@ -14,6 +14,8 @@
     "core:event:allow-emit-to",
     "core:event:allow-listen",
     "allow-get-onboarding-preferences",
+    "allow-osl-mail-get-status",
+    "allow-osl-mail-provision",
     "allow-list-hub-app-notifications",
     "allow-set-hub-notifications-enabled",
     "allow-set-hub-screenshot-protection",
