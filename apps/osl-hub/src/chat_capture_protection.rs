@@ -40,12 +40,24 @@ impl CaptureConsent {
         let requested = if local_opt_in == peer_opt_in {
             Some(if local_opt_in { EffectiveCaptureProtection::On } else { EffectiveCaptureProtection::Off })
         } else { None };
-        let changed = match requested {
-            Some(next) if next != self.effective => Some(next),
+        // Matched on the variants rather than using `!=` and `unwrap_or`:
+        // PartialEq and Option::unwrap_or are not const, so those forms do not
+        // compile inside a `const fn` and broke the desktop build.
+        let changed = match (requested, self.effective) {
+            (Some(EffectiveCaptureProtection::On), EffectiveCaptureProtection::Off) => {
+                Some(EffectiveCaptureProtection::On)
+            }
+            (Some(EffectiveCaptureProtection::Off), EffectiveCaptureProtection::On) => {
+                Some(EffectiveCaptureProtection::Off)
+            }
             _ => None,
         };
+        let effective = match changed {
+            Some(next) => next,
+            None => self.effective,
+        };
         ConsentTransition {
-            state: Self { local_opt_in, peer_opt_in, effective: changed.unwrap_or(self.effective) },
+            state: Self { local_opt_in, peer_opt_in, effective },
             effective_changed: changed,
         }
     }
