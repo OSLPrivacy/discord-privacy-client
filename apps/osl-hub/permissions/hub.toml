@@ -9,6 +9,11 @@ description = "Read only whether the optional local AI carrier is ready; this ex
 commands.allow = ["ai_carrier_status"]
 
 [[permission]]
+identifier = "allow-compose-scrub-erasure-request"
+description = "Compose a local GDPR/CCPA erasure request for the user to review and send themselves; it performs no network operation."
+commands.allow = ["compose_scrub_erasure_request"]
+
+[[permission]]
 identifier = "allow-osl-mail-get-status"
 description = "Read the signed OSL Mail availability and this unlocked identity's local mailbox status."
 commands.allow = ["osl_mail_get_status"]

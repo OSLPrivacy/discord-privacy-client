@@ -181,6 +181,7 @@ use osl_privacy_hub::hub_command_surface::{
     build_review_ui_identity_binding_verifier, checked_browser_footprint_binding,
     checked_hosted_session_scan_flow, require_native_discord_product_send_authority,
     require_review_ui_identity_binding_from_verifier, service_kind_id,
+    compose_erasure_request_for_user,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
     start_autoscrub_reviewed_run_inner, with_native_discord_product_send_authority,
     BrowserFootprintConsentRequest, CheckedHost, NativeDiscordProductSendAuthority,
@@ -1208,6 +1209,15 @@ fn request_autoscrub_global_stop(
     state: State<'_, HubCoreState>,
 ) -> Result<AutoScrubFleetStatus, String> {
     autoscrub_run::request_global_stop(&state.osl)
+}
+
+/// Produce local statutory-erasure text for the user to review and send.
+/// The command has no transport side effect.
+#[tauri::command]
+fn compose_scrub_erasure_request(
+    input: osl_privacy_hub::scrub_erasure::ErasureRequestInput,
+) -> Result<osl_privacy_hub::scrub_erasure::ComposedErasureRequest, String> {
+    compose_erasure_request_for_user(input)
 }
 
 #[tauri::command]
@@ -10051,6 +10061,11 @@ mod tauri_command_acl_tests {
             "start_autoscrub_reviewed_run",
             "request_autoscrub_global_stop",
         ]);
+    }
+
+    #[test]
+    fn scr_g1_erasure_composition_is_registered_on_the_shipping_command_surface() {
+        assert_registered_and_acl_granted(&["compose_scrub_erasure_request"]);
     }
 
     #[test]
