@@ -1,0 +1,1 @@
+Missing Hub-side RN recovery event and bootstrap-ping transport: T19-C1 only emits legacy SESSION_RESET, while cmd_osl_control_inbox_drain is not called by the shipping Hub; this prerequisite must be owned/wired before T19-C4 can schedule a ping.
