@@ -36,3 +36,11 @@ runtime; it is not a production module or endpoint.
 
 `crates/cover-ai/tests/tier_is_not_observable.rs` is a regression test for
 the intended shared codec output.  It has no shipping import by design.
+
+## T13-B5
+
+`crates/cover-ai/corpus/chat-en-expanded-v1.txt` and
+`crates/cover-ai/tests/corpus_quality.rs` are a candidate corpus handoff for
+DEP-T1-4.  T1 owns the compiled codec table, so importing this artefact into
+the current binary would create a second carrier model and break decode
+compatibility.  It remains a non-shipping handoff until T1 adopts it.
