@@ -137,6 +137,20 @@ mod tests {
         let mut pixel = binding(); pixel.evidence = BindingEvidence::Pixel;
         let placed = adapter.place(&pixel, &PlacementAuthorization::for_scope("scope"), &Carrier("carrier".into()));
         assert_eq!(adapter.commit(&pixel, &SendAuthorization::for_scope("scope"), &placed).outcome, SendOutcome::NotSent);
+
+        struct BadPaint;
+        impl WhatsAppBackend for BadPaint {
+            fn capabilities(&self, _: u64) -> CapabilitySet { CapabilitySet::new() }
+            fn locate(&self, _: &SurfaceTarget) -> Result<SurfaceBinding, AdapterRefusal> { Ok(binding()) }
+            fn read_state(&self, _: &SurfaceBinding) -> Result<SurfaceState, AdapterRefusal> { unreachable!() }
+            fn destination(&self, _: &SurfaceBinding) -> Result<DestinationIdentity, AdapterRefusal> { unreachable!() }
+            fn place(&self, _: &SurfaceBinding, _: &Carrier) -> PlacementReceipt { unreachable!() }
+            fn commit(&self, _: &SurfaceBinding, _: &PlacementReceipt) -> SendReceipt { unreachable!() }
+            fn paint_targets(&self, _: &SurfaceBinding) -> Result<Vec<PaintTarget>, AdapterRefusal> {
+                Ok(vec![PaintTarget { carrier_sha256: String::new(), rect: Bounds { x: 0, y: 0, width: 1, height: 1 }, clipped_by: None, confidence: PaintConfidence::Exact }])
+            }
+        }
+        assert_eq!(WhatsAppSurfaceAdapter::new(BadPaint).paint_targets(&binding()), Err(AdapterRefusal::AccessibilityUnavailable));
     }
     #[test]
     fn c6_returning_ok_without_post_write_digest_is_refused() {
