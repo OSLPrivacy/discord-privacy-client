@@ -10,7 +10,7 @@ fn cipher(salt: &[u8]) -> ConversationCipher {
 
 #[test]
 fn cover_text_is_canonical_for_a_scoped_pointer() {
-    let id: [u8; TOKEN_ID_BYTES] = [0x9a, 0x17, 0x53, 0xce, 0x42, 0x00, 0x7d, 0xf1];
+    let id: [u8; TOKEN_ID_BYTES] = [0x9a; TOKEN_ID_BYTES];
     let mac_key = b"coupling-test-scope-key";
     let first_cipher = cipher(b"first-conversation-cipher");
     let second_cipher = cipher(b"second-conversation-cipher");
@@ -37,7 +37,7 @@ fn cover_text_is_canonical_for_a_scoped_pointer() {
 
 #[test]
 fn cover_text_changes_when_the_scope_key_changes() {
-    let id: [u8; TOKEN_ID_BYTES] = [0x9a, 0x17, 0x53, 0xce, 0x42, 0x00, 0x7d, 0xf1];
+    let id: [u8; TOKEN_ID_BYTES] = [0x9a; TOKEN_ID_BYTES];
     let cover = encode_token(&cipher(b"test-cipher"), b"first-scope-key", &id);
     let other = encode_token(&cipher(b"test-cipher"), b"second-scope-key", &id);
 

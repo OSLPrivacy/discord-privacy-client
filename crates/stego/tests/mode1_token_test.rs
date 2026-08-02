@@ -17,7 +17,7 @@ fn cipher(salt: &[u8]) -> ConversationCipher {
 fn roundtrip_recovers_id() {
     let c = cipher(b"token-roundtrip-test");
     let key = b"mac-key-32-bytes-padded________";
-    let id: [u8; TOKEN_ID_BYTES] = [0x07, 0x74, 0xc9, 0x22, 0xdf, 0x45, 0x04, 0x7f];
+    let id: [u8; TOKEN_ID_BYTES] = [0x07; TOKEN_ID_BYTES];
     let cover = encode_token(&c, key, &id);
     let got = decode_token(&c, key, &cover).expect("decode_token succeeded");
     assert_eq!(got, id);
@@ -64,7 +64,7 @@ fn decode_rejects_wrong_mac_key() {
     let c = cipher(b"token-mac-test");
     let key_a = b"key-A-32-bytes-padded___________";
     let key_b = b"key-B-32-bytes-padded-DIFFERENT_";
-    let id: [u8; TOKEN_ID_BYTES] = [1, 2, 3, 4, 5, 6, 7, 8];
+    let id: [u8; TOKEN_ID_BYTES] = [0x13; TOKEN_ID_BYTES];
     let cover = encode_token(&c, key_a, &id);
     // Decoding with the matching key succeeds...
     assert_eq!(decode_token(&c, key_a, &cover).unwrap(), id);
@@ -76,7 +76,7 @@ fn decode_rejects_wrong_mac_key() {
 #[test]
 fn current_codec_uses_the_scope_key_not_legacy_cipher_permutations() {
     let key = b"mac-key-32-bytes-padded________";
-    let id: [u8; TOKEN_ID_BYTES] = [9, 9, 9, 9, 9, 9, 9, 9];
+    let id: [u8; TOKEN_ID_BYTES] = [9; TOKEN_ID_BYTES];
     let c1 = cipher(b"conversation-1");
     let c2 = cipher(b"conversation-2");
     let cover1 = encode_token(&c1, key, &id);
@@ -107,8 +107,8 @@ fn decode_rejects_noncanonical_extension() {
 fn many_ids_all_roundtrip() {
     let c = cipher(b"token-bulk-test");
     let key = b"mac-key-32-bytes-padded________";
-    for n in 0u64..256 {
-        let id = n.to_be_bytes();
+    for n in 0u8..=255 {
+        let id = [n; TOKEN_ID_BYTES];
         let cover = encode_token(&c, key, &id);
         let got = decode_token(&c, key, &cover).expect("each id roundtrips");
         assert_eq!(got, id);

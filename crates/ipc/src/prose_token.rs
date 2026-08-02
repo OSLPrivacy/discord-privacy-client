@@ -354,9 +354,9 @@ mod tests {
 
     #[test]
     fn id_hex_round_trip() {
-        let id: [u8; stego::TOKEN_ID_BYTES] = [0x07, 0x74, 0xc9, 0x22, 0xdf, 0x45, 0x04, 0x7f];
+        let id: [u8; stego::TOKEN_ID_BYTES] = [0x07; stego::TOKEN_ID_BYTES];
         let s = bytes_to_id_hex(&id);
-        assert_eq!(s, "0774c922df45047f");
+        assert_eq!(s, "0707070707070707070707070707070707070707");
         assert_eq!(id_hex_to_bytes(&s).unwrap(), id);
     }
 

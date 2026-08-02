@@ -1,7 +1,7 @@
 //! Bigram (n=2) language-model prose-token codec.
 //!
 //! Replaces the Mode 1 16-template-with-fixed-slots encoder for the
-//! prose-token cover (the 12-byte blob_id+HMAC payload that wraps
+//! prose-token cover (the 24-byte `P`+detect-tag payload that wraps
 //! cipher-store references). The output reads more like organic
 //! chat — each word is sampled from the conditional distribution
 //! P(word | previous word) trained on a small embedded corpus,
@@ -26,8 +26,8 @@
 //!
 //! ## Wire / framing
 //!
-//! Payload is the same 96 bits as Mode 1's prose-token
-//! (`TOKEN_ID_BYTES * 8 + TOKEN_MAC_BYTES * 8 = 64 + 32`). The
+//! Payload is the same 192 bits as Mode 1's prose-token
+//! (`TOKEN_ID_BYTES * 8 + TOKEN_MAC_BYTES * 8 = 160 + 32`). The
 //! arithmetic decoder emits words until the bit cursor has consumed
 //! exactly `TOKEN_PAYLOAD_BITS` of input. Encoder is the inverse: it
 //! re-encodes the word stream and returns the recovered bits, or
@@ -59,10 +59,10 @@ pub const VOCAB_SIZE: usize = 128;
 pub const BOS_IDX: usize = 0;
 
 /// Token payload bit-count this codec encodes / decodes per cover.
-/// Must match `mode1::TOKEN_PAYLOAD_BITS` (8-byte id + 4-byte HMAC
-/// tag = 12 bytes = 96 bits). Hardcoded here rather than re-exported
+/// Must match `mode1::TOKEN_PAYLOAD_BITS` (20-byte `P` + 4-byte detect tag
+/// = 24 bytes = 192 bits). Hardcoded here rather than re-exported
 /// to avoid a circular module dependency.
-pub const TOKEN_PAYLOAD_BITS: u32 = (8 + 4) * 8;
+pub const TOKEN_PAYLOAD_BITS: u32 = (20 + 4) * 8;
 
 /// Interval precision (bits). We subdivide a `[0, 2^PRECISION)`
 /// integer interval by the model CDF until the top
@@ -381,10 +381,9 @@ pub fn arithmetic_encode_words(words: &[usize], target_bits: u32) -> Vec<bool> {
     value_to_bits(lo, target_bits)
 }
 
-// Candidate pointer widths beyond the shipping arithmetic interval precision
-// are measured with this lossless 6-bit packing. The production wire remains
-// 96-bit arithmetic coding; this merely lets the budget report compare wider
-// candidates without overflowing its u128 interval representation.
+// Payloads wider than the arithmetic interval precision use this lossless
+// 6-bit packing. The 192-bit shipping pointer wire takes this path, as did
+// the 128/160-bit candidates in the cover-budget measurement.
 fn wide_measurement_decode(bits: &[bool], target_bits: u32) -> Vec<usize> {
     bits.iter()
         .copied()
