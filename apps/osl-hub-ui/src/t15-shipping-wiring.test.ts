@@ -8,6 +8,10 @@ describe("T15 shipped lifecycle UI wiring", () => {
     expect(shippingMain).toContain('from "./component-picker"');
     expect(shippingMain).toContain("componentPickerScreen(components)");
   });
+  it("T15-D5 keeps the later-feature state manager on that same shipping path", () => {
+    expect(shippingMain).toContain('from "./component-manager"');
+    expect(shippingMain).toContain("componentManagerFromOnboarding(");
+  });
   it("renders optional downloads behind the AutoScrub consent gate in Settings", () => {
     expect(shippingMain).toContain('from "./component-consent"');
     expect(shippingMain).toContain('decideAutoScrubInstall("autoscrub", null)');
