@@ -72,9 +72,18 @@ describe("OSL chats view", () => {
     const markup = oslChatsViewMarkup(model({
       messages: OSL_CHAT_DELIVERY_STATES.map((state) => ({ messageId: state, direction: state === "received" ? "incoming" : "outgoing", body: state, state, timestampLabel: "Now" })),
     }));
-    expect(OSL_CHAT_DELIVERY_STATES).toEqual(["sent", "delivered", "received", "opened", "expired", "failed"]);
+    expect(OSL_CHAT_DELIVERY_STATES).toEqual(["queued", "sent", "delivered", "received", "opened", "expired", "failed"]);
+    const labels: Record<typeof OSL_CHAT_DELIVERY_STATES[number], string> = {
+      queued: "Queued — not sent",
+      sent: "Sent",
+      delivered: "Delivered",
+      received: "Received",
+      opened: "Opened",
+      expired: "Expired",
+      failed: "Failed",
+    };
     for (const state of OSL_CHAT_DELIVERY_STATES) {
-      const label = state[0].toUpperCase() + state.slice(1);
+      const label = labels[state];
       expect(markup).toContain(`class="osl-chat-message-state is-${state}">${label}</span>`);
     }
   });
