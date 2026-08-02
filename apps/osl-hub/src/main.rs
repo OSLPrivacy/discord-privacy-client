@@ -35,7 +35,8 @@ use osl_privacy_hub::identity_registry::{
     HubIdentitySlotDto, HubIdentitySwitchResult,
 };
 use osl_privacy_hub::main_window_reveal::{
-    main_window_reveal, CaptureAffinity, MainWindowReveal, PageLoadPhase,
+    main_window_reveal, main_window_should_start_hidden, CaptureAffinity, MainWindowReveal,
+    PageLoadPhase,
 };
 use osl_privacy_hub::mass_cleanup::{
     self, MassCleanupCapabilityManifest, MassCleanupDiscoveryRequest, MassCleanupExecutionRequest,
@@ -9189,9 +9190,15 @@ fn main() {
         let main_window = app
             .get_webview_window("main")
             .ok_or_else(|| "OSL main window is unavailable".to_owned())?;
-        main_window
-            .hide()
-            .map_err(|_| "OSL main window could not start hidden".to_owned())?;
+        // Only Windows has a capture-affinity primitive that must be applied
+        // before the first paint. Hiding a WebKitGTK toplevel here makes its
+        // page-load callback (and therefore the later `show()`) depend on an
+        // unmapped window, which strands Linux at no window at all.
+        if main_window_should_start_hidden(CaptureAffinity::for_this_platform()) {
+            main_window
+                .hide()
+                .map_err(|_| "OSL main window could not start hidden".to_owned())?;
+        }
         let config_dir = app
             .path()
             .app_config_dir()

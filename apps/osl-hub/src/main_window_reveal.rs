@@ -56,6 +56,15 @@ pub enum MainWindowReveal {
     Show,
 }
 
+/// Whether setup must keep the configured main window hidden before its first
+/// paint. Only Windows has a capture-affinity primitive that needs this
+/// ordering guarantee. On platforms without one, hiding at setup would make
+/// mapping depend on a later webview callback, which WebKitGTK is not required
+/// to deliver for an unmapped toplevel.
+pub fn main_window_should_start_hidden(affinity: CaptureAffinity) -> bool {
+    affinity == CaptureAffinity::Gated
+}
+
 /// The single decision behind every `show()` of the main window at page load.
 ///
 /// `capture_protected` is the result of the affinity readback and is consulted
@@ -100,6 +109,12 @@ mod tests {
             ),
             MainWindowReveal::Show,
         );
+    }
+
+    #[test]
+    fn only_a_platform_with_capture_affinity_starts_hidden() {
+        assert!(main_window_should_start_hidden(CaptureAffinity::Gated));
+        assert!(!main_window_should_start_hidden(CaptureAffinity::Absent));
     }
 
     #[test]
