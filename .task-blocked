@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T10-T1 is incomplete: apps/osl-hub-ui/src/friend-trust-ui.test.ts still reads ./main.ts and asserts source text; its behavioral rewrite is required before T10-T3 can coordinate and freeze the allowlist.
