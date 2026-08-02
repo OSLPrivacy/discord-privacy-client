@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T4-N2 through T4-N5: none of the seven required osl_mail_* Rust commands is implemented or registered under apps/osl-hub/src, so T4-N6 cannot truthfully flip OSL Mail availability.
