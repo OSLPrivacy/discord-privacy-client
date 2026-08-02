@@ -129,6 +129,8 @@ pub mod discord_qa_inbound_receipt;
 #[cfg(feature = "core")]
 pub mod destruct_ack_rollup;
 #[cfg(feature = "core")]
+pub mod deadman;
+#[cfg(feature = "core")]
 pub mod device_transfer;
 #[cfg(feature = "core")]
 pub mod identity_binding_verifier;
