@@ -58,6 +58,16 @@ pub enum RnSessionHealth {
     Unrecoverable,
 }
 
+/// An explicit, safe action offered for a degraded RN session.
+///
+/// A skip-limit refusal means the receiver deliberately declined an
+/// impractically large gap. It is not authentication evidence, so the
+/// caller must offer a fresh handshake instead of reporting tampering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RnRecoveryOffer {
+    ReestablishSession,
+}
+
 /// A receive-side symptom that can prove an RN-pinned session has diverged.
 ///
 /// Callers may report these only after the peer's RN pin has been verified.
@@ -96,6 +106,17 @@ impl RnPeerHealth {
         self.consecutive_auth_failures
     }
 
+    /// The explicit recovery action for a state that cannot process an
+    /// otherwise valid RN message.
+    pub fn recovery_offer(&self) -> Option<RnRecoveryOffer> {
+        match self.health {
+            RnSessionHealth::Degraded | RnSessionHealth::Desynced => {
+                Some(RnRecoveryOffer::ReestablishSession)
+            }
+            RnSessionHealth::Healthy | RnSessionHealth::Unrecoverable => None,
+        }
+    }
+
     /// A successful authenticated decrypt is the sole way to clear a
     /// desynchronisation diagnosis.
     pub fn successful_decrypt(&mut self) {
@@ -109,8 +130,9 @@ impl RnPeerHealth {
     /// Record a real receive-side symptom from an RN-pinned peer.
     ///
     /// The detector's authentication-failure threshold is frozen at three.
-    /// A missing session or a per-message skip-bound refusal are immediate
-    /// proofs that the pinned session cannot process this wire message.
+    /// A missing session is immediate proof that the pinned session cannot
+    /// process this wire message. A per-message skip-bound refusal is a
+    /// recoverable availability limit, not evidence of authentication failure.
     /// Once desynchronised, later symptoms retain that state; they cannot make
     /// the UI look healthy again.
     pub fn observe_pinned_symptom(&mut self, symptom: RnDesyncSymptom) {
@@ -129,8 +151,11 @@ impl RnPeerHealth {
                     RnSessionHealth::Degraded
                 };
             }
-            RnDesyncSymptom::MissingSession | RnDesyncSymptom::MaxSkipPerMessageRefused => {
+            RnDesyncSymptom::MissingSession => {
                 self.health = RnSessionHealth::Desynced;
+            }
+            RnDesyncSymptom::MaxSkipPerMessageRefused => {
+                self.health = RnSessionHealth::Degraded;
             }
         }
     }
