@@ -7110,6 +7110,12 @@ code {
 }
 .burn-revocation-line.acknowledged { border-left-color: var(--brand); color: var(--muted); }
 
+.peer-integrity { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--line); border-left: 3px solid var(--muted); background: var(--panel-2); }
+.peer-integrity small { color: var(--muted); line-height: 1.45; }
+.peer-integrity--matching { border-left-color: var(--brand); }
+.peer-integrity--unpublished { border-left-color: var(--warn); }
+.peer-integrity--unknown { border-left-color: var(--danger); }
+
 /* Scrub's preview deliberately leads with the non-mutating state. */
 .scrub-dryrun-preview {
   max-width: 760px;
