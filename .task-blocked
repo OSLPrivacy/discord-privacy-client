@@ -1,0 +1,1 @@
+T2-15 prerequisite is missing: apps/osl-hub/src/receipt_emit_open.rs does not exist, and the only current receipt emission bypasses any recipient policy in broker.rs. T2-15/T2-14 must provide a policy-gated Delivered and Opened emission seam before T2-16 can make opt-out behavior real.
