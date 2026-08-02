@@ -20,6 +20,7 @@ use store::{MessageStore, StoreError, StoredMessage};
 
 use crate::group_send::{
     apply_skdm_recv, apply_skdm_request_recv, decrypt_v5_recv, encrypt_v5_send,
+    OSL_RESULT_RECOVERY_IGNORED,
 };
 
 // 9-TD2.3: F0-FIX3 trace logs.
