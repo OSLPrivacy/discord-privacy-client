@@ -103,7 +103,8 @@ describe("AutoScrub unattended run production wiring", () => {
     const markup = __oslHubUiTest.renderSettingsSection("scrub");
     expect(markup).toContain('id="autoscrub-stop"');
     expect(markup).toContain("2 open runs");
-    expect(markup).toContain("Nothing happens until you review and confirm every batch.");
+    expect(markup).toContain("LOCAL REVIEW");
+    expect(markup).toContain("Only selected items can be prepared; every batch still needs confirmation.");
   });
 });
 

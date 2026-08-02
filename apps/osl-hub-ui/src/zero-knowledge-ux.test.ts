@@ -15,10 +15,12 @@ function functionSource(name: string, nextName: string): string {
 describe("zero-knowledge Scrub review", () => {
   it("defers Scrub from first run and keeps the later review local-only", () => {
     const settings = functionSource("privacySettingsContent", "privacyScanResultsMarkup");
+    const reviewDialog = functionSource("scrubReviewDialogMarkup", "openScrubReviewDialogAfterRender");
     expect(source).not.toContain("function onboardingScrubContent");
     expect(settings).toContain('<p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p>');
     expect(settings).toContain("Every scan and review stays local.");
-    expect(settings).toContain("Nothing happens until you review and confirm every batch.");
+    expect(reviewDialog).toContain("Confirm this list");
+    expect(reviewDialog).toContain("Nothing is deleted by this build.");
   });
 
   it("keeps categories collapsed in onboarding and all six default on", () => {
@@ -39,7 +41,9 @@ describe("zero-knowledge Scrub review", () => {
 
   it("states that later deletion retains explicit review and confirmation", () => {
     const settings = functionSource("privacySettingsContent", "privacyScanResultsMarkup");
-    expect(settings).toContain("Nothing happens until you review and confirm every batch.");
+    const reviewDialog = functionSource("scrubReviewDialogMarkup", "openScrubReviewDialogAfterRender");
+    expect(reviewDialog).toContain("Confirm this list");
+    expect(reviewDialog).toContain("Confirming only prepares manual directions. It does not contact or change any app.");
     expect(settings).toContain("This build only gives manual directions. It does not delete app messages.");
   });
 

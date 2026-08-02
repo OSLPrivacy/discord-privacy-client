@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { projectAutoScrubFleetStatus } from "./autoscrub-contract";
+import { autoScrubTierStatus } from "./autoscrub-tier";
 import { scrubDeletionContract, scrubSignalDefinitions } from "./scrub";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
@@ -31,12 +32,19 @@ describe("Scrub safety contract", () => {
     expect(privacyUi).not.toContain("if (!proActive)");
   });
 
-  it("keeps AutoScrub Pro off and prevents unattended deletion claims", () => {
+  it("D85: reserves unattended execution for installed Pro while retaining reviewed deletion safety", () => {
     const autoScrubUi = anchoredSource("function autoScrubAssistantMarkup", "function clearPrivacyScanState");
+    const reviewDialogUi = anchoredSource("function scrubReviewDialogMarkup", "function openScrubReviewDialogAfterRender");
 
     expect(autoScrubUi).toContain("AutoScrub assistant");
-    expect(autoScrubUi).toContain("PRO · COMING SOON");
-    expect(autoScrubUi).toContain("Nothing happens until you review and confirm every batch.");
+    expect(autoScrubUi).toContain("PRO MODULE NOT INSTALLED");
+    expect(autoScrubTierStatus("pro", true)).toMatchObject({
+      label: "Unattended AutoScrub",
+      unattendedExecutionAllowed: true,
+      requiresHumanPresence: false,
+    });
+    expect(reviewDialogUi).toContain("Confirm this list");
+    expect(reviewDialogUi).toContain("Nothing is deleted by this build.");
     expect(projectAutoScrubFleetStatus(null)).toMatchObject({
       label: "Unavailable in this build",
       stopAvailable: false,

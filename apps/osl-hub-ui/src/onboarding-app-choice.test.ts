@@ -27,9 +27,10 @@ describe("onboarding app choice", () => {
     expect(binding).toMatch(/#continue-app-choice[\s\S]*?ensureNativeCatalogForAppChoice\(\)[\s\S]*?persistCombinedHomeChoices\(\)[\s\S]*?completeOnboarding\(\)/);
   });
 
-  it("keeps the legacy tutorial route as a wrapper around the app chooser", () => {
+  it("keeps the legacy tutorial route handing completed setup to the app chooser", () => {
     const wrapper = functionSource("tutorialContent", "chooseAppsOnboardingContent");
 
-    expect(wrapper).toContain("return chooseAppsOnboardingContent()");
+    expect(wrapper).toContain("if (!current)");
+    expect(wrapper).toContain(": chooseAppsOnboardingContent()");
   });
 });
