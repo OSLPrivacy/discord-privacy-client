@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T16-G5 requires Groups B, D, E, and F green, but their prerequisite adversarial tests are absent (including B7/B11, D3/D7, E2, and F3); those T16 tasks must land before an independent entitlement audit can run.
