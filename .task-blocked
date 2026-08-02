@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing a native dropped-file ingress that routes a dropped file through native_attachment_transport's existing encrypt/upload/deliver path; T2-65 cannot safely implement this from the renderer alone.
