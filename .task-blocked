@@ -1,1 +1,0 @@
-Missing a send-time warning integration with a bounded scan/fallback interface; T13-G7 owns wiring the warning into the unencrypted send path (the current sensitive-classify crate is mapping/policy only).
