@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+TF-78 cannot run: no deployable Windows artifact or release-grade TF-78 driver exists, and T20-A0..A8 own the still-present VM harness collision fixes that 06-VM-TEST-PLAN requires before VM evidence is trustworthy.
