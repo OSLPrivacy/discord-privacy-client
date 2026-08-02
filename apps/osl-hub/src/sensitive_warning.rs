@@ -41,7 +41,7 @@ pub fn before_unencrypted_send(
     let mut categories: Vec<_> = findings
         .findings
         .into_iter()
-        .map(|finding| warning_category_for(map_category(finding.category)))
+        .filter_map(|finding| warning_category_for(map_category(finding.category)))
         .filter(|category| policy.decision_for(draft, category) == WarningDecision::Warn)
         .collect();
     categories.sort();
