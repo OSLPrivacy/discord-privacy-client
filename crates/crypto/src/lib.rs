@@ -67,6 +67,7 @@ pub mod error;
 pub mod hkdf;
 pub mod ml_kem_768;
 pub mod padding;
+pub mod pointer;
 pub mod pqxdh;
 pub mod random;
 pub mod ratchet;
