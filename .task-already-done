@@ -1,1 +1,0 @@
-`/osl ` commands are accepted by `_plan_text` while home paths and secrets remain rejected, with regression coverage for every plan text field.
