@@ -110,7 +110,7 @@ import {
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
@@ -7568,14 +7568,18 @@ async function submitFriendCode(event: SubmitEvent): Promise<void> {
   const button = document.querySelector<HTMLButtonElement>("#add-friend-form button");
   const status = document.querySelector<HTMLElement>("#friend-form-status");
   const code = input?.value.trim() ?? "";
-  if (!/^OSLFR1\.[A-Za-z0-9_-]{16,8192}$/.test(code)) {
-    if (status) status.textContent = "Enter a valid OSL invite.";
+  const username = isNormalizedOslUsername(code) ? code : null;
+  if (!username && !/^OSLFR1\.[A-Za-z0-9_-]{16,8192}$/.test(code)) {
+    if (status) status.textContent = "Enter a valid OSL invite or username.";
     input?.focus();
     return;
   }
   if (button) button.disabled = true;
-  if (status) status.textContent = "Saving request locally…";
-  const outcome = await addOslFriend(code, nicknameInput?.value ?? "");
+  if (status) status.textContent = username ? "Resolving username…" : "Saving request locally…";
+  const resolved = username ? await addOslFriendByUsername(username, nicknameInput?.value ?? "") : null;
+  const outcome = username
+    ? (resolved ? { added: true, reason: null } : { added: false, reason: "username lookup was refused" })
+    : await addOslFriend(code, nicknameInput?.value ?? "");
   if (button) button.disabled = false;
   if (!outcome.added) {
     if (status) status.textContent = addFriendFailureStatus(outcome.reason);
