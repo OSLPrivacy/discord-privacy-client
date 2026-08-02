@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T4-P3: apps/osl-hub/src/web_surface_adapter/x.rs and its web_surface_adapter module do not exist; T4-P3 owns the required X adapter foundation.
