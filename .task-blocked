@@ -7,3 +7,4 @@ R-27 — Blocked: declared `osl-plan/task_report.py` is absent and dependencies 
 R-28 — Blocked: its declared `osl-plan/task_report.py` is absent and prerequisite R-12 has no implementation in this worktree. The executable plan/research gate has no shipping/reporting entry point to extend.
 T2-72 — Blocked: declared prerequisites T2-41 and T2-43 are absent (`cipher-store-cf/src/endpoints/attachment-reserve.ts` and `cipher-store-cf/src/lib/reserve-destroy.ts`). A composition test would invent a reservation API instead of testing the required implementation.
 T2-73 — Blocked: T2-41 is absent (`cipher-store-cf/src/endpoints/attachment-reserve.ts`), so attachment lifecycle semantics do not exist to compose with the present partial guard and burn boundary.
+T2-77 — Blocked: T2-52 is absent (`apps/osl-hub/src/view_once_fanout.rs`), so no per-device blob fanout exists for a partial-ack integration test.
