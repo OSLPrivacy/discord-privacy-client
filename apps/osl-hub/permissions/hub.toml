@@ -24,6 +24,11 @@ description = "Provision the unlocked identity's claimed OSL Mail username throu
 commands.allow = ["osl_mail_provision"]
 
 [[permission]]
+identifier = "allow-osl-mail-send"
+description = "Send a pointer-only OSL Mail envelope from the trusted main OSL window."
+commands.allow = ["osl_mail_send"]
+
+[[permission]]
 identifier = "allow-activate-native-manual-peer-context"
 description = "Bind one verified friend scope to the exact current signed native Discord host generation; accepts no Discord credentials, process, window, or conversation identifiers."
 commands.allow = ["activate_native_manual_peer_context"]

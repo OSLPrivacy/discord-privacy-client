@@ -1163,6 +1163,24 @@ async fn osl_mail_provision(
     .map_err(|_| "OSL Mail provisioning worker failed".to_owned())?
 }
 
+#[tauri::command]
+async fn osl_mail_send(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    recipient: String,
+    subject: String,
+    body: String,
+) -> Result<osl_mail::OslMailSendReceipt, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may send OSL Mail".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::send(&app.state::<HubCoreState>(), &app.state::<OslMailState>(), recipient, subject, body)
+    }).await.map_err(|_| "OSL Mail send worker failed".to_owned())?
+}
+
 fn require_active_pro_entitlement(core: &HubCoreState) -> Result<(), String> {
     if ipc::tier_gate::is_paid_equivalent(&core.osl) {
         Ok(())

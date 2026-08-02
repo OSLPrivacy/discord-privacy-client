@@ -512,6 +512,7 @@ describe("bundled preview security boundary", () => {
     const expectedPermissions = [
       "allow-osl-mail-get-status",
       "allow-osl-mail-provision",
+      "allow-osl-mail-send",
       "allow-emit-active-session-reset",
       // Resolves an OSL username against the signed keyserver before storing
       // the friend request, so it belongs on the network surface rather than
