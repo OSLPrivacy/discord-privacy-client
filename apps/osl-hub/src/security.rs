@@ -459,6 +459,18 @@ struct PeopleFile {
 /// migrated: there is nothing in them to carry forward.
 const PEOPLE_SCHEMA_VERSION: u32 = 3;
 
+/// The sole definition of a verified peer in the Hub.
+///
+/// Pre-v3 files contain a self-referential ceremony result, never a bilateral
+/// verification, and a pending key change invalidates any earlier result.
+pub fn peer_is_verified(
+    people_schema_version: u32,
+    safety_number_verified: bool,
+    pending_key_change: bool,
+) -> bool {
+    people_schema_version >= PEOPLE_SCHEMA_VERSION && safety_number_verified && !pending_key_change
+}
+
 /// Load `hub_people.json`, invalidating pre-v3 verification claims.
 ///
 /// Every read of the People file goes through here so no caller can observe the
@@ -1132,7 +1144,7 @@ pub fn set_friend_scope_permission(
             .people
             .get(&person_id)
             .ok_or_else(|| "OSL friend is unknown".to_owned())?;
-        ensure_friend_can_be_enabled(metadata)?;
+        ensure_friend_can_be_enabled(metadata, people.version)?;
     }
     let prefs_path = dir.join(SECURITY_PREFS_FILE);
     let previous_prefs = load_encrypted_json::<SecurityPreferences>(&prefs_path)?;
@@ -1286,7 +1298,7 @@ pub fn set_friend_scope_reach(
         .ok_or_else(|| "OSL friend is unknown".to_owned())?
         .clone();
     if broadened {
-        ensure_friend_can_be_enabled(&metadata)?;
+        ensure_friend_can_be_enabled(&metadata, people.version)?;
     }
     let previous_peers = core
         .osl
@@ -1587,7 +1599,7 @@ pub fn manual_peer_binding(
         .get(&person_id)
         .cloned()
         .ok_or_else(|| "OSL friend key state is missing".to_owned())?;
-    ensure_manual_peer_available(metadata, true)?;
+    ensure_manual_peer_available(metadata, people.version, true)?;
     // `person_id` is derived from the identity key, and every approval —
     // `manual_peer_scope_id` included — is keyed on `person_id`. If a stored
     // record ever drifts so that its key no longer derives its own id, the
@@ -1665,7 +1677,7 @@ pub fn manual_peer_ed25519_public(
         .get(&binding.person_id)
         .cloned()
         .ok_or_else(|| "OSL friend key state is missing".to_owned())?;
-    ensure_manual_peer_available(metadata, true)?;
+    ensure_manual_peer_available(metadata, people.version, true)?;
     validate_manual_peer_identity(&binding.person_id, metadata, &peer)?;
     let trusted = trusted_peer_key_bundle(&binding.person_id, metadata, &peer)?;
     let bytes =
@@ -2262,9 +2274,10 @@ fn remove_peer_replay_scope_at_path(
 
 fn ensure_manual_peer_available(
     metadata: &PersonMetadata,
+    people_version: u32,
     peer_map_entry_exists: bool,
 ) -> Result<(), String> {
-    ensure_friend_can_be_enabled(metadata)?;
+    ensure_friend_can_be_enabled(metadata, people_version)?;
     if !peer_map_entry_exists {
         return Err("OSL friend key state is missing".to_owned());
     }
@@ -2303,14 +2316,15 @@ fn constant_time_eq_32(left: &[u8; 32], right: &[u8; 32]) -> bool {
     difference == 0
 }
 
-fn ensure_friend_can_be_enabled(metadata: &PersonMetadata) -> Result<(), String> {
-    if !metadata.safety_number_verified {
+fn ensure_friend_can_be_enabled(metadata: &PersonMetadata, people_version: u32) -> Result<(), String> {
+    let pending_key_change = metadata.pending_ed25519_public.is_some() || metadata.pending_key_bundle.is_some();
+    if !peer_is_verified(people_version, metadata.safety_number_verified, pending_key_change) {
+        if pending_key_change {
+            return Err(
+                "Resolve this friend's pending key change before enabling encryption".to_owned(),
+            );
+        }
         return Err("Verify this friend's safety number before enabling encryption".to_owned());
-    }
-    if metadata.pending_ed25519_public.is_some() || metadata.pending_key_bundle.is_some() {
-        return Err(
-            "Resolve this friend's pending key change before enabling encryption".to_owned(),
-        );
     }
     Ok(())
 }
@@ -6330,11 +6344,18 @@ key"
     #[test]
     fn enabling_friend_scope_requires_verified_stable_keys() {
         let mut metadata = PersonMetadata::default();
-        assert!(ensure_friend_can_be_enabled(&metadata).is_err());
+        assert!(ensure_friend_can_be_enabled(&metadata, PEOPLE_SCHEMA_VERSION).is_err());
         metadata.safety_number_verified = true;
-        assert!(ensure_friend_can_be_enabled(&metadata).is_ok());
+        assert!(ensure_friend_can_be_enabled(&metadata, PEOPLE_SCHEMA_VERSION).is_ok());
         metadata.pending_ed25519_public = Some("changed-key".to_owned());
-        assert!(ensure_friend_can_be_enabled(&metadata).is_err());
+        assert!(ensure_friend_can_be_enabled(&metadata, PEOPLE_SCHEMA_VERSION).is_err());
+    }
+
+    #[test]
+    fn peer_verification_requires_the_bilateral_schema_version() {
+        assert!(!peer_is_verified(PEOPLE_SCHEMA_VERSION - 1, true, false));
+        assert!(!peer_is_verified(PEOPLE_SCHEMA_VERSION, true, true));
+        assert!(peer_is_verified(PEOPLE_SCHEMA_VERSION, true, false));
     }
 
     #[test]
@@ -6343,10 +6364,10 @@ key"
             osl_user_id: "peer-osl".to_owned(),
             ..Default::default()
         };
-        assert!(ensure_manual_peer_available(&metadata, true).is_err());
+        assert!(ensure_manual_peer_available(&metadata, PEOPLE_SCHEMA_VERSION, true).is_err());
         metadata.safety_number_verified = true;
-        assert!(ensure_manual_peer_available(&metadata, false).is_err());
-        assert!(ensure_manual_peer_available(&metadata, true).is_ok());
+        assert!(ensure_manual_peer_available(&metadata, PEOPLE_SCHEMA_VERSION, false).is_err());
+        assert!(ensure_manual_peer_available(&metadata, PEOPLE_SCHEMA_VERSION, true).is_ok());
         metadata.pending_key_bundle = Some(FriendCodeUnsigned {
             version: FRIEND_CODE_VERSION,
             osl_user_id: "peer-osl".to_owned(),
@@ -6355,7 +6376,7 @@ key"
             mlkem768_public: String::new(),
             ratchet_initial_public: None,
         });
-        assert!(ensure_manual_peer_available(&metadata, true).is_err());
+        assert!(ensure_manual_peer_available(&metadata, PEOPLE_SCHEMA_VERSION, true).is_err());
     }
 
     #[test]
