@@ -21,6 +21,7 @@ import {
   requireAttachmentSweepClaimSchema,
 } from "./attachment-sweep-claims.js";
 import { MAX_LIVE_BLOB_ROWS } from "./blob-limits.js";
+import { R2PayloadStore } from "./payload-store.js";
 
 /// D1 caps a query at 100 bound parameters. Measured against real D1, not
 /// recalled: 100 succeeds, 101 fails with `D1_ERROR: too many SQL variables`.
@@ -36,6 +37,12 @@ import { MAX_LIVE_BLOB_ROWS } from "./blob-limits.js";
 /// 90 leaves headroom for the `expires_at` bind and any future predicate.
 export const ATTACHMENT_D1_DELETE_CHUNK_IDS = 90;
 export const BLOB_SWEEP_BATCH_SIZE = 100;
+// D1 permits at most 1,000 queries per Worker invocation. A full blob batch
+// uses one SELECT plus two DELETEs (90 ids per DELETE), so keep this job below
+// that ceiling and leave headroom for the other scheduled maintenance jobs.
+export const BLOB_SWEEP_MAX_D1_QUERIES = 798;
+const BLOB_SWEEP_D1_QUERIES_PER_FULL_BATCH = 1
+  + Math.ceil(BLOB_SWEEP_BATCH_SIZE / ATTACHMENT_D1_DELETE_CHUNK_IDS);
 export const LINK_GRANT_SWEEP_BATCH_SIZE = 100;
 export const LINK_GRANT_SWEEP_MAX_ROWS = 1000;
 
@@ -49,22 +56,32 @@ function isConsumedMultipartUpload(error: unknown): boolean {
 export async function sweepExpired(env: Env): Promise<number> {
   const now = Math.floor(Date.now() / 1000);
   let deleted = 0;
-  while (deleted < MAX_LIVE_BLOB_ROWS) {
+  let d1Queries = 0;
+  const payloads = new R2PayloadStore(env.PAYLOADS);
+  while (
+    deleted < MAX_LIVE_BLOB_ROWS
+    && d1Queries + BLOB_SWEEP_D1_QUERIES_PER_FULL_BATCH <= BLOB_SWEEP_MAX_D1_QUERIES
+  ) {
     const result = await env.DB.prepare(
-      `SELECT id FROM blobs
+      `SELECT blob_id, fetch_digest_sha256_hex FROM blob_capability_index
        WHERE expires_at < ? ORDER BY expires_at LIMIT ${BLOB_SWEEP_BATCH_SIZE}`,
-    ).bind(now).all<{ id: ArrayBuffer | Uint8Array }>();
+    ).bind(now).all<{ blob_id: string; fetch_digest_sha256_hex: string }>();
+    d1Queries += 1;
     const rows = result.results ?? [];
     if (rows.length === 0) break;
 
-    const ids = rows.map((row) => row.id);
+    // Remove payload bytes before their index entries. If R2 deletion fails,
+    // retaining the index makes the object retryable on the next cron run.
+    await Promise.all(rows.map((row) => payloads.deleteByDigest(row.fetch_digest_sha256_hex)));
+    const ids = rows.map((row) => row.blob_id);
     for (let offset = 0; offset < ids.length; offset += ATTACHMENT_D1_DELETE_CHUNK_IDS) {
       const chunk = ids.slice(offset, offset + ATTACHMENT_D1_DELETE_CHUNK_IDS);
       const placeholders = chunk.map(() => "?").join(", ");
       await env.DB.prepare(
-        `DELETE FROM blobs
-         WHERE expires_at < ? AND id IN (${placeholders})`,
+        `DELETE FROM blob_capability_index
+         WHERE expires_at < ? AND blob_id IN (${placeholders})`,
       ).bind(now, ...chunk).run();
+      d1Queries += 1;
     }
     deleted += rows.length;
     if (rows.length < BLOB_SWEEP_BATCH_SIZE) break;
