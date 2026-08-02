@@ -7,7 +7,7 @@ describe("OSL Enclaves destination", () => {
 
     expect(markup).toContain(">OSL Enclaves</h1>");
     expect(markup).toContain("<span>Available</span>");
-    expect(markup).toContain("encrypted shared spaces");
+    expect(markup).toContain("encrypted communities");
     expect(markup).not.toContain("Coming later");
     expect(markup).toContain("OSL does not claim access to provider communities or read provider pages.");
   });

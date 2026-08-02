@@ -46,7 +46,7 @@ export type OslPrimaryDestination = typeof OSL_PRIMARY_DESTINATIONS[number];
 export type FirstPartyOslSurfaceState = "available" | "coming_later" | "unavailable";
 
 export interface FirstPartyOslSurfaceContract {
-  id: "osl-chat" | "osl-circles" | "osl-mail";
+  id: "osl-chat" | "osl-enclaves" | "osl-mail";
   label: "OSL Chat" | "OSL Enclaves" | "OSL Mail";
   destination: "Inbox";
   state: FirstPartyOslSurfaceState;
@@ -70,7 +70,7 @@ export const FIRST_PARTY_OSL_SURFACES: readonly FirstPartyOslSurfaceContract[] =
     missingCapability: "unavailable",
   },
   {
-    id: "osl-circles",
+    id: "osl-enclaves",
     label: "OSL Enclaves",
     destination: "Inbox",
     state: "available",

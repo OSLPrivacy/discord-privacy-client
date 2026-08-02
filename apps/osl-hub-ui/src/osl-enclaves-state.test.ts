@@ -2,15 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import {
   blockSpaceMember,
   channelAttention,
-  createOslSpacesLocalState,
-  emptySpaceLocalFilters,
+  createOslEnclavesLocalState,
+  emptyEnclaveLocalFilters,
   hideSpaceChannel,
   markChannelRead,
   muteSpaceChannel,
   shouldNotifyForSpaceMessage,
   visibleSpaceChannels,
   visibleSpaceMessages,
-} from "./osl-spaces-state";
+} from "./osl-enclaves-state";
 const messages = [
   { messageId: "outgoing", channelId: "general", localSequence: 1, incoming: false, mentionsLocalUser: false },
   { messageId: "hello", channelId: "general", localSequence: 2, incoming: true, mentionsLocalUser: false },
@@ -18,10 +18,10 @@ const messages = [
   { messageId: "private-ping", channelId: "private", localSequence: 4, incoming: true, mentionsLocalUser: true },
 ] as const;
 
-describe("OSL Spaces local unread state", () => {
+describe("OSL Enclaves local unread state", () => {
   it("derives unread and mention counts from local messages, then advances only this device's frontier", () => {
-    const firstDevice = createOslSpacesLocalState();
-    const secondDevice = createOslSpacesLocalState();
+    const firstDevice = createOslEnclavesLocalState();
+    const secondDevice = createOslEnclavesLocalState();
 
     expect(channelAttention(messages, firstDevice, "general")).toEqual({ unreadCount: 2, mentionCount: 1 });
 
@@ -40,7 +40,7 @@ describe("OSL Spaces local unread state", () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
     try {
-      const state = createOslSpacesLocalState();
+      const state = createOslEnclavesLocalState();
       const read = markChannelRead(messages, state, "general");
 
       expect(channelAttention(messages, read, "general")).toEqual({ unreadCount: 0, mentionCount: 0 });
@@ -51,9 +51,9 @@ describe("OSL Spaces local unread state", () => {
   });
 });
 
-describe("Space local moderation filters", () => {
+describe("Enclave local moderation filters", () => {
   it("hides channels and blocked members only on this device", () => {
-    let filters = emptySpaceLocalFilters();
+    let filters = emptyEnclaveLocalFilters();
     filters = hideSpaceChannel(filters, "ops");
     filters = blockSpaceMember(filters, "member-abusive");
 
@@ -66,7 +66,7 @@ describe("Space local moderation filters", () => {
   });
 
   it("keeps muted content visible while suppressing only this device's notifications", () => {
-    let filters = emptySpaceLocalFilters();
+    let filters = emptyEnclaveLocalFilters();
     filters = muteSpaceChannel(filters, "announcements");
     filters = blockSpaceMember(filters, "member-abusive");
 
@@ -79,7 +79,7 @@ describe("Space local moderation filters", () => {
   });
 
   it("cannot serialize a block list into a relay or member request", () => {
-    const filters = blockSpaceMember(emptySpaceLocalFilters(), "member-abusive");
+    const filters = blockSpaceMember(emptyEnclaveLocalFilters(), "member-abusive");
 
     expect(JSON.stringify(filters)).toBe("{}");
   });

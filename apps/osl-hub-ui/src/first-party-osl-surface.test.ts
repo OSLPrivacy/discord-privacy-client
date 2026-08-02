@@ -22,7 +22,7 @@ describe("first-party OSL service surface contracts", () => {
     ]);
     expect(surfaces.map((surface) => surface.id)).toEqual([
       "osl-chat",
-      "osl-circles",
+      "osl-enclaves",
       "osl-mail",
     ]);
     expect(surfaces.every((surface) => surface.destination === "Inbox")).toBe(true);
@@ -30,7 +30,7 @@ describe("first-party OSL service surface contracts", () => {
     expect(surfaces.every((surface) => surface.requiresConnectedService === false)).toBe(true);
     expect(surfaces.every((surface) => surface.missingCapability === "unavailable")).toBe(true);
     expect(surfaces.find((surface) => surface.id === "osl-chat")?.state).toBe("available");
-    expect(surfaces.find((surface) => surface.id === "osl-circles")?.state).toBe("available");
+    expect(surfaces.find((surface) => surface.id === "osl-enclaves")?.state).toBe("available");
     expect(surfaces.find((surface) => surface.id === "osl-mail")?.state).toBe("coming_later");
 
     const visibleText = surfaces

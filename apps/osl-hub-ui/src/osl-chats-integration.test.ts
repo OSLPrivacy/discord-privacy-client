@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const runtimeSource = readFileSync(new URL("./osl-chat-runtime.ts", import.meta.url), "utf8");
 const serversViewSource = readFileSync(new URL("./osl-servers-view.ts", import.meta.url), "utf8");
+const enclavesSurfaceSource = readFileSync(new URL("./osl-enclaves.ts", import.meta.url), "utf8");
 
 function functionSource(name: string, nextName: string): string {
   const start = source.indexOf(`function ${name}`);
@@ -112,9 +113,10 @@ describe("first-party OSL Chats integration", () => {
   it("ships OSL Enclaves without claiming provider-server access", () => {
     expect(source).toContain('if (route === "osl-servers") return oslServersContent()');
     expect(source).toContain('import { oslServersViewMarkup } from "./osl-servers-view"');
-    expect(serversViewSource).toContain("OSL Enclaves");
-    expect(serversViewSource).toContain('statusTag("Available")');
-    expect(serversViewSource).toContain('from "./osl-spaces-view"');
-    expect(serversViewSource).toContain("OSL does not claim access to provider communities");
+    expect(serversViewSource).toContain('from "./osl-enclaves"');
+    expect(enclavesSurfaceSource).toContain("OSL Enclaves");
+    expect(enclavesSurfaceSource).toContain('statusTag("Available")');
+    expect(enclavesSurfaceSource).toContain('from "./osl-enclaves-view"');
+    expect(enclavesSurfaceSource).toContain("OSL does not claim access to provider communities");
   });
 });

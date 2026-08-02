@@ -11,26 +11,26 @@ type StyleRequest = {
 
 function styleRequest(): StyleRequest {
   const document = readFileSync(
-    new URL("../../../docs/design/osl-spaces-style-request.md", import.meta.url),
+    new URL("../../../docs/design/osl-enclaves-style-request.md", import.meta.url),
     "utf8",
   );
   const match = document.match(/```json\n([\s\S]*?)\n```/u);
-  if (!match) throw new Error("Spaces style request is missing its machine-readable handoff");
+  if (!match) throw new Error("Enclaves style request is missing its machine-readable handoff");
   return JSON.parse(match[1]) as StyleRequest;
 }
 
-describe("Spaces style handoff", () => {
+describe("Enclaves style handoff", () => {
   it("gives T7 a CSP-safe namespace and every honest state from H6", () => {
     expect(styleRequest()).toEqual({
       stylesheet: "apps/osl-hub-ui/src/styles.css",
       forbidden: ["inline-style", "runtime-style"],
-      namespace: "osl-space",
+      namespace: "osl-enclave",
       requiredStateClasses: [
-        "osl-space-state--offline",
-        "osl-space-state--stale-roster",
-        "osl-space-state--burn-queued",
-        "osl-space-state--removal-unconfirmed",
-        "osl-space-state--ack-unconfirmed",
+        "osl-enclave-state--offline",
+        "osl-enclave-state--stale-roster",
+        "osl-enclave-state--burn-queued",
+        "osl-enclave-state--removal-unconfirmed",
+        "osl-enclave-state--ack-unconfirmed",
       ],
       prohibitedIndicators: ["presence", "last-seen", "online-dot"],
     });
