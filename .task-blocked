@@ -1,1 +1,2 @@
 T13-D9 — Blocked: T13-G2's category split is absent and T13-D3 has selected no carrier model or measurements. `docs/design/local-model-selection.md` correctly leaves classifier sharing undecided; choosing one or two artifacts without political-speech false-positive results would invent the D45 answer.
+T13-F3 — Not applicable in v1: T13-F1's checked contract sets cloud generation and credit purchase to false, so no cloud-credit debit boundary is shipped. An exhaustion test would cover an unreachable send branch rather than prove shipping behavior.
