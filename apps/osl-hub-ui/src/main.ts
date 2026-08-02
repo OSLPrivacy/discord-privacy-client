@@ -26,6 +26,7 @@ import { peopleDestinationHeaderMarkup } from "./people-destination-header";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import { unlockAttemptWarning } from "./unlock-attempts";
 import { chatPreviewHidingVisible } from "./entitlement-gates";
+import { entitlementView } from "./entitlement-view";
 import {
   escapeHtml,
   closeEmbeddedServiceHost,
@@ -5292,14 +5293,15 @@ function identityListMarkup(): string {
 
 function activationSettingsContent(): string {
   if (discordQaShell) return "";
-  const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  const accessLabel = licenseState.access === "offlineGrace" ? "Pro, offline grace" : pro ? "Pro active" : "Free";
+  const entitlement = entitlementView(licenseState, Math.floor(Date.now() / 1_000));
+  const pro = entitlement.tier === "pro" || entitlement.tier === "offlineGrace";
+  const accessLabel = entitlement.tier === "offlineGrace" ? "Pro, offline grace" : pro ? "Pro active" : "Free";
   const moduleAccess = pro
     ? "Optional Pro module: separately installed and licensed on this device."
     : "Optional Pro module: separate install and license required; base OSL stays available.";
   const period = licenseState.currentPeriodEnd === null ? "" : `<small>${licenseState.status === "CANCELLED" ? "Access through" : "Current period ends"} ${formatUnixDate(licenseState.currentPeriodEnd)}</small>`;
   const clear = licenseState.status === "UNCONFIGURED" ? "" : `<button class="button compact" id="clear-activation-code" type="button">Clear activation</button>`;
-  return `<details class="license-card settings-disclosure"><summary><span><strong>Plan</strong><small>${accessLabel}</small>${period}</span>${statusTag(escapeHtml(licenseState.status === "UNCONFIGURED" ? "Free" : licenseState.status), pro ? "active" : "")}</summary><div><p>Paste the activation code shown after checkout. No email is required.</p><p class="quiet-note">${moduleAccess}</p><form id="activation-form" class="license-form"><label for="activation-code">Activation code</label><div><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Activate Pro</button>${clear}</div></form></div></details>`;
+  return `<details class="license-card settings-disclosure" data-entitlement-banner="${entitlement.banner}" data-entitlement-cta="${entitlement.cta}"><summary><span><strong>Plan</strong><small>${accessLabel}</small>${period}</span>${statusTag(escapeHtml(licenseState.status === "UNCONFIGURED" ? "Free" : licenseState.status), pro ? "active" : "")}</summary><div><p>Paste the activation code shown after checkout. No email is required.</p><p class="quiet-note">${moduleAccess}</p><form id="activation-form" class="license-form"><label for="activation-code">Activation code</label><div><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Activate Pro</button>${clear}</div></form></div></details>`;
 }
 
 function formatUnixDate(seconds: number): string {
