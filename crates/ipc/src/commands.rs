@@ -4317,11 +4317,6 @@ pub fn cmd_osl_encrypt_message_v2(
     // alongside the 60-min model; the surviving tier gate fires
     // at `cmd_osl_seal_attachment_with_cover_v3` instead.
 
-    let scope_for_mode: crate::scope::Scope = scope_input
-        .clone()
-        .try_into()
-        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
-
     let EncryptWire {
         content: wire,
         control_messages,
@@ -4349,60 +4344,16 @@ pub fn cmd_osl_encrypt_message_v2(
     };
 
     use crate::app_preferences::StegoMode;
-    let mode = if matches!(mode, StegoMode::Mode1) {
+    if matches!(mode, StegoMode::Mode1) {
         tracing::warn!("Mode 1 disabled in V2; coercing to Mode 0. Legacy config?");
-        StegoMode::Mode0
-    } else {
-        mode
-    };
-
-    match mode {
-        StegoMode::Mode0 => Ok(EncryptOutput {
-            messages: vec![wire],
-            session_id: None,
-            control_messages,
-            skdm_peer_status,
-        }),
-        StegoMode::Mode1 => {
-            // Strip the DPC0:: prefix and recover the raw wire bytes
-            // — those are what we chunk into Mode 1 carriers. Each
-            // chunk is independently HMAC-authenticated against the
-            // conversation salt (see `mode1_chunking`).
-            let body = wire
-                .strip_prefix("DPC0::")
-                .ok_or_else(|| "OSL: Mode 1 wrap expected DPC0:: wire prefix".to_string())?;
-            let raw = STANDARD
-                .decode(body)
-                .map_err(|e| format!("OSL: Mode 1 wrap: base64 decode of wire body failed: {e}"))?;
-
-            let scope_storage_key = scope_for_mode.storage_key();
-            let salt = scope_storage_key.clone().into_bytes();
-            let cipher = stego::ConversationCipher::from_salt(&salt);
-            let session_id = crypto::random::random_u32();
-
-            let chunks = stego::chunk_payload(&salt, session_id, &raw);
-            let mut messages = Vec::with_capacity(chunks.len());
-            for chunk in &chunks {
-                let cover = stego::encode_mode1(&cipher, &chunk.bytes)
-                    .map_err(|e| format!("OSL: Mode 1 encode_mode1: {e}"))?;
-                messages.push(cover);
-            }
-
-            tracing::info!(
-                chunks = messages.len(),
-                session_id = session_id,
-                scope = %crate::log_id::log_id(&scope_storage_key),
-                "OSL: mode1 send"
-            );
-
-            Ok(EncryptOutput {
-                messages,
-                session_id: Some(session_id),
-                control_messages,
-                skdm_peer_status,
-            })
-        }
     }
+
+    Ok(EncryptOutput {
+        messages: vec![wire],
+        session_id: None,
+        control_messages,
+        skdm_peer_status,
+    })
 }
 
 /// Which wire path a send should use for one recipient.
@@ -6681,22 +6632,7 @@ pub const OSL_RESULT_LEGACY_HANDSHAKE_IGNORED: &str = "__OSL_CONTROL_LEGACY_HAND
 /// CDN-fetched blob.
 pub const OSL_RESULT_ATTACHMENT_PREFIX: &str = "__OSL_CONTROL_ATTACHMENT__|";
 
-/// Phase 9-B1: Mode 1 receive sentinels.
-///
-/// `__OSL_CONTROL_MODE1_INCOMPLETE__|<session_id>|<received>|<total>`
-/// — boot.js renders a "(Mode 1 part R/T)" placeholder and waits for
-/// the remaining chunks.
-pub const OSL_RESULT_MODE1_INCOMPLETE_PREFIX: &str = "__OSL_CONTROL_MODE1_INCOMPLETE__|";
-
-/// `__OSL_CONTROL_MODE1_CONFLICT__` — boot.js drops the in-flight
-/// session UI; the chunker on the sender side will need to restart
-/// the session.
-pub const OSL_RESULT_MODE1_CONFLICT: &str = "__OSL_CONTROL_MODE1_CONFLICT__";
-
-/// `__OSL_CONTROL_MODE1_INVALID__` — chunk bytes failed HMAC or
-/// header validation. Boot.js leaves the cover string visible
-/// (it's just innocuous English) and logs the rejection.
-pub const OSL_RESULT_MODE1_INVALID: &str = "__OSL_CONTROL_MODE1_INVALID__";
+const RN_SESSION_DIR_NAME: &str = "rn_sessions";
 
 struct InboundOpened {
     msg_type: u8,
@@ -6731,13 +6667,6 @@ pub fn cmd_osl_decrypt_message_v2(
     config_dir: Option<std::path::PathBuf>,
 ) -> Result<String, String> {
     guard_session_on_command_entry(state)?;
-    // 9-B1: Mode 1 envelope handling. If the cover string carries
-    // a `DPC1::` prefix, decode it as a Mode 1 chunk and push to
-    // the per-channel reassembly buffer. When the buffer completes,
-    // re-frame the reassembled wire bytes as `DPC0::<b64>` and fall
-    // through to the existing version dispatch below. Incomplete
-    // / conflicting / invalid chunks return sentinel strings boot.js
-    // renders into UI placeholders.
     let scope_opt: Option<crate::scope::Scope> = match scope_input {
         Some(input) => Some(
             input
@@ -6745,62 +6674,6 @@ pub fn cmd_osl_decrypt_message_v2(
                 .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?,
         ),
         None => None,
-    };
-
-    let content = if stego::is_mode1(&content) {
-        // Mode 1 requires a scope so we know the conversation salt.
-        let scope = scope_opt
-            .as_ref()
-            .ok_or_else(|| "OSL: Mode 1 decode needs scope_input".to_string())?;
-        let salt = scope.storage_key().into_bytes();
-        let cipher = stego::ConversationCipher::from_salt(&salt);
-        let chunk_bytes = match stego::decode_mode1(&cipher, &content) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::debug!(error = %e, "OSL: Mode 1 decode_mode1 failed");
-                return Ok(OSL_RESULT_MODE1_INVALID.to_string());
-            }
-        };
-        let parsed = match stego::parse_chunk(&salt, &chunk_bytes) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::debug!(error = %e, "OSL: Mode 1 chunk validation failed");
-                return Ok(OSL_RESULT_MODE1_INVALID.to_string());
-            }
-        };
-        let now = now_unix_secs() as u64;
-        let outcome = {
-            let mut bufs = state
-                .mode1_reassembly
-                .lock()
-                .expect("mode1_reassembly mutex poisoned");
-            let buf = bufs.entry(channel_id.clone()).or_default();
-            buf.push(
-                parsed.session_id,
-                parsed.chunk_index,
-                parsed.total_chunks,
-                parsed.payload,
-                now,
-            )
-        };
-        match outcome {
-            stego::PushOutcome::Incomplete { received, total } => {
-                return Ok(format!(
-                    "{}{}|{}|{}",
-                    OSL_RESULT_MODE1_INCOMPLETE_PREFIX, parsed.session_id, received, total
-                ));
-            }
-            stego::PushOutcome::Conflict => {
-                return Ok(OSL_RESULT_MODE1_CONFLICT.to_string());
-            }
-            stego::PushOutcome::Complete(c) => {
-                // Re-frame as DPC0::<b64> and fall through into the
-                // version-dispatch block below.
-                format!("DPC0::{}", STANDARD.encode(&c.wire_bytes))
-            }
-        }
-    } else {
-        content
     };
 
     // Peek the wire version byte (first byte after DPC0:: base64
@@ -15077,10 +14950,6 @@ pub fn cmd_osl_burn_scope_data(
         0
     };
     eprintln!("[OSL][burn] destroyed {rows} rows for channel {channel_id}");
-    // 9-B1: drop any in-flight Mode 1 reassembly buffers for this
-    // channel so chunked-but-not-yet-complete covers can't surface
-    // as plaintext after the burn.
-    drop_mode1_reassembly_for_channel(state, &channel_id);
     let _ = server_id;
     Ok(BurnScopeDataDto {
         rows_destroyed: rows,
@@ -15145,18 +15014,6 @@ pub fn cmd_osl_mark_scope_burned(
     }
     persist_burned_scopes_now(state);
     Ok(())
-}
-
-/// Phase 9-B1: drop any in-flight Mode 1 reassembly sessions
-/// belonging to the channel `channel_id`. Called from the burn
-/// pipeline so a freshly-burned scope's chunked-but-not-yet-complete
-/// covers can't unexpectedly resolve to plaintext after the burn.
-pub(crate) fn drop_mode1_reassembly_for_channel(state: &AppState, channel_id: &str) {
-    let mut bufs = state
-        .mode1_reassembly
-        .lock()
-        .expect("mode1_reassembly mutex poisoned");
-    bufs.remove(channel_id);
 }
 
 /// 9-A1c: burn kill list lookup. Returns true iff the given
@@ -16348,11 +16205,6 @@ fn cmd_osl_burn_engage_finish(
         .lock()
         .expect("app_preferences mutex poisoned") =
         crate::app_preferences::AppPreferences::default();
-    state
-        .mode1_reassembly
-        .lock()
-        .expect("mode1_reassembly mutex poisoned")
-        .clear();
     state
         .friend_ids
         .lock()

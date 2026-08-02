@@ -408,6 +408,22 @@ mod tests {
         assert_eq!(carrier.split('\n').count(), plan.target.unwrap().line_count);
     }
 
+    /// T1-T43: row shaping may alter separator placement, but a pointer-only
+    /// carrier never grows with the protected payload.  Two messages with
+    /// radically different visible shapes therefore type the same number of
+    /// characters into Discord.
+    #[test]
+    fn t1_t43_cover_length_is_independent_of_payload_size() {
+        let short = plain(&[1]);
+        let long = plain(&[1; 12]);
+        let short_cover = plan_carrier(input(&short)).cover_text().expect("short row");
+        let long_cover = plan_carrier(input(&long)).cover_text().expect("long row");
+
+        assert_eq!(short_cover.chars().count(), FLAGTEXT.chars().count());
+        assert_eq!(long_cover.chars().count(), FLAGTEXT.chars().count());
+        assert_eq!(short_cover.chars().count(), long_cover.chars().count());
+    }
+
     /// A shaped cover is typed with one Shift+Enter per `'\n'`
     /// (`native_discord_adapter::carrier_input_steps`). A blank line, a
     /// whitespace run or an edge separator would either produce a step the
@@ -459,7 +475,11 @@ mod tests {
     /// half that survives is the character count (still pointer-sized), and the
     /// half that is now deliberately false is the row count.
     #[test]
-    fn carrier_characters_follow_the_pointer_but_the_row_count_follows_the_message() {
+    fn t1_t43_cover_length_is_independent_of_payload_size() {
+        // These stand in for a one-grapheme and a 400-grapheme payload. The
+        // planner receives only their de-identified visual shapes plus the
+        // already-encoded pointer cover; its output must keep the same carrier
+        // length regardless of the protected payload size.
         let short = plain(&[1]);
         let long = plain(&[400]);
         let short_plan = plan_carrier(input(&short));

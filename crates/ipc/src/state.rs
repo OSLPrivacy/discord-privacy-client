@@ -317,12 +317,6 @@ pub struct AppState {
     /// is the caller's responsibility.
     pub app_preferences: Mutex<crate::app_preferences::AppPreferences>,
 
-    /// Phase 9-B1: per-channel Mode 1 receive-side reassembly state.
-    /// Sessions are bounded to 16 concurrent and expire after 5
-    /// minutes (see [`stego::ReassemblyBuffer`]). Not persisted —
-    /// receive replays after a restart will reassemble fresh.
-    pub mode1_reassembly: Mutex<HashMap<String, stego::ReassemblyBuffer>>,
-
     /// Phase 9-C2: ephemeral list of the user's Discord friend ids
     /// (relationships with type=1). Pushed from boot.js's gateway-tap
     /// READY handler via `osl_set_friend_ids`; consumed by the
@@ -422,7 +416,6 @@ impl Default for AppState {
             sender_keys_enabled: AtomicBool::new(true),
             channel_members: Mutex::new(HashMap::new()),
             app_preferences: Mutex::new(crate::app_preferences::AppPreferences::default()),
-            mode1_reassembly: Mutex::new(HashMap::new()),
             friend_ids: Mutex::new(Vec::new()),
             guild_list: Mutex::new(Vec::new()),
             server_defaults: Mutex::new(HashMap::new()),

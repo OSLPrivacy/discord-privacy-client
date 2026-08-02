@@ -978,11 +978,6 @@ pub(crate) fn reset_account_scoped_state(state: &ipc::AppState) {
         .recovery_guard
         .lock()
         .expect("recovery guard poisoned") = Default::default();
-    state
-        .mode1_reassembly
-        .lock()
-        .expect("reassembly poisoned")
-        .clear();
     *state
         .recovery_token
         .lock()

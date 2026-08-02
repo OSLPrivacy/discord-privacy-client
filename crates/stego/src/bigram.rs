@@ -67,9 +67,10 @@ pub const TOKEN_PAYLOAD_BITS: u32 = (20 + 4) * 8;
 /// Interval precision (bits). We subdivide a `[0, 2^PRECISION)`
 /// integer interval by the model CDF until the top
 /// [`TOKEN_PAYLOAD_BITS`] of the interval are pinned. The headroom
-/// `PRECISION - TOKEN_PAYLOAD_BITS` (110 - 96 = 14 bits) keeps the
-/// interval width well above any row's total count during the final
-/// subdivision, so no step ever collapses to a zero-width slice.
+/// For payloads up to [`PRECISION`] bits, the remaining interval headroom
+/// keeps the interval width well above any row's total count during the
+/// final subdivision, so no step ever collapses to a zero-width slice.
+/// The shipping 192-bit pointer uses the fixed-width codec below instead.
 ///
 /// Overflow budget: the hot products are `width * total` and
 /// `(value - lo) * total`, both bounded by `2^PRECISION * total`.
@@ -83,6 +84,13 @@ const FULL: u128 = 1u128 << PRECISION;
 /// stretch the cover; this caps it. ~96 bits / ~1 bit-per-word worst
 /// case ≈ 96, so 256 is comfortable headroom.
 const MAX_WORDS: usize = 256;
+
+/// The wide pointer codec carries six payload bits in each cover word.  The
+/// 24-byte pointer-v2 carrier therefore has a fixed 32-word floor.  Keeping
+/// this as a named budget lets shaping reserve the real carrier capacity
+/// rather than the obsolete 96-bit estimate.
+pub const WIDE_TOKEN_WORD_BITS: usize = 6;
+pub const WIDE_TOKEN_WORDS: usize = (TOKEN_PAYLOAD_BITS as usize).div_ceil(WIDE_TOKEN_WORD_BITS);
 
 /// Training corpus. Curated chat-style English; each line ends in a
 /// period so BOS-bigrams reflect sentence starts. Kept under 6 KB so
@@ -303,7 +311,7 @@ fn value_to_bits(lo: u128, target_bits: u32) -> Vec<bool> {
 /// flat-ish model.
 pub fn arithmetic_decode_bits(bits: &[bool], target_bits: u32) -> Vec<usize> {
     if target_bits > PRECISION {
-        return wide_measurement_decode(bits, target_bits);
+        return wide_token_decode(bits, target_bits);
     }
     let model = model();
     let value = bits_to_value(bits, target_bits);
@@ -353,7 +361,7 @@ pub fn arithmetic_decode_bits(bits: &[bool], target_bits: u32) -> Vec<usize> {
 /// index (surfaced as a decode miss upstream).
 pub fn arithmetic_encode_words(words: &[usize], target_bits: u32) -> Vec<bool> {
     if target_bits > PRECISION {
-        return wide_measurement_encode(words, target_bits);
+        return wide_token_encode(words, target_bits);
     }
     let model = model();
     let mut lo: u128 = 0;
@@ -382,15 +390,16 @@ pub fn arithmetic_encode_words(words: &[usize], target_bits: u32) -> Vec<bool> {
 }
 
 // Payloads wider than the arithmetic interval precision use this lossless
-// 6-bit packing. The 192-bit shipping pointer wire takes this path, as did
-// the 128/160-bit candidates in the cover-budget measurement.
-fn wide_measurement_decode(bits: &[bool], target_bits: u32) -> Vec<usize> {
+// 6-bit packing. The 192-bit shipping pointer wire takes this path; it emits
+// `ceil(target_bits / 6)` words, which is the capacity budget consumed by the
+// row shaper.
+fn wide_token_decode(bits: &[bool], target_bits: u32) -> Vec<usize> {
     bits.iter()
         .copied()
         .chain(std::iter::repeat(false))
         .take(target_bits as usize)
         .collect::<Vec<_>>()
-        .chunks(6)
+        .chunks(WIDE_TOKEN_WORD_BITS)
         .map(|chunk| {
             1 + chunk
                 .iter()
@@ -399,14 +408,15 @@ fn wide_measurement_decode(bits: &[bool], target_bits: u32) -> Vec<usize> {
         .collect()
 }
 
-fn wide_measurement_encode(words: &[usize], target_bits: u32) -> Vec<bool> {
+fn wide_token_encode(words: &[usize], target_bits: u32) -> Vec<bool> {
     let mut bits = Vec::with_capacity(target_bits as usize);
     for (index, &word) in words.iter().enumerate() {
         if !(1..=64).contains(&word) {
             return vec![false; target_bits as usize];
         }
         let value = word - 1;
-        let width = (target_bits as usize - index * 6).min(6);
+        let width = (target_bits as usize - index * WIDE_TOKEN_WORD_BITS)
+            .min(WIDE_TOKEN_WORD_BITS);
         for shift in (0..width).rev() {
             bits.push((value >> shift) & 1 == 1);
         }
