@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing MAIL-PATTERN (T4-M5) and WEB-CONFORMANCE; both are prerequisites owned by Track T4 before T4-F10 can create the iCloud Mail adapter.
