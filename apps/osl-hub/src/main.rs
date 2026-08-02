@@ -8914,10 +8914,16 @@ macro_rules! hub_tauri_command_names {
 #[cfg(feature = "signal-qa-shell")]
 fn main() {
     let builder = tauri::Builder::default().setup(|app| {
+        let profiles =
+            osl_privacy_hub::adapter_profile_boot::load_verified_adapter_profiles_at_boot()
+                .map_err(|_| {
+                    "OSL signed adapter profiles could not be verified at startup".to_owned()
+                })?;
         app.manage(HubCoreState::default());
         app.manage(HubAccountSessionState::default());
         app.manage(NativeWindowHostState::default());
         app.manage(NativeDiscordComposerState::default());
+        app.manage(profiles);
         app.manage(
             osl_privacy_hub::signal_destination_binding::SignalDestinationBindingState::default(),
         );
@@ -9115,6 +9121,11 @@ fn main() {
     startup_breadcrumb("setup_before"); // STARTUP-TRACE
     let builder = builder.setup(|app| {
         startup_breadcrumb("setup_enter"); // STARTUP-TRACE
+        let profiles =
+            osl_privacy_hub::adapter_profile_boot::load_verified_adapter_profiles_at_boot()
+                .map_err(|_| {
+                    "OSL signed adapter profiles could not be verified at startup".to_owned()
+                })?;
         let main_window = app
             .get_webview_window("main")
             .ok_or_else(|| "OSL main window is unavailable".to_owned())?;
@@ -9239,6 +9250,7 @@ fn main() {
             osl_privacy_hub::signal_destination_binding::SignalDestinationBindingState::default(),
         );
         app.manage(NativeDiscordComposerState::default());
+        app.manage(profiles);
         startup_breadcrumb("setup_step_30_native_discord_composer_state_managed"); // STARTUP-TRACE
         app.manage(WhatsAppQaHostState::default());
         app.manage(WhatsAppQaProtectionState::default());
