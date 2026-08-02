@@ -475,6 +475,17 @@ pub fn load_space_roster(path: &Path) -> Result<Vec<u8>, SpaceRosterFileError> {
         }
     };
 
+    // A roster is membership authority. Unlike compatibility readers for
+    // legacy preferences, it must never accept a plaintext fallback: a torn
+    // or substituted file could otherwise be treated as a live membership
+    // snapshot after the process had previously loaded a valid one.
+    if !crate::main_password::has_enc_magic(&encrypted) {
+        return Err(SpaceRosterFileError::DecryptFailed {
+            path: path.display().to_string(),
+            reason: "OSL: space roster is not encrypted".to_string(),
+        });
+    }
+
     crate::main_password::maybe_decrypt_file(path, &encrypted).map_err(|reason| {
         SpaceRosterFileError::DecryptFailed {
             path: path.display().to_string(),

@@ -607,7 +607,7 @@ impl MessageStore {
             }
             None => None,
         };
-        if existing_anchor.is_some() && !matches!(inspected_version, Some(7) | Some(8)) {
+        if existing_anchor.is_some() && !matches!(inspected_version, Some(7) | Some(8) | Some(9)) {
             return Err(StoreError::Anchor(
                 "anchored migration before v7 is not journal-supported; refusing mutation"
                     .to_string(),
@@ -662,6 +662,10 @@ impl MessageStore {
                     }
                     Some(binding)
                 }
+                // Current schemas are reconciled before this point; no
+                // migration is needed, and ordinary anchored mutations will
+                // continue to advance the binding transactionally.
+                (Some(9), Some(binding)) => Some(binding),
                 (Some(8), None) => {
                     schema::migrate(&conn, &key, &index_key)?;
                     Some(anchor::AnchorBinding::enroll_or_reconcile(
