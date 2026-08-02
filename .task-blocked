@@ -1,0 +1,1 @@
+Missing prerequisite T12-K3: apps/osl-hub-ui/src/scrub-consent-gate.ts / CONSENT-GATE has not been implemented, so no native rank-4 consent grant or service-revocation authority exists for T12-K4 to enforce. T12-K3 owns it.
