@@ -5,6 +5,7 @@
 pub mod account_identity_authority;
 #[cfg(feature = "core")]
 pub mod account_recovery;
+pub mod adapter_profile_boot;
 #[cfg(feature = "core")]
 pub mod attachment_formats;
 #[cfg(feature = "core")]
@@ -14,19 +15,18 @@ pub mod attachment_scan;
 pub mod attachment_thumbnail;
 #[cfg(feature = "core")]
 pub mod attachment_thumbnail_policy;
-pub mod adapter_profile_boot;
 // ai_carrier declares a #[tauri::command]. tauri is an optional dependency
 // pulled in by the `desktop` feature (NOT `core`), so an ungated declaration
 // failed to resolve `tauri` in every non-desktop build of the product lib.
+pub mod adapters;
 #[cfg(feature = "desktop")]
 pub mod ai_carrier;
 pub mod ai_consent;
-pub mod adapters;
 pub mod attended_imap;
 #[cfg(feature = "core")]
-pub mod autoscrub_run;
-#[cfg(feature = "core")]
 pub mod autoscrub_bridge;
+#[cfg(feature = "core")]
+pub mod autoscrub_run;
 pub mod background_priority;
 pub mod browser_companion;
 // The persistent footprint store is sealed with `ipc`'s process key, so it
@@ -36,14 +36,14 @@ pub mod browser_footprint;
 #[cfg(feature = "core")]
 pub mod browser_profile_scan;
 pub mod build_integrity;
-pub mod burn_contract;
 pub mod burn_authorize;
+pub mod burn_contract;
+#[cfg(feature = "core")]
+pub mod burn_dispatch;
 #[cfg(feature = "core")]
 pub mod burn_journal_bridge;
 #[cfg(feature = "core")]
 pub mod burn_server;
-#[cfg(feature = "core")]
-pub mod burn_dispatch;
 pub mod carrier_placement;
 pub mod cloud_autoscrub_authority;
 pub mod cloud_autoscrub_consent;
@@ -74,11 +74,11 @@ pub mod invite_clipboard;
 /// `desktop`: the reveal rule is what decides whether the app is visible at all,
 /// so it is testable in every build that can compile this crate.
 pub mod main_window_reveal;
-pub mod models;
 pub mod model_pack_install;
+pub mod models;
 pub mod mullvad_window_host;
-pub mod native_apps;
 pub mod native_a11y;
+pub mod native_apps;
 pub mod native_attachment_jobs;
 pub mod native_attachment_jobs_bridge;
 pub mod native_discord_adapter;
@@ -86,11 +86,10 @@ pub mod native_signal_adapter;
 pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
 pub mod native_window_host;
-pub mod tor_pref;
-#[cfg(feature = "core")]
-pub mod osl_profile;
 #[cfg(feature = "core")]
 pub mod osl_mail;
+#[cfg(feature = "core")]
+pub mod osl_profile;
 pub mod owner_presence;
 #[cfg(feature = "core")]
 pub mod peer_attachment_io;
@@ -100,27 +99,33 @@ pub mod privacy_scan;
 pub mod pro_context_cover;
 pub mod proprietary_module_boundary;
 pub mod proprietary_module_lifecycle;
-pub mod scrub_evidence_manifest;
 pub mod scrub_erasure;
-pub mod scrub_erasure_tracker;
 pub mod scrub_erasure_queue;
+pub mod scrub_erasure_tracker;
+pub mod scrub_evidence_manifest;
+pub mod tor_pref;
 pub mod scrub_hosted {
     pub mod checkpoint;
+    pub mod friction;
+    pub mod ordering;
+    pub mod verify_surface;
+    pub mod x_web;
 }
-#[cfg(feature = "core")]
-pub mod rn_recovery;
-#[cfg(feature = "core")]
-pub mod rn_attribution;
+pub mod scrub_hosted_port;
 #[cfg(all(feature = "core", feature = "desktop"))]
 pub mod revocation_drain_timer;
+#[cfg(feature = "core")]
+pub mod rn_attribution;
+#[cfg(feature = "core")]
+pub mod rn_recovery;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
 pub mod updates;
-pub mod whatsapp_accessibility;
-pub mod whatsapp_qa_host;
 pub mod visual_binding;
 pub mod web_surface_adapter;
+pub mod whatsapp_accessibility;
+pub mod whatsapp_qa_host;
 #[cfg(feature = "core")]
 pub mod whatsapp_qa_pairing;
 pub mod whatsapp_qa_transport;
@@ -137,50 +142,50 @@ pub mod placement;
 
 #[cfg(feature = "core")]
 pub mod broker;
+pub mod chat_capture_protection;
 #[cfg(feature = "core")]
 pub mod cleanup;
 #[cfg(feature = "core")]
 pub mod core_bridge;
+#[cfg(feature = "core")]
+pub mod deadman;
+#[cfg(feature = "core")]
+pub mod destruct_ack_rollup;
+#[cfg(feature = "core")]
+pub mod device_transfer;
 #[cfg(all(feature = "core", feature = "discord-qa-shell"))]
 pub mod discord_qa_identity;
 #[cfg(all(feature = "core", feature = "discord-qa-shell"))]
 pub mod discord_qa_inbound_receipt;
-#[cfg(feature = "core")]
-pub mod destruct_ack_rollup;
-#[cfg(feature = "core")]
-pub mod deadman;
-#[cfg(feature = "core")]
-pub mod device_transfer;
 #[cfg(feature = "core")]
 pub mod identity_binding_verifier;
 #[cfg(feature = "core")]
 pub mod identity_registry;
 #[cfg(feature = "core")]
 pub mod inbound_receipts;
-#[cfg(feature = "core")]
-pub mod receipt_emit;
-pub mod realtime_client;
-pub mod chat_capture_protection;
-pub mod realtime_decoy;
-pub mod realtime_resume;
-pub mod realtime_subscription;
 pub mod isolated_worker;
 #[cfg(feature = "core")]
 pub mod mass_cleanup;
+pub mod realtime_client;
+pub mod realtime_decoy;
+pub mod realtime_resume;
+pub mod realtime_subscription;
+#[cfg(feature = "core")]
+pub mod receipt_emit;
 // Timed deletion and view-once expiry. Needs `ipc` (sealed-at-rest storage) and
 // `store` (local plaintext cache), so it lives behind `core` like they do.
+pub mod expiry_clock;
 #[cfg(feature = "core")]
 pub mod message_expiry;
-pub mod expiry_clock;
 // View-once payloads are opened only after the native viewer proves capture
 // protection; the module is dependency-free so its ordering tests run on all
 // supported build hosts.
 #[cfg(feature = "core")]
+pub mod password_lifecycle;
+#[cfg(feature = "core")]
 pub mod view_once_eligibility;
 pub mod view_once_open;
 pub mod view_once_watch;
-#[cfg(feature = "core")]
-pub mod password_lifecycle;
 // The pure half of the headless QA self-test driver in `main.rs`. It lives here
 // only so it can actually be tested: the `osl-privacy-hub` binary cannot be
 // built on a Linux host, so every `#[cfg(test)]` inside `main.rs` is compiled
@@ -201,20 +206,21 @@ pub mod native_surface_capture;
 // core`, which is the only configuration CI and the accept commands can build.
 #[cfg(feature = "core")]
 pub mod hub_command_surface;
+pub mod imap_verify;
 pub mod scrub_imap;
 #[cfg(feature = "core")]
 pub mod scrub_index;
 pub mod scrub_receipt;
 #[cfg(feature = "core")]
 pub mod security;
-pub mod sensitive_warning;
 #[cfg(feature = "core")]
 pub mod security_credentials;
-#[cfg(feature = "core")]
-pub mod spaces;
+pub mod sensitive_warning;
 #[cfg(feature = "core")]
 pub mod service_scope_index;
 pub mod signal_destination_binding;
+#[cfg(feature = "core")]
+pub mod spaces;
 #[cfg(feature = "core")]
 pub mod startup_gate;
 
