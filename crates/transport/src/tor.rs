@@ -8,7 +8,7 @@
 use reqwest::blocking::Client;
 use reqwest::Proxy;
 use std::io;
-use std::net::{SocketAddr, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::Mutex;
@@ -17,7 +17,14 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 /// The loopback SOCKS listener exposed by Arti's proxy mode.
-pub const DEFAULT_SOCKS_ADDR: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 9150));
+// Built from parts rather than `SocketAddr::from(([127,0,0,1], 9150))`: the
+// `From` impl is not a const trait, so that form does not compile in a const
+// and took the whole `transport` crate -- and therefore every Rust test in the
+// workspace -- down with it.
+pub const DEFAULT_SOCKS_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(
+    Ipv4Addr::new(127, 0, 0, 1),
+    9150,
+));
 
 /// Configuration for the signed Arti proxy executable packaged with OSL.
 #[derive(Debug, Clone)]
