@@ -4,6 +4,10 @@ import { describe, expect, it } from "vitest";
 const shippingMain = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
 describe("T15 shipped lifecycle UI wiring", () => {
+  it("T15-D4 keeps the measured optional-component picker on the shipping Settings path", () => {
+    expect(shippingMain).toContain('from "./component-picker"');
+    expect(shippingMain).toContain("componentPickerScreen(components)");
+  });
   it("renders optional downloads behind the AutoScrub consent gate in Settings", () => {
     expect(shippingMain).toContain('from "./component-consent"');
     expect(shippingMain).toContain('decideAutoScrubInstall("autoscrub", null)');
