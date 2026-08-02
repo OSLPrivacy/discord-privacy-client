@@ -52,6 +52,7 @@ pub mod membership;
 pub mod message_expiry_dial;
 pub mod migration;
 pub mod peer_map;
+pub mod peer_capabilities;
 pub mod prose_token;
 pub mod receipt_wire;
 pub mod recovery;
