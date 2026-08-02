@@ -18,6 +18,9 @@ pub trait WebSurfaceBackend: Send + Sync {
         now_unix_seconds: u64,
     ) -> CapabilitySet;
     fn is_current_generation(&self, generation: u64) -> bool;
+    /// Wake Chromium accessibility before walking selectors. A backend that
+    /// cannot populate a complete tree must refuse instead of falling back.
+    fn wake_accessibility(&self) -> Result<(), AdapterRefusal>;
     fn locate(
         &self,
         profile: &adapter_profile::ProfilePayload,
@@ -108,6 +111,7 @@ impl<B: WebSurfaceBackend> SurfaceAdapter for WebSurfaceAdapter<B> {
         if !self.backend.is_current_generation(target.generation) {
             return Err(AdapterRefusal::GenerationStale);
         }
+        self.backend.wake_accessibility()?;
         let binding = self.backend.locate(&self.profile, target)?;
         if !self.validates_binding(&binding) || binding.generation != target.generation {
             return Err(AdapterRefusal::GenerationStale);
@@ -188,6 +192,11 @@ impl<B: WebSurfaceBackend> SurfaceAdapter for WebSurfaceAdapter<B> {
             return Err(AdapterRefusal::GenerationStale);
         }
         let targets = self.backend.paint_targets(binding)?;
+        if targets.iter().any(|target| {
+            target.confidence == PaintConfidence::Exact && target.carrier_sha256.is_empty()
+        }) {
+            return Err(AdapterRefusal::AccessibilityUnavailable);
+        }
         if matches!(binding.evidence, BindingEvidence::Pixel)
             && targets
                 .iter()
@@ -274,6 +283,10 @@ mod tests {
 
         fn is_current_generation(&self, generation: u64) -> bool {
             generation == 7
+        }
+
+        fn wake_accessibility(&self) -> Result<(), AdapterRefusal> {
+            Ok(())
         }
 
         fn locate(
