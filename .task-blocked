@@ -1,0 +1,1 @@
+Missing prerequisite T5-C5: apps/osl-hub/src/security.rs does not export security::peer_is_verified, which owns the definitive trust predicate for this TS mirror.
