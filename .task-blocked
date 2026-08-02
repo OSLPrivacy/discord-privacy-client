@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite: T18-C1 has not landed; crates/ipc/src/group_send.rs is absent and encrypt_v5_send remains in crates/ipc/src/commands.rs. T18 owns this prerequisite.
