@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T15-E3: no destination import with authorised anchor adoption exists; apps/osl-hub/src/device_transfer.rs is source-side bundle sealing/opening only, so transfer cannot be proven on VM B.
