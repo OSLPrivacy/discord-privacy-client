@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T21-C4: crates/ipc/src/space_roster.rs has no signed membership-event log or ordered replay/gap validation for the relay endpoint to transport.
