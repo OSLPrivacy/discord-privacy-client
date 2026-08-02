@@ -45,6 +45,7 @@ export default defineConfig({
               OSL_KEYSERVER_ADMIN_TOKEN: "test-admin-token-do-not-ship",
               OSL_COMP_ADMIN_TOKEN: "test-comp-admin-token-do-not-ship",
               COMP_AUDIT_HMAC_SECRET: "test-comp-audit-secret-do-not-ship-32-bytes",
+              USERNAME_BUCKET_DECOY_SECRET: "test-username-bucket-decoy-secret-do-not-ship",
               // OSL_KEYSERVER_ALLOWED_USERS retired (open signed
               // register; allowlist removed).
               SELECTOR_MANIFEST_JSON: "",
