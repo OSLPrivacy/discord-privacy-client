@@ -3061,6 +3061,7 @@ dependencies = [
  "keystore",
  "lopdf",
  "message-lifecycle",
+ "minisign-verify",
  "pdf-extract",
  "quick-xml",
  "rfd",

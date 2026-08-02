@@ -30,6 +30,8 @@ pub mod cloud_autoscrub_envelope;
 pub mod cloud_autoscrub_execution;
 #[cfg(feature = "core")]
 pub mod cloud_autoscrub_run;
+#[cfg(feature = "core")]
+pub mod components;
 pub mod consent_ledger;
 pub mod control_contract;
 pub mod discord_carrier_geometry;
