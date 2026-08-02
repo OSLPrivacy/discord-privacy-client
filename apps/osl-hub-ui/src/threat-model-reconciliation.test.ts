@@ -53,6 +53,16 @@ function rustBooleanInitializer(source: string, field: string): boolean {
   return match![1] === "true";
 }
 
+function rustBooleanConstant(source: string, name: string): boolean {
+  const expression = new RegExp(
+    `pub const ${name}:\\s*bool\\s*=\\s*(true|false)`,
+    "u",
+  );
+  const match = source.match(expression);
+  expect(match, `${name} initializer must stay explicit`).not.toBeNull();
+  return match![1] === "true";
+}
+
 function coreBridgeReadsIpcSenderKeySwitch(source: string): boolean {
   return /group_sender_keys_enabled:\s*state\.osl\.sender_keys_enabled\.load\(Ordering::Acquire\),/u.test(
     source,
@@ -66,6 +76,8 @@ function threatModelHasCitation(threatModel: string, citation: string): boolean 
 describe("THREAT_MODEL reconciliation for retired v4 and v5 limits", () => {
   it("threat_model_reconciles_v4_retirement_and_v5_ratchet_limits", () => {
     const model = threatModelReconciliation();
+    const state = readRepo("crates/ipc/src/state.rs");
+    const wireRn = readRepo("crates/ipc/src/wire_rn.rs");
 
     expect(model.v4_pairwise_dm).toEqual({
       shipping_default: false,
@@ -76,6 +88,12 @@ describe("THREAT_MODEL reconciliation for retired v4 and v5 limits", () => {
       production_encrypt_decrypt: false,
       downgrade_refusal_guard: true,
     });
+    // A compile-time seam is not a shipping path. Both gates must be open
+    // before the documented production status may change.
+    expect(
+      rustBooleanConstant(wireRn, "RN_WIRE_IN_ENABLED") &&
+        rustBooleanInitializer(state, "rn_wire_in_enabled"),
+    ).toBe(model.rn_wire_in.production_encrypt_decrypt);
     expect(model.v5_rotation_limits.implemented_triggers).toEqual([
       "twenty_four_hours",
       "membership_change",

@@ -40,7 +40,9 @@ downgrade server-enforced burn, expiry, and view-once to an unenforced carrier.
 > **What actually carries traffic today:** one stateless scheme, wire `v=3`
 > (`crates/ipc/src/wire_v2.rs:685`). The send dispatcher checks the sealed
 > OSL-RN version pin before allowing that legacy `v=3` path, but this is a
-> downgrade-refusal guard, not RN traffic: `RN_WIRE_IN_ENABLED` remains `false`.
+> downgrade-refusal guard, not RN traffic: the compile-time
+> `RN_WIRE_IN_ENABLED` seam is open, but the shipping `AppState` runtime gate
+> remains `false`.
 > The retired Double Ratchet DM path (`v=4`) is switched off for production
 > sends. The group sender-keys path (`v=5`) is enabled in the IPC core, but the
 > shipping app constructs only direct-message conversations and therefore cannot
@@ -51,13 +53,12 @@ downgrade server-enforced burn, expiry, and view-once to an unenforced carrier.
 > dependency, and its IPC adapter `crates/ipc/src/wire_rn.rs` genuinely uses it.
 > The production send dispatcher now calls `wire_rn::select_wire_version` and
 > reads `RnSessionStore` solely to refuse a silent downgrade if a peer is already
-> pinned to RN (`crates/ipc/src/commands.rs:3284-3320`). Capability
-> advertisement is absent, so normal peers are checked as
-> `PeerCapabilities::Absent`; because no production path raises RN pins and
-> `RN_WIRE_IN_ENABLED` is `false` (`crates/ipc/src/wire_rn.rs:83`), this guard is
-> inert unless existing local state already requires RN. `send_rn` and
-> `receive_rn` refuse while the gate is off (`crates/ipc/src/wire_rn.rs:843-875`),
-> and inbound RN wires are rejected before bootstrap (`crates/ipc/src/commands.rs:5216-5244`).
+> pinned to RN. Registration advertises the compatibility and live capability
+> bits, but the **runtime** `AppState::rn_wire_in_enabled` default is `false`
+> (`crates/ipc/src/state.rs:434`), so normal shipping instances still refuse
+> RN send/receive before session crypto. The compile-time
+> `RN_WIRE_IN_ENABLED` seam is `true` (`crates/ipc/src/wire_rn.rs:85`); neither
+> gate alone is a production traffic claim.
 > Status: `implemented-unwired`. No forward-secrecy, post-compromise, or
 > post-quantum-authentication claim may be made on its behalf.
 >
@@ -149,15 +150,15 @@ previously claimed, it is restated below as `Planned` with the reason.
   Seizing or malware-extracting one device retro-decrypts that device's entire
   ciphertext history. *Reason it is not implemented:* forward secrecy requires
   ratcheting state, and the ratchet was deliberately disabled — see below.
-- **Post-compromise security (DM) — `Planned`.** There is no ratchet step, so
+- **Post-compromise security (DM) — `Planned`.** There is no live ratchet step, so
   nothing heals a compromised session. `crates/ipc/src/commands.rs:3170` reads
   `let v4_dm_enabled = false;`, which makes the entire `v=4` Double Ratchet
   branch beginning at `:3171` unreachable. The in-source rationale is explicit
   and deliberate: `v=4` was "the sole source of the recurring 'ratchet desync'
   DM failures", so DMs were routed to stateless `v=3` to eliminate the desync
-  class. The replacement RN adapter is not a shipping ratchet yet:
-  `RN_WIRE_IN_ENABLED` is still `false`, so RN send/receive refuses before any
-  state load or crypto operation. A compromised recipient stays compromised
+  class. The replacement RN adapter is not a shipping ratchet yet: the runtime
+  `AppState::rn_wire_in_enabled` default is `false`, so RN send/receive refuses
+  before any state load or crypto operation. A compromised recipient stays compromised
   until they rotate identity keys out of band.
 - **Post-compromise security (group) — `Planned`.** The sender-key router is
   enabled in the IPC core, not disabled: it selects `SenderKeysV5` for an
