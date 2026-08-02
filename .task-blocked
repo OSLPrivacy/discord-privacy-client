@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisites: T21-J2 (Space directory endpoint) and T14-G1 (two-VM OSL Chat harness) are not present; without them there is no Space delivery surface/harness to extend. T21-J2 is owned by T21, and T14-G1 by T14.
