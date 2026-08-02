@@ -6,8 +6,8 @@ import { isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/v
 import { verifySignedRequest } from "../lib/signed-request.js";
 import {
   USERNAME_FRESHNESS_MS,
+  normalizeUsername,
   usernameClaimMessage,
-  validNormalizedUsername,
   validateFriendCode,
 } from "../lib/username.js";
 
@@ -82,12 +82,11 @@ export async function handleUsernameLookup(request: Request, env: Env): Promise<
   catch { return badRequest("malformed JSON body"); }
   // Exact lookup only. Rejecting non-canonical input prevents a supposedly
   // convenient lowercase transform from resolving a different identifier.
-  if (!validNormalizedUsername(body.username)) {
-    return badRequest("username must already be normalized");
-  }
+  const identity = normalizeUsername(body.username);
+  if (!identity) return badRequest("username invalid");
   const row = await env.DB.prepare(
     "SELECT username, friend_code FROM username_directory WHERE username = ?",
-  ).bind(body.username).first<{ username: string; friend_code: string }>();
+  ).bind(identity.username).first<{ username: string; friend_code: string }>();
   return paddedLookupResponse(row);
 }
 export async function handleUsernameClaim(request: Request, env: Env): Promise<Response> {
@@ -96,7 +95,8 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   let body: Record<string, unknown>;
   try { body = await request.json() as Record<string, unknown>; }
   catch { return badRequest("malformed JSON body"); }
-  if (!validNormalizedUsername(body.username)) return badRequest("username must already be normalized");
+  const identity = normalizeUsername(body.username);
+  if (!identity) return badRequest("username invalid");
   if (!isProtocolId(body.user_id)) return badRequest("user_id invalid");
   if (typeof body.friend_code !== "string" || body.friend_code.length < 24 || body.friend_code.length > 8199) return badRequest("friend_code invalid");
   if (!isHighEntropyRequestId(body.request_id)) return badRequest("request_id invalid");
@@ -104,7 +104,9 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   if (typeof body.timestamp_ms !== "number" || !Number.isSafeInteger(body.timestamp_ms) || body.timestamp_ms <= 0) return badRequest("timestamp_ms invalid");
   if (Math.abs(Date.now() - body.timestamp_ms) > USERNAME_FRESHNESS_MS) return badRequest("timestamp_ms stale");
 
-  const username = body.username;
+  // Sign and store the canonical value. The original spelling is display-only
+  // and therefore cannot change comparison or authorization semantics.
+  const username = identity.username;
   const userId = body.user_id;
   const current = await getUserForVerify(env.DB, userId);
   if (!current) return unauthorized("registered identity required");
@@ -142,14 +144,22 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
             )`,
       ).bind(userId, username, digest),
       env.DB.prepare(
-        `INSERT INTO username_directory
+         `INSERT INTO username_directory
            (username, username_skeleton, display_username, user_id, friend_code, claimed_at, updated_at)
-         SELECT ?1, ?1, ?1, ?2, ?3, ?4, ?4
-          WHERE EXISTS (SELECT 1 FROM username_claim_receipts WHERE user_id = ?2 AND request_digest = ?5)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?6
+          WHERE EXISTS (SELECT 1 FROM username_claim_receipts WHERE user_id = ?4 AND request_digest = ?7)
          ON CONFLICT(username) DO UPDATE SET
            username = excluded.username, friend_code = excluded.friend_code, updated_at = excluded.updated_at
          WHERE username_directory.user_id = excluded.user_id`,
-      ).bind(username, userId, body.friend_code, now, digest),
+      ).bind(
+        username,
+        identity.skeleton,
+        identity.displayUsername,
+        userId,
+        body.friend_code,
+        now,
+        digest,
+      ),
     ]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

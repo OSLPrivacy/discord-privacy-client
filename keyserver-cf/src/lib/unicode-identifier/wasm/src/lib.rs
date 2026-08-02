@@ -1,6 +1,8 @@
 use unicode_security::{
     skeleton, GeneralSecurityProfile, MixedScript, RestrictionLevel, RestrictionLevelDetection,
 };
+use unicode_normalization::UnicodeNormalization;
+use unicode_general_category::{get_general_category, GeneralCategory};
 use wasm_bindgen::prelude::*;
 
 fn restriction_level_name(level: RestrictionLevel) -> &'static str {
@@ -35,24 +37,45 @@ fn json_string(value: &str) -> String {
     escaped
 }
 
+fn has_five_consecutive_nonspacing_marks(identifier: &str) -> bool {
+    let mut consecutive = 0usize;
+    for character in identifier.chars() {
+        if get_general_category(character) == GeneralCategory::NonspacingMark {
+            consecutive += 1;
+            if consecutive > 4 { return true; }
+        } else {
+            consecutive = 0;
+        }
+    }
+    false
+}
+
 /// Runs the UTS #39 primitives that the username policy consumes.
 ///
 /// This is intentionally the only implementation exposed to JavaScript: the
 /// Worker must not grow a second, subtly different TypeScript implementation.
 #[wasm_bindgen]
 pub fn analyze_identifier(identifier: &str) -> String {
-    let identifier_allowed = !identifier.is_empty()
-        && identifier.chars().all(GeneralSecurityProfile::identifier_allowed);
-    let skeleton = skeleton(identifier).collect::<String>();
-    let single_script = identifier.is_single_script();
-    let restriction_level = restriction_level_name(identifier.detect_restriction_level());
+    // Rust's standard Unicode casing is the closest stable case-folding
+    // primitive available in this pinned UTS #39 artifact.  Keep it here,
+    // beside skeleton/restriction analysis, so Worker callers cannot drift
+    // into a hand-written JavaScript normalizer.
+    let normalized = identifier.nfkc().flat_map(char::to_lowercase).collect::<String>();
+    let identifier_allowed = !normalized.is_empty()
+        && normalized.chars().all(GeneralSecurityProfile::identifier_allowed);
+    let skeleton = skeleton(&normalized).collect::<String>();
+    let single_script = normalized.as_str().is_single_script();
+    let restriction_level = restriction_level_name(normalized.as_str().detect_restriction_level());
+    let has_excess_marks = has_five_consecutive_nonspacing_marks(identifier);
 
     format!(
-        "{{\"skeleton\":{},\"identifierAllowed\":{},\"singleScript\":{},\"restrictionLevel\":{}}}",
+        "{{\"normalized\":{},\"skeleton\":{},\"identifierAllowed\":{},\"singleScript\":{},\"restrictionLevel\":{},\"hasExcessMarks\":{}}}",
+        json_string(&normalized),
         json_string(&skeleton),
         identifier_allowed,
         single_script,
         json_string(restriction_level),
+        has_excess_marks,
     )
 }
 

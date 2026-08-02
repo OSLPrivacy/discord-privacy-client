@@ -82,7 +82,7 @@ async function claim(
 }
 
 describe("username directory", () => {
-  it("claims and resolves only an exact normalized username", async () => {
+  it("claims and resolves the canonical username", async () => {
     const uid = userId();
     const pair = await registerTestUser(SELF, uid);
     const invite = await friendCode(uid, pair);
@@ -91,7 +91,7 @@ describe("username directory", () => {
     const found = await lookup("alice_01", "203.0.113.10");
     expect(found.status).toBe(200);
     expect(await found.json()).toMatchObject({ found: true, username: "alice_01", friend_code: invite });
-    expect((await lookup("Alice_01", "203.0.113.11")).status).toBe(400);
+    expect(await looksUp("Alice_01", "203.0.113.11")).toBe(true);
   });
 
   it("rejects unsigned, wrong-key, and mismatched-invite claims", async () => {
@@ -168,6 +168,29 @@ describe("username directory", () => {
     })).status).toBe(200);
     expect(await looksUp("renamed_user", "203.0.113.17")).toBe(false);
     expect((await claim("renamed_user", two, pairTwo)).status).toBe(409);
+  });
+
+  it("rejects a UTS #39 skeleton collision", async () => {
+    const first = userId();
+    const second = userId();
+    const firstPair = await registerTestUser(SELF, first);
+    const secondPair = await registerTestUser(SELF, second);
+    expect((await claim("Michael", first, firstPair)).status).toBe(200);
+    // The intentionally over-inclusive skeleton rejects a visually distinct
+    // spelling rather than allowing an impersonation-adjacent handle.
+    expect((await claim("Michae1", second, secondPair)).status).toBe(409);
+  });
+
+  it("does not reissue a retired skeleton after a rename", async () => {
+    const original = userId();
+    const replacement = userId();
+    const originalPair = await registerTestUser(SELF, original);
+    const replacementPair = await registerTestUser(SELF, replacement);
+    expect((await claim("Michael", original, originalPair)).status).toBe(200);
+    expect((await claim("another_handle", original, originalPair)).status).toBe(200);
+    // No live Michael row remains, so this specifically proves the tombstone
+    // rejects the skeleton rather than relying on the live unique index.
+    expect((await claim("Michae1", replacement, replacementPair)).status).toBe(409);
   });
 
   it("removes a stale signed invite when the registered identity key rotates", async () => {

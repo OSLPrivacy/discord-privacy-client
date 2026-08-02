@@ -6,6 +6,11 @@
 
 use crate::adapters::*;
 
+/// X's reviewed DM implementation.  Keeping this behind the common adapter
+/// means it receives the same generation, scope, and authorization checks as
+/// every other fixed-origin web surface.
+pub mod x;
+
 /// Accessibility and input implementation for one verified web profile.
 ///
 /// The backend is intentionally supplied by later service tasks. It may use the
@@ -18,8 +23,8 @@ pub trait WebSurfaceBackend: Send + Sync {
         now_unix_seconds: u64,
     ) -> CapabilitySet;
     fn is_current_generation(&self, generation: u64) -> bool;
-    /// Give Chromium/WebView accessibility a chance to populate before a
-    /// selector walk.  A backend that cannot wake the tree must fail closed.
+    /// Wake Chromium/WebView accessibility before a selector walk. A backend
+    /// that cannot populate a complete tree must fail closed, never fall back.
     fn wake_accessibility(&self) -> Result<(), AdapterRefusal>;
     fn locate(
         &self,

@@ -9,4 +9,10 @@ crate-type = ["cdylib"]
 
 [dependencies]
 unicode-security = "=0.1.2"
+unicode-normalization = "=0.1.25"
+unicode-general-category = "=1.1.0"
 wasm-bindgen = "=0.2.106"
+
+# This small WASM crate is deliberately built outside the desktop workspace.
+# It is a Worker artifact, not a desktop target.
+[workspace]
