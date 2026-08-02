@@ -1,0 +1,1 @@
+Missing prerequisite T21-C7: apps/osl-hub/src/spaces.rs has no Join implementation or membership-event primitive; T21-C7 owns it.
