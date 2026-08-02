@@ -4,3 +4,10 @@ Blocked: T19-G3 requires T19-G1 and T19-G2.  T19-G2 is available, but the
 integrated T19-G1 result explicitly records the missing F1 live pair
 prerequisite.  A two-identity restart receipt cannot be fabricated without
 performing the required two-instance VM run, which this batch forbids.
+
+# T20-C5
+
+Blocked: T20-C5 needs T20-C1's BORROW-CORE.  No
+`borrowed_window_lifecycle.rs` implementation is reachable from this branch;
+moving WhatsApp QA onto a newly invented private lifecycle would violate the
+single-engine requirement the task exists to enforce.
