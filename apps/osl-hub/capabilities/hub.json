@@ -22,6 +22,7 @@
     "allow-set-hub-screenshot-protection",
     "allow-copy-hub-friend-invite",
     "allow-save-onboarding-preferences",
+    "allow-set-tor-preference",
     "allow-scan-local-privacy",
     "allow-initialize-scrub-index",
     "allow-set-scrub-index-manifest",

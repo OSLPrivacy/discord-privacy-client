@@ -184,6 +184,11 @@ description = "Save the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["save_onboarding_preferences"]
 
 [[permission]]
+identifier = "allow-set-tor-preference"
+description = "Persist the explicit OSL network route before encrypted text can be sent."
+commands.allow = ["set_tor_preference"]
+
+[[permission]]
 identifier = "allow-scan-local-privacy"
 description = "Scan bounded caller-provided visible message text in local process memory without persistence or network access."
 commands.allow = ["scan_local_privacy"]
