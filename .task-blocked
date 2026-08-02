@@ -1,0 +1,1 @@
+Missing prerequisite: T1-71/T1-72 Tor transport preference and backend-reported active state; no Tor IPC/state wiring exists in apps/osl-hub/src or crates/ipc/src.
