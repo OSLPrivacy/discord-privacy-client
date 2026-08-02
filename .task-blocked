@@ -10,3 +10,4 @@ T2-73 — Blocked: T2-41 is absent (`cipher-store-cf/src/endpoints/attachment-re
 T2-77 — Blocked: T2-52 is absent (`apps/osl-hub/src/view_once_fanout.rs`), so no per-device blob fanout exists for a partial-ack integration test.
 T14-G3 — Blocked: T14-C3 is absent (`apps/osl-hub/src/osl_chat_queue.rs`); the required offline queue cannot be proved on a VM before it is implemented and surfaced by T14-C4.
 T16-B10 — Blocked: T16-B9a's subscription/account lifecycle remains in the prepaid path, so the required B2..B7 and T11-H2 green closure does not exist; readiness must remain source-owned false.
+T16-G4 — Blocked: T16-B10 remains correctly false, so changing the three manifest keys would publish redemption-start timing before the required live acceptance proof.
