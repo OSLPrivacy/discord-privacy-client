@@ -664,6 +664,13 @@ describe("fresh-account continuation", () => {
     expect(bootstrap).toContain('onboardingRoute = "welcome"');
   });
 
+  it("makes the optional Pro Skip control explicitly advance to privacy", () => {
+    const content = functionSource("proSetupContent", "tutorialContent");
+    const binding = functionSource("bindOnboarding", "completeOnboarding");
+    expect(content).toContain('id="skip-pro-setup"');
+    expect(binding).toMatch(/#skip-pro-setup[\s\S]*?addEventListener\("click"[\s\S]*?continueFromProOnboarding\("skipped"\)\.route[\s\S]*?render\(\)/);
+  });
+
   it("offers an optional fixed Mullvad handoff without claiming tunnel access", () => {
     const content = functionSource("mullvadSetupContent", "scrubCategoryChooserMarkup");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
