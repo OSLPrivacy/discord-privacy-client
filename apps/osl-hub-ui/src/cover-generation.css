@@ -1,0 +1,59 @@
+/*
+ * Presentation only. T7-82 supplies the state and T7-70 imports this sheet;
+ * keeping it here means the shipped `style-src 'self'` policy can render it.
+ */
+.cover-generation-surface {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  pointer-events: none;
+}
+
+.cover-generation-progress {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 4px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--brand, #06b6d4) 22%, transparent);
+  box-shadow: 0 1px 10px color-mix(in srgb, var(--brand, #06b6d4) 38%, transparent);
+}
+
+.cover-generation-progress-fill {
+  display: block;
+  width: 38%;
+  height: 100%;
+  border-radius: 0 999px 999px 0;
+  background: linear-gradient(90deg, #38bdf8, var(--brand, #06b6d4), #60a5fa);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--brand, #06b6d4) 80%, transparent);
+  animation: cover-generation-progress 1.15s var(--ease-standard, cubic-bezier(.2, 0, 0, 1)) infinite;
+  will-change: transform;
+}
+
+.cover-generation-popup {
+  position: fixed;
+  z-index: 1001;
+  top: 20px;
+  right: 20px;
+  max-width: min(360px, calc(100vw - 40px));
+  padding: 11px 14px;
+  border: 1px solid color-mix(in srgb, var(--brand, #06b6d4) 48%, var(--line, #2a2a2a));
+  border-radius: var(--radius, 6px);
+  background: color-mix(in srgb, var(--panel, #141414) 92%, #071722);
+  box-shadow: var(--shadow, 0 12px 34px rgba(0, 0, 0, .38));
+  color: var(--text, #e8e8e8);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: .01em;
+}
+
+@keyframes cover-generation-progress {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(365%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cover-generation-progress-fill {
+    width: 100%;
+    animation: none;
+  }
+}
