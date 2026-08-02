@@ -19,3 +19,4 @@ T19-G4 — Blocked: T19-G3's two-identity restart harness is absent, and T19-D2 
 T19-G5 — Blocked: T19-G3's live two-identity harness is absent, so RC1/RC3/RC4 cannot be injected into a pair or compared with a v3 control without fabricating the critical sabotage evidence.
 T19-H2 — Blocked: T19-G5 has not generated the mandatory desync positive and sabotage evidence. A dossier without its negative results would falsely imply a go/no-go decision is ready.
 T20-C1 — Blocked: the required T3 native-window-host task has not landed and T20-B5's real-VM matrix baseline is absent. Extracting the compositor repair before its owner and measured baseline would violate the serial hand-off.
+T20-C2 — Blocked: T20-C1 has not provided BORROW-CORE, so Mullvad cannot adopt the shared compositor repair without creating the prohibited second implementation.
