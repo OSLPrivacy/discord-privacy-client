@@ -9,7 +9,10 @@ export interface TorOnboardingState {
 
 export const initialTorOnboardingState = (): TorOnboardingState => ({ choice: null });
 
-export function chooseTorRoute(state: TorOnboardingState, choice: Exclude<TorChoice, null>): TorOnboardingState {
+// The previous state is intentionally unused: choosing a route REPLACES it,
+// and there is deliberately no default (the owner's decision: Tor is an
+// explicit choice, both options stating their downsides).
+export function chooseTorRoute(_state: TorOnboardingState, choice: Exclude<TorChoice, null>): TorOnboardingState {
   return { choice };
 }
 

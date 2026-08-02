@@ -216,8 +216,10 @@ export function inviteCopyFailureToast(reason: string): string {
  * different problems with three different fixes, and the operator could not
  * tell them apart.
  */
-export function addFriendFailureStatus(reason: string): string {
-  const detail = reason.trim();
+// `reason` is nullable since the username path landed: a refused username
+// lookup reports failure without a detail string.
+export function addFriendFailureStatus(reason: string | null): string {
+  const detail = (reason ?? "").trim();
   return detail
     ? `The invite could not be added. Nothing changed. ${detail}`
     : "The invite could not be added. Nothing changed.";

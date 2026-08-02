@@ -42,8 +42,11 @@ grep -qE '^test result: ok' /tmp/verify-hub.txt || fail=1
 sed -n '/^failures:$/,/^test result/p' /tmp/verify-hub.txt |
     grep -E '^    [a-z]' | sort -u | sed 's/^/    /'
 
-step "frontend"
+step "frontend production build (tsc + vite -- vitest does NOT typecheck)"
 cd apps/osl-hub-ui || exit 1
+npm run build > /tmp/verify-build.txt 2>&1 || { grep -E "error TS" /tmp/verify-build.txt | head -5; echo "FAIL"; fail=1; }
+
+step "frontend"
 npx vitest run --maxWorkers=2 > /tmp/verify-ts.txt 2>&1
 grep -E 'Tests ' /tmp/verify-ts.txt | tail -1 | sed 's/^/  /'
 grep -qE 'Tests .*failed' /tmp/verify-ts.txt && fail=1
