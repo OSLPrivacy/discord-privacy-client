@@ -6267,14 +6267,14 @@ code {
 .connected-source .source-mark,
 .osl-chat-source .source-mark,
 .request-source .source-mark,
-.circle-feed-item .source-mark { color: var(--muted); }
+.enclave-feed-item .source-mark { color: var(--muted); }
 
-.circle-feed-list { display: grid; }
-.circle-feed-item:first-child { border-top: 1px solid var(--line); }
+.enclave-feed-list { display: grid; }
+.enclave-feed-item:first-child { border-top: 1px solid var(--line); }
 
 /* A setting-line is a two-column row; this card adds a third block of prose,
    which flex would otherwise squeeze onto the same line as the status chip. */
-.circle-audience-card {
+.enclave-audience-card {
   min-height: 0;
   padding: 11px 0;
   display: grid;
@@ -6282,16 +6282,16 @@ code {
   align-items: start;
   gap: 5px 12px;
 }
-.circle-audience-card > span { grid-column: 1; grid-row: 1; min-width: 0; }
-.circle-audience-card > .status-tag { grid-column: 2; grid-row: 1; justify-self: end; }
-.circle-audience-card > p {
+.enclave-audience-card > span { grid-column: 1; grid-row: 1; min-width: 0; }
+.enclave-audience-card > .status-tag { grid-column: 2; grid-row: 1; justify-self: end; }
+.enclave-audience-card > p {
   grid-column: 1 / -1;
   margin: 0;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.45;
 }
-.circle-audience-card.unavailable { opacity: .72; }
+.enclave-audience-card.unavailable { opacity: .72; }
 
 /* --- Connections ---------------------------------------------------------- */
 

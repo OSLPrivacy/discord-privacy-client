@@ -3,7 +3,7 @@ import {
   projectKnownSpaceMembers,
   renderSpaceMemberList,
   type KnownSpaceMember,
-} from "./osl-spaces-members";
+} from "./osl-enclaves-members";
 
 class TestElement {
   className = "";
@@ -34,7 +34,7 @@ const members: readonly KnownSpaceMember[] = [
   { memberId: "member-bob", displayName: "Bob" },
 ];
 
-describe("Space member list", () => {
+describe("Enclave member list", () => {
   it("renders only local membership names, even when an untyped caller includes activity signals", () => {
     const activityBearingInput = members.map((member, index) => ({
       ...member,
@@ -61,8 +61,8 @@ describe("Space member list", () => {
     expect(() => projectKnownSpaceMembers([
       { memberId: "member-alice", displayName: "Alice" },
       { memberId: "member-alice", displayName: "Alice again" },
-    ])).toThrow(/Duplicate Space member/u);
+    ])).toThrow(/Duplicate Enclave member/u);
     expect(() => projectKnownSpaceMembers([{ memberId: "member-alice", displayName: "  " }]))
-      .toThrow(/Invalid Space member/u);
+      .toThrow(/Invalid Enclave member/u);
   });
 });

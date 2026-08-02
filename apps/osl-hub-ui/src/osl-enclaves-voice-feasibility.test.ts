@@ -11,7 +11,7 @@ type VoiceGate = {
 
 function voiceGate(): VoiceGate {
   const document = readFileSync(
-    new URL("../../../docs/design/osl-spaces-voice-feasibility.md", import.meta.url),
+    new URL("../../../docs/design/osl-enclaves-voice-feasibility.md", import.meta.url),
     "utf8",
   );
   const match = document.match(/```json\n([\s\S]*?)\n```/u);
@@ -19,13 +19,13 @@ function voiceGate(): VoiceGate {
   return JSON.parse(match[1]) as VoiceGate;
 }
 
-describe("Spaces voice feasibility gate", () => {
+describe("Enclaves voice feasibility gate", () => {
   it("keeps voice out of v1 until its privacy and transport prerequisites are proven", () => {
     expect(voiceGate()).toEqual({
       decision: "post-v1-separate-track",
       availability: "coming-later-not-implemented",
       requiredBeforeBuild: [
-        "authenticated-space-membership",
+        "authenticated-enclave-membership",
         "authenticated-voice-signaling",
         "end-to-end-media-key-distribution-and-rotation",
         "sfu-and-turn-operations",

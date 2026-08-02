@@ -1,17 +1,17 @@
-# OSL Spaces voice: feasibility and release gate
+# OSL Enclaves voice: feasibility and release gate
 
 Status: design decision, 2026-08-01. This document does not add voice calling or change a
 shipped surface.
 
 ## Decision
 
-**Voice is feasible, but it is post-v1 work on a separate track.** The first usable Spaces
+**Voice is feasible, but it is post-v1 work on a separate track.** The first usable Enclaves
 release ships without voice. A voice channel may exist as a future channel kind, but it must not
 start capture, create a call, or imply that a call can be joined.
 
 The honest unavailable-state copy is:
 
-> Voice is coming later. It is not available in OSL Spaces yet.
+> Voice is coming later. It is not available in OSL Enclaves yet.
 
 Do not call the future feature private, anonymous, zero-knowledge, metadata-free, or
 end-to-end encrypted until the release gate below has been passed and those specific properties
@@ -22,7 +22,7 @@ have been independently tested.
   "decision": "post-v1-separate-track",
   "availability": "coming-later-not-implemented",
   "requiredBeforeBuild": [
-    "authenticated-space-membership",
+    "authenticated-enclave-membership",
     "authenticated-voice-signaling",
     "end-to-end-media-key-distribution-and-rotation",
     "sfu-and-turn-operations",
@@ -65,12 +65,12 @@ pseudonymous connection, start/end times, packet timing and volume, and network-
 TURN relay can also handle media. Padding cannot make a real-time interactive call look like no
 call, and it does not remove the operator's need to route media.
 
-Consequences for OSL Spaces:
+Consequences for OSL Enclaves:
 
 - Do not expose presence, a member roster, speaking indicators, or a public activity count merely
   because the media backend has connection state.
 - Use opaque, per-call participant identifiers at the media boundary; do not send usernames,
-  display names, contact graphs, text history, or Space governance data there.
+  display names, contact graphs, text history, or Enclave governance data there.
 - No recording, transcription, moderation pipeline, analytics, or retained media logs in v1.
   Those features would create a new plaintext or behavioural-data disclosure and require an
   explicit future decision.
@@ -109,9 +109,9 @@ example, not a promise about concurrency, audio bitrate, or total bill.
 
 The future track may begin only after all of the following have an owner and an executable proof:
 
-1. Authenticated Space membership and sender authentication are shipped; no unauthenticated client
+1. Authenticated Enclave membership and sender authentication are shipped; no unauthenticated client
    can obtain a call admission credential or impersonate a participant.
-2. The call-control/signaling service authenticates an opaque Space membership capability, binds it
+2. The call-control/signaling service authenticates an opaque Enclave membership capability, binds it
    to a short-lived call credential, and never receives plaintext media keys.
 3. The media-key protocol documents creation, distribution, authentication, removal, rejoin,
    device addition, and rotation. Its tests prove a removed participant cannot decrypt media after

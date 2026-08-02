@@ -24,8 +24,8 @@ async function loadUi() {
 }
 
 function circlesCard(inboxHtml: string): string {
-  return inboxHtml.match(/<section class="inbox-surface-card circles-destination"[\s\S]*?<\/section>\s*<\/section>/u)?.[0]
-    ?? inboxHtml.match(/<section class="inbox-surface-card circles-destination"[\s\S]*/u)?.[0]
+  return inboxHtml.match(/<section class="inbox-surface-card enclaves-destination"[\s\S]*?<\/section>\s*<\/section>/u)?.[0]
+    ?? inboxHtml.match(/<section class="inbox-surface-card enclaves-destination"[\s\S]*/u)?.[0]
     ?? "";
 }
 
@@ -37,7 +37,7 @@ function visibleText(markup: string): string {
 // them is a real contact, so none of them may ever appear on a real account.
 const inventedNames = ["Close friends", "Family", "Book club", "Work", "Neighborhood", "Maya", "Theo", "Rina", "Ari", "Sam"];
 
-describe("OSL Circles reflects real trust state", () => {
+describe("OSL Enclaves reflects real trust state", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
@@ -46,7 +46,7 @@ describe("OSL Circles reflects real trust state", () => {
   it("shows nobody on a fresh account with no verified people", async () => {
     // A shipping account must remain empty even if an old development-only
     // demo switch is present in its environment.
-    vi.stubEnv("VITE_OSL_CIRCLE_DEMO_AUDIENCES", "1");
+    vi.stubEnv("VITE_OSL_ENCLAVE_DEMO_AUDIENCES", "1");
     const { __oslHubUiTest } = await loadUi();
     // A brand-new unlocked account: no friends, no services, nothing verified.
     __oslHubUiTest.reset({ route: "inbox", coreReady: true, hubPeople: [], services: [] });
@@ -57,15 +57,15 @@ describe("OSL Circles reflects real trust state", () => {
 
     expect(card).not.toBe("");
     for (const name of inventedNames) {
-      expect(copy, `Circles must not name "${name}" on an account with no people`).not.toContain(name);
+      expect(copy, `Enclaves must not name "${name}" on an account with no people`).not.toContain(name);
     }
     // Nothing may claim a member count either: "8 people" is as much a trust
     // claim as the names behind it.
     expect(copy).not.toMatch(/\d+\s+people/u);
-    expect(card).toContain('data-circle-audience-count="0"');
-    expect(card).not.toContain("data-circle-audience=");
-    expect(card).not.toContain('data-circle-posting="ready"');
-    expect(card).toContain('data-circle-audiences="none"');
+    expect(card).toContain('data-enclave-audience-count="0"');
+    expect(card).not.toContain("data-enclave-audience=");
+    expect(card).not.toContain('data-enclave-posting="ready"');
+    expect(card).toContain('data-enclave-audiences="none"');
     expect(copy).toMatch(/No Enclave audiences yet/u);
   });
 
@@ -74,22 +74,22 @@ describe("OSL Circles reflects real trust state", () => {
     __oslHubUiTest.reset({
       route: "inbox",
       coreReady: true,
-      circleAudienceRecords: [
-        { audienceId: "a".repeat(32), name: "Hiking group", memberCount: 1, membershipVisibility: "visible", visibleMembers: [{ memberId: "1".repeat(32), name: "Robin", verified: true }], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: true },
-        { audienceId: "d".repeat(32), name: "Choir", memberCount: 2, membershipVisibility: "count-only", visibleMembers: [], consentGranted: false, boundToCurrentCircle: true, postingAuthorized: true },
+      enclaveAudienceRecords: [
+        { audienceId: "a".repeat(32), name: "Hiking group", memberCount: 1, membershipVisibility: "visible", visibleMembers: [{ memberId: "1".repeat(32), name: "Robin", verified: true }], consentGranted: true, boundToCurrentEnclave: true, postingAuthorized: true },
+        { audienceId: "d".repeat(32), name: "Choir", memberCount: 2, membershipVisibility: "count-only", visibleMembers: [], consentGranted: false, boundToCurrentEnclave: true, postingAuthorized: true },
       ],
     });
 
     const card = circlesCard(__oslHubUiTest.renderWorkspaceContent("inbox"));
     const copy = visibleText(card);
 
-    expect(card).toContain('data-circle-audience-count="2"');
+    expect(card).toContain('data-enclave-audience-count="2"');
     expect(copy).toContain("Hiking group");
     expect(copy).toContain("Robin verified");
     expect(copy).toContain("Choir");
-    expect(card).toContain('data-circle-posting="ready"');
-    expect(card).toContain('data-circle-posting="refused"');
-    expect(card).not.toContain('data-circle-audiences="none"');
+    expect(card).toContain('data-enclave-posting="ready"');
+    expect(card).toContain('data-enclave-posting="refused"');
+    expect(card).not.toContain('data-enclave-audiences="none"');
     // Still nothing invented alongside the real ones.
     for (const name of inventedNames) {
       expect(copy).not.toContain(name);
@@ -101,11 +101,11 @@ describe("OSL Circles reflects real trust state", () => {
     __oslHubUiTest.reset({ route: "home", coreReady: true, hubPeople: [] });
 
     const home = visibleText(__oslHubUiTest.renderWorkspaceContent("home"));
-    const circles = visibleText(circlesCard(__oslHubUiTest.renderWorkspaceContent("inbox")));
+    const enclaves = visibleText(circlesCard(__oslHubUiTest.renderWorkspaceContent("inbox")));
 
     expect(home).toContain("Trusted people");
     expect(home).toContain("0 verified");
     // Home said zero. Enclaves may not simultaneously show approved audiences.
-    expect(circles).toMatch(/No Enclave audiences yet/u);
+    expect(enclaves).toMatch(/No Enclave audiences yet/u);
   });
 });

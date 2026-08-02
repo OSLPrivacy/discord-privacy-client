@@ -36,40 +36,40 @@ describe("Enclaves scope", () => {
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({
       route: "inbox",
-      circleAudienceRecords: [
-        { audienceId: "a".repeat(32), name: "Hiking group", memberCount: 1, membershipVisibility: "visible", visibleMembers: [{ memberId: "1".repeat(32), name: "Robin", verified: true }], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: true },
-        { audienceId: "d".repeat(32), name: "Choir", memberCount: 2, membershipVisibility: "count-only", visibleMembers: [], consentGranted: false, boundToCurrentCircle: true, postingAuthorized: true },
+      enclaveAudienceRecords: [
+        { audienceId: "a".repeat(32), name: "Hiking group", memberCount: 1, membershipVisibility: "visible", visibleMembers: [{ memberId: "1".repeat(32), name: "Robin", verified: true }], consentGranted: true, boundToCurrentEnclave: true, postingAuthorized: true },
+        { audienceId: "d".repeat(32), name: "Choir", memberCount: 2, membershipVisibility: "count-only", visibleMembers: [], consentGranted: false, boundToCurrentEnclave: true, postingAuthorized: true },
       ],
     });
 
     const inboxHtml = __oslHubUiTest.renderWorkspaceContent("inbox");
-    const enclaves = inboxHtml.match(/<section class="inbox-surface-card circles-destination"[\s\S]*?<\/section>/u)?.[0] ?? "";
+    const enclaves = inboxHtml.match(/<section class="inbox-surface-card enclaves-destination"[\s\S]*?<\/section>/u)?.[0] ?? "";
     const enclaveCopy = visibleText(enclaves);
 
     expect(enclaves).not.toBe("");
-    expect(enclaves).toContain('data-circle-state="available"');
-    expect(enclaves).toContain('data-circle-feeds="private-audiences"');
+    expect(enclaves).toContain('data-enclave-state="available"');
+    expect(enclaves).toContain('data-enclave-feeds="private-audiences"');
     expect(enclaveCopy).toMatch(/OSL Enclaves/iu);
     expect(enclaveCopy).toMatch(/Posts and comments are encrypted for the selected audience/iu);
-    expect(enclaves).toContain('data-circle-posting="ready"');
-    expect(enclaves).toContain('data-circle-posting="refused"');
+    expect(enclaves).toContain('data-enclave-posting="ready"');
+    expect(enclaves).toContain('data-enclave-posting="refused"');
   });
 
   it("renders the declared available Enclaves state and live audience cards", async () => {
     const { firstPartyOslSurfaceContracts } = await import("./osl-chats-view");
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({
-      circleAudienceRecords: [{ audienceId: "a".repeat(32), name: "Hiking group", memberCount: 1, membershipVisibility: "visible", visibleMembers: [], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: true }],
+      enclaveAudienceRecords: [{ audienceId: "a".repeat(32), name: "Hiking group", memberCount: 1, membershipVisibility: "visible", visibleMembers: [], consentGranted: true, boundToCurrentEnclave: true, postingAuthorized: true }],
     });
 
-    const circle = firstPartyOslSurfaceContracts().find((surface) => surface.id === "osl-circles");
+    const enclave = firstPartyOslSurfaceContracts().find((surface) => surface.id === "osl-enclaves");
     const inboxHtml = __oslHubUiTest.renderWorkspaceContent("inbox");
 
-    expect(circle?.state).toBe("available");
-    expect(inboxHtml).toContain('data-inbox-osl-surface="circles"');
-    expect(inboxHtml).toContain('data-circle-state="available"');
+    expect(enclave?.state).toBe("available");
+    expect(inboxHtml).toContain('data-inbox-osl-surface="enclaves"');
+    expect(inboxHtml).toContain('data-enclave-state="available"');
     expect(inboxHtml).toContain("OSL Enclaves");
-    expect(inboxHtml).toContain('data-circle-posting="ready"');
+    expect(inboxHtml).toContain('data-enclave-posting="ready"');
     expect(inboxHtml).toContain("Posts and comments are encrypted for the selected audience.");
   });
 });

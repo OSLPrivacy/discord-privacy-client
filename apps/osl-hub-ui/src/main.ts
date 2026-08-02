@@ -176,7 +176,7 @@ import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
-import { parseCircleAudience, type CircleAudience } from "./osl-collab";
+import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
 import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { initialAccountRecoveryFlow, recoveryScreenMarkup } from "./account-recovery";
@@ -3975,15 +3975,15 @@ function workspaceContent(): string {
   return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary">${homeDestinationContent()}<section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock in-dom-tooltip-anchor" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong>${inDomTooltipMarkup(profileName)}</button></main>`;
 }
 
-function parsedCircleAudiences(records: unknown[]): CircleAudience[] {
+function parsedEnclaveAudiences(records: unknown[]): EnclaveAudience[] {
   return records
-    .map((record) => parseCircleAudience(record))
-    .filter((audience): audience is CircleAudience => audience !== null);
+    .map((record) => parseEnclaveAudience(record))
+    .filter((audience): audience is EnclaveAudience => audience !== null);
 }
 
-let privateCircleAudiences: CircleAudience[] = [];
+let privateEnclaveAudiences: EnclaveAudience[] = [];
 
-function circleAudienceMembershipDetail(audience: CircleAudience): string {
+function enclaveAudienceMembershipDetail(audience: EnclaveAudience): string {
   if (audience.membershipVisibility === "visible") {
     const names = audience.visibleMembers.map((member) => `${member.name}${member.verified ? " verified" : " needs review"}`).join(", ");
     return names ? `${audience.memberCount.toLocaleString("en-US")} people: ${names}` : `${audience.memberCount.toLocaleString("en-US")} people. Members are shown before posting.`;
@@ -3992,27 +3992,27 @@ function circleAudienceMembershipDetail(audience: CircleAudience): string {
   return "Membership is hidden here. Posting stays refused until the audience is shown for review.";
 }
 
-function circleAudienceStatus(audience: CircleAudience): { label: "Ready" | "Refused"; detail: string } {
+function enclaveAudienceStatus(audience: EnclaveAudience): { label: "Ready" | "Refused"; detail: string } {
   if (audience.canPost) return { label: "Ready", detail: "Posts and comments are encrypted for the selected audience." };
   if (audience.refusal === "consent") return { label: "Refused", detail: "Review and approve this audience on this device before posting." };
   if (audience.refusal === "binding") return { label: "Refused", detail: "Choose the Enclave for this audience before posting." };
   return { label: "Refused", detail: "This account is not allowed to post to that audience." };
 }
 
-function circlesDestinationContent(): string {
-  const circleSurface = firstPartyOslSurfaceContract("osl-circles");
-  if (circleSurface.state !== "available") {
-    return `<section class="inbox-surface-card circles-destination unavailable" data-inbox-osl-surface="circles" data-circle-state="${circleSurface.state}" aria-disabled="true"><strong>${escapeHtml(circleSurface.label)}</strong><small>Private audience feeds</small><p>${statusTag("Coming later")} ${escapeHtml(circleSurface.label)} is coming after small-group review. Private audience posts are unavailable.</p>${publicCirclesUnavailableMarkup()}</section>`;
+function enclavesDestinationContent(): string {
+  const enclaveSurface = firstPartyOslSurfaceContract("osl-enclaves");
+  if (enclaveSurface.state !== "available") {
+    return `<section class="inbox-surface-card enclaves-destination unavailable" data-inbox-osl-surface="enclaves" data-enclave-state="${enclaveSurface.state}" aria-disabled="true"><strong>${escapeHtml(enclaveSurface.label)}</strong><small>Private audience feeds</small><p>${statusTag("Coming later")} ${escapeHtml(enclaveSurface.label)} is coming after small-group review. Private audience posts are unavailable.</p>${publicEnclavesUnavailableMarkup()}</section>`;
   }
-  const audienceCards = privateCircleAudiences.map((audience) => {
-    const status = circleAudienceStatus(audience);
-    return `<article class="setting-line circle-audience-card ${audience.canPost ? "" : "unavailable"}" data-circle-audience="${escapeHtml(audience.audienceId)}" data-circle-posting="${audience.canPost ? "ready" : "refused"}" data-circle-refusal="${audience.refusal ?? "none"}" aria-disabled="${audience.canPost ? "false" : "true"}"><span><strong>${escapeHtml(audience.name)}</strong><small>${escapeHtml(circleAudienceMembershipDetail(audience))}</small></span>${statusTag(status.label)}<p>${escapeHtml(status.detail)}</p></article>`;
+  const audienceCards = privateEnclaveAudiences.map((audience) => {
+    const status = enclaveAudienceStatus(audience);
+    return `<article class="setting-line enclave-audience-card ${audience.canPost ? "" : "unavailable"}" data-enclave-audience="${escapeHtml(audience.audienceId)}" data-enclave-posting="${audience.canPost ? "ready" : "refused"}" data-enclave-refusal="${audience.refusal ?? "none"}" aria-disabled="${audience.canPost ? "false" : "true"}"><span><strong>${escapeHtml(audience.name)}</strong><small>${escapeHtml(enclaveAudienceMembershipDetail(audience))}</small></span>${statusTag(status.label)}<p>${escapeHtml(status.detail)}</p></article>`;
   }).join("");
-  const feedItems = privateCircleAudiences.filter((audience) => audience.canPost).map((audience, index) => `<article class="inbox-row circle-feed-item" data-circle-feed-item="${index}" data-circle-feed-order="chronological" data-circle-audience="${escapeHtml(audience.audienceId)}"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><div><strong>${escapeHtml(audience.name)}</strong><small>Chronological private feed · ${audience.memberCount.toLocaleString("en-US")} people · no ranking or behavioral advertising</small></div>${statusTag("Encrypted")}</article>`).join("");
+  const feedItems = privateEnclaveAudiences.filter((audience) => audience.canPost).map((audience, index) => `<article class="inbox-row enclave-feed-item" data-enclave-feed-item="${index}" data-enclave-feed-order="chronological" data-enclave-audience="${escapeHtml(audience.audienceId)}"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><div><strong>${escapeHtml(audience.name)}</strong><small>Chronological private feed · ${audience.memberCount.toLocaleString("en-US")} people · no ranking or behavioral advertising</small></div>${statusTag("Encrypted")}</article>`).join("");
   const audienceList = audienceCards
-    ? `<div class="settings-list circle-audience-list" aria-label="Private Enclave audiences">${audienceCards}</div><div class="circle-feed-list" aria-label="Chronological private Enclave feeds">${feedItems}</div>`
-    : `<div class="empty-state" data-circle-audiences="none"><strong>No Enclave audiences yet</strong><p>An audience appears here after you create one on this device. Until then there is nobody to post to.</p></div>`;
-  return `<section class="inbox-surface-card circles-destination" data-inbox-osl-surface="circles" data-circle-state="${circleSurface.state}" data-circle-feeds="private-audiences" data-circle-audience-count="${privateCircleAudiences.length}"><strong>OSL Enclaves</strong><small>Private audience feeds</small><p>${statusTag("Private")} Posts and comments are encrypted for the selected audience. Audience membership is shown before posting.</p>${audienceList}${publicCirclesUnavailableMarkup()}</section>`;
+    ? `<div class="settings-list enclave-audience-list" aria-label="Private Enclave audiences">${audienceCards}</div><div class="enclave-feed-list" aria-label="Chronological private Enclave feeds">${feedItems}</div>`
+    : `<div class="empty-state" data-enclave-audiences="none"><strong>No Enclave audiences yet</strong><p>An audience appears here after you create one on this device. Until then there is nobody to post to.</p></div>`;
+  return `<section class="inbox-surface-card enclaves-destination" data-inbox-osl-surface="enclaves" data-enclave-state="${enclaveSurface.state}" data-enclave-feeds="private-audiences" data-enclave-audience-count="${privateEnclaveAudiences.length}"><strong>OSL Enclaves</strong><small>Private audience feeds</small><p>${statusTag("Private")} Posts and comments are encrypted for the selected audience. Audience membership is shown before posting.</p>${audienceList}${publicEnclavesUnavailableMarkup()}</section>`;
 }
 
 type OslMailboxStageCReview = {
@@ -4098,8 +4098,8 @@ export function oslMailStageBContent(
   return `<article class="inbox-surface-card mail-stage-card" data-inbox-osl-surface="mail" data-osl-mail-stage-b="${state}" data-osl-mail-stage-b-after="client-protection" data-osl-mail-aliases="${ready ? "available" : "refused"}" data-osl-mail-relay="${ready ? "available" : "refused"}" aria-disabled="${ready ? "false" : "true"}"><strong>Aliases and relay</strong><small>After client protection</small><p>${statusTag(label)} ${escapeHtml(detail)}</p><ul>${capabilities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><p>External email remains ordinary email unless a supported encrypted path is selected before send.</p></article>`;
 }
 
-function publicCirclesUnavailableMarkup(): string {
-  return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Enclaves</strong><small>Private audience feeds</small><p>${statusTag("Unavailable")} Public Enclaves network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
+function publicEnclavesUnavailableMarkup(): string {
+  return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="enclaves" data-public-enclaves-network="unavailable" aria-disabled="true"><strong>OSL Enclaves</strong><small>Private audience feeds</small><p>${statusTag("Unavailable")} Public Enclaves network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
 }
 
 export function publicPostGuardCarrierPreviewMarkup(platform = "Public platforms"): string {
@@ -4130,12 +4130,12 @@ export function inboxDestinationContent(): string {
     : `<div class="empty-state"><strong>No requests</strong><p>New friend requests and key reviews appear here.</p></div>`;
   const oslSurfaces = [
     ["chat", "OSL Chat", "Protected OSL messages", "Ready for verified friends"],
-    ["circles", "OSL Enclaves", "Private audience feeds", "Create an enclave to begin"],
+    ["enclaves", "OSL Enclaves", "Private audience feeds", "Create an enclave to begin"],
     ["mail", "OSL Mail", "Client protection", "External recipients are not OSL E2EE"],
   ] as const;
   const mailboxGate = oslMailboxStageCGate();
   const surfaceCards = oslSurfaces.map(([id, label, protection, detail]) => {
-    if (id === "circles") return circlesDestinationContent();
+    if (id === "enclaves") return enclavesDestinationContent();
     if (id === "mail") {
       return `${oslMailStageAContent(oslMailStage("stageA"), mailboxGate)}${oslMailStageBContent(oslMailStage("stageB"))}`;
     }
@@ -9149,7 +9149,7 @@ type OslHubUiTestStatePatch = {
   hubIdentities?: HubIdentitySlot[];
   hubIdentitiesLoad?: IdentityListLoad;
   bootstrapStatus?: BootstrapStatus;
-  circleAudienceRecords?: unknown[];
+  enclaveAudienceRecords?: unknown[];
 };
 
 function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPerson {
@@ -9208,7 +9208,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   hubIdentities = patch.hubIdentities ?? [];
   hubIdentitiesLoad = patch.hubIdentitiesLoad ?? (patch.hubIdentities ? "loaded" : "pending");
   identityListRefreshInFlight = false;
-  privateCircleAudiences = parsedCircleAudiences(patch.circleAudienceRecords ?? []);
+  privateEnclaveAudiences = parsedEnclaveAudiences(patch.enclaveAudienceRecords ?? []);
   notificationsEnabled = patch.notificationsEnabled ?? false;
   notificationPreviewContent = patch.notificationPreviewContent ?? true;
   appNotifications = patch.appNotifications ?? [];

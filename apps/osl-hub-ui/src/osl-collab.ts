@@ -6,15 +6,15 @@ export interface OslSharedDocument { kind: OslDocumentKind; title: string; body:
 export interface OslLanInvitation { code: string; address: string; roomId: string; encrypted: true; requiresCloud: false; requiresPro: false; }
 export interface OslLanSession { sessionId: string; role: "host" | "guest"; revision: number; document: OslSharedDocument; invitation: OslLanInvitation | null; connected: true; encrypted: true; cloud: false; }
 export interface OslLanSync { revision: number; document: OslSharedDocument; changed: boolean; conflict: boolean; connected: boolean; }
-export type CircleAudienceMembershipVisibility = "visible" | "count-only" | "hidden";
-export type CircleAudienceRefusal = "consent" | "binding" | "authority";
-export type CirclePostRefusal = CircleAudienceRefusal | "audience" | "draft" | "membership-review";
-export interface CircleAudienceMember { memberId: string; name: string; verified: boolean; }
-export interface CircleAudience { audienceId: string; name: string; memberCount: number; membershipVisibility: CircleAudienceMembershipVisibility; visibleMembers: CircleAudienceMember[]; canPost: boolean; refusal: CircleAudienceRefusal | null; }
-export interface CirclePostMembershipReview { audienceId: string; audienceName: string; memberCount: number; members: CircleAudienceMember[]; shownBeforePosting: true; }
-export interface CirclePostReady { status: "ready"; audienceId: string; audienceName: string; body: string; membershipReview: CirclePostMembershipReview; encryptedForAudience: true; feedOrder: "chronological"; sendAuthority: "user-action-required"; }
-export interface CirclePostRefused { status: "refused"; reason: CirclePostRefusal; audienceId: string | null; audienceName: string | null; membershipReview: CirclePostMembershipReview | null; encryptedForAudience: false; sendAuthority: "none"; }
-export type CirclePostComposition = CirclePostReady | CirclePostRefused;
+export type EnclaveAudienceMembershipVisibility = "visible" | "count-only" | "hidden";
+export type EnclaveAudienceRefusal = "consent" | "binding" | "authority";
+export type EnclavePostRefusal = EnclaveAudienceRefusal | "audience" | "draft" | "membership-review";
+export interface EnclaveAudienceMember { memberId: string; name: string; verified: boolean; }
+export interface EnclaveAudience { audienceId: string; name: string; memberCount: number; membershipVisibility: EnclaveAudienceMembershipVisibility; visibleMembers: EnclaveAudienceMember[]; canPost: boolean; refusal: EnclaveAudienceRefusal | null; }
+export interface EnclavePostMembershipReview { audienceId: string; audienceName: string; memberCount: number; members: EnclaveAudienceMember[]; shownBeforePosting: true; }
+export interface EnclavePostReady { status: "ready"; audienceId: string; audienceName: string; body: string; membershipReview: EnclavePostMembershipReview; encryptedForAudience: true; feedOrder: "chronological"; sendAuthority: "user-action-required"; }
+export interface EnclavePostRefused { status: "refused"; reason: EnclavePostRefusal; audienceId: string | null; audienceName: string | null; membershipReview: EnclavePostMembershipReview | null; encryptedForAudience: false; sendAuthority: "none"; }
+export type EnclavePostComposition = EnclavePostReady | EnclavePostRefused;
 
 const kinds = new Set(["note", "document", "spreadsheet", "drawing", "presentation", "photo", "video", "audio", "model3d"]);
 const visibility = new Set(["visible", "count-only", "hidden"]);
@@ -27,42 +27,42 @@ export function sharedDocument(note: OslNote): OslSharedDocument { return { kind
 function parseInvitation(value: unknown): OslLanInvitation | null { if (!record(value) || !exact(value, ["code", "address", "roomId", "encrypted", "requiresCloud", "requiresPro"]) || typeof value.code !== "string" || value.code.length > 256 || typeof value.address !== "string" || typeof value.roomId !== "string" || !/^[a-f0-9]{32}$/u.test(value.roomId) || value.encrypted !== true || value.requiresCloud !== false || value.requiresPro !== false) return null; return value as unknown as OslLanInvitation; }
 export function parseLanSession(value: unknown): OslLanSession | null { if (!record(value) || !exact(value, ["sessionId", "role", "revision", "document", "invitation", "connected", "encrypted", "cloud"]) || typeof value.sessionId !== "string" || !/^[a-f0-9]{32}$/u.test(value.sessionId) || !["host", "guest"].includes(String(value.role)) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0 || value.connected !== true || value.encrypted !== true || value.cloud !== false) return null; const document = parseSharedDocument(value.document); const invitation = value.invitation === null ? null : parseInvitation(value.invitation); if (!document || value.invitation !== null && !invitation || value.role === "host" && !invitation || value.role === "guest" && invitation) return null; return { sessionId: value.sessionId, role: value.role as "host" | "guest", revision: Number(value.revision), document, invitation, connected: true, encrypted: true, cloud: false }; }
 export function parseLanSync(value: unknown): OslLanSync | null { if (!record(value) || !exact(value, ["revision", "document", "changed", "conflict", "connected"]) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0 || typeof value.changed !== "boolean" || typeof value.conflict !== "boolean" || typeof value.connected !== "boolean") return null; const document = parseSharedDocument(value.document); return document ? { revision: Number(value.revision), document, changed: value.changed, conflict: value.conflict, connected: value.connected } : null; }
-function parseCircleAudienceMember(value: unknown): CircleAudienceMember | null { if (!record(value) || !exact(value, ["memberId", "name", "verified"]) || typeof value.memberId !== "string" || !/^[a-f0-9]{32}$/u.test(value.memberId) || !boundedText(value.name, 80) || typeof value.verified !== "boolean") return null; return { memberId: value.memberId, name: value.name, verified: value.verified }; }
-export function parseCircleAudience(value: unknown): CircleAudience | null {
-  if (!record(value) || !exact(value, ["audienceId", "name", "memberCount", "membershipVisibility", "visibleMembers", "consentGranted", "boundToCurrentCircle", "postingAuthorized"]) || typeof value.audienceId !== "string" || !/^[a-f0-9]{32}$/u.test(value.audienceId) || !boundedText(value.name, 80) || !Number.isSafeInteger(value.memberCount) || Number(value.memberCount) < 0 || Number(value.memberCount) > 10_000 || !visibility.has(String(value.membershipVisibility)) || !Array.isArray(value.visibleMembers) || value.visibleMembers.length > Number(value.memberCount) || typeof value.consentGranted !== "boolean" || typeof value.boundToCurrentCircle !== "boolean" || typeof value.postingAuthorized !== "boolean") return null;
-  const visibleMembers = value.visibleMembers.map(parseCircleAudienceMember);
+function parseEnclaveAudienceMember(value: unknown): EnclaveAudienceMember | null { if (!record(value) || !exact(value, ["memberId", "name", "verified"]) || typeof value.memberId !== "string" || !/^[a-f0-9]{32}$/u.test(value.memberId) || !boundedText(value.name, 80) || typeof value.verified !== "boolean") return null; return { memberId: value.memberId, name: value.name, verified: value.verified }; }
+export function parseEnclaveAudience(value: unknown): EnclaveAudience | null {
+  if (!record(value) || !exact(value, ["audienceId", "name", "memberCount", "membershipVisibility", "visibleMembers", "consentGranted", "boundToCurrentEnclave", "postingAuthorized"]) || typeof value.audienceId !== "string" || !/^[a-f0-9]{32}$/u.test(value.audienceId) || !boundedText(value.name, 80) || !Number.isSafeInteger(value.memberCount) || Number(value.memberCount) < 0 || Number(value.memberCount) > 10_000 || !visibility.has(String(value.membershipVisibility)) || !Array.isArray(value.visibleMembers) || value.visibleMembers.length > Number(value.memberCount) || typeof value.consentGranted !== "boolean" || typeof value.boundToCurrentEnclave !== "boolean" || typeof value.postingAuthorized !== "boolean") return null;
+  const visibleMembers = value.visibleMembers.map(parseEnclaveAudienceMember);
   if (visibleMembers.some((member) => member === null)) return null;
-  const membershipVisibility = value.membershipVisibility as CircleAudienceMembershipVisibility;
+  const membershipVisibility = value.membershipVisibility as EnclaveAudienceMembershipVisibility;
   if (membershipVisibility !== "visible" && visibleMembers.length !== 0) return null;
-  const refusal = value.consentGranted !== true ? "consent" : value.boundToCurrentCircle !== true ? "binding" : value.postingAuthorized !== true ? "authority" : null;
-  return { audienceId: value.audienceId, name: value.name, memberCount: Number(value.memberCount), membershipVisibility, visibleMembers: visibleMembers as CircleAudienceMember[], canPost: refusal === null, refusal };
+  const refusal = value.consentGranted !== true ? "consent" : value.boundToCurrentEnclave !== true ? "binding" : value.postingAuthorized !== true ? "authority" : null;
+  return { audienceId: value.audienceId, name: value.name, memberCount: Number(value.memberCount), membershipVisibility, visibleMembers: visibleMembers as EnclaveAudienceMember[], canPost: refusal === null, refusal };
 }
 
-function parseComposedCircleAudience(value: unknown): CircleAudience | null {
+function parseComposedEnclaveAudience(value: unknown): EnclaveAudience | null {
   if (!record(value) || !exact(value, ["audienceId", "name", "memberCount", "membershipVisibility", "visibleMembers", "canPost", "refusal"]) || typeof value.audienceId !== "string" || !/^[a-f0-9]{32}$/u.test(value.audienceId) || !boundedText(value.name, 80) || !Number.isSafeInteger(value.memberCount) || Number(value.memberCount) < 0 || Number(value.memberCount) > 10_000 || !visibility.has(String(value.membershipVisibility)) || !Array.isArray(value.visibleMembers) || value.visibleMembers.length > Number(value.memberCount) || typeof value.canPost !== "boolean" || !(value.refusal === null || value.refusal === "consent" || value.refusal === "binding" || value.refusal === "authority") || value.canPost !== (value.refusal === null)) return null;
-  const visibleMembers = value.visibleMembers.map(parseCircleAudienceMember);
+  const visibleMembers = value.visibleMembers.map(parseEnclaveAudienceMember);
   if (visibleMembers.some((member) => member === null)) return null;
-  const membershipVisibility = value.membershipVisibility as CircleAudienceMembershipVisibility;
+  const membershipVisibility = value.membershipVisibility as EnclaveAudienceMembershipVisibility;
   if (membershipVisibility !== "visible" && visibleMembers.length !== 0) return null;
-  return { audienceId: value.audienceId, name: value.name, memberCount: Number(value.memberCount), membershipVisibility, visibleMembers: visibleMembers as CircleAudienceMember[], canPost: value.canPost, refusal: value.refusal };
+  return { audienceId: value.audienceId, name: value.name, memberCount: Number(value.memberCount), membershipVisibility, visibleMembers: visibleMembers as EnclaveAudienceMember[], canPost: value.canPost, refusal: value.refusal };
 }
 
-function circlePostRefusal(reason: CirclePostRefusal, audience: CircleAudience | null = null, membershipReview: CirclePostMembershipReview | null = null): CirclePostRefused {
+function enclavePostRefusal(reason: EnclavePostRefusal, audience: EnclaveAudience | null = null, membershipReview: EnclavePostMembershipReview | null = null): EnclavePostRefused {
   return { status: "refused", reason, audienceId: audience?.audienceId ?? null, audienceName: audience?.name ?? null, membershipReview, encryptedForAudience: false, sendAuthority: "none" };
 }
 
-function circleMembershipReview(audience: CircleAudience): CirclePostMembershipReview | null {
+function enclaveMembershipReview(audience: EnclaveAudience): EnclavePostMembershipReview | null {
   if (audience.membershipVisibility !== "visible" || audience.visibleMembers.length !== audience.memberCount) return null;
   return { audienceId: audience.audienceId, audienceName: audience.name, memberCount: audience.memberCount, members: audience.visibleMembers.map((member) => ({ ...member })), shownBeforePosting: true };
 }
 
-export function composeCirclePost(audienceInput: unknown, bodyInput: unknown): CirclePostComposition {
-  const audience = parseCircleAudience(audienceInput) ?? parseComposedCircleAudience(audienceInput);
-  if (!audience) return circlePostRefusal("audience");
-  const membershipReview = circleMembershipReview(audience);
-  if (!membershipReview) return circlePostRefusal("membership-review", audience);
-  if (!audience.canPost) return circlePostRefusal(audience.refusal ?? "authority", audience, membershipReview);
-  if (!boundedPostBody(bodyInput)) return circlePostRefusal("draft", audience, membershipReview);
+export function composeEnclavePost(audienceInput: unknown, bodyInput: unknown): EnclavePostComposition {
+  const audience = parseEnclaveAudience(audienceInput) ?? parseComposedEnclaveAudience(audienceInput);
+  if (!audience) return enclavePostRefusal("audience");
+  const membershipReview = enclaveMembershipReview(audience);
+  if (!membershipReview) return enclavePostRefusal("membership-review", audience);
+  if (!audience.canPost) return enclavePostRefusal(audience.refusal ?? "authority", audience, membershipReview);
+  if (!boundedPostBody(bodyInput)) return enclavePostRefusal("draft", audience, membershipReview);
   return { status: "ready", audienceId: audience.audienceId, audienceName: audience.name, body: bodyInput.trim(), membershipReview, encryptedForAudience: true, feedOrder: "chronological", sendAuthority: "user-action-required" };
 }
 
