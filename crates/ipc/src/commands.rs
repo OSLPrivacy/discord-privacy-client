@@ -3957,8 +3957,9 @@ fn encrypt_rn_content_send(
     .map(EncryptWire::content_only)
     .map_err(|e| {
         format!(
-            "OSL: RN send refused for peer {peer}: {e}",
-            peer = crate::log_id::log_id(peer_discord_id)
+            "OSL: RN send refused for peer {peer}: {} ({e})",
+            crate::rn_health::user_state_for_rn_error(&e),
+            peer = crate::log_id::log_id(peer_discord_id),
         )
     })
 }
