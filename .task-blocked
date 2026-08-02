@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing `scripts/qa/scrub-provider-fixtures/` Reddit fixture (enumerate/inspect/delete/verify, including ambiguous `/api/del` response); owned by T12-E5.
