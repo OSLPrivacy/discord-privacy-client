@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T18-C1: crates/ipc/src/group_send.rs (the required extraction target) does not exist; rotation policy remains in crates/ipc/src/commands.rs. T18-C1 owns the behavior-identical extraction.
