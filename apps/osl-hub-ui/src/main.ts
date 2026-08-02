@@ -172,6 +172,7 @@ import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSe
 import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, recoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
 import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
+import { senderReceiptStatus } from "./receipt-status";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
 import { listOslChatAttachments, openOslChatAttachment, selectOslChatAttachment } from "./native-overlay-adapter";
@@ -4204,6 +4205,9 @@ function oslChatContent(): string {
   const attachments = activeOslChatContext?.scopeApproved && pro
     ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
+  const receipt = activeOslChatPersonId
+    ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])
+    : "";
   return `<main class="content-viewport osl-chat-page"><header class="osl-chat-page-header"><button class="text-button" id="osl-chat-back" type="button" ${oslChatBusy ? "disabled" : ""}>Back</button><h1 id="route-heading" tabindex="-1">OSL Chats</h1><button class="text-button" id="osl-chat-refresh" type="button" ${activeOslChatContext?.scopeApproved && !oslChatBusy ? "" : "disabled"}>Refresh</button></header>${approval}${oslChatsViewMarkup({
     friends,
     activePersonId: activeOslChatPersonId,
@@ -4212,7 +4216,19 @@ function oslChatContent(): string {
     busy: oslChatBusy,
     viewOnce: oslChatViewOnce,
     homeLogoUrl: oslVectorLogoUrl,
-  })}${attachments}${settings}</main>`;
+  })}${receipt}${attachments}${settings}</main>`;
+}
+
+/** The sender sees only a receipt the peer app actually reported. */
+export function oslChatSenderReceiptMarkup(messages: readonly OslChatMessage[]): string {
+  const latestOutgoing = [...messages].reverse().find((message) => message.direction === "outgoing");
+  const receipt = senderReceiptStatus(
+    latestOutgoing?.state === "delivered" ? "Delivered"
+      : latestOutgoing?.state === "opened" ? "Opened"
+        : latestOutgoing?.state === "expired" ? "Destroyed"
+          : "Prepared",
+  );
+  return `<p class="setting-line osl-chat-receipt-status" data-osl-chat-receipt-confirmed="${receipt.confirmed}"><span><strong>Delivery receipt</strong><small>${receipt.label}</small></span></p>`;
 }
 
 function oslChatFriendSettingsMarkup(person: HubPerson): string {
