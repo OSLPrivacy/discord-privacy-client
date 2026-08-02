@@ -153,6 +153,19 @@ export async function rotateUserKeys(
 ): Promise<{ last_rotated_at: string } | null> {
   const now = new Date().toISOString();
   const results = await db.batch([
+    // Retire the directory identity before invalidating its signing key.
+    // The migration trigger is a defence-in-depth backstop for rename and
+    // future deletion sites; doing this explicitly keeps the release atomic
+    // and documents why rotation must never free a username.
+    db.prepare(
+      `INSERT INTO username_tombstones (username, skeleton, retired_at)
+       SELECT username, username_skeleton, ?3 FROM username_directory
+        WHERE user_id = ?1
+          AND EXISTS (
+            SELECT 1 FROM users
+             WHERE user_id = ?1 AND ik_ed25519_pub = ?2
+          )`,
+    ).bind(input.user_id, expectedCurrentEd25519Pub, now),
     db.prepare(
       `DELETE FROM username_directory
         WHERE user_id = ?1
@@ -185,7 +198,7 @@ export async function rotateUserKeys(
       input.rn_capabilities ?? 0,
     ),
   ]);
-  if ((results[1]?.meta?.changes ?? 0) !== 1) return null;
+  if ((results[2]?.meta?.changes ?? 0) !== 1) return null;
   return { last_rotated_at: now };
 }
 
@@ -212,6 +225,7 @@ export async function unregisterUserIfCurrent(
 ): Promise<UnregisterUserResult> {
   const ownsCurrentKey =
     "EXISTS (SELECT 1 FROM users WHERE user_id = ? AND ik_ed25519_pub = ?)";
+  const now = new Date().toISOString();
   let results: D1Result[];
   try {
     results = await db.batch([
@@ -243,6 +257,13 @@ export async function unregisterUserIfCurrent(
             AND ${ownsCurrentKey}`,
         )
         .bind(userId, userId, userId, expectedCurrentEd25519Pub),
+      db
+        .prepare(
+          `INSERT INTO username_tombstones (username, skeleton, retired_at)
+           SELECT username, username_skeleton, ? FROM username_directory
+            WHERE user_id = ? AND ${ownsCurrentKey}`,
+        )
+        .bind(now, userId, userId, expectedCurrentEd25519Pub),
       db
         .prepare(
           `DELETE FROM username_directory

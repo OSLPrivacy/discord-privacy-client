@@ -72,6 +72,7 @@ import { handleInboundEmail } from "./mail/inbound.js";
 export { Mailbox } from "./mail/mailbox.js";
 export { Archive } from "./archive/archive.js";
 import { handleUsernameCoverage } from "./endpoints/username-coverage.js";
+import { handleUsernameBucket } from "./endpoints/username-bucket.js";
 import { handleUsernameClaim, handleUsernameLookup } from "./endpoints/usernames.js";
 import {
   handleControlInboxDelete,
@@ -334,6 +335,8 @@ async function dispatch(
     if (path === "/v1/mail/capabilities") return handleMailCapabilities();
     if (path === "/v1/download/windows") return await handleWindowsDownload(request, env);
     if (path === "/v1/selector-manifest") return handleSelectorManifest(env);
+    const usernameBucket = matchParam(path, /^\/v1\/username-bucket\/([^/]+)$/);
+    if (usernameBucket !== null) return await handleUsernameBucket(request, env, usernameBucket);
     const pubkeysUserId = matchParam(path, /^\/v1\/pubkeys\/([^/]+)$/);
     if (pubkeysUserId !== null) return await handlePubkeys(env, pubkeysUserId);
     const wrappedContentId = matchParam(path, /^\/v1\/wrapped-keys\/([^/]+)$/);

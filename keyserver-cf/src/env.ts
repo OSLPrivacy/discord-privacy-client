@@ -17,6 +17,8 @@ export interface Env {
   RATE_LIMIT_120: RateLimit;
   RATE_LIMIT_1200: RateLimit;
   RATE_LIMIT_3600: RateLimit;
+  /** Secret HMAC root for deterministic username-bucket cover rows. */
+  USERNAME_BUCKET_DECOY_SECRET?: string;
   /**
    * Operator-only bearer for crypto administration. When unset, the
    * protected route returns 503 rather than opening access.

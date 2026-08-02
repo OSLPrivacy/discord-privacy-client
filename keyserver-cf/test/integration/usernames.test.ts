@@ -145,7 +145,7 @@ describe("username directory", () => {
     expect(stale.status).toBe(400);
   });
 
-  it("enforces uniqueness, permits owner rename, and cleans up on unregister", async () => {
+  it("retires names on rename and unregister so they can never be reclaimed", async () => {
     const one = userId();
     const two = userId();
     const pairOne = await registerTestUser(SELF, one);
@@ -157,6 +157,7 @@ describe("username directory", () => {
     expect((await claim("renamed_user", one, pairOne)).status).toBe(200);
     expect(await looksUp("unique_name", "203.0.113.14")).toBe(false);
     expect(await looksUp("renamed_user", "203.0.113.15")).toBe(true);
+    expect((await claim("unique_name", two, pairTwo)).status).toBe(409);
 
     const timestamp_ms = Date.now();
     const message = canonicalUnregisterBytes({ user_id: one, timestamp_ms });
@@ -166,6 +167,7 @@ describe("username directory", () => {
       body: JSON.stringify({ signature_b64, timestamp_ms }),
     })).status).toBe(200);
     expect(await looksUp("renamed_user", "203.0.113.17")).toBe(false);
+    expect((await claim("renamed_user", two, pairTwo)).status).toBe(409);
   });
 
   it("removes a stale signed invite when the registered identity key rotates", async () => {
@@ -199,5 +201,8 @@ describe("username directory", () => {
     });
     expect(rotated.status).toBe(200);
     expect(await looksUp("rotate_me", "203.0.113.22")).toBe(false);
+    const replacementId = userId();
+    const replacement = await registerTestUser(SELF, replacementId);
+    expect((await claim("rotate_me", replacementId, replacement)).status).toBe(409);
   });
 });

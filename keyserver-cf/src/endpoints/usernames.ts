@@ -142,8 +142,9 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
             )`,
       ).bind(userId, username, digest),
       env.DB.prepare(
-        `INSERT INTO username_directory (username, user_id, friend_code, claimed_at, updated_at)
-         SELECT ?1, ?2, ?3, ?4, ?4
+        `INSERT INTO username_directory
+           (username, username_skeleton, display_username, user_id, friend_code, claimed_at, updated_at)
+         SELECT ?1, ?1, ?1, ?2, ?3, ?4, ?4
           WHERE EXISTS (SELECT 1 FROM username_claim_receipts WHERE user_id = ?2 AND request_digest = ?5)
          ON CONFLICT(username) DO UPDATE SET
            username = excluded.username, friend_code = excluded.friend_code, updated_at = excluded.updated_at
@@ -152,7 +153,9 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
     ]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/username_directory\.username|UNIQUE|PRIMARY/i.test(message)) return conflict("username is unavailable");
+    if (/username_directory\.username|username is retired|UNIQUE|PRIMARY/i.test(message)) {
+      return conflict("username is unavailable");
+    }
     throw error;
   }
   if ((result[1]?.meta?.changes ?? 0) !== 1) return conflict("username claim replayed or identity changed");
