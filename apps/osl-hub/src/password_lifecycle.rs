@@ -30,6 +30,7 @@ const ACCOUNT_STATE_FILES: &[&str] = &[
     "scope_ttl.json",
     "scope_blobs.json",
     ipc::space_roster::SPACE_ROSTER_FILE,
+    ipc::tombstone_file::TOMBSTONE_FILE,
     "store/messages.sqlite",
 ];
 

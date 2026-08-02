@@ -14553,6 +14553,7 @@ const OSL_EXPORT_FILES: &[&str] = &[
     "scope_ttl.json",
     "scope_blobs.json",
     crate::space_roster::SPACE_ROSTER_FILE,
+    crate::tombstone_file::TOMBSTONE_FILE,
     "store/messages.sqlite",
     "store/messages.sqlite-wal",
     "store/messages.sqlite-shm",
