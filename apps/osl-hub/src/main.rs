@@ -782,7 +782,7 @@ async fn save_osl_profile(
             return Err("OSL username is already owned by another identity".to_owned());
         }
     }
-    if let Err(error) = claim_username(&identity, &saved.username_candidate) {
+    if let Err(error) = claim_username(&core, &identity, &saved.username_candidate) {
         let _ = osl_profile::restore_active_profile(&owner, previous);
         return Err(error);
     }
@@ -5853,14 +5853,32 @@ fn lookup_username(username: &str) -> Result<Option<String>, String> {
         .map_err(|error| format!("OSL username lookup failed: {error}"))
 }
 
-fn claim_username<T>(_identity: &T, username: &str) -> Result<HubUsernameClaim, String>
-where
-    T: ?Sized,
-{
+fn username_directory_client() -> Result<keystore::KeyServerClient, String> {
+    let directory = keystore::osl_config_dir()
+        .map_err(|error| format!("OSL username directory configuration is unavailable: {error}"))?;
+    keystore::KeyServerClient::new(ipc::commands::resolve_keyserver_base_url(&directory))
+        .map_err(|error| format!("OSL username directory is unavailable: {error}"))
+}
+
+fn claim_username(
+    core: &HubCoreState,
+    identity: &keystore::Identity,
+    username: &str,
+) -> Result<HubUsernameClaim, String> {
     if !valid_osl_username(username) {
         return Err("OSL username is invalid".to_owned());
     }
-    Err("OSL username directory authority is unavailable in this build".to_owned())
+    let friend_code = security::export_friend_code(core)?.friend_code;
+    let claimed = username_directory_client()?
+        .claim_username(identity, username, &friend_code)
+        .map_err(|error| format!("OSL username claim failed: {error}"))?;
+    if claimed.username != username || claimed.user_id != identity.user_id {
+        return Err("OSL username directory returned an invalid claim binding".to_owned());
+    }
+    Ok(HubUsernameClaim {
+        username: claimed.username,
+        osl_user_id: claimed.user_id,
+    })
 }
 
 #[tauri::command]
@@ -5870,11 +5888,12 @@ async fn claim_hub_username(
     username: String,
 ) -> Result<HubUsernameClaim, String> {
     let _session = session.transition.lock().await;
-    let _owner = active_unlocked_osl_user_id(&core)?;
-    if !valid_osl_username(&username) {
-        return Err("OSL username is invalid".to_owned());
-    }
-    Err("OSL username directory authority is unavailable in this build".to_owned())
+    active_unlocked_osl_user_id(&core)?;
+    let identity = core.osl.identity.lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .as_ref().cloned()
+        .ok_or_else(|| "Unlock an OSL identity before claiming a username".to_owned())?;
+    claim_username(&core, &identity, &username)
 }
 
 #[tauri::command]
@@ -5903,7 +5922,6 @@ async fn add_hub_friend_by_username(
     alias: Option<String>,
 ) -> Result<AddFriendResult, String> {
     let _session = session.transition.lock().await;
-    let _ = (&core, &security_state);
     if !valid_osl_username(&username) {
         return Err("OSL username is invalid".to_owned());
     }
@@ -5912,7 +5930,23 @@ async fn add_hub_friend_by_username(
     }) {
         return Err("OSL friend alias is invalid".to_owned());
     }
-    Err("OSL username friend lookup is unavailable in this build".to_owned())
+    let identity = core.osl.identity.lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .as_ref().cloned()
+        .ok_or_else(|| "Unlock an OSL identity before adding a friend".to_owned())?;
+    let client = username_directory_client()?;
+    let row = client.resolve_username(&username)
+        .map_err(|error| format!("OSL username lookup failed: {error}"))?
+        .ok_or_else(|| "OSL username was not found".to_owned())?;
+    let bundle = client.fetch_identity_bundle(&identity, &row.user_id)
+        .map_err(|_| "OSL username identity bundle verification failed".to_owned())?;
+    if bundle.identity.ed25519_identity_pub != row.ed25519_public {
+        return Err("OSL username identity bundle does not bind to the directory row".to_owned());
+    }
+    let friend_code = client.lookup_username_friend_code(&username)
+        .map_err(|error| format!("OSL username lookup failed: {error}"))?
+        .ok_or_else(|| "OSL username was not found".to_owned())?;
+    security::add_friend_code(&core, &security_state, friend_code, alias)
 }
 
 #[tauri::command]

@@ -173,6 +173,29 @@ pub fn username_claim_msg(
         .into_bytes()
 }
 
+/// Response returned after an authenticated username claim.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UsernameClaimResponse {
+    pub username: String,
+    pub user_id: String,
+}
+
+#[derive(Serialize)]
+struct UsernameClaimRequest<'a> {
+    username: &'a str,
+    user_id: &'a str,
+    friend_code: &'a str,
+    request_id: String,
+    signature_b64: String,
+    timestamp_ms: i64,
+}
+
+#[derive(Deserialize)]
+struct UsernameLookupResponse {
+    username: Option<String>,
+    friend_code: Option<String>,
+}
+
 pub fn reg_msg(
     user_id: &str,
     ik_x25519_pub_b64: &str,
@@ -938,6 +961,67 @@ impl KeyServerClient {
         Resolver::with_client(&self.base_url, self.client.clone())
             .resolve(name)
             .map_err(|error| Error::Transport(format!("username resolution: {error}")))
+    }
+
+    /// Claim `username` for the loaded identity.  The claim binds the exact
+    /// signed friend code and a fresh request nonce; there is no ambient
+    /// keyserver credential.
+    pub fn claim_username(
+        &self,
+        identity: &Identity,
+        username: &str,
+        friend_code: &str,
+    ) -> Result<UsernameClaimResponse> {
+        if !is_normalized_username(username) {
+            return Err(Error::Transport("username must already be normalized".into()));
+        }
+        let request_id = URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32));
+        let timestamp_ms = unix_timestamp_ms();
+        let message = username_claim_msg(
+            username,
+            &identity.user_id,
+            friend_code,
+            &request_id,
+            timestamp_ms,
+        );
+        let signature_b64 = STANDARD.encode(
+            crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes(),
+        );
+        let body = UsernameClaimRequest {
+            username,
+            user_id: &identity.user_id,
+            friend_code,
+            request_id,
+            signature_b64,
+            timestamp_ms,
+        };
+        let bytes = serde_json::to_vec(&body)?;
+        let response = self.send_request(
+            "POST",
+            "/v1/usernames/claim",
+            Some(("application/json", &bytes)),
+        )?;
+        check_2xx(&response)?;
+        serde_json::from_slice(&response.body).map_err(Into::into)
+    }
+
+    /// Obtain the signed invite for an exact username.  The username is sent
+    /// in a POST body so it is not retained in the request URI.
+    pub fn lookup_username_friend_code(&self, username: &str) -> Result<Option<String>> {
+        if !is_normalized_username(username) {
+            return Err(Error::Transport("username must already be normalized".into()));
+        }
+        let bytes = serde_json::to_vec(&serde_json::json!({ "username": username }))?;
+        let response = self.send_request(
+            "POST",
+            "/v1/usernames/lookup",
+            Some(("application/json", &bytes)),
+        )?;
+        check_2xx(&response)?;
+        let result: UsernameLookupResponse = serde_json::from_slice(&response.body)?;
+        Ok((result.username.as_deref() == Some(username))
+            .then_some(result.friend_code)
+            .flatten())
     }
 
     /// Build the registration request body for `identity`, signed
