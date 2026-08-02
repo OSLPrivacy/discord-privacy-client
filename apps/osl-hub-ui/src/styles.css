@@ -7076,3 +7076,25 @@ code {
   line-height: 1.5;
 }
 .burn-revocation-line.acknowledged { border-left-color: var(--brand); color: var(--muted); }
+
+/* Scrub's preview deliberately leads with the non-mutating state. */
+.scrub-dryrun-preview {
+  max-width: 760px;
+  margin: 20px auto;
+  padding: 24px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.scrub-dryrun-preview header { display: grid; gap: 8px; }
+.scrub-dryrun-preview h2,
+.scrub-dryrun-preview p { margin: 0; }
+.scrub-dryrun-eyebrow { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.scrub-dryrun-safety { padding: 12px 14px; border-left: 3px solid var(--warn); background: var(--panel-2); line-height: 1.5; }
+.scrub-dryrun-target { margin-top: 18px !important; color: var(--muted); }
+.scrub-dryrun-items { display: grid; gap: 10px; margin: 16px 0 0; padding-left: 24px; }
+.scrub-dryrun-items li { padding: 12px; border: 1px solid var(--line); background: var(--panel-2); }
+.scrub-dryrun-items dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 8px 0 0; }
+.scrub-dryrun-items dl div { display: contents; }
+.scrub-dryrun-items dt { color: var(--muted); }
+.scrub-dryrun-preview code { overflow-wrap: anywhere; }
