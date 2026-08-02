@@ -25,6 +25,8 @@ pub mod adapters;
 pub mod attended_imap;
 #[cfg(feature = "core")]
 pub mod autoscrub_run;
+#[cfg(feature = "core")]
+pub mod autoscrub_bridge;
 pub mod background_priority;
 pub mod browser_companion;
 // The persistent footprint store is sealed with `ipc`'s process key, so it
