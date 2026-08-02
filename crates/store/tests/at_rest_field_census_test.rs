@@ -229,8 +229,8 @@ fn schema_v8_field_census_and_raw_wal_plaintext_guards_are_nonvacuous() {
         .unwrap();
     assert_eq!(
         schema_version,
-        8u32.to_le_bytes(),
-        "{BOUNDARY_SCHEMA_V8_FIELD_CENSUS} must inspect schema v8"
+        9u32.to_le_bytes(),
+        "{BOUNDARY_SCHEMA_V8_FIELD_CENSUS} must inspect the current schema"
     );
     assert_eq!(
         table_columns(&conn, "messages"),
@@ -247,6 +247,10 @@ fn schema_v8_field_census_and_raw_wal_plaintext_guards_are_nonvacuous() {
             "content_version",
             "wrapped_key_nonce",
             "wrapped_key",
+            "delivered_at",
+            "opened_at",
+            "destroyed_at",
+            "destruct_reason",
             "discord_message_id",
             "channel_id",
             "sender_discord_id",
@@ -288,6 +292,10 @@ fn schema_v8_field_census_and_raw_wal_plaintext_guards_are_nonvacuous() {
         ["mid_bi", "complete", "generation", "nonce", "ciphertext"]
     );
     assert_eq!(table_columns(&conn, "_meta"), ["key", "value"]);
+    assert_eq!(
+        table_columns(&conn, "message_device_acks"),
+        ["mid_bi", "device_bi", "ack_kind", "acknowledged_at", "destruct_reason"]
+    );
 
     let message_legacy_values: i64 = conn
         .query_row(
@@ -514,7 +522,7 @@ fn v7_burn_timestamp_migration_scrubs_column_and_preserves_reopen_and_burn() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 8u32.to_le_bytes());
+    assert_eq!(version, 9u32.to_le_bytes());
     drop(conn);
     for (name, bytes) in store_files(tmp.path()) {
         assert!(

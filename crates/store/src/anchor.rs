@@ -291,7 +291,6 @@ impl AnchorBinding {
                 next.phase = MigrationPhase::VacuumV8;
                 let tx = conn.unchecked_transaction()?;
                 schema::apply_v7_to_v8_tx(&tx)?;
-                schema::install_current_schema_tx(&tx)?;
                 write_journal(&tx, &next)?;
                 self.commit(tx)?;
             }
@@ -942,7 +941,7 @@ mod tests {
             calls_before_restore_validation,
             "restore validation must not turn a restored backup into provider recovery"
         );
-        assert_eq!(schema::inspect_schema_version(&conn).unwrap(), Some(8));
+        assert_eq!(schema::inspect_schema_version(&conn).unwrap(), Some(9));
         assert!(read_journal(&conn).unwrap().is_none());
     }
 

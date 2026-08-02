@@ -1084,7 +1084,7 @@ fn assert_legacy_privacy_migration(stamped: bool) {
     );
     drop(store);
 
-    assert_eq!(schema_version(&db_path), 8);
+    assert_eq!(schema_version(&db_path), 9);
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let burned_rows: Vec<LegacyBurnedRow> = {
         let mut stmt = conn
@@ -1218,7 +1218,7 @@ fn ambiguous_live_legacy_wrapper_refuses_before_any_migration_mutation() {
 /// A v1 profile — no v2 columns, no `attachments` table — must migrate straight
 /// to the current schema without losing anything.
 #[test]
-fn v1_database_migrates_all_the_way_to_v8() {
+fn v1_database_migrates_all_the_way_to_v9() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("messages.sqlite");
     let rows = vec![
@@ -1255,7 +1255,7 @@ fn v1_database_migrates_all_the_way_to_v8() {
         "v1 migration did not preserve newest-first ordering"
     );
 
-    // And it must land on v8, not stall at an intermediate version.
+    // And it must land on the current schema, not stall at an intermediate version.
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     let version: Vec<u8> = conn
         .query_row(
@@ -1264,7 +1264,7 @@ fn v1_database_migrates_all_the_way_to_v8() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(u32::from_le_bytes(version.try_into().unwrap()), 8);
+    assert_eq!(u32::from_le_bytes(version.try_into().unwrap()), 9);
     let (ciphertext, nonce, wrapped_key_nonce, wrapped_key, content_version): MigratedAttachmentRow = conn
         .query_row(
             "SELECT ciphertext, nonce, wrapped_key_nonce, wrapped_key, content_version \
@@ -1647,11 +1647,11 @@ fn exact_adff4e45_reader_reaches_explicit_version_refusal() {
     drop(store);
 
     let refusal = adff4e45_schema_reader::open_schema(tmp.path())
-        .expect_err("the exact pre-v4 reader opened schema v8");
+        .expect_err("the exact pre-v4 reader opened the current schema");
     match refusal {
         store::StoreError::Schema(message) => assert_eq!(
             message,
-            "on-disk schema version 8 is newer than this binary supports (3); refusing to open",
+            "on-disk schema version 9 is newer than this binary supports (3); refusing to open",
             "the exact reader refused for a reason other than its version gate"
         ),
         other => panic!("exact pre-v4 reader did not reach its version refusal: {other}"),
