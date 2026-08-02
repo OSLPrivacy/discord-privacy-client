@@ -1,0 +1,1 @@
+Missing T21-D6: apps/osl-hub/src/spaces.rs has no group-scale message-id or idempotent receiver-dedupe journal; T21-D6 owns it.
