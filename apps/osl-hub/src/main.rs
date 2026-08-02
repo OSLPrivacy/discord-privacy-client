@@ -3,6 +3,7 @@
 #[cfg(feature = "whatsapp-qa-shell")]
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
+use osl_privacy_hub::ai_carrier::{ai_carrier_status, AiCarrierState};
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
     OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, PreparedCoreMessage,
@@ -9309,6 +9310,7 @@ fn main() {
         app.manage(WhatsAppQaProtectionState::default());
         app.manage(LocalCoverState::default());
         startup_breadcrumb("setup_step_31_local_cover_state_managed"); // STARTUP-TRACE
+        app.manage(AiCarrierState::default());
         app.manage(OverlaySessionState::default());
         startup_breadcrumb("setup_step_32_overlay_session_state_managed"); // STARTUP-TRACE
         app.manage(native_surface_capture::NativeSurfaceCaptureState::default());
@@ -9850,6 +9852,11 @@ mod tauri_command_acl_tests {
                 "hub capability must include permission {permission}"
             );
         }
+    }
+
+    #[test]
+    fn t13_td8_ai_carrier_command_is_reachable_from_the_shipping_binary() {
+        assert_registered_and_acl_granted(&["ai_carrier_status"]);
     }
 
     fn test_checked_host() -> CheckedHost {
