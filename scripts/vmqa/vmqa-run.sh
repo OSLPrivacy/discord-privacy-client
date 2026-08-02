@@ -142,7 +142,7 @@ write_request() {
   ' "$steps_file" >"$out"
 }
 
-cmd_run() {
+cmd_run_unleased() {
   local vm="$DEFAULT_VM" identifier="$DEFAULT_IDENTIFIER" steps="" bundle_dir=""
   local build_identity exe evidence_dir run_id="" timeout="$DEFAULT_TIMEOUT"
   local run_start request_tmp verdict_tmp report_dir wait_rc overall remote_prefix exit_rc
@@ -259,6 +259,26 @@ cmd_run() {
   set -e
   rm -f -- "$request_tmp" "$verdict_tmp"
   return "$exit_rc"
+}
+
+# Hold Azure's server-side lease from request publication through verdict retrieval.
+# A local PID lock cannot protect agents running on different hosts.
+cmd_run() {
+  local vm="$DEFAULT_VM" lease_id rc
+  local -a original_args=("$@")
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --vm) [ $# -ge 2 ] || die_usage "--vm needs a value"; vm="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  lease_id=$("$SCRIPT_DIR/lease.sh" acquire "$vm") || return $?
+  if cmd_run_unleased "${original_args[@]}"; then rc=0; else rc=$?; fi
+  "$SCRIPT_DIR/lease.sh" release "$vm" "$lease_id" >/dev/null 2>&1 || {
+    echo "VM-LEASE-RELEASE-ERROR vm=$vm" >&2
+    return 5
+  }
+  return "$rc"
 }
 
 fetch_run_verdict() {
