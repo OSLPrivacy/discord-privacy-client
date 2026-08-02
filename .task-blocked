@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T12-E3 seeded IMAP fixture and T12-E5 provider fixture allowlist/target-resolution seam; T12 owns both prerequisites.
