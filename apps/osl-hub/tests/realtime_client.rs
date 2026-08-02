@@ -4,6 +4,7 @@ use osl_privacy_hub::realtime_client::{ScheduledFetch,
     BlobId, CarrierPointer, FrameError, RealtimeClient, RealtimeRoute, FRAME_BYTES, TICK_INTERVAL,
 };
 use osl_privacy_hub::realtime_subscription::DeliveryTag;
+use osl_privacy_hub::realtime_resume::{AcknowledgementCursor, ReconnectSchedule, SessionId};
 
 fn id(byte: u8) -> BlobId {
     BlobId::from_bytes([byte; 16])
@@ -137,4 +138,27 @@ fn t1_t52_frames_cannot_supply_a_capability_or_secret() {
         Err(FrameError::UnexpectedFields)
     );
     assert!(client.take_fetch_work().is_none());
+}
+
+#[test]
+fn t1_t53_reconnect_restores_tags_but_not_the_old_session_cursor() {
+    let tags = [
+        DeliveryTag::try_from_bytes([1; 16]).unwrap(),
+        DeliveryTag::try_from_bytes([2; 16]).unwrap(),
+    ];
+    let mut before_close = RealtimeClient::new(Duration::ZERO);
+    before_close.replace_subscription_tags(tags);
+    let mut reconnect = ReconnectSchedule::new();
+    reconnect.set_contract(before_close.reconnect_contract(
+        SessionId::from_bytes([9; 16]),
+        AcknowledgementCursor { last_sent: 12, last_accepted_peer_frame: 11 },
+    ));
+    let restored = reconnect.restore_for_new_session(SessionId::from_bytes([10; 16])).unwrap();
+
+    let mut after_reconnect = RealtimeClient::new(Duration::ZERO);
+    after_reconnect.restore_subscriptions(&restored);
+    let tick = after_reconnect.next_outbound_tick();
+    assert_eq!(tick.delivery_tags, tags);
+    assert_eq!(restored.cursor, AcknowledgementCursor::default());
+    assert_eq!(restored.session_id.as_bytes(), [10; 16]);
 }
