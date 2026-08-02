@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T21-C1 is blocked: T21-B1's docs/design/osl-spaces-fanout-arithmetic.md and T21-B3's docs/design/osl-spaces-sender-auth.md are missing; the required G-A..G-G gates (including T5 P0, T18 Groups B/C, T6 pool/device-roster/migration reservation, and T1 group delivery) are also not satisfied. Their owning tasks/tracks must land before this contract can be frozen.
