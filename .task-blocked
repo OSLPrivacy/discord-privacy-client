@@ -1,0 +1,1 @@
+Missing prerequisite: T15-F4's native dead-man binding (and its T15-F2/F3 lock/wipe/removal plumbing) is not present, so real USB removal cannot trigger either action; no Windows VM with a passthrough physical USB stick is attached to this workspace. T15-F4 owns the missing application binding; T20 owns the Windows device-notification plumbing.
