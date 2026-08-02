@@ -10,3 +10,9 @@ as a replacement for a feature-level reachability test.
 It is intentionally not imported by shipping code; Cargo discovers it as a
 test target.  Its only purpose is to constrain `stego::encode_token`, so it
 has no runtime call site to add.
+
+## T13-A2
+
+`crates/cover-ai/tests/entropy_budget.rs` is likewise a Cargo integration
+test.  It measures the compiled deterministic codec and emits no runtime
+component; adding a production import would be incorrect.
