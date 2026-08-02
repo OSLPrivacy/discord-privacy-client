@@ -15,8 +15,6 @@ be reported as a release pass. A result discovered there must be reproduced
 through `scripts/vmqa/vmqa-run.sh`; only that runner's validated verdict and
 artifacts can satisfy a release gate.
 
-## Keeping the split useful
-
 ## Space negative proofs
 
 `space-removal.ps1` is the T21-K2 three-VM proof. It invokes the installed
@@ -34,6 +32,8 @@ post-join message. Validate its sabotage guard with
 checking local history, queued compose, and immediate local burn; reconnecting
 then must refuse the queued send after a roster change. Validate it with
 `python3 scripts/vmqa/test-space-offline.py` before the VM run.
+
+## Keeping the split useful
 
 Use the scratch directory for fast, disposable experiments. When an experiment
 becomes repeatable release coverage, move or reimplement the driver and its
