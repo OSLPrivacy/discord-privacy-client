@@ -466,6 +466,35 @@ fn launch_classify_cached_active_stamps_paid() {
 }
 
 #[test]
+fn launch_classify_expired_paid_cache_stamps_free_without_network() {
+    let state = AppState::new();
+    let dir = tempdir().unwrap();
+    let now = unix_now();
+    let expired_cache = LicenseCacheInner {
+        license_plaintext: "OSL-2222-3333-4444-5555".to_string(),
+        last_validated_status: "ACTIVE".to_string(),
+        redeemed_at: Some(now - 30 * 86_400),
+        expires_at: Some(now - 1),
+        current_period_end: Some(now - 1),
+        last_validated_at: now - 60,
+        checksum_ok: true,
+    };
+    let sealer = select_best_sealer();
+    save_license_cache(
+        &dir.path().join("license.json"),
+        &expired_cache,
+        sealer.as_ref(),
+    )
+    .unwrap();
+
+    launch_classify(&state, dir.path());
+
+    let dto = state.license_state.lock().unwrap().clone();
+    assert_eq!(dto.state, LicenseState::Free);
+    assert_eq!(dto.raw_status, "ACTIVE");
+}
+
+#[test]
 fn launch_classify_never_produces_paid_offline_grace() {
     // The PaidOfflineGrace state requires a failed online
     // attempt; launch_classify is cache-only so it must never

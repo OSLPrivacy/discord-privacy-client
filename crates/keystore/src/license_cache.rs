@@ -25,6 +25,7 @@
 //! Versioning: blob version starts at 2. Future migrations bump
 //! this; loaders raise [`Error::BlobVersionMismatch`] on mismatch.
 
+use crate::license_expiry::is_license_expired;
 use crate::sealer::Sealer;
 use crate::{Error, Result};
 use base64::engine::general_purpose::STANDARD;
@@ -232,6 +233,23 @@ impl LicenseStateDto {
     pub fn from_cache(cache: &LicenseCacheInner) -> Self {
         Self {
             state: classify_state(&cache.last_validated_status),
+            raw_status: cache.last_validated_status.clone(),
+            current_period_end: cache.current_period_end,
+            last_validated_at: Some(cache.last_validated_at),
+        }
+    }
+
+    /// Build a DTO from a loaded cache row using the local clock. A sealed
+    /// prepaid entitlement is Free at and after its cached `expires_at`, even
+    /// when its last keyserver status remains `ACTIVE` and no network is
+    /// available.
+    pub fn from_cache_at(cache: &LicenseCacheInner, now: i64) -> Self {
+        Self {
+            state: if is_license_expired(cache.expires_at, now) {
+                LicenseState::Free
+            } else {
+                classify_state(&cache.last_validated_status)
+            },
             raw_status: cache.last_validated_status.clone(),
             current_period_end: cache.current_period_end,
             last_validated_at: Some(cache.last_validated_at),
