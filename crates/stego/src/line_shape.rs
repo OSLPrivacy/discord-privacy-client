@@ -297,8 +297,10 @@ pub fn shape_cover(cover: &str, budget: RowBudget) -> ShapedCover {
     }
 }
 
-/// [`crate::encode_token`] followed by [`shape_cover`]: the live carrier path,
-/// where only a fixed-size pointer rides in the text and the floor is small.
+/// [`crate::encode_token`] followed by [`shape_cover`]: the live carrier path.
+/// Pointer v2 always consumes [`crate::bigram::WIDE_TOKEN_WORDS`] cover words
+/// before separator shaping; this is intentionally a fixed carrier budget,
+/// not a branch on protected payload length.
 pub fn encode_token_shaped(
     cipher: &ConversationCipher,
     mac_key: &[u8],
