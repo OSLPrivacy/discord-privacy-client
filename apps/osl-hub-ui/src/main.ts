@@ -3895,7 +3895,7 @@ function circleAudienceMembershipDetail(audience: CircleAudience): string {
 function circleAudienceStatus(audience: CircleAudience): { label: "Ready" | "Refused"; detail: string } {
   if (audience.canPost) return { label: "Ready", detail: "Posts and comments are encrypted for the selected audience." };
   if (audience.refusal === "consent") return { label: "Refused", detail: "Review and approve this audience on this device before posting." };
-  if (audience.refusal === "binding") return { label: "Refused", detail: "Choose the Circle for this audience before posting." };
+  if (audience.refusal === "binding") return { label: "Refused", detail: "Choose the Enclave for this audience before posting." };
   return { label: "Refused", detail: "This account is not allowed to post to that audience." };
 }
 
@@ -3910,9 +3910,9 @@ function circlesDestinationContent(): string {
   }).join("");
   const feedItems = privateCircleAudiences.filter((audience) => audience.canPost).map((audience, index) => `<article class="inbox-row circle-feed-item" data-circle-feed-item="${index}" data-circle-feed-order="chronological" data-circle-audience="${escapeHtml(audience.audienceId)}"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><div><strong>${escapeHtml(audience.name)}</strong><small>Chronological private feed · ${audience.memberCount.toLocaleString("en-US")} people · no ranking or behavioral advertising</small></div>${statusTag("Encrypted")}</article>`).join("");
   const audienceList = audienceCards
-    ? `<div class="settings-list circle-audience-list" aria-label="Private Circle audiences">${audienceCards}</div><div class="circle-feed-list" aria-label="Chronological private Circle feeds">${feedItems}</div>`
-    : `<div class="empty-state" data-circle-audiences="none"><strong>No Circle audiences yet</strong><p>An audience appears here after you create one on this device. Until then there is nobody to post to.</p></div>`;
-  return `<section class="inbox-surface-card circles-destination" data-inbox-osl-surface="circles" data-circle-state="${circleSurface.state}" data-circle-feeds="private-audiences" data-circle-audience-count="${privateCircleAudiences.length}"><strong>OSL Circles</strong><small>Private audience feeds</small><p>${statusTag("Private")} Posts and comments are encrypted for the selected audience. Audience membership is shown before posting.</p>${audienceList}${publicCirclesUnavailableMarkup()}</section>`;
+    ? `<div class="settings-list circle-audience-list" aria-label="Private Enclave audiences">${audienceCards}</div><div class="circle-feed-list" aria-label="Chronological private Enclave feeds">${feedItems}</div>`
+    : `<div class="empty-state" data-circle-audiences="none"><strong>No Enclave audiences yet</strong><p>An audience appears here after you create one on this device. Until then there is nobody to post to.</p></div>`;
+  return `<section class="inbox-surface-card circles-destination" data-inbox-osl-surface="circles" data-circle-state="${circleSurface.state}" data-circle-feeds="private-audiences" data-circle-audience-count="${privateCircleAudiences.length}"><strong>OSL Enclaves</strong><small>Private audience feeds</small><p>${statusTag("Private")} Posts and comments are encrypted for the selected audience. Audience membership is shown before posting.</p>${audienceList}${publicCirclesUnavailableMarkup()}</section>`;
 }
 
 type OslMailboxStageCReview = {
@@ -3999,7 +3999,7 @@ export function oslMailStageBContent(
 }
 
 function publicCirclesUnavailableMarkup(): string {
-  return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Circles</strong><small>Private audience feeds</small><p>${statusTag("Unavailable")} Public Circles network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
+  return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Enclaves</strong><small>Private audience feeds</small><p>${statusTag("Unavailable")} Public Enclaves network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
 }
 
 export function publicPostGuardCarrierPreviewMarkup(platform = "Public platforms"): string {
@@ -4030,7 +4030,7 @@ export function inboxDestinationContent(): string {
     : `<div class="empty-state"><strong>No requests</strong><p>New friend requests and key reviews appear here.</p></div>`;
   const oslSurfaces = [
     ["chat", "OSL Chat", "Protected OSL messages", "Ready for verified friends"],
-    ["circles", "OSL Circles", "Private audience feeds", "Coming after small-group review"],
+    ["circles", "OSL Enclaves", "Private audience feeds", "Create an enclave to begin"],
     ["mail", "OSL Mail", "Client protection", "External recipients are not OSL E2EE"],
   ] as const;
   const mailboxGate = oslMailboxStageCGate();

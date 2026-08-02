@@ -100,8 +100,8 @@ describe("first-party OSL Chats integration", () => {
     expect(chatSettings).toContain('class="settings-list osl-chat-notification-settings"');
     expect(chatSettings).toContain('id="notification-chat-activity"');
     expect(chatSettings).toContain('id="osl-chat-preview-toggle"');
-    expect(chatSettings).toContain("Preview hiding is available with Pro.");
     expect(chatSettings).toContain("Hide message previews on this device.");
+    expect(chatSettings).not.toContain("Preview hiding is available with Pro.");
     expect(chatSettings).toContain('data-osl-chat-unmute="${escapeHtml(personId)}"');
     expect(chatSettings).not.toMatch(/keyserver|ratchet|receipt|browser profile|provider adapter/iu);
     expect(binding).toContain("persistOslChatPreviewVisibility()");

@@ -47,7 +47,7 @@ export type FirstPartyOslSurfaceState = "available" | "coming_later" | "unavaila
 
 export interface FirstPartyOslSurfaceContract {
   id: "osl-chat" | "osl-circles" | "osl-mail";
-  label: "OSL Chat" | "OSL Circles" | "OSL Mail";
+  label: "OSL Chat" | "OSL Enclaves" | "OSL Mail";
   destination: "Inbox";
   state: FirstPartyOslSurfaceState;
   primaryAction: string;
@@ -71,11 +71,11 @@ export const FIRST_PARTY_OSL_SURFACES: readonly FirstPartyOslSurfaceContract[] =
   },
   {
     id: "osl-circles",
-    label: "OSL Circles",
+    label: "OSL Enclaves",
     destination: "Inbox",
-    state: "coming_later",
-    primaryAction: "Create a circle",
-    protectionScope: "OSL-owned groups",
+    state: "available",
+    primaryAction: "Create an enclave",
+    protectionScope: "OSL-owned enclaves",
     externalPlatform: false,
     requiresConnectedService: false,
     missingCapability: "unavailable",
