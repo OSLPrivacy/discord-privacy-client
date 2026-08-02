@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T12-I1: apps/osl-hub/Cargo.toml has no IMAP client dependency (async-imap/rustls); T12-I1 owns it.
