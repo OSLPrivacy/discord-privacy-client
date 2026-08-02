@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+The existing multi-recipient RN guard in crates/ipc/src/commands.rs returns an error after RN selection instead of choosing v=3; T19-F5 owns only crates/ipc/tests/rn_pairwise_only.rs, so the required green assertion needs a send-path behavior change outside this task's scope (T19-E2/F1 owner area).
