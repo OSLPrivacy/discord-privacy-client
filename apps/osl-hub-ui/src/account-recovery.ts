@@ -7,6 +7,10 @@ export interface LockoutStatusDto {
   now: number;
 }
 
+// Imported by the shipping recovery flow so legacy-marker refusals retain the
+// explicit migration vocabulary rather than becoming a generic reset error.
+export { legacyMarkerRecoveryRefused, legacyRecoveryMigrationMarkup } from "./recovery-migration";
+
 export type AccountRecoveryFlow = {
   step: "phrase" | "password" | "complete";
   recoveryToken: string | null;

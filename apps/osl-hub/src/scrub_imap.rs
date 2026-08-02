@@ -232,6 +232,35 @@ pub enum DeleteVerification {
     Unknown,
 }
 
+/// Why deletion cannot be honestly verified.  These are intentionally not
+/// collapsed: an operator needs to distinguish a provider outage from a
+/// changed account authorization or a response that cannot be interpreted.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+pub enum VerificationAmbiguity {
+    DroppedConnection,
+    AuthEpochChanged,
+    SchemaDrift,
+    RateLimited,
+    AmbiguousReadback,
+    PriorUnknown,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
+pub struct AmbiguityCounts {
+    counts: BTreeMap<VerificationAmbiguity, usize>,
+}
+
+impl AmbiguityCounts {
+    pub fn record(&mut self, source: VerificationAmbiguity) -> DeleteVerification {
+        *self.counts.entry(source).or_default() += 1;
+        DeleteVerification::Unknown
+    }
+
+    pub fn count(&self, source: VerificationAmbiguity) -> usize {
+        self.counts.get(&source).copied().unwrap_or(0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScrubReceiptStatus {
