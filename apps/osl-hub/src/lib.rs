@@ -159,11 +159,8 @@ pub mod discord_qa_identity;
 pub mod discord_qa_inbound_receipt;
 #[cfg(feature = "core")]
 pub mod eager_fetch;
-<<<<<<< HEAD
 #[cfg(feature = "core")]
 pub mod eager_fetch_retry;
-=======
->>>>>>> bk7
 pub mod identity_binding_verifier;
 #[cfg(feature = "core")]
 pub mod identity_registry;

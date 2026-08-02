@@ -55,6 +55,7 @@ pub struct XSurfaceSnapshot {
 pub trait XSurfaceDriver: Send + Sync {
     fn capabilities(&self) -> CapabilitySet;
     fn is_current_generation(&self, generation: u64) -> bool;
+    fn wake_accessibility(&self) -> Result<(), AdapterRefusal>;
     fn snapshot(&self) -> Result<XSurfaceSnapshot, AdapterRefusal>;
 
     fn place_with_vm_attestation(&self, _carrier: &str) -> Result<(), AdapterRefusal> {
@@ -135,6 +136,10 @@ impl<D: XSurfaceDriver> WebSurfaceBackend for XWebBackend<D> {
 
     fn is_current_generation(&self, generation: u64) -> bool {
         self.driver.is_current_generation(generation)
+    }
+
+    fn wake_accessibility(&self) -> Result<(), AdapterRefusal> {
+        self.driver.wake_accessibility()
     }
 
     fn locate(
@@ -319,6 +324,10 @@ mod tests {
 
         fn is_current_generation(&self, generation: u64) -> bool {
             generation == 7
+        }
+
+        fn wake_accessibility(&self) -> Result<(), AdapterRefusal> {
+            Ok(())
         }
 
         fn snapshot(&self) -> Result<XSurfaceSnapshot, AdapterRefusal> {
