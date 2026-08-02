@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T12-I3: apps/osl-hub/src/imap_client.rs and its UID enumeration path do not exist; T12-I3 owns them.
