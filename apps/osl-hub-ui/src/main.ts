@@ -169,7 +169,8 @@ import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusC
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { initialAccountRecoveryFlow, recoveryScreenMarkup } from "./account-recovery";
 import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
-import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, recoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
+import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
+import { loadHubRecoveryKitUnsaved, setHubRecoveryKitUnsaved } from "./adapters";
 import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
@@ -298,6 +299,9 @@ let passwordRoleStatus: HubPasswordRoleStatus | null = null;
 let setup: SetupState = parseSetupState(null);
 let route: Route = "onboarding";
 let onboardingRoute: OnboardingRoute = "welcome";
+// A cache only. The authority is encrypted account state in the native hub;
+// WebView storage is deliberately not consulted because burn/duress erase it.
+let recoveryKitUnsavedDurable = false;
 let settingsSection: SettingsSection = "account";
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
@@ -1033,8 +1037,21 @@ export function desktopCtaHandoffRoute(surface: DesktopCtaSurface): DesktopCtaRo
  * an unsaved recovery kit outranks every other pending step.
  */
 function pendingOnboardingRoute(): OnboardingRoute | null {
-  const resumed = resumeOnboardingRoute(localStorage, onboardingResumeStorageKey);
+  const resumed = recoveryKitUnsavedDurable
+    ? "recovery"
+    : resumeOnboardingRoute(localStorage, onboardingResumeStorageKey);
   return resumed === null ? null : onboardingRouteForBuild(resumed);
+}
+
+async function persistRecoveryKitUnsaved(unsaved: boolean): Promise<boolean> {
+  const persisted = await setHubRecoveryKitUnsaved(unsaved);
+  if (!persisted) return false;
+  recoveryKitUnsavedDurable = unsaved;
+  // Keep this compatibility cache in step only; it is never consulted for the
+  // launch/resume decision.
+  if (unsaved) markRecoveryKitUnsaved(localStorage);
+  else clearRecoveryKitUnsaved(localStorage);
+  return true;
 }
 
 function persistCurrentOnboardingRoute(): void {
@@ -2351,7 +2368,7 @@ function recoveryKitStateNow(): RecoveryKitState {
     captureEnforcement: captureProtectionEnforced() ? "enforced" : "unenforced",
     shownWithoutProtection: recoveryShownWithoutProtection,
     savedAcknowledged: recoverySavedAcknowledged,
-    kitUnsaved: recoveryKitUnsaved(localStorage),
+    kitUnsaved: recoveryKitUnsavedDurable,
   };
 }
 
@@ -2361,8 +2378,7 @@ function applyRecoveryKitAction(action: RecoveryKitAction): "none" | "rejected" 
   recoveryBundle = state.secrets;
   recoveryShownWithoutProtection = state.shownWithoutProtection;
   recoverySavedAcknowledged = state.savedAcknowledged;
-  if (state.kitUnsaved) markRecoveryKitUnsaved(localStorage);
-  else clearRecoveryKitUnsaved(localStorage);
+  void persistRecoveryKitUnsaved(state.kitUnsaved);
   return outcome;
 }
 
@@ -2980,7 +2996,7 @@ function bindPasswordForm(): void {
         recoveryShownWithoutProtection = false;
         // T15-A8: from this instant a kit exists that nobody has confirmed
         // saving. Until they do, every launch comes back here.
-        markRecoveryKitUnsaved(localStorage);
+        if (!await persistRecoveryKitUnsaved(true)) throw new Error("OSL could not save the recovery-kit reminder");
         onboardingRoute = "recovery";
         await proveRecoveryCaptureProtection();
       } else {
@@ -3064,7 +3080,7 @@ function bindPasswordForm(): void {
         // T15-A8: an unsaved recovery kit outranks a "finished" onboarding.
         // Deferring the kit used to be indistinguishable from never having
         // been offered it, because nothing survived the unlock.
-        if (onboardingComplete && !recoveryKitUnsaved(localStorage)) {
+        if (onboardingComplete && !recoveryKitUnsavedDurable) {
           route = "home";
           void openMullvadOnStartup();
           void refreshUpdateStatus();
@@ -3222,7 +3238,7 @@ function bindImportForm(): void {
       recoveryBundle = { userId: identity.userId, identityPhrase: null, passwordPhrase: passwordResult.passwordRecoveryPhrase };
       recoverySavedAcknowledged = false;
       recoveryShownWithoutProtection = false;
-      markRecoveryKitUnsaved(localStorage);
+      if (!await persistRecoveryKitUnsaved(true)) throw new Error("OSL could not save the recovery-kit reminder");
       onboardingRoute = "recovery";
       await proveRecoveryCaptureProtection();
       render();
@@ -8750,6 +8766,7 @@ async function bootstrap(): Promise<void> {
       showPlaintextPreview: true,
       windowCaptureEnabled: true,
     };
+    recoveryKitUnsavedDurable = await loadHubRecoveryKitUnsaved().catch(() => null) ?? false;
     if (attempt !== bootstrapEpoch) return;
     setup = preferences.setup;
     windowCaptureEnabled = preferences.windowCaptureEnabled;
@@ -8771,7 +8788,7 @@ async function bootstrap(): Promise<void> {
       // T15-A8: "Remind me later" is a real state, not a dismissal. While a
       // recovery kit is unsaved the launch lands back on the recovery step
       // even for an account that already finished onboarding.
-      const recoveryKitOutstanding = recoveryKitUnsaved(localStorage);
+      const recoveryKitOutstanding = recoveryKitUnsavedDurable;
       route = preferences.onboardingComplete && !recoveryKitOutstanding ? "home" : "onboarding";
       if (route === "onboarding") onboardingRoute = pendingOnboardingRoute() ?? onboardingRouteForBuild("pro");
     }
