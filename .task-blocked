@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing `apps/osl-hub/src/web_surface_adapter` from T4-W1; T4-W2 needs its web adapter contract before authoring a compiled-in web ProfilePayload.
