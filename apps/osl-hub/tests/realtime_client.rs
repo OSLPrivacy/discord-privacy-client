@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use osl_privacy_hub::realtime_client::{
+use osl_privacy_hub::realtime_client::{ScheduledFetch, 
     BlobId, CarrierPointer, FrameError, RealtimeClient, RealtimeRoute, FRAME_BYTES, TICK_INTERVAL,
 };
 
@@ -39,7 +39,7 @@ fn t1_t52_outbound_frames_are_constant_for_50_idle_and_busy_turns() {
 
         busy.receive_frame(&response(turn, 0xbb))
             .expect("valid wakeup");
-        assert!(busy.take_scheduled_fetch().is_some());
+        assert!(busy.take_fetch_work().is_some());
     }
 }
 
@@ -70,10 +70,17 @@ fn t1_t52_unknown_wakeup_causes_no_fetch() {
     client
         .receive_frame(&response(0xaa, 0xbb))
         .expect("valid unauthorised wakeup");
-    assert!(
-        client.take_scheduled_fetch().is_none(),
-        "a wakeup is never fetch authority"
-    );
+    // An unknown wakeup must schedule a DECOY, not nothing. Scheduling nothing
+    // would leak the match: an observer could tell a matched reply from an
+    // unmatched one by whether a fetch followed. The property under test is
+    // that a wakeup is never fetch AUTHORITY - never that no work is queued.
+    match client.take_fetch_work() {
+        Some(ScheduledFetch::Decoy(_)) => {}
+        Some(ScheduledFetch::Authorized(_)) => {
+            panic!("a wakeup is never fetch authority: unknown blob got an AUTHORIZED fetch")
+        }
+        None => panic!("an unknown wakeup must still schedule a decoy, or the match leaks"),
+    }
 }
 
 #[test]
@@ -84,9 +91,15 @@ fn t1_t52_matching_wakeup_uses_the_preexisting_carrier_pointer() {
         .receive_frame(&response(0xaa, 0xbb))
         .expect("valid wakeup");
     let fetch = client
-        .take_scheduled_fetch()
+        .take_fetch_work()
         .expect("local pointer authorizes scheduling");
-    fetch
+    // ScheduledFetch is an enum: only the Authorized variant carries a bearer
+    // capability and can fetch. Matching here also asserts we did NOT get a
+    // Decoy - a decoy performing a real fetch would defeat the cover traffic.
+    let ScheduledFetch::Authorized(authorized) = fetch else {
+        panic!("a locally held pointer must schedule an AUTHORIZED fetch, not a decoy");
+    };
+    authorized
         .fetch_with(|blob_id, bearer_capability| {
             assert_eq!(blob_id, id(0xbb));
             assert_eq!(bearer_capability, "carrier-only-P");
@@ -104,5 +117,5 @@ fn t1_t52_frames_cannot_supply_a_capability_or_secret() {
         client.receive_frame(&frame),
         Err(FrameError::UnexpectedFields)
     );
-    assert!(client.take_scheduled_fetch().is_none());
+    assert!(client.take_fetch_work().is_none());
 }
