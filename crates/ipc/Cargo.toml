@@ -74,6 +74,9 @@ keystore = { path = "../keystore" }
 osl-ratchet-next = { path = "../osl-ratchet-next" }
 store = { path = "../store" }
 message-lifecycle = { path = "../message-lifecycle" }
+# Sender-key rotation policy is stateful per scope and is consulted by the
+# shipping v=5 group-send path before it encrypts content.
+runtime = { path = "../runtime" }
 
 [dev-dependencies]
 tempfile = "=3.13"

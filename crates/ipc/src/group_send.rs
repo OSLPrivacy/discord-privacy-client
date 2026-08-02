@@ -11,9 +11,6 @@ use crate::state::AppState;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 
-/// Phase 9-A3: 24-hour rotation timer threshold.
-const SENDER_KEY_ROTATE_AFTER_SECS: u64 = 24 * 60 * 60;
-
 /// Phase 6.2: how often (in seconds) we re-emit the SKDM bundle for
 /// self-heal purposes when the chain hasn't otherwise changed.
 /// Pre-6.2 behaviour was "emit on every send", which produced N extra
@@ -25,19 +22,12 @@ const SENDER_KEY_ROTATE_AFTER_SECS: u64 = 24 * 60 * 60;
 /// shed ~95% of the noise messages.
 const SKDM_PERIODIC_EMIT_INTERVAL_SECS: u64 = 5 * 60;
 
-/// Phase 9-A3: decide whether the sender-keys chain for this scope
-/// needs to rotate before the next send. Returns `true` when:
-/// - the time since `chain_started_at` exceeds 24 hours, OR
-/// - the current channel-member set differs from
-///   `last_known_members` (any join/leave).
-fn sender_key_needs_rotation(
+/// Detect a recipient-set change so the per-scope runtime controller can
+/// force rotation *before* the next message is encrypted.
+fn sender_key_membership_changed(
     sender: &crypto::sender_keys::SenderChain,
     current_members: &[String],
-    now: u64,
 ) -> bool {
-    if now.saturating_sub(sender.chain_started_at()) >= SENDER_KEY_ROTATE_AFTER_SECS {
-        return true;
-    }
     let stored: std::collections::BTreeSet<&[u8]> = sender
         .last_known_members()
         .iter()
@@ -115,10 +105,30 @@ pub(crate) fn encrypt_v5_send(
 
     // Decide install / rotate / continue.
     let needs_install = sks.sender_chain().is_none();
-    let needs_rotate = sks
-        .sender_chain()
-        .map(|c| sender_key_needs_rotation(c, &recipient_ids, now))
-        .unwrap_or(false);
+    // RotationController is the policy authority for every shipping v=5
+    // sender chain. Keep one per scope: it tracks the one-hour, 500-message,
+    // membership, and suspicious-event triggers across sends. Membership is
+    // registered before polling so it cannot be bypassed by the encryption
+    // below.
+    let needs_rotate = if let Some(chain) = sks.sender_chain() {
+        let membership_changed = sender_key_membership_changed(chain, &recipient_ids);
+        let mut rotations = state
+            .sender_key_rotation
+            .lock()
+            .expect("sender_key_rotation mutex poisoned");
+        let controller = rotations.entry(scope_key.clone()).or_insert_with(|| {
+            runtime::RotationController::new(
+                Box::new(runtime::SystemClock),
+                runtime::RotationConfig::default(),
+            )
+        });
+        if membership_changed {
+            controller.note_membership_change();
+        }
+        controller.check_for_rotation().is_some()
+    } else {
+        false
+    };
 
     let send_skdm = needs_install || needs_rotate;
     if needs_install {
@@ -141,6 +151,23 @@ pub(crate) fn encrypt_v5_send(
         sks.sender_chain_mut()
             .unwrap()
             .set_last_known_members(members_bytes);
+    }
+
+    // The initial install and every successful rotation reset the policy
+    // window. This happens before the content cipher runs, matching the
+    // requirement that rotation distributions precede guarded messages.
+    if needs_install || needs_rotate {
+        let mut rotations = state
+            .sender_key_rotation
+            .lock()
+            .expect("sender_key_rotation mutex poisoned");
+        let controller = rotations.entry(scope_key.clone()).or_insert_with(|| {
+            runtime::RotationController::new(
+                Box::new(runtime::SystemClock),
+                runtime::RotationConfig::default(),
+            )
+        });
+        controller.note_rotation_completed();
     }
 
     let (chain_id, rotation_root, physical_device_id) = {
@@ -182,6 +209,16 @@ pub(crate) fn encrypt_v5_send(
         .map_err(|e| format!("OSL: v=5 send: sender_keys::encrypt: {e}"))?;
     let wire = crate::wire_v2::encrypt_v5(self_pk, crate::wire_v2::MSG_TYPE_CONTENT, 0, &em)
         .map_err(|e| format!("OSL: v=5 send: encrypt_v5: {e}"))?;
+
+    // Count only content messages that encrypted successfully; the controller
+    // will force the next send to rotate at its configured threshold.
+    state
+        .sender_key_rotation
+        .lock()
+        .expect("sender_key_rotation mutex poisoned")
+        .get_mut(&scope_key)
+        .expect("v=5 sender-key rotation controller installed before encryption")
+        .note_message_sent();
 
     // Persist updated state before any SKDM dispatch — if the SKDM
     // wire goes out but persistence dies between send + crash, we'd
@@ -868,4 +905,105 @@ fn verify_v5_sender_discord_binding(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encrypt_v5_send;
+    use crate::state::AppState;
+    use std::time::Duration;
+
+    #[test]
+    fn shipping_v5_send_registers_and_advances_rotation_controller() {
+        let state = AppState::new();
+        let sender = keystore::generate_identity("rotation-controller-sender".to_string());
+        let peer = keystore::generate_identity("rotation-controller-peer".to_string());
+        let scope = crate::scope::Scope::gc("rotation-controller-group");
+        let self_did = "900000000000000001".to_string();
+        let peer_did = "900000000000000002".to_string();
+        let recipient = crate::wire_v2::RecipientV3 {
+            x25519_pub: peer.x25519_public,
+            mlkem_pub: crypto::ml_kem_768::EncapsulationKey::from_bytes(&peer.mlkem_public_bytes),
+        };
+        let peers = vec![(peer_did, recipient)];
+        let peer_refs: Vec<&(String, crate::wire_v2::RecipientV3)> = peers.iter().collect();
+
+        {
+            let mut identity = state.identity.lock().expect("identity mutex poisoned");
+            *identity = Some(sender.clone());
+        }
+
+        encrypt_v5_send(
+            &state,
+            &sender.x25519_secret,
+            &sender.x25519_public,
+            &scope,
+            &self_did,
+            &[],
+            &peer_refs,
+            b"rotation controller must be reached by the shipping v5 path",
+        )
+        .expect("v5 send succeeds");
+
+        let rotations = state
+            .sender_key_rotation
+            .lock()
+            .expect("sender_key_rotation mutex poisoned");
+        let controller = rotations
+            .get(&scope.storage_key())
+            .expect("shipping v5 send must install a rotation controller for its scope");
+        assert_eq!(
+            controller.messages_since_rotation(),
+            1,
+            "removing the shipping v5 call to RotationController::note_message_sent must fail"
+        );
+        drop(rotations);
+
+        // Make the next policy check rotate after one recorded message. This
+        // proves the controller's `check_for_rotation` result controls the
+        // real encrypt path, rather than merely being constructed alongside
+        // the legacy rotation logic.
+        let mut config = runtime::RotationConfig::default();
+        config.message_count_trigger = 1;
+        config.time_trigger = Duration::from_secs(24 * 60 * 60);
+        let mut threshold_one =
+            runtime::RotationController::new(Box::new(runtime::SystemClock), config);
+        threshold_one.note_message_sent();
+        state
+            .sender_key_rotation
+            .lock()
+            .expect("sender_key_rotation mutex poisoned")
+            .insert(scope.storage_key(), threshold_one);
+
+        encrypt_v5_send(
+            &state,
+            &sender.x25519_secret,
+            &sender.x25519_public,
+            &scope,
+            &self_did,
+            &[],
+            &peer_refs,
+            b"the controller decision must rotate before this message encrypts",
+        )
+        .expect("threshold-triggered v5 send succeeds");
+
+        let sender_state: crypto::sender_keys::SenderKeyState = state
+            .sender_key_state
+            .lock()
+            .expect("sender_key_state mutex poisoned")
+            .states
+            .get(&scope.storage_key())
+            .expect("v5 sender state persists")
+            .clone()
+            .try_into()
+            .expect("persisted v5 sender state loads");
+        assert_eq!(
+            sender_state
+                .sender_chain()
+                .expect("sender chain exists")
+                .current_chain_id(),
+            1,
+            "removing RotationController::check_for_rotation from shipping v5 sends must fail"
+        );
+    }
 }
