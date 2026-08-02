@@ -429,7 +429,9 @@ impl SkippedKeyCache {
 }
 
 /// Sender side of the sender-keys construction. Owns the rotation
-/// root, current chain id, current `CK_n`, and the running counter.
+/// root, current chain id, current `CK_n`, and the running counter. The
+/// rotation root is intentionally memory-only: persisting it would allow a
+/// profile snapshot to re-derive every prior key in the current chain.
 pub struct SenderChain {
     physical_device_id: PhysicalDeviceId,
     rotation_root: RotationRoot,
@@ -1061,7 +1063,7 @@ impl SenderKeyState {
 
 /// On-disk version byte for [`SenderKeyStateOnDisk`]. Bump on any
 /// shape change to force a clean reject of stale-format records.
-pub const SENDER_KEY_STATE_ON_DISK_VERSION: u8 = 0x02;
+pub const SENDER_KEY_STATE_ON_DISK_VERSION: u8 = 0x03;
 
 /// Errors raised when reconstructing live state from a persisted
 /// [`SenderKeyStateOnDisk`].
@@ -1083,6 +1085,8 @@ pub enum SenderKeyPersistError {
     },
     #[error("sender-key state on-disk: physical_device_id binding absent")]
     MissingPhysicalDeviceId,
+    #[error("sender-key state on-disk: sender chain_id cannot rotate past u32::MAX")]
+    SenderChainIdOverflow,
     #[error("sender-key state on-disk: peer has more than {max} receiver chains")]
     ReceiverChainLimitExceeded { max: usize },
 }
@@ -1116,9 +1120,7 @@ impl Default for SenderKeyStateOnDisk {
 pub struct SenderChainOnDisk {
     #[serde(default)]
     pub physical_device_id_b64: String,
-    pub rotation_root_b64: String,
     pub chain_id: u32,
-    pub ck_n_b64: String,
     pub n: u32,
     pub prev_chain_length: u32,
     pub chain_started_at: u64,
@@ -1142,17 +1144,6 @@ pub struct ReceiverChainOnDisk {
     pub chain_id: u32,
     pub ck_n_b64: String,
     pub n: u32,
-    #[serde(default)]
-    pub skipped: Vec<SkippedKeyOnDisk>,
-}
-
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SkippedKeyOnDisk {
-    pub chain_id: u32,
-    pub n: u32,
-    pub hk_b64: String,
-    pub mk_b64: String,
-    pub added_at_unix_secs: u64,
 }
 
 impl From<&SenderKeyState> for SenderKeyStateOnDisk {
@@ -1177,9 +1168,7 @@ impl From<&SenderChain> for SenderChainOnDisk {
     fn from(c: &SenderChain) -> Self {
         SenderChainOnDisk {
             physical_device_id_b64: STANDARD.encode(c.physical_device_id.as_bytes()),
-            rotation_root_b64: STANDARD.encode(c.rotation_root.as_bytes()),
             chain_id: c.chain_id,
-            ck_n_b64: STANDARD.encode(c.ck_n.as_bytes()),
             n: c.n,
             prev_chain_length: c.prev_chain_length,
             chain_started_at: c.chain_started_at,
@@ -1200,22 +1189,6 @@ impl From<&ReceiverChain> for ReceiverChainOnDisk {
             chain_id: c.chain_id,
             ck_n_b64: STANDARD.encode(c.ck_n.as_bytes()),
             n: c.n,
-            skipped: c
-                .skipped
-                .keys
-                .iter()
-                .map(|e| SkippedKeyOnDisk {
-                    chain_id: e.chain_id,
-                    n: e.n,
-                    hk_b64: STANDARD.encode(e.hk.as_bytes()),
-                    mk_b64: STANDARD.encode(e.mk.as_bytes()),
-                    added_at_unix_secs: e
-                        .inserted_at
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0),
-                })
-                .collect(),
         }
     }
 }
@@ -1261,31 +1234,27 @@ impl TryFrom<SenderChainOnDisk> for SenderChain {
 
     fn try_from(d: SenderChainOnDisk) -> std::result::Result<Self, Self::Error> {
         let physical_device_id = decode_physical_device_id(&d.physical_device_id_b64)?;
-        let rotation_root =
-            RotationRoot::from_bytes(decode_32(&d.rotation_root_b64, "rotation_root")?);
-        let ck_n = SenderChainKey::from_bytes(decode_32(&d.ck_n_b64, "ck_n")?);
-        let mut last_known_members = Vec::with_capacity(d.last_known_members_b64.len());
-        for (idx, b64) in d.last_known_members_b64.iter().enumerate() {
-            let m = STANDARD
-                .decode(b64)
-                .map_err(|source| SenderKeyPersistError::Base64 {
-                    // Static-str field name; the index is for logging only.
-                    field: "last_known_members[?]",
-                    source,
-                })?;
-            let _ = idx;
-            last_known_members.push(m);
-        }
+        // A persisted `CK_n` can continue the current chain but cannot safely
+        // recreate its SKDM root. Start a new chain instead: the IPC sender
+        // observes the empty member snapshot, rotates before its next group
+        // send, and distributes that fresh root before ciphertext.
+        let chain_id = d
+            .chain_id
+            .checked_add(1)
+            .ok_or(SenderKeyPersistError::SenderChainIdOverflow)?;
+        let rotation_root = RotationRoot::random();
+        let ck_n = derive_ck_0(&rotation_root, chain_id)
+            .map_err(|_| SenderKeyPersistError::SenderChainIdOverflow)?;
         Ok(SenderChain {
             physical_device_id,
             rotation_root,
-            chain_id: d.chain_id,
+            chain_id,
             ck_n,
-            n: d.n,
-            prev_chain_length: d.prev_chain_length,
-            chain_started_at: d.chain_started_at,
-            last_known_members,
-            last_skdm_emit_at: d.last_skdm_emit_at,
+            n: 0,
+            prev_chain_length: d.n,
+            chain_started_at: now_unix_secs(),
+            last_known_members: Vec::new(),
+            last_skdm_emit_at: 0,
         })
     }
 }
@@ -1296,22 +1265,12 @@ impl TryFrom<ReceiverChainOnDisk> for ReceiverChain {
     fn try_from(d: ReceiverChainOnDisk) -> std::result::Result<Self, Self::Error> {
         let physical_device_id = decode_physical_device_id(&d.physical_device_id_b64)?;
         let ck_n = SenderChainKey::from_bytes(decode_32(&d.ck_n_b64, "receiver.ck_n")?);
-        let mut skipped_keys: Vec<SkippedKey> = Vec::with_capacity(d.skipped.len());
-        for entry in d.skipped {
-            skipped_keys.push(SkippedKey {
-                chain_id: entry.chain_id,
-                n: entry.n,
-                hk: aead::Key::from_bytes(decode_32(&entry.hk_b64, "skipped.hk")?),
-                mk: aead::Key::from_bytes(decode_32(&entry.mk_b64, "skipped.mk")?),
-                inserted_at: UNIX_EPOCH + Duration::from_secs(entry.added_at_unix_secs),
-            });
-        }
         Ok(ReceiverChain {
             physical_device_id,
             chain_id: d.chain_id,
             ck_n,
             n: d.n,
-            skipped: SkippedKeyCache { keys: skipped_keys },
+            skipped: SkippedKeyCache::default(),
         })
     }
 }
@@ -1340,9 +1299,7 @@ impl fmt::Debug for SenderChainOnDisk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SenderChainOnDisk")
             .field("physical_device_id_b64", &"[REDACTED]")
-            .field("rotation_root_b64", &"[REDACTED]")
             .field("chain_id", &self.chain_id)
-            .field("ck_n_b64", &"[REDACTED]")
             .field("n", &self.n)
             .field("prev_chain_length", &self.prev_chain_length)
             .field("chain_started_at", &self.chain_started_at)
@@ -1366,18 +1323,6 @@ impl fmt::Debug for ReceiverChainOnDisk {
                 "skipped",
                 &format_args!("[REDACTED; {} entries]", self.skipped.len()),
             )
-            .finish()
-    }
-}
-
-impl fmt::Debug for SkippedKeyOnDisk {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SkippedKeyOnDisk")
-            .field("chain_id", &self.chain_id)
-            .field("n", &self.n)
-            .field("hk_b64", &"[REDACTED]")
-            .field("mk_b64", &"[REDACTED]")
-            .field("added_at_unix_secs", &self.added_at_unix_secs)
             .finish()
     }
 }
@@ -1536,8 +1481,38 @@ mod tests {
         for canary in ["member-canary", "peer-canary"] {
             assert!(!debug.contains(canary), "debug leaked {canary}");
         }
-        assert!(!debug.contains(&disk.sender.as_ref().unwrap().rotation_root_b64));
-        assert!(!debug.contains(&disk.sender.as_ref().unwrap().ck_n_b64));
         assert!(!debug.contains(&disk.sender.as_ref().unwrap().physical_device_id_b64));
+    }
+
+    #[test]
+    fn persisted_state_cannot_recover_a_prior_sender_message_key() {
+        let mut state = SenderKeyState::new();
+        state.install_sender().unwrap();
+        let context = ctx(0x55);
+        let original_root = state.sender_chain().unwrap().rotation_root_bytes();
+        let original_device = state.sender_chain().unwrap().physical_device_id();
+        let original_chain = state.sender_chain().unwrap().current_chain_id();
+        let earlier = state.encrypt(b"before persistence", &context).unwrap();
+
+        let disk = SenderKeyStateOnDisk::from(&state);
+        let encoded = serde_json::to_string(&disk).unwrap();
+        assert!(
+            !encoded.contains(&STANDARD.encode(original_root)),
+            "persisted state must not contain the live rotation root"
+        );
+
+        let reloaded: SenderKeyState = disk.try_into().unwrap();
+        let restored = reloaded.sender_chain().unwrap();
+        assert!(restored.current_chain_id() > original_chain);
+        let mut receiver = ReceiverChain::install(
+            restored.current_chain_id(),
+            &restored.rotation_root_bytes(),
+            original_device,
+        )
+        .unwrap();
+        assert!(
+            receiver.decrypt(&earlier, &context).is_err(),
+            "state restored from disk must not decrypt a message from before persistence"
+        );
     }
 }
