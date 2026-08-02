@@ -906,6 +906,7 @@ impl KeyServerClient {
         let client = std::thread::spawn(|| {
             reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(30))
+                .http1_title_case_headers()
                 // Never follow an origin-changing redirect with signed protocol
                 // bodies. Production is already HTTPS and local tests do not need
                 // an upgrade redirect.
