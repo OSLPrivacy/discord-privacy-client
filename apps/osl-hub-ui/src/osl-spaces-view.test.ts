@@ -11,11 +11,8 @@ describe("Space honest states", () => {
     expect(main).toContain('import { oslServersViewMarkup } from "./osl-servers-view"');
     expect(main).toContain('if (route === "osl-servers") return oslServersContent();');
     expect(main).toContain('route = "osl-servers";');
-    expect(serversView).toContain('from "./osl-spaces-view"');
-    expect(serversView).toContain("oslSpaceStateMarkup(state)");
-    expect(serversView).toContain("OSL Enclaves");
-    expect(serversView).toContain('statusTag("Available")');
-    expect(serversView).not.toContain('statusTag("Coming later")');
+    expect(serversView).toContain('from "./osl-spaces"');
+    expect(serversView).toContain("oslSpacesSurfaceMarkup({ statusTag })");
   });
 
   it("keeps a queued send pending while offline", () => {
