@@ -1,1 +1,0 @@
-Missing T10-I1's `03-CONTRACTS/integrity.md`, which must freeze the handshake field name, width, and wire-version gate; T10-I1 (and T1 for the envelope gate) owns this prerequisite.
