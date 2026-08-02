@@ -29,12 +29,14 @@ interface Row {
   fetch_token_sha256_hex: string;
   state: "uploading" | "completing" | "ready";
   upload_id: string | null;
+  single_fetch: number;
+  reserved_until: number | null;
 }
 
 async function attachmentRow(id: string): Promise<Row> {
   return d1First<Row>(
     `SELECT object_key, size_bytes, expires_at, content_expires_at,
-            fetch_token_sha256_hex, state, upload_id
+            fetch_token_sha256_hex, state, upload_id, single_fetch, reserved_until
        FROM attachment_objects WHERE id = ? LIMIT 1`,
     id,
   );
@@ -80,6 +82,31 @@ function uploadRequest(body: BodyInit, contentLength?: number): Request {
 }
 
 describe("R2 attachment transport", () => {
+  it("TF-41 holds one view-once reservation across a dropped transfer and retry", async () => {
+    const env = workerEnv();
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const request = uploadRequest(bytes, bytes.byteLength);
+    request.headers.set("x-osl-single-fetch", "1");
+    const uploaded = await handleAttachmentUpload(request, env);
+    expect(uploaded.status).toBe(201);
+    const { id } = await uploaded.json() as { id: string };
+
+    // Do not consume this body: a disconnected transfer must retain its one
+    // reservation and permit a retry rather than reserving per transfer part.
+    const first = await handleAttachmentFetch(new Request(`https://cipher.test/v1/attachment/${id}`, {
+      headers: { "x-osl-fetch-token": token },
+    }), env, id);
+    expect(first.status).toBe(200);
+    const reserved = await attachmentRow(id);
+    expect(reserved.reserved_until).not.toBeNull();
+
+    const retry = await handleAttachmentFetch(new Request(`https://cipher.test/v1/attachment/${id}`, {
+      headers: { "x-osl-fetch-token": token, range: "bytes=2-" },
+    }), env, id);
+    expect(retry.status).toBe(200);
+    expect(new Uint8Array(await retry.arrayBuffer())).toEqual(bytes);
+  });
+
   it("buffers upload and streams fetch while D1 stores only opaque transport metadata", async () => {
     const env = workerEnv();
     const bytes = new Uint8Array([1, 2, 3, 4]);
