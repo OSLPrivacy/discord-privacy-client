@@ -50,3 +50,17 @@ The machine-readable contract is the test surface for T21-T31:
   }
 }
 ```
+
+## Channels
+
+A channel is an explicit replicated declaration with an opaque channel id, a
+`kind`, and a `position`.  `kind` is never inferred from the display name;
+renaming a channel therefore cannot change its delivery or key-domain
+semantics. `position` is the shared ordering value replicated through the
+Space event log, so clients do not sort channels by last activity.
+
+The v1 channel model is flat: categories and category membership are not
+represented. `voice` has an explicit kind for convergence, but Voice is not a
+v1 delivery feature and must be shown as unavailable until its separate gate
+has live proof. A channel membership and its current channel keys, not a role,
+are the basis for decrypting that channel's future content.
