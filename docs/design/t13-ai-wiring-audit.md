@@ -16,3 +16,12 @@ has no runtime call site to add.
 `crates/cover-ai/tests/entropy_budget.rs` is likewise a Cargo integration
 test.  It measures the compiled deterministic codec and emits no runtime
 component; adding a production import would be incorrect.
+
+## T13-A5
+
+`crates/cover-ai/src/fallback.rs` has no non-test consumer.  It cannot be
+wired honestly yet: its plain-word-bank floor assumes Mode 1, while the
+shipping IPC selector coerces Mode 1 to Mode 0.  Calling the table from that
+Mode-0 path would report a word-bank carrier while sending `DPC0::` text.
+That is a false safety signal, so this remains blocked on the T1 carrier
+revival rather than receiving a decorative call site.
