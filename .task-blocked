@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing a current attested Windows VMQA build bundle (build-identity.json plus osl-privacy-hub.exe) for T15-B7; the release/integration build owner must provide it before the live Windows proof can run.
