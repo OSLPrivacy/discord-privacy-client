@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Cannot add the mandated behavioral cross-dispatch proof in crates/ipc/tests/rn_mixed_version.rs: apps/osl-hub's private overlay drain depends on ipc and is excluded from the root workspace, so ipc cannot depend back on it without a circular dependency; a source-text assertion is explicitly forbidden. T19-B5 owns the overlay boundary.
