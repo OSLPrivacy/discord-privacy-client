@@ -1319,10 +1319,9 @@ impl fmt::Debug for ReceiverChainOnDisk {
             .field("chain_id", &self.chain_id)
             .field("ck_n_b64", &"[REDACTED]")
             .field("n", &self.n)
-            .field(
-                "skipped",
-                &format_args!("[REDACTED; {} entries]", self.skipped.len()),
-            )
+            // No `skipped` field here: the skipped-key cache lives on the
+            // in-memory ReceiverChain, not on the on-disk form. The redaction
+            // intent is unchanged -- there is no key material to redact.
             .finish()
     }
 }
