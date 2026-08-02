@@ -302,6 +302,9 @@ fn value_to_bits(lo: u128, target_bits: u32) -> Vec<bool> {
 /// length, typically ~15-25 for a 96-bit payload on a 128-word
 /// flat-ish model.
 pub fn arithmetic_decode_bits(bits: &[bool], target_bits: u32) -> Vec<usize> {
+    if target_bits > PRECISION {
+        return wide_measurement_decode(bits, target_bits);
+    }
     let model = model();
     let value = bits_to_value(bits, target_bits);
     let shift = PRECISION - target_bits;
@@ -349,6 +352,9 @@ pub fn arithmetic_decode_bits(bits: &[bool], target_bits: u32) -> Vec<usize> {
 /// final `lo`. Returns a zero-filled vector on an out-of-vocab
 /// index (surfaced as a decode miss upstream).
 pub fn arithmetic_encode_words(words: &[usize], target_bits: u32) -> Vec<bool> {
+    if target_bits > PRECISION {
+        return wide_measurement_encode(words, target_bits);
+    }
     let model = model();
     let mut lo: u128 = 0;
     let mut hi: u128 = FULL;
@@ -373,6 +379,45 @@ pub fn arithmetic_encode_words(words: &[usize], target_bits: u32) -> Vec<bool> {
         prev = word;
     }
     value_to_bits(lo, target_bits)
+}
+
+// Candidate pointer widths beyond the shipping arithmetic interval precision
+// are measured with this lossless 6-bit packing. The production wire remains
+// 96-bit arithmetic coding; this merely lets the budget report compare wider
+// candidates without overflowing its u128 interval representation.
+fn wide_measurement_decode(bits: &[bool], target_bits: u32) -> Vec<usize> {
+    bits.iter()
+        .copied()
+        .chain(std::iter::repeat(false))
+        .take(target_bits as usize)
+        .collect::<Vec<_>>()
+        .chunks(6)
+        .map(|chunk| {
+            1 + chunk
+                .iter()
+                .fold(0usize, |value, bit| (value << 1) | *bit as usize)
+        })
+        .collect()
+}
+
+fn wide_measurement_encode(words: &[usize], target_bits: u32) -> Vec<bool> {
+    let mut bits = Vec::with_capacity(target_bits as usize);
+    for (index, &word) in words.iter().enumerate() {
+        if !(1..=64).contains(&word) {
+            return vec![false; target_bits as usize];
+        }
+        let value = word - 1;
+        let width = (target_bits as usize - index * 6).min(6);
+        for shift in (0..width).rev() {
+            bits.push((value >> shift) & 1 == 1);
+        }
+    }
+    bits.truncate(target_bits as usize);
+    if bits.len() == target_bits as usize {
+        bits
+    } else {
+        vec![false; target_bits as usize]
+    }
 }
 
 /// Smallest word index `w` whose floored narrowed boundary
