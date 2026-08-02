@@ -1,0 +1,1 @@
+cipher-store delete already returns 204 for absent, swept/expired, consumed, and repeated blobs; cipher-store-cf/test/burn-offline.test.ts verifies it.
