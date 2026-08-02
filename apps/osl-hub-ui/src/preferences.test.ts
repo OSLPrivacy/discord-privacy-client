@@ -57,6 +57,7 @@ describe("first-run onboarding preference persistence", () => {
       },
       showPlaintextPreview: true,
       windowCaptureEnabled: true,
+      forwardSecrecyMode: "keepGroupDelivery",
     });
     expect(storage.getItem("osl-preview-onboarded")).toBe("true");
     expect(JSON.parse(storage.getItem("osl-preview-setup") ?? "{}")).toEqual(saved.setup);
@@ -104,6 +105,7 @@ describe("first-run onboarding preference persistence", () => {
       placementMode: "atomic",
       showPlaintextPreview: true,
       windowCaptureEnabled: false,
+      forwardSecrecyMode: "keepGroupDelivery",
       acknowledgeExperimentalSendRisk: false,
     });
 
@@ -121,6 +123,7 @@ describe("first-run onboarding preference persistence", () => {
         showPlaintextPreview: true,
         windowCaptureEnabled: false,
         acknowledgeExperimentalSendRisk: false,
+        forwardSecrecyMode: "keepGroupDelivery",
       },
     });
     expect(saved.setup.sendMode).toBe("clipboard");
