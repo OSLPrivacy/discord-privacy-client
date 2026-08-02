@@ -1,0 +1,1 @@
+complete_unit.inflight delegates to task_report.running_ids, which derives running tasks from runs/*.json instead of /proc.
