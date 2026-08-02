@@ -1,4 +1,4 @@
-use osl_hub::chat_capture_protection::{CaptureConsent, EffectiveCaptureProtection as Effective};
+use osl_privacy_hub::chat_capture_protection::{CaptureConsent, EffectiveCaptureProtection as Effective};
 
 #[test]
 fn t14_t17_bilateral_capture_consent_state_machine() {
