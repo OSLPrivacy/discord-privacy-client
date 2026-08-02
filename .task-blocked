@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing CHAT-PATTERN / WEB-CONFORMANCE: this checkout has no apps/osl-hub/src/web_surface_adapter module or crates/adapter-profile/src/defaults_web.rs profile registry; the prerequisite belongs to T4-E / its gate.
