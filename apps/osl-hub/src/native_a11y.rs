@@ -99,7 +99,7 @@ pub(crate) fn wake_electron_accessibility(
         return None;
     }
     wake_electron_accessibility_with(
-        |event, object_id| unsafe { NotifyWinEvent(event, window as _, object_id, 0) },
+        |event, object_id| unsafe { NotifyWinEvent(event, HWND(window as _), object_id, 0) },
         |object_id| {
             let mut object: *mut c_void = std::ptr::null_mut();
             unsafe {

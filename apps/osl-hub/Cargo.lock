@@ -3159,6 +3159,7 @@ dependencies = [
  "osl-ratchet-next",
  "pdf-extract",
  "quick-xml",
+ "rand 0.8.7",
  "reqwest 0.12.28",
  "rfd",
  "runtime",
