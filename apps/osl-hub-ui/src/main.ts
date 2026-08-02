@@ -127,6 +127,7 @@ import { freshStartCleanupPresentation, freshStartLimitationsMarkup } from "./fr
 import { loadAutoScrubRunFleetStatus, requestAutoScrubGlobalStop } from "./autoscrub-unattended-run";
 import { oslMailStage, type OslMailStage } from "./desktop-service-policy";
 import { webSurfaceLabel, type WebSurfaceCapability } from "./web-surface-label";
+import { homeProtectionState } from "./home-protection-state";
 import {
   acknowledgeOslMailRetrieval,
   burnOslMailbox,
@@ -462,6 +463,7 @@ let discordMarkerAvailable = true;
 let whitelistRosterOpen = false;
 let onboardingComplete = false;
 let screenshotProtectionEnabled = false;
+let linkedServicesChecked = false;
 let windowCaptureEnabled = true;
 let hubIdentities: HubIdentitySlot[] = [];
 // An empty `hubIdentities` used to be read as "OSL is locked", which is a
@@ -3786,6 +3788,10 @@ function homeDestinationContent(): string {
   const deviceProtected = coreReady && protection.state === "protected";
   const launchableApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
   const connectedApps = launchableApps.filter((app) => app.linked || savedNativeApps.has(app.id as NativeAppId));
+  const connectedAppsState = homeProtectionState(linkedServicesChecked, connectedApps.length > 0, {
+    enabled: "Ready",
+    unavailable: "Unavailable",
+  });
   const pendingFriendReviews = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange).length;
   const verifiedFriends = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange).length;
   const recentActivity = notificationsEnabled ? visibleAppNotifications().at(0) ?? null : null;
@@ -3804,7 +3810,7 @@ function homeDestinationContent(): string {
   const activityAction = recentActivity || !notificationsEnabled
     ? `<button class="button compact" data-notification-settings type="button">${recentActivity ? "Review" : "Turn on"}</button>`
     : `${statusTag("Quiet")}`;
-  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommendedAction}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedApps.length.toLocaleString("en-US")} of ${launchableApps.length.toLocaleString("en-US")} ready</small></span>${statusTag(connectedApps.length ? "Ready" : "Unavailable")}</div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
+  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommendedAction}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedApps.length.toLocaleString("en-US")} of ${launchableApps.length.toLocaleString("en-US")} ready</small></span>${statusTag(connectedAppsState.label, connectedAppsState.statusTone === "ok" ? "ok" : "")}</div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
 }
 
 function workspaceContent(): string {
@@ -8699,7 +8705,10 @@ async function bootstrap(): Promise<void> {
     startReadyWorkspaceLoads();
     void Promise.all([servicesRequest, nativeAppsRequest, licenseRequest, browserCompanionRequest, browserProfilesRequest]).then(([linkedServices, nativeCatalog, currentLicenseState, currentBrowserCompanionStatus, profiles]) => {
       if (attempt !== bootstrapEpoch) return;
-      if (linkedServices) services = linkedServices;
+      if (linkedServices) {
+        services = linkedServices;
+        linkedServicesChecked = true;
+      }
       if (nativeCatalog && isCompleteNativeCatalog(nativeCatalog)) {
         nativeApps = nativeCatalog;
       }
@@ -8876,6 +8885,7 @@ type OslHubUiTestStatePatch = {
   coreReady?: boolean;
   storageMethod?: string | null;
   services?: LinkedService[];
+  servicesChecked?: boolean;
   hubPeople?: Array<Partial<HubPerson> & { personId: string }>;
   notificationsEnabled?: boolean;
   notificationPreviewContent?: boolean;
@@ -8940,6 +8950,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   activityAttentionReviewOpen = false;
   peoplePrimaryActionFocus = null;
   services = patch.services ?? [];
+  linkedServicesChecked = patch.servicesChecked ?? patch.services !== undefined;
   hubPeople = (patch.hubPeople ?? []).map(testHubPerson);
   hubIdentities = patch.hubIdentities ?? [];
   hubIdentitiesLoad = patch.hubIdentitiesLoad ?? (patch.hubIdentities ? "loaded" : "pending");
