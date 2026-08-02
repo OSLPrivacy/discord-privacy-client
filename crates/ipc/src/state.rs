@@ -282,6 +282,11 @@ pub struct AppState {
     /// per-(scope, sender) receiver chain.
     pub sender_key_state: Mutex<crate::sender_key_state::SenderKeyStateFile>,
 
+    /// Ephemeral sender-key material for this process. Rotation roots and
+    /// skipped message keys must never enter the on-disk mirror; retaining
+    /// them here preserves an active process's chain continuity.
+    pub sender_key_live_state: Mutex<HashMap<String, crypto::sender_keys::SenderKeyState>>,
+
     /// Live rotation-policy state for each outbound sender-key scope. This is
     /// deliberately in-memory: the durable sender-chain record remains the
     /// cryptographic source of truth, while this registry drives the next-send
@@ -416,6 +421,7 @@ impl Default for AppState {
             stealth_active: Mutex::new(false),
             burned_scopes: Mutex::new(crate::burned_scopes_file::BurnedScopesFile::default()),
             sender_key_state: Mutex::new(crate::sender_key_state::SenderKeyStateFile::default()),
+            sender_key_live_state: Mutex::new(HashMap::new()),
             sender_key_rotation: Mutex::new(HashMap::new()),
             sender_keys_enabled: AtomicBool::new(true),
             channel_members: Mutex::new(HashMap::new()),
