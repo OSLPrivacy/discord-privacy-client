@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing the eager-fetch/local-copy integration that receives transport NotFound and transitions Announced to Unavailable; T2-90 (demoted pending T6-R7) owns that prerequisite.
