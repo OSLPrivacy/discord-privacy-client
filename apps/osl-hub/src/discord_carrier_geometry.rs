@@ -475,7 +475,11 @@ mod tests {
     /// half that survives is the character count (still pointer-sized), and the
     /// half that is now deliberately false is the row count.
     #[test]
-    fn carrier_characters_follow_the_pointer_but_the_row_count_follows_the_message() {
+    fn t1_t43_cover_length_is_independent_of_payload_size() {
+        // These stand in for a one-grapheme and a 400-grapheme payload. The
+        // planner receives only their de-identified visual shapes plus the
+        // already-encoded pointer cover; its output must keep the same carrier
+        // length regardless of the protected payload size.
         let short = plain(&[1]);
         let long = plain(&[400]);
         let short_plan = plan_carrier(input(&short));
