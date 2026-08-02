@@ -156,7 +156,7 @@ import { peopleReverificationNoticeMarkup } from "./people-reverification-notice
 import { parseCircleAudience, type CircleAudience } from "./osl-collab";
 import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
-import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
+import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
 import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, recoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
 import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
@@ -2379,8 +2379,7 @@ function recoveryContent(): string {
   if (view.mode === "refusal") return recoveryProtectionRefusalContent(view);
   const secrets = visibleRecoverySecrets(state);
   if (!secrets) return `<p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="pro">Continue</button>`;
-  const accountRecovery = secrets.identityPhrase ? `<code>${escapeHtml(secrets.identityPhrase)}</code>` : `<p>Keep using the account recovery phrase you imported.</p>`;
-  return `<h1 id="route-heading" tabindex="-1" class="recovery-heading">Save your recovery kit</h1><section class="setup-surface recovery-surface">${recoveryProtectionNoticeMarkup(view)}<article class="recovery-kit-item"><span>1</span><div><strong>Account recovery</strong>${accountRecovery}</div></article><article class="recovery-kit-item"><span>2</span><div><strong>Password recovery</strong><code>${escapeHtml(secrets.passwordPhrase)}</code></div></article>${secureRecoveryOnboardingContent()}<details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(secrets.userId)}</code></details><button class="button" id="copy-recovery-kit" type="button">Copy recovery kit</button><label class="check"><input id="recovery-saved" type="checkbox" ${recoverySavedAcknowledged ? "checked" : ""}/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" ${recoverySavedAcknowledged ? "" : "disabled"}>Continue</button></section>`;
+  return `<h1 id="route-heading" tabindex="-1" class="recovery-heading">Save your recovery kit</h1><section class="setup-surface recovery-surface">${recoveryProtectionNoticeMarkup(view)}${recoveryKitSecretCardsMarkup(secrets, escapeHtml)}${secureRecoveryOnboardingContent()}<details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(secrets.userId)}</code></details><button class="button" id="copy-recovery-kit" type="button">Copy recovery kit</button><label class="check"><input id="recovery-saved" type="checkbox" ${recoverySavedAcknowledged ? "checked" : ""}/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" ${recoverySavedAcknowledged ? "" : "disabled"}>Continue</button></section>`;
 }
 
 /**
