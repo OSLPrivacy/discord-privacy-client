@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisites: T4-W1 must add apps/osl-hub/src/web_surface_adapter/ and T4-W2 must add crates/adapter-profile/src/defaults_web.rs before T4-W3 can instantiate its fixture adapter and profile.
