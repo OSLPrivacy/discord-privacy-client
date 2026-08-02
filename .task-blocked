@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T12-I4's imap_client.rs delete path is absent; moreover OWNER DECISION D57 supersedes the native-IMAP lane with consented UI automation, so T12-I5 needs an owner re-scope before implementation.
