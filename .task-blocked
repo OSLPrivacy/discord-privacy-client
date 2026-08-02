@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T4-N3's apps/osl-hub/src/osl_mail.rs read-path bridge (and N2 status/provision bridge); T4-N2 and T4-N3 own this prerequisite.
