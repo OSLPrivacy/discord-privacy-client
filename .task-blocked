@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T21-H3 is missing: apps/osl-hub-ui/src/osl-spaces-view.ts has no in-product visibility disclosure. T21-A2 must also land the owner-mandated Enclaves rename before T21-H4 can add its flow.
