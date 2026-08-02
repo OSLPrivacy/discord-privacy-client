@@ -3,7 +3,15 @@ import test from 'node:test';
 import {
   deterministicPageScript,
   stabilizeCaptureExpression,
+  MODES,
+  WIDTHS,
 } from './screenshot-matrix.mjs';
+
+test('matrix covers the exact responsive, motion, JavaScript, and zoom gate', () => {
+  assert.deepEqual(WIDTHS, [320, 360, 390, 768, 1024, 1440]);
+  assert.deepEqual(MODES.map((mode) => mode.id), ['js-on', 'js-off', 'reduced-motion', 'zoom-200']);
+  assert.equal(MODES.find((mode) => mode.id === 'zoom-200')?.pageScaleFactor, 2);
+});
 
 test('deterministicPageScript pins default Date construction and Date.now', () => {
   const source = deterministicPageScript();
@@ -14,12 +22,9 @@ test('deterministicPageScript pins default Date construction and Date.now', () =
   assert.match(source, /Date = MatrixDate;/);
 });
 
-test('stabilizeCaptureExpression disables motion-sensitive capture variance', () => {
+test('stabilizeCaptureExpression preserves CSP and starts at scroll origin', () => {
   const source = stabilizeCaptureExpression();
 
-  assert.match(source, /data-screenshot-matrix-stability/);
-  assert.match(source, /animation-duration:0s!important;/);
-  assert.match(source, /transition-duration:0s!important;/);
-  assert.match(source, /scroll-behavior:auto!important;/);
-  assert.match(source, /caret-color:transparent!important;/);
+  assert.match(source, /window\.scrollTo\(0, 0\)/);
+  assert.doesNotMatch(source, /createElement\('style'\)/);
 });

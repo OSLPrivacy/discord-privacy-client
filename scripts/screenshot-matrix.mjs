@@ -22,12 +22,17 @@ const MANIFEST_PATH = path.join(REPO_ROOT, 'data', 'public-surface-manifest.json
 const EVIDENCE_DIR = path.join(REPO_ROOT, 'docs', 'evidence', 'website-matrix');
 const SCREENSHOT_DIR = path.join(EVIDENCE_DIR, 'screenshots');
 const MATRIX_PATH = path.join(EVIDENCE_DIR, 'matrix.json');
-const WIDTHS = [320, 390, 768, 1280];
+// Product authority §8.6: test the exact owner-facing viewport set, including
+// narrow devices and the two common desktop breakpoints.
+export const WIDTHS = [320, 360, 390, 768, 1024, 1440];
 const VIEWPORT_HEIGHT = 900;
-const MODES = [
-  { id: 'js-on', javascript: true, reducedMotion: false },
-  { id: 'js-off', javascript: false, reducedMotion: false },
-  { id: 'reduced-motion', javascript: true, reducedMotion: true },
+export const MODES = [
+  { id: 'js-on', javascript: true, reducedMotion: false, pageScaleFactor: 1 },
+  { id: 'js-off', javascript: false, reducedMotion: false, pageScaleFactor: 1 },
+  { id: 'reduced-motion', javascript: true, reducedMotion: true, pageScaleFactor: 1 },
+  // Browser zoom, rather than CSS zoom, exercises responsive layout at the
+  // accessibility setting people actually use.
+  { id: 'zoom-200', javascript: true, reducedMotion: false, pageScaleFactor: 2 },
 ];
 
 function routeFromHtmlPath(htmlPath) {
@@ -258,20 +263,10 @@ export function deterministicPageScript() {
 
 export function stabilizeCaptureExpression() {
   return `(() => {
-    const style = document.createElement('style');
-    style.setAttribute('data-screenshot-matrix-stability', 'true');
-    style.textContent = [
-      '*,*::before,*::after{',
-      'animation-delay:0s!important;',
-      'animation-duration:0s!important;',
-      'animation-iteration-count:1!important;',
-      'transition-delay:0s!important;',
-      'transition-duration:0s!important;',
-      'scroll-behavior:auto!important;',
-      'caret-color:transparent!important;',
-      '}'
-    ].join('');
-    document.head.append(style);
+    // Do not inject a <style> element: production CSP is style-src 'self'.
+    // The reduced-motion matrix cell exercises motion-free rendering through
+    // CDP media emulation; each capture is taken at scroll origin.
+    window.scrollTo(0, 0);
   })()`;
 }
 
@@ -290,6 +285,7 @@ async function captureCombo({ cdp, port, page, width, mode }) {
       deviceScaleFactor: 1,
       mobile: width < 700,
     }, sessionId);
+    await cdp.send('Emulation.setPageScaleFactor', { pageScaleFactor: mode.pageScaleFactor }, sessionId);
     await cdp.send('Emulation.setScriptExecutionDisabled', { value: !mode.javascript }, sessionId);
     await cdp.send('Emulation.setEmulatedMedia', {
       features: mode.reducedMotion
@@ -354,6 +350,8 @@ async function captureCombo({ cdp, port, page, width, mode }) {
       mode: mode.id,
       javascript: mode.javascript,
       reduced_motion: mode.reducedMotion,
+      zoom_percent: mode.pageScaleFactor * 100,
+      capture_phase: 'before-scroll',
       viewport_width: width,
       viewport_height: VIEWPORT_HEIGHT,
       screenshot: relativePath.replaceAll(path.sep, '/'),
