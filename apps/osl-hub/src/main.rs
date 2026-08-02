@@ -9894,6 +9894,19 @@ mod tauri_command_acl_tests {
         assert!(source.contains("app.manage(check_current());"));
     }
 
+    #[test]
+    fn t14_t17_chat_activation_initializes_bilateral_capture_consent() {
+        let source = include_str!("main.rs");
+        let start = source
+            .find("async fn activate_osl_chat_context(")
+            .expect("shipping OSL Chat activation command");
+        let end = source[start + 1..]
+            .find("#[tauri::command]")
+            .map(|offset| start + 1 + offset)
+            .expect("next command boundary");
+        assert!(source[start..end].contains("capture_protection.ensure_conversation"));
+    }
+
     fn test_checked_host() -> CheckedHost {
         CheckedHost {
             context_epoch: 42,
