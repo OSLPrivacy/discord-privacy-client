@@ -1,0 +1,1 @@
+T15-E2 exports only code-sealed identity.json; it lacks source authorization and AnchorRecord generation/digest, while authorized reconciliation/anchor-material APIs remain private to crates/store. T15-E3 cannot adopt a floor or refuse replays without weakening D34.
