@@ -73,8 +73,8 @@ pub struct RecoveryGuard {
 }
 
 impl RecoveryGuard {
-    /// Outbound throttle: may we emit a `kind` request to `peer` now?
-    /// Records the emit time when it returns `true`.
+    /// Outbound throttle for recovery requests whose construction is also the
+    /// delivery operation (the legacy SKDM request path).
     pub fn should_emit(&mut self, peer: &str, kind: RecoveryKind, now: i64) -> bool {
         let key = (peer.to_string(), kind);
         if let Some(&t) = self.last_emit.get(&key) {
@@ -84,6 +84,20 @@ impl RecoveryGuard {
         }
         self.last_emit.insert(key, now);
         true
+    }
+
+    /// Test whether a SESSION_RESET may be sent without consuming its budget.
+    /// Call [`Self::record_emitted`] only once the transport confirms delivery.
+    pub fn may_emit(&self, peer: &str, kind: RecoveryKind, now: i64) -> bool {
+        self.last_emit
+            .get(&(peer.to_string(), kind))
+            .is_none_or(|&t| now.saturating_sub(t) >= RECOVERY_MIN_INTERVAL_SECS)
+    }
+
+    /// Arm a SESSION_RESET's outbound throttle after the transport confirms
+    /// delivery.
+    pub fn record_emitted(&mut self, peer: &str, kind: RecoveryKind, now: i64) {
+        self.last_emit.insert((peer.to_string(), kind), now);
     }
 
     /// Inbound gate (staleness + replay + honor-throttle). Does NOT
@@ -168,6 +182,20 @@ mod tests {
         assert!(g.should_emit(P, RecoveryKind::SessionReset, 1000));
         // Different peer: independent budget.
         assert!(g.should_emit("other", RecoveryKind::SkdmRequest, 1000));
+    }
+
+    #[test]
+    fn failed_wire_delivery_does_not_arm_the_emit_throttle() {
+        let mut g = RecoveryGuard::default();
+
+        // A wire was built, but its transport failed before delivery. There
+        // is deliberately no record_emitted call for that attempt.
+        assert!(g.may_emit(P, RecoveryKind::SessionReset, 1000));
+        assert!(g.may_emit(P, RecoveryKind::SessionReset, 1001));
+
+        // Once delivery succeeds, the same retry budget is throttled.
+        g.record_emitted(P, RecoveryKind::SessionReset, 1001);
+        assert!(!g.may_emit(P, RecoveryKind::SessionReset, 1002));
     }
 
     #[test]

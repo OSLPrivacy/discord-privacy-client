@@ -215,13 +215,19 @@ fn synthetic_volume_removal_reaches_only_the_removal_callback() {
         Box::new(move || {
             arrival_counter.fetch_add(1, Ordering::SeqCst);
         }),
-        Box::new(move || {
+        Box::new(move |device_id| {
+            assert_eq!(device_id.as_str(), r"\\?\Volume{test-device}");
             removal_counter.fetch_add(1, Ordering::SeqCst);
         }),
     );
 
-    let event = usb_monitor_event_from_device_change(0x0219, 0x8004, 0x0002)
-        .expect("synthetic volume removal message is monitored");
+    let event = usb_monitor_event_from_device_change(
+        0x0219,
+        0x8004,
+        0x0005,
+        Some(r"\\?\Volume{test-device}"),
+    )
+    .expect("synthetic volume removal message is monitored");
     callbacks.dispatch(event);
 
     assert_eq!(arrivals.load(Ordering::SeqCst), 0);
@@ -238,17 +244,22 @@ fn synthetic_capture_arrival_still_reaches_only_the_arrival_callback() {
         Box::new(move || {
             arrival_counter.fetch_add(1, Ordering::SeqCst);
         }),
-        Box::new(move || {
+        Box::new(move |_| {
             removal_counter.fetch_add(1, Ordering::SeqCst);
         }),
     );
 
-    let event = usb_monitor_event_from_device_change(0x0219, 0x8000, 0x0005)
+    let event = usb_monitor_event_from_device_change(0x0219, 0x8000, 0x0005, None)
         .expect("synthetic capture-arrival message is monitored");
     callbacks.dispatch(event);
 
     assert_eq!(arrivals.load(Ordering::SeqCst), 1);
     assert_eq!(removals.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn removal_event_rejects_reassignable_drive_letters_as_device_identity() {
+    assert!(usb_monitor_event_from_device_change(0x0219, 0x8004, 0x0005, Some("E:")).is_none());
 }
 
 #[test]

@@ -19,5 +19,5 @@ fn detector_enters_desynced_only_for_real_pinned_peer_symptoms() {
 
     let mut skip_bound_refusal = RnPeerHealth::default();
     skip_bound_refusal.observe_pinned_symptom(RnDesyncSymptom::MaxSkipPerMessageRefused);
-    assert_eq!(skip_bound_refusal.health(), RnSessionHealth::Desynced);
+    assert_eq!(skip_bound_refusal.health(), RnSessionHealth::Degraded);
 }

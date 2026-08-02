@@ -12,6 +12,9 @@ pub mod attachment_partial_guard;
 pub mod attachment_scan;
 #[cfg(feature = "core")]
 pub mod attachment_thumbnail;
+#[cfg(feature = "core")]
+pub mod attachment_thumbnail_policy;
+pub mod adapter_profile_boot;
 pub mod adapters;
 pub mod attended_imap;
 #[cfg(feature = "core")]
@@ -67,6 +70,8 @@ pub mod native_whatsapp_adapter;
 pub mod native_window_host;
 #[cfg(feature = "core")]
 pub mod osl_profile;
+#[cfg(feature = "core")]
+pub mod osl_mail;
 pub mod owner_presence;
 #[cfg(feature = "core")]
 pub mod peer_attachment_io;
@@ -79,8 +84,15 @@ pub mod proprietary_module_lifecycle;
 pub mod scrub_evidence_manifest;
 pub mod scrub_erasure_tracker;
 pub mod scrub_erasure_queue;
+pub mod scrub_hosted {
+    pub mod checkpoint;
+}
 #[cfg(feature = "core")]
 pub mod rn_recovery;
+#[cfg(feature = "core")]
+pub mod rn_attribution;
+#[cfg(all(feature = "core", feature = "desktop"))]
+pub mod revocation_drain_timer;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
@@ -88,6 +100,7 @@ pub mod updates;
 pub mod whatsapp_accessibility;
 pub mod whatsapp_qa_host;
 pub mod visual_binding;
+pub mod web_surface_adapter;
 #[cfg(feature = "core")]
 pub mod whatsapp_qa_pairing;
 pub mod whatsapp_qa_transport;

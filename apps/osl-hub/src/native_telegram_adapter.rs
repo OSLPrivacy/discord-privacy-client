@@ -4,6 +4,8 @@
 //! column sub-items.  This module deliberately selects only those direct
 //! columns; it never walks a row's arbitrary descendant tree.
 
+use crate::adapters::{Bounds, PaintConfidence, PaintTarget};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TelegramRect {
     pub left: i32,
@@ -97,6 +99,28 @@ pub struct TelegramRowCandidate {
     pub node_index: usize,
     pub text: String,
     pub body_bounds: TelegramRect,
+}
+
+/// Associate an already-derived carrier digest with the exact accessible body
+/// rectangle. Provider text is deliberately not part of the paint target.
+pub fn telegram_row_paint_target(
+    carrier_sha256: String,
+    row: &TelegramRowCandidate,
+) -> Result<PaintTarget, TelegramSelectorError> {
+    if carrier_sha256.is_empty() || !row.body_bounds.valid() {
+        return Err(TelegramSelectorError::Invalid);
+    }
+    Ok(PaintTarget {
+        carrier_sha256,
+        rect: Bounds {
+            x: row.body_bounds.left,
+            y: row.body_bounds.top,
+            width: row.body_bounds.width(),
+            height: row.body_bounds.height(),
+        },
+        clipped_by: None,
+        confidence: PaintConfidence::Exact,
+    })
 }
 
 pub fn discover_telegram_composer(
@@ -259,5 +283,31 @@ mod tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].node_index, 2);
         assert_eq!(selected[0].text, "must not be reached");
+    }
+
+    #[test]
+    fn row_paint_target_uses_the_accessible_body_rectangle_without_provider_text() {
+        let row = TelegramRowCandidate {
+            node_index: 3,
+            text: "provider message".into(),
+            body_bounds: rect(440, 245, 1060, 275),
+        };
+
+        let target = telegram_row_paint_target("carrier-digest".into(), &row).unwrap();
+        assert_eq!(target.carrier_sha256, "carrier-digest");
+        assert_eq!(
+            target.rect,
+            Bounds {
+                x: 440,
+                y: 245,
+                width: 620,
+                height: 30,
+            }
+        );
+        assert_eq!(target.confidence, PaintConfidence::Exact);
+        assert_eq!(
+            telegram_row_paint_target(String::new(), &row),
+            Err(TelegramSelectorError::Invalid)
+        );
     }
 }

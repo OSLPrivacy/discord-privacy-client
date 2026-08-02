@@ -127,6 +127,7 @@ import { freshStartCleanupPresentation, freshStartLimitationsMarkup } from "./fr
 import { loadAutoScrubRunFleetStatus, requestAutoScrubGlobalStop } from "./autoscrub-unattended-run";
 import { oslMailStage, type OslMailStage } from "./desktop-service-policy";
 import { webSurfaceLabel, type WebSurfaceCapability } from "./web-surface-label";
+import { homeProtectionState } from "./home-protection-state";
 import {
   acknowledgeOslMailRetrieval,
   burnOslMailbox,
@@ -150,6 +151,7 @@ export {
   type AutoscrubUnattendedRunResult,
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
+import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
@@ -157,7 +159,7 @@ import { parseCircleAudience, type CircleAudience } from "./osl-collab";
 import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { initialAccountRecoveryFlow, recoveryScreenMarkup } from "./account-recovery";
-import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
+import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
 import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, recoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
 import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
@@ -462,6 +464,7 @@ let discordMarkerAvailable = true;
 let whitelistRosterOpen = false;
 let onboardingComplete = false;
 let screenshotProtectionEnabled = false;
+let linkedServicesChecked = false;
 let windowCaptureEnabled = true;
 let hubIdentities: HubIdentitySlot[] = [];
 // An empty `hubIdentities` used to be read as "OSL is locked", which is a
@@ -1407,8 +1410,10 @@ function containBackgroundFailure(): void {
 }
 
 function desktopTitlebar(): string {
-  const nativeControlsBlocked = activeNativeHostId || activeDefaultBrowserCompanion ? ' disabled title="Unavailable while a companion window is open"' : "";
-  return `<header class="desktop-titlebar"><div class="desktop-drag-region" data-tauri-drag-region aria-hidden="true"></div>${fleetIndicatorMarkup()}<div class="window-controls"><button id="window-minimize" aria-label="Minimize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5h10"/></svg></button><button id="window-maximize" aria-label="Maximize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg></button><button id="window-close" class="window-close" aria-label="Close"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div></header>`;
+  const controlsBlocked = activeNativeHostId || activeDefaultBrowserCompanion;
+  const nativeControlsBlocked = controlsBlocked ? ' disabled aria-describedby="desktop-controls-unavailable"' : "";
+  const unavailableTooltip = controlsBlocked ? `<span class="in-dom-tooltip" id="desktop-controls-unavailable" role="tooltip">Unavailable while a companion window is open</span>` : "";
+  return `<header class="desktop-titlebar"><div class="desktop-drag-region" data-tauri-drag-region aria-hidden="true"></div>${fleetIndicatorMarkup()}<div class="window-controls in-dom-tooltip-anchor"><button id="window-minimize" aria-label="Minimize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5h10"/></svg></button><button id="window-maximize" aria-label="Maximize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg></button><button id="window-close" class="window-close" aria-label="Close"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button>${unavailableTooltip}</div></header>`;
 }
 
 // The hub route (onboarding excluded — see renderOnboarding) no longer gets a
@@ -1424,8 +1429,10 @@ function desktopTitlebar(): string {
 // header to dock into, and keeping the two independent avoids a shared
 // helper whose blast radius spans both layouts.
 function desktopWindowControlsMarkup(): string {
-  const nativeControlsBlocked = activeNativeHostId || activeDefaultBrowserCompanion ? ' disabled title="Unavailable while a companion window is open"' : "";
-  return `${fleetIndicatorMarkup()}<div class="window-controls"><button id="window-minimize" aria-label="Minimize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5h10"/></svg></button><button id="window-maximize" aria-label="Maximize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg></button><button id="window-close" class="window-close" aria-label="Close"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button></div>`;
+  const controlsBlocked = activeNativeHostId || activeDefaultBrowserCompanion;
+  const nativeControlsBlocked = controlsBlocked ? ' disabled aria-describedby="desktop-controls-unavailable"' : "";
+  const unavailableTooltip = controlsBlocked ? `<span class="in-dom-tooltip" id="desktop-controls-unavailable" role="tooltip">Unavailable while a companion window is open</span>` : "";
+  return `${fleetIndicatorMarkup()}<div class="window-controls in-dom-tooltip-anchor"><button id="window-minimize" aria-label="Minimize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5h10"/></svg></button><button id="window-maximize" aria-label="Maximize"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg></button><button id="window-close" class="window-close" aria-label="Close"${nativeControlsBlocked}><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button>${unavailableTooltip}</div>`;
 }
 
 const desktopMaximizeGlyph = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9"/></svg>';
@@ -2381,8 +2388,7 @@ function recoveryContent(): string {
   if (view.mode === "refusal") return recoveryProtectionRefusalContent(view);
   const secrets = visibleRecoverySecrets(state);
   if (!secrets) return `<p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="pro">Continue</button>`;
-  const accountRecovery = secrets.identityPhrase ? `<code>${escapeHtml(secrets.identityPhrase)}</code>` : `<p>Keep using the account recovery phrase you imported.</p>`;
-  return `<h1 id="route-heading" tabindex="-1" class="recovery-heading">Save your recovery kit</h1><section class="setup-surface recovery-surface">${recoveryProtectionNoticeMarkup(view)}<article class="recovery-kit-item"><span>1</span><div><strong>Account recovery</strong>${accountRecovery}</div></article><article class="recovery-kit-item"><span>2</span><div><strong>Password recovery</strong><code>${escapeHtml(secrets.passwordPhrase)}</code></div></article>${secureRecoveryOnboardingContent()}<details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(secrets.userId)}</code></details><button class="button" id="copy-recovery-kit" type="button">Copy recovery kit</button><label class="check"><input id="recovery-saved" type="checkbox" ${recoverySavedAcknowledged ? "checked" : ""}/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" ${recoverySavedAcknowledged ? "" : "disabled"}>Continue</button></section>`;
+  return `<h1 id="route-heading" tabindex="-1" class="recovery-heading">Save your recovery kit</h1><section class="setup-surface recovery-surface">${recoveryProtectionNoticeMarkup(view)}${recoveryKitSecretCardsMarkup(secrets, escapeHtml)}${secureRecoveryOnboardingContent()}<details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(secrets.userId)}</code></details><button class="button" id="copy-recovery-kit" type="button">Copy recovery kit</button><label class="check"><input id="recovery-saved" type="checkbox" ${recoverySavedAcknowledged ? "checked" : ""}/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" ${recoverySavedAcknowledged ? "" : "disabled"}>Continue</button></section>`;
 }
 
 /**
@@ -3358,7 +3364,7 @@ export function primarySidebarMarkup(): string {
 function appLauncherStrip(): string {
   const configured = configuredTopStripApps(homeAppsFromServices(services), homeTileOrder)
     .filter((app) => !hiddenServices.has(app.serviceId ?? ""));
-  return `<nav class="app-launcher-strip" aria-label="Your apps">${configured.map((app) => `<button class="app-launcher ${activeHomeAppId === app.id ? "active" : ""} ${appLaunchPendingId === app.id ? "pending" : ""}" data-home-app="${app.id}" aria-label="Open ${escapeHtml(app.displayName)}" title="${escapeHtml(app.displayName)}" ${appLaunchPendingId ? "disabled" : ""}>${homeAppLogo(app)}</button>`).join("")}</nav>`;
+  return `<nav class="app-launcher-strip" aria-label="Your apps">${configured.map((app) => `<button class="app-launcher in-dom-tooltip-anchor ${activeHomeAppId === app.id ? "active" : ""} ${appLaunchPendingId === app.id ? "pending" : ""}" data-home-app="${app.id}" aria-label="Open ${escapeHtml(app.displayName)}" ${appLaunchPendingId ? "disabled" : ""}>${homeAppLogo(app)}${inDomTooltipMarkup(app.displayName)}</button>`).join("")}</nav>`;
 }
 
 function simpleDeviceStatusMarkup(): string {
@@ -3402,7 +3408,7 @@ function fleetIndicatorMarkup(): string {
   // which blocks inline style attributes as well as <style> blocks, so the
   // previous inline-styled version rendered as two unstyled text runs jammed
   // against the window controls: no pill, no border, no vertical stacking.
-  return `<aside class="fleet-indicator fleet-indicator-${status.tone}" data-fleet-indicator data-open-run-count="${openRunCount}" data-open-run-names="${escapeHtml(runNames)}" role="status" aria-label="${escapeHtml(ariaLabel)}" title="${escapeHtml(ariaLabel)}"><span class="fleet-indicator-dot" aria-hidden="true"></span><span class="fleet-indicator-text"><strong>${escapeHtml(status.label)}</strong><small>${escapeHtml(runNames)}</small></span></aside>`;
+  return `<aside class="fleet-indicator fleet-indicator-${status.tone} in-dom-tooltip-anchor" data-fleet-indicator data-open-run-count="${openRunCount}" data-open-run-names="${escapeHtml(runNames)}" role="status" aria-label="${escapeHtml(ariaLabel)}"><span class="fleet-indicator-dot" aria-hidden="true"></span><span class="fleet-indicator-text"><strong>${escapeHtml(status.label)}</strong><small>${escapeHtml(runNames)}</small></span>${inDomTooltipMarkup(ariaLabel)}</aside>`;
 }
 
 /**
@@ -3442,7 +3448,7 @@ function nativeDiscordComposerUnreachableNotice(): string {
   // well as <style> blocks, so every declaration on this element was dropped:
   // the one chip that says plaintext is leaving the app right now rendered as
   // bare unstyled text with no border, no alarm colour and no chip shape.
-  return `<span class="native-discord-composer-unreachable" id="native-discord-composer-unreachable" role="alert" data-composer-input-state="unreachable" title="OSL's protected composer is visible but is not receiving keyboard input — ${cause}. Anything you type now goes to Discord unencrypted. Stop typing, click the composer with the cyan lock ring, and confirm the ring before every message."><span class="native-discord-composer-unreachable-mark" aria-hidden="true">!</span> Your typing is going to Discord, not OSL — check the cyan ring</span>`;
+  return `<span class="native-discord-composer-unreachable in-dom-tooltip-anchor" id="native-discord-composer-unreachable" role="alert" data-composer-input-state="unreachable"><span class="native-discord-composer-unreachable-mark" aria-hidden="true">!</span> Your typing is going to Discord, not OSL — check the cyan ring${inDomTooltipMarkup(`OSL's protected composer is visible but is not receiving keyboard input — ${cause}. Anything you type now goes to Discord unencrypted. Stop typing, click the composer with the cyan lock ring, and confirm the ring before every message.`)}</span>`;
 }
 
 function nativeDiscordHeaderControls(): string {
@@ -3454,7 +3460,7 @@ function nativeDiscordHeaderControls(): string {
   const composerUnreachableNotice = nativeDiscordComposerUnreachableNotice();
   if (!discordQaShell) {
     const inactive = nativeDiscordProtectionActive ? "" : "disabled";
-    return `<div class="native-discord-header-controls" aria-label="Discord privacy controls">${composerUnreachableNotice}<button class="header-protection-control burn" data-open-burn="chat" type="button" ${inactive} title="Burn this local OSL chat">Burn</button><button class="header-protection-control ${nativeDiscordCovertextEnabled ? "active" : ""}" id="native-discord-covertext" type="button" aria-pressed="${nativeDiscordCovertextEnabled}" title="${nativeDiscordCovertextEnabled ? "Covertext is on" : "Covertext is off"}">Covertext</button><button class="header-protection-control" id="native-discord-ai-covertext" type="button" disabled title="Requires a verified local model pack; no cloud AI is used">AI Covertext <small>Model pack needed</small></button></div>`;
+    return `<div class="native-discord-header-controls" aria-label="Discord privacy controls">${composerUnreachableNotice}<button class="header-protection-control burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive}>Burn${inDomTooltipMarkup("Burn this local OSL chat")}</button><button class="header-protection-control in-dom-tooltip-anchor ${nativeDiscordCovertextEnabled ? "active" : ""}" id="native-discord-covertext" type="button" aria-pressed="${nativeDiscordCovertextEnabled}">Covertext${inDomTooltipMarkup(nativeDiscordCovertextEnabled ? "Covertext is on" : "Covertext is off")}</button><button class="header-protection-control in-dom-tooltip-anchor" id="native-discord-ai-covertext" type="button" disabled>AI Covertext <small>Model pack needed</small>${inDomTooltipMarkup("Requires a verified local model pack; no cloud AI is used")}</button></div>`;
   }
   const context = peerProtectedSheet.context;
   const verifiedPeer = context
@@ -3478,7 +3484,7 @@ function nativeDiscordHeaderControls(): string {
   // attribute: the shipped CSP is `style-src 'self'` with no `'unsafe-inline'`,
   // which drops inline style attributes too, so the inline copy styled nothing.
   const whitelistWarningNotice = nativeDiscordProtectionActive && verifiedPeer && !scopeApproved
-    ? `<span class="discord-qa-whitelist-warning" id="discord-qa-whitelist-warning" role="status" data-whitelist-state="revoked" title="Press the + button to allow this chat again. Until then, every message you send in it will fail to send.">Encryption revoked for this chat — sends will fail until you allow it again</span>`
+    ? `<span class="discord-qa-whitelist-warning in-dom-tooltip-anchor" id="discord-qa-whitelist-warning" role="status" data-whitelist-state="revoked">Encryption revoked for this chat — sends will fail until you allow it again${inDomTooltipMarkup("Press the + button to allow this chat again. Until then, every message you send in it will fail to send.")}</span>`
     : "";
   const transcriptVisible = peerProtectedSheet.decryptDisplayEnabled;
   const flame = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.4 2.8c.5 3.6-2.6 4.8-2.6 7.4 0 1.1.7 2 1.8 2.4-.2-1.8.8-3.2 2.3-4.4 2.4 1.8 4 4.2 4 7.1A6.9 6.9 0 0 1 12 22a6.9 6.9 0 0 1-6.9-6.7c0-3.8 2.3-7.2 6.9-10.3-.1 2.5.6 3.3 1.4 4.1.8-1.8 1-3.9 0-6.3Z"/></svg>`;
@@ -3513,7 +3519,7 @@ function nativeDiscordHeaderControls(): string {
   const transcriptNotice = transcriptFailed || transcriptUnapplied
     ? `<span class="discord-qa-visibility-notice" id="discord-qa-transcript-visibility-notice" role="status" data-transcript-state="${transcriptOutcome}">${transcriptFailed ? "Eye failed — transcript unchanged" : "Eye saved — no display surface open"}</span>`
     : "";
-  const transcriptVisibilityControl = `<button class="discord-qa-icon-control ${transcriptVisible ? "visible" : "hidden"}${transcriptFailed ? " transcript-failed" : ""}" id="discord-qa-transcript-visibility" type="button" aria-pressed="${transcriptVisible}" data-transcript-mode="${transcriptMode}" data-transcript-state="${transcriptOutcome}" ${transcriptFailed ? 'aria-invalid="true" ' : ""}aria-label="${transcriptVisible ? "Hide protected transcript" : "Show protected transcript"}" title="${transcriptTitle}" ${!verifiedPeer || visibilityBusy ? "disabled" : ""}>${eye}</button>`;
+  const transcriptVisibilityControl = `<button class="discord-qa-icon-control in-dom-tooltip-anchor ${transcriptVisible ? "visible" : "hidden"}${transcriptFailed ? " transcript-failed" : ""}" id="discord-qa-transcript-visibility" type="button" aria-pressed="${transcriptVisible}" data-transcript-mode="${transcriptMode}" data-transcript-state="${transcriptOutcome}" ${transcriptFailed ? 'aria-invalid="true" ' : ""}aria-label="${transcriptVisible ? "Hide protected transcript" : "Show protected transcript"}" ${!verifiedPeer || visibilityBusy ? "disabled" : ""}>${eye}${inDomTooltipMarkup(transcriptTitle)}</button>`;
   const lock = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="${nativeDiscordProtectionActive ? "M8 10V7a4 4 0 0 1 8 0v3" : "M8 10V7a4 4 0 0 1 7.7-1.5"}"/></svg>`;
   // "Refused" only survives while protection is still off: an open composer
   // answers the question the refusal was asking. The four states are otherwise
@@ -3534,7 +3540,7 @@ function nativeDiscordHeaderControls(): string {
     : composerLockState === "busy"
       ? "Protected composer opening…"
       : composerRefusal
-        ? `Protected composer refused — ${escapeHtml(composerRefusal.message)} (${escapeHtml(composerRefusal.reason)})`
+        ? `Protected composer refused — ${composerRefusal.message} (${composerRefusal.reason})`
         : "Protected composer off — open";
   // Shape, not colour: a refused lock carries a bang mark, so the state reads
   // the same way with any theme or colour vision. Its `position: absolute` and
@@ -3550,14 +3556,14 @@ function nativeDiscordHeaderControls(): string {
   // false; the lock is hidden there. Protection already open stays shown so it
   // always has a control to turn back off, even if the view changes under it.
   const composerControl = discordMarkerAvailable || nativeDiscordProtectionActive
-    ? `<button class="discord-qa-icon-control composer ${nativeDiscordProtectionActive ? "locked" : "unlocked"}${composerRefusal ? " composer-refused" : ""}" id="discord-qa-toggle-composer" type="button" aria-pressed="${nativeDiscordProtectionActive}" aria-label="${composerProtectionLabel}" title="${composerProtectionLabel}" ${discordQaComposerBusy ? "disabled" : ""} data-lock-state="${composerLockState}"${composerRefusal ? ' aria-invalid="true"' : ""}>${lock}${composerRefusedMark}</button>`
+    ? `<button class="discord-qa-icon-control in-dom-tooltip-anchor composer ${nativeDiscordProtectionActive ? "locked" : "unlocked"}${composerRefusal ? " composer-refused" : ""}" id="discord-qa-toggle-composer" type="button" aria-pressed="${nativeDiscordProtectionActive}" aria-label="${escapeHtml(composerProtectionLabel)}" ${discordQaComposerBusy ? "disabled" : ""} data-lock-state="${composerLockState}"${composerRefusal ? ' aria-invalid="true"' : ""}>${lock}${composerRefusedMark}${inDomTooltipMarkup(composerProtectionLabel)}</button>`
     : "";
   // Persistent, plain-language refusal in the header strip — the one surface
   // that draws above the borrowed native Discord window. It stays until the
   // next operator attempt or a successful open, so a reason can no longer be
   // produced and lost, and it is never populated by an automatic retry.
   const composerRefusalNotice = composerRefusal
-    ? `<span class="discord-qa-composer-refusal" id="discord-qa-composer-refusal" role="status" data-lock-state="refused" title="${escapeHtml(composerRefusal.reason)}">${escapeHtml(composerRefusal.message)}</span>`
+    ? `<span class="discord-qa-composer-refusal in-dom-tooltip-anchor" id="discord-qa-composer-refusal" role="status" data-lock-state="refused">${escapeHtml(composerRefusal.message)}${inDomTooltipMarkup(composerRefusal.reason)}</span>`
     : "";
   const rowProofLabel = discordQaRowProofState === "accepted"
     ? "Row proof passed"
@@ -3568,8 +3574,8 @@ function nativeDiscordHeaderControls(): string {
         : rowProofBusy
           ? "Checking row proof…"
           : "Check row proof";
-  const rowProofControl = `<button class="discord-qa-control" id="discord-qa-row-proof" type="button" data-runtime-proof="${discordQaRowProofState}" aria-label="${rowProofLabel}" title="${rowProofLabel}" ${!nativeDiscordProtectionActive || !verifiedPeer || rowProofBusy ? "disabled" : ""}>Proof</button>`;
-  return `<div class="native-discord-header-controls discord-qa-header-controls" aria-label="Discord QA privacy controls"><div class="discord-qa-header-left"><button class="discord-qa-control danger icon-only" data-open-burn="account" type="button" aria-label="Account Burn" title="Open Account Burn confirmation">${accountBurnIcon}</button></div><button class="discord-qa-control danger icon-only discord-qa-discord-burn" data-open-burn="app" type="button" aria-label="Discord Burn" title="Open Discord Burn confirmation">${discordBurnIcon}</button><div class="discord-qa-header-right">${rowProofControl}<div class="discord-qa-whitelist" role="group" aria-label="Connected verified peer whitelist"><button id="discord-qa-whitelist-roster" type="button" aria-haspopup="dialog" aria-expanded="${whitelistRosterOpen}" title="Review who is whitelisted and where" ${discordQaHeaderBusy ? "disabled" : ""}>Whitelist</button><button id="discord-qa-whitelist-add" type="button" aria-label="Allow this verified peer scope" title="Allow this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || scopeApproved || whitelistBusy ? "disabled" : ""}>+</button><button id="discord-qa-whitelist-remove" type="button" aria-label="Revoke this verified peer scope" title="Revoke this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || !scopeApproved || whitelistBusy ? "disabled" : ""}>−</button></div><button class="discord-qa-control danger icon-only chat-burn" data-open-burn="chat" type="button" ${inactive} aria-label="Chat Burn" title="Open Chat Burn confirmation">${flame}</button>${composerUnreachableNotice}${composerRefusalNotice}${transcriptNotice}${transcriptVisibilityControl}${composerControl}${whitelistWarningNotice}</div></div>`;
+  const rowProofControl = `<button class="discord-qa-control in-dom-tooltip-anchor" id="discord-qa-row-proof" type="button" data-runtime-proof="${discordQaRowProofState}" aria-label="${rowProofLabel}" ${!nativeDiscordProtectionActive || !verifiedPeer || rowProofBusy ? "disabled" : ""}>Proof${inDomTooltipMarkup(rowProofLabel)}</button>`;
+  return `<div class="native-discord-header-controls discord-qa-header-controls" aria-label="Discord QA privacy controls"><div class="discord-qa-header-left"><button class="discord-qa-control danger icon-only in-dom-tooltip-anchor" data-open-burn="account" type="button" aria-label="Account Burn">${accountBurnIcon}${inDomTooltipMarkup("Open Account Burn confirmation")}</button></div><button class="discord-qa-control danger icon-only discord-qa-discord-burn in-dom-tooltip-anchor" data-open-burn="app" type="button" aria-label="Discord Burn">${discordBurnIcon}${inDomTooltipMarkup("Open Discord Burn confirmation")}</button><div class="discord-qa-header-right">${rowProofControl}<div class="discord-qa-whitelist" role="group" aria-label="Connected verified peer whitelist"><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-roster" type="button" aria-haspopup="dialog" aria-expanded="${whitelistRosterOpen}" ${discordQaHeaderBusy ? "disabled" : ""}>Whitelist${inDomTooltipMarkup("Review who is whitelisted and where")}</button><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-add" type="button" aria-label="Allow this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || scopeApproved || whitelistBusy ? "disabled" : ""}>+${inDomTooltipMarkup("Allow this verified peer scope")}</button><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-remove" type="button" aria-label="Revoke this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || !scopeApproved || whitelistBusy ? "disabled" : ""}>−${inDomTooltipMarkup("Revoke this verified peer scope")}</button></div><button class="discord-qa-control danger icon-only chat-burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive} aria-label="Chat Burn">${flame}${inDomTooltipMarkup("Open Chat Burn confirmation")}</button>${composerUnreachableNotice}${composerRefusalNotice}${transcriptNotice}${transcriptVisibilityControl}${composerControl}${whitelistWarningNotice}</div></div>`;
 }
 
 function trustedHeader(): string {
@@ -3610,7 +3616,7 @@ function trustedHeader(): string {
 function homeHeader(): string {
   const friendRequests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange).length;
   const notificationCount = notificationsEnabled ? visibleAppNotifications().length : 0;
-  return `<div class="trusted-stack home-trusted-stack"><header class="home-header home-command-bar"><button class="home-logo-button" data-route="home" aria-label="OSL Privacy home" title="OSL Privacy"><img src="${oslVectorLogoUrl}" alt=""/></button><nav class="home-command-actions" aria-label="Home controls"><button class="home-command-icon" data-open-friends type="button" aria-label="Friends${friendRequests ? `, ${friendRequests} pending` : ""}" title="Friends">${homeCommandIcon("friends")}${friendRequests ? `<span class="home-command-badge">${Math.min(friendRequests, 99)}</span>` : ""}</button><button class="home-command-icon" data-notification-settings type="button" aria-label="Notifications${notificationCount ? `, ${notificationCount} new` : ""}" title="Notifications">${homeCommandIcon("notifications")}${notificationCount ? `<span class="home-command-dot" aria-hidden="true"></span>` : ""}</button><button class="home-command-icon" data-route="settings" type="button" aria-label="Settings" title="Settings">${homeCommandIcon("settings")}</button></nav></header>${updateBannerMarkup()}</div>`;
+  return `<div class="trusted-stack home-trusted-stack"><header class="home-header home-command-bar"><button class="home-logo-button in-dom-tooltip-anchor" data-route="home" aria-label="OSL Privacy home"><img src="${oslVectorLogoUrl}" alt=""/>${inDomTooltipMarkup("OSL Privacy")}</button><nav class="home-command-actions" aria-label="Home controls"><button class="home-command-icon in-dom-tooltip-anchor" data-open-friends type="button" aria-label="Friends${friendRequests ? `, ${friendRequests} pending` : ""}">${homeCommandIcon("friends")}${friendRequests ? `<span class="home-command-badge">${Math.min(friendRequests, 99)}</span>` : ""}${inDomTooltipMarkup("Friends")}</button><button class="home-command-icon in-dom-tooltip-anchor" data-notification-settings type="button" aria-label="Notifications${notificationCount ? `, ${notificationCount} new` : ""}">${homeCommandIcon("notifications")}${notificationCount ? `<span class="home-command-dot" aria-hidden="true"></span>` : ""}${inDomTooltipMarkup("Notifications")}</button><button class="home-command-icon in-dom-tooltip-anchor" data-route="settings" type="button" aria-label="Settings">${homeCommandIcon("settings")}${inDomTooltipMarkup("Settings")}</button></nav></header>${updateBannerMarkup()}</div>`;
 }
 
 function homeCommandIcon(id: "friends" | "notifications" | "settings" | "organize"): string {
@@ -3786,6 +3792,10 @@ function homeDestinationContent(): string {
   const deviceProtected = coreReady && protection.state === "protected";
   const launchableApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
   const connectedApps = launchableApps.filter((app) => app.linked || savedNativeApps.has(app.id as NativeAppId));
+  const connectedAppsState = homeProtectionState(linkedServicesChecked, connectedApps.length > 0, {
+    enabled: "Ready",
+    unavailable: "Unavailable",
+  });
   const pendingFriendReviews = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange).length;
   const verifiedFriends = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange).length;
   const recentActivity = notificationsEnabled ? visibleAppNotifications().at(0) ?? null : null;
@@ -3804,7 +3814,7 @@ function homeDestinationContent(): string {
   const activityAction = recentActivity || !notificationsEnabled
     ? `<button class="button compact" data-notification-settings type="button">${recentActivity ? "Review" : "Turn on"}</button>`
     : `${statusTag("Quiet")}`;
-  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommendedAction}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedApps.length.toLocaleString("en-US")} of ${launchableApps.length.toLocaleString("en-US")} ready</small></span>${statusTag(connectedApps.length ? "Ready" : "Unavailable")}</div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
+  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommendedAction}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedApps.length.toLocaleString("en-US")} of ${launchableApps.length.toLocaleString("en-US")} ready</small></span>${statusTag(connectedAppsState.label, connectedAppsState.statusTone === "ok" ? "ok" : "")}</div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
 }
 
 function workspaceContent(): string {
@@ -3844,7 +3854,7 @@ function workspaceContent(): string {
     if (hidden && !homeEditMode) return "";
     const controls = homeEditMode ? `<span class="tile-edit-controls"><button class="tile-remove" type="button" data-tile-toggle="${escapeHtml(id)}" aria-label="${hidden ? "Show" : "Remove"} ${escapeHtml(id)}">${hidden ? "+" : "−"}</button><span class="tile-keyboard-controls"><button type="button" data-tile-move="${escapeHtml(id)}:-1" ${index === 0 ? "disabled" : ""} aria-label="Move before">←</button><button type="button" data-tile-move="${escapeHtml(id)}:1" ${index === orderedIds.length - 1 ? "disabled" : ""} aria-label="Move after">→</button></span></span>` : "";
     const module = moduleById.get(id as typeof modules[number]["id"]);
-    if (module) return `<article class="app-tile home-module ${module.available ? "" : "module-unavailable"} ${hidden ? "tile-hidden" : ""}" data-tile-id="${module.id}" draggable="${homeEditMode}" data-module-kind="${module.id}"><button type="button" data-home-module="${module.id}" ${module.available ? "" : "disabled"} aria-label="${escapeHtml(module.available ? module.name : `${module.name}, coming later`)}" title="${escapeHtml(module.available ? module.name : `${module.name} · Coming later`)}"><span class="app-logo-plate osl-module-logo" aria-hidden="true">${homeModuleIcon(module.id)}</span><span class="app-tile-copy"><strong>${module.name}</strong></span></button>${controls}</article>`;
+    if (module) return `<article class="app-tile home-module ${module.available ? "" : "module-unavailable"} ${hidden ? "tile-hidden" : ""}" data-tile-id="${module.id}" draggable="${homeEditMode}" data-module-kind="${module.id}"><button class="in-dom-tooltip-anchor" type="button" data-home-module="${module.id}" ${module.available ? "" : "disabled"} aria-label="${escapeHtml(module.available ? module.name : `${module.name}, coming later`)}"><span class="app-logo-plate osl-module-logo" aria-hidden="true">${homeModuleIcon(module.id)}</span><span class="app-tile-copy"><strong>${module.name}</strong></span>${inDomTooltipMarkup(module.available ? module.name : `${module.name} · Coming later`)}</button>${controls}</article>`;
     const app = byId.get(id as HomeAppId);
     if (!app) return "";
     const state = app.linked ? "OSL profile ready" : app.launchState === "available" ? "Set up" : "Coming later";
@@ -3856,12 +3866,12 @@ function workspaceContent(): string {
   const socialTiles = orderedIds.filter((id) => socialIds.has(id as HomeAppId)).map(renderHomeTile).join("");
   const emailTiles = orderedIds.filter((id) => emailIds.has(id as HomeAppId)).map(renderHomeTile).join("");
   const oslTiles = orderedIds.filter((id) => moduleById.has(id as typeof modules[number]["id"])).map(renderHomeTile).join("");
-  const organizeButton = (label: string) => `<button class="home-section-action" data-edit-home type="button" aria-label="${homeEditMode ? "Finish arranging" : `Customize ${label}`}" title="${homeEditMode ? "Done" : `Customize ${label}`}">${homeCommandIcon("organize")}</button>`;
+  const organizeButton = (label: string) => `<button class="home-section-action in-dom-tooltip-anchor" data-edit-home type="button" aria-label="${homeEditMode ? "Finish arranging" : `Customize ${label}`}">${homeCommandIcon("organize")}${inDomTooltipMarkup(homeEditMode ? "Done" : `Customize ${label}`)}</button>`;
   const oslSection = oslTiles ? `<section class="home-app-section home-osl-section"><div class="app-grid" aria-label="OSL tools">${oslTiles}</div></section>` : "";
   const activeIdentity = hubIdentities.find((identity) => identity.active);
   const profileName = activeIdentity?.label?.trim() || "OSL Profile";
   const profileInitial = profileName.slice(0, 1).toLocaleUpperCase();
-  return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary">${homeDestinationContent()}<section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile" title="${escapeHtml(profileName)}"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong></button></main>`;
+  return `<main id="home-navigation" class="content-viewport home-dashboard ${homeEditMode ? "editing" : ""}"><section class="home-primary">${homeDestinationContent()}<section class="home-apps" aria-labelledby="route-heading"><div class="home-app-groups">${oslSection}${socialTiles ? `<section class="home-app-section"><header><h2>Social</h2>${organizeButton("social apps")}</header><div class="app-grid" aria-label="Social apps">${socialTiles}</div></section>` : ""}${emailTiles ? `<section class="home-app-section"><header><h2>Email</h2>${organizeButton("email apps")}</header><div class="app-grid" aria-label="Email apps">${emailTiles}</div></section>` : ""}</div></section></section><button class="home-profile-dock in-dom-tooltip-anchor" data-route="settings" data-profile-settings type="button" aria-label="Open your OSL profile"><span aria-hidden="true">${escapeHtml(profileInitial)}</span><strong>${escapeHtml(profileName)}</strong>${inDomTooltipMarkup(profileName)}</button></main>`;
 }
 
 function parsedCircleAudiences(records: unknown[]): CircleAudience[] {
@@ -4442,11 +4452,11 @@ function whitelistRosterPersonMarkup(person: HubPerson, activePersonId: string |
   const hiddenScopeCount = Math.max(0, person.whitelistCount - visibleScopes.length);
   const scopeRows = visibleScopes.map((scope) => {
     const label = friendScopeLabel(scope);
-    return `<div class="whitelist-roster-scope"><span class="friend-scope">${escapeHtml(label)}${scope.userSpecific ? ` <small>only this person</small>` : ""}</span><div class="discord-qa-whitelist" role="group" aria-label="Trust for ${escapeHtml(label)}"><button type="button" data-whitelist-scope-add="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}" aria-label="Approve ${escapeHtml(label)} for ${escapeHtml(nickname)}" title="Already approved" disabled>+</button><button type="button" data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}" aria-label="Revoke ${escapeHtml(label)} for ${escapeHtml(nickname)}" title="${isActive ? "Revoke this chat now" : "Open this person's protected chat to revoke"}" ${!isActive || busy ? "disabled" : ""}>−</button></div></div>`;
+    return `<div class="whitelist-roster-scope"><span class="friend-scope">${escapeHtml(label)}${scope.userSpecific ? ` <small>only this person</small>` : ""}</span><div class="discord-qa-whitelist" role="group" aria-label="Trust for ${escapeHtml(label)}"><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-add="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}" aria-label="Approve ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>+${inDomTooltipMarkup("Already approved")}</button><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}" aria-label="Revoke ${escapeHtml(label)} for ${escapeHtml(nickname)}" ${!isActive || busy ? "disabled" : ""}>−${inDomTooltipMarkup(isActive ? "Revoke this chat now" : "Open this person's protected chat to revoke")}</button></div></div>`;
   }).join("");
   const narrowedRows = person.reachNarrowedScopes.slice(0, whitelistRosterScopeLimit).map((key) => {
     const label = narrowedScopeLabel(key);
-    return `<div class="whitelist-roster-scope narrowed"><span class="friend-scope narrowed">${escapeHtml(label)} <small>taken back</small></span><div class="discord-qa-whitelist" role="group" aria-label="Trust for ${escapeHtml(label)}"><button type="button" data-whitelist-scope-add="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(key)}" aria-label="Approve ${escapeHtml(label)} for ${escapeHtml(nickname)}" title="Approve this chat from inside it" disabled>+</button><button type="button" data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(key)}" aria-label="Revoke ${escapeHtml(label)} for ${escapeHtml(nickname)}" title="Not approved" disabled>−</button></div></div>`;
+    return `<div class="whitelist-roster-scope narrowed"><span class="friend-scope narrowed">${escapeHtml(label)} <small>taken back</small></span><div class="discord-qa-whitelist" role="group" aria-label="Trust for ${escapeHtml(label)}"><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-add="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(key)}" aria-label="Approve ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>+${inDomTooltipMarkup("Approve this chat from inside it")}</button><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(key)}" aria-label="Revoke ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>−${inDomTooltipMarkup("Not approved")}</button></div></div>`;
   }).join("");
   const scopes = scopeRows || `<span class="friend-none">No chats approved</span>`;
   const truncated = hiddenScopeCount > 0 || person.whitelistedScopesTruncated
@@ -4455,7 +4465,7 @@ function whitelistRosterPersonMarkup(person: HubPerson, activePersonId: string |
   // Reach widens trust that already exists, so it needs a recorded approval
   // or the approved chat the user is standing in — the hub enforces the same rule.
   const reachDisabled = !isActive || busy || (!person.reachBroadened && person.whitelistCount === 0 && !activeScopeApproved);
-  const reachButton = `<button class="button compact" type="button" data-whitelist-reach="${escapeHtml(person.personId)}" data-whitelist-reach-next="${person.reachBroadened ? "off" : "on"}" aria-pressed="${person.reachBroadened}" title="${person.reachBroadened ? "Withdraw reach across the chats you share" : "Extend this trust to the other chats you share"}" ${reachDisabled ? "disabled" : ""}>${person.reachBroadened ? "Limit reach" : "Extend reach"}</button>`;
+  const reachButton = `<button class="button compact in-dom-tooltip-anchor" type="button" data-whitelist-reach="${escapeHtml(person.personId)}" data-whitelist-reach-next="${person.reachBroadened ? "off" : "on"}" aria-pressed="${person.reachBroadened}" ${reachDisabled ? "disabled" : ""}>${person.reachBroadened ? "Limit reach" : "Extend reach"}${inDomTooltipMarkup(person.reachBroadened ? "Withdraw reach across the chats you share" : "Extend this trust to the other chats you share")}</button>`;
   const reachNote = isActive ? "" : `<small class="whitelist-roster-note">Open this person's protected chat to change their reach or revoke a chat.</small>`;
   return `<article class="whitelist-roster-row person-row" data-whitelist-person="${escapeHtml(person.personId)}"><header><div><strong>${escapeHtml(nickname)}</strong><small>${escapeHtml(whitelistReachLine(person))}</small></div>${reachButton}</header><div class="whitelist-roster-scopes">${scopes}${narrowedRows}</div>${truncated}${reachNote}</article>`;
 }
@@ -8699,7 +8709,10 @@ async function bootstrap(): Promise<void> {
     startReadyWorkspaceLoads();
     void Promise.all([servicesRequest, nativeAppsRequest, licenseRequest, browserCompanionRequest, browserProfilesRequest]).then(([linkedServices, nativeCatalog, currentLicenseState, currentBrowserCompanionStatus, profiles]) => {
       if (attempt !== bootstrapEpoch) return;
-      if (linkedServices) services = linkedServices;
+      if (linkedServices) {
+        services = linkedServices;
+        linkedServicesChecked = true;
+      }
       if (nativeCatalog && isCompleteNativeCatalog(nativeCatalog)) {
         nativeApps = nativeCatalog;
       }
@@ -8876,6 +8889,7 @@ type OslHubUiTestStatePatch = {
   coreReady?: boolean;
   storageMethod?: string | null;
   services?: LinkedService[];
+  servicesChecked?: boolean;
   hubPeople?: Array<Partial<HubPerson> & { personId: string }>;
   notificationsEnabled?: boolean;
   notificationPreviewContent?: boolean;
@@ -8940,6 +8954,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   activityAttentionReviewOpen = false;
   peoplePrimaryActionFocus = null;
   services = patch.services ?? [];
+  linkedServicesChecked = patch.servicesChecked ?? patch.services !== undefined;
   hubPeople = (patch.hubPeople ?? []).map(testHubPerson);
   hubIdentities = patch.hubIdentities ?? [];
   hubIdentitiesLoad = patch.hubIdentitiesLoad ?? (patch.hubIdentities ? "loaded" : "pending");

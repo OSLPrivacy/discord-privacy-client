@@ -7,6 +7,7 @@ export function workerEnv(overrides: Partial<Env> = {}): Env {
   return {
     DB: env.DB,
     ATTACHMENTS: env.ATTACHMENTS,
+    PAYLOADS: env.PAYLOADS,
     RATE_LIMIT: env.RATE_LIMIT,
     RATE_LIMIT_HASH_KEY: env.RATE_LIMIT_HASH_KEY,
     ...overrides,

@@ -1619,6 +1619,30 @@ pub fn manual_peer_binding(
     })
 }
 
+/// Resolve a current manual-peer binding by the stable OSL recipient id kept in
+/// the revocation outbox.  The timer never accepts an identity from a renderer;
+/// it re-reads the People and peer-map records before each network attempt so a
+/// removed or changed friend fails closed and the durable notice remains due.
+pub fn manual_peer_binding_for_osl_user_id(
+    core: &HubCoreState,
+    peer_osl_user_id: &str,
+) -> Result<ManualPeerBinding, String> {
+    require_unlocked()?;
+    let people = load_people_file(&config_dir()?)?;
+    let mut matching_people = people
+        .people
+        .iter()
+        .filter(|(_, metadata)| metadata.osl_user_id == peer_osl_user_id)
+        .map(|(person_id, _)| person_id.clone());
+    let person_id = matching_people
+        .next()
+        .ok_or_else(|| "OSL revocation recipient is no longer a friend".to_owned())?;
+    if matching_people.next().is_some() {
+        return Err("OSL revocation recipient identity is ambiguous".to_owned());
+    }
+    manual_peer_binding(core, person_id)
+}
+
 /// Return the pinned identity-signing key for an already-authorized manual
 /// peer. Receipt signatures use this key in addition to the authenticated
 /// transport envelope, so a stale or mismatched friend record fails closed.

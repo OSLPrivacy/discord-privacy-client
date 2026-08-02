@@ -30,7 +30,7 @@
 //! arrivals via `RegisterDeviceNotificationW`, and invokes the
 //! user-supplied callback on each `WM_DEVICECHANGE / DBT_DEVICEARRIVAL`.
 //! It also registers for volume notifications and forwards
-//! `DBT_DEVICEREMOVECOMPLETE` for `DBT_DEVTYP_VOLUME` to a separate callback.
+//! `DBT_DEVICEREMOVECOMPLETE` for `GUID_DEVINTERFACE_VOLUME` to a separate callback.
 //! On non-Windows targets [`UsbMonitor::start`] is a no-op stub so
 //! the rest of the binary compiles on Linux / macOS dev hosts.
 //!
@@ -92,38 +92,68 @@ pub type Result<T> = core::result::Result<T, UsbMonitorError>;
 /// a dedicated thread.
 pub type ArrivalCallback = Box<dyn Fn() + Send + Sync + 'static>;
 
+/// A Windows volume device-interface path.
+///
+/// Windows may assign a different drive letter when the same device returns,
+/// so a drive letter must never be used as the dead-man switch's device key.
+/// The `GUID_DEVINTERFACE_VOLUME` notification supplies this symbolic-link
+/// path instead.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct StorageDeviceId(String);
+
+impl StorageDeviceId {
+    /// Creates an identity from a volume device-interface symbolic-link path.
+    /// A drive letter is not valid: Windows can reassign one whenever a
+    /// volume is mounted. Device-interface paths begin with `\\?\`.
+    pub fn new(device_interface_path: impl Into<String>) -> Option<Self> {
+        let device_interface_path = device_interface_path.into();
+        device_interface_path
+            .starts_with(r"\\?\")
+            .then_some(Self(device_interface_path))
+    }
+
+    /// The opaque Windows device-interface symbolic-link path.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Callback invoked when Windows reports that a mounted volume was removed.
 /// This is deliberately separate from [`ArrivalCallback`]: capture-device
 /// arrivals continue to drive rotation, while a volume removal is consumed by
-/// the dead-man switch.
-pub type VolumeRemovalCallback = Box<dyn Fn() + Send + Sync + 'static>;
+/// the dead-man switch with a stable, non-drive-letter identity.
+pub type VolumeRemovalCallback = Box<dyn Fn(StorageDeviceId) + Send + Sync + 'static>;
 
 /// USB monitor events forwarded from the platform-specific message pump.
 ///
 /// Keeping this event boundary platform-independent lets callers and tests
 /// exercise the same callback routing without manufacturing a Win32 message.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UsbMonitorEvent {
     /// A device registered in the capture interface class arrived.
     CaptureArrival,
-    /// A mounted volume was removed.
-    VolumeRemoval,
+    /// A mounted volume was removed, identified by its Windows device
+    /// interface path rather than its reassignable drive letter.
+    StorageDeviceRemoved(StorageDeviceId),
 }
 
 /// Decodes the subset of `WM_DEVICECHANGE` messages consumed by this monitor.
 ///
 /// The numeric values are Win32's `WM_DEVICECHANGE`, `DBT_DEVICEARRIVAL`,
-/// `DBT_DEVICEREMOVECOMPLETE`, `DBT_DEVTYP_DEVICEINTERFACE`, and
-/// `DBT_DEVTYP_VOLUME` respectively. Keeping this decoder independent of the
+/// `DBT_DEVICEREMOVECOMPLETE`, and `DBT_DEVTYP_DEVICEINTERFACE` respectively.
+/// Keeping this decoder independent of the
 /// Windows bindings makes the real message routing testable on every target.
 pub fn usb_monitor_event_from_device_change(
     message: u32,
     change: u32,
     device_type: u32,
+    device_interface_path: Option<&str>,
 ) -> Option<UsbMonitorEvent> {
     match (message, change, device_type) {
         (0x0219, 0x8000, 0x0005) => Some(UsbMonitorEvent::CaptureArrival),
-        (0x0219, 0x8004, 0x0002) => Some(UsbMonitorEvent::VolumeRemoval),
+        (0x0219, 0x8004, 0x0005) => device_interface_path
+            .and_then(StorageDeviceId::new)
+            .map(UsbMonitorEvent::StorageDeviceRemoved),
         _ => None,
     }
 }
@@ -147,7 +177,7 @@ impl UsbMonitorCallbacks {
     pub fn dispatch(&self, event: UsbMonitorEvent) {
         match event {
             UsbMonitorEvent::CaptureArrival => (self.arrival)(),
-            UsbMonitorEvent::VolumeRemoval => (self.volume_removal)(),
+            UsbMonitorEvent::StorageDeviceRemoved(device_id) => (self.volume_removal)(device_id),
         }
     }
 }
@@ -164,11 +194,22 @@ pub const KSCATEGORY_CAPTURE_GUID_BYTES: [u8; 16] = [
     0xA3, 0xB9, 0x00, 0xA0, 0xC9, 0x22, 0x31, 0x96, // Data4
 ];
 
+/// `GUID_DEVINTERFACE_VOLUME` (`{53F5630D-B6BF-11D0-94F2-00A0C91EFB8B}`).
+/// Registering this interface class provides an opaque device path in the
+/// notification payload; `DBT_DEVTYP_VOLUME` only supplies a drive-letter
+/// bitmask, which is not a stable identity.
+pub const GUID_DEVINTERFACE_VOLUME_BYTES: [u8; 16] = [
+    0x0D, 0x63, 0xF5, 0x53, // Data1 little-endian: 0x53F5630D
+    0xBF, 0xB6, // Data2: 0xB6BF
+    0xD0, 0x11, // Data3: 0x11D0
+    0x94, 0xF2, 0x00, 0xA0, 0xC9, 0x1E, 0xFB, 0x8B, // Data4
+];
+
 #[cfg(windows)]
 mod imp {
     use super::{
         usb_monitor_event_from_device_change, Result, UsbMonitorCallbacks, UsbMonitorError,
-        UsbMonitorEvent, KSCATEGORY_CAPTURE_GUID_BYTES,
+        UsbMonitorEvent, GUID_DEVINTERFACE_VOLUME_BYTES, KSCATEGORY_CAPTURE_GUID_BYTES,
     };
     use std::sync::Arc;
     use std::thread::JoinHandle;
@@ -179,14 +220,20 @@ mod imp {
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
         RegisterClassExW, RegisterDeviceNotificationW, SetWindowLongPtrW, TranslateMessage,
         UnregisterClassW, UnregisterDeviceNotification, DBT_DEVTYP_DEVICEINTERFACE,
-        DBT_DEVTYP_VOLUME, DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W,
-        DEV_BROADCAST_HDR, DEV_BROADCAST_VOLUME, GWLP_USERDATA, HWND_MESSAGE, MSG,
-        REGISTER_NOTIFICATION_FLAGS, WINDOW_EX_STYLE, WM_DESTROY, WM_DEVICECHANGE, WM_QUIT,
-        WNDCLASSEXW,
+        DEVICE_NOTIFY_WINDOW_HANDLE, DEV_BROADCAST_DEVICEINTERFACE_W, DEV_BROADCAST_HDR,
+        GWLP_USERDATA, HWND_MESSAGE, MSG, REGISTER_NOTIFICATION_FLAGS, WINDOW_EX_STYLE, WM_DESTROY,
+        WM_DEVICECHANGE, WM_QUIT, WNDCLASSEXW,
     };
 
     fn ksc_capture_guid() -> GUID {
-        let b = KSCATEGORY_CAPTURE_GUID_BYTES;
+        guid_from_le_bytes(KSCATEGORY_CAPTURE_GUID_BYTES)
+    }
+
+    fn volume_interface_guid() -> GUID {
+        guid_from_le_bytes(GUID_DEVINTERFACE_VOLUME_BYTES)
+    }
+
+    fn guid_from_le_bytes(b: [u8; 16]) -> GUID {
         GUID {
             data1: u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
             data2: u16::from_le_bytes([b[4], b[5]]),
@@ -406,16 +453,14 @@ mod imp {
             )
             .map_err(|e| UsbMonitorError::Win32(format!("RegisterDeviceNotificationW: {e}")))?;
 
-            // Volume notifications are independent of the capture-interface
-            // registration above. Windows fills the volume metadata in each
-            // removal message; the dead-man consumer only needs the removal
-            // edge, so it receives the event through its dedicated callback.
-            let mut volume_filter = DEV_BROADCAST_VOLUME {
-                dbcv_size: std::mem::size_of::<DEV_BROADCAST_VOLUME>() as u32,
-                dbcv_devicetype: DBT_DEVTYP_VOLUME.0,
-                dbcv_reserved: 0,
-                dbcv_unitmask: 0,
-                dbcv_flags: Default::default(),
+            // Unlike DBT_DEVTYP_VOLUME, GUID_DEVINTERFACE_VOLUME supplies the
+            // volume's symbolic-link path, not a reassignable drive letter.
+            let mut volume_filter = DEV_BROADCAST_DEVICEINTERFACE_W {
+                dbcc_size: std::mem::size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>() as u32,
+                dbcc_devicetype: DBT_DEVTYP_DEVICEINTERFACE.0,
+                dbcc_reserved: 0,
+                dbcc_classguid: volume_interface_guid(),
+                dbcc_name: [0],
             };
             let volume_notify_handle = match RegisterDeviceNotificationW(
                 hwnd,
@@ -426,7 +471,7 @@ mod imp {
                 Err(e) => {
                     let _ = UnregisterDeviceNotification(notify_handle);
                     return Err(UsbMonitorError::Win32(format!(
-                        "RegisterDeviceNotificationW(volume): {e}"
+                        "RegisterDeviceNotificationW(volume interface): {e}"
                     )));
                 }
             };
@@ -463,7 +508,7 @@ mod imp {
     }
 
     /// `WndProc` for the hidden monitor window. Handles
-    /// `WM_DEVICECHANGE` and forwards capture arrivals and volume removals to
+    /// `WM_DEVICECHANGE` and forwards capture arrivals and storage removals to
     /// their respective callbacks.
     unsafe extern "system" fn wnd_proc(
         hwnd: HWND,
@@ -486,6 +531,7 @@ mod imp {
                         msg,
                         wparam.0 as u32,
                         (*hdr).dbch_devicetype.0,
+                        device_interface_path(hdr).as_deref(),
                     ) {
                         let state = &*(user_data as *const WindowState);
                         state.callbacks.dispatch(event);
@@ -501,6 +547,31 @@ mod imp {
             return LRESULT(0);
         }
         DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+
+    /// Extract the NUL-terminated device-interface path from a device-change
+    /// payload. The path belongs to the message and is copied before the
+    /// callback returns.
+    unsafe fn device_interface_path(hdr: *const DEV_BROADCAST_HDR) -> Option<String> {
+        if (*hdr).dbch_devicetype.0 != DBT_DEVTYP_DEVICEINTERFACE.0 {
+            return None;
+        }
+
+        let fixed_size =
+            std::mem::size_of::<DEV_BROADCAST_DEVICEINTERFACE_W>() - std::mem::size_of::<u16>();
+        let payload_size = (*hdr).dbch_size as usize;
+        if payload_size <= fixed_size {
+            return None;
+        }
+
+        let name_len = (payload_size - fixed_size) / std::mem::size_of::<u16>();
+        let interface = hdr.cast::<DEV_BROADCAST_DEVICEINTERFACE_W>();
+        let name = std::slice::from_raw_parts((*interface).dbcc_name.as_ptr(), name_len);
+        let nul = name
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(name.len());
+        String::from_utf16(&name[..nul]).ok()
     }
 }
 
@@ -534,7 +605,7 @@ impl UsbMonitor {
     /// Start monitoring for capture-class USB device arrivals.
     /// `callback` is invoked once per arrival event.
     pub fn start(callback: ArrivalCallback) -> Result<Self> {
-        Self::start_with_volume_removal(callback, Box::new(|| {}))
+        Self::start_with_volume_removal(callback, Box::new(|_| {}))
     }
 
     /// Start monitoring for capture arrivals and mounted-volume removals.

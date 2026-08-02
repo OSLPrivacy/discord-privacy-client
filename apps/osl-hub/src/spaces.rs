@@ -5,7 +5,12 @@
 //! every active member.  The founding member is an administrator because of a
 //! roster role, not because their account holds different cryptographic state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::burn_authorize::{
+    authorize_remote_friend_burn, BurnAuthorizationError, BurnScopeBindings,
+};
+use crate::burn_contract::{BurnSignatureVerifier, RemoteFriendBurnPlan, RemoteFriendBurnRequest};
 
 /// A sender-side cooldown for one Space.
 ///
@@ -109,6 +114,174 @@ pub enum CreateSpaceError {
     EmptyFounderIdentity,
 }
 
+/// The one server-side effect of an administrative deletion request.
+///
+/// This does not say anything about the copies held by Space members.  The
+/// server can confirm its own blob delete; each member's local deletion is a
+/// distinct, independently acknowledged request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServerBlobDeleteRequestState {
+    Queued,
+    Confirmed,
+}
+
+/// Honest, count-only status for an admin's delete-for-everyone request.
+///
+/// The variants intentionally retain `Request`: even after the server blob is
+/// confirmed gone, member copies remain independent instructions whose absent
+/// acknowledgements are `Unconfirmed`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdminDeleteForEveryoneRequestStatus {
+    RequestQueued { member_deletions_confirmed: usize },
+    RequestServerBlobConfirmed { member_deletions_confirmed: usize },
+}
+
+impl AdminDeleteForEveryoneRequestStatus {
+    /// Display copy for a UI that must never turn a queued request into a
+    /// completed deletion.  The member result is a count, never a boolean or
+    /// a denominator, so it does not expose member device totals.
+    pub fn display_text(self) -> String {
+        let confirmed = match self {
+            Self::RequestQueued {
+                member_deletions_confirmed,
+            }
+            | Self::RequestServerBlobConfirmed {
+                member_deletions_confirmed,
+            } => member_deletions_confirmed,
+        };
+        let member_word = if confirmed == 1 { "member" } else { "members" };
+        let server_text = match self {
+            Self::RequestQueued { .. } => {
+                "Delete request queued; server blob deletion is unconfirmed"
+            }
+            Self::RequestServerBlobConfirmed { .. } => {
+                "Delete request; server blob deletion confirmed"
+            }
+        };
+        format!(
+            "{server_text}. {confirmed} {member_word} confirmed deletion; all other member deletions are Unconfirmed."
+        )
+    }
+}
+
+/// A planned admin delete-for-everyone action.  It is a request, not a claim
+/// that any member copy has disappeared.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminDeleteForEveryoneRequest {
+    remote_burn_plan: RemoteFriendBurnPlan,
+    pending_member_deletions: BTreeSet<SpaceMemberId>,
+    confirmed_member_deletions: BTreeSet<SpaceMemberId>,
+    server_blob_delete: ServerBlobDeleteRequestState,
+}
+
+impl AdminDeleteForEveryoneRequest {
+    /// The outgoing authenticated instructions.  These are queued requests;
+    /// their presence is not a member-deletion acknowledgement.
+    pub fn peer_deletion_instruction_count(&self) -> usize {
+        self.remote_burn_plan.notices.len()
+    }
+
+    pub const fn server_blob_delete_state(&self) -> ServerBlobDeleteRequestState {
+        self.server_blob_delete
+    }
+
+    pub fn status(&self) -> AdminDeleteForEveryoneRequestStatus {
+        let member_deletions_confirmed = self.confirmed_member_deletions.len();
+        match self.server_blob_delete {
+            ServerBlobDeleteRequestState::Queued => {
+                AdminDeleteForEveryoneRequestStatus::RequestQueued {
+                    member_deletions_confirmed,
+                }
+            }
+            ServerBlobDeleteRequestState::Confirmed => {
+                AdminDeleteForEveryoneRequestStatus::RequestServerBlobConfirmed {
+                    member_deletions_confirmed,
+                }
+            }
+        }
+    }
+
+    /// Records only the relay's confirmation of its own blob deletion.
+    pub fn confirm_server_blob_deletion(&mut self) {
+        self.server_blob_delete = ServerBlobDeleteRequestState::Confirmed;
+    }
+
+    /// Records an individual member acknowledgement.  An absent acknowledgement
+    /// remains `Unconfirmed`; it is neither compliance nor refusal.
+    pub fn record_member_deletion_acknowledgement(&mut self, member: SpaceMemberId) -> bool {
+        if !self.pending_member_deletions.contains(&member) {
+            return false;
+        }
+        self.confirmed_member_deletions.insert(member)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum AdminDeleteForEveryoneError {
+    NotAnAdmin,
+    NoOtherMembers,
+    RequestTargetsDoNotMatchSpaceMembership,
+    Authorization(BurnAuthorizationError),
+}
+
+/// Authorize an admin's delete-for-everyone request and queue one authenticated
+/// delete instruction for every other current Space member.
+///
+/// This deliberately delegates cryptographic scope, issuer, consent, and
+/// signature checks to T2's [`authorize_remote_friend_burn`] boundary.  Space
+/// moderation adds only the roster-role and current-membership checks; it does
+/// not create another burn authorization system.
+pub fn request_admin_delete_for_everyone(
+    space: &Space,
+    requesting_admin: SpaceMemberId,
+    bindings: BurnScopeBindings<'_>,
+    local_identity_commitment: [u8; 32],
+    request: &RemoteFriendBurnRequest,
+    revoked_grants: &BTreeMap<[u8; 16], u64>,
+    verifier: &impl BurnSignatureVerifier,
+) -> Result<AdminDeleteForEveryoneRequest, AdminDeleteForEveryoneError> {
+    if space.role_of(requesting_admin) != Some(SpaceRole::Admin) {
+        return Err(AdminDeleteForEveryoneError::NotAnAdmin);
+    }
+
+    let pending_member_deletions: BTreeSet<_> = space
+        .members
+        .keys()
+        .copied()
+        .filter(|member| *member != requesting_admin)
+        .collect();
+    if pending_member_deletions.is_empty() {
+        return Err(AdminDeleteForEveryoneError::NoOtherMembers);
+    }
+    let request_targets: BTreeSet<_> = request
+        .affected_identity_commitments
+        .iter()
+        .copied()
+        .map(SpaceMemberId::from_bytes)
+        .collect();
+    if request_targets != pending_member_deletions
+        || request.affected_identity_commitments.len() != request_targets.len()
+    {
+        return Err(AdminDeleteForEveryoneError::RequestTargetsDoNotMatchSpaceMembership);
+    }
+
+    let remote_burn_plan = authorize_remote_friend_burn(
+        bindings,
+        local_identity_commitment,
+        request,
+        revoked_grants,
+        verifier,
+    )
+    .map_err(AdminDeleteForEveryoneError::Authorization)?;
+
+    Ok(AdminDeleteForEveryoneRequest {
+        remote_burn_plan,
+        pending_member_deletions,
+        confirmed_member_deletions: BTreeSet::new(),
+        server_blob_delete: ServerBlobDeleteRequestState::Queued,
+    })
+}
+
 /// Creates a Space with its founder as an administrator.
 ///
 /// The returned object contains no key material.  In particular, the founder
@@ -197,6 +370,48 @@ mod tests {
         assert_eq!(
             create_space(SpaceId::from_bytes([1; 20]), member(0)),
             Err(CreateSpaceError::EmptyFounderIdentity)
+        );
+    }
+
+    #[test]
+    fn t21_t37_admin_delete_stays_a_request_until_each_member_acknowledges() {
+        let bob = member(2);
+        let carol = member(3);
+        let mut request = AdminDeleteForEveryoneRequest {
+            remote_burn_plan: RemoteFriendBurnPlan {
+                burn_id: [9; 32],
+                notices: vec![],
+            },
+            pending_member_deletions: BTreeSet::from([bob, carol]),
+            confirmed_member_deletions: BTreeSet::new(),
+            server_blob_delete: ServerBlobDeleteRequestState::Queued,
+        };
+
+        assert_eq!(request.peer_deletion_instruction_count(), 0);
+        assert_eq!(
+            request.status(),
+            AdminDeleteForEveryoneRequestStatus::RequestQueued {
+                member_deletions_confirmed: 0
+            }
+        );
+        assert_eq!(
+            request.status().display_text(),
+            "Delete request queued; server blob deletion is unconfirmed. 0 members confirmed deletion; all other member deletions are Unconfirmed."
+        );
+
+        request.confirm_server_blob_deletion();
+        assert!(request.record_member_deletion_acknowledgement(bob));
+        assert!(!request.record_member_deletion_acknowledgement(member(4)));
+        assert_eq!(
+            request.status(),
+            AdminDeleteForEveryoneRequestStatus::RequestServerBlobConfirmed {
+                member_deletions_confirmed: 1
+            },
+            "a server confirmation and one acknowledgement cannot complete the other member request"
+        );
+        assert_eq!(
+            request.status().display_text(),
+            "Delete request; server blob deletion confirmed. 1 member confirmed deletion; all other member deletions are Unconfirmed."
         );
     }
 
