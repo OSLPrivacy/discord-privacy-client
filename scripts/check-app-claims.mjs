@@ -3322,6 +3322,11 @@ async function runSelfTest() {
   const ratchetClaims = parseRatchetClaims(allowlist);
   const fixtures = [
     {
+      name: "T13-TI1 catches unearned undetectable cover claim",
+      text: "OSL cover text is statistically undetectable.",
+      shouldFlag: true,
+    },
+    {
       name: "catches destroys-keys inversion",
       text: "The product destroys keys, not messages.",
       shouldFlag: true,
