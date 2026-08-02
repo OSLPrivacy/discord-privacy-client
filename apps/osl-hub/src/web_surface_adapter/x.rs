@@ -179,18 +179,71 @@ impl<D: XSurfaceDriver> WebSurfaceBackend for XWebBackend<D> {
         Ok(Self::destination_from(self.snapshot()?))
     }
 
-    // T4-P4 replaces these fail-closed stubs with the VM-guarded write path.
-    fn place(&self, _: &SurfaceBinding, _: &Carrier) -> PlacementReceipt {
+    fn place(&self, _: &SurfaceBinding, carrier: &Carrier) -> PlacementReceipt {
+        let before = match self.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(_) => return not_placed(),
+        };
+        let expected = digest("x-carrier", &carrier.0);
+        if self.driver.place_with_vm_attestation(&carrier.0).is_err() {
+            return not_placed();
+        }
+        let after = match self.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(_) => return not_placed(),
+        };
+
+        // Placement is an edit only.  A newly visible row means the platform
+        // submitted while placing, so do not issue a successful receipt.
+        if after.rows.len() != before.rows.len()
+            || after.generation != before.generation
+            || after.composer_text != carrier.0
+        {
+            return not_placed();
+        }
         PlacementReceipt {
-            status: PlacementStatus::NotPlaced,
-            placed_sha256: None,
+            status: PlacementStatus::Placed,
+            placed_sha256: Some(expected),
             elapsed_ms: 0,
         }
     }
 
-    fn commit(&self, _: &SurfaceBinding, _: &PlacementReceipt) -> SendReceipt {
+    fn commit(&self, _: &SurfaceBinding, placed: &PlacementReceipt) -> SendReceipt {
+        if placed.status != PlacementStatus::Placed || placed.placed_sha256.is_none() {
+            return not_sent();
+        }
+        let before = match self.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(_) => return not_sent(),
+        };
+        let outcome = match self.driver.commit_with_vm_attestation() {
+            Ok(outcome) => outcome,
+            Err(_) => return not_sent(),
+        };
+        if outcome != SendOutcome::Sent {
+            return SendReceipt {
+                outcome,
+                elapsed_ms: 0,
+            };
+        }
+        let after = match self.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                return SendReceipt {
+                    outcome: SendOutcome::Unknown,
+                    elapsed_ms: 0,
+                }
+            }
+        };
+        // The send command is one-shot: any ambiguity is reported as Unknown
+        // and is never retried by this adapter.
+        let outcome = if after.rows.len() == before.rows.len() + 1 {
+            SendOutcome::Sent
+        } else {
+            SendOutcome::Unknown
+        };
         SendReceipt {
-            outcome: SendOutcome::NotSent,
+            outcome,
             elapsed_ms: 0,
         }
     }
@@ -213,6 +266,21 @@ fn digest(domain: &str, value: &str) -> String {
     )
 }
 
+fn not_placed() -> PlacementReceipt {
+    PlacementReceipt {
+        status: PlacementStatus::NotPlaced,
+        placed_sha256: None,
+        elapsed_ms: 0,
+    }
+}
+
+fn not_sent() -> SendReceipt {
+    SendReceipt {
+        outcome: SendOutcome::NotSent,
+        elapsed_ms: 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +301,29 @@ mod tests {
 
         fn snapshot(&self) -> Result<XSurfaceSnapshot, AdapterRefusal> {
             Ok(self.0.lock().unwrap().clone())
+        }
+
+        fn place_with_vm_attestation(&self, carrier: &str) -> Result<(), AdapterRefusal> {
+            // The fixture models the T3-F4-owned, VM-attested write boundary.
+            // It deliberately changes only the composer; no Enter/submit occurs.
+            self.0.lock().unwrap().composer_text = carrier.to_owned();
+            Ok(())
+        }
+
+        fn commit_with_vm_attestation(&self) -> Result<SendOutcome, AdapterRefusal> {
+            let mut snapshot = self.0.lock().unwrap();
+            let carrier = std::mem::take(&mut snapshot.composer_text);
+            let rect = Bounds {
+                x: 1,
+                y: 20,
+                width: 30,
+                height: 10,
+            };
+            snapshot.rows.push(XTranscriptRow {
+                rect,
+                carrier: Some(carrier),
+            });
+            Ok(SendOutcome::Sent)
         }
     }
 
@@ -299,5 +390,39 @@ mod tests {
         let unknown = backend.destination(&binding).unwrap();
         assert_eq!(unknown.status, DestinationStatus::Unknown);
         assert!(unknown.conversation_digest.is_empty());
+    }
+
+    #[test]
+    fn web_p4_place_never_sends_and_commit_adds_exactly_one_row() {
+        let backend = XWebBackend::new(Fixture(Mutex::new(snapshot("scope-a", Some("Alice")))));
+        let binding = SurfaceBinding::for_claimed_surface(
+            AdapterAppId::X,
+            7,
+            BindingEvidence::Accessibility {
+                tree: A11yTree::WebAx,
+            },
+            NodeRef::for_claimed_node(1),
+            Some(NodeRef::for_claimed_node(2)),
+            Bounds {
+                x: 1,
+                y: 2,
+                width: 3,
+                height: 4,
+            },
+            10,
+            "scope-a",
+        );
+        let carrier = Carrier("osl1_carrier".into());
+        let rows_before = backend.snapshot().unwrap().rows.len();
+        let placed = backend.place(&binding, &carrier);
+        let after_place = backend.snapshot().unwrap();
+        assert_eq!(placed.status, PlacementStatus::Placed);
+        assert_eq!(placed.placed_sha256, Some(digest("x-carrier", &carrier.0)));
+        assert_eq!(after_place.rows.len(), rows_before);
+        assert_eq!(after_place.composer_text, carrier.0);
+
+        let sent = backend.commit(&binding, &placed);
+        assert_eq!(sent.outcome, SendOutcome::Sent);
+        assert_eq!(backend.snapshot().unwrap().rows.len(), rows_before + 1);
     }
 }
