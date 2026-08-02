@@ -12,6 +12,9 @@ describe("T15 shipped lifecycle UI wiring", () => {
     expect(shippingMain).toContain('from "./component-manager"');
     expect(shippingMain).toContain("componentManagerFromOnboarding(");
   });
+  it("T15-E4 keeps the transfer manifest in the shipping settings render", () => {
+    expect(shippingMain).toContain("deviceTransferManifestScreen()");
+  });
   it("renders optional downloads behind the AutoScrub consent gate in Settings", () => {
     expect(shippingMain).toContain('from "./component-consent"');
     expect(shippingMain).toContain('decideAutoScrubInstall("autoscrub", null)');
