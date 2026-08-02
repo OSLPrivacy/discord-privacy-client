@@ -84,6 +84,8 @@ pub mod scrub_hosted {
 }
 #[cfg(feature = "core")]
 pub mod rn_recovery;
+#[cfg(feature = "core")]
+pub mod rn_attribution;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
