@@ -51,6 +51,76 @@ permitted for credits.
 }
 ```
 
+## Measurements, not a detectability claim
+
+These are the reproducible measurements currently available in this repository.
+They describe a codec and a fixed selection harness, not a claim that the
+resulting cover is undetectable. Run the named test with `--nocapture` to print
+the source value before changing any of these numbers.
+
+### Codec capacity and cover length
+
+`crates/cover-ai/tests/entropy_budget.rs` measures the shipping bigram model's
+stationary conditional entropy at **5.05 bits/word** (accepted range ±0.02).
+At that rate, its idealized pointer payload lengths are:
+
+| Pointer payload width | Ideal words | Ideal characters (including spaces) |
+|---:|---:|---:|
+| 96 bits | 19.0 | 90 |
+| 128 bits | 25.4 | 121 |
+| 160 bits | 31.7 | 151 |
+| 192 bits | 38.0 | 182 |
+
+The expanded 256-word candidate corpus measures **6.012429583 bits/word** in
+`crates/cover-ai/tests/corpus_quality.rs`; its corresponding figures are 16.0/
+86, 21.3/116, 26.6/145, and 31.9/174 for 96/128/160/192-bit pointers. These are
+capacity calculations, not a naturalness or detectability measurement. The
+bounded vocabulary and protected-message timing remain observable.
+
+### Selection gain and distortion
+
+The frozen, auditable score corpus in `crates/cover-ai/tests/selection_gain.rs`
+selects **K = 13**. Its measured quality proxy is **12.000** at K=13 and
+**12.000** at K=256: the larger pool produced **0.000** additional proxy gain.
+`crates/cover-ai/tests/selection_detectability.rs` reports a selected-versus-
+unselected rank displacement of **0.429** at K=13, under its 0.45 cap. This is
+a distribution-distortion proxy, not a classifier accuracy figure; it is the
+reason selection must be described as a quality trade-off rather than a
+detection-evasion property.
+
+### Local-model comparison
+
+No model has been packaged or benchmarked in this worktree, so latency, peak
+RSS, cover-quality, and detector-rate columns are deliberately **unavailable**.
+The table records every licence-qualified candidate, including the larger one
+that could lose on the required measurements, rather than pretending a model
+was selected from its parameter count.
+
+| Candidate | Q4_K_M artifact size | Quality / detectability / latency / peak RSS | Result |
+|---|---:|---|---|
+| Qwen3.5-0.8B | 532,517,120 bytes | Not measured | No winner declared |
+| Qwen3-1.7B | 1,107,409,472 bytes | Not measured | No loser declared |
+| Llama 3.2 1B | n/a | Not measured | Excluded before measurement: attribution/naming and agreement obligations |
+| Gemma 3 | n/a | Not measured | Excluded before measurement: vendor terms and gated access |
+| LFM | n/a | Not measured | Excluded before measurement: revenue-capped Open License |
+
+The candidate sizes and licence exclusions are sourced in
+[`local-model-selection.md`](local-model-selection.md). A future model choice
+must replace every `Not measured` cell with a reproducible result; it must not
+replace them with an adjective.
+
+### Political-speech false positives
+
+There is no political-speech classifier in v1 and therefore no valid
+classifier false-positive rate to publish. The executable policy measurement
+is **0/3**: `crates/sensitive-classify/tests/political_speech_is_not_sensitive.rs`
+checks that the three potentially political lexical detector categories
+(`Profanity`, `PotentiallyUnlawfulConduct`, and `ControlledSubstances`) map to
+no send-time warning. That is a policy-coverage count, **not** a claim of 0%
+false positives on political speech. Any future semantic classifier must
+publish a held-out political-speech corpus, denominator, and false-positive
+rate alongside its other results before it can be enabled.
+
 ## Existing code: keep `osl-cover-draft`
 
 `crates/cover-draft` remains a workspace member but has no consumer crate.
