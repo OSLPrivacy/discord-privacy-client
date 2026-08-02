@@ -31,3 +31,8 @@ revival rather than receiving a decorative call site.
 `crates/cover-ai/tests/floor_survives_uninstall.rs` is a Cargo integration
 test.  It deliberately compiles the codec and fallback table without an AI
 runtime; it is not a production module or endpoint.
+
+## T13-B4
+
+`crates/cover-ai/tests/tier_is_not_observable.rs` is a regression test for
+the intended shared codec output.  It has no shipping import by design.
