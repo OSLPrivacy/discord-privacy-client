@@ -179,6 +179,10 @@ import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, resumeOnboardingRoute 
 import { loadHubRecoveryKitUnsaved, setHubRecoveryKitUnsaved } from "./adapters";
 import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
+import { senderReceiptStatus } from "./receipt-status";
+import { attachmentProgressMarkup, parseAttachmentProgressEvent, type AttachmentProgressEvent } from "./attachment-progress";
+import { destructStatusMarkup, type ServerDestructStatus } from "./destruct-status";
+import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslConnectionState } from "./offline-capability-status";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
 import { listOslChatAttachments, openOslChatAttachment, selectOslChatAttachment } from "./native-overlay-adapter";
@@ -254,6 +258,7 @@ type BurnResult = {
   tone: "success" | "warning" | "error";
   message: string;
   showUninstall: boolean;
+  destructServerStatus?: ServerDestructStatus;
   /**
    * Peer-acknowledgement half of a chat burn, shown as its own line. Absent for
    * the burn scopes that queue no peer revocation, so nothing is implied about
@@ -509,6 +514,7 @@ let oslChatPreviewsVisible = true;
 let oslChatMutedPeople = new Set<string>();
 let oslChatSettingsPersonId: string | null = null;
 let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
+const attachmentProgressByContext = new Map<string, AttachmentProgressEvent>();
 let privacyScanResult: LocalPrivacyScanResult | PersistedLocalPrivacyScanResult | null = null;
 let privacyScanFileName: string | null = null;
 let privacyScanBusy = false;
@@ -4224,8 +4230,12 @@ function oslChatContent(): string {
   const settingsPerson = oslChatSettingsPersonId ? hubPeople.find((person) => person.personId === oslChatSettingsPersonId) ?? null : null;
   const settings = settingsPerson ? oslChatFriendSettingsMarkup(settingsPerson) : "";
   const attachments = activeOslChatContext?.scopeApproved && pro
-    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
+    ? `<section class="osl-chat-attachments" aria-label="Encrypted attachments"><header><strong>Attachments</strong><button class="button compact" id="osl-chat-attach" type="button" ${oslChatBusy ? "disabled" : ""}>Choose file</button></header>${attachmentProgressMarkupForActiveChat()}${oslChatAttachments.length ? oslChatAttachments.map((item) => `<button class="setting-line" data-osl-chat-attachment="${escapeHtml(item.attachmentId)}" type="button"><span><strong>${escapeHtml(item.originalFilename)}</strong><small>${item.viewOnce ? "View once · " : ""}${item.plaintextSize.toLocaleString("en-US")} bytes</small></span>${statusTag("Open")}</button>`).join("") : `<p>No pending attachments.</p>`}<small>Images open in OSL's capture-resistant viewer. Other supported files open temporarily in their Windows viewer, which may allow capture.</small></section>`
     : "";
+  const receipt = activeOslChatPersonId
+    ? oslChatSenderReceiptMarkup(oslChatMessages.get(activeOslChatPersonId) ?? [])
+    : "";
+  const offlineStatus = oslRelayConnectionState() === "offline" ? offlineCapabilitiesMarkup() : "";
   return `<main class="content-viewport osl-chat-page"><header class="osl-chat-page-header"><button class="text-button" id="osl-chat-back" type="button" ${oslChatBusy ? "disabled" : ""}>Back</button><h1 id="route-heading" tabindex="-1">OSL Chats</h1><button class="text-button" id="osl-chat-refresh" type="button" ${activeOslChatContext?.scopeApproved && !oslChatBusy ? "" : "disabled"}>Refresh</button></header>${approval}${oslChatsViewMarkup({
     friends,
     activePersonId: activeOslChatPersonId,
@@ -4234,7 +4244,61 @@ function oslChatContent(): string {
     busy: oslChatBusy,
     viewOnce: oslChatViewOnce,
     homeLogoUrl: oslVectorLogoUrl,
-  })}${attachments}${settings}</main>`;
+  })}${offlineStatus}${receipt}${attachments}${settings}</main>`;
+}
+
+const OFFLINE_CAPABILITIES: readonly OfflineUnavailableCapability[] = [
+  "receiveNewMessages",
+  "sendMessage",
+  "lookUpNewContactKey",
+  "confirmBurnOnServer",
+  "enforceExpiryOnServer",
+  "enforceViewOnceOnServer",
+];
+
+/** Browser offline is a reliable negative signal; any other state stays unknown. */
+function oslRelayConnectionState(): OslConnectionState {
+  return typeof navigator !== "undefined" && navigator.onLine === false ? "offline" : "unknown";
+}
+
+function offlineCapabilitiesMarkup(): string {
+  return `<section class="setting-line unavailable" data-osl-relay="offline" role="status"><span><strong>OSL is offline</strong>${OFFLINE_CAPABILITIES.map((capability) => {
+    const status = offlineCapabilityStatus(capability, "offline");
+    return `<small data-offline-capability="${capability}"><strong>${status.title}</strong> ${status.detail}</small>`;
+  }).join("")}</span></section>`;
+}
+
+function refuseOfflineCapability(capability: OfflineUnavailableCapability): boolean {
+  if (oslRelayConnectionState() !== "offline") return false;
+  showToast(offlineCapabilityStatus(capability, "offline").detail);
+  return true;
+}
+
+function attachmentProgressMarkupForActiveChat(): string {
+  return [...attachmentProgressByContext.values()]
+    .map((event) => attachmentProgressMarkup(event))
+    .join("");
+}
+
+function bindAttachmentProgressEvents(): void {
+  void listen<unknown>("osl://attachment-progress", (event) => {
+    const progress = parseAttachmentProgressEvent(event.payload);
+    if (!progress) return;
+    attachmentProgressByContext.set(progress.contextId, progress);
+    if (route === "osl-chat") renderWhenIdle();
+  });
+}
+
+/** The sender sees only a receipt the peer app actually reported. */
+export function oslChatSenderReceiptMarkup(messages: readonly OslChatMessage[]): string {
+  const latestOutgoing = [...messages].reverse().find((message) => message.direction === "outgoing");
+  const receipt = senderReceiptStatus(
+    latestOutgoing?.state === "delivered" ? "Delivered"
+      : latestOutgoing?.state === "opened" ? "Opened"
+        : latestOutgoing?.state === "expired" ? "Destroyed"
+          : "Prepared",
+  );
+  return `<p class="setting-line osl-chat-receipt-status" data-osl-chat-receipt-confirmed="${receipt.confirmed}"><span><strong>Delivery receipt</strong><small>${receipt.label}</small></span></p>`;
 }
 
 function oslChatFriendSettingsMarkup(person: HubPerson): string {
@@ -4596,7 +4660,10 @@ function burnGuaranteeMarkup(effects: string): string {
 function burnDialogMarkup(): string {
   if (!burnDialogOpen) return "";
   if (burnResult) {
-    return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card burn-result"><header><div><p class="eyebrow">Burn</p><h2 id="burn-dialog-title">${burnResult.tone === "success" ? "Finished" : burnResult.tone === "warning" ? "Needs attention" : "Nothing was claimed"}</h2></div><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><p class="burn-result-message ${burnResult.tone}" role="status">${escapeHtml(burnResult.message)}</p>${burnRevocationMarkup(burnResult.revocation)}${burnResult.showUninstall ? `<div class="burn-uninstall"><strong>Uninstall is separate</strong><p>Your local OSL cleanup finished. Windows controls removal of the app itself.</p><a class="button" href="ms-settings:appsfeatures">Open Windows installed apps</a></div>` : ""}<footer><button class="button primary" data-close-burn>Done</button></footer></section></dialog>`;
+    const destructStatus = burnResult.destructServerStatus
+      ? destructStatusMarkup({ action: "burn", local: "complete", server: burnResult.destructServerStatus })
+      : "";
+    return `<dialog class="burn-dialog" id="burn-dialog" aria-labelledby="burn-dialog-title"><section class="burn-card burn-result"><header><div><p class="eyebrow">Burn</p><h2 id="burn-dialog-title">${burnResult.tone === "success" ? "Finished" : burnResult.tone === "warning" ? "Needs attention" : "Nothing was claimed"}</h2></div><button class="icon-button" data-close-burn aria-label="Close Burn">×</button></header><p class="burn-result-message ${burnResult.tone}" role="status">${escapeHtml(burnResult.message)}</p>${destructStatus}${burnRevocationMarkup(burnResult.revocation)}${burnResult.showUninstall ? `<div class="burn-uninstall"><strong>Uninstall is separate</strong><p>Your local OSL cleanup finished. Windows controls removal of the app itself.</p><a class="button" href="ms-settings:appsfeatures">Open Windows installed apps</a></div>` : ""}<footer><button class="button primary" data-close-burn>Done</button></footer></section></dialog>`;
   }
 
   const cards: Array<{ scope: BurnScope; title: string; detail: string }> = [
@@ -5793,6 +5860,7 @@ async function toggleDiscordQaTranscriptVisibility(): Promise<void> {
 }
 
 if (!runningUnderVitest) {
+  bindAttachmentProgressEvents();
   void listen<void>(MAIN_WINDOW_CAPTURE_REFUSED_EVENT, () => {
     recoveryCaptureGate.invalidate();
     screenshotProtectionEnabled = false;
@@ -7488,7 +7556,7 @@ async function approveOslChat(): Promise<void> {
 async function refreshOslChat(): Promise<void> {
   const context = activeOslChatContext;
   const personId = activeOslChatPersonId;
-  if (!context?.scopeApproved || !personId || oslChatBusy) return;
+  if (!context?.scopeApproved || !personId || oslChatBusy || refuseOfflineCapability("receiveNewMessages")) return;
   const epoch = oslChatOperationEpoch;
   oslChatBusy = true;
   render();
@@ -7541,7 +7609,7 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
   const context = activeOslChatContext;
   const personId = activeOslChatPersonId;
   const draft = oslChatDraft;
-  if (!context?.scopeApproved || !personId || oslChatBusy || !isHubPlaintext(draft)) return;
+  if (!context?.scopeApproved || !personId || oslChatBusy || !isHubPlaintext(draft) || refuseOfflineCapability("sendMessage")) return;
   const epoch = oslChatOperationEpoch;
   oslChatBusy = true;
   render();
@@ -7603,6 +7671,10 @@ async function submitFriendCode(event: SubmitEvent): Promise<void> {
   const button = document.querySelector<HTMLButtonElement>("#add-friend-form button");
   const status = document.querySelector<HTMLElement>("#friend-form-status");
   const code = input?.value.trim() ?? "";
+  if (refuseOfflineCapability("lookUpNewContactKey")) {
+    if (status) status.textContent = offlineCapabilityStatus("lookUpNewContactKey", "offline").detail;
+    return;
+  }
   if (!/^OSLFR1\.[A-Za-z0-9_-]{16,8192}$/.test(code)) {
     if (status) status.textContent = "Enter a valid OSL invite.";
     input?.focus();
@@ -7962,6 +8034,7 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
       message: localLine,
       showUninstall: false,
       revocation,
+      destructServerStatus: revocation.acknowledged ? "confirmed" : "not-confirmed",
     };
     render();
     return;
@@ -7990,6 +8063,7 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
         ? `Local OSL settings and caches for ${result.scopesBurned} indexed ${result.scopesBurned === 1 ? "scope was" : "scopes were"} removed. Sent relay cleanup was acknowledged. Login profile, cookies, provider history, and other copies remain.`
         : `Local OSL settings and caches for ${result.scopesBurned} indexed ${result.scopesBurned === 1 ? "scope was" : "scopes were"} removed, but ${result.remoteBlobDeletionsFailed} sent relay blob ${result.remoteBlobDeletionsFailed === 1 ? "deletion was" : "deletions were"} not acknowledged. Login profile, cookies, provider history, and other copies remain.`,
       showUninstall: false,
+      destructServerStatus: result.remoteCleanupComplete ? "confirmed" : "not-confirmed",
     };
     render();
     return;
