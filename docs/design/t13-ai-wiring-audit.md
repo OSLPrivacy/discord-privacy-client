@@ -53,3 +53,13 @@ state.  The planned B2 replacement also has no shippable route today because
 the IPC send selector still forces Mode 1 to Mode 0.  Reintroducing a
 word-bank call here would either be disconnected from the real carrier or
 silently claim a Mode-1 guarantee that the actual send cannot provide.
+
+## T13-C1
+
+`CoverScorer` is exported from `cover-ai`, but no shipping package depends on
+that crate and there is neither a candidate sampler (T13-C2) nor a concrete
+scorer selected for the product.  The trait's contract is deliberately
+selection-only; invoking it on the one already-chosen Mode-0 carrier cannot
+select anything and would be a no-op.  It is therefore a deferred extension
+point, not a legitimate shipping entry point, until C2 and the Mode-1 carrier
+path exist.
