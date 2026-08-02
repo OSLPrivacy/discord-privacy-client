@@ -1,1 +1,0 @@
-Missing prerequisite T21-E2 (one key domain per channel) in apps/osl-hub/src/spaces.rs; T21-E2/T21 owns the channel key-domain model required before signed lifecycle events can be implemented.
