@@ -26,3 +26,9 @@ test("cloud AutoScrub remains deferred for v1 until every privacy control is rev
     "deletion receipt",
   ]);
 });
+
+test("does not mislabel reviewed-and-launched AutoScrub as attended", () => {
+  const document = readFileSync(recordPath, "utf8");
+  assert.match(document, /may then continue without someone watching/);
+  assert.doesNotMatch(document, /attended, local Pro AutoScrub/i);
+});
