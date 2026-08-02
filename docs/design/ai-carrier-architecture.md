@@ -14,6 +14,13 @@ With the local model nothing leaves your device; if you choose cloud generation
 it only ever sees text the platform already has. Cloud generation can still
 reveal conversation membership to OSL, so this is not a zero-knowledge claim.
 
+## v1 scope
+
+**Decision (T13-F1): v1 does not ship cloud carrier generation.** Cloud generation is deferred
+until a measured, explicitly approved future release. The free word-bank carrier remains available
+without payment, and local generation remains an optional future component rather than a send
+requirement. This is a scope decision, not an availability claim.
+
 ## Credits purchase contract
 
 Under owner decision D72, v1 ships local AI first and measures it before any
