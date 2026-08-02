@@ -161,6 +161,41 @@ pub enum CreateSpaceError {
     EmptyFounderIdentity,
 }
 
+/// A join cannot add a recipient to any current sender-key epoch.  The
+/// caller supplies T18-C4's key-rotation operation; this boundary only makes
+/// its ordering non-optional for Space admission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum JoinSpaceError {
+    EmptyJoinerIdentity,
+    AlreadyMember,
+    RotationFailed(String),
+}
+
+/// Admit a consumed, valid invite only after the group key has rotated.
+///
+/// `rotate` must distribute a fresh epoch to the roster that existed before
+/// this call.  If it fails, the joiner is absent from the roster and receives
+/// neither a historic nor a current key.  This is the Space call site for the
+/// rotate-before-admit ordering owned by T18-C4.
+pub fn admit_join_after_rotation<F>(
+    space: &mut Space,
+    joiner: SpaceMemberId,
+    rotate: F,
+) -> Result<(), JoinSpaceError>
+where
+    F: FnOnce(&Space) -> Result<(), String>,
+{
+    if joiner.0.iter().all(|byte| *byte == 0) {
+        return Err(JoinSpaceError::EmptyJoinerIdentity);
+    }
+    if space.members.contains_key(&joiner) {
+        return Err(JoinSpaceError::AlreadyMember);
+    }
+    rotate(space).map_err(JoinSpaceError::RotationFailed)?;
+    space.members.insert(joiner, SpaceRole::Member);
+    Ok(())
+}
+
 /// The one server-side effect of an administrative deletion request.
 ///
 /// This does not say anything about the copies held by Space members.  The
@@ -443,6 +478,29 @@ mod tests {
             create_space(SpaceId::from_bytes([1; 20]), member(0)),
             Err(CreateSpaceError::EmptyFounderIdentity)
         );
+    }
+
+    #[test]
+    fn t21_t13_rotation_completes_before_joiner_is_admitted() {
+        let founder = member(1);
+        let joiner = member(2);
+        let mut space = create_space(SpaceId::from_bytes([7; 20]), founder).unwrap();
+        let mut rotation_saw_joiner = false;
+
+        admit_join_after_rotation(&mut space, joiner, |before_admission| {
+            rotation_saw_joiner = before_admission.role_of(joiner).is_some();
+            Ok(())
+        })
+        .unwrap();
+        assert!(!rotation_saw_joiner, "rotation must exclude the joiner");
+        assert_eq!(space.role_of(joiner), Some(SpaceRole::Member));
+
+        let failed = member(3);
+        assert_eq!(
+            admit_join_after_rotation(&mut space, failed, |_| Err("rotation unavailable".into())),
+            Err(JoinSpaceError::RotationFailed("rotation unavailable".into()))
+        );
+        assert_eq!(space.role_of(failed), None, "a failed rotation admits nobody");
     }
 
     #[test]
