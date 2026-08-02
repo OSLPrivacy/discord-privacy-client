@@ -921,6 +921,25 @@ impl RnSessionStore {
         session: &Session,
         sealer: &dyn keystore::sealer::Sealer,
     ) -> Result<(), RnError> {
+        self.save_session_with_sealer_inner(peer_identity_x25519, session, sealer, true)
+    }
+
+    fn save_received_session_with_sealer(
+        &self,
+        peer_identity_x25519: &[u8; 32],
+        session: &Session,
+        sealer: &dyn keystore::sealer::Sealer,
+    ) -> Result<(), RnError> {
+        self.save_session_with_sealer_inner(peer_identity_x25519, session, sealer, false)
+    }
+
+    fn save_session_with_sealer_inner(
+        &self,
+        peer_identity_x25519: &[u8; 32],
+        session: &Session,
+        sealer: &dyn keystore::sealer::Sealer,
+        enforce_send_floor: bool,
+    ) -> Result<(), RnError> {
         if sealer.requires_insecure_banner() {
             return Err(RnError::PlaintextSealerRefused);
         }
@@ -960,7 +979,9 @@ impl RnSessionStore {
         }
         // Persist the floor first. If the subsequent session write fails, the
         // old blob is refused rather than allowed to reissue a nonce.
-        self.persist_send_floor(peer_identity_x25519, blob.session_id, blob.sending_counter)?;
+        if enforce_send_floor {
+            self.persist_send_floor(peer_identity_x25519, blob.session_id, blob.sending_counter)?;
+        }
         atomic_write(&path, &json)
     }
 
@@ -1003,6 +1024,29 @@ impl RnSessionStore {
         peer_identity_x25519: &[u8; 32],
         sealer: &dyn keystore::sealer::Sealer,
     ) -> Result<Option<Session>, RnError> {
+        self.load_session_with_sealer_inner(peer_identity_x25519, sealer, true)
+    }
+
+    /// Load session state for an inbound ratchet transition.
+    ///
+    /// The durable send floor prevents an old local *sending* state from
+    /// reusing a nonce. Receiving is not a send, and a DH-ratchet transition
+    /// can legitimately reset that session counter, so applying the outgoing
+    /// floor here would refuse an otherwise authenticated peer wire.
+    fn load_session_for_receive_with_sealer(
+        &self,
+        peer_identity_x25519: &[u8; 32],
+        sealer: &dyn keystore::sealer::Sealer,
+    ) -> Result<Option<Session>, RnError> {
+        self.load_session_with_sealer_inner(peer_identity_x25519, sealer, false)
+    }
+
+    fn load_session_with_sealer_inner(
+        &self,
+        peer_identity_x25519: &[u8; 32],
+        sealer: &dyn keystore::sealer::Sealer,
+        enforce_send_floor: bool,
+    ) -> Result<Option<Session>, RnError> {
         let path = self.session_path(peer_identity_x25519);
         let bytes = match read_bounded(&path, MAX_SESSION_FILE_BYTES, "session")? {
             Some(b) => b,
@@ -1032,15 +1076,17 @@ impl RnSessionStore {
                 blob.version
             )));
         }
-        if let Some(floor) = self.load_send_floor(peer_identity_x25519)? {
-            if blob.session_id != floor.session_id {
-                return Err(RnError::RolledBackSessionGeneration);
-            }
-            if blob.sending_counter < floor.high_water {
-                return Err(RnError::RolledBackSession {
-                    blob_counter: blob.sending_counter,
-                    high_water: floor.high_water,
-                });
+        if enforce_send_floor {
+            if let Some(floor) = self.load_send_floor(peer_identity_x25519)? {
+                if blob.session_id != floor.session_id {
+                    return Err(RnError::RolledBackSessionGeneration);
+                }
+                if blob.sending_counter < floor.high_water {
+                    return Err(RnError::RolledBackSession {
+                        blob_counter: blob.sending_counter,
+                        high_water: floor.high_water,
+                    });
+                }
             }
         }
         // Constant-time compare of the method label: it is not secret,
@@ -1689,10 +1735,10 @@ fn receive_rn_after_gate(
 ) -> Result<Opened, RnError> {
     let _writer_lock = store.acquire_writer_lock(peer_identity_x25519)?;
     let mut session = store
-        .load_session_with_sealer(peer_identity_x25519, sealer)?
+        .load_session_for_receive_with_sealer(peer_identity_x25519, sealer)?
         .ok_or_else(|| RnError::Protocol("no OSL-RN session on file".into()))?;
     let opened = osl_ratchet_next::decrypt_rn(&mut session, wire).map_err(RnError::from)?;
-    store.save_session_with_sealer(peer_identity_x25519, &session, sealer)?;
+    store.save_received_session_with_sealer(peer_identity_x25519, &session, sealer)?;
     Ok(opened)
 }
 
