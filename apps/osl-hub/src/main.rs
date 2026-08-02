@@ -25,6 +25,7 @@ use osl_privacy_hub::browser_profile_scan::{
     BrowserProfileScanReceipt, BrowserProfileScanState,
 };
 use osl_privacy_hub::cleanup::{self, HubFullCleanupResult};
+use osl_privacy_hub::deadman;
 use osl_privacy_hub::core_bridge::{
     self, CoreFeature, CoreReadiness, HubCoreState, HubLicenseState,
 };
@@ -108,6 +109,7 @@ use std::sync::{
 };
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
+use runtime::UsbMonitor;
 #[cfg(feature = "whatsapp-qa-shell")]
 use zeroize::{Zeroize, Zeroizing};
 
@@ -9460,6 +9462,39 @@ fn main() {
         startup_breadcrumb("setup_step_27_identity_registry_state_managed"); // STARTUP-TRACE
         app.manage(ServiceHostState::default());
         startup_breadcrumb("setup_step_28_service_host_state_managed"); // STARTUP-TRACE
+        // Keep the monitor owned by Tauri for the life of the process.  The
+        // callback receives a stable Windows volume-interface id, never a
+        // reassignable drive letter.  It first closes every OSL-owned service
+        // surface; if that boundary cannot be established, removal fails
+        // closed rather than running a partial wipe.
+        let deadman_app = app.handle().clone();
+        let deadman_config_dir = config_dir.clone();
+        let deadman_local_data_dir = local_data_dir.clone();
+        let deadman_monitor = UsbMonitor::start_with_volume_removal(
+            Box::new(|| {}),
+            Box::new(move |volume| {
+                let app = deadman_app.clone();
+                let config_dir = deadman_config_dir.clone();
+                let local_data_dir = deadman_local_data_dir.clone();
+                tauri::async_runtime::spawn(async move {
+                    let hosts = app.state::<ServiceHostState>();
+                    if service_host::desktop::shutdown(&app, &hosts).await.is_err() {
+                        return;
+                    }
+                    let core = app.state::<HubCoreState>();
+                    let _ = deadman::handle_volume_removal(
+                        &config_dir.join("deadman-bindings.json"),
+                        volume.as_str(),
+                        &core,
+                        &config_dir,
+                        &local_data_dir,
+                        true,
+                    );
+                });
+            }),
+        )
+        .map_err(|error| format!("USB dead-man monitor could not start: {error}"))?;
+        app.manage(deadman_monitor);
         app.manage(NativeWindowHostState::default());
         startup_breadcrumb("setup_step_29_native_window_host_state_managed"); // STARTUP-TRACE
         app.manage(
