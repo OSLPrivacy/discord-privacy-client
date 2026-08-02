@@ -8522,22 +8522,22 @@ mod tests {
         });
         assert!(!receipt.startup_allowed);
         assert!(!receipt.ready);
-        // T19 made the reviewed RN receive path live. The preflight must
-        // report the runtime we actually ship, rather than retaining the
-        // superseded "wire-in disabled" blocker.
-        assert!(receipt.ratchet_wire_in_enabled);
+        // D41 keeps the runtime activation gate closed until desync recovery
+        // is proven. The preflight must name that shipping-runtime blocker.
+        assert!(!receipt.ratchet_wire_in_enabled);
         assert_eq!(receipt.broker_relay_transport, "direct_manual_v3");
         assert_eq!(receipt.keyserver_origin, "production");
         assert_eq!(
             receipt.startup_blockers,
             [
+                "rn_wire_in_disabled",
                 "broker_relay_uses_direct_manual_v3",
                 "dedicated_qa_keyserver_not_configured",
                 "source_commit_unbound",
                 "server_deployment_identity_unbound",
             ]
         );
-        assert_eq!(receipt.blockers.len(), 11);
+        assert_eq!(receipt.blockers.len(), 12);
     }
 
     #[test]
