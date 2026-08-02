@@ -2,9 +2,10 @@
 ///
 /// Routes:
 ///   GET    /v1/healthz
-///   POST   /v1/blob                    body: ciphertext bytes
+///   PUT    /v1/blob                    body: ciphertext bytes
 ///                                      header: X-OSL-TTL-Seconds
 ///   GET    /v1/blob/:id_hex
+///   POST   /v1/blob/:id_hex/ack
 ///   DELETE /v1/blob/:id_hex
 ///
 /// scheduled() handler: every 5 minutes, sweep expired rows.
@@ -29,6 +30,7 @@ import {
   handleFetch,
   handleUpload,
 } from "./endpoints/blob.js";
+import { handleAck } from "./endpoints/receipt.js";
 import {
   handleAttachmentComplete,
   handleAttachmentDelete,
@@ -119,7 +121,7 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
   const path = url.pathname;
 
   if (path === "/v1/healthz" && request.method === "GET") {
-    return handleHealthz();
+    return handleHealthz(env);
   }
 
   if (path === "/robots.txt" && request.method === "GET") {
@@ -172,7 +174,7 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
   }
   // ------------------------------------------------------------------
 
-  if (path === "/v1/blob" && request.method === "POST") {
+  if (path === "/v1/blob" && request.method === "PUT") {
     const rl = await rateLimit(env, clientIp(request), "upload");
     if (!rl.allowed) {
       return error(429, "rate_limited", "upload rate limit hit");
@@ -227,6 +229,15 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
       if (!rl.allowed) return error(429, "rate_limited", "delete rate limit hit");
       return handleAttachmentDelete(request, env, id);
     }
+  }
+
+  const blobAckMatch = /^\/v1\/blob\/([0-9a-f]{32})\/ack$/.exec(path);
+  if (blobAckMatch && request.method === "POST") {
+    const rl = await rateLimit(env, clientIp(request), "delete");
+    if (!rl.allowed) {
+      return error(429, "rate_limited", "delete rate limit hit");
+    }
+    return handleAck(request, env, blobAckMatch[1]!);
   }
 
   const blobMatch = /^\/v1\/blob\/([0-9a-fA-F]+)$/.exec(path);

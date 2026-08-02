@@ -100,6 +100,21 @@ export const RECOVERY_SHOWN_UNPROTECTED_NOTICE =
 export const RECOVERY_REVEAL_REQUIRED_NOTICE =
   "You never confirmed saving your recovery kit. Enter your password to read it again — OSL kept it encrypted, it was never written down for you.";
 
+/**
+ * The recovery phrases protect different things. Keep this copy with the kit
+ * renderer so every place that shows both phrases makes that distinction.
+ */
+export function recoveryKitSecretCardsMarkup(
+  secrets: RecoveryKitSecrets,
+  escape: (value: string) => string,
+): string {
+  const identityPhrase = secrets.identityPhrase
+    ? `<code>${escape(secrets.identityPhrase)}</code>`
+    : "<p>Keep using the identity phrase you imported.</p>";
+
+  return `<article class="recovery-kit-item" data-recovery-secret="identity"><span aria-hidden="true">1</span><div><strong>Identity phrase</strong><p>Your identity phrase brings back who you are.</p>${identityPhrase}</div></article><article class="recovery-kit-item" data-recovery-secret="password"><span aria-hidden="true">2</span><div><strong>Password phrase</strong><p>Your password phrase brings back your data.</p><code>${escape(secrets.passwordPhrase)}</code></div></article><p class="recovery-kit-requirement">You need both.</p>`;
+}
+
 export function initialRecoveryKitState(
   secrets: RecoveryKitSecrets | null,
   kitUnsaved: boolean,

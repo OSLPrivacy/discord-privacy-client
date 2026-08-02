@@ -9,7 +9,7 @@
 > the claim-eligibility half of master §20.2 and §8.2.
 > Authority: [`osl-master-decision-2026-07-26.md`](osl-master-decision-2026-07-26.md).
 > Status vocabulary: master §0.3. Evidence detail: [`../THREAT_MODEL.md`](../THREAT_MODEL.md).
-> Claim-gate source SHA-256: `368691867350791373c78d6d178af3ac6e0db596534fabec4bb88a9452fa243e`
+> Claim-gate source SHA-256: `c4f25244bbc2c0bec01b2e8fca10394bda16a0139089a218a884dde74a0c432d`
 
 ## How to use it
 
@@ -78,6 +78,15 @@ tree; re-verify anchors before relying on a row.
 | **Evidence** | *Re-anchored 2026-07-27, and stronger than previously recorded.* The call is `crates/runtime/src/screenshot.rs:83`, and the result is **read back and required to match exactly** at `:91`/`:97` — it does not assume success. The overlay compositor independently re-reads via `GetWindowDisplayAffinity` before treating exclusion as proven (`apps/osl-hub/src/native_discord_overlay.rs:4875`), and non-QA builds select `ScreenshotProtection::On` at `:176`. Stays **Planned** only because first-paint ordering is an open critical (master §2 P0-5). |
 | **Required alongside** | "It cannot stop a phone camera, a hardware capture device, or a modified client. On machines where Windows refuses the protection it does nothing — and we show you when that happens." Never write "screenshot-proof" or "prevents screenshots". Master §3b: this is the feature most likely to be over-read; keep the copy narrow. |
 
+### A5a · Recovery-kit display
+
+| | |
+|---|---|
+| **Permitted wording** | "On Windows, OSL can hold a recovery kit until it confirms capture resistance for the focused OSL window. Linux and macOS have no capture-resistance primitive in this build, so a recovery kit shown there is capturable." |
+| **Status** | `implemented-unwired` → **`Planned`** badge. This is a platform-scoped recovery-display property, not a general promise that recovery secrets cannot be copied. |
+| **Evidence** | `src-tauri/src/screenshot.rs:33-41` makes the non-Windows `apply_to_window` path a successful no-op. `apps/osl-hub-ui/src/adapters.ts:1038-1063` separately tracks whether the platform actually enforces capture protection, and `apps/osl-hub-ui/src/recovery-kit.ts:121-132` makes the recovery-display claim depend on that enforcement rather than the successful no-op return. `apps/osl-hub-ui/src/recovery-kit.test.ts` covers the non-Windows state. |
+| **Required alongside** | "If you choose to reveal a recovery kit without proven capture resistance, anything that can read your screen can read it." Never call a Linux or macOS recovery display protected, capture-resistant, screenshot-proof, or unrecordable. |
+
 ### A6 · No stored payment data
 
 | | |
@@ -140,6 +149,18 @@ cautious user actually wants — the product refuses to act rather than acting o
 | **Evidence** | The export is sealed with an AEAD key derived from the 12-word recovery entropy in `crates/ipc/src/commands.rs:15199-15265`; import requires the matching phrase and validates the account binding before replacing state at `:15285-15353`. `OSL_EXPORT_FILES` deliberately excludes device-specific keyserver, license, password/lockout and UI-preference files at `:14738-14754`. The UI decision model cannot complete until the owner explicitly chooses keep or destroy after confirmed import: `apps/osl-hub-ui/src/device-transfer-source.ts:38-96`, covered by `apps/osl-hub-ui/src/device-transfer-source.test.ts`. |
 | **Required alongside** | "This replaces or copies one device; it is not a claim that OSL delivers to all your devices at once. The transfer carries the account's identity keys, and pending inbound messages that have not reached the old device do not move." Never imply a silent clone, a server-mediated transfer, or automatic deletion of the old copy. |
 
+<!-- ratchet_claims:start -->
+### A16 · Pairwise direct-message ratcheting
+
+| | |
+|---|---|
+| **Permitted wording** | "OSL's pairwise direct-message encryption adds forward secrecy and post-quantum ratcheting. Classical post-compromise recovery takes one round trip; post-quantum recovery takes about 82 round trips at default settings and requires traffic in both directions. It does not provide post-quantum authentication, groups, multi-device syncing, sealed-sender delivery, or authenticated prekey bundles. Recovery and reset messages do not have forward secrecy, a skipped-key ceiling can make delayed messages unavailable, and the design has had no formal analysis or external cryptographic review." |
+| **Status** | `test-proven-only` → **`Beta`** badge. The `0x10` OSL-RN path is enabled for pairwise direct messages, but it has no named release-build runtime proof. |
+| **Evidence** | `crates/ipc/src/wire_rn.rs:83` opens the compile-time fuse; `crates/ipc/src/state.rs:426` opens the runtime default; `crates/keystore/src/client.rs:204`, `:227-233` advertises live-capability bit 1. Properties and limits: `crates/osl-ratchet-next/DESIGN.md` §10 rows 3-6, 9, 16, 19-21, 24-25, 27 and §11. |
+| **Required alongside** | Use the permitted wording as one indivisible statement. It is direct-message/pairwise only; never abbreviate it to "post-quantum secure messaging," "post-quantum authentication," or an unqualified forward-secrecy or post-compromise claim. |
+
+<!-- ratchet_claims:end -->
+
 ### Candidates NOT added — cited evidence did not check out
 
 Two further suggestions were rejected on verification, recorded so nobody re-derives them:
@@ -163,8 +184,6 @@ when the distinction matters.
 
 | Claim | Status | Evidence | Mandatory framing |
 |---|---|---|---|
-| Forward secrecy | `implemented-unwired` | `osl-ratchet-next` built; `crates/ipc/src/wire_rn.rs` has no consumer — only the `crates/ipc/src/lib.rs:76` module declaration | "Planned. Not in the current release." |
-| Post-compromise security | `implemented-unwired` | same; the Double Ratchet DM path is dead at `crates/ipc/src/commands.rs:2842` | "Planned. Not in the current release." |
 | Group sender keys | `implemented-unwired` — implemented and enabled in the IPC core, but unreachable in the shipping app | `crates/ipc/src/state.rs:413` defaults `sender_keys_enabled` to true; the v5 router accepts group scopes at `crates/ipc/src/commands.rs:4523-4543`; every production `HubConversationContext` in `apps/osl-hub/src/broker.rs:303,348,1964` is a DM, and the manual-peer path forces `ScopeKind::Dm` at `:329-336` | "Group chats currently get the same protection as direct messages. The group-specific scheme (sender keys) is implemented but is not reachable in the app, because the app does not yet have group conversations. When it ships it will bound how far back a leaked key reads — it will not make one group member unable to impersonate another, and it will not make a removed member unable to read messages sent before the next key rotation." |
 | Unlock password, 15-minute auto-lock, 10-attempt auto-burn, duress password | `implemented-unwired` | `crates/keystore/src/password.rs:62`, `:283-288`; `crates/keystore/src/duress.rs` — zero production callers, only the `crates/keystore/src/lib.rs:58-59` re-export and keystore tests | "Planned." Do not list under device security. Master §7.14-adjacent copy must not imply the app locks itself. |
 | Bilateral burn | `implemented-unwired`, plus an open defect | `apps/osl-hub/src/broker.rs` retains authenticated revocation notices and returns `EnforcementUnavailable` rather than falsely acknowledging an unenforced burn; `apps/osl-hub/src/security.rs::admit_peer_content_seq` remains deliberately unwired pending T1/T2's authenticated content-envelope protocol change. | "Planned. A peer burn request is not proof that another device deleted its copy." |
@@ -207,10 +226,11 @@ Each is listed with why, so nobody re-derives it and reintroduces the phrase.
 
 | Forbidden phrase | Why it is forbidden |
 |---|---|
-| **"Better than Signal"** | Explicitly barred by master §7.11: no public "Signal protocol", "better than Signal", forward-secrecy, post-compromise or post-quantum-authentication claim may outrun the audited live path. Nothing has been audited, and Signal has forward secrecy and post-compromise security that OSL currently does not. The claim is false today, not merely unproven. Master §8.4 also requires OSL's disadvantages to appear with the same prominence as competitors'. |
+| **"Better than Signal"** | Explicitly barred by master §7.11. OSL-RN adds the limited pairwise properties in A16, but it has no formal analysis or external cryptographic review and does not provide post-quantum authentication, groups, multi-device sync, sealed-sender delivery, or authenticated prekey bundles. A broad comparison would hide those limits. Master §8.4 also requires OSL's disadvantages to appear with the same prominence as competitors'. |
 | **"Post-quantum authentication"** | Factually wrong. ML-KEM-768 provides *confidentiality* only (`crates/ipc/src/wire_v2.rs:731`). Sender authentication is classical X25519/Ed25519. Additionally, attribution is an open critical finding (master §10 finding 2) — the receive path authenticates one key and attributes the plaintext to a caller-supplied identity. So authentication is neither post-quantum nor currently sound. |
 | **"Forward secrecy in groups" / "bounded blast radius"** | Sender keys are implemented and enabled in the IPC core, but the shipping app cannot construct a group conversation. More importantly, a sender-key chain is shared: a group member holding a sender's chain can impersonate that sender cryptographically, and a removed member can read messages sent before that sender's next rotation. Do not describe either property as a present capability; in particular, do not use "bounded blast radius" as a present-tense claim. See the group sender-keys row in section B. |
 | **"Private communities"** | OSL Spaces do not exist in the shipping product. D68 allows only the explicit planned framing in the OSL Spaces row in section B; a present-tense private-community claim is not earned. |
+| **"OSL servers are available now" / "OSL communities are available now" / "encrypted Circles are available now"** | D66 puts OSL servers and communities in v1, but D68 prohibits shipping a capability claim before the capability ships. The present release has no evidenced OSL server, community, or encrypted-Circles surface. Planned-language references remain allowed only with the OSL Spaces row's explicit framing: "OSL Spaces are planned. They are not in the current release." |
 | **"Space administrators cannot read messages" / "Space admins cannot read messages"** | This cannot be claimed before Spaces F1-F3 land with exact evidence. Until then there is no Space implementation, and an administrator-visibility promise would conceal the missing membership, sender-authentication, delivery, and history guarantees. |
 | **"OSL Spaces moderation" / "Space moderation keeps communities safe"** | Moderation is not an eligible Spaces claim. It must not be marketed before a concrete, separately evidenced design and implementation exist; no moderation wording is sanctioned by the OSL Spaces row. |
 | **"Cryptographic burn"** | Burn is policy and state deletion, not destruction of decryption capability. `MessageStore::put` (`crates/store/src/lib.rs:194-206`) never writes the `wrapped_key` column, so the burn paths that set `wrapped_key = NULL` (`:298`, `:342`, `:350`, `:560`) null a column that was already null. Burn zeroblobs the *local* cached ciphertext — real, and sayable — but the ciphertext on Discord's CDN stays decryptable by any holder of the recipient's long-term keys. |

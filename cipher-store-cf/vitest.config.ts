@@ -14,7 +14,7 @@ export default defineConfig({
         wrangler: { configPath: "./wrangler.toml" },
         miniflare: {
           d1Databases: ["DB"],
-          r2Buckets: ["ATTACHMENTS"],
+          r2Buckets: ["ATTACHMENTS", "PAYLOADS"],
           kvNamespaces: ["RATE_LIMIT"],
           bindings: {
             RATE_LIMIT_HASH_KEY: "test-rate-limit-hash-key-32-bytes-min",

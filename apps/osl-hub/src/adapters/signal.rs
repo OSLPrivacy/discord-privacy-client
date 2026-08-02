@@ -9,6 +9,10 @@ use crate::native_signal_adapter::{
     discover_signal_composer, discover_signal_transcript, SignalNode, SignalRect, SignalRole,
     SignalSelectorError,
 };
+use crate::signal_destination_binding::{
+    SignalBindingStatus, SignalDestinationBindingState, SignalDestinationEvidence,
+};
+use std::sync::Arc;
 
 const MAX_SIGNAL_A11Y_NODES: usize = 4_096;
 const MAX_SIGNAL_A11Y_DEPTH: usize = 64;
@@ -21,6 +25,12 @@ pub trait SignalBackend: Send + Sync {
     fn capabilities(&self, now_unix_seconds: u64) -> CapabilitySet;
     fn locate(&self, target: &SurfaceTarget) -> Result<SurfaceBinding, AdapterRefusal>;
     fn read_state(&self, binding: &SurfaceBinding) -> Result<SurfaceState, AdapterRefusal>;
+    /// Fresh native accessibility evidence for the exact currently selected
+    /// Signal account, conversation, recipients, and composer.
+    fn destination_evidence(
+        &self,
+        binding: &SurfaceBinding,
+    ) -> Result<SignalDestinationEvidence, AdapterRefusal>;
     fn place_without_submit(&self, binding: &SurfaceBinding, carrier: &Carrier)
         -> PlacementReceipt;
 }
@@ -28,11 +38,22 @@ pub trait SignalBackend: Send + Sync {
 /// Signal's native surface adapter through L2 placement.
 pub struct SignalSurfaceAdapter<B> {
     backend: B,
+    destination_binding: Arc<SignalDestinationBindingState>,
 }
 
 impl<B> SignalSurfaceAdapter<B> {
     pub fn new(backend: B) -> Self {
-        Self { backend }
+        Self::with_destination_binding(backend, Arc::new(SignalDestinationBindingState::default()))
+    }
+
+    pub fn with_destination_binding(
+        backend: B,
+        destination_binding: Arc<SignalDestinationBindingState>,
+    ) -> Self {
+        Self {
+            backend,
+            destination_binding,
+        }
     }
 }
 
@@ -81,8 +102,34 @@ impl<B: SignalBackend> SurfaceAdapter for SignalSurfaceAdapter<B> {
         self.backend.read_state(binding)
     }
 
-    fn destination(&self, _: &SurfaceBinding) -> Result<DestinationIdentity, AdapterRefusal> {
-        Err(AdapterRefusal::DestinationUnattested)
+    fn destination(&self, binding: &SurfaceBinding) -> Result<DestinationIdentity, AdapterRefusal> {
+        if !self.validates_binding(binding)
+            || !matches!(
+                binding.evidence,
+                BindingEvidence::Accessibility {
+                    tree: A11yTree::Uia | A11yTree::Msaa | A11yTree::Both
+                }
+            )
+        {
+            return Err(AdapterRefusal::DestinationUnattested);
+        }
+        let evidence = self.backend.destination_evidence(binding)?;
+        let receipt = self
+            .destination_binding
+            .attest_native_observation(evidence.clone());
+        if receipt.status != SignalBindingStatus::Accepted {
+            return Err(AdapterRefusal::DestinationUnattested);
+        }
+        Ok(DestinationIdentity {
+            status: DestinationStatus::Attested,
+            account_digest: hex_digest(evidence.account_binding_sha256),
+            conversation_digest: hex_digest(evidence.conversation_binding_sha256),
+            recipients_digest: hex_digest(evidence.participant_set_sha256),
+            scope_binding_hash: binding.scope_binding_hash.clone(),
+            evidence: binding.evidence.clone(),
+            attested_at_ms: evidence.observed_at_ms,
+            ttl_ms: receipt.valid_for_ms,
+        })
     }
 
     fn place(
@@ -133,6 +180,16 @@ impl<B: SignalBackend> SurfaceAdapter for SignalSurfaceAdapter<B> {
     fn paint_targets(&self, _: &SurfaceBinding) -> Result<Vec<PaintTarget>, AdapterRefusal> {
         Err(AdapterRefusal::AccessibilityUnavailable)
     }
+}
+
+fn hex_digest(digest: [u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(64);
+    for byte in digest {
+        encoded.push(HEX[usize::from(byte >> 4)] as char);
+        encoded.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    encoded
 }
 
 /// The result of one bounded read of the exact Signal accessibility root.
@@ -343,7 +400,10 @@ mod windows {
 mod tests {
     use super::*;
     use crate::native_signal_adapter::SignalNode;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
 
     struct PlacementBackend {
         placements: AtomicUsize,
@@ -395,6 +455,13 @@ mod tests {
             })
         }
 
+        fn destination_evidence(
+            &self,
+            binding: &SurfaceBinding,
+        ) -> Result<SignalDestinationEvidence, AdapterRefusal> {
+            Ok(destination_evidence(binding.generation, 3))
+        }
+
         fn place_without_submit(&self, _: &SurfaceBinding, _: &Carrier) -> PlacementReceipt {
             self.placements.fetch_add(1, Ordering::SeqCst);
             PlacementReceipt {
@@ -420,6 +487,54 @@ mod tests {
         node.editable = true;
         node.read_only = false;
         node
+    }
+
+    fn destination_evidence(generation: u64, conversation: u8) -> SignalDestinationEvidence {
+        SignalDestinationEvidence {
+            host_generation: generation,
+            window_identity_sha256: [1; 32],
+            account_binding_sha256: [2; 32],
+            conversation_binding_sha256: [conversation; 32],
+            participant_set_sha256: [4; 32],
+            composer_identity_sha256: [5; 32],
+            attestation_nonce_sha256: [conversation.saturating_add(10); 32],
+            observed_at_ms: crate::signal_destination_binding::monotonic_now_ms(),
+            window_foreground: true,
+            composer_focused: true,
+            conversation_stable: true,
+        }
+    }
+
+    struct AttestationBackend {
+        conversation: Mutex<u8>,
+    }
+
+    impl SignalBackend for AttestationBackend {
+        fn capabilities(&self, _: u64) -> CapabilitySet {
+            CapabilitySet::new()
+        }
+
+        fn locate(&self, target: &SurfaceTarget) -> Result<SurfaceBinding, AdapterRefusal> {
+            Ok(binding(target.generation))
+        }
+
+        fn read_state(&self, _: &SurfaceBinding) -> Result<SurfaceState, AdapterRefusal> {
+            unreachable!("destination attestation does not read the composer state")
+        }
+
+        fn destination_evidence(
+            &self,
+            binding: &SurfaceBinding,
+        ) -> Result<SignalDestinationEvidence, AdapterRefusal> {
+            Ok(destination_evidence(
+                binding.generation,
+                *self.conversation.lock().unwrap(),
+            ))
+        }
+
+        fn place_without_submit(&self, _: &SurfaceBinding, _: &Carrier) -> PlacementReceipt {
+            unreachable!("destination attestation never places a carrier")
+        }
     }
 
     #[test]
@@ -483,5 +598,31 @@ mod tests {
         );
         assert_eq!(refused.status, PlacementStatus::NotPlaced);
         assert_eq!(adapter.backend.placements.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn t3_t16_conversation_change_invalidates_prior_signal_attestation() {
+        let state = Arc::new(SignalDestinationBindingState::default());
+        let adapter = SignalSurfaceAdapter::with_destination_binding(
+            AttestationBackend {
+                conversation: Mutex::new(3),
+            },
+            Arc::clone(&state),
+        );
+        let binding = binding(7);
+
+        let first = adapter.destination(&binding).unwrap();
+        assert_eq!(first.status, DestinationStatus::Attested);
+        let first_readiness = state.readiness();
+        assert_eq!(first_readiness.status, SignalBindingStatus::Accepted);
+
+        *adapter.backend.conversation.lock().unwrap() = 8;
+        let second = adapter.destination(&binding).unwrap();
+
+        assert_eq!(second.status, DestinationStatus::Attested);
+        assert_ne!(first.conversation_digest, second.conversation_digest);
+        let second_readiness = state.readiness();
+        assert_eq!(second_readiness.status, SignalBindingStatus::Accepted);
+        assert!(second_readiness.lifecycle_generation > first_readiness.lifecycle_generation);
     }
 }

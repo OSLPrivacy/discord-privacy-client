@@ -7,7 +7,14 @@ pub mod account_identity_authority;
 pub mod account_recovery;
 #[cfg(feature = "core")]
 pub mod attachment_formats;
+#[cfg(feature = "core")]
+pub mod attachment_partial_guard;
 pub mod attachment_scan;
+#[cfg(feature = "core")]
+pub mod attachment_thumbnail;
+#[cfg(feature = "core")]
+pub mod attachment_thumbnail_policy;
+pub mod adapter_profile_boot;
 pub mod adapters;
 pub mod attended_imap;
 #[cfg(feature = "core")]
@@ -30,6 +37,8 @@ pub mod cloud_autoscrub_envelope;
 pub mod cloud_autoscrub_execution;
 #[cfg(feature = "core")]
 pub mod cloud_autoscrub_run;
+#[cfg(feature = "core")]
+pub mod components;
 pub mod consent_ledger;
 pub mod control_contract;
 pub mod discord_carrier_geometry;
@@ -48,6 +57,7 @@ pub mod invite_clipboard;
 /// so it is testable in every build that can compile this crate.
 pub mod main_window_reveal;
 pub mod models;
+pub mod model_pack_install;
 pub mod mullvad_window_host;
 pub mod native_apps;
 pub mod native_a11y;
@@ -60,6 +70,8 @@ pub mod native_whatsapp_adapter;
 pub mod native_window_host;
 #[cfg(feature = "core")]
 pub mod osl_profile;
+#[cfg(feature = "core")]
+pub mod osl_mail;
 pub mod owner_presence;
 #[cfg(feature = "core")]
 pub mod peer_attachment_io;
@@ -72,14 +84,23 @@ pub mod proprietary_module_lifecycle;
 pub mod scrub_evidence_manifest;
 pub mod scrub_erasure_tracker;
 pub mod scrub_erasure_queue;
+pub mod scrub_hosted {
+    pub mod checkpoint;
+}
 #[cfg(feature = "core")]
 pub mod rn_recovery;
+#[cfg(feature = "core")]
+pub mod rn_attribution;
+#[cfg(all(feature = "core", feature = "desktop"))]
+pub mod revocation_drain_timer;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
 pub mod updates;
 pub mod whatsapp_accessibility;
 pub mod whatsapp_qa_host;
+pub mod visual_binding;
+pub mod web_surface_adapter;
 #[cfg(feature = "core")]
 pub mod whatsapp_qa_pairing;
 pub mod whatsapp_qa_transport;
@@ -130,6 +151,7 @@ pub mod expiry_clock;
 #[cfg(feature = "core")]
 pub mod view_once_eligibility;
 pub mod view_once_open;
+pub mod view_once_watch;
 #[cfg(feature = "core")]
 pub mod password_lifecycle;
 // The pure half of the headless QA self-test driver in `main.rs`. It lives here

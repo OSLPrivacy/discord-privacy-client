@@ -117,7 +117,7 @@ function getFreePort() {
 }
 
 // Runs inside the audited page.
-function auditPage() {
+export function auditPage() {
   function visible(el) {
     const style = getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden') return false;
@@ -282,7 +282,9 @@ async function run() {
   }
 }
 
-run().catch((error) => {
-  console.error(`check-a11y: fatal error: ${error.stack || error.message}`);
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  run().catch((error) => {
+    console.error(`check-a11y: fatal error: ${error.stack || error.message}`);
+    process.exit(1);
+  });
+}

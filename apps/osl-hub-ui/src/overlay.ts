@@ -1417,6 +1417,10 @@ async function pollReceived(): Promise<void> {
       recordInvalidBackendResponse("open_native_discord_overlay_text",
         "the backend deferred rows it could not resolve");
     }
+    if (batch.unrecognizedWireRows > 0) {
+      recordInvalidBackendResponse("open_native_discord_overlay_text",
+        "the backend retained rows with an unrecognized protected-message wire");
+    }
     let opened = 0;
     for (const message of batch.messages) {
       // Named by its correlation handle, so a message the backend surfaces a
@@ -1452,6 +1456,7 @@ async function pollReceived(): Promise<void> {
     // fragment of what arrived.
     if (opened > 0) status.textContent = `${opened} private ${opened === 1 ? "message" : "messages"} received through OSL.`;
     else if (batch.deferredRows > 0) status.textContent = "OSL could not reach the protected message store. Retrying.";
+    else if (batch.unrecognizedWireRows > 0) status.textContent = "A protected message needs a newer version of OSL to open.";
     else if (!batch.decryptDisplayEnabled) status.textContent = "Decrypted text is off for this conversation.";
   } catch (error) {
     // This was the last swallowed failure in the file: a bare `catch` that only

@@ -296,6 +296,18 @@ describe("D80 unlock screen renders one credential input", () => {
     expect(nodes.filter((node) => (node.attributes.class ?? "").includes("password-input-row"))).toHaveLength(1);
   });
 
+  it("routes the unlock screen's forgot-password control to password recovery", async () => {
+    const harness = buildUnlockHarness();
+    const { __oslHubUiTest } = await loadUi(harness);
+
+    const unlock = __oslHubUiTest.renderOnboardingRoute("unlock");
+    const recovery = __oslHubUiTest.renderOnboardingRoute("account-recovery");
+
+    expect(unlock).toContain('data-onboarding="account-recovery"');
+    expect(recovery).toContain('data-account-recovery-phrase');
+    expect(recovery).toContain("Forgot password?");
+  });
+
   it("exposes nothing in the markup or the accessibility tree that names an alternate credential", async () => {
     const harness = buildUnlockHarness();
     const { __oslHubUiTest } = await loadUi(harness);
