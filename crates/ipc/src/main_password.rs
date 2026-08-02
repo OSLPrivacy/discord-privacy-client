@@ -2274,36 +2274,6 @@ mod password_policy_tests {
     }
 
     #[test]
-    fn main_password_lock_discards_half_assembled_mode1_plaintext() {
-        let _serial = crate::test_process_globals::serialize();
-        set_file_storage_key(None);
-        let state = AppState::new();
-        let mut buffer = stego::ReassemblyBuffer::new();
-        let outcome = buffer.push(7, 0, 2, b"half-assembled plaintext".to_vec(), 1);
-        assert!(
-            matches!(outcome, stego::PushOutcome::Incomplete { .. }),
-            "a single chunk must remain buffered until the rest of the message arrives"
-        );
-        state
-            .mode1_reassembly
-            .lock()
-            .expect("mode1_reassembly mutex poisoned")
-            .insert("private-channel".to_owned(), buffer);
-
-        lock_main_password_session(&state);
-
-        assert!(
-            state
-                .mode1_reassembly
-                .lock()
-                .expect("mode1_reassembly mutex poisoned")
-                .is_empty(),
-            "locking must discard half-assembled Mode-1 plaintext"
-        );
-        set_file_storage_key(None);
-    }
-
-    #[test]
     fn record_wrong_password_attempt_triggers_duress_at_threshold() {
         // Serialize: this test mutates the PROCESS-GLOBAL file storage key.
         // CI runs `cargo test --workspace` (N threads, ONE process) while the

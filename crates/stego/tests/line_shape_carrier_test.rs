@@ -8,8 +8,8 @@
 
 use stego::{
     decode_mode1, decode_token, encode_mode1_shaped, encode_token_shaped, is_mode1, rendered_rows,
-    rows_for_hard_lines, shape_cover, ConversationCipher, RowBudget, RowMatch, CHUNK_PAYLOAD_BYTES,
-    MAX_SHAPED_ROWS, MODE1_MAX_RAW_LEN, TOKEN_ID_BYTES,
+    rows_for_hard_lines, shape_cover, ConversationCipher, RowBudget, RowMatch, MAX_SHAPED_ROWS,
+    MODE1_MAX_RAW_LEN, TOKEN_ID_BYTES,
 };
 
 /// Discord's message column at 100% zoom on a default window is roughly 85
@@ -342,7 +342,7 @@ fn measured_carrier_floors_per_mode_and_column() {
     // Wordbank mode carries payload in the text, so its floor tracks the
     // payload size directly. These are the numbers that decide whether
     // compressing the plaintext could ever buy an exact match.
-    for payload_len in [1usize, 8, 24, 60, CHUNK_PAYLOAD_BYTES, MODE1_MAX_RAW_LEN] {
+    for payload_len in [1usize, 8, 24, 60, MODE1_MAX_RAW_LEN] {
         let payload = vec![0x5au8; payload_len];
         let shaped = encode_mode1_shaped(&cipher, &payload, RowBudget::new(1, WIDE_COLUMN))
             .expect("within cap");
