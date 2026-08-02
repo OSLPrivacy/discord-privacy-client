@@ -1,0 +1,1 @@
+Missing T1/T6-owned retention_deadline transport/storage interface (server clock plus allowed buckets); no exported contract or implementation exists for T2-34 to consume.
