@@ -130,6 +130,7 @@ pub mod expiry_clock;
 #[cfg(feature = "core")]
 pub mod view_once_eligibility;
 pub mod view_once_open;
+pub mod view_once_watch;
 #[cfg(feature = "core")]
 pub mod password_lifecycle;
 // The pure half of the headless QA self-test driver in `main.rs`. It lives here
