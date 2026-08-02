@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Blocked: T6-K6 / T6 DEP-1 has not implemented the executable account-scoped per-device roster (including its two-device test), and T6's B1 capacity decision is not landed; `apps/osl-hub/src/spaces.rs` and T21-G1 do not yet exist for T21-G2 to consume.
