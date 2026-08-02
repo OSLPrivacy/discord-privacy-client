@@ -1357,7 +1357,9 @@ pub(crate) fn refuse_ambiguous_legacy_wrappers(conn: &Connection) -> Result<(), 
     if table_exists(conn, "attachment_manifests")?
         && !matches!(
             on_disk,
-            Some(ATTACHMENT_MANIFEST_SCHEMA_VERSION) | Some(SCHEMA_VERSION)
+            Some(ATTACHMENT_MANIFEST_SCHEMA_VERSION)
+                | Some(BURN_TIMESTAMP_PRIVACY_SCHEMA_VERSION)
+                | Some(SCHEMA_VERSION)
         )
     {
         return Err(StoreError::Schema(
@@ -1567,6 +1569,41 @@ pub(crate) fn check_canary(conn: &Connection, key: &aead::Key) -> Result<(), Sto
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v8_manifest_schema_is_not_an_ambiguous_pre_v7_state() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _meta (key TEXT PRIMARY KEY, value BLOB);
+             CREATE TABLE attachment_manifests (mid_bi BLOB PRIMARY KEY);",
+        )
+        .unwrap();
+        write_meta_u32(
+            &conn,
+            "schema_version",
+            BURN_TIMESTAMP_PRIVACY_SCHEMA_VERSION,
+        )
+        .unwrap();
+
+        refuse_ambiguous_legacy_wrappers(&conn).unwrap();
+    }
+
+    #[test]
+    fn pre_v7_manifest_schema_remains_refused() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE _meta (key TEXT PRIMARY KEY, value BLOB);
+             CREATE TABLE attachment_manifests (mid_bi BLOB PRIMARY KEY);",
+        )
+        .unwrap();
+        write_meta_u32(&conn, "schema_version", ATTACHMENT_ENVELOPE_SCHEMA_VERSION).unwrap();
+
+        let error = refuse_ambiguous_legacy_wrappers(&conn).unwrap_err();
+        assert!(
+            matches!(&error, StoreError::Schema(message) if message.contains("ambiguous partial migration state")),
+            "unexpected pre-v7 manifest result: {error}"
+        );
+    }
 
     #[test]
     fn v8_to_v9_adds_receipt_fields_and_per_device_ack_rows() {
