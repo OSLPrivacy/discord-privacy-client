@@ -1,8 +1,23 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { oslSpaceStateMarkup } from "./osl-spaces-view";
 
 describe("Space honest states", () => {
+  it("ships the Enclaves state view through the main server route", () => {
+    const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    const serversView = readFileSync(new URL("./osl-servers-view.ts", import.meta.url), "utf8");
+
+    expect(main).toContain('import { oslServersViewMarkup } from "./osl-servers-view"');
+    expect(main).toContain('if (route === "osl-servers") return oslServersContent();');
+    expect(main).toContain('route = "osl-servers";');
+    expect(serversView).toContain('from "./osl-spaces-view"');
+    expect(serversView).toContain("oslSpaceStateMarkup(state)");
+    expect(serversView).toContain("OSL Enclaves");
+    expect(serversView).toContain('statusTag("Available")');
+    expect(serversView).not.toContain('statusTag("Coming later")');
+  });
+
   it("keeps a queued send pending while offline", () => {
     const markup = oslSpaceStateMarkup({ offline: true, queuedSends: 1 });
 

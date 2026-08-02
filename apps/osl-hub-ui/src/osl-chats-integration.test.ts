@@ -109,12 +109,12 @@ describe("first-party OSL Chats integration", () => {
     expect(binding).not.toMatch(/localStorage\.setItem\(\s*oslChatPreviewStorageKey/u);
   });
 
-  it("labels provider server capabilities as unavailable instead of faking support", () => {
+  it("ships OSL Enclaves without claiming provider-server access", () => {
     expect(source).toContain('if (route === "osl-servers") return oslServersContent()');
     expect(source).toContain('import { oslServersViewMarkup } from "./osl-servers-view"');
-    expect(serversViewSource).toContain('["Discord servers", "Not available yet"]');
-    expect(serversViewSource).toContain('["Telegram groups and channels", "Not available yet"]');
-    expect(serversViewSource).toContain('["Signal groups", "Not available yet"]');
-    expect(serversViewSource).toContain('["Snapchat groups", "Not available yet"]');
+    expect(serversViewSource).toContain("OSL Enclaves");
+    expect(serversViewSource).toContain('statusTag("Available")');
+    expect(serversViewSource).toContain('from "./osl-spaces-view"');
+    expect(serversViewSource).toContain("OSL does not claim access to provider communities");
   });
 });
