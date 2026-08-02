@@ -2466,26 +2466,27 @@ pub fn burn_scope(
     // anything. Losing this ledger could strand server-held ciphertext.
     let mut blobs_file = load_scope_blobs_strict(&blobs_path)?;
 
-    let rows_destroyed = {
+    let mut rows_destroyed = 0usize;
+    crate::burn_dispatch::destroy_local_before_queuing(|| {
         let store = core
             .osl
             .message_store
             .lock()
             .map_err(|_| "OSL message store is unavailable".to_owned())?;
-        match store.as_ref() {
+        rows_destroyed = match store.as_ref() {
             Some(store) => {
                 let mut rows = 0usize;
                 for channel_id in &channels {
-                    rows =
-                        rows.saturating_add(store.delete_messages_in_channel(channel_id).map_err(
-                            |_| "OSL scope history could not be securely deleted".to_owned(),
-                        )?);
+                    rows = rows.saturating_add(store.delete_messages_in_channel(channel_id).map_err(
+                        |_| "OSL scope history could not be securely deleted".to_owned(),
+                    )?);
                 }
                 rows
             }
             None => 0,
-        }
-    };
+        };
+        Ok::<(), String>(())
+    })?;
     ipc::commands::cmd_osl_apply_burn(&core.osl, scope_input.clone())?;
 
     let mut peers = core
@@ -6356,6 +6357,39 @@ key"
             )
             .unwrap(),
             vec!["one".to_owned(), "two".to_owned()]
+        );
+    }
+
+    #[test]
+    fn t1_t63_scope_burn_enters_dispatch_before_remote_effects() {
+        let harness = FileBackedSecurityHarness::new("t1-63-burn-dispatch");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+        write_scope_blobs(
+            &harness.path().join("scope_blobs.json"),
+            &ipc::scope_blobs_file::ScopeBlobsFile::default(),
+        )
+        .unwrap();
+
+        let _ = crate::burn_dispatch::take_shipping_local_destroy_dispatches();
+        let _ = burn_scope(
+            &core,
+            &security,
+            dm_scope_input("t1-63-scope".to_owned()),
+            Vec::new(),
+            true,
+            Vec::new(),
+        );
+
+        assert_eq!(
+            crate::burn_dispatch::take_shipping_local_destroy_dispatches(),
+            1,
+            "the shipping scope-burn path must dispatch local destruction before its remote queues"
         );
     }
 
