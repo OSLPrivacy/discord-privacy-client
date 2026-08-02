@@ -1,0 +1,1 @@
+T16-B1's migration leaves subscriptions.status constrained to PENDING/ACTIVE/CANCELLED/GRACE/REVOKED/EXPIRED; it must add UNREDEEMED support before T16-B5 can write the required status.
