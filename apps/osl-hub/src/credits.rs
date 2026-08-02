@@ -44,6 +44,12 @@ pub const fn display_after_refresh(
     }
 }
 
+/// Until the optional cloud ledger has successfully refreshed, the shipping UI
+/// must receive an explicit unknown rather than an invented zero balance.
+pub const fn unavailable_balance() -> BalanceDisplay {
+    display_after_refresh(None, Err(()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{display_after_refresh, BalanceDisplay, CreditBalance};

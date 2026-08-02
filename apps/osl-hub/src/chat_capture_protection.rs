@@ -4,6 +4,8 @@
 //! two authored booleans and sends `effective_changed` to both peers through
 //! the authenticated chat-control lane when present.
 
+use std::{collections::HashMap, sync::Mutex};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EffectiveCaptureProtection { Off, On }
 
@@ -72,3 +74,32 @@ impl CaptureConsent {
 }
 
 impl Default for CaptureConsent { fn default() -> Self { Self::new() } }
+
+/// Per-conversation state owned by the shipping chat runtime. A conversation is
+/// entered with both authored preferences off; peer control messages can only
+/// update this state through the transition methods above.
+#[derive(Default)]
+pub struct ChatCaptureProtectionState {
+    conversations: Mutex<HashMap<String, CaptureConsent>>,
+}
+
+impl ChatCaptureProtectionState {
+    pub fn ensure_conversation(&self, conversation_id: &str) -> CaptureConsent {
+        let mut conversations = self.conversations.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *conversations.entry(conversation_id.to_owned()).or_insert_with(CaptureConsent::new)
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::{ChatCaptureProtectionState, EffectiveCaptureProtection};
+
+    #[test]
+    fn shipping_conversation_state_starts_each_new_chat_with_both_sides_off() {
+        let state = ChatCaptureProtectionState::default();
+        let consent = state.ensure_conversation("person-a");
+        assert!(!consent.local_opt_in);
+        assert!(!consent.peer_opt_in);
+        assert_eq!(consent.effective, EffectiveCaptureProtection::Off);
+    }
+}

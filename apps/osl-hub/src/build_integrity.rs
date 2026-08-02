@@ -9,6 +9,7 @@ use std::{collections::HashSet, fs, path::Path};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use minisign_verify::{PublicKey, Signature};
 use serde::Deserialize;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 const UPDATER_CONFIG: &str = include_str!("../tauri.conf.json");
@@ -16,7 +17,8 @@ const BUNDLED_MANIFEST: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/build-
 const BUNDLED_SIGNATURE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/build-hashes.json.sig"));
 
 /// The outcome displayed to the person using this copy of OSL.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum BuildIntegrity {
     /// The executable's digest is in a valid, signed published-hash list.
     Verified,
