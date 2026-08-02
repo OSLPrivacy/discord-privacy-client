@@ -8,6 +8,56 @@ use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::Path};
 
+/// The fixed governance roles available in an Enclave in v1.
+///
+/// Roles deliberately grant governance capability only. They do not carry a
+/// channel, key, or visibility grant: a member can read a channel only through
+/// that channel's separate membership record and its corresponding keys.
+/// Custom roles are intentionally not representable in this schema.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceRole {
+    Member,
+    Moderator,
+    Admin,
+}
+
+impl SpaceRole {
+    /// Every role that may be persisted or accepted from another client.
+    pub const ALL: [Self; 3] = [Self::Member, Self::Moderator, Self::Admin];
+}
+
+/// A governance action that a role may request.
+///
+/// This intentionally has no read or channel-visibility variant. Permission
+/// evaluation is introduced by T21-F2; it must combine a role with a distinct
+/// channel-membership/key-possession check rather than treat a role as access.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceGovernanceCapability {
+    ModerateMembers,
+    ManageRoles,
+    ManageChannels,
+}
+
+impl SpaceRole {
+    /// The governance capabilities associated with this fixed role.
+    ///
+    /// These are client-request capabilities, not cryptographic enforcement;
+    /// key possession remains the only basis for channel visibility.
+    pub const fn governance_capabilities(self) -> &'static [SpaceGovernanceCapability] {
+        match self {
+            Self::Member => &[],
+            Self::Moderator => &[SpaceGovernanceCapability::ModerateMembers],
+            Self::Admin => &[
+                SpaceGovernanceCapability::ModerateMembers,
+                SpaceGovernanceCapability::ManageRoles,
+                SpaceGovernanceCapability::ManageChannels,
+            ],
+        }
+    }
+}
+
 /// Opaque, client-generated identity for a Space.
 ///
 /// A Space ID is fresh CSPRNG output. It deliberately accepts no account or
