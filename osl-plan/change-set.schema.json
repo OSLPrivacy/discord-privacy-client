@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OSL semantic change-set",
+  "type": "object",
+  "required": ["change_id", "classification", "semantic_change", "authorities", "affected_artifacts"],
+  "properties": {
+    "change_id": {"type": "string", "minLength": 1},
+    "classification": {"type": "array", "items": {"enum": ["product-intent", "implementation-evidence", "dependency-owner-blocker", "security", "durable-design", "deadline"]}, "uniqueItems": true},
+    "semantic_change": {"type": "boolean"},
+    "authorities": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "affected_artifacts": {"type": "array", "items": {"type": "string"}},
+    "layman_update_not_due": {"type": "string", "minLength": 1},
+    "compact_memory": {"type": "object", "required": ["field_changed"], "properties": {"field_changed": {"type": "boolean"}, "update": {"type": "string"}}}
+  },
+  "additionalProperties": true
+}
