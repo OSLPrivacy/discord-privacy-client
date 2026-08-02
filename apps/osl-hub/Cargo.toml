@@ -51,6 +51,7 @@ bip39 = { version = "=2.2.2", default-features = false, features = ["std"], opti
 # in-memory transport envelope directly, so this is not a core-only dependency.
 base64 = "=0.22.1"
 url = "=2.5.8"
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
 zeroize = "=1.9.0"
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 # apps/osl-hub is EXCLUDED from the workspace (Cargo.toml:31), so it has no
