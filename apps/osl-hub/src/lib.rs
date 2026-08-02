@@ -125,6 +125,8 @@ pub mod expiry_clock;
 // View-once payloads are opened only after the native viewer proves capture
 // protection; the module is dependency-free so its ordering tests run on all
 // supported build hosts.
+#[cfg(feature = "core")]
+pub mod view_once_eligibility;
 pub mod view_once_open;
 #[cfg(feature = "core")]
 pub mod password_lifecycle;
