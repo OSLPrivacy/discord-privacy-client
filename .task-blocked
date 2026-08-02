@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing MAIL-PATTERN and WEB-CONFORMANCE (owned by T4-M5 and its conformance work); no AOL adapter fan-out can start.
