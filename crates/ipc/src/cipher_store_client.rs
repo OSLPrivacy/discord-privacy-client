@@ -20,6 +20,7 @@ use reqwest::blocking::Client;
 use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 /// Built-in production cipher-store. Overridable per install via
 /// `<config_dir>/keyserver.json` field `cipher_store_url` (same file
@@ -44,6 +45,34 @@ fn is_valid_ttl(ttl: u32) -> bool {
 /// while keeping the header short. The worker stores the hex form
 /// of this exact byte length.
 pub const FETCH_TOKEN_BYTES: usize = 16;
+
+/// Whether a receipt destroys this copy.  A fan-out copy is always
+/// `SingleAck`; group manifests deliberately remain fetchable after receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlobObjectClass {
+    SingleAck,
+    MultiFetch,
+}
+
+impl BlobObjectClass {
+    fn header_value(self) -> &'static str {
+        match self {
+            Self::SingleAck => "single-ack",
+            Self::MultiFetch => "multi-fetch",
+        }
+    }
+}
+
+/// The three bearer capabilities for one pointer-derived store object.
+/// They are sent only in frozen headers; the Worker receives only their
+/// SHA-256 digests on upload and never persists a capability plaintext.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlobCapabilities {
+    pub fetch_cap: [u8; FETCH_TOKEN_BYTES],
+    pub ack_cap: [u8; FETCH_TOKEN_BYTES],
+    pub manage_cap: [u8; FETCH_TOKEN_BYTES],
+    pub delivery_tag: [u8; FETCH_TOKEN_BYTES],
+}
 
 fn hex_lower(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -236,6 +265,34 @@ impl CipherStoreClient {
         Ok(UploadResult { id_hex, expires_at })
     }
 
+    /// Upload a pointer-derived object.  Unlike the retired upload API, its
+    /// id is client-derived and all persisted authorities are SHA-256 digests.
+    pub fn upload_pointer(
+        &self,
+        body: &[u8],
+        ttl_seconds: u32,
+        blob_id: &[u8; FETCH_TOKEN_BYTES],
+        capabilities: BlobCapabilities,
+        object_class: BlobObjectClass,
+    ) -> Result<UploadResult, CipherStoreError> {
+        if !is_valid_ttl(ttl_seconds) { return Err(CipherStoreError::BadTtl(ttl_seconds)); }
+        if body.is_empty() || body.len() > MAX_BLOB_BYTES {
+            return Err(CipherStoreError::BlobTooLarge { got: body.len(), max: MAX_BLOB_BYTES });
+        }
+        let digest = |cap: &[u8]| hex_lower(&Sha256::digest(cap));
+        let response = self.http.post(format!("{}/v1/blob", self.base_url))
+            .header("content-type", "application/octet-stream")
+            .header("x-osl-ttl-seconds", ttl_seconds.to_string())
+            .header("x-osl-blob-id", hex_lower(blob_id))
+            .header("x-osl-fetch-digest", digest(&capabilities.fetch_cap))
+            .header("x-osl-ack-digest", digest(&capabilities.ack_cap))
+            .header("x-osl-manage-digest", digest(&capabilities.manage_cap))
+            .header("x-osl-delivery-tag", hex_lower(&capabilities.delivery_tag))
+            .header("x-osl-object-class", object_class.header_value())
+            .body(body.to_vec()).send()?;
+        parse_upload_response(response, FETCH_TOKEN_BYTES * 2)
+    }
+
     /// Fetch ciphertext bytes by ID + capability token (Phase 6).
     /// Returns `NotFound` for missing / expired / burned blobs.
     /// Returns `Status { status: 401|403, .. }` when the token is
@@ -267,6 +324,28 @@ impl CipherStoreClient {
         }
         let bytes = resp.bytes()?;
         Ok(bytes.to_vec())
+    }
+
+    /// Acknowledges a durably persisted plaintext.  This is intentionally a
+    /// separate verb from fetch: receipt authority cannot be used to fetch.
+    pub fn ack(&self, id_hex: &str, ack_cap: &[u8; FETCH_TOKEN_BYTES]) -> Result<(), CipherStoreError> {
+        self.no_content("POST", &format!("{}/v1/blob/{id_hex}/ack", self.base_url), "x-osl-ack-cap", ack_cap)
+    }
+
+    /// Permanently burns a copy with the sender-derived manage authority.
+    /// The Worker is unconditionally idempotent (`204`), including unknown ids.
+    pub fn burn(&self, id_hex: &str, manage_cap: &[u8; FETCH_TOKEN_BYTES]) -> Result<(), CipherStoreError> {
+        self.no_content("DELETE", &format!("{}/v1/blob/{id_hex}", self.base_url), "x-osl-manage-cap", manage_cap)
+    }
+
+    fn no_content(&self, method: &str, url: &str, header: &str, cap: &[u8; FETCH_TOKEN_BYTES]) -> Result<(), CipherStoreError> {
+        let request = match method { "POST" => self.http.post(url), "DELETE" => self.http.delete(url), _ => unreachable!() };
+        let response = request.header(header, hex_lower(cap)).send()?;
+        if response.status() == StatusCode::TOO_MANY_REQUESTS { return Err(CipherStoreError::RateLimited); }
+        if !response.status().is_success() {
+            return Err(CipherStoreError::Status { status: response.status().as_u16(), body: response.text().unwrap_or_default() });
+        }
+        Ok(())
     }
 
     /// Burn (delete) a blob. Idempotent — second call returns Ok even
@@ -609,6 +688,59 @@ fn parse_upload_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::thread;
+
+    #[test]
+    fn t6_t19_client_uses_header_capabilities_and_non_destructive_fetch() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for index in 0..5 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut raw = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let count = stream.read(&mut chunk).unwrap();
+                    raw.extend_from_slice(&chunk[..count]);
+                    let Some(headers_end) = raw.windows(4).position(|v| v == b"\r\n\r\n") else { continue };
+                    let headers = String::from_utf8_lossy(&raw[..headers_end]);
+                    let length = headers.lines().find_map(|line| line.strip_prefix("content-length: "))
+                        .and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
+                    if raw.len() >= headers_end + 4 + length { break; }
+                }
+                requests.push(String::from_utf8_lossy(&raw).to_ascii_lowercase());
+                let response = match index {
+                    0 => "HTTP/1.1 201 Created\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: 59\r\n\r\n{\"id\":\"00000000000000000000000000000000\",\"expires_at\":1}",
+                    1 | 2 => "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\none",
+                    _ => "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n",
+                };
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        let client = CipherStoreClient::new(format!("http://{address}")).unwrap();
+        let caps = BlobCapabilities { fetch_cap: [1; 16], ack_cap: [2; 16], manage_cap: [3; 16], delivery_tag: [4; 16] };
+        let upload = client.upload_pointer(b"one", TTL_7D, &[9; 16], caps, BlobObjectClass::SingleAck).unwrap();
+        assert_eq!(upload.id_hex, "00000000000000000000000000000000");
+        assert_eq!(client.fetch(&upload.id_hex, &caps.fetch_cap).unwrap(), b"one");
+        assert_eq!(client.fetch(&upload.id_hex, &caps.fetch_cap).unwrap(), b"one");
+        client.ack(&upload.id_hex, &caps.ack_cap).unwrap();
+        client.burn(&upload.id_hex, &caps.manage_cap).unwrap();
+        let requests = server.join().unwrap();
+        assert!(requests[0].contains("x-osl-fetch-digest:"));
+        assert!(requests[0].contains("x-osl-ack-digest:"));
+        assert!(requests[0].contains("x-osl-manage-digest:"));
+        assert!(requests[0].contains("x-osl-object-class: single-ack"));
+        assert!(requests[1].contains("x-osl-fetch-cap: 01010101010101010101010101010101"));
+        assert!(requests[2].contains("x-osl-fetch-cap: 01010101010101010101010101010101"));
+        assert!(requests[3].starts_with("post /v1/blob/00000000000000000000000000000000/ack"));
+        assert!(requests[3].contains("x-osl-ack-cap: 02020202020202020202020202020202"));
+        assert!(requests[4].starts_with("delete /v1/blob/00000000000000000000000000000000"));
+        assert!(requests[4].contains("x-osl-manage-cap: 03030303030303030303030303030303"));
+    }
 
     #[test]
     fn ttl_allowlist_matches_the_cipher_store_worker() {
