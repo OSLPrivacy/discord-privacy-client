@@ -25,6 +25,11 @@ use crate::service_host::{service_manifest, validate_opaque_id, ActiveServiceHos
 use crate::service_scope_index::ServiceScopeRegistration;
 use crate::services::{service_kind_from_id, ServiceRegistryState};
 
+// Kept beside the broker rather than as an unreferenced helper: this public
+// entry is the application-level path that prepares one sealed copy per device.
+#[path = "view_once_fanout.rs"]
+pub mod view_once_fanout;
+
 const MAX_CONTEXT_ID_BYTES: usize = 160;
 
 fn scope_storage_key(scope_input: &ScopeInput) -> Result<String, String> {
@@ -1253,6 +1258,13 @@ pub struct PreparedPeerAttachment {
     pub transport_filename: String,
     pub expires_at: i64,
     pub view_once: bool,
+}
+
+/// One native-adapter delivery unit.  `attachment` is independently sealed for
+/// this exact device; adapters must upload/post every returned unit.
+pub struct PreparedPeerAttachmentFanout {
+    pub recipient_device_id: String,
+    pub attachment: PreparedPeerAttachment,
 }
 
 /// Plain attachment recovered inside trusted Rust. It intentionally omits
@@ -7081,6 +7093,45 @@ pub fn prepare_peer_attachment(
         view_once,
         ipc::main_password::now_unix_secs_pub(),
     )
+}
+
+/// Prepare view-once attachment ciphertext separately for every recipient
+/// device.  The resulting attachment ids, keys, ciphertext and envelopes are
+/// all independent because the ordinary prepare function is invoked once per
+/// target.  Cipher-store never learns the device ids.
+pub fn prepare_peer_attachment_fanout(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    context_token: &str,
+    original_bytes: Vec<u8>,
+    original_filename: String,
+    recipient_id: String,
+    recipient_device_ids: Vec<String>,
+) -> Result<Vec<PreparedPeerAttachmentFanout>, String> {
+    use view_once_fanout::{fan_out_view_once, RecipientDeviceTarget};
+
+    let targets = recipient_device_ids
+        .into_iter()
+        .map(|device_id| RecipientDeviceTarget {
+            recipient_id: recipient_id.clone(),
+            device_id,
+        })
+        .collect();
+    fan_out_view_once(targets, |target| {
+        prepare_peer_attachment(
+            core,
+            broker,
+            context_token,
+            original_bytes.clone(),
+            original_filename.clone(),
+            true,
+        )
+        .map(|attachment| PreparedPeerAttachmentFanout {
+            recipient_device_id: target.device_id.clone(),
+            attachment,
+        })
+    })
+    .map(|copies| copies.into_iter().map(|copy| copy.copy).collect())
 }
 
 fn prepare_peer_attachment_at(

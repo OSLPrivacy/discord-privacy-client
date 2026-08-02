@@ -26,6 +26,7 @@ import {
   releaseAttachmentCompletionClaimAfterFailure,
 } from "../lib/attachment-sweep-claims.js";
 import { error, json, notFound } from "../lib/http.js";
+import { reserveAttachmentFetch } from "./attachment-reserve.js";
 
 export {
   MAX_ATTACHMENT_PART_BYTES,
@@ -51,6 +52,12 @@ function parseAllowedTtlSeconds(raw: string | null): number | null {
 function readCapability(request: Request): string | null {
   const raw = request.headers.get("x-osl-fetch-token")?.trim().toLowerCase();
   return raw && CAPABILITY_RE.test(raw) ? raw : null;
+}
+
+function readSingleFetch(request: Request): number | null {
+  const value = request.headers.get("x-osl-single-fetch");
+  if (value === null || value === "0") return 0;
+  return value === "1" ? 1 : null;
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -314,6 +321,8 @@ interface AttachmentRow {
   fetch_token_sha256_hex: string;
   state: "uploading" | "completing" | "ready";
   upload_id: string | null;
+  single_fetch: number;
+  reserved_until: number | null;
 }
 
 /// The expiry a caller was promised. Rows written before migration 0006 are
@@ -330,7 +339,7 @@ async function authorizedRow(
   if (!ID_RE.test(id)) return error(400, "bad_id", "id must be 32 lowercase hex chars");
   const row = await env.DB.prepare(
     `SELECT object_key, size_bytes, expires_at, content_expires_at,
-            fetch_token_sha256_hex, state, upload_id
+            fetch_token_sha256_hex, state, upload_id, single_fetch, reserved_until
        FROM attachment_objects WHERE id = ? LIMIT 1`,
   ).bind(id).first<AttachmentRow>();
   if (!row || row.expires_at <= Math.floor(Date.now() / 1000)) return notFound();
@@ -355,6 +364,7 @@ async function insertObject(
     digest: string;
     state: AttachmentRow["state"];
     uploadId: string | null;
+    singleFetch: number;
     enforceIncompletePool: boolean;
   },
 ): Promise<Response | null> {
@@ -372,8 +382,8 @@ async function insertObject(
   const inserted = await env.DB.prepare(
     `INSERT INTO attachment_objects
      (id, object_key, size_bytes, expires_at, content_expires_at, created_at,
-      fetch_token_sha256_hex, state, upload_id)
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+      fetch_token_sha256_hex, state, upload_id, single_fetch)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE (SELECT COUNT(*) FROM attachment_objects) < ?
         AND COALESCE((SELECT SUM(size_bytes) FROM attachment_objects), 0) <= ? - ?
         AND (? = 0 OR (
@@ -392,6 +402,7 @@ async function insertObject(
     values.digest,
     values.state,
     values.uploadId,
+    values.singleFetch,
     MAX_LIVE_ATTACHMENT_ROWS,
     MAX_LIVE_ATTACHMENT_BYTES,
     values.size,
@@ -423,6 +434,8 @@ export async function handleAttachmentSessionCreate(request: Request, env: Env):
   if (ttl === null) return error(400, "bad_ttl", "unsupported attachment TTL");
   const capability = readCapability(request);
   if (capability === null) return error(400, "bad_fetch_token", "invalid fetch token");
+  const singleFetch = readSingleFetch(request);
+  if (singleFetch === null) return error(400, "bad_single_fetch", "X-OSL-Single-Fetch must be 0 or 1");
   const declared = unsignedLength(request.headers.get("x-osl-size-bytes"), MAX_SEALED_ATTACHMENT_BYTES);
   if (declared instanceof Response || declared === null) {
     return declared ?? error(400, "size_required", "X-OSL-Size-Bytes header required");
@@ -452,6 +465,7 @@ export async function handleAttachmentSessionCreate(request: Request, env: Env):
       digest: await capabilityDigestHex(capability),
       state: "uploading",
       uploadId: multipart.uploadId,
+      singleFetch,
       enforceIncompletePool: true,
     });
   } catch (databaseError) {
@@ -737,6 +751,8 @@ export async function handleAttachmentUpload(request: Request, env: Env): Promis
   if (ttl === null) return error(400, "bad_ttl", "unsupported attachment TTL");
   const capability = readCapability(request);
   if (capability === null) return error(400, "bad_fetch_token", "invalid fetch token");
+  const singleFetch = readSingleFetch(request);
+  if (singleFetch === null) return error(400, "bad_single_fetch", "X-OSL-Single-Fetch must be 0 or 1");
   if (!request.body) return error(400, "empty_body", "attachment body required");
 
   // Read and validate before allocating storage. The body count is
@@ -769,6 +785,7 @@ export async function handleAttachmentUpload(request: Request, env: Env): Promis
     digest: await capabilityDigestHex(capability),
     state: "uploading",
     uploadId: directUploadId,
+    singleFetch,
     enforceIncompletePool: false,
   });
   if (rejected) return rejected;
@@ -829,6 +846,7 @@ export async function handleAttachmentFetch(request: Request, env: Env, id: stri
   const row = await authorizedRow(request, env, id);
   if (row instanceof Response) return row;
   if (row.state !== "ready") return notFound();
+  if (!await reserveAttachmentFetch(env, id, row, Math.floor(Date.now() / 1000))) return notFound();
   const head = await env.ATTACHMENTS.head(row.object_key);
   if (!head || !r2MetadataMatches(head, row.object_key, row.size_bytes)) {
     return notFound();

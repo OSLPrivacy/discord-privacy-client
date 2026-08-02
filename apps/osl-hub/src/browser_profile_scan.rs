@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -355,30 +356,57 @@ fn scan_resolved_profile_with_commit(
 }
 
 pub fn query_snapshot(snapshot_path: &Path) -> Result<Vec<BrowserProfileObservation>, String> {
-    let bytes = std::fs::read(snapshot_path)
+    let metadata = std::fs::metadata(snapshot_path)
         .map_err(|_| "The browser profile history snapshot could not be read".to_owned())?;
-    if bytes.len() as u64 > MAX_HISTORY_SNAPSHOT_BYTES {
+    if metadata.len() > MAX_HISTORY_SNAPSHOT_BYTES {
         return Err("The browser profile history snapshot is too large".to_owned());
     }
-    let text = String::from_utf8_lossy(&bytes);
+    let connection = Connection::open_with_flags(
+        snapshot_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| {
+        "The browser profile history snapshot is not a readable SQLite database".to_owned()
+    })?;
     let mut seen = BTreeSet::new();
     let mut observations = Vec::new();
-    for line in text.lines() {
-        if observations.len() >= MAX_SNAPSHOT_ROWS {
-            break;
-        }
-        let Some(host) = url::Url::parse(line.trim())
-            .ok()
-            .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
-        else {
+    let mut queried_schema = false;
+    // Chromium-family browsers use `urls`; Firefox uses `moz_places`.  These
+    // are fixed queries against an OSL-owned read-only snapshot, never against
+    // a live browser database.
+    for query in [
+        "SELECT url FROM urls WHERE url IS NOT NULL LIMIT ?1",
+        "SELECT url FROM moz_places WHERE url IS NOT NULL LIMIT ?1",
+    ] {
+        let Ok(mut statement) = connection.prepare(query) else {
             continue;
         };
-        if seen.insert(host.clone()) {
-            observations.push(BrowserProfileObservation {
-                service: host.clone(),
-                site: host,
-            });
+        queried_schema = true;
+        let rows = statement
+            .query_map([MAX_SNAPSHOT_ROWS as i64], |row| row.get::<_, String>(0))
+            .map_err(|_| "The browser profile history records could not be read".to_owned())?;
+        for url in rows {
+            let url = url
+                .map_err(|_| "The browser profile history records could not be read".to_owned())?;
+            let Some(host) = url::Url::parse(url.trim())
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+            else {
+                continue;
+            };
+            if seen.insert(host.clone()) {
+                observations.push(BrowserProfileObservation {
+                    service: host.clone(),
+                    site: host,
+                });
+                if observations.len() >= MAX_SNAPSHOT_ROWS {
+                    return Ok(observations);
+                }
+            }
         }
+    }
+    if !queried_schema {
+        return Err("The browser profile history database has no supported URL records".to_owned());
     }
     Ok(observations)
 }
@@ -1106,18 +1134,26 @@ mod tests {
     }
 
     #[test]
-    fn scan_resolved_profile_reads_only_bounded_snapshot_rows() {
+    fn ti_5_scan_resolved_profile_reads_sqlite_history_rows() {
         let root = temp_root("resolved-scan");
         let profile_dir = root.join("Default");
         let snapshot_root = root.join("snapshots");
         std::fs::create_dir_all(&profile_dir).unwrap();
         let history = profile_dir.join("History");
-        let mut rows = Vec::new();
+        let connection = Connection::open(&history).unwrap();
+        connection
+            .execute("CREATE TABLE urls (url TEXT NOT NULL)", [])
+            .unwrap();
         for index in 0..(MAX_SNAPSHOT_ROWS + 20) {
-            rows.push(format!("https://service{index}.example/path"));
+            connection
+                .execute(
+                    "INSERT INTO urls (url) VALUES (?1)",
+                    [format!("https://service{index}.example/path")],
+                )
+                .unwrap();
         }
-        let original = rows.join("\n");
-        std::fs::write(&history, original.as_bytes()).unwrap();
+        drop(connection);
+        let original = std::fs::read(&history).unwrap();
 
         let receipt = scan_resolved_profile_with_commit(
             &snapshot_root,
@@ -1141,7 +1177,16 @@ mod tests {
         assert_eq!(receipt.scope, HISTORY_SCOPE);
         assert_eq!(receipt.observation_count, MAX_SNAPSHOT_ROWS);
         assert!(receipt.snapshot_deleted);
-        assert_eq!(std::fs::read(&history).unwrap(), original.as_bytes());
+        assert_eq!(std::fs::read(&history).unwrap(), original);
+    }
+
+    #[test]
+    fn ti_5_rejects_the_old_newline_fixture_instead_of_claiming_a_scan() {
+        let root = temp_root("newline-history");
+        std::fs::create_dir_all(&root).unwrap();
+        let history = root.join("History");
+        std::fs::write(&history, b"https://example.test/\n").unwrap();
+        assert!(query_snapshot(&history).is_err());
     }
 
     #[test]
