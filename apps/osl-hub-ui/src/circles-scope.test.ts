@@ -27,12 +27,12 @@ function visibleText(markup: string): string {
   return markup.replace(/<[^>]*>/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
-describe("public Circles network scope", () => {
+describe("Enclaves scope", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("keeps public Circles network scope visibly unavailable", async () => {
+  it("renders available Enclaves with audiences that can post", async () => {
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({
       route: "inbox",
@@ -43,21 +43,19 @@ describe("public Circles network scope", () => {
     });
 
     const inboxHtml = __oslHubUiTest.renderWorkspaceContent("inbox");
-    const publicCard = inboxHtml.match(/<article class="inbox-surface-card unavailable"[^>]*data-public-circles-network="unavailable"[\s\S]*?<\/article>/u)?.[0] ?? "";
-    const publicCopy = visibleText(publicCard);
+    const enclaves = inboxHtml.match(/<section class="inbox-surface-card circles-destination"[\s\S]*?<\/section>/u)?.[0] ?? "";
+    const enclaveCopy = visibleText(enclaves);
 
-    expect(publicCard).not.toBe("");
-    expect(publicCard).toContain('aria-disabled="true"');
-    expect(publicCopy).toMatch(/Public Circles network unavailable/iu);
-    expect(publicCopy).toMatch(/Private audience posts stay off/iu);
-    expect(publicCard).not.toMatch(/<button|href=|data-route|data-home-module/iu);
-    expect(publicCopy).not.toMatch(/global feed|available now|ready now|public .*end-to-end encrypted/iu);
-
-    expect(inboxHtml).not.toContain('data-circle-posting="ready"');
-    expect(inboxHtml).not.toContain('data-circle-posting="refused"');
+    expect(enclaves).not.toBe("");
+    expect(enclaves).toContain('data-circle-state="available"');
+    expect(enclaves).toContain('data-circle-feeds="private-audiences"');
+    expect(enclaveCopy).toMatch(/OSL Enclaves/iu);
+    expect(enclaveCopy).toMatch(/Posts and comments are encrypted for the selected audience/iu);
+    expect(enclaves).toContain('data-circle-posting="ready"');
+    expect(enclaves).toContain('data-circle-posting="refused"');
   });
 
-  it("renders the declared coming-later Circles state instead of live audience cards", async () => {
+  it("renders the declared available Enclaves state and live audience cards", async () => {
     const { firstPartyOslSurfaceContracts } = await import("./osl-chats-view");
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({
@@ -67,11 +65,11 @@ describe("public Circles network scope", () => {
     const circle = firstPartyOslSurfaceContracts().find((surface) => surface.id === "osl-circles");
     const inboxHtml = __oslHubUiTest.renderWorkspaceContent("inbox");
 
-    expect(circle?.state).toBe("coming_later");
+    expect(circle?.state).toBe("available");
     expect(inboxHtml).toContain('data-inbox-osl-surface="circles"');
-    expect(inboxHtml).toContain('data-circle-state="coming_later"');
-    expect(inboxHtml).toContain("Coming later");
-    expect(inboxHtml).not.toContain('data-circle-posting="ready"');
-    expect(inboxHtml).not.toContain("Posts and comments are encrypted for the selected audience.");
+    expect(inboxHtml).toContain('data-circle-state="available"');
+    expect(inboxHtml).toContain("OSL Enclaves");
+    expect(inboxHtml).toContain('data-circle-posting="ready"');
+    expect(inboxHtml).toContain("Posts and comments are encrypted for the selected audience.");
   });
 });
