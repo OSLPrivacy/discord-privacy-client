@@ -26,11 +26,10 @@ export function canContinuePastTorChoice(state: TorOnboardingState): boolean {
  * presented as the product's recommended or inherently safer route.
  */
 export function onboardingTorMarkup(state: TorOnboardingState): string {
-  const card = (choice: Exclude<TorChoice, null>, title: string, downside: string, icon: string): string => {
+  const card = (choice: Exclude<TorChoice, null>, title: string, downside: string): string => {
     const selected = state.choice === choice;
     return `<label class="tor-choice-card${selected ? " selected" : ""}">
       <input type="radio" name="tor-route" value="${choice}"${selected ? " checked" : ""}/>
-      <span class="tor-choice-icon tor-choice-icon-${icon}" aria-hidden="true"></span>
       <span class="tor-choice-copy"><strong>${title}</strong><small>${downside}</small></span>
     </label>`;
   };
@@ -38,12 +37,12 @@ export function onboardingTorMarkup(state: TorOnboardingState): string {
   return `<section class="tor-onboarding" aria-labelledby="tor-onboarding-heading">
     <p class="eyebrow">Connection choice</p>
     <h1 id="tor-onboarding-heading" tabindex="-1">Choose how OSL connects</h1>
-    <p class="compact-lead">Pick one before continuing. You can review this choice later in Settings.</p>
+    <p class="compact-lead onboarding-centered-copy">Pick one before continuing. You can review this choice later in Settings.</p>
     <fieldset class="tor-choice-grid"><legend class="sr-only">Connection route</legend>
-      ${card("tor", "Use Tor", "Connections may take longer and may not work on every network.", "tor")}
-      ${card("direct", "Connect directly", "Your network provider can see that this device connects to OSL’s server.", "direct")}
+      ${card("tor", "Use Tor", "Connections may take longer and may not work on every network.")}
+      ${card("direct", "Connect directly", "Your network provider can see that this device connects to OSL’s server.")}
     </fieldset>
     <p class="tor-choice-note" role="status">${state.choice === null ? "Choose a connection route to continue." : "Your choice will be saved before OSL sends or fetches anything."}</p>
-    <button class="button primary" data-tor-choice-continue type="button" ${canContinuePastTorChoice(state) ? "" : "disabled"}>Continue</button>
+    <div class="setup-footer onboarding-actions"><button class="button primary" data-tor-choice-continue type="button" ${canContinuePastTorChoice(state) ? "" : "disabled"}>Continue</button></div>
   </section>`;
 }

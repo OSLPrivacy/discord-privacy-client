@@ -366,6 +366,9 @@ describe("bundled preview security boundary", () => {
       "allow-request-hosted-session-scan-command",
       "allow-close-service-host",
       "allow-set-local-protected-sheet-open",
+      // Stores the explicitly chosen route locally before onboarding proceeds;
+      // it does not open or use a network connection.
+      "allow-set-tor-preference",
       "allow-remove-service-account",
       "allow-activate-local-loopback-context",
       "allow-activate-manual-peer-context",

@@ -29,6 +29,15 @@ describe("Tor onboarding choice", () => {
     expect(markup).not.toMatch(/recommended|more private|faster/iu);
   });
 
+  it("uses the shared centred onboarding copy and action layout with visible radios", () => {
+    const markup = onboardingTorMarkup(initialTorOnboardingState());
+
+    expect(markup).toContain('class="compact-lead onboarding-centered-copy"');
+    expect(markup).toContain('class="setup-footer onboarding-actions"');
+    expect(markup).toContain('type="radio" name="tor-route"');
+    expect(markup).not.toContain("tor-choice-icon");
+  });
+
   it("only enables onward travel after either route has been explicitly selected", () => {
     const tor = chooseTorRoute(initialTorOnboardingState(), "tor");
     const direct = chooseTorRoute(initialTorOnboardingState(), "direct");
