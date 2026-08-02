@@ -236,6 +236,10 @@ mod tests {
         let _serial = crate::global_keystore_test_lock();
         let path = temporary_file();
         let (config, local, core, profiles, native_profiles) = cleanup_roots(&path);
+        // The wipe path must only purge the currently configured isolated
+        // OSL core. Establish the same trusted-root invariant as the host
+        // before exercising a bound-volume removal.
+        keystore::set_base_dir_override(Some(core.clone()));
         let state = HubCoreState::default();
         let lock_volume = r"\\?\Volume{lock}".to_owned();
         let wipe_volume = r"\\?\Volume{wipe}".to_owned();
@@ -272,6 +276,7 @@ mod tests {
         assert!(!core.exists());
         assert!(!profiles.exists());
         assert!(!native_profiles.exists());
+        keystore::set_base_dir_override(None);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 }
