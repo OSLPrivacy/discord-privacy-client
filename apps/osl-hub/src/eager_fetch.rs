@@ -53,9 +53,12 @@ impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
     }
 
     /// Called by the authenticated pointer-arrival path, never by an open UI.
-    /// A failed fetch/decrypt/write leaves no ACK decision to this task.
+    /// Retries retain the cipher-store reservation created before the first
+    /// byte. A failed fetch/decrypt/write leaves no ACK decision to this task.
     pub fn on_pointer_arrival(&mut self, pointer: &PointerArrival) -> Result<(), String> {
-        let ciphertext = self.transport.fetch(&pointer.blob_id, &pointer.fetch_cap)?;
+        let ciphertext = crate::eager_fetch_retry::retry_reserved_fetch(|| {
+            self.transport.fetch(&pointer.blob_id, &pointer.fetch_cap)
+        })?;
         self.store.decrypt_and_persist(&pointer.blob_id, &ciphertext)
     }
 
