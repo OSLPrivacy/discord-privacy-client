@@ -44,3 +44,12 @@ the intended shared codec output.  It has no shipping import by design.
 DEP-T1-4.  T1 owns the compiled codec table, so importing this artefact into
 the current binary would create a second carrier model and break decode
 compatibility.  It remains a non-shipping handoff until T1 adopts it.
+
+## T13-B2
+
+The original `FREE_COVER` and 16-phrase code no longer exists:
+`pro_context_cover.rs` was repurposed by T13-B3 into encrypted cover-history
+state.  The planned B2 replacement also has no shippable route today because
+the IPC send selector still forces Mode 1 to Mode 0.  Reintroducing a
+word-bank call here would either be disconnected from the real carrier or
+silently claim a Mode-1 guarantee that the actual send cannot provide.
