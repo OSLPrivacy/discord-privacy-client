@@ -1,1 +1,0 @@
-Missing prerequisite T12-I5 (IMAP-VERIFY): apps/osl-hub/src/imap_verify.rs does not exist, so T12-I6 cannot safely register the destructive IMAP commands.
