@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+config_home="${CLAUDE3_CONFIG_HOME:-$HOME/.claude3}"
+claude_bin="${CLAUDE_BIN:-claude}"
+exec env CLAUDE_CONFIG_DIR="$config_home" "$claude_bin" "$@"
