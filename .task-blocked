@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T19-C1 is missing: no rn_recovery.rs or SESSION_RESET transport/delivery handoff exists, so T19-C2 has no confirmed-delivery hook to arm the throttle from.
