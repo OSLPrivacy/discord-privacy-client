@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T2-23: apps/osl-hub/src/burn_idempotence.rs and its reachable burn-to-DestructionAckKind::AlreadyAbsent path; T2-70 cannot compose the required consumed-object acknowledgement without it.
