@@ -78,15 +78,15 @@ describe("native window transition settling", () => {
     expect(pass).not.toContain("withNativeDeadline(");
   });
 
-  it("keeps one frame-level event ingress for move, resize, and focus", () => {
+  it("keeps one frame-level event ingress for move, resize, scale, restore, and focus", () => {
     const schedule = between(
       "function scheduleNativeHostRealignment",
-      "window.addEventListener(\"resize\"",
+      "if (!runningUnderVitest)",
     );
     expect(schedule).toContain("requestAnimationFrame");
     expect(schedule).toContain("void validateNativeSurfaces()");
-    expect(source).toContain("desktopWindow.onMoved(scheduleNativeHostRealignment)");
-    expect(source).toContain("desktopWindow.onResized(scheduleNativeHostRealignment)");
+    expect(source).toContain('import { bindWindowLifecycleRealignment } from "./window-lifecycle-bindings"');
+    expect(source).toContain("bindWindowLifecycleRealignment(\n    window,\n    desktopWindow,\n    document,\n    scheduleNativeHostRealignment,");
     expect(source).toContain("desktopWindow.onFocusChanged");
   });
 });

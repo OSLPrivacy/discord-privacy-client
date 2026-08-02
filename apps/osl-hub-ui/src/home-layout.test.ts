@@ -289,15 +289,14 @@ describe("home interaction regressions", () => {
     expect(binding).toMatch(/if\s*\(dialog\s*&&\s*!dialog\.open\)\s*\{?\s*dialog\.showModal\(\)/);
   });
 
-  it("registers one coalesced resize hook only for an active native host", () => {
-    expect(source.match(/window\.addEventListener\("resize"/g) ?? []).toHaveLength(1);
+  it("registers one shared lifecycle binding only for an active native host", () => {
+    expect(source.match(/bindWindowLifecycleRealignment\(/g) ?? []).toHaveLength(1);
     const binding = functionSource(source, "bindWorkspace", "ttlSeconds");
     expect(binding).not.toContain('window.addEventListener("resize"');
     expect(binding).not.toContain('document.addEventListener("keydown"');
     expect(source).toMatch(/function scheduleNativeHostRealignment[\s\S]*?if \(\(!activeNativeHostId && !activeDefaultBrowserCompanion && !mullvadWindowHosted\) \|\| nativeHostResizeFrame\) return;[\s\S]*?requestAnimationFrame[\s\S]*?validateNativeSurfaces\(\)/);
-    expect(source).toContain('window.addEventListener("resize", scheduleNativeHostRealignment)');
-    expect(source).toContain("desktopWindow.onMoved(scheduleNativeHostRealignment)");
-    expect(source).toContain("desktopWindow.onResized(scheduleNativeHostRealignment)");
+    expect(source).toContain('import { bindWindowLifecycleRealignment } from "./window-lifecycle-bindings"');
+    expect(source).toContain("bindWindowLifecycleRealignment(\n    window,\n    desktopWindow,\n    document,\n    scheduleNativeHostRealignment,");
     expect(source).toContain("desktopWindow.onFocusChanged");
   });
 

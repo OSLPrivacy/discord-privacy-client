@@ -98,12 +98,12 @@ describe("native Discord composite tether", () => {
     );
   });
 
-  it("reconciles after parent move, resize, activation, and fullscreen settlement", () => {
+  it("reconciles after parent move, resize, scale, restore, activation, and fullscreen settlement", () => {
     expect(mainSource).toContain(
-      "desktopWindow.onMoved(scheduleNativeHostRealignment)",
+      'import { bindWindowLifecycleRealignment } from "./window-lifecycle-bindings"',
     );
     expect(mainSource).toContain(
-      "desktopWindow.onResized(scheduleNativeHostRealignment)",
+      "bindWindowLifecycleRealignment(\n    window,\n    desktopWindow,\n    document,\n    scheduleNativeHostRealignment,",
     );
     expect(mainSource).toContain("(handler) => desktopWindow.onFocusChanged(handler)");
     expect(behaviorSource).toContain(

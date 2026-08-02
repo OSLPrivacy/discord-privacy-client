@@ -137,6 +137,7 @@ import type { ScrubRouteState, ScrubRouteStep } from "./scrub-route";
 import { nextServiceGuideStep, parseServiceGuideState, previousServiceGuideStep, type ServiceGuideStep } from "./service-guide";
 import { NativeDeadlineError, withNativeDeadline } from "./native-deadline";
 import { CoalescedRealignment, NativeCallGate } from "./native-realignment";
+import { bindWindowLifecycleRealignment } from "./window-lifecycle-bindings";
 import { FrameRenderScheduler } from "./render-scheduler";
 import { defaultScrubSignalGroups, enabledScrubFindings, parseScrubSignalGroups, scrubSignalDefinitions, scrubSignalGroupFor, type ScrubSignalGroup } from "./scrub";
 import { loadMassCleanupCapabilities, type MassCleanupCapabilityManifest } from "./mass-cleanup";
@@ -9329,10 +9330,13 @@ export const __oslHubUiTest = {
 };
 
 if (!runningUnderVitest) {
-  window.addEventListener("resize", scheduleNativeHostRealignment);
   const desktopWindow = getCurrentWindow();
-  void desktopWindow.onMoved(scheduleNativeHostRealignment).catch(() => undefined);
-  void desktopWindow.onResized(scheduleNativeHostRealignment).catch(() => undefined);
+  bindWindowLifecycleRealignment(
+    window,
+    desktopWindow,
+    document,
+    scheduleNativeHostRealignment,
+  );
   void bindMainWindowFocusChanges(
     (handler) => desktopWindow.onFocusChanged(handler),
     {

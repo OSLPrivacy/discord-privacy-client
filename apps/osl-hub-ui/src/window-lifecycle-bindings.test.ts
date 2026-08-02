@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   bindWindowLifecycleRealignment,
@@ -39,6 +40,13 @@ function lifecycleFixture(visibilityState: "visible" | "hidden" = "visible"): {
 }
 
 describe("bindWindowLifecycleRealignment", () => {
+  it("is installed by the shipping window lifecycle setup", () => {
+    const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+
+    expect(main).toContain('import { bindWindowLifecycleRealignment } from "./window-lifecycle-bindings"');
+    expect(main).toContain("bindWindowLifecycleRealignment(\n    window,\n    desktopWindow,\n    document,\n    scheduleNativeHostRealignment,");
+  });
+
   it("realigns for browser geometry, native move/resize, and DPI changes", async () => {
     const fixture = lifecycleFixture();
     const scheduleNativeHostRealignment = vi.fn();
