@@ -143,6 +143,7 @@ pub mod identity_registry;
 pub mod inbound_receipts;
 #[cfg(feature = "core")]
 pub mod receipt_emit;
+pub mod realtime_client;
 pub mod isolated_worker;
 #[cfg(feature = "core")]
 pub mod mass_cleanup;

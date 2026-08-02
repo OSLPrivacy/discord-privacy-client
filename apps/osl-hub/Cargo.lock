@@ -3139,7 +3139,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "osl-privacy-hub"
+name = "osl-hub"
 version = "0.1.0"
 dependencies = [
  "adapter-profile",

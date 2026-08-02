@@ -1,5 +1,5 @@
 [package]
-name = "osl-privacy-hub"
+name = "osl-hub"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
@@ -91,6 +91,11 @@ custom-protocol = ["tauri/custom-protocol"]
 discord-qa-shell = []
 signal-qa-shell = []
 whatsapp-qa-shell = []
+
+[lib]
+# The package is `osl-hub` so it can be selected with `cargo -p osl-hub`.
+# Keep the established Rust crate name used by the desktop binary and tests.
+name = "osl_privacy_hub"
 
 [[bin]]
 name = "osl-privacy-hub"
