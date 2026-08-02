@@ -1,0 +1,1 @@
+Missing prerequisite T19-A4: /home/liamw/osl-plan/plan/03-CONTRACTS/ratchet.md (the frozen RN recovery contract); T19-D1 cannot implement rn_outbox.rs until T19-A4 owns and supplies it.
