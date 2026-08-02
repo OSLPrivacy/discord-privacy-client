@@ -1042,6 +1042,14 @@ pub struct OpenedNativeOverlayTextBatch {
     /// from an empty inbox. It is a count of rows and nothing else -- no cause
     /// string, no identifiers, nothing derived from content.
     pub deferred_rows: u32,
+    /// Authenticated-inbox rows whose wire version this build cannot open.
+    ///
+    /// The row stays in the inbox so updating the app can recover it.  This is
+    /// deliberately separate from [`Self::deferred_rows`]: an unavailable
+    /// cipher store is retryable, while an unknown wire requires a compatible
+    /// build.  As with every receive-side tally, it carries no row identifier
+    /// or content-derived data across the Tauri boundary.
+    pub unrecognized_wire_rows: u32,
 }
 
 /// Counts of acknowledgement states in one broker batch.
@@ -4033,6 +4041,10 @@ fn drain_peer_inbox_text(
     // and nothing about which rows or why.
     let mut deferred_rows =
         u32::try_from(control_inbox_delivery.retained_disabled_rows).unwrap_or(u32::MAX);
+    // A future wire must be visible to the receiver instead of looking like an
+    // empty inbox.  The row is retained: this build cannot authenticate and
+    // consume it, but a compatible build may be able to after an update.
+    let mut unrecognized_wire_rows = 0u32;
     for item in items {
         // Unrelated inbox traffic must never consume this bounded display
         // budget. Stop only after 64 messages for this exact friend/scope were
@@ -4212,8 +4224,17 @@ fn drain_peer_inbox_text(
         if !allow_messages
             || messages.len().saturating_add(pending_view_once.len())
                 >= MAX_NATIVE_OVERLAY_OPEN_BATCH
-            || !ipc::wire_v2::is_native_overlay_relay_bundle(&bundle)
         {
+            continue;
+        }
+        // Attachments use this same inbox and have their own drain. They are a
+        // recognised protocol family, not a wire this text drain failed to
+        // understand.
+        if ipc::wire_v2::is_attachment_bundle(&bundle) {
+            continue;
+        }
+        if !ipc::wire_v2::is_native_overlay_relay_bundle(&bundle) {
+            unrecognized_wire_rows = unrecognized_wire_rows.saturating_add(1);
             continue;
         }
         let wire = format!("DPC0::{}", STANDARD.encode(&bundle));
@@ -4746,6 +4767,7 @@ fn drain_peer_inbox_text(
         // deferred rather than absent.
         decrypt_display_enabled: allow_messages,
         deferred_rows,
+        unrecognized_wire_rows,
     })
 }
 
@@ -11398,6 +11420,7 @@ mod tests {
             fetched: 2,
             decrypt_display_enabled: true,
             deferred_rows: 0,
+            unrecognized_wire_rows: 0,
         })
         .unwrap();
         assert_eq!(value["fetched"], 2);
@@ -11424,6 +11447,7 @@ mod tests {
         // or with "the cipher store was unreachable".
         assert_eq!(value["decryptDisplayEnabled"], true);
         assert_eq!(value["deferredRows"], 0);
+        assert_eq!(value["unrecognizedWireRows"], 0);
 
         // A multi-row message has no single cover, and the absent key is what the
         // renderer's exact-key parser expects rather than an explicit null.
@@ -11483,6 +11507,7 @@ mod tests {
             fetched: 0,
             decrypt_display_enabled: true,
             deferred_rows: 0,
+            unrecognized_wire_rows: 0,
         };
         let counters = batch.acknowledgment_counters();
         assert_eq!(counters.received, 1);
@@ -11517,6 +11542,7 @@ mod tests {
             fetched: 0,
             decrypt_display_enabled: true,
             deferred_rows: 0,
+            unrecognized_wire_rows: 0,
         };
 
         assert_eq!(
@@ -11592,6 +11618,7 @@ mod tests {
             fetched: 3,
             decrypt_display_enabled: true,
             deferred_rows: 0,
+            unrecognized_wire_rows: 0,
         };
 
         let statuses = batch
@@ -11639,6 +11666,7 @@ mod tests {
                 fetched: 0,
                 decrypt_display_enabled: true,
                 deferred_rows: 0,
+                unrecognized_wire_rows: 0,
             };
         let labels = |batch: &OpenedNativeOverlayTextBatch| {
             batch
@@ -11782,6 +11810,7 @@ mod tests {
             fetched: 1,
             decrypt_display_enabled: true,
             deferred_rows: 0,
+            unrecognized_wire_rows: 0,
         };
 
         let value = serde_json::to_value(batch).expect("B-side batch serializes");
