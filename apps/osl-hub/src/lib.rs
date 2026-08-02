@@ -8,6 +8,8 @@ pub mod account_recovery;
 #[cfg(feature = "core")]
 pub mod attachment_formats;
 pub mod attachment_scan;
+#[cfg(feature = "core")]
+pub mod attachment_thumbnail;
 pub mod adapters;
 pub mod attended_imap;
 #[cfg(feature = "core")]
