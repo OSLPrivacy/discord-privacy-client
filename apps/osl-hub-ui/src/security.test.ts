@@ -421,6 +421,10 @@ describe("bundled preview security boundary", () => {
       // (account_recovery.rs). No network, no keyserver, no shell - it stays
       // inside the local main-window boundary this test protects.
       "allow-recovery-kit-status",
+      // Reads in-memory AiCarrierState only (ai_carrier.rs has zero network
+      // references) - reports whether a LOCAL cover model is ready. No network,
+      // no keyserver, no shell.
+      "allow-ai-carrier-status",
     ];
     expect(new Set(capability.permissions)).toEqual(new Set(expectedPermissions));
     expect(capability.permissions).toHaveLength(expectedPermissions.length);
