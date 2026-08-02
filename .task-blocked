@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+T18-C2 is missing: crates/ipc/src/group_send.rs and its signed membership-change event that forces every member's sender chain to rotate before the next send. T18-C2 (Track T18) owns it.
