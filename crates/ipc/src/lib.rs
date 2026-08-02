@@ -45,6 +45,7 @@ pub mod decoy_mp4;
 pub mod destruct_ack;
 pub mod fresh_start;
 pub mod friend_request;
+pub(crate) mod group_send;
 pub mod license_lifecycle;
 pub mod log_id;
 pub mod main_password;
