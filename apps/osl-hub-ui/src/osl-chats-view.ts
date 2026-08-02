@@ -97,6 +97,12 @@ export function firstPartyOslSurfaceContracts(): readonly FirstPartyOslSurfaceCo
   return FIRST_PARTY_OSL_SURFACES;
 }
 
+export function firstPartyOslSurfaceContract(
+  id: FirstPartyOslSurfaceContract["id"],
+): FirstPartyOslSurfaceContract {
+  return FIRST_PARTY_OSL_SURFACES.find((surface) => surface.id === id)!;
+}
+
 export interface OslChatFriend {
   personId: string;
   nickname: string;
