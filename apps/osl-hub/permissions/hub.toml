@@ -29,6 +29,11 @@ description = "Send a pointer-only OSL Mail envelope from the trusted main OSL w
 commands.allow = ["osl_mail_send"]
 
 [[permission]]
+identifier = "allow-osl-mail-burn"
+description = "Burn the active OSL Mail mailbox only after its exact address is confirmed."
+commands.allow = ["osl_mail_burn"]
+
+[[permission]]
 identifier = "allow-activate-native-manual-peer-context"
 description = "Bind one verified friend scope to the exact current signed native Discord host generation; accepts no Discord credentials, process, window, or conversation identifiers."
 commands.allow = ["activate_native_manual_peer_context"]
