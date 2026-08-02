@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const runtimeSource = readFileSync(new URL("./osl-chat-runtime.ts", import.meta.url), "utf8");
+const serversViewSource = readFileSync(new URL("./osl-servers-view.ts", import.meta.url), "utf8");
 
 function functionSource(name: string, nextName: string): string {
   const start = source.indexOf(`function ${name}`);
@@ -110,9 +111,10 @@ describe("first-party OSL Chats integration", () => {
 
   it("labels provider server capabilities as unavailable instead of faking support", () => {
     expect(source).toContain('if (route === "osl-servers") return oslServersContent()');
-    expect(source).toContain('["Discord servers", "Not available yet"]');
-    expect(source).toContain('["Telegram groups and channels", "Not available yet"]');
-    expect(source).toContain('["Signal groups", "Not available yet"]');
-    expect(source).toContain('["Snapchat groups", "Not available yet"]');
+    expect(source).toContain('import { oslServersViewMarkup } from "./osl-servers-view"');
+    expect(serversViewSource).toContain('["Discord servers", "Not available yet"]');
+    expect(serversViewSource).toContain('["Telegram groups and channels", "Not available yet"]');
+    expect(serversViewSource).toContain('["Signal groups", "Not available yet"]');
+    expect(serversViewSource).toContain('["Snapchat groups", "Not available yet"]');
   });
 });
