@@ -45,3 +45,10 @@ Blocked: T6-R3 depends on T6-R2, but the reachable R2 commit is not integrated
 and `prose_token.rs` still uses the explicitly named `legacy_scope_fetch_key`.
 Changing only this caller would make sender and receiver capability contracts
 diverge, not close the public-scope authority finding.
+
+# T6-R4
+
+Blocked: T6-R4 requires both T6-R2's capability upload contract and T6-K6's
+device roster surface. Neither is integrated here. The locally added T2-52
+view-once helper is not a transport send path and cannot stand in for the
+required per-device upload/ack behaviour.
