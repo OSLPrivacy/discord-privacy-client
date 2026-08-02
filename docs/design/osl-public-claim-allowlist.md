@@ -78,6 +78,15 @@ tree; re-verify anchors before relying on a row.
 | **Evidence** | *Re-anchored 2026-07-27, and stronger than previously recorded.* The call is `crates/runtime/src/screenshot.rs:83`, and the result is **read back and required to match exactly** at `:91`/`:97` — it does not assume success. The overlay compositor independently re-reads via `GetWindowDisplayAffinity` before treating exclusion as proven (`apps/osl-hub/src/native_discord_overlay.rs:4875`), and non-QA builds select `ScreenshotProtection::On` at `:176`. Stays **Planned** only because first-paint ordering is an open critical (master §2 P0-5). |
 | **Required alongside** | "It cannot stop a phone camera, a hardware capture device, or a modified client. On machines where Windows refuses the protection it does nothing — and we show you when that happens." Never write "screenshot-proof" or "prevents screenshots". Master §3b: this is the feature most likely to be over-read; keep the copy narrow. |
 
+### A5a · Recovery-kit display
+
+| | |
+|---|---|
+| **Permitted wording** | "On Windows, OSL can hold a recovery kit until it confirms capture resistance for the focused OSL window. Linux and macOS have no capture-resistance primitive in this build, so a recovery kit shown there is capturable." |
+| **Status** | `implemented-unwired` → **`Planned`** badge. This is a platform-scoped recovery-display property, not a general promise that recovery secrets cannot be copied. |
+| **Evidence** | `src-tauri/src/screenshot.rs:33-41` makes the non-Windows `apply_to_window` path a successful no-op. `apps/osl-hub-ui/src/adapters.ts:1038-1063` separately tracks whether the platform actually enforces capture protection, and `apps/osl-hub-ui/src/recovery-kit.ts:121-132` makes the recovery-display claim depend on that enforcement rather than the successful no-op return. `apps/osl-hub-ui/src/recovery-kit.test.ts` covers the non-Windows state. |
+| **Required alongside** | "If you choose to reveal a recovery kit without proven capture resistance, anything that can read your screen can read it." Never call a Linux or macOS recovery display protected, capture-resistant, screenshot-proof, or unrecordable. |
+
 ### A6 · No stored payment data
 
 | | |
