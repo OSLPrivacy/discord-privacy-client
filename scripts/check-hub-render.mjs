@@ -13,6 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { launchChrome } from './lib/cdp-harness.mjs';
+import { shippedHubCspHeaders } from './lib/csp-mirror.mjs';
 
 const SCRIPTS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.dirname(SCRIPTS_DIR);
@@ -92,24 +93,25 @@ async function realSidebarMarkup() {
 
 function startDistServer(sidebarMarkup) {
   const stylesheet = builtMainStylesheet();
+  const cspHeaders = shippedHubCspHeaders();
   const server = createServer((request, response) => {
     if ((request.url || '').startsWith('/__render-gate-sidebar')) {
-      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      response.writeHead(200, { ...cspHeaders, 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
       response.end(`<!doctype html><link rel="stylesheet" href="${stylesheet}"><main>${sidebarMarkup}</main>`);
       return;
     }
     if ((request.url || '').startsWith('/__render-gate-unstyled')) {
-      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      response.writeHead(200, { ...cspHeaders, 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
       response.end('<!doctype html><main><aside class="primary-sidebar">unstyled fixture</aside></main>');
       return;
     }
     const file = fileForRequest(request.url || '/');
     if (!file) {
-      response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      response.writeHead(404, { ...cspHeaders, 'content-type': 'text/plain; charset=utf-8' });
       response.end('not found');
       return;
     }
-    response.writeHead(200, { 'content-type': contentType(file), 'cache-control': 'no-store' });
+    response.writeHead(200, { ...cspHeaders, 'content-type': contentType(file), 'cache-control': 'no-store' });
     createReadStream(file).pipe(response);
   });
   return new Promise((resolve, reject) => {
