@@ -94,6 +94,16 @@ anything that is not green.
 
 ### T5-T18: two VMs, one verification code
 
+#### Execution gate (2026-08-02)
+
+The harness is checked in, but this is deliberately **not** a passing VMQA
+receipt yet. `T5-C2` and `T5-C3` are not merged into the available Windows
+binary, and neither `OSL-Azure-Client-1` nor `OSL-Azure-Client-2` is available
+to receive a rebuilt binary. Do not mark T5-T18 passed, remove its blocked
+marker, or claim Scheme 1 availability until two live VM executions produce
+the matching receipts described below. This records the external blocker
+without weakening the byte-equality/sabotage requirement.
+
 Run the following only on the two isolated QA VMs after mutual pairing. Both confirmation dialogs
 must be visible at once. The coordinator relays each UIA-read value to the other VM over its
 protected QA channel on standard input; never put either code in an argument, transcript, screenshot

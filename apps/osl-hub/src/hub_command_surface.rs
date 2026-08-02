@@ -408,6 +408,8 @@ macro_rules! hub_tauri_commands {
             get_hub_license_state,
             osl_mail_get_status,
             osl_mail_provision,
+            osl_mail_send,
+            osl_mail_burn,
             get_mass_cleanup_capabilities,
             discover_mass_cleanup_targets,
             execute_mass_cleanup_batch,
