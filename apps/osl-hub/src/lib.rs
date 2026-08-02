@@ -12,6 +12,8 @@ pub mod attachment_partial_guard;
 pub mod attachment_scan;
 #[cfg(feature = "core")]
 pub mod attachment_thumbnail;
+#[cfg(feature = "core")]
+pub mod attachment_thumbnail_policy;
 pub mod adapters;
 pub mod attended_imap;
 #[cfg(feature = "core")]
