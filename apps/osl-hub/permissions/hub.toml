@@ -4,6 +4,16 @@ description = "Read the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["get_onboarding_preferences"]
 
 [[permission]]
+identifier = "allow-osl-mail-get-status"
+description = "Read the signed OSL Mail availability and this unlocked identity's local mailbox status."
+commands.allow = ["osl_mail_get_status"]
+
+[[permission]]
+identifier = "allow-osl-mail-provision"
+description = "Provision the unlocked identity's claimed OSL Mail username through the signed OSL Mail endpoint."
+commands.allow = ["osl_mail_provision"]
+
+[[permission]]
 identifier = "allow-activate-native-manual-peer-context"
 description = "Bind one verified friend scope to the exact current signed native Discord host generation; accepts no Discord credentials, process, window, or conversation identifiers."
 commands.allow = ["activate_native_manual_peer_context"]
