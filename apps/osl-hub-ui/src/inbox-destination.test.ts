@@ -23,9 +23,9 @@ describe("Inbox destination content", () => {
     }
   });
 
-  it("shows OSL Chat, Circles, Mail, and connected account sections with honest protection labels", () => {
+  it("shows OSL Chat, Enclaves, Mail, and connected account sections with honest protection labels", () => {
     expect(inbox).toContain("OSL Chat");
-    expect(inbox).toContain("OSL Circles");
+    expect(inbox).toContain("OSL Enclaves");
     expect(inbox).toContain("OSL Mail");
     expect(inbox).toContain("Protected OSL messages");
     expect(inbox).toContain("OSL Chat · Protected OSL message");

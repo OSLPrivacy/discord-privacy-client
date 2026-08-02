@@ -17,12 +17,13 @@ function functionSource(source: string, name: string, nextName: string): string 
 describe("People destination", () => {
   const source = readRelative("./main.ts");
   const styles = readRelative("./styles.css");
+  const header = readRelative("./people-destination-header.ts");
   const content = functionSource(source, "peopleDestinationContent", "peopleDialogMarkup");
 
   it("renders People as the trust destination over existing friend state", () => {
     expect(source).toContain('"people"');
     expect(functionSource(source, "workspaceContent", "oslChatContent")).toContain('route === "people"');
-    expect(content).toContain("<h1 id=\"route-heading\" tabindex=\"-1\">People</h1>");
+    expect(header).toContain("<h1 id=\"route-heading\" tabindex=\"-1\">People</h1>");
     expect(content).toContain("Add or verify a person");
     expect(content).toContain("People you know");
     expect(content).toContain('peopleListMarkup("manage")');

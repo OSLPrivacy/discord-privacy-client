@@ -117,6 +117,14 @@ import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
 import oslVectorLogoUrl from "./assets/logo-mark.svg";
 import { importLocalMessageExport, LOCAL_MESSAGE_IMPORT_MAX_BYTES } from "./local-message-import";
 import { persistLocalScrubExport } from "./scrub-local";
+import {
+  defaultScrubConsentGateState,
+  evaluateScrubConsentGate,
+  scrubConsentGatedRouteMarkup,
+  type ScrubConsentGateRequest,
+  type ScrubConsentGateState,
+} from "./scrub-consent-gate";
+import type { ScrubRouteState, ScrubRouteStep } from "./scrub-route";
 import { nextServiceGuideStep, parseServiceGuideState, previousServiceGuideStep, type ServiceGuideStep } from "./service-guide";
 import { NativeDeadlineError, withNativeDeadline } from "./native-deadline";
 import { CoalescedRealignment, NativeCallGate } from "./native-realignment";
@@ -499,6 +507,16 @@ let selectedScrubFindings = new Set<number>();
 let scrubResultsPage = 0;
 let scrubReviewOpen = false;
 let scrubReviewPage = 0;
+const localScrubConsentRequest: ScrubConsentGateRequest = {
+  serviceId: "local-export",
+  serviceName: "message export",
+  warning: "Scrub can permanently delete messages from a connected service and may cause account termination. Confirm this risk before scanning or reviewing a deletion preview.",
+};
+let localScrubConsentState: ScrubConsentGateState = defaultScrubConsentGateState();
+let localScrubRouteOpened = false;
+let localScrubRouteStep: ScrubRouteStep = "choose";
+let localScrubRouteAccountSelected = false;
+let localScrubRouteCategories = new Set<ScrubSignalGroup>();
 let lastFocusKey = "";
 let lastOnboardingMarkup: string | null = null;
 let renderedOnboardingRoute: OnboardingRoute | null = null;
@@ -1248,8 +1266,8 @@ function applyNativeBrowserFootprint(hydration: BrowserFootprintHydration): void
   savedAccountsReady = hydration.imports.length > 0
     && hydration.observations.length > 0
     && hydration.imports.every((receipt) =>
-      receipt.persistedCount > 0
-      && receipt.persistedCount === receipt.immediateRereadCount);
+      receipt.observationCount > 0
+      && receipt.snapshotDeleted);
   if (!preferredBrowserId || !completedBrowserImportIds.has(preferredBrowserId)) {
     preferredBrowserId = hydration.imports[0]?.browserId ?? null;
   }
@@ -2121,7 +2139,7 @@ function bindBrowserImportControls(): void {
     browserImportFailureNotice = "";
     render();
     try {
-      await revokeDetectedBrowserFootprint(receipt.browserId, receipt.profile, receipt.account);
+      await revokeDetectedBrowserFootprint(receipt.browserId, receipt.profile, receipt.account, receipt.runId);
       const remaining = browserFootprintImports.filter((candidate) =>
         candidate.browserId !== receipt.browserId
         || candidate.profile !== receipt.profile
@@ -2193,11 +2211,11 @@ function bindBrowserImportControls(): void {
           grant.grantId,
         );
         if (runEpoch !== browserImportRunEpoch) return;
-        if (receipt.persistedCount < 1) {
+        if (receipt.observationCount < 1) {
           throw new Error("Nothing was imported from it");
         }
-        if (receipt.persistedCount !== receipt.immediateRereadCount) {
-          throw new Error("The saved browser account hints did not survive their immediate reread.");
+        if (!receipt.snapshotDeleted) {
+          throw new Error("The temporary browser snapshot was not deleted.");
         }
         scanReceipts.push(receipt);
         browserImportSourceSelected = true;
@@ -3485,7 +3503,7 @@ function nativeDiscordHeaderControls(): string {
   // attribute: the shipped CSP is `style-src 'self'` with no `'unsafe-inline'`,
   // which drops inline style attributes too, so the inline copy styled nothing.
   const whitelistWarningNotice = nativeDiscordProtectionActive && verifiedPeer && !scopeApproved
-    ? `<span class="discord-qa-whitelist-warning in-dom-tooltip-anchor" id="discord-qa-whitelist-warning" role="status" data-whitelist-state="revoked">Encryption revoked for this chat — sends will fail until you allow it again${inDomTooltipMarkup("Press the + button to allow this chat again. Until then, every message you send in it will fail to send.")}</span>`
+    ? '<span class="discord-qa-whitelist-warning" id="discord-qa-whitelist-warning" role="status" data-whitelist-state="revoked">Encryption revoked for this chat — sends will fail until you allow it again. Press the + button to allow this chat again. Until then, every message you send in it will fail to send.</span>'
     : "";
   const transcriptVisible = peerProtectedSheet.decryptDisplayEnabled;
   const flame = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.4 2.8c.5 3.6-2.6 4.8-2.6 7.4 0 1.1.7 2 1.8 2.4-.2-1.8.8-3.2 2.3-4.4 2.4 1.8 4 4.2 4 7.1A6.9 6.9 0 0 1 12 22a6.9 6.9 0 0 1-6.9-6.7c0-3.8 2.3-7.2 6.9-10.3-.1 2.5.6 3.3 1.4 4.1.8-1.8 1-3.9 0-6.3Z"/></svg>`;
@@ -3520,7 +3538,7 @@ function nativeDiscordHeaderControls(): string {
   const transcriptNotice = transcriptFailed || transcriptUnapplied
     ? `<span class="discord-qa-visibility-notice" id="discord-qa-transcript-visibility-notice" role="status" data-transcript-state="${transcriptOutcome}">${transcriptFailed ? "Eye failed — transcript unchanged" : "Eye saved — no display surface open"}</span>`
     : "";
-  const transcriptVisibilityControl = `<button class="discord-qa-icon-control in-dom-tooltip-anchor ${transcriptVisible ? "visible" : "hidden"}${transcriptFailed ? " transcript-failed" : ""}" id="discord-qa-transcript-visibility" type="button" aria-pressed="${transcriptVisible}" data-transcript-mode="${transcriptMode}" data-transcript-state="${transcriptOutcome}" ${transcriptFailed ? 'aria-invalid="true" ' : ""}aria-label="${transcriptVisible ? "Hide protected transcript" : "Show protected transcript"}" ${!verifiedPeer || visibilityBusy ? "disabled" : ""}>${eye}${inDomTooltipMarkup(transcriptTitle)}</button>`;
+  const transcriptVisibilityControl = `<button class="discord-qa-icon-control ${transcriptVisible ? "visible" : "hidden"}${transcriptFailed ? " transcript-failed" : ""}" id="discord-qa-transcript-visibility" type="button" aria-pressed="${transcriptVisible}" data-transcript-mode="${transcriptMode}" data-transcript-state="${transcriptOutcome}" ${transcriptFailed ? 'aria-invalid="true" ' : ""}aria-label="${transcriptVisible ? "Hide protected transcript" : "Show protected transcript"}" title="${transcriptTitle}" ${!verifiedPeer || visibilityBusy ? "disabled" : ""}>${eye}</button>`;
   const lock = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="${nativeDiscordProtectionActive ? "M8 10V7a4 4 0 0 1 8 0v3" : "M8 10V7a4 4 0 0 1 7.7-1.5"}"/></svg>`;
   // "Refused" only survives while protection is still off: an open composer
   // answers the question the refusal was asking. The four states are otherwise
@@ -3541,7 +3559,7 @@ function nativeDiscordHeaderControls(): string {
     : composerLockState === "busy"
       ? "Protected composer opening…"
       : composerRefusal
-        ? `Protected composer refused — ${composerRefusal.message} (${composerRefusal.reason})`
+        ? `Protected composer refused — ${escapeHtml(composerRefusal.message)} (${escapeHtml(composerRefusal.reason)})`
         : "Protected composer off — open";
   // Shape, not colour: a refused lock carries a bang mark, so the state reads
   // the same way with any theme or colour vision. Its `position: absolute` and
@@ -3557,14 +3575,14 @@ function nativeDiscordHeaderControls(): string {
   // false; the lock is hidden there. Protection already open stays shown so it
   // always has a control to turn back off, even if the view changes under it.
   const composerControl = discordMarkerAvailable || nativeDiscordProtectionActive
-    ? `<button class="discord-qa-icon-control in-dom-tooltip-anchor composer ${nativeDiscordProtectionActive ? "locked" : "unlocked"}${composerRefusal ? " composer-refused" : ""}" id="discord-qa-toggle-composer" type="button" aria-pressed="${nativeDiscordProtectionActive}" aria-label="${escapeHtml(composerProtectionLabel)}" ${discordQaComposerBusy ? "disabled" : ""} data-lock-state="${composerLockState}"${composerRefusal ? ' aria-invalid="true"' : ""}>${lock}${composerRefusedMark}${inDomTooltipMarkup(composerProtectionLabel)}</button>`
+    ? `<button class="discord-qa-icon-control composer ${nativeDiscordProtectionActive ? "locked" : "unlocked"}${composerRefusal ? " composer-refused" : ""}" id="discord-qa-toggle-composer" type="button" aria-pressed="${nativeDiscordProtectionActive}" aria-label="${composerProtectionLabel}" title="${composerProtectionLabel}" ${discordQaComposerBusy ? "disabled" : ""} data-lock-state="${composerLockState}"${composerRefusal ? ' aria-invalid="true"' : ""}>${lock}${composerRefusedMark}</button>`
     : "";
   // Persistent, plain-language refusal in the header strip — the one surface
   // that draws above the borrowed native Discord window. It stays until the
   // next operator attempt or a successful open, so a reason can no longer be
   // produced and lost, and it is never populated by an automatic retry.
   const composerRefusalNotice = composerRefusal
-    ? `<span class="discord-qa-composer-refusal in-dom-tooltip-anchor" id="discord-qa-composer-refusal" role="status" data-lock-state="refused">${escapeHtml(composerRefusal.message)}${inDomTooltipMarkup(composerRefusal.reason)}</span>`
+    ? `<span class="discord-qa-composer-refusal" id="discord-qa-composer-refusal" role="status" data-lock-state="refused">${escapeHtml(composerRefusal.message)} — ${escapeHtml(composerRefusal.reason)}</span>`
     : "";
   const rowProofLabel = discordQaRowProofState === "accepted"
     ? "Row proof passed"
@@ -3575,7 +3593,7 @@ function nativeDiscordHeaderControls(): string {
         : rowProofBusy
           ? "Checking row proof…"
           : "Check row proof";
-  const rowProofControl = `<button class="discord-qa-control in-dom-tooltip-anchor" id="discord-qa-row-proof" type="button" data-runtime-proof="${discordQaRowProofState}" aria-label="${rowProofLabel}" ${!nativeDiscordProtectionActive || !verifiedPeer || rowProofBusy ? "disabled" : ""}>Proof${inDomTooltipMarkup(rowProofLabel)}</button>`;
+  const rowProofControl = `<button class="discord-qa-control" id="discord-qa-row-proof" type="button" data-runtime-proof="${discordQaRowProofState}" aria-label="${rowProofLabel}" title="${rowProofLabel}" ${!nativeDiscordProtectionActive || !verifiedPeer || rowProofBusy ? "disabled" : ""}>Proof</button>`;
   return `<div class="native-discord-header-controls discord-qa-header-controls" aria-label="Discord QA privacy controls"><div class="discord-qa-header-left"><button class="discord-qa-control danger icon-only in-dom-tooltip-anchor" data-open-burn="account" type="button" aria-label="Account Burn">${accountBurnIcon}${inDomTooltipMarkup("Open Account Burn confirmation")}</button></div><button class="discord-qa-control danger icon-only discord-qa-discord-burn in-dom-tooltip-anchor" data-open-burn="app" type="button" aria-label="Discord Burn">${discordBurnIcon}${inDomTooltipMarkup("Open Discord Burn confirmation")}</button><div class="discord-qa-header-right">${rowProofControl}<div class="discord-qa-whitelist" role="group" aria-label="Connected verified peer whitelist"><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-roster" type="button" aria-haspopup="dialog" aria-expanded="${whitelistRosterOpen}" ${discordQaHeaderBusy ? "disabled" : ""}>Whitelist${inDomTooltipMarkup("Review who is whitelisted and where")}</button><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-add" type="button" aria-label="Allow this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || scopeApproved || whitelistBusy ? "disabled" : ""}>+${inDomTooltipMarkup("Allow this verified peer scope")}</button><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-remove" type="button" aria-label="Revoke this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || !scopeApproved || whitelistBusy ? "disabled" : ""}>−${inDomTooltipMarkup("Revoke this verified peer scope")}</button></div><button class="discord-qa-control danger icon-only chat-burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive} aria-label="Chat Burn">${flame}${inDomTooltipMarkup("Open Chat Burn confirmation")}</button>${composerUnreachableNotice}${composerRefusalNotice}${transcriptNotice}${transcriptVisibilityControl}${composerControl}${whitelistWarningNotice}</div></div>`;
 }
 
@@ -3895,7 +3913,7 @@ function circleAudienceMembershipDetail(audience: CircleAudience): string {
 function circleAudienceStatus(audience: CircleAudience): { label: "Ready" | "Refused"; detail: string } {
   if (audience.canPost) return { label: "Ready", detail: "Posts and comments are encrypted for the selected audience." };
   if (audience.refusal === "consent") return { label: "Refused", detail: "Review and approve this audience on this device before posting." };
-  if (audience.refusal === "binding") return { label: "Refused", detail: "Choose the Circle for this audience before posting." };
+  if (audience.refusal === "binding") return { label: "Refused", detail: "Choose the Enclave for this audience before posting." };
   return { label: "Refused", detail: "This account is not allowed to post to that audience." };
 }
 
@@ -3910,9 +3928,9 @@ function circlesDestinationContent(): string {
   }).join("");
   const feedItems = privateCircleAudiences.filter((audience) => audience.canPost).map((audience, index) => `<article class="inbox-row circle-feed-item" data-circle-feed-item="${index}" data-circle-feed-order="chronological" data-circle-audience="${escapeHtml(audience.audienceId)}"><span class="source-mark">${homeModuleIcon("osl-chats")}</span><div><strong>${escapeHtml(audience.name)}</strong><small>Chronological private feed · ${audience.memberCount.toLocaleString("en-US")} people · no ranking or behavioral advertising</small></div>${statusTag("Encrypted")}</article>`).join("");
   const audienceList = audienceCards
-    ? `<div class="settings-list circle-audience-list" aria-label="Private Circle audiences">${audienceCards}</div><div class="circle-feed-list" aria-label="Chronological private Circle feeds">${feedItems}</div>`
-    : `<div class="empty-state" data-circle-audiences="none"><strong>No Circle audiences yet</strong><p>An audience appears here after you create one on this device. Until then there is nobody to post to.</p></div>`;
-  return `<section class="inbox-surface-card circles-destination" data-inbox-osl-surface="circles" data-circle-state="${circleSurface.state}" data-circle-feeds="private-audiences" data-circle-audience-count="${privateCircleAudiences.length}"><strong>OSL Circles</strong><small>Private audience feeds</small><p>${statusTag("Private")} Posts and comments are encrypted for the selected audience. Audience membership is shown before posting.</p>${audienceList}${publicCirclesUnavailableMarkup()}</section>`;
+    ? `<div class="settings-list circle-audience-list" aria-label="Private Enclave audiences">${audienceCards}</div><div class="circle-feed-list" aria-label="Chronological private Enclave feeds">${feedItems}</div>`
+    : `<div class="empty-state" data-circle-audiences="none"><strong>No Enclave audiences yet</strong><p>An audience appears here after you create one on this device. Until then there is nobody to post to.</p></div>`;
+  return `<section class="inbox-surface-card circles-destination" data-inbox-osl-surface="circles" data-circle-state="${circleSurface.state}" data-circle-feeds="private-audiences" data-circle-audience-count="${privateCircleAudiences.length}"><strong>OSL Enclaves</strong><small>Private audience feeds</small><p>${statusTag("Private")} Posts and comments are encrypted for the selected audience. Audience membership is shown before posting.</p>${audienceList}${publicCirclesUnavailableMarkup()}</section>`;
 }
 
 type OslMailboxStageCReview = {
@@ -3999,7 +4017,7 @@ export function oslMailStageBContent(
 }
 
 function publicCirclesUnavailableMarkup(): string {
-  return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Circles</strong><small>Private audience feeds</small><p>${statusTag("Unavailable")} Public Circles network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
+  return `<article class="inbox-surface-card unavailable" data-inbox-osl-surface="circles" data-public-circles-network="unavailable" aria-disabled="true"><strong>OSL Enclaves</strong><small>Private audience feeds</small><p>${statusTag("Unavailable")} Public Enclaves network unavailable. Private audience posts stay off until membership, posting, and moderation are complete.</p></article>`;
 }
 
 export function publicPostGuardCarrierPreviewMarkup(platform = "Public platforms"): string {
@@ -4030,7 +4048,7 @@ export function inboxDestinationContent(): string {
     : `<div class="empty-state"><strong>No requests</strong><p>New friend requests and key reviews appear here.</p></div>`;
   const oslSurfaces = [
     ["chat", "OSL Chat", "Protected OSL messages", "Ready for verified friends"],
-    ["circles", "OSL Circles", "Private audience feeds", "Coming after small-group review"],
+    ["circles", "OSL Enclaves", "Private audience feeds", "Create an enclave to begin"],
     ["mail", "OSL Mail", "Client protection", "External recipients are not OSL E2EE"],
   ] as const;
   const mailboxGate = oslMailboxStageCGate();
@@ -4861,6 +4879,10 @@ function serviceAccountsSettingsContent(): string {
 async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
   const file = input.files?.[0];
   input.value = "";
+  if (!localScrubRouteOpened || !evaluateScrubConsentGate(localScrubConsentRequest, localScrubConsentState).allowed) {
+    showToast("Confirm Scrub consent before scanning an export");
+    return;
+  }
   if (!file || privacyScanBusy) return;
   if (file.size > LOCAL_MESSAGE_IMPORT_MAX_BYTES) {
     showToast("Export is larger than the 8 MiB local scan limit");
@@ -4961,7 +4983,22 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
 function privacySettingsContent(): string {
   const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   const scanActions = `<div class="privacy-scan-actions"><label class="button primary ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning…" : "Choose export"}</label><input id="privacy-export-input" class="sr-only" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv" ${privacyScanBusy ? "disabled" : ""}/>${privacyScanResult ? `<button class="button" id="clear-privacy-scan" type="button">Clear results</button>` : ""}</div>`;
-  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}${autoScrubAssistantMarkup(proActive)}<details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, services, exports, and backups may retain copies. Only a service recheck can verify removal within its stated coverage.</p><p>Automatic deletion is unavailable in this build until the native one-shot reviewed-consent capability is available. Connect IMAP for read-only verification.</p><p>This build only gives manual directions. It does not delete app messages. Check the original app and delete each message yourself.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Remote app access</span><strong>Blocked</strong></div><div class="setting-line"><span><strong>Windows capture resistance</strong><small>Always applied to OSL’s own window. Cameras, malware, and modified recipients can still capture content.</small></span><strong>${screenshotProtectionEnabled ? "Active" : "Unavailable"}</strong></div></details>`;
+  const routeState: ScrubRouteState = {
+    accounts: [{ id: "local-export", label: "Local message export", detail: "TXT, CSV, or JSON on this device" }],
+    selectedAccountIds: localScrubRouteAccountSelected ? ["local-export"] : [],
+    selectedCategories: [...localScrubRouteCategories],
+    scan: { state: privacyScanBusy ? "scanning" : privacyScanResult ? "complete" : "not-started", findings: privacyScanResult?.findings.length ?? 0 },
+  };
+  const consent = evaluateScrubConsentGate(localScrubConsentRequest, localScrubConsentState);
+  const gatedRoute = scrubConsentGatedRouteMarkup(
+    localScrubConsentRequest,
+    localScrubConsentState,
+    routeState,
+    localScrubRouteStep,
+    localScrubRouteOpened,
+  );
+  const scanControls = consent.allowed && localScrubRouteOpened && localScrubRouteStep === "scan" ? scanActions : "";
+  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p>${gatedRoute}${scanControls}${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}${autoScrubAssistantMarkup(proActive)}<details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, services, exports, and backups may retain copies. Only a service recheck can verify removal within its stated coverage.</p><p>Automatic deletion is unavailable in this build until the native one-shot reviewed-consent capability is available. Connect IMAP for read-only verification.</p><p>This build only gives manual directions. It does not delete app messages. Check the original app and delete each message yourself.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Remote app access</span><strong>Blocked</strong></div><div class="setting-line"><span><strong>Windows capture resistance</strong><small>Always applied to OSL’s own window. Cameras, malware, and modified recipients can still capture content.</small></span><strong>${screenshotProtectionEnabled ? "Active" : "Unavailable"}</strong></div></details>`;
 }
 
 function autoScrubAssistantMarkup(proActive: boolean): string {
@@ -5038,6 +5075,43 @@ function openScrubReviewDialogAfterRender(): void {
 }
 
 function bindScrubControls(): void {
+  document.querySelector<HTMLInputElement>(".scrub-consent-gate input[type=checkbox]")?.addEventListener("change", (event) => {
+    localScrubConsentState = { ...localScrubConsentState, checked: (event.currentTarget as HTMLInputElement).checked };
+    render();
+  });
+  document.querySelector<HTMLInputElement>("#scrub-consent-acknowledgement")?.addEventListener("input", (event) => {
+    localScrubConsentState = { ...localScrubConsentState, typedAcknowledgement: (event.currentTarget as HTMLInputElement).value };
+    render();
+  });
+  document.querySelector<HTMLButtonElement>(".scrub-consent-proceed")?.addEventListener("click", () => {
+    if (!evaluateScrubConsentGate(localScrubConsentRequest, localScrubConsentState).allowed) return;
+    localScrubRouteOpened = true;
+    render();
+  });
+  document.querySelectorAll<HTMLInputElement>("[name=scrub-account]").forEach((input) => input.addEventListener("change", () => {
+    localScrubRouteAccountSelected = input.checked;
+    localScrubRouteStep = "choose";
+    render();
+  }));
+  document.querySelectorAll<HTMLInputElement>("[name=scrub-category]").forEach((input) => input.addEventListener("change", () => {
+    const category = input.value as ScrubSignalGroup;
+    if (!defaultScrubSignalGroups.includes(category)) return;
+    if (input.checked) localScrubRouteCategories.add(category); else localScrubRouteCategories.delete(category);
+    localScrubRouteStep = "choose";
+    render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-scrub-route-next]").forEach((button) => button.addEventListener("click", () => {
+    localScrubRouteStep = button.dataset.scrubRouteNext as ScrubRouteStep;
+    render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-scrub-route-back]").forEach((button) => button.addEventListener("click", () => {
+    localScrubRouteStep = button.dataset.scrubRouteBack as ScrubRouteStep;
+    render();
+  }));
+  document.querySelector<HTMLButtonElement>("[data-scrub-route-scan]")?.addEventListener("click", () => {
+    if (!evaluateScrubConsentGate(localScrubConsentRequest, localScrubConsentState).allowed) return;
+    document.querySelector<HTMLInputElement>("#privacy-export-input")?.click();
+  });
   document.querySelectorAll<HTMLInputElement>("[data-scrub-category]").forEach((input) => input.addEventListener("change", () => {
     const group = input.dataset.scrubCategory as ScrubSignalGroup;
     if (!defaultScrubSignalGroups.includes(group)) return;
@@ -8874,8 +8948,10 @@ async function validateNativeSurfaces(): Promise<void> {
 
 function scheduleNativeHostRealignment(): void {
   if ((!activeNativeHostId && !activeDefaultBrowserCompanion && !mullvadWindowHosted) || nativeHostResizeFrame) return;
+  nativeHostRealignment.armHeartbeat();
   nativeHostResizeFrame = requestAnimationFrame(() => {
     nativeHostResizeFrame = 0;
+    nativeHostRealignment.acknowledgeAnimationFrame();
     void validateNativeSurfaces();
   });
 }

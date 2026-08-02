@@ -16,7 +16,7 @@ describe("zero-knowledge Scrub review", () => {
   it("defers Scrub from first run and keeps the later review local-only", () => {
     const settings = functionSource("privacySettingsContent", "privacyScanResultsMarkup");
     expect(source).not.toContain("function onboardingScrubContent");
-    expect(settings).toMatch(/return `<h2>Scrub<\/h2><p class="scrub-local-promise"><strong>Your messages never leave this device\.<\/strong>[\s\S]*\$\{scanActions\}/);
+    expect(settings).toContain('<p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p>');
     expect(settings).toContain("Every scan and review stays local.");
     expect(settings).toContain("Nothing happens until you review and confirm every batch.");
   });

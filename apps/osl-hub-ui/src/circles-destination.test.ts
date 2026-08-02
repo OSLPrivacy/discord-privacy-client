@@ -12,11 +12,11 @@ function functionSource(name: string, nextName: string): string {
   return source.slice(start, end);
 }
 
-describe("Circles destination content", () => {
+describe("Enclaves destination content", () => {
   const circles = functionSource("circlesDestinationContent", "publicCirclesUnavailableMarkup");
   const inbox = functionSource("inboxDestinationContent", "activityDestinationContent");
 
-  it("renders OSL Circles as private audience feeds in the Inbox", () => {
+  it("renders OSL Enclaves as private audience feeds in the Inbox", () => {
     expect(source).toContain('import { parseCircleAudience, type CircleAudience } from "./osl-collab"');
     expect(source).toContain("let privateCircleAudiences: CircleAudience[]");
     expect(source).toContain(".map((record) => parseCircleAudience(record))");
@@ -30,7 +30,7 @@ describe("Circles destination content", () => {
     expect(inbox).toContain('if (id === "circles") return circlesDestinationContent()');
   });
 
-  it("refuses Circles posting when consent, audience selection, or account authority is absent", () => {
+  it("refuses Enclave posting when consent, audience selection, or account authority is absent", () => {
     const approved = parseCircleAudience({ audienceId: "a".repeat(32), name: "Close friends", memberCount: 1, membershipVisibility: "visible", visibleMembers: [{ memberId: "1".repeat(32), name: "Maya", verified: true }], consentGranted: true, boundToCurrentCircle: true, postingAuthorized: true });
     const noConsent = parseCircleAudience({ audienceId: "b".repeat(32), name: "Family", memberCount: 1, membershipVisibility: "visible", visibleMembers: [{ memberId: "2".repeat(32), name: "Ari", verified: true }], consentGranted: false, boundToCurrentCircle: true, postingAuthorized: true });
     const noAudience = parseCircleAudience({ audienceId: "c".repeat(32), name: "Book club", memberCount: 2, membershipVisibility: "count-only", visibleMembers: [], consentGranted: true, boundToCurrentCircle: false, postingAuthorized: true });
@@ -47,13 +47,15 @@ describe("Circles destination content", () => {
     expect(source).toContain('return { label: "Refused", detail: "This account is not allowed to post to that audience." }');
   });
 
-  it("keeps public Circles unavailable and avoids implementation-facing copy", () => {
-    expect(circles).toContain("publicCirclesUnavailableMarkup()");
-    expect(source).toContain('data-public-circles-network="unavailable"');
-    expect(source).toContain("Public Circles network unavailable.");
+  it("keeps available Enclaves product-facing and avoids implementation-facing copy", () => {
+    expect(circles).toContain('data-circle-state="${circleSurface.state}"');
+    expect(circles).toContain("OSL Enclaves");
+    expect(circles).not.toContain("OSL Circles");
+    expect(circles).toContain("Private audience feeds");
+    expect(circles).toContain("Posts and comments are encrypted for the selected audience.");
     const visibleCopy = circles.replace(/\$\{[^}]+\}/g, "");
     expect(visibleCopy).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/i);
-    expect(visibleCopy).not.toMatch(/global feed|available now|ready now|public .*end-to-end encrypted|screenshots impossible|forwarding impossible/i);
+    expect(visibleCopy).not.toMatch(/global feed|public .*end-to-end encrypted|screenshots impossible|forwarding impossible/i);
     expect(visibleCopy).not.toMatch(/auto.?retry|retry automatically|silently send/i);
   });
 });

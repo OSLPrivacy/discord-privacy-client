@@ -66,7 +66,7 @@ describe("OSL Circles reflects real trust state", () => {
     expect(card).not.toContain("data-circle-audience=");
     expect(card).not.toContain('data-circle-posting="ready"');
     expect(card).toContain('data-circle-audiences="none"');
-    expect(copy).toMatch(/No Circle audiences yet/u);
+    expect(copy).toMatch(/No Enclave audiences yet/u);
   });
 
   it("names members only from the audiences it was actually given", async () => {
@@ -96,7 +96,7 @@ describe("OSL Circles reflects real trust state", () => {
     }
   });
 
-  it("keeps Home's verified-people count and the Circles surface telling the same story", async () => {
+  it("keeps Home's verified-people count and the Enclaves surface telling the same story", async () => {
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({ route: "home", coreReady: true, hubPeople: [] });
 
@@ -105,7 +105,7 @@ describe("OSL Circles reflects real trust state", () => {
 
     expect(home).toContain("Trusted people");
     expect(home).toContain("0 verified");
-    // Home said zero. Circles may not simultaneously show approved audiences.
-    expect(circles).toMatch(/No Circle audiences yet/u);
+    // Home said zero. Enclaves may not simultaneously show approved audiences.
+    expect(circles).toMatch(/No Enclave audiences yet/u);
   });
 });

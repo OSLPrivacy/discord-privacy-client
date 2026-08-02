@@ -17,10 +17,11 @@ function anchoredSource(start: string, end: string): string {
 describe("Scrub safety contract", () => {
   it("keeps Manual Scrub free, local, review-first, and user deleted", () => {
     const privacyUi = anchoredSource("function privacySettingsContent", "function autoScrubAssistantMarkup");
+    const privacyDestinationUi = anchoredSource("function privacyDestinationContent", "function massCleanupActionLabel");
     const scanResultsUi = anchoredSource("function privacyScanResultsMarkup", "function selectedScrubItems");
 
     expect(privacyUi).toContain('id="privacy-export-input"');
-    expect(privacyUi).toContain("FREE · THIS DEVICE ONLY");
+    expect(privacyDestinationUi).toContain("FREE · THIS DEVICE ONLY");
     expect(privacyUi).toContain("Your messages never leave this device.");
     expect(scanResultsUi).toContain("data-scrub-finding");
     expect(scanResultsUi).toContain("select-all-scrub");

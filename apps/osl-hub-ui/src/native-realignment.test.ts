@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { CoalescedRealignment, NATIVE_REALIGNMENT_PACING_MS, NativeCallGate } from "./native-realignment";
+import {
+  CoalescedRealignment,
+  NATIVE_REALIGNMENT_HEARTBEAT_MS,
+  NATIVE_REALIGNMENT_PACING_MS,
+  NativeCallGate,
+} from "./native-realignment";
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -182,6 +187,82 @@ describe("CoalescedRealignment", () => {
   it("ships a pacing default that is invisible at rest and bounded under load", () => {
     expect(NATIVE_REALIGNMENT_PACING_MS).toBeGreaterThan(0);
     expect(NATIVE_REALIGNMENT_PACING_MS).toBeLessThanOrEqual(250);
+  });
+
+  it("realigns through a low-rate heartbeat when an animation frame is frozen", async () => {
+    // This models a minimised/occluded WebView: scheduleNativeHostRealignment
+    // armed the backstop, but its rAF callback is never delivered.
+    const timers = new Map<number, () => void>();
+    let nextTimer = 0;
+    let passes = 0;
+    const coalescer = new CoalescedRealignment(async () => {
+      passes += 1;
+    }, {
+      heartbeatMs: 1_000,
+      setHeartbeatTimer: (callback) => {
+        nextTimer += 1;
+        timers.set(nextTimer, callback);
+        return nextTimer;
+      },
+      clearHeartbeatTimer: (timer) => {
+        timers.delete(timer as number);
+      },
+    });
+
+    coalescer.armHeartbeat();
+    expect(timers.size).toBe(1);
+    const firstBeat = timers.entries().next().value!;
+    // A real timeout is removed by the platform before its callback runs.
+    // Model that lifecycle explicitly in this injected scheduler.
+    timers.delete(firstBeat[0]);
+    firstBeat[1]();
+    await settle();
+
+    expect(passes).toBe(1);
+    // It stays low-rate while rAF remains frozen, rather than becoming a busy
+    // loop or a second, unbounded native-call path.
+    expect(timers.size).toBe(1);
+    coalescer.acknowledgeAnimationFrame();
+    expect(timers.size).toBe(0);
+  });
+
+  it("keeps heartbeat requests inside the existing coalescing bound", async () => {
+    const timers = new Map<number, () => void>();
+    let nextTimer = 0;
+    const gate = deferred();
+    const coalescer = new CoalescedRealignment(async () => {
+      await gate.promise;
+    }, {
+      pacingMs: 0,
+      setHeartbeatTimer: (callback) => {
+        nextTimer += 1;
+        timers.set(nextTimer, callback);
+        return nextTimer;
+      },
+      clearHeartbeatTimer: (timer) => {
+        timers.delete(timer as number);
+      },
+    });
+
+    coalescer.armHeartbeat();
+    timers.values().next().value!();
+    await settle();
+    timers.values().next().value!();
+    await settle();
+    timers.values().next().value!();
+    await settle();
+
+    expect(coalescer.passes).toBe(1);
+    expect(coalescer.trailingPassOwed).toBe(true);
+    expect(coalescer.peakConcurrentPasses).toBe(1);
+    coalescer.acknowledgeAnimationFrame();
+    gate.resolve();
+    await settle();
+    expect(coalescer.passes).toBe(2);
+  });
+
+  it("uses a heartbeat interval that remains a backstop rather than polling", () => {
+    expect(NATIVE_REALIGNMENT_HEARTBEAT_MS).toBeGreaterThanOrEqual(500);
   });
 });
 
