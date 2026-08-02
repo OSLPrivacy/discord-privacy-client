@@ -31,7 +31,7 @@ describe("atomic OSL profile and username ownership", () => {
   });
 
   it("keeps username changes server-atomic and refuses self-friending", () => {
-    expect(rust).toContain("claim_username(&identity, &saved.username_candidate");
+    expect(rust).toContain("claim_username(&core, &identity, &saved.username_candidate");
     expect(security).toContain("OSL refuses to add the active identity as a friend");
   });
 });
