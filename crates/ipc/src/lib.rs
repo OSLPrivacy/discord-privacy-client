@@ -45,6 +45,7 @@ pub mod decoy_mp4;
 pub mod destruct_ack;
 pub mod fresh_start;
 pub mod friend_request;
+pub mod group_manifest;
 pub(crate) mod group_send;
 pub mod license_lifecycle;
 pub mod log_id;
@@ -93,6 +94,7 @@ pub mod state_reload;
 pub mod tier_gate;
 pub mod tofu;
 pub mod tombstone_file;
+pub mod transport;
 // Padmé applies to the stored transport object, outside the AEAD plaintext
 // padding boundary.  Expose it from the shipping IPC crate so the upload path
 // can consume the one canonical implementation as the object envelope lands.
