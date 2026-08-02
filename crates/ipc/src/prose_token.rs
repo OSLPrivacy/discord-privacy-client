@@ -16,14 +16,9 @@
 //!     and re-wrapped as `DPC0::<base64>` so the existing decrypt
 //!     pipeline picks it up unchanged.
 //!
-//! MAC-key derivation: HKDF-SHA256 over the scope's `storage_key`
-//! (e.g. `"dm:<peer>"`, `"server_channel:<srv>:<ch>"`) with the
-//! domain separator [`PROSE_TOKEN_MAC_HKDF_INFO`]. The salt itself
-//! is public (anyone with scope IDs can derive the same MAC key) —
-//! the HMAC's role is "tag this 8-byte payload as 'looks like an
-//! OSL token' so receivers don't mistake plain English for one",
-//! not "prevent forgery." Genuine sender authentication would require
-//! rekeying this from secret conversation state such as the ratchet root.
+//! Detection-key derivation: the shipping caller supplies secret conversation
+//! material and this module expands it under [`DETECT_KEY_HKDF_INFO`]. Scope
+//! labels must never decide whether public cover text carries an OSL pointer.
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
@@ -39,6 +34,8 @@ use crate::scope::ScopeInput;
 const DPC0_PREFIX: &str = "DPC0::";
 const MAC_KEY_LEN: usize = 32;
 pub const PROSE_TOKEN_MAC_HKDF_INFO: &[u8] = b"discord-privacy-client/prose-token/mac-key/v1";
+/// Domain separator for the private pointer-detection key in transport §6b.
+pub const DETECT_KEY_HKDF_INFO: &[u8] = b"osl/detect/v1";
 
 /// Phase 6 capability-token domain separator. The token is
 /// HMAC-SHA256(mac_key, FETCH_TOKEN_INFO || blob_id_bytes)[..16];
@@ -75,6 +72,8 @@ pub enum ProseTokenError {
     CipherStore(#[from] CipherStoreError),
     #[error("blob id was not 16 hex chars: {0}")]
     BadIdHex(String),
+    #[error("a secret conversation detection key is required")]
+    MissingDetectionKey,
 }
 
 /// Derive the per-conversation MAC key + ConversationCipher used by
@@ -94,17 +93,37 @@ pub enum ProseTokenError {
 ///   - `gc` / `server_channel` / `server_full`: scope.storage_key()
 ///     is already symmetric across peers (uses channel_id /
 ///     server_id) so no change is needed.
-fn derive_scope_primitives(
-    scope_input: &ScopeInput,
-) -> Result<(stego::ConversationCipher, [u8; MAC_KEY_LEN]), ProseTokenError> {
+fn derive_scope_cipher(scope_input: &ScopeInput) -> Result<stego::ConversationCipher, ProseTokenError> {
     let scope = crate::scope::Scope::try_from(scope_input.clone())?;
     let salt = prose_token_salt(&scope);
-    let cipher = stego::ConversationCipher::from_salt(salt.as_bytes());
-    let hk = Hkdf::<Sha256>::new(None, salt.as_bytes());
-    let mut mac_key = [0u8; MAC_KEY_LEN];
-    hk.expand(PROSE_TOKEN_MAC_HKDF_INFO, &mut mac_key)
+    Ok(stego::ConversationCipher::from_salt(salt.as_bytes()))
+}
+
+/// Derive `K_detect` from shared secret conversation material. It is separate
+/// from the `osl/tag/v1` delivery-tag derivation, preserving D-SEP.
+pub fn derive_detection_key(
+    conversation_epoch_secret: &[u8],
+) -> Result<[u8; MAC_KEY_LEN], ProseTokenError> {
+    if conversation_epoch_secret.is_empty() {
+        return Err(ProseTokenError::MissingDetectionKey);
+    }
+    let hk = Hkdf::<Sha256>::new(None, conversation_epoch_secret);
+    let mut key = [0u8; MAC_KEY_LEN];
+    hk.expand(DETECT_KEY_HKDF_INFO, &mut key)
         .expect("HKDF expand to 32 bytes is infallible");
-    Ok((cipher, mac_key))
+    Ok(key)
+}
+
+// T6-R3 replaces this temporary legacy capability key with P-derived
+// authority. It is deliberately separate from the private detector above.
+fn legacy_scope_fetch_key(scope_input: &ScopeInput) -> Result<[u8; MAC_KEY_LEN], ProseTokenError> {
+    let scope = crate::scope::Scope::try_from(scope_input.clone())?;
+    let salt = prose_token_salt(&scope);
+    let hk = Hkdf::<Sha256>::new(None, salt.as_bytes());
+    let mut key = [0u8; MAC_KEY_LEN];
+    hk.expand(PROSE_TOKEN_MAC_HKDF_INFO, &mut key)
+        .expect("HKDF expand to 32 bytes is infallible");
+    Ok(key)
 }
 
 /// Prose-token-specific salt. See [`derive_scope_primitives`] for the
@@ -181,6 +200,7 @@ pub struct ProseTokenRecvOutput {
 pub fn prose_token_send(
     config_dir: &std::path::Path,
     scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
     dpc0_wire: &str,
     ttl_seconds: u32,
 ) -> Result<ProseTokenSendOutput, ProseTokenError> {
@@ -214,14 +234,15 @@ pub fn prose_token_send(
     //   Privacy-Pass-style blind tokens (deferred).
     let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir);
     let client = CipherStoreClient::new(base_url)?;
-    let (cipher, mac_key) = derive_scope_primitives(scope_input)?;
-    let fetch_token = derive_fetch_token(&mac_key, &[0u8; stego::TOKEN_ID_BYTES]);
+    let cipher = derive_scope_cipher(scope_input)?;
+    let fetch_key = legacy_scope_fetch_key(scope_input)?;
+    let fetch_token = derive_fetch_token(&fetch_key, &[0u8; stego::TOKEN_ID_BYTES]);
 
     let UploadResult { id_hex, expires_at } =
         client.upload(&cipher_bytes, ttl_seconds, &fetch_token)?;
 
     let id_bytes = id_hex_to_bytes(&id_hex)?;
-    let cover_text = stego::encode_token(&cipher, &mac_key, &id_bytes);
+    let cover_text = stego::encode_token(&cipher, detection_key, &id_bytes);
 
     Ok(ProseTokenSendOutput {
         cover_text,
@@ -268,10 +289,11 @@ pub enum ProseTokenRecv {
 pub fn prose_token_recv_classified(
     config_dir: &std::path::Path,
     scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
     msg: &str,
 ) -> Result<ProseTokenRecv, ProseTokenError> {
-    let (cipher, mac_key) = derive_scope_primitives(scope_input)?;
-    let id_bytes = match stego::decode_token(&cipher, &mac_key, msg) {
+    let cipher = derive_scope_cipher(scope_input)?;
+    let id_bytes = match stego::decode_token(&cipher, detection_key, msg) {
         Some(id) => id,
         None => return Ok(ProseTokenRecv::Missed(ProseTokenMiss::NoToken)),
     };
@@ -283,7 +305,8 @@ pub fn prose_token_recv_classified(
     // used at upload. derive_fetch_token is deterministic over
     // (mac_key, [0u8; 8]) so sender + receiver produce identical
     // tokens without any wire roundtrip.
-    let fetch_token = derive_fetch_token(&mac_key, &[0u8; stego::TOKEN_ID_BYTES]);
+    let fetch_key = legacy_scope_fetch_key(scope_input)?;
+    let fetch_token = derive_fetch_token(&fetch_key, &[0u8; stego::TOKEN_ID_BYTES]);
     let cipher_bytes = match client.fetch(&id_hex, &fetch_token) {
         Ok(b) => b,
         // The one line this split exists for. A clean 404 means the pointer was
@@ -317,10 +340,11 @@ pub fn prose_token_recv_classified(
 pub fn prose_token_recv(
     config_dir: &std::path::Path,
     scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
     msg: &str,
 ) -> Result<Option<ProseTokenRecvOutput>, ProseTokenError> {
     Ok(
-        match prose_token_recv_classified(config_dir, scope_input, msg)? {
+        match prose_token_recv_classified(config_dir, scope_input, detection_key, msg)? {
             ProseTokenRecv::Recovered(output) => Some(output),
             ProseTokenRecv::Missed(_) => None,
         },
@@ -342,8 +366,8 @@ pub fn prose_token_burn_id(
 ) -> Result<(), ProseTokenError> {
     let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir);
     let client = CipherStoreClient::new(base_url)?;
-    let (_, mac_key) = derive_scope_primitives(scope_input)?;
-    let fetch_token = derive_fetch_token(&mac_key, &[0u8; stego::TOKEN_ID_BYTES]);
+    let fetch_key = legacy_scope_fetch_key(scope_input)?;
+    let fetch_token = derive_fetch_token(&fetch_key, &[0u8; stego::TOKEN_ID_BYTES]);
     client.delete(blob_id, &fetch_token)?;
     Ok(())
 }
@@ -369,15 +393,17 @@ mod tests {
     }
 
     #[test]
-    fn derive_is_deterministic_per_scope() {
+    fn derive_is_deterministic_for_shared_secret() {
         let scope = ScopeInput {
             kind: crate::scope::ScopeKind::Dm,
             id: "1234567890".to_string(),
             server_id: None,
             channel_id: None,
         };
-        let (c1, k1) = derive_scope_primitives(&scope).unwrap();
-        let (c2, k2) = derive_scope_primitives(&scope).unwrap();
+        let c1 = derive_scope_cipher(&scope).unwrap();
+        let c2 = derive_scope_cipher(&scope).unwrap();
+        let k1 = derive_detection_key(&[0x42; 32]).unwrap();
+        let k2 = derive_detection_key(&[0x42; 32]).unwrap();
         assert_eq!(k1, k2);
         // ConversationCipher comparison via encoding the same payload.
         let id = [0u8; stego::TOKEN_ID_BYTES];
@@ -400,8 +426,8 @@ mod tests {
             server_id: None,
             channel_id: None,
         };
-        let (_, ka) = derive_scope_primitives(&a).unwrap();
-        let (_, kb) = derive_scope_primitives(&b).unwrap();
+        let ka = legacy_scope_fetch_key(&a).unwrap();
+        let kb = legacy_scope_fetch_key(&b).unwrap();
         assert_ne!(ka, kb);
     }
 
@@ -425,8 +451,8 @@ mod tests {
             server_id: None,
             channel_id: Some("9999999999999999".to_string()), // DM channel
         };
-        let (_, ka) = derive_scope_primitives(&desktop_view).unwrap();
-        let (_, kb) = derive_scope_primitives(&laptop_view).unwrap();
+        let ka = legacy_scope_fetch_key(&desktop_view).unwrap();
+        let kb = legacy_scope_fetch_key(&laptop_view).unwrap();
         assert_eq!(
             ka, kb,
             "DM mac_keys must be symmetric across peers when channel_id is set"
@@ -452,8 +478,8 @@ mod tests {
             server_id: None,
             channel_id: Some("111".to_string()), // fallback equals id
         };
-        let (_, k1) = derive_scope_primitives(&no_ch).unwrap();
-        let (_, k2) = derive_scope_primitives(&ch_eq_id).unwrap();
+        let k1 = legacy_scope_fetch_key(&no_ch).unwrap();
+        let k2 = legacy_scope_fetch_key(&ch_eq_id).unwrap();
         // Both should produce the same key (both use storage_key()).
         assert_eq!(k1, k2);
     }
@@ -475,8 +501,33 @@ mod tests {
             server_id: None,
             channel_id: None,
         };
-        let (_, k1) = derive_scope_primitives(&with_ch).unwrap();
-        let (_, k2) = derive_scope_primitives(&without_ch).unwrap();
+        let k1 = legacy_scope_fetch_key(&with_ch).unwrap();
+        let k2 = legacy_scope_fetch_key(&without_ch).unwrap();
         assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn t1_t31_public_scope_cannot_detect_a_secret_keyed_pointer() {
+        let scope = ScopeInput {
+            kind: crate::scope::ScopeKind::Dm,
+            id: "public-channel-context".to_owned(),
+            server_id: None,
+            channel_id: Some("public-channel-context".to_owned()),
+        };
+        let cipher = derive_scope_cipher(&scope).unwrap();
+        let detector = derive_detection_key(&[0x5a; 32]).unwrap();
+        let public_scope_key = legacy_scope_fetch_key(&scope).unwrap();
+        let pointer = [0x17; stego::TOKEN_ID_BYTES];
+        let cover = stego::encode_token(&cipher, &detector, &pointer);
+
+        assert_eq!(stego::decode_token(&cipher, &detector, &cover), Some(pointer));
+        assert_eq!(stego::decode_token(&cipher, &public_scope_key, &cover), None);
+
+        let delivery_tag = Hkdf::<Sha256>::new(None, &[0x5a; 32]);
+        let mut delivery = [0u8; MAC_KEY_LEN];
+        delivery_tag
+            .expand(b"osl/tag/v1", &mut delivery)
+            .expect("fixed HKDF output is valid");
+        assert_ne!(detector, delivery, "D-SEP requires independent HKDF outputs");
     }
 }

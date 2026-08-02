@@ -34,6 +34,27 @@ fn scope_storage_key(scope_input: &ScopeInput) -> Result<String, String> {
         .map_err(|_| "OSL protected scope is invalid".to_owned())?;
     Ok(scope.storage_key())
 }
+
+/// Derives the private carrier detector from the bilateral secret held by both
+/// ends of an approved manual-peer conversation. It never crosses the adapter
+/// boundary and uses a domain distinct from the delivery tag (D-SEP).
+fn prose_detection_key(
+    core: &HubCoreState,
+    peer: &ManualPeerBinding,
+) -> Result<[u8; 32], String> {
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .clone()
+        .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    let peer_public = crypto::x25519::PublicKey::from_bytes(peer.peer_x25519_public);
+    let shared = crypto::x25519::diffie_hellman(&identity.x25519_secret, &peer_public)
+        .map_err(|_| "OSL protected conversation key is unavailable".to_owned())?;
+    ipc::prose_token::derive_detection_key(shared.as_bytes())
+        .map_err(|_| "OSL protected conversation key is unavailable".to_owned())
+}
 const MAX_PARTICIPANTS: usize = 512;
 const MAX_TEXT_BYTES: usize = 1_000;
 const MAX_NATIVE_OVERLAY_CHUNK_BYTES: usize = 40 * 1024;
@@ -1686,7 +1707,14 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
 
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
-    let uploaded = ipc::prose_token::prose_token_send(&dir, &scope, &encrypted, ttl_seconds)
+    let detection_key = prose_detection_key(core, &verified)?;
+    let uploaded = ipc::prose_token::prose_token_send(
+        &dir,
+        &scope,
+        &detection_key,
+        &encrypted,
+        ttl_seconds,
+    )
         .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
     if security::record_peer_prose_blob(security_state, scope.clone(), uploaded.blob_id.clone())
         .is_err()
@@ -1787,7 +1815,14 @@ fn prepare_peer_prose_text_inner_with_chunk(
 
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
-    let uploaded = ipc::prose_token::prose_token_send(&dir, &manual.scope, &encrypted, ttl_seconds)
+    let detection_key = prose_detection_key(core, &verified)?;
+    let uploaded = ipc::prose_token::prose_token_send(
+        &dir,
+        &manual.scope,
+        &detection_key,
+        &encrypted,
+        ttl_seconds,
+    )
         .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
     if security::record_peer_prose_blob(
         security_state,
@@ -2026,6 +2061,7 @@ pub fn open_whatsapp_qa_peer_prose_text(
     let (scope, manual, context) = whatsapp_qa_peer_context(core, &verified)?;
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+    let detection_key = prose_detection_key(core, &verified)?;
     // peer_prose_token_or_generic was deliberately removed: it used
     // result.ok().flatten(), which discarded transport errors, so a cipher-store
     // outage, an evicted blob and a nonsense cover were one indistinguishable skip
@@ -2037,6 +2073,7 @@ pub fn open_whatsapp_qa_peer_prose_text(
     let recovered = peer_prose_token_outcome(ipc::prose_token::prose_token_recv_classified(
         &dir,
         &scope,
+        &detection_key,
         &cover_text,
     ))
     .map_err(|_| "This encrypted message could not be opened".to_owned())?;
@@ -3348,9 +3385,12 @@ fn authenticate_oriented_prose_pointer(
     }
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+    let detection_key = prose_detection_key(core, &verified)
+        .map_err(|_| PeerProsePointerFailure::Rejected)?;
     let recovered = peer_prose_token_outcome(ipc::prose_token::prose_token_recv_classified(
         &dir,
         &manual.scope,
+        &detection_key,
         cover_text,
     ))?;
     // Exactly one orientation can satisfy this: the wire names one sender

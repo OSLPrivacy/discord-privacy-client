@@ -34,6 +34,10 @@ fn fake_wire(payload: &[u8]) -> String {
     format!("DPC0::{}", B64.encode(payload))
 }
 
+fn detection_key() -> [u8; 32] {
+    ipc::prose_token::derive_detection_key(&[0x44; 32]).expect("test secret derives detector")
+}
+
 #[test]
 fn end_to_end_round_trip_via_live_store() {
     if !live_tests_enabled() {
@@ -47,14 +51,15 @@ fn end_to_end_round_trip_via_live_store() {
     let wire = fake_wire(&payload);
     println!("[send] wire = {wire}");
 
-    let sent = prose_token_send(&dir, &scope, &wire, 86400).expect("prose_token_send");
+    let key = detection_key();
+    let sent = prose_token_send(&dir, &scope, &key, &wire, 86400).expect("prose_token_send");
     println!("[send] blob_id = {}", sent.blob_id);
     println!("[send] cover_text = {}", sent.cover_text);
     println!("[send] expires_at = {}", sent.expires_at);
     assert_eq!(sent.blob_id.len(), 16);
     assert!(!sent.cover_text.starts_with("DPC"));
 
-    let recv = prose_token_recv(&dir, &scope, &sent.cover_text)
+    let recv = prose_token_recv(&dir, &scope, &key, &sent.cover_text)
         .expect("prose_token_recv ok")
         .expect("prose_token_recv saw a valid token");
     println!("[recv] wire = {}", recv.wire);
@@ -68,7 +73,7 @@ fn end_to_end_round_trip_via_live_store() {
 
     // After burn, recv should map to None (server returns 404 →
     // prose_token_recv folds that to Ok(None)).
-    let after_burn = prose_token_recv(&dir, &scope, &sent.cover_text).expect("recv ok");
+    let after_burn = prose_token_recv(&dir, &scope, &key, &sent.cover_text).expect("recv ok");
     assert!(
         after_burn.is_none(),
         "expected None after burn, got {after_burn:?}"
@@ -84,7 +89,7 @@ fn plain_english_is_not_a_token() {
     let dir = config_dir();
     let scope = dm_scope();
     let msg = "hey what's for lunch tomorrow?";
-    let result = prose_token_recv(&dir, &scope, msg).expect("recv ok");
+    let result = prose_token_recv(&dir, &scope, &detection_key(), msg).expect("recv ok");
     assert!(result.is_none(), "plain English must not decode as a token");
 }
 
@@ -109,10 +114,11 @@ fn cross_scope_does_not_decode() {
     };
     let payload = b"cross-scope-payload".to_vec();
     let wire = fake_wire(&payload);
-    let sent = prose_token_send(&dir, &scope_a, &wire, 86400).expect("send");
+    let key = detection_key();
+    let sent = prose_token_send(&dir, &scope_a, &key, &wire, 86400).expect("send");
     // Decoding under scope_b with the same cover should NOT recover
     // the token (different cipher permutation + different MAC key).
-    let recv_b = prose_token_recv(&dir, &scope_b, &sent.cover_text).expect("recv ok");
+    let recv_b = prose_token_recv(&dir, &scope_b, &key, &sent.cover_text).expect("recv ok");
     assert!(recv_b.is_none(), "cross-scope decode must return None");
     // Cleanup.
     let _ = prose_token_burn_id(&dir, &scope_a, &sent.blob_id);
