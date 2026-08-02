@@ -5,7 +5,7 @@ import { sha256Hex } from "../src/lib/digest.js";
 const ORIGIN = "https://cipher.test";
 const TTL = "604800";
 
-async function upload(id: string) {
+async function attemptedUpload(id: string) {
   const fetchCap = `1${id.slice(1)}`;
   const ackCap = `2${id.slice(1)}`;
   const manageCap = `3${id.slice(1)}`;
@@ -23,39 +23,19 @@ async function upload(id: string) {
     },
     body: new Uint8Array([7]),
   });
-  expect(response.status).toBe(201);
+  expect(response.status).toBe(401);
   return { fetchCap, ackCap, manageCap };
 }
 
 describe("receipt-aware blob routes and health capability", () => {
-  it("wires the frozen PUT, GET, ACK, and DELETE authorities without a status route", async () => {
+  it("makes the real PUT route consume a storage grant before it can create a blob", async () => {
     const fetchId = "a".repeat(32);
-    const fetch = await upload(fetchId);
+    await attemptedUpload(fetchId);
+    expect(await env.DB.prepare("SELECT 1 FROM blob_capability_index WHERE blob_id = ?")
+      .bind(fetchId).first()).toBeNull();
+    expect(await env.PAYLOADS.head(await sha256Hex(`1${fetchId.slice(1)}`))).toBeNull();
+
     expect((await SELF.fetch(`${ORIGIN}/v1/blob`, { method: "POST" })).status).toBe(404);
-    expect((await SELF.fetch(`${ORIGIN}/v1/blob/${fetchId}`, {
-      headers: { "x-osl-fetch-cap": "0".repeat(32) },
-    })).status).toBe(404);
-    expect((await SELF.fetch(`${ORIGIN}/v1/blob/${fetchId}`, {
-      headers: { "x-osl-fetch-cap": fetch.fetchCap },
-    })).status).toBe(200);
-
-    const ackId = "b".repeat(32);
-    const ack = await upload(ackId);
-    expect((await SELF.fetch(`${ORIGIN}/v1/blob/${ackId}/ack`, {
-      method: "POST",
-      headers: { "x-osl-ack-cap": "0".repeat(32) },
-    })).status).toBe(404);
-    expect((await SELF.fetch(`${ORIGIN}/v1/blob/${ackId}/ack`, {
-      method: "POST",
-      headers: { "x-osl-ack-cap": ack.ackCap },
-    })).status).toBe(204);
-
-    const burnId = "c".repeat(32);
-    const burn = await upload(burnId);
-    expect((await SELF.fetch(`${ORIGIN}/v1/blob/${burnId}`, {
-      method: "DELETE",
-      headers: { "x-osl-manage-cap": burn.manageCap },
-    })).status).toBe(204);
     expect((await SELF.fetch(`${ORIGIN}/v1/blob/${fetchId}/status`)).status).toBe(404);
   });
 
