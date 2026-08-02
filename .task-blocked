@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T4-N2: apps/osl-hub/src/osl_mail.rs plus its command registration and permissions; T4-N2 owns this prerequisite.
