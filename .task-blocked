@@ -1,0 +1,6 @@
+T14-G1 / T14-G2: the required drivers are implemented at
+/home/liamw/osl-plan/vmqa/osl_chat_e2e.ps1 and
+/home/liamw/osl-plan/vmqa/osl_chat_route_delivery.ps1.  That directory is not
+a Git repository, so those task-owned files cannot be included in this
+worktree's per-task commits.  The commits below record this external ownership
+constraint; no wrappers or duplicate copies were added.

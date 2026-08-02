@@ -20,6 +20,7 @@ export type FirstPartyOslServiceSurfaceId =
   FirstPartyOslServiceSurface["surfaceId"];
 
 export const OSL_CHAT_DELIVERY_STATES = [
+  "queued",
   "sent",
   "delivered",
   "received",
@@ -175,6 +176,7 @@ export function oslChatDraftBytes(value: string): number {
 
 function deliveryLabel(state: OslChatDeliveryState): string {
   switch (state) {
+    case "queued": return "Queued — not sent";
     case "sent": return "Sent";
     case "delivered": return "Delivered";
     case "received": return "Received";

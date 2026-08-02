@@ -100,6 +100,25 @@ export interface OslChatDeliveryRuntime {
 }
 
 /**
+ * Project an outbound envelope which was durably accepted by the offline queue
+ * into the timeline.  It is deliberately not `sent`: reconnect delivery has
+ * not happened yet, and rendering a green success state here would lie.
+ */
+export function queuedOslChatMessage(
+  messageId: string,
+  body: string,
+  timestampLabel: string,
+): OslChatMessage {
+  return {
+    messageId,
+    direction: "outgoing",
+    body,
+    state: "queued",
+    timestampLabel,
+  };
+}
+
+/**
  * Verified friends only. The trust gate is unchanged from the pre-extraction
  * loop: a friend must have a compared safety number and no pending key change.
  */

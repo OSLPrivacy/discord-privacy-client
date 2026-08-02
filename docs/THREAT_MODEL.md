@@ -68,6 +68,42 @@ downgrade server-enforced burn, expiry, and view-once to an unenforced carrier.
 > the Cargo level (`crates/ipc/Cargo.toml:73`). That comment is owned by another
 > tab and was not edited here.
 
+## Cover text and optional AI assistance
+
+Cover text is a presentation layer around a protected-message carrier. It does
+**not** hide the fact that the user is communicating, the destination,
+participants, timing, volume, row count, or the encrypted payload's size
+bucket. It cannot make a protected-message send look like the user's normal
+writing. A channel observer can compare vocabulary and timing, and a dedicated
+steganalyser can look for distributional artefacts. OSL must not call this
+undetectable or imply that it defeats a determined observer.
+
+The deterministic word-bank codec and the optional AI selector are not a
+shipping stealth claim. The current send path coerces Mode 1 to the visible
+`DPC0::` capsule (`crates/ipc/src/commands.rs:2640-2660`). The word-bank
+renderer exists in `crates/stego/src/bigram.rs`; the selector can only rank
+already-rendered candidates (`crates/cover-ai/src/scorer.rs`) and has no
+production send consumer. Selecting the most readable candidate from a pool
+also deliberately biases its distribution. That improves a human-facing
+quality proxy, but it can make machine detection easier rather than harder.
+
+The AI boundary does not receive protected-message plaintext. The local context
+types admit only a completed visible cover (`crates/cover-ai/src/context.rs`),
+and a cold start can use no conversation text (`crates/cover-ai/src/cold_start.rs`).
+If a future user explicitly opts into cloud generation, it may receive only
+cover text the platform already has plus a style hint; it still exposes request
+IP (unless separately routed), timing, frequency, size, and which cover
+conversation was used. Cloud generation is not offered in v1 and must never be
+described as end-to-end encrypted.
+
+The local sensitive-content detector is a separate safety feature, not a
+content-moderation system or a cover-text detector. It has no HTTP/model
+dependency and performs no I/O (`apps/osl-hub/src/privacy_scan.rs:1-6`). The
+send-warning policy maps only structured secret and identity findings; it
+excludes political, historical, reclaimed, and other lexical categories
+(`crates/sensitive-classify/src/categories.rs`). It must remain non-blocking,
+must not score or log a user, and does not inspect images in v1.
+
 ## Mission
 
 Limit the power of social media companies and government surveillance over

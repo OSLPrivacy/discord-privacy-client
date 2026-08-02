@@ -159,6 +159,8 @@ pub mod discord_qa_identity;
 pub mod discord_qa_inbound_receipt;
 #[cfg(feature = "core")]
 pub mod eager_fetch;
+pub mod osl_chat_delivery;
+pub mod osl_chat_queue;
 #[cfg(feature = "core")]
 pub mod eager_fetch_retry;
 pub mod identity_binding_verifier;

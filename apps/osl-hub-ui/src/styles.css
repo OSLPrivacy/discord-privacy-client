@@ -7098,6 +7098,7 @@ code {
 .osl-chat-message-state.is-opened { color: var(--muted); }
 .osl-chat-message-state.is-expired { color: var(--warn); }
 .osl-chat-message-state.is-failed { color: var(--danger); font-weight: 600; }
+.osl-chat-message-state.is-queued { color: var(--warning); font-weight: 600; }
 /* Burn result: the peer-acknowledgement line.
    `queue_scope_revocations_locked` (apps/osl-hub/src/security.rs) says a burn
    whose notices are only queued must read `Not acknowledged` and never a
