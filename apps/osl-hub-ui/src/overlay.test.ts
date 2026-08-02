@@ -187,7 +187,7 @@ describe("trusted composer overlay", () => {
     expect(native).toContain("fn show_capture_shield(shield: &tauri::WebviewWindow, shielded: bool)");
     expect(native).toContain("let shielded = !painted_rows.is_empty();");
     expect(source).toMatch(
-      /applyDecryptDisplayVisibility\(payload\);[\s\S]*?if \(payload\)[\s\S]*?scheduleReceivePoll\(0\)[\s\S]*?receiveTimer = undefined/u,
+      /applyDecryptDisplayVisibility\(payload\);[\s\S]*?if \(payload\)[\s\S]*?requestRealtimeDrain\(\)/u,
     );
     expect(styles).not.toMatch(
       /:root\[data-discord-qa-shell="true"\]\s+\.transcript-mount\s*\{\s*display:\s*none/u,
@@ -822,7 +822,7 @@ describe("trusted composer overlay", () => {
     const source = readRelative("./overlay.ts");
     expect(source).toContain("if (!discordQaShell) {");
     expect(source).toContain("removeViewOnceBubbles();");
-    expect(source).toContain("scheduleReceivePoll(0);");
+    expect(source).toContain("requestRealtimeDrain();");
   });
 
   it("bounds ephemeral plaintext lifetime without retaining it in browser storage", () => {
@@ -858,12 +858,12 @@ describe("trusted composer overlay", () => {
     );
     expect(save).toContain("applyDecryptDisplayVisibility(previousDecrypt)");
     // EXPECTED VALUE CHANGED: the eye-on branch used to be the single statement
-    // `if (decryptDisplayEnabled) scheduleReceivePoll(0)`. Switching the eye on
+    // `if (decryptDisplayEnabled) requestRealtimeDrain()`. Switching the eye on
     // now also claims one bounded transcript read -- the edge that puts the
     // operator's decryptable history on screen -- so the branch is a block. The
     // ordering guarantee this test exists for is unchanged and still asserted:
     // visibility is applied synchronously BEFORE anything is allowed to poll.
-    expect(save).toContain("if (decryptDisplayEnabled) {\n    scheduleReceivePoll(0);");
+    expect(save).toContain("if (decryptDisplayEnabled) {\n    requestRealtimeDrain();");
     expect(save.indexOf("applyDecryptDisplayVisibility(decryptDisplayEnabled)")).toBeLessThan(
       save.indexOf("if (decryptDisplayEnabled) {"),
     );
@@ -1003,7 +1003,7 @@ describe("trusted composer overlay", () => {
     // The receive poll is itself a timer, so it must only raise an edge when the
     // backend actually reported something new -- otherwise the eye would read
     // Discord's accessibility tree once per receive tick.
-    const poll = source.slice(source.indexOf("async function pollReceived"), source.indexOf('document.addEventListener("visibilitychange"'));
+    const poll = source.slice(source.indexOf("async function drainReceived"), source.indexOf('document.addEventListener("visibilitychange"'));
     expect(poll).toContain("if (batch.messages.length > 0 || batch.pendingViewOnce.length > 0");
     expect(poll).toContain("scheduleTranscriptRehydrate();");
 
@@ -1145,7 +1145,7 @@ describe("trusted composer overlay", () => {
   it("destroys view-once plaintext on display-off while preserving destructive cleanup", () => {
     const source = readRelative("./overlay.ts");
     const visibility = source.slice(source.indexOf("function applyDecryptDisplayVisibility"), source.indexOf("function clearMessageBubbles"));
-    const reveal = source.slice(source.indexOf("function appendPendingViewOnce"), source.indexOf("function scheduleReceivePoll"));
+    const reveal = source.slice(source.indexOf("function appendPendingViewOnce"), source.indexOf("function requestRealtimeDrain"));
     const burn = source.slice(source.indexOf('burnChat.addEventListener("click"'), source.indexOf("function clearGestureTimer"));
 
     expect(visibility).toContain("if (!visible) removeViewOnceBubbles()");
@@ -1159,8 +1159,8 @@ describe("trusted composer overlay", () => {
 
   it("does not fetch received plaintext while display is off", () => {
     const source = readRelative("./overlay.ts");
-    const schedule = source.slice(source.indexOf("function scheduleReceivePoll"), source.indexOf("async function pollReceived"));
-    const poll = source.slice(source.indexOf("async function pollReceived"), source.indexOf('document.addEventListener("visibilitychange"'));
+    const schedule = source.slice(source.indexOf("function requestRealtimeDrain"), source.indexOf("async function drainReceived"));
+    const poll = source.slice(source.indexOf("async function drainReceived"), source.indexOf('document.addEventListener("visibilitychange"'));
     expect(schedule).toContain("shouldPollDiscordOverlay({");
     expect(schedule).toContain("decryptDisplayEnabled,");
     expect(poll).toContain("shouldPollDiscordOverlay({");
@@ -1176,7 +1176,7 @@ describe("trusted composer overlay", () => {
 
   it("names every received message and never swallows a receive failure", () => {
     const source = readRelative("./overlay.ts");
-    const pollStart = source.indexOf("async function pollReceived(): Promise<void> {");
+    const pollStart = source.indexOf("async function drainReceived(): Promise<void> {");
     expect(pollStart).toBeGreaterThan(-1);
     const poll = source.slice(pollStart, source.indexOf('document.addEventListener("visibilitychange"', pollStart));
 
@@ -1199,7 +1199,7 @@ describe("trusted composer overlay", () => {
     // one short-circuits the receipts that keep flowing in both of them.
     expect(poll).toContain("if (!batch.decryptDisplayEnabled) {");
     expect(poll).toContain("if (batch.deferredRows > 0) {");
-    expect(poll).toContain("|| batch.deferredRows > 0 || attachments.length > 0 ? 2_000");
+    expect(poll).not.toContain("idlePollMs");
     expect(poll).not.toMatch(/if \(!batch\.decryptDisplayEnabled\) \{[\s\S]{0,400}?\breturn\b/u);
     // Status text stays a fixed sentence plus a count -- never a fragment of what
     // arrived.
@@ -1626,13 +1626,13 @@ describe("trusted composer overlay", () => {
   it("is never driven by a timer or a keystroke, only by an explicit send attempt", () => {
     const source = readRelative("./overlay.ts");
 
-    // pollReceived() is the one function scheduled on a timer (via
-    // scheduleReceivePoll/window.setTimeout). It updates the acknowledgement
+    // drainReceived() is the one function scheduled on a timer (via
+    // requestRealtimeDrain/window.setTimeout). It updates the acknowledgement
     // flag indirectly through applyAcknowledgment (a real ledger fact, not a
     // timer firing on its own), but it must never itself touch the caution
     // element or call the caution function -- that only ever happens from
     // inside sendDraft(), on an explicit send.
-    const pollStart = source.indexOf("async function pollReceived(): Promise<void> {");
+    const pollStart = source.indexOf("async function drainReceived(): Promise<void> {");
     const pollEnd = source.indexOf('document.addEventListener("visibilitychange"', pollStart);
     expect(pollStart).toBeGreaterThan(-1);
     expect(pollEnd).toBeGreaterThan(pollStart);
@@ -1790,7 +1790,7 @@ describe("trusted composer overlay", () => {
     expect(source).toMatch(
       /failureBannerDismiss\.addEventListener\("click", \(\) => \{\s*renderSendFailureBanner\(""\);\s*\}\);/u,
     );
-    const pollStart = source.indexOf("async function pollReceived(): Promise<void> {");
+    const pollStart = source.indexOf("async function drainReceived(): Promise<void> {");
     const pollBody = source.slice(pollStart, source.indexOf('document.addEventListener("visibilitychange"', pollStart));
     expect(pollBody).not.toContain("renderSendFailureBanner");
     for (const [timer] of source.matchAll(/setTimeout\([\s\S]{0,400}?\)\s*;/gu)) {

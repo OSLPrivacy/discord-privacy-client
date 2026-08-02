@@ -92,6 +92,10 @@ const discordQaShell = import.meta.env.VITE_OSL_DISCORD_QA_SHELL === "1";
 const PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT = "osl://protected-display-visibility-changed";
 const NATIVE_SURFACE_CHANGED_EVENT = "osl://native-surface-changed";
 const OVERLAY_REFOCUS_EVENT = "osl://native-discord-overlay-refocus";
+// The Rust realtime transport emits this only after it accepted a wakeup whose
+// blob id matches a locally-held carrier pointer.  It is an edge, not a clock:
+// no renderer timer is allowed to manufacture a receive attempt.
+const REALTIME_WAKEUP_EVENT = "osl://realtime-wakeup";
 // Discord's transcript band moved, resized or came to rest, so every row
 // rectangle this renderer holds is now pointing at the wrong pixels. No payload:
 // it is a bare "re-read", raised by the native guard loop on the tick something
@@ -145,10 +149,8 @@ let c4NativeReceiptAttempt = 0;
 // discardProtectedSession() below.
 let anyProtectedMessageSent = false;
 let anyProtectedMessageAcknowledged = false;
-let receiveTimer: number | undefined;
 let gestureTimer: number | undefined;
 let burnTimer: number | undefined;
-let idlePollMs = 2_000;
 const sendGesture = new OverlaySendGesture();
 if (discordQaShell) {
   sendMode.value = "single";
@@ -1360,7 +1362,7 @@ function appendPendingViewOnce(message: { messageId: string; expiresAt: number }
         "That view-once message could not be opened safely.",
         "reveal_native_discord_overlay_view_once",
       );
-      scheduleReceivePoll(idlePollMs);
+      requestRealtimeDrain();
       return;
     }
     removeBubble(item);
@@ -1371,25 +1373,18 @@ function appendPendingViewOnce(message: { messageId: string; expiresAt: number }
       appendBubble("incoming", opened.plaintext, "Received · opened once", opened.expiresAt, true),
     );
     status.textContent = "View-once message opened in OSL.";
-    scheduleReceivePoll(0);
+    requestRealtimeDrain();
   })());
   const expiryTimer = window.setTimeout(() => removeBubble(item), overlayExpiryDelayMs(message.expiresAt, Date.now()));
   messageExpiryTimers.set(item, expiryTimer);
 }
 
-function scheduleReceivePoll(delayMs: number): void {
-  if (receiveTimer !== undefined) window.clearTimeout(receiveTimer);
-  receiveTimer = undefined;
-  if (!shouldPollDiscordOverlay({
-    overlayReady,
-    decryptDisplayEnabled,
-    documentHidden: document.hidden,
-    discordQaShell,
-  })) return;
-  receiveTimer = window.setTimeout(() => void pollReceived(), delayMs);
+function requestRealtimeDrain(): void {
+  if (!shouldPollDiscordOverlay({ overlayReady, decryptDisplayEnabled, documentHidden: document.hidden, discordQaShell })) return;
+  void drainReceived();
 }
 
-async function pollReceived(): Promise<void> {
+async function drainReceived(): Promise<void> {
   if (receiveBusy || !shouldPollDiscordOverlay({
     overlayReady,
     decryptDisplayEnabled,
@@ -1451,8 +1446,7 @@ async function pollReceived(): Promise<void> {
     for (const attachment of attachments) appendPendingAttachment(attachment);
     // A deferred row keeps the poll brisk on purpose: backing off while the store
     // is unreachable is how a transient outage turns into a ten-second-deep hole.
-    idlePollMs = opened > 0 || batch.pendingViewOnce.length > 0 || batch.deferredRows > 0 || attachments.length > 0 ? 2_000 : Math.min(idlePollMs * 2, 10_000);
-    // Fixed sentences only, and only ever about counts and states -- never a
+        // Fixed sentences only, and only ever about counts and states -- never a
     // fragment of what arrived.
     if (opened > 0) status.textContent = `${opened} private ${opened === 1 ? "message" : "messages"} received through OSL.`;
     else if (batch.deferredRows > 0) status.textContent = "OSL could not reach the protected message store. Retrying.";
@@ -1465,26 +1459,19 @@ async function pollReceived(): Promise<void> {
     // what reaches here is this loop's own validation, so it is journalled under
     // the command the loop exists to call.
     recordBackendFailure("open_native_discord_overlay_text", error);
-    idlePollMs = Math.min(idlePollMs * 2, 10_000);
   } finally {
     receiveBusy = false;
-    scheduleReceivePoll(idlePollMs);
   }
 }
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     removeViewOnceBubbles();
-    if (!discordQaShell) {
-      if (receiveTimer !== undefined) window.clearTimeout(receiveTimer);
-      receiveTimer = undefined;
-    } else {
-      idlePollMs = 2_000;
-      scheduleReceivePoll(0);
+    if (discordQaShell) {
+      requestRealtimeDrain();
     }
   } else {
-    idlePollMs = 2_000;
-    scheduleReceivePoll(0);
+    requestRealtimeDrain();
   }
 });
 window.addEventListener("blur", removeViewOnceBubbles);
@@ -1991,10 +1978,7 @@ async function saveSecurity(): Promise<void> {
     // Hiding is immediate and conservative; a failed save restores the exact
     // prior visibility below. Do not allow a receive poll to race the toggle.
     decryptDisplayEnabled = false;
-    applyDecryptDisplayVisibility(false);
-    if (receiveTimer !== undefined) window.clearTimeout(receiveTimer);
-    receiveTimer = undefined;
-  }
+    applyDecryptDisplayVisibility(false);  }
   securityBusy = true;
   refreshControls();
   status.textContent = "Saving protection…";
@@ -2005,7 +1989,7 @@ async function saveSecurity(): Promise<void> {
     decryptDisplay.checked = previousDecrypt;
     decryptDisplayEnabled = previousDecrypt;
     applyDecryptDisplayVisibility(previousDecrypt);
-    if (previousDecrypt) scheduleReceivePoll(0);
+    if (previousDecrypt) requestRealtimeDrain();
     status.textContent = "That change was not saved. The previous protection stays active.";
     refreshControls();
     return;
@@ -2024,16 +2008,13 @@ async function saveSecurity(): Promise<void> {
   refreshControls();
   status.textContent = "Protection updated.";
   if (decryptDisplayEnabled) {
-    scheduleReceivePoll(0);
+    requestRealtimeDrain();
     // EYE-ON EDGE. Nothing was painted a moment ago and something must be now,
     // so this is the read that puts the operator's decryptable history on
     // screen. Turning the eye off raises no edge at all: applyDecryptDisplay-
     // Visibility() above already cancelled the pending read and dropped the rows.
     scheduleTranscriptRehydrate();
-  } else {
-    if (receiveTimer !== undefined) window.clearTimeout(receiveTimer);
-    receiveTimer = undefined;
-  }
+  } else {  }
 }
 
 async function refreshProtectedDisplayVisibility(): Promise<void> {
@@ -2076,16 +2057,13 @@ async function refreshProtectedDisplayVisibility(): Promise<void> {
   applyDecryptDisplayVisibility(decryptDisplayEnabled);
   refreshControls();
   if (decryptDisplayEnabled) {
-    scheduleReceivePoll(0);
+    requestRealtimeDrain();
     // RE-MEASURE EDGE. Everything that reaches this function -- a native-surface
     // change, a resize, a DPI step, a theme switch, the fonts settling -- has
     // just invalidated every rectangle OSL was painting against, so the rows it
     // is painting have to be located again before they mean anything.
     scheduleTranscriptRehydrate();
-  } else {
-    if (receiveTimer !== undefined) window.clearTimeout(receiveTimer);
-    receiveTimer = undefined;
-  }
+  } else {  }
 }
 
 ttl.addEventListener("change", () => void saveSecurity());
@@ -2170,7 +2148,7 @@ async function initializeOverlay(): Promise<void> {
         ? "Ready."
         : "Receiving private text is off for this friend.";
     if (decryptDisplayEnabled) {
-      scheduleReceivePoll(0);
+      requestRealtimeDrain();
       // SESSION-READY / SCOPE-CHANGE EDGE. A verified session just became
       // readable, so this is the read that puts the operator's decryptable
       // history back on screen from behind the capture shield. A scope change
@@ -2324,13 +2302,9 @@ void listen<boolean>(PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT, ({ payload }) =
     decryptDisplay.checked = payload;
     applyDecryptDisplayVisibility(payload);
     if (payload) {
-      idlePollMs = 2_000;
-      scheduleReceivePoll(0);
+      requestRealtimeDrain();
       // EYE-ON EDGE, announced rather than clicked.
       scheduleTranscriptRehydrate();
-    } else {
-      if (receiveTimer !== undefined) window.clearTimeout(receiveTimer);
-      receiveTimer = undefined;
     }
     refreshControls();
     return;
@@ -2343,6 +2317,7 @@ void listen<void>(NATIVE_SURFACE_CHANGED_EVENT, () => {
 void listen<void>(OVERLAY_REFOCUS_EVENT, () => {
   draft.focus({ preventScroll: true });
 });
+void listen<void>(REALTIME_WAKEUP_EVENT, requestRealtimeDrain);
 // NATIVE SCROLL/GEOMETRY EDGE. The completion of the wheel listener above: the
 // guard loop watching Discord's window raises this on the tick the transcript
 // band actually changed shape or came to rest, which is the only way this
@@ -2424,10 +2399,7 @@ function discardProtectedSession(): void {
   // policy, not a property of an encryption session, so it is deliberately NOT
   // reset here -- doing that is what made a lock toggle silently close the
   // operator's decrypted display.
-  applyDecryptDisplayVisibility(decryptDisplayEnabled);
-  if (receiveTimer !== undefined) window.clearTimeout(receiveTimer);
-  receiveTimer = undefined;
-  status.textContent = "Verifying protected Discord…";
+  applyDecryptDisplayVisibility(decryptDisplayEnabled);  status.textContent = "Verifying protected Discord…";
   // Discarding readiness must never leave this renderer with no way back to it.
   // The next session announces itself, but that announcement can be missed by a
   // retained WebView, and a renderer that refuses every keystroke while the
