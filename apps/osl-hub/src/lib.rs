@@ -199,6 +199,7 @@ pub mod scrub_index;
 pub mod scrub_receipt;
 #[cfg(feature = "core")]
 pub mod security;
+pub mod sensitive_warning;
 #[cfg(feature = "core")]
 pub mod security_credentials;
 #[cfg(feature = "core")]

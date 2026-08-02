@@ -6,6 +6,10 @@
 
 export interface Env {
   DB: D1Database;
+  /** Optional isolated Workers AI binding for stateless carrier generation. */
+  AI?: Ai;
+  /** Explicit model identifier; absent uses the reviewed default in the handler. */
+  AI_CARRIER_MODEL?: string;
   /** Strongly consistent, ciphertext-only per-identity OSL mailbox. */
   MAILBOX: DurableObjectNamespace<import("./mail/mailbox.js").Mailbox>;
   /** Per-owner retained ciphertext pool; its DO owns eviction and expiry. */

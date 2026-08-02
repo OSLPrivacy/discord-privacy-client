@@ -43,6 +43,7 @@ runtime = { path = "../../crates/runtime", optional = true }
 # behind `core`, so this cannot be an optional dependency: the planner must obey
 # the same row contract in every build that can compile it.
 stego = { path = "../../crates/stego" }
+sensitive-classify = { path = "../../crates/sensitive-classify" }
 sha2 = "=0.10.9"
 tracing = { version = "=0.1.44", optional = true }
 bip39 = { version = "=2.2.2", default-features = false, features = ["std"], optional = true }
