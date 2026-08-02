@@ -5,10 +5,12 @@
 //! signed document verifies at the current time.
 
 use adapter_profile::{
-    load_signed_adapter_profile_or_compiled_in, signal_default_profile,
-    signal_default_trusted_signing_key_b64, whatsapp_default_profile,
-    whatsapp_default_trusted_signing_key_b64, LoadedSignedAdapterProfile,
-    SignedAdapterProfileLoaderError,
+    loader::{
+        load_signed_adapter_profile_or_compiled_in, LoadedSignedAdapterProfile,
+        SignedAdapterProfileLoaderError,
+    },
+    signal_default_profile, signal_default_trusted_signing_key_b64, whatsapp_default_profile,
+    whatsapp_default_trusted_signing_key_b64,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -66,7 +68,7 @@ pub fn load_verified_adapter_profiles_at_boot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adapter_profile::AdapterProfileSource;
+    use adapter_profile::loader::AdapterProfileSource;
 
     const VALID_NOW: u64 = 1_800_000_000;
     const EXPIRED_NOW: u64 = 2_000_000_000;

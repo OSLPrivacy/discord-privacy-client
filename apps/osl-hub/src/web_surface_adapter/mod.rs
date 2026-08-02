@@ -138,7 +138,7 @@ impl<B: WebSurfaceBackend> SurfaceAdapter for WebSurfaceAdapter<B> {
         if !self.validates_binding(binding)
             || !same_scope(
                 &binding.scope_binding_hash,
-                &authorization.scope_binding_hash,
+                authorization.scope_binding_hash(),
             )
             || !self.supports(adapter_profile::Capability::PlaceProtectedPayload)
         {
@@ -162,7 +162,7 @@ impl<B: WebSurfaceBackend> SurfaceAdapter for WebSurfaceAdapter<B> {
             || !is_send_evidence_admissible(&binding.evidence)
             || !same_scope(
                 &binding.scope_binding_hash,
-                &authorization.scope_binding_hash,
+                authorization.scope_binding_hash(),
             )
             || !self.supports(adapter_profile::Capability::SendProtectedPayload)
             || placed.status != PlacementStatus::Placed

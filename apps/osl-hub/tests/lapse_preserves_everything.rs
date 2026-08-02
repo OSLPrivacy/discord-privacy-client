@@ -160,7 +160,7 @@ fn expired_pro_cache_leaves_identity_peers_history_and_notes_byte_identical() {
         &after_lapse.osl,
         CHANNEL.to_owned(),
         "post-lapse-inbound-0000000000000001".to_owned(),
-        alice.user_id,
+        alice.user_id.clone(),
         "received after lapse".to_owned(),
     )
     .expect("text receiving stays available after lapse");

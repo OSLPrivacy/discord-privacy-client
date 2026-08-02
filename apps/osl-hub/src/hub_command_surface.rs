@@ -1302,6 +1302,15 @@ mod tauri_registration_surface_tests {
         )
     }
 
+    fn network_registration_inputs(
+    ) -> (BTreeSet<String>, BTreeMap<String, String>, BTreeSet<String>) {
+        (
+            handler_commands(),
+            permission_commands(include_str!("../permissions/hub.toml")),
+            capability_permissions(include_str!("../capabilities/osl-network.json")),
+        )
+    }
+
     /// T15-A3/A4 — the "see my recovery phrase again" surface.
     ///
     /// `cmd_osl_view_recovery_phrase` has existed in `crates/ipc` all along,
@@ -1331,7 +1340,7 @@ mod tauri_registration_surface_tests {
 
     #[test]
     fn session_reset_emitter_is_registered_and_granted() {
-        let (handlers, permissions, capability) = registration_inputs();
+        let (handlers, permissions, capability) = network_registration_inputs();
         assert_registered_and_granted(
             &handlers,
             &permissions,

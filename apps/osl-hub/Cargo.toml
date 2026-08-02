@@ -1,5 +1,5 @@
 [package]
-name = "osl-privacy-hub"
+name = "osl-hub"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
@@ -46,10 +46,17 @@ stego = { path = "../../crates/stego" }
 sha2 = "=0.10.9"
 tracing = { version = "=0.1.44", optional = true }
 bip39 = { version = "=2.2.2", default-features = false, features = ["std"], optional = true }
-base64 = { version = "=0.22.1", optional = true }
+# Attachment scanning is available outside `core` and decodes its bounded,
+# in-memory transport envelope directly, so this is not a core-only dependency.
+base64 = "=0.22.1"
 url = "=2.5.8"
 zeroize = "=1.9.0"
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# IMAP is deliberately built without its native-TLS default. The IMAP client
+# added by T12-I2 must establish a rustls connection before it sends commands
+# or app-password credentials; no plaintext fallback is available.
+imap = { version = "=2.4.1", default-features = false }
+rustls = { version = "=0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
 
 [dev-dependencies]
 tempfile = "=3.13"
@@ -74,8 +81,8 @@ rfd = { version = "=0.16.0", default-features = false, features = ["gtk3"] }
 [features]
 # The WhatsApp protected surface is part of the shipped desktop product. Keep
 # the feature name for its QA audit hooks, but compile it in the standard binary.
-default = ["whatsapp-qa-shell"]
-core = ["dep:base64", "dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:tracing"]
+default = ["core", "whatsapp-qa-shell"]
+core = ["dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:tracing"]
 desktop = ["dep:runtime", "dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tokio", "core"]
 custom-protocol = ["tauri/custom-protocol"]
 # Disposable two-VM Discord testing only. This is deliberately a native build
@@ -84,6 +91,11 @@ custom-protocol = ["tauri/custom-protocol"]
 discord-qa-shell = []
 signal-qa-shell = []
 whatsapp-qa-shell = []
+
+[lib]
+# The package is `osl-hub` so it can be selected with `cargo -p osl-hub`.
+# Keep the established Rust crate name used by the desktop binary and tests.
+name = "osl_privacy_hub"
 
 [[bin]]
 name = "osl-privacy-hub"

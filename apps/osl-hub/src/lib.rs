@@ -21,6 +21,9 @@ pub mod attended_imap;
 pub mod autoscrub_run;
 pub mod background_priority;
 pub mod browser_companion;
+// The persistent footprint store is sealed with `ipc`'s process key, so it
+// belongs to the same runtime boundary as the other core storage modules.
+#[cfg(feature = "core")]
 pub mod browser_footprint;
 #[cfg(feature = "core")]
 pub mod browser_profile_scan;
@@ -140,6 +143,8 @@ pub mod identity_registry;
 pub mod inbound_receipts;
 #[cfg(feature = "core")]
 pub mod receipt_emit;
+pub mod realtime_client;
+pub mod realtime_subscription;
 pub mod isolated_worker;
 #[cfg(feature = "core")]
 pub mod mass_cleanup;

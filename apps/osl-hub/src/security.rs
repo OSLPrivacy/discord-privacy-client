@@ -2345,7 +2345,8 @@ pub fn scope_security(scope_input: ScopeInput) -> Result<ScopeSecurityDto, Strin
         load_encrypted_json::<ipc::scope_ttl_file::ScopeTtlFile>(&dir.join("scope_ttl.json"))?;
     let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
     Ok(ScopeSecurityDto {
-        ttl_seconds: ipc::scope_ttl_file::get_scope_ttl(&ttl_file, &storage_key),
+        ttl_seconds: ipc::scope_ttl_file::get_scope_ttl(&ttl_file, &storage_key)
+            .map_err(|error| format!("OSL scope TTL is invalid: {error}"))?,
         decrypt_display_enabled: prefs
             .decrypt_display_by_scope
             .get(&storage_key)
@@ -2379,8 +2380,12 @@ pub fn set_scope_security(
     }
     let ttl_path = dir.join("scope_ttl.json");
     let mut ttl_file = load_encrypted_json::<ipc::scope_ttl_file::ScopeTtlFile>(&ttl_path)?;
-    let effective_ttl =
-        ipc::scope_ttl_file::set_scope_ttl(&mut ttl_file, storage_key.clone(), ttl_seconds);
+    let effective_ttl = ipc::scope_ttl_file::set_scope_ttl(
+        &mut ttl_file,
+        storage_key.clone(),
+        ttl_seconds,
+    )
+    .map_err(|error| format!("OSL scope TTL is invalid: {error}"))?;
     write_encrypted_json(&ttl_path, &ttl_file)?;
     prefs.version = 2;
     prefs
@@ -6555,7 +6560,7 @@ key"
             load_encrypted_json_with_key(&path, &file_key).unwrap();
         assert_eq!(
             ipc::scope_ttl_file::get_scope_ttl(&loaded, "dm:test"),
-            86_400
+            Ok(86_400)
         );
         let _ = std::fs::remove_file(path);
     }
