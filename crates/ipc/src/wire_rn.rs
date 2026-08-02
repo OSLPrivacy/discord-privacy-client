@@ -100,7 +100,7 @@ pub const RN_CONTEXT_DISCORD_MANUAL: &[u8] = b"osl-hub/discord-manual-peer/v1";
 /// State-blob format version for the sealed session file.
 const SESSION_BLOB_VERSION: u32 = 2;
 /// Format version for the separately persisted send-counter high-water mark.
-const SESSION_SEND_FLOOR_VERSION: u32 = 1;
+const SESSION_SEND_FLOOR_VERSION: u32 = 2;
 /// State-blob format version for the pin file.
 const PIN_BLOB_VERSION: u32 = 1;
 
@@ -170,6 +170,12 @@ pub enum RnError {
     #[error("peer is pinned to OSL-RN; refusing to send a legacy v=3 message")]
     PinnedToRn,
 
+    /// Session recovery is only valid for a peer that is already pinned to
+    /// OSL-RN. Otherwise deleting the session could make a subsequent send
+    /// select v=3 instead of performing the required RN re-handshake.
+    #[error("refusing OSL-RN session recovery for an unpinned peer")]
+    RecoveryRequiresRnPin,
+
     /// The peer does not advertise OSL-RN and policy requires it.
     #[error("policy requires OSL-RN for this peer but the peer does not support it")]
     RnRequiredButUnsupported,
@@ -185,6 +191,12 @@ pub enum RnError {
     /// message-key nonces that this device has already consumed.
     #[error("refusing rolled-back OSL-RN session blob: send counter {blob_counter} is below persisted high-water mark {high_water}")]
     RolledBackSession { blob_counter: u32, high_water: u32 },
+
+    /// A restored session belongs to an older handshake generation than the
+    /// durable send floor. Its counter cannot safely be compared to the new
+    /// generation's counter, so it is refused outright.
+    #[error("refusing OSL-RN session blob from an older handshake generation")]
+    RolledBackSessionGeneration,
 
     /// The active sealer would write the session state in plaintext.
     /// Refused: the export contains every secret the session holds.
@@ -637,12 +649,16 @@ struct SealedBlob {
     /// Duplicates the authenticated session counter so it can be compared to
     /// the durable high-water mark before the session is used.
     sending_counter: u32,
+    /// Non-secret handshake generation used to bind the rollback floor to a
+    /// particular session. A recovery creates a new generation at counter 0.
+    session_id: [u8; 16],
     sealed_b64: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SessionSendFloor {
     version: u32,
+    session_id: [u8; 16],
     high_water: u32,
 }
 
@@ -825,6 +841,7 @@ impl RnSessionStore {
             version: SESSION_BLOB_VERSION,
             method: sealer.method_label().to_string(),
             sending_counter: session.sending_counter(),
+            session_id: session.session_id(),
             sealed_b64: b64(&sealed),
         };
         let json = serde_json::to_vec(&blob)
@@ -851,7 +868,7 @@ impl RnSessionStore {
         }
         // Persist the floor first. If the subsequent session write fails, the
         // old blob is refused rather than allowed to reissue a nonce.
-        self.persist_send_floor(peer_identity_x25519, blob.sending_counter)?;
+        self.persist_send_floor(peer_identity_x25519, blob.session_id, blob.sending_counter)?;
         atomic_write(&path, &json)
     }
 
@@ -913,11 +930,14 @@ impl RnSessionStore {
                 blob.version
             )));
         }
-        if let Some(high_water) = self.load_send_floor(peer_identity_x25519)? {
-            if blob.sending_counter < high_water {
+        if let Some(floor) = self.load_send_floor(peer_identity_x25519)? {
+            if blob.session_id != floor.session_id {
+                return Err(RnError::RolledBackSessionGeneration);
+            }
+            if blob.sending_counter < floor.high_water {
                 return Err(RnError::RolledBackSession {
                     blob_counter: blob.sending_counter,
-                    high_water,
+                    high_water: floor.high_water,
                 });
             }
         }
@@ -959,10 +979,18 @@ impl RnSessionStore {
                 max: MAX_SKIPPED_KEYS_POLICY,
             });
         }
+        if session.session_id() != blob.session_id {
+            return Err(RnError::Storage(
+                "session blob handshake generation does not match sealed session state".into(),
+            ));
+        }
         Ok(Some(session))
     }
 
-    fn load_send_floor(&self, peer_identity_x25519: &[u8; 32]) -> Result<Option<u32>, RnError> {
+    fn load_send_floor(
+        &self,
+        peer_identity_x25519: &[u8; 32],
+    ) -> Result<Option<SessionSendFloor>, RnError> {
         let path = self.send_floor_path(peer_identity_x25519);
         let Some(bytes) = read_bounded(&path, MAX_SESSION_SEND_FLOOR_FILE_BYTES, "send floor")?
         else {
@@ -976,24 +1004,26 @@ impl RnSessionStore {
                 floor.version
             )));
         }
-        Ok(Some(floor.high_water))
+        Ok(Some(floor))
     }
 
     fn persist_send_floor(
         &self,
         peer_identity_x25519: &[u8; 32],
+        session_id: [u8; 16],
         sending_counter: u32,
     ) -> Result<(), RnError> {
-        if let Some(high_water) = self.load_send_floor(peer_identity_x25519)? {
-            if sending_counter < high_water {
+        if let Some(floor) = self.load_send_floor(peer_identity_x25519)? {
+            if floor.session_id == session_id && sending_counter < floor.high_water {
                 return Err(RnError::RolledBackSession {
                     blob_counter: sending_counter,
-                    high_water,
+                    high_water: floor.high_water,
                 });
             }
         }
         let floor = SessionSendFloor {
             version: SESSION_SEND_FLOOR_VERSION,
+            session_id,
             high_water: sending_counter,
         };
         let json = serde_json::to_vec(&floor)
@@ -1108,6 +1138,22 @@ impl RnSessionStore {
 // ---------------------------------------------------------------
 // Session lifecycle helpers
 // ---------------------------------------------------------------
+
+/// Begin recovery from a desynchronised OSL-RN session.
+///
+/// Recovery intentionally deletes only the sealed session state. The separate
+/// pin must already be raised and is retained, so the following handshake is
+/// constrained to OSL-RN and can never silently become a legacy v=3 send.
+/// The caller performs that fresh handshake with the authenticated peer bundle.
+pub fn recover_session(
+    store: &RnSessionStore,
+    peer_identity_x25519: &[u8; 32],
+) -> Result<(), RnError> {
+    if !store.load_pin(peer_identity_x25519)?.is_pinned_to_rn() {
+        return Err(RnError::RecoveryRequiresRnPin);
+    }
+    store.delete_session(peer_identity_x25519)
+}
 
 /// Start an OSL-RN session towards a peer and persist it.
 ///
