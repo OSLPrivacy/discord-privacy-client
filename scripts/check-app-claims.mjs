@@ -42,6 +42,7 @@ const SUPPORT_MATRIX_PATH = path.join(REPO_ROOT, "docs/status/support-matrix.jso
 const GATE_SOURCE_PATH = fileURLToPath(import.meta.url);
 const GATE_CONTRACT_PATTERN =
   /^> Claim-gate source SHA-256: `([0-9a-f]{64})`$/m;
+const RATCHET_CLAIM_TERMS = /\b(?:forward secrecy|post-compromise|post quantum|post-quantum|ratcheting)\b/i;
 
 const MIN_BANNED_PHRASES = 8; // Prevents a malformed section-D parse from approving everything.
 const MIN_TS_STRING_LITERALS = 300; // Ensures the app copy scan cannot pass after extracting nothing.
@@ -1406,6 +1407,32 @@ function parseBannedPhrases(markdown) {
   }));
 }
 
+function parseRatchetClaims(markdown) {
+  const match = markdown.match(/<!-- ratchet_claims:start -->\s*([\s\S]*?)<!-- ratchet_claims:end -->/);
+  if (!match) {
+    return [];
+  }
+
+  return [...match[1].matchAll(/^\| \*\*Permitted wording\*\* \| "([^"]+)" \|$/gm)]
+    .map((entry) => normalizedClaimTextWithSourceMap(entry[1]).text)
+    .filter(Boolean);
+}
+
+function ratchetClaimAllowed(text, ratchetClaims) {
+  let remainder = text;
+  for (const claim of ratchetClaims) {
+    remainder = remainder.replaceAll(claim, " ");
+  }
+  return !RATCHET_CLAIM_TERMS.test(remainder);
+}
+
+function withinAllowedRatchetClaim(text, start, end, ratchetClaims) {
+  return ratchetClaims.some((claim) => {
+    const claimStart = text.indexOf(claim);
+    return claimStart !== -1 && start >= claimStart && end <= claimStart + claim.length;
+  });
+}
+
 async function listTypeScriptFiles(root) {
   const files = [];
 
@@ -2514,7 +2541,7 @@ function publicReviewClaimAllowed(text, index, phrase) {
   return !PUBLIC_REVIEW_CLAIM_DISALLOWED_CONTEXT_RE.test(sentenceAround(text, index));
 }
 
-function analyseFragments(file, fragments, bannedPhrases, publicClaimServices = new Set()) {
+function analyseFragments(file, fragments, bannedPhrases, publicClaimServices = new Set(), ratchetClaims = []) {
   const violations = [];
 
   for (const fragment of fragments) {
@@ -2539,6 +2566,7 @@ function analyseFragments(file, fragments, bannedPhrases, publicClaimServices = 
         if (
           !gatedOut &&
           !limited &&
+          !withinAllowedRatchetClaim(lower, index, end, ratchetClaims) &&
           !publicReviewClaimAllowed(lower, index, phrase.normalized)
         ) {
           const sourceIndex = normalized.sourceIndexes[index] ?? 0;
@@ -2552,6 +2580,16 @@ function analyseFragments(file, fragments, bannedPhrases, publicClaimServices = 
 
         index = lower.indexOf(phrase.normalized, index + phrase.normalized.length);
       }
+    }
+
+    if (RATCHET_CLAIM_TERMS.test(lower) && !ratchetClaimAllowed(lower, ratchetClaims)) {
+      const sourceIndex = normalized.sourceIndexes[0] ?? 0;
+      violations.push({
+        file,
+        line: fragment.line + countNewlinesBefore(fragment.text, sourceIndex),
+        phrase: "ratchet claim not verbatim in the allowlist",
+        excerpt: excerptAround(fragment.text, sourceIndex, fragment.text.length),
+      });
     }
 
     for (const span of semanticAttachmentClaimSpans(lower)) {
@@ -3135,6 +3173,7 @@ function bannedPhraseInputFailures(bannedPhrases) {
 
 async function scanRepository() {
   const bannedPhrases = await loadBannedPhrases();
+  const ratchetClaims = parseRatchetClaims(await readUtf8(ALLOWLIST_PATH));
   let supportMatrix = null;
   try {
     supportMatrix = JSON.parse(await readUtf8(SUPPORT_MATRIX_PATH));
@@ -3150,6 +3189,9 @@ async function scanRepository() {
     ...bannedPhraseInputFailures(bannedPhrases),
     ...supportMatrixFailures,
   ];
+  if (ratchetClaims.length === 0) {
+    floorFailures.push({ name: "ratchet claims parsed from A16", expected: 1, actual: 0 });
+  }
   let tsStringCount = 0;
   let rustStringCount = 0;
   let readmeBytes = 0;
@@ -3159,7 +3201,7 @@ async function scanRepository() {
     const source = await readUtf8(filePath);
     const fragments = extractTypeScriptStrings(source);
     const file = repoRelative(filePath);
-    const violations = analyseFragments(file, fragments, bannedPhrases, publicClaimServices);
+    const violations = analyseFragments(file, fragments, bannedPhrases, publicClaimServices, ratchetClaims);
 
     tsStringCount += fragments.length;
     publicFragments.push(...fragments.map((fragment) => ({ ...fragment, file })));
@@ -3176,7 +3218,7 @@ async function scanRepository() {
     const source = await readUtf8(filePath);
     const fragments = extractRustStrings(source);
     const file = repoRelative(filePath);
-    const violations = analyseFragments(file, fragments, bannedPhrases, publicClaimServices);
+    const violations = analyseFragments(file, fragments, bannedPhrases, publicClaimServices, ratchetClaims);
 
     rustStringCount += fragments.length;
     publicFragments.push(...fragments.map((fragment) => ({ ...fragment, file })));
@@ -3199,7 +3241,7 @@ async function scanRepository() {
   }
 
   const readmeFragments = readmeText ? [{ text: readmeText, line: 1 }] : [];
-  const readmeViolations = analyseFragments("README.md", readmeFragments, bannedPhrases, publicClaimServices);
+  const readmeViolations = analyseFragments("README.md", readmeFragments, bannedPhrases, publicClaimServices, ratchetClaims);
   publicFragments.push(...readmeFragments.map((fragment) => ({ ...fragment, file: "README.md" })));
   allViolations.push(...readmeViolations);
   rows.push({
@@ -3274,6 +3316,7 @@ async function runSelfTest() {
   const tsTestWorkflow = await readUtf8(TS_TEST_WORKFLOW_PATH);
   const branchProtection = await readUtf8(BRANCH_PROTECTION_PATH);
   const bannedPhrases = parseBannedPhrases(allowlist);
+  const ratchetClaims = parseRatchetClaims(allowlist);
   const fixtures = [
     {
       name: "catches destroys-keys inversion",
@@ -3299,6 +3342,16 @@ async function runSelfTest() {
       name: "catches military-grade",
       text: "Protect every message with military-grade privacy controls.",
       shouldFlag: true,
+    },
+    {
+      name: "catches an unqualified post-quantum secure messaging claim",
+      text: "OSL provides post-quantum secure messaging.",
+      shouldFlag: true,
+    },
+    {
+      name: "allows the complete qualified ratchet claim",
+      text: ratchetClaims[0],
+      shouldFlag: false,
     },
     {
       name: "catches permanent ciphertext",
@@ -4759,6 +4812,8 @@ async function runSelfTest() {
       `self-test/${fixture.name}`,
       [{ text: fixture.text, line: 1 }],
       bannedPhrases,
+      new Set(),
+      ratchetClaims,
     );
     const flagged = violations.length > 0;
     const ok = flagged === fixture.shouldFlag;
