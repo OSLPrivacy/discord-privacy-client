@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite: T18-E3 has not produced crates/ipc/src/group_send.rs or its single shared member cap, and T21-K4 has not produced the measured fan-out result needed to derive it; T18 owns E3 and T21 owns K4.
