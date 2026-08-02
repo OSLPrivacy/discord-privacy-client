@@ -4829,6 +4829,9 @@ fn begin_peer_attachment(
     .map_err(|_| ERROR.to_owned())?;
     let mime_type =
         validate_peer_attachment_filename(&original_filename).map_err(|_| ERROR.to_owned())?;
+    if view_once {
+        crate::view_once_eligibility::require_view_once_attachment_eligibility(&mime_type)?;
+    }
     if plaintext_size == 0 || plaintext_size > ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES {
         return Err(ERROR.to_owned());
     }
@@ -6979,6 +6982,9 @@ fn prepare_peer_attachment_at(
     let context = broker.context_for(context_token)?;
     let mime_type = validate_peer_attachment_filename(&original_filename)
         .map_err(|_| PREPARE_ERROR.to_owned())?;
+    if view_once {
+        crate::view_once_eligibility::require_view_once_attachment_eligibility(&mime_type)?;
+    }
     if original_bytes.is_empty()
         || original_bytes.len() > ipc::attachment_wire::MAX_ATTACHMENT_BYTES
     {
