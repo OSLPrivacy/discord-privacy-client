@@ -112,7 +112,7 @@ pub fn provision(
         .addresses
         .lock()
         .map_err(|_| "OSL Mail state is unavailable".to_owned())?
-        .insert(identity.user_id, provisioned.address.clone());
+        .insert(identity.user_id.clone(), provisioned.address.clone());
     Ok(status_from_address(Some(provisioned.address)))
 }
 

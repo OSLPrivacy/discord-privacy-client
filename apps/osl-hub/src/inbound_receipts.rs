@@ -10,7 +10,7 @@ use ipc::receipt_wire::{
     PrivacyReceipt, PrivacyReceiptKind, ReceiptWireError, SignedPrivacyReceipt,
     MSG_TYPE_PRIVACY_RECEIPT,
 };
-use message_lifecycle::{ReceiptKind, ReceiptMutation, ReceiptState};
+use message_lifecycle::monotonic::{ReceiptKind, ReceiptMutation, ReceiptState};
 use sha2::{Digest, Sha256};
 
 const WIRE_VERSION_V3: u8 = 0x03;

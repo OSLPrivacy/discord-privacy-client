@@ -116,6 +116,11 @@ impl PlacementAuthorization {
             scope_binding_hash: scope_binding_hash.into(),
         }
     }
+
+    /// Returns the opaque host-derived binding for same-scope verification.
+    pub(crate) fn scope_binding_hash(&self) -> &str {
+        &self.scope_binding_hash
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -129,6 +134,11 @@ impl SendAuthorization {
         Self {
             scope_binding_hash: scope_binding_hash.into(),
         }
+    }
+
+    /// Returns the opaque host-derived binding for same-scope verification.
+    pub(crate) fn scope_binding_hash(&self) -> &str {
+        &self.scope_binding_hash
     }
 }
 

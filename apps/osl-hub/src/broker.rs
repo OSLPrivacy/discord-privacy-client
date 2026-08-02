@@ -13,18 +13,27 @@ use std::time::{Duration, Instant};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use ipc::scope::{ScopeInput, ScopeKind};
-use message_lifecycle::ReceiptState;
+use message_lifecycle::monotonic::ReceiptState;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::core_bridge::HubCoreState;
+use crate::models::ServiceKind;
 use crate::security::{self, HubSecurityState, ManualPeerBinding};
 use crate::service_host::{service_manifest, validate_opaque_id, ActiveServiceHost};
 use crate::service_scope_index::ServiceScopeRegistration;
 use crate::services::{service_kind_from_id, ServiceRegistryState};
 
 const MAX_CONTEXT_ID_BYTES: usize = 160;
+
+fn scope_storage_key(scope_input: &ScopeInput) -> Result<String, String> {
+    let scope: ipc::scope::Scope = scope_input
+        .clone()
+        .try_into()
+        .map_err(|_| "OSL protected scope is invalid".to_owned())?;
+    Ok(scope.storage_key())
+}
 const MAX_PARTICIPANTS: usize = 512;
 const MAX_TEXT_BYTES: usize = 1_000;
 const MAX_NATIVE_OVERLAY_CHUNK_BYTES: usize = 40 * 1024;
@@ -4130,7 +4139,8 @@ fn drain_peer_inbox_text(
                     &wire,
                     ManualWireSender::Peer,
                     message_type,
-                )?;
+                )
+                .map_err(|_| "OSL privacy receipt was invalid".to_owned())?;
                 let plaintext = decrypt_direct_manual_v3_payload(
                     core,
                     &verified,
@@ -4517,7 +4527,7 @@ fn drain_peer_inbox_text(
             && !payload.view_once
             && ipc::commands::cmd_osl_persist_inbound(
                 &core.osl,
-                manual.scope.storage_key(),
+                scope_storage_key(&manual.scope)?,
                 payload.message_id.clone(),
                 manual.peer_osl_user_id.clone(),
                 payload.plaintext.clone(),
@@ -4697,7 +4707,7 @@ fn drain_peer_inbox_text(
             && !logical.view_once
             && ipc::commands::cmd_osl_persist_inbound(
                 &core.osl,
-                manual.scope.storage_key(),
+                scope_storage_key(&manual.scope)?,
                 logical.message_id.clone(),
                 manual.peer_osl_user_id.clone(),
                 logical.plaintext.clone(),
@@ -4788,7 +4798,11 @@ pub fn load_osl_chat_history(
         manual.person_id,
         manual.scope.clone(),
     )?;
-    ipc::commands::cmd_osl_load_channel_history(&core.osl, manual.scope.storage_key(), Some(200))
+    ipc::commands::cmd_osl_load_channel_history(
+        &core.osl,
+        scope_storage_key(&manual.scope)?,
+        Some(200),
+    )
 }
 
 pub fn begin_native_overlay_attachment(
@@ -6923,7 +6937,8 @@ fn prepare_local_protected_text_in_dir(
         .map_err(|_| "OSL protected scope is invalid".to_owned())?;
     let ttl_key = ipc::scope::Scope::storage_key(&ttl_scope);
     let ttl_file = ipc::scope_ttl_file::load_scope_ttls(&dir.join("scope_ttl.json"));
-    let ttl_seconds = ipc::scope_ttl_file::get_scope_ttl(&ttl_file, &ttl_key);
+    let ttl_seconds = ipc::scope_ttl_file::get_scope_ttl(&ttl_file, &ttl_key)
+        .map_err(|error| format!("OSL protected scope TTL is invalid: {error}"))?;
     let now = ipc::main_password::now_unix_secs_pub();
     if ttl_seconds > 0 {
         ledger
@@ -7458,7 +7473,8 @@ fn decrypt_local_protected_capsule_in_dir(
         .try_into()
         .map_err(|_| "OSL protected scope is invalid".to_owned())?;
     let ttl_file = ipc::scope_ttl_file::load_scope_ttls(&dir.join("scope_ttl.json"));
-    let ttl_seconds = ipc::scope_ttl_file::get_scope_ttl(&ttl_file, &ttl_scope.storage_key());
+    let ttl_seconds = ipc::scope_ttl_file::get_scope_ttl(&ttl_file, &ttl_scope.storage_key())
+        .map_err(|error| format!("OSL protected scope TTL is invalid: {error}"))?;
     let now = ipc::main_password::now_unix_secs_pub();
     if ttl_seconds > 0
         && ledger
@@ -11247,6 +11263,9 @@ mod tests {
         let active = ActiveContext {
             lease: lease.clone(),
             context: context.clone(),
+            origin: ProtectedContextOrigin::NativeApp {
+                app_id: "discord".to_owned(),
+            },
             authority: ContextAuthority::ManualPeer,
             manual_peer: Some(manual.clone()),
         };
@@ -12697,7 +12716,8 @@ mod tests {
             .unwrap();
         let host = crate::service_host::ServiceHostState::default();
         let namespace = owner_profile_namespace(owner).unwrap();
-        host.begin_open(&namespace, "instagram", &account.id, "www.instagram.com")
+        let active = host
+            .begin_open(&namespace, "instagram", &account.id, "www.instagram.com")
             .unwrap();
         let broker = HubBrokerState::default();
 
