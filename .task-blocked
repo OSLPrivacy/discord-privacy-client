@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing the T13-G4 false-positive gate and any shipping unencrypted outbound-send path; T13-G4 must land the gate, and the protected-composer/send-path owner must expose the unencrypted hook before T13-G7 can wire it.
