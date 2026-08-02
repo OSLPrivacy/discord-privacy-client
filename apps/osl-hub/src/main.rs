@@ -4,6 +4,7 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::account_recovery;
+use osl_privacy_hub::components;
 use osl_privacy_hub::ai_carrier::{ai_carrier_status_for, AiCarrierState};
 use osl_privacy_hub::build_integrity::{check_current, BuildIntegrity};
 use osl_privacy_hub::chat_capture_protection::ChatCaptureProtectionState;
@@ -1865,6 +1866,8 @@ fn install_mullvad() -> Result<MullvadActionResult, String> {
 #[tauri::command]
 fn open_mullvad() -> Result<MullvadActionResult, String> {
     native_apps::open_mullvad()
+}
+
 fn component_store(app: &tauri::AppHandle) -> Result<components::ComponentStore, String> {
     let config_dir = app
         .path()
@@ -1895,8 +1898,6 @@ fn remove_component(app: tauri::AppHandle, component_id: String) -> Result<(), S
     component_store(&app)?
         .remove(&component_id)
         .map_err(|error| format!("could not remove OSL component: {error:?}"))
-}
-
 }
 
 #[tauri::command]

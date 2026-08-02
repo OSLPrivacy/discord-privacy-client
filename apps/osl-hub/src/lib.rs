@@ -55,6 +55,10 @@ pub mod cloud_autoscrub_run;
 pub mod components;
 pub mod consent_ledger;
 pub mod control_contract;
+// credits.rs existed but was never declared, so `crate::credits` failed to
+// resolve the moment ai_carrier started using it - the file shipped as an
+// orphan and only broke the build once something imported it.
+pub mod credits;
 pub mod discord_carrier_geometry;
 #[cfg(feature = "desktop")]
 pub mod entitlement_refresh;
