@@ -181,6 +181,18 @@ describe("username directory", () => {
     expect((await claim("Michae1", second, secondPair)).status).toBe(409);
   });
 
+  it("does not reissue a retired skeleton after a rename", async () => {
+    const original = userId();
+    const replacement = userId();
+    const originalPair = await registerTestUser(SELF, original);
+    const replacementPair = await registerTestUser(SELF, replacement);
+    expect((await claim("Michael", original, originalPair)).status).toBe(200);
+    expect((await claim("another_handle", original, originalPair)).status).toBe(200);
+    // No live Michael row remains, so this specifically proves the tombstone
+    // rejects the skeleton rather than relying on the live unique index.
+    expect((await claim("Michae1", replacement, replacementPair)).status).toBe(409);
+  });
+
   it("removes a stale signed invite when the registered identity key rotates", async () => {
     const uid = userId();
     const owner = await registerTestUser(SELF, uid);
