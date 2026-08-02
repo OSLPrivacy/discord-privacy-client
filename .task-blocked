@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing a hub-to-UI capability bridge: T2-05's declared view-once support exists only in crates/ipc/src/peer_capabilities.rs and is not exposed per recipient to apps/osl-hub-ui; T2-05 owns the prerequisite.
