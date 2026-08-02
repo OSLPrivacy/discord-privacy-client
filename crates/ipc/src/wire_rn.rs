@@ -3296,11 +3296,11 @@ mod tests {
     }
 
     #[test]
-    fn app_state_runtime_gate_starts_open_with_the_compile_time_fuse() {
+    fn app_state_runtime_gate_starts_closed_until_explicitly_enabled() {
         let state = crate::AppState::new();
 
         assert!(RN_WIRE_IN_ENABLED, "the build fuse must be open");
-        assert!(app_state_wire_in_enabled(&state));
+        assert!(!app_state_wire_in_enabled(&state));
 
         state.set_rn_wire_in_enabled(true);
         assert!(
@@ -3361,6 +3361,7 @@ mod tests {
     #[test]
     fn rn_wire_in_enabled_follows_app_state_controlled_toggle() {
         let state = crate::AppState::new();
+        state.set_rn_wire_in_enabled(true);
         let (_d, store) = fresh_store();
         let sealer = MemorySealer::new();
         let mut rng = seeded_rng(73);

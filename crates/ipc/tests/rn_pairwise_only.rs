@@ -148,6 +148,7 @@ fn three_recipient_scope_refuses_to_fan_out_an_rn_wire() {
     ]);
 
     let state = AppState::new();
+    state.set_rn_wire_in_enabled(true);
     state.install_identity(alice);
     *state.keyserver.lock().expect("keyserver lock") = Some(
         KeyServerClient::new(format!("http://127.0.0.1:{port}"))

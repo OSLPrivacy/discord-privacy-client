@@ -4577,7 +4577,7 @@ pub fn cmd_osl_encrypt_message_v2_wire(
 
     if let Some(wire) = try_encrypt_rn_first_contact_from_state(
         state,
-        crate::wire_rn::RN_WIRE_IN_ENABLED,
+        state.rn_wire_in_enabled(),
         &scope,
         &non_self_peers,
         plaintext.as_bytes(),
@@ -4606,6 +4606,13 @@ pub fn cmd_osl_encrypt_message_v2_wire(
             )? {
                 RnWirePath::LegacyV3 => {}
                 RnWirePath::Rn => {
+                    if !state.rn_wire_in_enabled() {
+                        return Err(
+                            "OSL: peer requires OSL-RN but wire-in is disabled in this build; \
+                             refusing to send v=3 (no downgrade)"
+                                .to_string(),
+                        );
+                    }
                     if non_self_peers.len() != 1 {
                         return Err(
                             "OSL: RN send selected for a multi-recipient scope; refusing \
