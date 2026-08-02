@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T21-J1's `docs/design/osl-spaces-directory.md` directory contract; T21-J1 owns it and must define the non-enumerating listing semantics before T21-J2 can implement the endpoint.
