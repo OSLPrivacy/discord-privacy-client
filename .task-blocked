@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Blocked: T12-H2's HOSTED-HANDOFF, T12-H7's independent verification surface, T12-K4's consent gate, and T12-E4's X export-coverage measurement do not exist yet; T12 owns each prerequisite.
