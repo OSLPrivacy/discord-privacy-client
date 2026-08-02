@@ -6,6 +6,7 @@
 
 pub mod contract;
 pub mod defaults;
+pub mod defaults_web;
 pub mod envelope;
 pub mod loader;
 pub mod schema;
@@ -21,6 +22,10 @@ pub use defaults::{
     signal_default_profile, signal_default_trusted_signing_key_b64, whatsapp_default_profile,
     whatsapp_default_trusted_signing_key_b64, SIGNAL_DESKTOP_NATIVE_APP_ROOT_ROLE,
     SIGNAL_DESKTOP_NATIVE_PRIMARY_WINDOW_CLASS, SIGNAL_DESKTOP_NATIVE_WINDOW_TITLE,
+};
+pub use defaults_web::{
+    capabilities_from_profile, x_web_default_capability_profile, x_web_default_profile,
+    x_web_default_trusted_signing_key_b64,
 };
 pub use envelope::{
     canonical_profile_digest, EnvelopeError, SignedProfile, ADAPTER_PROFILE_ENVELOPE_DOMAIN,
