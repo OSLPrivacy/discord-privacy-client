@@ -71,19 +71,23 @@ impl WarningCategory {
 /// No detector is implemented here. An integration boundary must call this
 /// after the app-local scanner has produced a category and before any warning
 /// policy is considered.
-pub const fn warning_category_for(category: DetectorCategory) -> WarningCategory {
+pub const fn warning_category_for(category: DetectorCategory) -> Option<WarningCategory> {
     match category {
-        DetectorCategory::Credential => WarningCategory::Credential,
-        DetectorCategory::RecoveryMaterial => WarningCategory::RecoveryMaterial,
-        DetectorCategory::PaymentCard => WarningCategory::PaymentCard,
-        DetectorCategory::GovernmentIdentity => WarningCategory::GovernmentIdentity,
-        DetectorCategory::PreciseLocation => WarningCategory::PreciseLocation,
-        DetectorCategory::Profanity => WarningCategory::Profanity,
-        DetectorCategory::SexualContent => WarningCategory::SexualContent,
-        DetectorCategory::SensitiveHealth => WarningCategory::SensitiveHealth,
-        DetectorCategory::ControlledSubstances => WarningCategory::ControlledSubstances,
-        DetectorCategory::PotentiallyUnlawfulConduct => WarningCategory::PotentiallyUnlawfulConduct,
-        DetectorCategory::WorkSensitiveInformation => WarningCategory::WorkSensitiveInformation,
+        DetectorCategory::Credential => Some(WarningCategory::Credential),
+        DetectorCategory::RecoveryMaterial => Some(WarningCategory::RecoveryMaterial),
+        DetectorCategory::PaymentCard => Some(WarningCategory::PaymentCard),
+        DetectorCategory::GovernmentIdentity => Some(WarningCategory::GovernmentIdentity),
+        DetectorCategory::PreciseLocation => Some(WarningCategory::PreciseLocation),
+        // The Scrub lexical detector is useful for discovery but is not safe
+        // as a send-time warning: political, historical, reclaimed and AAVE
+        // text can legitimately match it.  The warning deliberately drops
+        // these categories instead of trying to tune a threshold.
+        DetectorCategory::Profanity
+        | DetectorCategory::SexualContent
+        | DetectorCategory::SensitiveHealth
+        | DetectorCategory::ControlledSubstances
+        | DetectorCategory::PotentiallyUnlawfulConduct
+        | DetectorCategory::WorkSensitiveInformation => None,
     }
 }
 
@@ -92,7 +96,7 @@ mod tests {
     use super::{warning_category_for, DetectorCategory, DetectorFamily, WarningCategory};
 
     #[test]
-    fn every_existing_detector_category_has_a_warning_category() {
+    fn every_structured_detector_category_has_a_warning_category() {
         let mappings = [
             (DetectorCategory::Credential, WarningCategory::Credential),
             (
@@ -108,38 +112,28 @@ mod tests {
                 DetectorCategory::PreciseLocation,
                 WarningCategory::PreciseLocation,
             ),
-            (DetectorCategory::Profanity, WarningCategory::Profanity),
-            (
-                DetectorCategory::SexualContent,
-                WarningCategory::SexualContent,
-            ),
-            (
-                DetectorCategory::SensitiveHealth,
-                WarningCategory::SensitiveHealth,
-            ),
-            (
-                DetectorCategory::ControlledSubstances,
-                WarningCategory::ControlledSubstances,
-            ),
-            (
-                DetectorCategory::PotentiallyUnlawfulConduct,
-                WarningCategory::PotentiallyUnlawfulConduct,
-            ),
-            (
-                DetectorCategory::WorkSensitiveInformation,
-                WarningCategory::WorkSensitiveInformation,
-            ),
         ];
 
         for (detector, expected_warning) in mappings {
-            assert_eq!(warning_category_for(detector), expected_warning);
+            assert_eq!(warning_category_for(detector), Some(expected_warning));
         }
     }
 
     #[test]
     fn credential_findings_stay_on_the_structured_text_warning_path() {
         let warning = warning_category_for(DetectorCategory::Credential);
-        assert_eq!(warning, WarningCategory::Credential);
-        assert_eq!(warning.detector_family(), DetectorFamily::StructuredText);
+        assert_eq!(warning, Some(WarningCategory::Credential));
+        assert_eq!(warning.unwrap().detector_family(), DetectorFamily::StructuredText);
+    }
+
+    #[test]
+    fn political_speech_categories_are_not_send_time_warnings() {
+        for category in [
+            DetectorCategory::Profanity,
+            DetectorCategory::PotentiallyUnlawfulConduct,
+            DetectorCategory::ControlledSubstances,
+        ] {
+            assert_eq!(warning_category_for(category), None);
+        }
     }
 }

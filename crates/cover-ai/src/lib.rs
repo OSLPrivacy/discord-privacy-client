@@ -2,6 +2,7 @@
 
 pub mod context;
 pub mod cold_start;
+pub mod candidates;
 // Gated with its runtime: this module is the only consumer of llama-cpp-2, and
 // compiling it without the feature would fail on the missing crate rather than
 // on anything the caller did.
