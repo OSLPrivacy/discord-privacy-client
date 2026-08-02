@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T4-P2: apps/osl-hub/src/web_surface_adapter/x.rs and its X read/binding path do not exist; T4-P2 (Track T4) owns it.
