@@ -1,5 +1,9 @@
 # Space fan-out arithmetic against the frozen storage contract
 
+> This is a planning model, not a live-store result. See
+> [the T21-K4 measurement record](osl-spaces-fanout-measured.md) for the
+> current evidence status before using these figures for a capacity decision.
+
 Status: **contract finding for T6 and T1; not a change to the frozen storage
 contract and not a shipped Spaces capability.** Verified 2026-08-01 against
 `storage.md`, owner decisions D16/D17/D29, and the live cipher-store limits.
