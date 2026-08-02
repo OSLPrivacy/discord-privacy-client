@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing `K_conv_n` ratchet-epoch secret and delivery_tag derivation on the broker relay path; T19 owns the live ratchet (including T19-F1) and T19-E6 must establish the usable delivery_tag look-ahead window before T14-B5 can replace the stable scope safely.
