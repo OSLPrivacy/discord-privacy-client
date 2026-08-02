@@ -2806,7 +2806,7 @@ function bindOnboarding(): void {
   document.querySelector<HTMLButtonElement>("[data-tor-choice-continue]")?.addEventListener("click", () => {
     if (torOnboarding.choice === null) return;
     void invoke("set_tor_preference", { preference: torOnboarding.choice }).then(() => {
-      onboardingRoute = "forward-secrecy";
+      onboardingRoute = "sending";
       render();
     }).catch(() => {
       // Do not advance: without native persistence the send boundary remains
@@ -2824,7 +2824,7 @@ function bindOnboarding(): void {
     const selectedForwardSecrecyMode = forwardSecrecyOnboarding.choice === "protect-past" ? "protectPast" : "keepGroupDelivery";
     void saveOnboardingPreferences({ onboardingComplete: false, setup, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
       forwardSecrecyMode = saved.forwardSecrecyMode;
-      onboardingRoute = "sending";
+      onboardingRoute = "privacy";
       render();
     }).catch(() => undefined);
   });
@@ -7946,7 +7946,7 @@ async function activatePro(event: SubmitEvent): Promise<void> {
   if (submit) { submit.disabled = true; submit.textContent = "Activating…"; }
   try {
     licenseState = await validateHubActivationCode(activationCode);
-    if (route === "onboarding" && onboardingRoute === "pro" && licenseState.access !== "free") onboardingRoute = "privacy";
+    if (route === "onboarding" && onboardingRoute === "pro" && licenseState.access !== "free") onboardingRoute = "forward-secrecy";
     render();
     showToast(licenseState.access === "free" ? "This code does not include active Pro access" : "Pro activated on this device");
   } catch (failure) {

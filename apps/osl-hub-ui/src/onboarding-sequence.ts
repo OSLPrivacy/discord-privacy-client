@@ -7,10 +7,10 @@ export const ONBOARDING_SEQUENCE = [
   "welcome",
   "recovery",
   "pro",
+  "forward-secrecy",
   "privacy",
   "defaults",
   "tor",
-  "forward-secrecy",
   "sending",
   "cover",
   "passwords",
@@ -73,7 +73,7 @@ export function nextOnboardingRoute(
 export type ProOnboardingOutcome = "skipped" | "failed" | "activated";
 
 export interface ProOnboardingContinuation {
-  route: "privacy";
+  route: "forward-secrecy";
   access: "free" | "pro";
 }
 
@@ -84,7 +84,7 @@ export const proOnboardingStepContract = {
 
 export function continueFromProOnboarding(outcome: ProOnboardingOutcome): ProOnboardingContinuation {
   return {
-    route: "privacy",
+    route: "forward-secrecy",
     access: outcome === "activated" ? "pro" : "free",
   };
 }

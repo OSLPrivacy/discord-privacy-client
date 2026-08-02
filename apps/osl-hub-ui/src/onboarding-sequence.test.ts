@@ -15,10 +15,10 @@ describe("T15-C1 onboarding sequence", () => {
       "welcome",
       "recovery",
       "pro",
+      "forward-secrecy",
       "privacy",
       "defaults",
       "tor",
-      "forward-secrecy",
       "sending",
       "cover",
       "passwords",
@@ -62,13 +62,13 @@ describe("T15-C1 onboarding sequence", () => {
 });
 
 describe("Pro onboarding seam", () => {
-  it("continues to privacy with a usable free account when activation is skipped or fails", () => {
+  it("continues to the message-protection choice with a usable free account when activation is skipped or fails", () => {
     expect(proOnboardingStepContract).toMatchObject({ skippable: true, worksOffline: true });
-    expect(continueFromProOnboarding("skipped")).toEqual({ route: "privacy", access: "free" });
-    expect(continueFromProOnboarding("failed")).toEqual({ route: "privacy", access: "free" });
+    expect(continueFromProOnboarding("skipped")).toEqual({ route: "forward-secrecy", access: "free" });
+    expect(continueFromProOnboarding("failed")).toEqual({ route: "forward-secrecy", access: "free" });
   });
 
-  it("continues to privacy after a successful activation without defining redemption semantics", () => {
-    expect(continueFromProOnboarding("activated")).toEqual({ route: "privacy", access: "pro" });
+  it("continues to the message-protection choice after a successful activation without defining redemption semantics", () => {
+    expect(continueFromProOnboarding("activated")).toEqual({ route: "forward-secrecy", access: "pro" });
   });
 });
