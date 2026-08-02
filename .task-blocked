@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing reason-coded revocation wire contract and inbound handling; T2-33 cannot send an expiry-specific wipe with only its owned module. The listed prerequisite T2-24 owns destruct-ack outcomes only, so this prerequisite is currently unassigned in T2 (it must own control_messages/revocation/broker integration).
