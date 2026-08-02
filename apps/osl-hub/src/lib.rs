@@ -80,6 +80,7 @@ pub mod services;
 pub mod updates;
 pub mod whatsapp_accessibility;
 pub mod whatsapp_qa_host;
+pub mod visual_binding;
 #[cfg(feature = "core")]
 pub mod whatsapp_qa_pairing;
 pub mod whatsapp_qa_transport;
