@@ -106,6 +106,11 @@ pub const WIRE_VERSION_V4: u8 = 0x04;
 /// out-of-band via v=4-wrapped SKDMs (`MSG_TYPE_SENDER_KEY_DISTRIBUTION`).
 pub const WIRE_VERSION_V5: u8 = 0x05;
 
+/// Wire v6 keeps the v5 sender-key frame but reserves the version gate for
+/// authenticated build-integrity declarations.  Older peers decode a missing
+/// declaration as not reported; v6 peers must not silently emit it as v5.
+pub const WIRE_VERSION_V6: u8 = 0x06;
+
 /// Message-type byte: ordinary content (post-decrypt rendered as
 /// the user-visible message body).
 pub const MSG_TYPE_CONTENT: u8 = 0x00;
@@ -212,6 +217,10 @@ pub const MSG_TYPE_REVOCATION: u8 = 0x0A;
 /// did-you-still-have-it oracle. It is not a delivery or read receipt and
 /// never reports what the peer held.
 pub const MSG_TYPE_REVOCATION_ACK: u8 = 0x0B;
+
+/// Sender's self-reported executable hash.  Its CBOR body is
+/// [`crate::control_messages::BuildIntegrityReport`].  Valid only on v6+.
+pub const MSG_TYPE_BUILD_INTEGRITY: u8 = 0x0C;
 
 /// Framing-only classification for a bilateral-burn revocation notice.
 /// Authentication (`encrypt_v3` open + sender binding) stays mandatory before
@@ -1312,7 +1321,8 @@ impl std::fmt::Debug for ParsedV5 {
 /// implicitly authenticated via `sender_ik_x25519_pub` (any tamper
 /// on that field selects the wrong ReceiverChain on decode and the
 /// AEAD fails).
-pub fn encrypt_v5(
+fn encrypt_sender_key_wire(
+    wire_version: u8,
     sender_ik_pub: &x25519::PublicKey,
     msg_type: u8,
     flags: u8,
@@ -1338,7 +1348,7 @@ pub fn encrypt_v5(
             + aead::NONCE_SIZE
             + em.ciphertext.len(),
     );
-    wire.push(WIRE_VERSION_V5);
+    wire.push(wire_version);
     wire.push(msg_type);
     wire.extend_from_slice(sender_ik_pub.as_bytes());
     wire.push(flags);
@@ -1352,6 +1362,27 @@ pub fn encrypt_v5(
     out.push_str("DPC0::");
     out.push_str(&b64);
     Ok(out)
+}
+
+pub fn encrypt_v5(
+    sender_ik_pub: &x25519::PublicKey,
+    msg_type: u8,
+    flags: u8,
+    em: &crypto::sender_keys::EncryptedMessage,
+) -> Result<String, V2Error> {
+    encrypt_sender_key_wire(WIRE_VERSION_V5, sender_ik_pub, msg_type, flags, em)
+}
+
+/// Encode the v6 form of the sender-key frame.  V6 is required for
+/// `MSG_TYPE_BUILD_INTEGRITY`; other message types keep their existing v5
+/// emission so rolling upgrades do not manufacture a compatibility cliff.
+pub fn encrypt_v6(
+    sender_ik_pub: &x25519::PublicKey,
+    msg_type: u8,
+    flags: u8,
+    em: &crypto::sender_keys::EncryptedMessage,
+) -> Result<String, V2Error> {
+    encrypt_sender_key_wire(WIRE_VERSION_V6, sender_ik_pub, msg_type, flags, em)
 }
 
 /// Phase 9-A3: parse a v=5 wire blob. Returns [`ParsedV5`] for the
@@ -1373,7 +1404,7 @@ pub fn decrypt_v5(wire: &str) -> Result<ParsedV5, V2Error> {
             expected: 1,
         });
     }
-    if raw[0] != WIRE_VERSION_V5 {
+    if raw[0] != WIRE_VERSION_V5 && raw[0] != WIRE_VERSION_V6 {
         return Err(V2Error::WrongVersion {
             got: raw[0],
             expected: WIRE_VERSION_V5,

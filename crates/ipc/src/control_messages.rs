@@ -85,6 +85,10 @@ pub enum ControlError {
     /// alive.
     #[error("revocation notice carries too many message commitments: got {got}, max {max}")]
     TooManyCommitments { got: usize, max: usize },
+
+    /// A build-integrity declaration did not use the frozen v1 vocabulary.
+    #[error("invalid build-integrity report")]
+    InvalidBuildIntegrityReport,
 }
 
 // ---- Structs ----
@@ -182,6 +186,62 @@ pub struct RevocationAck {
 /// longer list instead of silently dropping entries: a truncated burn would
 /// leave content alive while reporting success.
 pub const MAX_REVOCATION_MESSAGE_COMMITMENTS: usize = 256;
+
+/// Version of the fixed [`BuildIntegrityReport`] body.
+pub const BUILD_INTEGRITY_REPORT_VERSION: u8 = 1;
+
+/// The result a client says it obtained from *its own* local self-check.
+///
+/// This is deliberately not a verdict about a peer or its machine.  A receiver
+/// may display it as context, but derives publication separately from the
+/// reported hash and its own signed manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalBuildIntegrity {
+    Verified,
+    Mismatch,
+    Unknown,
+}
+
+impl LocalBuildIntegrity {
+    fn to_wire(self) -> u8 {
+        match self {
+            Self::Verified => 0,
+            Self::Mismatch => 1,
+            Self::Unknown => 2,
+        }
+    }
+
+    fn from_wire(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Verified),
+            1 => Some(Self::Mismatch),
+            2 => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
+/// Type=0x0C: the sender's report of its own executable hash.
+///
+/// The type is legal only on wire v6 or newer.  The fixed 32-byte hash is raw
+/// SHA-256 output (not a hex string and not a source commit).  Its presence is
+/// a report, not machine attestation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildIntegrityReport {
+    pub local_result: LocalBuildIntegrity,
+    pub build_hash_sha256: [u8; 32],
+}
+
+/// What a receiver can safely say when looking for a build-integrity report.
+///
+/// Invalid, absent and pre-v6 declarations deliberately collapse to
+/// `NotReported`: none of them may acquire the affordance of a verified
+/// report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeerBuildIntegrityReport {
+    NotReported,
+    Reported(BuildIntegrityReport),
+}
 
 // 9-C1: `WhitelistInvitation` (0x02) + `WhitelistResponse` (0x03)
 // removed alongside the invitation handshake. The recv path now
@@ -365,6 +425,13 @@ struct RevocationAckWire {
     applied: bool,
 }
 
+#[derive(Serialize, Deserialize)]
+struct BuildIntegrityReportWire {
+    report_version: u8,
+    local_result: u8,
+    build_hash_sha256: [u8; 32],
+}
+
 // ---- Serialize ----
 
 fn cbor_encode<T: Serialize>(v: &T) -> Result<Vec<u8>, ControlError> {
@@ -535,6 +602,50 @@ pub fn deserialize_revocation_ack(bytes: &[u8]) -> Result<RevocationAck, Control
     })
 }
 
+/// Encode the v1 build-integrity report body for `MSG_TYPE_BUILD_INTEGRITY`.
+pub fn serialize_build_integrity_report(
+    report: &BuildIntegrityReport,
+) -> Result<Vec<u8>, ControlError> {
+    cbor_encode(&BuildIntegrityReportWire {
+        report_version: BUILD_INTEGRITY_REPORT_VERSION,
+        local_result: report.local_result.to_wire(),
+        build_hash_sha256: report.build_hash_sha256,
+    })
+}
+
+/// Decode a report body.  Call [`peer_build_integrity_report`] at the wire
+/// boundary when an absent or malformed report should become `NotReported`.
+pub fn deserialize_build_integrity_report(
+    bytes: &[u8],
+) -> Result<BuildIntegrityReport, ControlError> {
+    let wire: BuildIntegrityReportWire = cbor_decode(bytes)?;
+    if wire.report_version != BUILD_INTEGRITY_REPORT_VERSION {
+        return Err(ControlError::InvalidBuildIntegrityReport);
+    }
+    let local_result = LocalBuildIntegrity::from_wire(wire.local_result)
+        .ok_or(ControlError::InvalidBuildIntegrityReport)?;
+    Ok(BuildIntegrityReport {
+        local_result,
+        build_hash_sha256: wire.build_hash_sha256,
+    })
+}
+
+/// Apply the frozen v6 gate to an optional received report.
+///
+/// Older wire versions did not have this declaration.  They remain compatible
+/// and are not failures; they simply have no report to disclose.
+pub fn peer_build_integrity_report(
+    wire_version: u8,
+    body: Option<&[u8]>,
+) -> PeerBuildIntegrityReport {
+    if wire_version < crate::wire_v2::WIRE_VERSION_V6 {
+        return PeerBuildIntegrityReport::NotReported;
+    }
+    body.and_then(|body| deserialize_build_integrity_report(body).ok())
+        .map(PeerBuildIntegrityReport::Reported)
+        .unwrap_or(PeerBuildIntegrityReport::NotReported)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,5 +760,41 @@ mod tests {
         let bytes = serialize_session_reset(&m).unwrap();
         let back = deserialize_session_reset(&bytes).unwrap();
         assert_eq!(back, m);
+    }
+
+    /// T10-T12: silence and old wire versions must be disclosure states, not
+    /// an accidental positive integrity claim.
+    #[test]
+    fn build_integrity_report_requires_v6_and_never_upgrades_absence_to_verified() {
+        let report = BuildIntegrityReport {
+            local_result: LocalBuildIntegrity::Verified,
+            build_hash_sha256: [0xA5; 32],
+        };
+        let body = serialize_build_integrity_report(&report).unwrap();
+        assert_eq!(
+            peer_build_integrity_report(crate::wire_v2::WIRE_VERSION_V5, Some(&body)),
+            PeerBuildIntegrityReport::NotReported,
+            "a peer on the older wire version has no declaration"
+        );
+        assert_eq!(
+            peer_build_integrity_report(crate::wire_v2::WIRE_VERSION_V6, None),
+            PeerBuildIntegrityReport::NotReported,
+            "absence must never decode as Verified"
+        );
+        assert_eq!(
+            peer_build_integrity_report(crate::wire_v2::WIRE_VERSION_V6, Some(&body)),
+            PeerBuildIntegrityReport::Reported(report)
+        );
+
+        let malformed = cbor_encode(&BuildIntegrityReportWire {
+            report_version: BUILD_INTEGRITY_REPORT_VERSION,
+            local_result: 99,
+            build_hash_sha256: [0; 32],
+        })
+        .unwrap();
+        assert_eq!(
+            peer_build_integrity_report(crate::wire_v2::WIRE_VERSION_V6, Some(&malformed)),
+            PeerBuildIntegrityReport::NotReported
+        );
     }
 }

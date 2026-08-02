@@ -6914,6 +6914,21 @@ pub fn cmd_osl_decrypt_message_v2(
             );
             return Ok(result);
         }
+        Some(crate::wire_v2::WIRE_VERSION_V6) => {
+            // V6 keeps v5 framing and advances the same sender-key state;
+            // its version gate permits the build-integrity declaration.
+            tracing::debug!(wire_version = "v6", "v=6 decode dispatched");
+            let sender_did_for_persist = sender_discord_id.clone();
+            let result = decrypt_v5_recv(state, sender_discord_id, content, scope_opt)?;
+            persist_user_plaintext(
+                state,
+                discord_message_id.as_deref(),
+                &channel_id,
+                &sender_did_for_persist,
+                &result,
+            );
+            return Ok(result);
+        }
         Some(osl_ratchet_next::WIRE_VERSION_RN) => {
             tracing::debug!(wire_version = "rn", "OSL-RN bootstrap decode dispatched");
             let peer = osl_ratchet_next::peek_bootstrap_initiator_identity(&content)
@@ -7039,6 +7054,23 @@ pub fn cmd_osl_decrypt_message_v2(
             // new transport.
             let _ = scope_opt;
             apply_skdm_recv(state, &sender_discord_id, &recovered.plaintext)
+        }
+        crate::wire_v2::MSG_TYPE_BUILD_INTEGRITY => {
+            // A valid report is deliberately not user-visible plaintext.  The
+            // later peer-status owner records and exposes the disclosure; this
+            // transport boundary only proves old/malformed reports cannot be
+            // mistaken for a positive result.
+            match crate::control_messages::peer_build_integrity_report(
+                crate::wire_v2::WIRE_VERSION_V6,
+                Some(&recovered.plaintext),
+            ) {
+                crate::control_messages::PeerBuildIntegrityReport::Reported(_) => {
+                    Ok("OSL_BUILD_INTEGRITY_REPORTED".to_owned())
+                }
+                crate::control_messages::PeerBuildIntegrityReport::NotReported => {
+                    Ok("OSL_BUILD_INTEGRITY_NOT_REPORTED".to_owned())
+                }
+            }
         }
         other => Err(format!(
             "OSL: v=2 msg_type 0x{other:02x} not supported by this client"
