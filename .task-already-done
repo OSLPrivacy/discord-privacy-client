@@ -1,0 +1,1 @@
+Native checkbox styling (appearance:none, checked mark, focus ring) already satisfies t7-40 in apps/osl-hub-ui/src/styles.css.
