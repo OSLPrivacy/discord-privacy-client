@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing owner decision for T10-S3 OQ-3 (refuse versus warn-and-continue) and a signed per-profile expected-at-rest-files manifest; T10-I2's build-hash manifest cannot establish either. Owned by T10-I2 plus the owner decision.
