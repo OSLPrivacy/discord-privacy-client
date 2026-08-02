@@ -432,7 +432,6 @@ export async function handleTelegramCommand(
     "/osl stats: live commerce summary",
     "/osl payments: Stripe and Pro license summary",
     "/osl downloads: download requests",
-    "/osl on|off|quiet|bind|unbind: coordination controls when owner binding is active",
   ].join("\n"));
   const unavailableCoordinationMessage = (isOperatorChat: boolean): string => withProgress(
     isOperatorChat
@@ -463,11 +462,6 @@ export async function handleTelegramCommand(
       "payments",
       "downloads",
       "help",
-      "on",
-      "off",
-      "quiet",
-      "bind",
-      "unbind",
     ];
     const closest = supported
       .map((candidate) => ({ candidate, distance: editDistance(subcommand, candidate) }))
@@ -683,6 +677,7 @@ function registerTelegramSourceTests(vitest: TelegramSourceVitest): void {
       ).resolves.toBe("accepted");
       expect(help.sent[0]?.text).toContain("OSL operator commands");
       expect(help.sent[0]?.text).toContain("/osl progress: project progress block");
+      expect(help.sent[0]?.text).not.toMatch(/\/osl (?:on|off|quiet|bind|unbind)/);
       expect(help.sent[0]?.text).toContain("OSL progress (internal checklist)");
 
       const progress = captureTelegramSends();
