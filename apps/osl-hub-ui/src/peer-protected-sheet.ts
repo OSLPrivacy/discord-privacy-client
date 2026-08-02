@@ -1,4 +1,4 @@
-import type { HubPerson, ManualPeerContext } from "./adapters";
+import { peerIsVerified, type HubPerson, type ManualPeerContext } from "./adapters";
 import { LOCAL_TTL_OPTIONS, type LocalTtlSeconds } from "./local-protected-sheet";
 import { utf8Length } from "./overlay-state";
 
@@ -96,8 +96,7 @@ function hasOslPeerIdentity(person: HubPerson): boolean {
 }
 
 export function verifiedPeerFriends(people: HubPerson[]): HubPerson[] {
-  return people.filter((person) => person.safetyNumberVerified
-    && !person.pendingKeyChange
+  return people.filter((person) => peerIsVerified(person)
     && hasOslPeerIdentity(person));
 }
 

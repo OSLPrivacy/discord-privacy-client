@@ -118,7 +118,7 @@ import {
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
@@ -4056,7 +4056,7 @@ export function publicPostGuardCarrierPreviewMarkup(platform = "Public platforms
 }
 
 export function inboxDestinationContent(): string {
-  const verifiedPeople = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
+  const verifiedPeople = hubPeople.filter(peerIsVerified);
   const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
   const connectedApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch" && app.linked);
   const connectedRows = connectedApps.length
@@ -4453,7 +4453,7 @@ function peopleListMarkup(mode: PeopleListMode, limit?: number, offset = 0): str
 }
 
 function peopleDestinationContent(): string {
-  const verified = hubPeople.filter((person) => person.safetyNumberVerified && !person.pendingKeyChange);
+  const verified = hubPeople.filter(peerIsVerified);
   const needsReview = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
   const reVerificationNotice = peopleReverificationNoticeMarkup(hubPeople.some((person) => !person.safetyNumberVerified && !person.pendingKeyChange));
   const approvedChats = verified.reduce((total, person) => total + person.whitelistCount, 0);
@@ -7321,7 +7321,7 @@ function toggleHomeTile(id: string): void {
 }
 
 export function inboxPrimaryAction(): void {
-  const first = hubPeople.find((person) => person.safetyNumberVerified && !person.pendingKeyChange);
+  const first = hubPeople.find(peerIsVerified);
   if (first) {
     friendsDialogOpen = false;
     void openOslChat(first.personId);
@@ -7360,7 +7360,7 @@ function oslChatTimestamp(): string {
 
 async function openOslChat(personId: string): Promise<void> {
   const person = hubPeople.find((candidate) => candidate.personId === personId);
-  if (!person?.safetyNumberVerified || person.pendingKeyChange || oslChatBusy) return;
+  if (!person || !peerIsVerified(person) || oslChatBusy) return;
   const queuedViewOnce = (oslChatUnread.get(personId) ?? 0) > 0
     ? (oslChatMessages.get(personId) ?? []).filter((message) => message.state === "opened")
     : [];
@@ -7673,18 +7673,25 @@ async function submitFriendCode(event: SubmitEvent): Promise<void> {
   const button = document.querySelector<HTMLButtonElement>("#add-friend-form button");
   const status = document.querySelector<HTMLElement>("#friend-form-status");
   const code = input?.value.trim() ?? "";
+  // Offline refusal stays FIRST: a username add needs a key lookup, so letting
+  // the username branch run while offline would attempt exactly the capability
+  // this guard exists to refuse.
   if (refuseOfflineCapability("lookUpNewContactKey")) {
     if (status) status.textContent = offlineCapabilityStatus("lookUpNewContactKey", "offline").detail;
     return;
   }
-  if (!/^OSLFR1\.[A-Za-z0-9_-]{16,8192}$/.test(code)) {
-    if (status) status.textContent = "Enter a valid OSL invite.";
+  const username = isNormalizedOslUsername(code) ? code : null;
+  if (!username && !/^OSLFR1\.[A-Za-z0-9_-]{16,8192}$/.test(code)) {
+    if (status) status.textContent = "Enter a valid OSL invite or username.";
     input?.focus();
     return;
   }
   if (button) button.disabled = true;
-  if (status) status.textContent = "Saving request locally…";
-  const outcome = await addOslFriend(code, nicknameInput?.value ?? "");
+  if (status) status.textContent = username ? "Resolving username…" : "Saving request locally…";
+  const resolved = username ? await addOslFriendByUsername(username, nicknameInput?.value ?? "") : null;
+  const outcome = username
+    ? (resolved ? { added: true, reason: null } : { added: false, reason: "username lookup was refused" })
+    : await addOslFriend(code, nicknameInput?.value ?? "");
   if (button) button.disabled = false;
   if (!outcome.added) {
     if (status) status.textContent = addFriendFailureStatus(outcome.reason);

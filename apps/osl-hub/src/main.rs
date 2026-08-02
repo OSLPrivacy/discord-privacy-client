@@ -5748,13 +5748,7 @@ struct HubUsernameStatus {
 }
 
 fn valid_osl_username(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    (3..=30).contains(&bytes.len())
-        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
-        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
-        && bytes
-            .iter()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+    keystore::client::is_normalized_username(value)
 }
 
 fn lookup_username(username: &str) -> Result<Option<String>, String> {
@@ -10037,5 +10031,12 @@ mod tauri_command_acl_tests {
             "start_autoscrub_reviewed_run",
             "request_autoscrub_global_stop",
         ]);
+    }
+
+    #[test]
+    fn hub_username_commands_share_the_keystore_normalizer() {
+        assert!(valid_osl_username("alice_01"));
+        assert!(!valid_osl_username("Alice"));
+        assert!(!valid_osl_username("alice-name"));
     }
 }
