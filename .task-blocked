@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T4-M2: no Gmail destination/write adapter exists (the planned apps/osl-hub/src/web_surface_adapter/gmail.rs path is absent); Gmail is scan-only in hosted_session_port.rs.
