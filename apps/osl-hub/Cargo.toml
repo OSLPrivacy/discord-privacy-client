@@ -50,6 +50,11 @@ base64 = { version = "=0.22.1", optional = true }
 url = "=2.5.8"
 zeroize = "=1.9.0"
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# IMAP is deliberately built without its native-TLS default. The IMAP client
+# added by T12-I2 must establish a rustls connection before it sends commands
+# or app-password credentials; no plaintext fallback is available.
+imap = { version = "=2.4.1", default-features = false }
+rustls = { version = "=0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
 
 [dev-dependencies]
 tempfile = "=3.13"
