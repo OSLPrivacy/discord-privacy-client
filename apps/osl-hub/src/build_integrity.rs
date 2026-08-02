@@ -26,6 +26,15 @@ pub enum BuildIntegrity {
     Unknown,
 }
 
+/// Offline publication status for a digest a peer reported.  This lookup is
+/// intentionally only against the bundled signed list; it never contacts Rekor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublishedHash {
+    Published,
+    Unpublished,
+    Unknown,
+}
+
 #[derive(Deserialize)]
 struct Manifest {
     format: u8,
@@ -45,7 +54,38 @@ pub fn check_current() -> BuildIntegrity {
     let Ok(executable) = std::env::current_exe() else {
         return BuildIntegrity::Unknown;
     };
-    check_executable(&executable, BUNDLED_MANIFEST, BUNDLED_SIGNATURE, updater_public_key())
+    check_executable(
+        &executable,
+        BUNDLED_MANIFEST,
+        BUNDLED_SIGNATURE,
+        updater_public_key(),
+    )
+}
+
+/// Look up a peer-reported raw SHA-256 digest without any runtime network call.
+pub fn published_hash_status(digest: &[u8; 32]) -> PublishedHash {
+    published_hash_status_from_assets(
+        digest,
+        BUNDLED_MANIFEST,
+        BUNDLED_SIGNATURE,
+        updater_public_key(),
+    )
+}
+
+fn published_hash_status_from_assets(
+    digest: &[u8; 32],
+    manifest: &[u8],
+    signature: &[u8],
+    public_key: Option<String>,
+) -> PublishedHash {
+    let Some(hashes) = verified_hashes(manifest, signature, public_key) else {
+        return PublishedHash::Unknown;
+    };
+    if hashes.contains(&hex_digest(digest)) {
+        PublishedHash::Published
+    } else {
+        PublishedHash::Unpublished
+    }
 }
 
 fn updater_public_key() -> Option<String> {
@@ -64,34 +104,9 @@ fn check_executable(
     signature_bytes: &[u8],
     public_key: Option<String>,
 ) -> BuildIntegrity {
-    let Some(public_key) = public_key else {
+    let Some(hashes) = verified_hashes(manifest_bytes, signature_bytes, public_key) else {
         return BuildIntegrity::Unknown;
     };
-    let Ok(signature) = std::str::from_utf8(signature_bytes)
-        .ok()
-        .and_then(|text| Signature::decode(text).ok())
-        .ok_or(())
-    else {
-        return BuildIntegrity::Unknown;
-    };
-    let Ok(public_key) = PublicKey::decode(&public_key) else {
-        return BuildIntegrity::Unknown;
-    };
-    if public_key.verify(manifest_bytes, &signature, false).is_err() {
-        return BuildIntegrity::Unknown;
-    }
-    let Ok(manifest) = serde_json::from_slice::<Manifest>(manifest_bytes) else {
-        return BuildIntegrity::Unknown;
-    };
-    if manifest.format != 1 || manifest.builds.is_empty() {
-        return BuildIntegrity::Unknown;
-    }
-    let mut hashes = HashSet::new();
-    for build in manifest.builds {
-        if !valid_sha256(&build.exe_sha256) || !hashes.insert(build.exe_sha256) {
-            return BuildIntegrity::Unknown;
-        }
-    }
     let Ok(executable) = fs::read(executable) else {
         return BuildIntegrity::Unknown;
     };
@@ -103,8 +118,36 @@ fn check_executable(
     }
 }
 
+fn verified_hashes(
+    manifest_bytes: &[u8],
+    signature_bytes: &[u8],
+    public_key: Option<String>,
+) -> Option<HashSet<String>> {
+    let public_key = PublicKey::decode(&public_key?).ok()?;
+    let signature = Signature::decode(std::str::from_utf8(signature_bytes).ok()?).ok()?;
+    public_key.verify(manifest_bytes, &signature, false).ok()?;
+    let manifest = serde_json::from_slice::<Manifest>(manifest_bytes).ok()?;
+    if manifest.format != 1 || manifest.builds.is_empty() {
+        return None;
+    }
+    let mut hashes = HashSet::new();
+    for build in manifest.builds {
+        if !valid_sha256(&build.exe_sha256) || !hashes.insert(build.exe_sha256) {
+            return None;
+        }
+    }
+    Some(hashes)
+}
+
+fn hex_digest(digest: &[u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn valid_sha256(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte.is_ascii_hexdigit()))
+    value.len() == 64
+        && value.bytes().all(|byte| {
+            byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte.is_ascii_hexdigit())
+        })
 }
 
 #[cfg(test)]
@@ -115,7 +158,8 @@ mod tests {
 
     // A fixed independent test key and real pre-hashed minisign signature. This
     // keeps the test on the cryptographic verification path rather than a mock.
-    const TEST_PUBLIC_KEY: &str = "untrusted comment: test\nRWQxMjM0NTY3OCslv3Koov09Jl3NBvNsBHzCFgomynJIU0sAdlI6QIJh";
+    const TEST_PUBLIC_KEY: &str =
+        "untrusted comment: test\nRWQxMjM0NTY3OCslv3Koov09Jl3NBvNsBHzCFgomynJIU0sAdlI6QIJh";
     const TEST_SIGNATURE: &str = "untrusted comment: test\nRUQxMjM0NTY3OOxIzrHTGVRKDNp9td93JLkhGeRapaKP1Q8RlVdIHb2TmkSEBH6DMcmrfem8idFWB5MpLtJw0gjhFAkF8PrqpgE=\ntrusted comment: timestamp:1555779966\\tfile:build-hashes.json\nnPQfnEwYG7SvVDHpUZgcjd1tG2k7SKT4FWOHcLFNvq7yhxO0ada/qcYf8FaYtzUKSPf9bzzBL7BoiuDxa/H8Dg==";
     const TEST_MANIFEST: &[u8] = br#"{"format":1,"builds":[{"exe_sha256":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}]}"#;
 
@@ -124,19 +168,56 @@ mod tests {
         let mut executable = NamedTempFile::new().unwrap();
         executable.write_all(b"test").unwrap();
         assert_eq!(
-            check_executable(executable.path(), TEST_MANIFEST, TEST_SIGNATURE.as_bytes(), Some(TEST_PUBLIC_KEY.into())),
+            check_executable(
+                executable.path(),
+                TEST_MANIFEST,
+                TEST_SIGNATURE.as_bytes(),
+                Some(TEST_PUBLIC_KEY.into())
+            ),
             BuildIntegrity::Verified,
         );
 
         executable.write_all(b" appended byte").unwrap();
         executable.flush().unwrap();
         assert_eq!(
-            check_executable(executable.path(), TEST_MANIFEST, TEST_SIGNATURE.as_bytes(), Some(TEST_PUBLIC_KEY.into())),
+            check_executable(
+                executable.path(),
+                TEST_MANIFEST,
+                TEST_SIGNATURE.as_bytes(),
+                Some(TEST_PUBLIC_KEY.into())
+            ),
             BuildIntegrity::Mismatch,
         );
         assert_eq!(
             check_executable(executable.path(), &[], &[], Some(TEST_PUBLIC_KEY.into())),
             BuildIntegrity::Unknown,
+        );
+    }
+
+    #[test]
+    fn fabricated_hash_is_unpublished_without_a_transparency_log_query() {
+        let published = [
+            0x9f, 0x86, 0xd0, 0x81, 0x88, 0x4c, 0x7d, 0x65, 0x9a, 0x2f, 0xea, 0xa0, 0xc5, 0x5a,
+            0xd0, 0x15, 0xa3, 0xbf, 0x4f, 0x1b, 0x2b, 0x0b, 0x82, 0x2c, 0xd1, 0x5d, 0x6c, 0x15,
+            0xb0, 0xf0, 0x0a, 0x08,
+        ];
+        assert_eq!(
+            published_hash_status_from_assets(
+                &published,
+                TEST_MANIFEST,
+                TEST_SIGNATURE.as_bytes(),
+                Some(TEST_PUBLIC_KEY.into()),
+            ),
+            PublishedHash::Published,
+        );
+        assert_eq!(
+            published_hash_status_from_assets(
+                &[0x42; 32],
+                TEST_MANIFEST,
+                TEST_SIGNATURE.as_bytes(),
+                Some(TEST_PUBLIC_KEY.into()),
+            ),
+            PublishedHash::Unpublished,
         );
     }
 }
