@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Blocked: T18-B3 is not complete (SenderChainOnDisk still persists rotation_root_b64) and T18-C3 is blocked on missing T18-C2; T18-F2 requires B1-B5 and C3 before the audit package can truthfully document every fixed defect.
