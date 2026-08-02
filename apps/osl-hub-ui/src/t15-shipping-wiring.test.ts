@@ -15,6 +15,10 @@ describe("T15 shipped lifecycle UI wiring", () => {
   it("T15-E4 keeps the transfer manifest in the shipping settings render", () => {
     expect(shippingMain).toContain("deviceTransferManifestScreen()");
   });
+  it("T15-E5 keeps the explicit source-copy choice on the shipping path", () => {
+    expect(shippingMain).toContain("initialOldDeviceCopyDecision({ importConfirmed: false })");
+    expect(shippingMain).toContain("oldDeviceCopyDecisionView(");
+  });
   it("renders optional downloads behind the AutoScrub consent gate in Settings", () => {
     expect(shippingMain).toContain('from "./component-consent"');
     expect(shippingMain).toContain('decideAutoScrubInstall("autoscrub", null)');
