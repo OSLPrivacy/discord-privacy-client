@@ -48,6 +48,7 @@ pub mod mullvad_window_host;
 pub mod native_apps;
 pub mod native_a11y;
 pub mod native_attachment_jobs;
+pub mod native_attachment_jobs_bridge;
 pub mod native_discord_adapter;
 pub mod native_signal_adapter;
 pub mod native_whatsapp_adapter;
