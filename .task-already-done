@@ -1,1 +1,0 @@
-claude-bridge/osl_mode.py already accepts 48 running nodes and renders 12 entries plus an omitted-count line while retaining the true total.
