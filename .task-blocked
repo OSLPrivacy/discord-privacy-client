@@ -1,0 +1,1 @@
+Missing `--force-renderer-accessibility=complete` in `BrowserAccountMode::IsolatedOsl` (owned by T4-S4); the required Windows Chromium runtime proof also needs a Windows VM.
