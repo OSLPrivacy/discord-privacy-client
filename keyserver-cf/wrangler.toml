@@ -5,6 +5,13 @@ compatibility_flags = ["nodejs_compat"]
 workers_dev = false
 preview_urls = false
 
+# The username normalizer is compiled once from the pinned Rust UTS #39
+# implementation.  Treat the artifact as a Worker module, never as a URL or
+# text asset, so both deployment and Miniflare instantiate the same bytes.
+[[rules]]
+type = "CompiledWasm"
+globs = ["src/lib/unicode-identifier/dist/*.wasm"]
+
 # Production secrets (set via `wrangler secret put`):
 #   OSL_KEYSERVER_ADMIN_TOKEN     — operator-only payment/admin bearer
 #       payment and crypto-admin routes only.

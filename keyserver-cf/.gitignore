@@ -3,6 +3,8 @@ node_modules/
 .dev.vars
 .dev.vars.*
 dist/
+!src/lib/unicode-identifier/dist/
+!src/lib/unicode-identifier/dist/**
 *.log
 .DS_Store
 
