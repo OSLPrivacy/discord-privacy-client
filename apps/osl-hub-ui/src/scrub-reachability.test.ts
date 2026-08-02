@@ -11,14 +11,12 @@ const ENTRYPOINT = join(SOURCE_ROOT, "main.ts");
 // reachable module, rather than letting the deletion lane disappear unnoticed.
 const KNOWN_ORPHANS = [
   "autoscrub-flow.ts",
+  "autoscrub-progress.ts",
+  "autoscrub-tier.ts",
   "scrub-attended-imap-run.ts",
-  // These two newly added presentation/host modules are intentionally not
-  // shipped yet: the current UI exports local coverage and has no attended
-  // scrub engine route. Keep them explicit so adding a shipping import removes
-  // them from this list instead of silently widening the prototype boundary.
+  "scrub-confirm.ts",
   "scrub-coverage-view.ts",
-  "scrub-delete-engine.ts",
-  "scrub-engine-host.ts",
+  "scrub-dryrun-view.ts",
   "scrub-hosted-session-assisted.ts",
   "scrub-hosted-session-channel.ts",
   "scrub-hosted-session-port.ts",
@@ -26,8 +24,10 @@ const KNOWN_ORPHANS = [
   "scrub-imap-adapter.ts",
   "scrub-imap-ipc.ts",
   "scrub-imap.ts",
+  "scrub-protected.ts",
   "scrub-provider-policy.ts",
   "scrub-provider-preloads.ts",
+  "scrub-receipt-view.ts",
   "scrub-review-list.ts",
   "scrub-scope-fingerprint.ts",
 ] as const;

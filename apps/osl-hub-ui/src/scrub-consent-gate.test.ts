@@ -4,14 +4,23 @@ import {
   consentAcknowledgementForService,
   defaultScrubConsentGateState,
   evaluateScrubConsentGate,
+  scrubConsentGatedRouteMarkup,
   scrubConsentGateMarkup,
   type ScrubConsentGateRequest,
 } from "./scrub-consent-gate";
+import type { ScrubRouteState } from "./scrub-route";
 
 const discord: ScrubConsentGateRequest = {
   serviceId: "discord",
   serviceName: "Discord",
   warning: "Discord prohibits this automation and can permanently terminate your account.",
+};
+
+const route: ScrubRouteState = {
+  accounts: [{ id: "discord", label: "Discord", detail: "Connected account" }],
+  selectedAccountIds: ["discord"],
+  selectedCategories: ["personal"],
+  scan: { state: "not-started", findings: 0 },
 };
 
 describe("SCR-K3 scrub consent gate", () => {
@@ -49,5 +58,14 @@ describe("SCR-K3 scrub consent gate", () => {
       .toBeGreaterThanOrEqual(SCRUB_CONSENT_GATE_PRESENTATION.proceedFontSizePx);
     expect(SCRUB_CONSENT_GATE_PRESENTATION.warningFontWeight)
       .toBeGreaterThanOrEqual(SCRUB_CONSENT_GATE_PRESENTATION.proceedFontWeight);
+  });
+
+  it("does not expose the shipped route until this service's consent gate has passed", () => {
+    expect(scrubConsentGatedRouteMarkup(discord, defaultScrubConsentGateState(), route, "scan", true))
+      .not.toContain('data-scrub-route-step');
+
+    const accepted = { checked: true, typedAcknowledgement: consentAcknowledgementForService(discord.serviceName) };
+    expect(scrubConsentGatedRouteMarkup(discord, accepted, route, "scan", true))
+      .toContain('data-scrub-route-step="scan"');
   });
 });

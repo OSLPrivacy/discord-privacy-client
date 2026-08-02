@@ -117,6 +117,14 @@ import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
 import oslVectorLogoUrl from "./assets/logo-mark.svg";
 import { importLocalMessageExport, LOCAL_MESSAGE_IMPORT_MAX_BYTES } from "./local-message-import";
 import { persistLocalScrubExport } from "./scrub-local";
+import {
+  defaultScrubConsentGateState,
+  evaluateScrubConsentGate,
+  scrubConsentGatedRouteMarkup,
+  type ScrubConsentGateRequest,
+  type ScrubConsentGateState,
+} from "./scrub-consent-gate";
+import type { ScrubRouteState, ScrubRouteStep } from "./scrub-route";
 import { nextServiceGuideStep, parseServiceGuideState, previousServiceGuideStep, type ServiceGuideStep } from "./service-guide";
 import { NativeDeadlineError, withNativeDeadline } from "./native-deadline";
 import { CoalescedRealignment, NativeCallGate } from "./native-realignment";
@@ -499,6 +507,16 @@ let selectedScrubFindings = new Set<number>();
 let scrubResultsPage = 0;
 let scrubReviewOpen = false;
 let scrubReviewPage = 0;
+const localScrubConsentRequest: ScrubConsentGateRequest = {
+  serviceId: "local-export",
+  serviceName: "message export",
+  warning: "Scrub can permanently delete messages from a connected service and may cause account termination. Confirm this risk before scanning or reviewing a deletion preview.",
+};
+let localScrubConsentState: ScrubConsentGateState = defaultScrubConsentGateState();
+let localScrubRouteOpened = false;
+let localScrubRouteStep: ScrubRouteStep = "choose";
+let localScrubRouteAccountSelected = false;
+let localScrubRouteCategories = new Set<ScrubSignalGroup>();
 let lastFocusKey = "";
 let lastOnboardingMarkup: string | null = null;
 let renderedOnboardingRoute: OnboardingRoute | null = null;
@@ -4861,6 +4879,10 @@ function serviceAccountsSettingsContent(): string {
 async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
   const file = input.files?.[0];
   input.value = "";
+  if (!localScrubRouteOpened || !evaluateScrubConsentGate(localScrubConsentRequest, localScrubConsentState).allowed) {
+    showToast("Confirm Scrub consent before scanning an export");
+    return;
+  }
   if (!file || privacyScanBusy) return;
   if (file.size > LOCAL_MESSAGE_IMPORT_MAX_BYTES) {
     showToast("Export is larger than the 8 MiB local scan limit");
@@ -4961,7 +4983,22 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
 function privacySettingsContent(): string {
   const proActive = licenseState.access === "pro" || licenseState.access === "offlineGrace";
   const scanActions = `<div class="privacy-scan-actions"><label class="button primary ${privacyScanBusy ? "disabled" : ""}" for="privacy-export-input">${privacyScanBusy ? "Scanning…" : "Choose export"}</label><input id="privacy-export-input" class="sr-only" type="file" accept=".txt,.json,.csv,text/plain,application/json,text/csv" ${privacyScanBusy ? "disabled" : ""}/>${privacyScanResult ? `<button class="button" id="clear-privacy-scan" type="button">Clear results</button>` : ""}</div>`;
-  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p><section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}${autoScrubAssistantMarkup(proActive)}<details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, services, exports, and backups may retain copies. Only a service recheck can verify removal within its stated coverage.</p><p>Automatic deletion is unavailable in this build until the native one-shot reviewed-consent capability is available. Connect IMAP for read-only verification.</p><p>This build only gives manual directions. It does not delete app messages. Check the original app and delete each message yourself.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Remote app access</span><strong>Blocked</strong></div><div class="setting-line"><span><strong>Windows capture resistance</strong><small>Always applied to OSL’s own window. Cameras, malware, and modified recipients can still capture content.</small></span><strong>${screenshotProtectionEnabled ? "Active" : "Unavailable"}</strong></div></details>`;
+  const routeState: ScrubRouteState = {
+    accounts: [{ id: "local-export", label: "Local message export", detail: "TXT, CSV, or JSON on this device" }],
+    selectedAccountIds: localScrubRouteAccountSelected ? ["local-export"] : [],
+    selectedCategories: [...localScrubRouteCategories],
+    scan: { state: privacyScanBusy ? "scanning" : privacyScanResult ? "complete" : "not-started", findings: privacyScanResult?.findings.length ?? 0 },
+  };
+  const consent = evaluateScrubConsentGate(localScrubConsentRequest, localScrubConsentState);
+  const gatedRoute = scrubConsentGatedRouteMarkup(
+    localScrubConsentRequest,
+    localScrubConsentState,
+    routeState,
+    localScrubRouteStep,
+    localScrubRouteOpened,
+  );
+  const scanControls = consent.allowed && localScrubRouteOpened && localScrubRouteStep === "scan" ? scanActions : "";
+  return `<h2>Scrub</h2><p class="scrub-local-promise"><strong>Your messages never leave this device.</strong> Every scan and review stays local.</p>${gatedRoute}${scanControls}${scrubCategoryChooserMarkup()}${privacyScanResultsMarkup()}${autoScrubAssistantMarkup(proActive)}<details class="safety-disclosure scrub-safety"><summary>Before deleting anything</summary><div><p><strong>Use at your own risk.</strong> Suggestions can be wrong. Check every message first.</p><p>Deletion can be irreversible. Apps, people, services, exports, and backups may retain copies. Only a service recheck can verify removal within its stated coverage.</p><p>Automatic deletion is unavailable in this build until the native one-shot reviewed-consent capability is available. Connect IMAP for read-only verification.</p><p>This build only gives manual directions. It does not delete app messages. Check the original app and delete each message yourself.</p></div></details><details class="privacy-technical settings-disclosure"><summary>Privacy and technical details</summary><div class="setting-line"><span>Default key expiry</span><strong>${timer}</strong></div><div class="setting-line"><span>Remote app access</span><strong>Blocked</strong></div><div class="setting-line"><span><strong>Windows capture resistance</strong><small>Always applied to OSL’s own window. Cameras, malware, and modified recipients can still capture content.</small></span><strong>${screenshotProtectionEnabled ? "Active" : "Unavailable"}</strong></div></details>`;
 }
 
 function autoScrubAssistantMarkup(proActive: boolean): string {
@@ -5038,6 +5075,43 @@ function openScrubReviewDialogAfterRender(): void {
 }
 
 function bindScrubControls(): void {
+  document.querySelector<HTMLInputElement>(".scrub-consent-gate input[type=checkbox]")?.addEventListener("change", (event) => {
+    localScrubConsentState = { ...localScrubConsentState, checked: (event.currentTarget as HTMLInputElement).checked };
+    render();
+  });
+  document.querySelector<HTMLInputElement>("#scrub-consent-acknowledgement")?.addEventListener("input", (event) => {
+    localScrubConsentState = { ...localScrubConsentState, typedAcknowledgement: (event.currentTarget as HTMLInputElement).value };
+    render();
+  });
+  document.querySelector<HTMLButtonElement>(".scrub-consent-proceed")?.addEventListener("click", () => {
+    if (!evaluateScrubConsentGate(localScrubConsentRequest, localScrubConsentState).allowed) return;
+    localScrubRouteOpened = true;
+    render();
+  });
+  document.querySelectorAll<HTMLInputElement>("[name=scrub-account]").forEach((input) => input.addEventListener("change", () => {
+    localScrubRouteAccountSelected = input.checked;
+    localScrubRouteStep = "choose";
+    render();
+  }));
+  document.querySelectorAll<HTMLInputElement>("[name=scrub-category]").forEach((input) => input.addEventListener("change", () => {
+    const category = input.value as ScrubSignalGroup;
+    if (!defaultScrubSignalGroups.includes(category)) return;
+    if (input.checked) localScrubRouteCategories.add(category); else localScrubRouteCategories.delete(category);
+    localScrubRouteStep = "choose";
+    render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-scrub-route-next]").forEach((button) => button.addEventListener("click", () => {
+    localScrubRouteStep = button.dataset.scrubRouteNext as ScrubRouteStep;
+    render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-scrub-route-back]").forEach((button) => button.addEventListener("click", () => {
+    localScrubRouteStep = button.dataset.scrubRouteBack as ScrubRouteStep;
+    render();
+  }));
+  document.querySelector<HTMLButtonElement>("[data-scrub-route-scan]")?.addEventListener("click", () => {
+    if (!evaluateScrubConsentGate(localScrubConsentRequest, localScrubConsentState).allowed) return;
+    document.querySelector<HTMLInputElement>("#privacy-export-input")?.click();
+  });
   document.querySelectorAll<HTMLInputElement>("[data-scrub-category]").forEach((input) => input.addEventListener("change", () => {
     const group = input.dataset.scrubCategory as ScrubSignalGroup;
     if (!defaultScrubSignalGroups.includes(group)) return;
