@@ -61,6 +61,7 @@ use osl_privacy_hub::native_window_host::{
     DiscordSessionMode, DiscordTakeover, NativeWindowHostReason, NativeWindowHostResult,
     NativeWindowHostState,
 };
+use osl_privacy_hub::osl_mail::{self, OslMailState, OslMailStatus};
 use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput};
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult, HubMainPasswordSetupResult,
@@ -1113,6 +1114,45 @@ fn list_core_features() -> Vec<CoreFeature> {
 #[tauri::command]
 fn get_hub_license_state(state: State<'_, HubCoreState>) -> Result<HubLicenseState, String> {
     core_bridge::license_state(&state)
+}
+
+#[tauri::command]
+async fn osl_mail_get_status(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<OslMailStatus, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read OSL Mail status".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::get_status(&app.state::<HubCoreState>(), &app.state::<OslMailState>())
+    })
+    .await
+    .map_err(|_| "OSL Mail status worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn osl_mail_provision(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    username: String,
+) -> Result<OslMailStatus, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may provision OSL Mail".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::provision(
+            &app.state::<HubCoreState>(),
+            &app.state::<OslMailState>(),
+            username,
+        )
+    })
+    .await
+    .map_err(|_| "OSL Mail provisioning worker failed".to_owned())?
 }
 
 fn require_active_pro_entitlement(core: &HubCoreState) -> Result<(), String> {
@@ -9222,6 +9262,7 @@ fn main() {
         startup_breadcrumb("setup_step_35_browser_footprint_store_managed"); // STARTUP-TRACE
         app.manage(HubAccountSessionState::default());
         startup_breadcrumb("setup_step_36_hub_account_session_state_managed"); // STARTUP-TRACE
+        app.manage(OslMailState::default());
         app.manage(MainWindowLifecycleState::default());
         startup_breadcrumb("setup_step_37_main_window_lifecycle_state_managed"); // STARTUP-TRACE
         app.manage(HubUpdaterState::default());

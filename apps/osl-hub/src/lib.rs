@@ -69,6 +69,8 @@ pub mod native_whatsapp_adapter;
 pub mod native_window_host;
 #[cfg(feature = "core")]
 pub mod osl_profile;
+#[cfg(feature = "core")]
+pub mod osl_mail;
 pub mod owner_presence;
 #[cfg(feature = "core")]
 pub mod peer_attachment_io;
