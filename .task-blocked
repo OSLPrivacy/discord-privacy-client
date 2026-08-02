@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing T21-G4 Space backpressure seam (and its G1-G3 fan-out prerequisites); T21-G4 owns the immediate prerequisite for eager fetch at group scale.
