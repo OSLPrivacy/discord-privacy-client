@@ -17,6 +17,7 @@ describe("T15-C1 onboarding sequence", () => {
       "pro",
       "privacy",
       "defaults",
+      "tor",
       "sending",
       "cover",
       "passwords",

@@ -1076,6 +1076,7 @@ function persistCurrentOnboardingRoute(): void {
   if (onboardingRoute === "pro"
     || onboardingRoute === "privacy"
     || onboardingRoute === "defaults"
+    || onboardingRoute === "tor"
     || onboardingRoute === "sending"
     || onboardingRoute === "cover"
     || onboardingRoute === "passwords"

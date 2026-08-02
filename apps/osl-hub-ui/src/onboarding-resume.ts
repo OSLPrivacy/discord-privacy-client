@@ -24,6 +24,7 @@ export const RESUMABLE_ONBOARDING_ROUTES = [
   "pro",
   "privacy",
   "defaults",
+  "tor",
   "sending",
   "cover",
   "passwords",

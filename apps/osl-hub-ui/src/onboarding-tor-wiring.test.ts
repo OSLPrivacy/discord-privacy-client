@@ -14,5 +14,6 @@ describe("Tor onboarding shipping wiring", () => {
     expect(main).toContain('document.querySelector<HTMLButtonElement>("[data-tor-choice-continue]")');
     expect(main).toContain('if (torOnboarding.choice === null) return;');
     expect(main).toContain('onboardingRoute = "sending";');
+    expect(main).toContain('|| onboardingRoute === "tor"');
   });
 });
