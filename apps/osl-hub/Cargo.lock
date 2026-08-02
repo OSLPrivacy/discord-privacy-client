@@ -3048,6 +3048,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "osl-cover-draft"
+version = "0.0.1"
+dependencies = [
+ "sha2",
+ "thiserror 1.0.69",
+ "zeroize",
+]
+
+[[package]]
 name = "osl-privacy-hub"
 version = "0.1.0"
 dependencies = [
@@ -3055,6 +3064,7 @@ dependencies = [
  "base64 0.22.1",
  "bip39",
  "calamine",
+ "osl-cover-draft",
  "crypto",
  "flate2",
  "ipc",

@@ -48,6 +48,7 @@ pub mod invite_clipboard;
 /// so it is testable in every build that can compile this crate.
 pub mod main_window_reveal;
 pub mod models;
+pub mod model_pack_install;
 pub mod mullvad_window_host;
 pub mod native_apps;
 pub mod native_a11y;
