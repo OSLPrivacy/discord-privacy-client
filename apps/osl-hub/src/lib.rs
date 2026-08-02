@@ -68,6 +68,7 @@ pub mod native_signal_adapter;
 pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
 pub mod native_window_host;
+pub mod tor_pref;
 #[cfg(feature = "core")]
 pub mod osl_profile;
 #[cfg(feature = "core")]
