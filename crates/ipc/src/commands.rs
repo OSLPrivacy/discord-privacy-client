@@ -6891,12 +6891,19 @@ pub fn cmd_osl_decrypt_message_v2(
         }
         Some(osl_ratchet_next::WIRE_VERSION_RN) => {
             tracing::debug!(wire_version = "rn", "OSL-RN bootstrap decode dispatched");
-            accept_rn_bootstrap_inbound_unknown(
+            let recovered = accept_rn_bootstrap_inbound_unknown(
                 state,
                 &content,
                 config_dir.as_deref(),
                 crate::wire_rn::RN_WIRE_IN_ENABLED,
-            )?
+            )?;
+            // A successful authenticated RN decrypt is the only event allowed
+            // to clear a durable desync diagnosis for this peer.
+            let peer = osl_ratchet_next::peek_bootstrap_initiator_identity(&content)
+                .map_err(|_| "OSL: secure message could not be opened".to_string())?
+                .ok_or_else(|| "OSL: secure message could not be opened".to_string())?;
+            record_rn_successful_decrypt(config_dir.as_deref(), peer.as_bytes())?;
+            recovered
         }
         _ => {
             // v=1 or unknown: preserve the existing Phase 5 path.
@@ -7017,6 +7024,26 @@ fn rn_session_store(config_dir: Option<&Path>) -> Result<crate::wire_rn::RnSessi
     };
     crate::wire_rn::RnSessionStore::for_config_dir(dir)
         .map_err(|e| format!("OSL: cannot open RN session store: {e}"))
+}
+
+/// Persist the sole health transition that may make an RN conversation look
+/// healthy again.  Keeping this at the dispatcher prevents a successful wire
+/// open from bypassing the durable health gate.
+fn record_rn_successful_decrypt(config_dir: Option<&Path>, peer: &[u8; 32]) -> Result<(), String> {
+    let dir = match config_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => keystore::osl_config_dir()
+            .map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?,
+    };
+    let store = crate::rn_health::RnHealthStore::for_config_dir(dir);
+    let sealer = keystore::select_best_sealer();
+    let mut health = store
+        .load_with_sealer(peer, sealer.as_ref())
+        .map_err(|e| format!("OSL: RN health state could not be read: {e}"))?;
+    health.successful_decrypt();
+    store
+        .save_with_sealer(peer, &health, sealer.as_ref())
+        .map_err(|e| format!("OSL: RN health state could not be saved: {e}"))
 }
 
 fn rn_session_store_for_first_contact(
@@ -16896,5 +16923,21 @@ mod unit_b1_rn_wire_path_dispatch {
             "Required policy must refuse, got {result:?}"
         );
         assert_ne!(result, Ok(RnWirePath::LegacyV3));
+    }
+}
+
+#[cfg(test)]
+mod t19_b1_shipping_wiring_test {
+    #[test]
+    fn rn_dispatcher_records_a_successful_decrypt_in_durable_health() {
+        let source = include_str!("commands.rs");
+        let dispatch = source
+            .split("Some(osl_ratchet_next::WIRE_VERSION_RN) =>")
+            .nth(1)
+            .expect("RN dispatcher arm must exist");
+        assert!(
+            dispatch.contains("record_rn_successful_decrypt(config_dir.as_deref(), peer.as_bytes())"),
+            "an RN decrypt must clear health only through the durable dispatcher call"
+        );
     }
 }
