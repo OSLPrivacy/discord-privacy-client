@@ -91,7 +91,7 @@ describe("first-party OSL Chat IPC", () => {
       // The opened batch now carries the receive path's correlation handle plus
       // its own display/deferred state, so "nothing arrived" can no longer be
       // confused with "opening is off" or "the message store was unreachable".
-      .mockResolvedValueOnce({ messages: [{ messageId: "peer-0123456789abcdef0123456789abcdef", coverPointer: "cover prose", plaintext: "hello\nworld", contextVerified: true, personToPersonE2ee: true, viewOnceConsumed: false, expiresAt: 2_000_000_000 }], pendingViewOnce: [], acknowledgments: [], fetched: 1, decryptDisplayEnabled: true, deferredRows: 0 });
+      .mockResolvedValueOnce({ messages: [{ messageId: "peer-0123456789abcdef0123456789abcdef", coverPointer: "cover prose", plaintext: "hello\nworld", contextVerified: true, personToPersonE2ee: true, viewOnceConsumed: false, expiresAt: 2_000_000_000 }], pendingViewOnce: [], acknowledgments: [], fetched: 1, decryptDisplayEnabled: true, deferredRows: 0, unrecognizedWireRows: 0 });
     await expect(prepareOslChatText("hello\nworld")).resolves.toMatchObject({ deliveredToOslInbox: true });
     await expect(openOslChatText()).resolves.toMatchObject({ fetched: 1 });
     expect(mocks.invoke.mock.calls).toEqual([

@@ -67,6 +67,7 @@ function batchWith(bodies: string[]): NativeDiscordOverlayOpenedBatch {
     fetched: bodies.length,
     decryptDisplayEnabled: true,
     deferredRows: 0,
+    unrecognizedWireRows: 0,
   } as NativeDiscordOverlayOpenedBatch;
 }
 
