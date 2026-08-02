@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T12-I6: Hub Rust command registrations scrub_imap_prepare_delete and scrub_imap_delete (and IMAP-E2E) do not exist; only UI IPC callers are present. T12-I6 / T12 owns the prerequisite.
