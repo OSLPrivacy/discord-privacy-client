@@ -2,12 +2,12 @@
 
 use osl_privacy_hub::adapters::*;
 use osl_privacy_hub::web_surface_adapter::{WebSurfaceAdapter, WebSurfaceBackend};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
 
 #[derive(Clone, Copy)]
 enum DestinationMode { Attested, Changed, Unknown }
 
-struct Fixture { writes: AtomicUsize, wakeups: AtomicUsize, password: bool, pixel: bool, destination: DestinationMode, unknown_send: bool, empty_exact_target: bool, wake_fails: bool }
+struct Fixture { writes: Arc<AtomicUsize>, wakeups: Arc<AtomicUsize>, password: bool, pixel: bool, destination: DestinationMode, unknown_send: bool, empty_exact_target: bool, wake_fails: bool }
 
 fn profile() -> adapter_profile::ProfilePayload {
     adapter_profile::ProfilePayload { domain: "osl/adapter-profile/v1".into(), schema_version: 1, adapter_id: "fixture.web".into(), app: adapter_profile::AppDescriptor { stable_id: "x".into(), display_name: "X".into(), service_family: "messaging".into(), min_app_version: None }, revision: adapter_profile::ProfileRevision { number: 1, label: "fixture".into() }, issued_at_unix_seconds: 1, expires_at_unix_seconds: u64::MAX, support: adapter_profile::SupportLevel::Supported, authority: adapter_profile::AuthorityRequirements { user_consent_required: true, account_binding_required: true, release_authority_required: true, harmless_canary_required: true }, selectors: vec![], fallbacks: vec![], canary: adapter_profile::HarmlessCanary { selector: adapter_profile::SelectorKind::AppRoot, expected_text: "Messages".into(), max_age_seconds: 1 } }
@@ -26,38 +26,38 @@ impl WebSurfaceBackend for Fixture {
     fn commit(&self, _: &SurfaceBinding, _: &PlacementReceipt) -> SendReceipt { self.writes.fetch_add(1, Ordering::SeqCst); SendReceipt { outcome: if self.unknown_send { SendOutcome::Unknown } else { SendOutcome::Sent }, elapsed_ms: 1 } }
     fn paint_targets(&self, _: &SurfaceBinding) -> Result<Vec<PaintTarget>, AdapterRefusal> { Ok(vec![PaintTarget { carrier_sha256: if self.empty_exact_target { String::new() } else { "d".repeat(64) }, rect: Bounds { x: 0, y: 0, width: 1, height: 1 }, clipped_by: None, confidence: PaintConfidence::Exact }]) }
 }
-fn fixture(destination: DestinationMode, pixel: bool, password: bool, unknown_send: bool, empty_exact_target: bool, wake_fails: bool) -> WebSurfaceAdapter<Fixture> { WebSurfaceAdapter::new(AdapterAppId::X, profile(), Fixture { writes: AtomicUsize::new(0), wakeups: AtomicUsize::new(0), password, pixel, destination, unknown_send, empty_exact_target, wake_fails }) }
+fn fixture(destination: DestinationMode, pixel: bool, password: bool, unknown_send: bool, empty_exact_target: bool, wake_fails: bool) -> (WebSurfaceAdapter<Fixture>, Arc<AtomicUsize>, Arc<AtomicUsize>) { let writes = Arc::new(AtomicUsize::new(0)); let wakeups = Arc::new(AtomicUsize::new(0)); (WebSurfaceAdapter::new(AdapterAppId::X, profile(), Fixture { writes: writes.clone(), wakeups: wakeups.clone(), password, pixel, destination, unknown_send, empty_exact_target, wake_fails }), writes, wakeups) }
 fn target() -> SurfaceTarget { SurfaceTarget { app: AdapterAppId::X, surface: SurfaceKind::FixedOfficialWebOrigin, generation: 7 } }
 fn placed() -> PlacementReceipt { PlacementReceipt { status: PlacementStatus::Placed, placed_sha256: Some("d".repeat(64)), elapsed_ms: 1 } }
 
 #[test]
 fn web_w3_c1_to_c10_conformance() {
-    let adapter = fixture(DestinationMode::Attested, false, false, false, false, false);
+    let (adapter, writes, _) = fixture(DestinationMode::Attested, false, false, false, false, false);
     let stale = binding(6, false);
     assert_eq!(adapter.place(&stale, &PlacementAuthorization::for_scope("opaque-scope"), &Carrier("carrier".into())).status, PlacementStatus::NotPlaced);
-    assert_eq!(adapter.backend.writes.load(Ordering::SeqCst), 0);
+    assert_eq!(writes.load(Ordering::SeqCst), 0);
     let live = adapter.locate(&target()).unwrap();
     assert_eq!(adapter.place(&live, &PlacementAuthorization::for_scope("opaque-scope"), &Carrier("carrier".into())).status, PlacementStatus::Placed);
-    assert_eq!(adapter.backend.writes.load(Ordering::SeqCst), 1, "place must not send");
+    assert_eq!(writes.load(Ordering::SeqCst), 1, "place must not send");
 
-    let password = fixture(DestinationMode::Attested, false, true, false, false, false);
+    let (password, _, _) = fixture(DestinationMode::Attested, false, true, false, false, false);
     assert_eq!(password.place(&password.locate(&target()).unwrap(), &PlacementAuthorization::for_scope("opaque-scope"), &Carrier("carrier".into())).status, PlacementStatus::NotPlaced);
     for mode in [DestinationMode::Unknown, DestinationMode::Changed] {
-        let adapter = fixture(mode, false, false, false, false, false);
+        let (adapter, _, _) = fixture(mode, false, false, false, false, false);
         assert_eq!(adapter.commit(&adapter.locate(&target()).unwrap(), &SendAuthorization::for_scope("opaque-scope"), &placed()).outcome, SendOutcome::NotSent);
     }
-    let pixel = fixture(DestinationMode::Attested, true, false, false, false, false);
+    let (pixel, _, _) = fixture(DestinationMode::Attested, true, false, false, false, false);
     let live = pixel.locate(&target()).unwrap();
     assert_eq!(pixel.commit(&live, &SendAuthorization::for_scope("opaque-scope"), &placed()).outcome, SendOutcome::NotSent);
     assert_eq!(pixel.paint_targets(&live), Err(AdapterRefusal::AccessibilityUnavailable));
-    let missing_digest = fixture(DestinationMode::Attested, false, false, false, true, false);
+    let (missing_digest, _, _) = fixture(DestinationMode::Attested, false, false, false, true, false);
     assert_eq!(missing_digest.paint_targets(&missing_digest.locate(&target()).unwrap()), Err(AdapterRefusal::AccessibilityUnavailable));
-    let unknown = fixture(DestinationMode::Attested, false, false, true, false, false);
+    let (unknown, unknown_writes, _) = fixture(DestinationMode::Attested, false, false, true, false, false);
     assert_eq!(unknown.commit(&unknown.locate(&target()).unwrap(), &SendAuthorization::for_scope("opaque-scope"), &placed()).outcome, SendOutcome::Unknown);
-    assert_eq!(unknown.backend.writes.load(Ordering::SeqCst), 1);
-    let unavailable = fixture(DestinationMode::Attested, false, false, false, false, true);
+    assert_eq!(unknown_writes.load(Ordering::SeqCst), 1);
+    let (unavailable, _, unavailable_wakeups) = fixture(DestinationMode::Attested, false, false, false, false, true);
     assert_eq!(unavailable.locate(&target()), Err(AdapterRefusal::AccessibilityUnavailable));
-    assert_eq!(unavailable.backend.wakeups.load(Ordering::SeqCst), 1);
+    assert_eq!(unavailable_wakeups.load(Ordering::SeqCst), 1);
     let marker = "provider-title::must-not-leak";
     assert!(!format!("{:?}", placed()).contains(marker));
 }
