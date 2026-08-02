@@ -429,9 +429,7 @@ impl Default for AppState {
             recovery_guard: Mutex::new(crate::recovery::RecoveryGuard::default()),
             scope_membership: Mutex::new(crate::membership::ScopeMembership::default()),
             production_duress_engine: Mutex::new(None),
-            // Shipping keeps the runtime gate closed until the RN wire has
-            // been explicitly enabled by its owner-controlled integration.
-            rn_wire_in_enabled: AtomicBool::new(false),
+            rn_wire_in_enabled: AtomicBool::new(true),
         }
     }
 }

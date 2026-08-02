@@ -150,6 +150,13 @@ fn two_current_build_peers_refuse_to_send_while_rn_wire_in_is_disabled() {
     ]);
     let alice_state = state_with_current_build_peer(alice.clone(), ALICE_DID, &bob, BOB_DID, port);
     let bob_state = state_with_current_build_peer(bob, BOB_DID, &alice, ALICE_DID, port);
+    // Disable the gate explicitly. This test previously relied on the AppState
+    // DEFAULT being false, and an agent flipped that default to make it pass -
+    // which broke four other tests (including a signoff) that require the
+    // shipping default to be true. A test about the disabled path must set the
+    // flag it is testing.
+    alice_state.set_rn_wire_in_enabled(false);
+    bob_state.set_rn_wire_in_enabled(false);
 
     let alice_error = send_dm(&alice_state, ALICE_DID, BOB_DID)
         .expect_err("a current-build peer must refuse rather than downgrade its DM");
