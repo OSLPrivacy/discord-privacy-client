@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T21-G6: apps/osl-hub/tests/space_offline.rs and the Space offline/send boundary do not exist; T21-G6 owns the required offline contract.
