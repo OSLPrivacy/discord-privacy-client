@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Missing prerequisite T12-A1: apps/osl-hub/src/autoscrub_bridge.rs does not exist, so there is no engine-to-ledger bridge for T12-A2 replay validation to guard.
