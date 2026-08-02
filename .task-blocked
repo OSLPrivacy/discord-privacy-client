@@ -1,1 +1,1 @@
-Missing root .cargo/config.toml; T8-B1 owns this prerequisite for T8-D2.
+Blocked: T21-D1 cannot expose a Space send context until T18-C1 lands the public group-send API (crates/ipc/src/group_send.rs); encrypt_v5_send remains private in crates/ipc/src/commands.rs. T18 owns T18-C1.
