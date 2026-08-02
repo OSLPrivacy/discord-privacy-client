@@ -802,6 +802,7 @@
           "telegram.org",
           "core.telegram.org",
           "bugs.telegram.org"
+          ,"oslprivacy.com"
         ]
       },
       "fact": {
@@ -1438,8 +1439,21 @@
           "protection_score"
         ]
       },
-      "sources": [],
-      "rows": []
+      "sources": [
+        {"id":"signal-private-messaging","publisher":"Signal","source_type":"product","url":"https://signal.org/","title":"Signal Private Messenger","section":"Private messaging","published_or_effective_on":"2026-07-01","accessed_on":"2026-07-31","refresh_evidence":{"checked_on":"2026-07-31","method":"manual_official_source_review","result":"Reviewed Signal's official product page for the messenger comparison."}},
+        {"id":"signal-usernames","publisher":"Signal","source_type":"support","url":"https://support.signal.org/hc/en-us/articles/6715628361754-Usernames","title":"Usernames","section":"About usernames","published_or_effective_on":"2026-06-25","accessed_on":"2026-07-31","refresh_evidence":{"checked_on":"2026-07-31","method":"manual_official_source_review","result":"Reviewed Signal's official support page for the messenger comparison."}},
+        {"id":"whatsapp-security","publisher":"WhatsApp","source_type":"privacy","url":"https://www.whatsapp.com/security","title":"WhatsApp Security","section":"End-to-end encryption","published_or_effective_on":"2026-07-01","accessed_on":"2026-07-31","refresh_evidence":{"checked_on":"2026-07-31","method":"manual_official_source_review","result":"Reviewed WhatsApp's official security page for the messenger comparison."}},
+        {"id":"whatsapp-privacy","publisher":"WhatsApp","source_type":"privacy","url":"https://www.whatsapp.com/privacy","title":"WhatsApp Privacy","section":"Information we collect","published_or_effective_on":"2026-07-01","accessed_on":"2026-07-31","refresh_evidence":{"checked_on":"2026-07-31","method":"manual_official_source_review","result":"Reviewed WhatsApp's official privacy page for the messenger comparison."}},
+        {"id":"telegram-secret-chats","publisher":"Telegram","source_type":"faq","url":"https://telegram.org/faq#q-what-are-secret-chats","title":"Telegram FAQ","section":"What are Secret Chats?","published_or_effective_on":"2026-07-01","accessed_on":"2026-07-31","refresh_evidence":{"checked_on":"2026-07-31","method":"manual_official_source_review","result":"Reviewed Telegram's official FAQ for the messenger comparison."}},
+        {"id":"telegram-cloud-chats","publisher":"Telegram","source_type":"faq","url":"https://telegram.org/faq#q-how-are-cloud-chats-different-from-secret-chats","title":"Telegram FAQ","section":"Cloud Chats and Secret Chats","published_or_effective_on":"2026-07-01","accessed_on":"2026-07-31","refresh_evidence":{"checked_on":"2026-07-31","method":"manual_official_source_review","result":"Reviewed Telegram's official FAQ for the messenger comparison."}},
+        {"id":"osl-capability-status","publisher":"OSL","source_type":"status","url":"https://oslprivacy.com/docs/status.html","title":"OSL capability status","section":"Current capability boundaries","published_or_effective_on":"2026-07-31","accessed_on":"2026-07-31","refresh_evidence":{"checked_on":"2026-07-31","method":"manual_official_source_review","result":"Reviewed OSL's official capability status for the messenger comparison."}}
+      ],
+      "rows": [
+        {"id":"signal","product":"Signal","comparability":"not_equivalent","cells":[{"id":"private-messaging","claim":"Purpose-built private messenger.","source_ids":["signal-private-messaging"]},{"id":"usernames","claim":"Usernames can be used without sharing a phone number.","source_ids":["signal-usernames"]}]},
+        {"id":"whatsapp","product":"WhatsApp","comparability":"not_equivalent","cells":[{"id":"encryption","claim":"Personal messages and calls are end-to-end encrypted.","source_ids":["whatsapp-security"]},{"id":"privacy","claim":"Privacy information is described in WhatsApp's published privacy policy.","source_ids":["whatsapp-privacy"]}]},
+        {"id":"telegram","product":"Telegram","comparability":"not_equivalent","cells":[{"id":"secret-chats","claim":"Secret Chats are end-to-end encrypted and device-specific.","source_ids":["telegram-secret-chats"]},{"id":"cloud-chats","claim":"Cloud Chats and Secret Chats have different security properties.","source_ids":["telegram-cloud-chats"]}]},
+        {"id":"osl","product":"OSL","comparability":"not_equivalent","cells":[{"id":"scope","claim":"OSL is a hub over existing accounts; it is not a purpose-built messaging network.","source_ids":["osl-capability-status"]},{"id":"availability","claim":"Public capability claims remain bounded by OSL's current status evidence.","source_ids":["osl-capability-status"]}]}
+      ]
     }
   },
   "launch_frame": {

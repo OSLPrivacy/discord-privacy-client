@@ -413,6 +413,22 @@ function validateG1MessengerSchema(pricing, asOf) {
       else if (ageDays > sourceSchema?.max_age_days) add('SOURCE_STALE', `${label} is ${ageDays} days old at --as-of=${asOf}; maximum is ${sourceSchema.max_age_days}`);
     }
   }
+  const sourceIds = new Set(list(comparison?.sources).map((source) => source?.id));
+  for (const [rowIndex, row] of list(comparison?.rows).entries()) {
+    const label = isNonempty(row?.id) ? row.id : `rows[${rowIndex}]`;
+    if (!isNonempty(row?.id) || !isNonempty(row?.product)) add('ROW_SCHEMA', `${label} needs id and product`);
+    if (!list(schema?.fact?.comparability_values).includes(row?.comparability)) add('ROW_COMPARABILITY', `${label} needs an approved comparability value`);
+    const cells = list(row?.cells);
+    if (cells.length === 0) add('ROW_CELLS', `${label} must have sourced cells`);
+    for (const [cellIndex, cell] of cells.entries()) {
+      const cellLabel = `${label}.cells[${cellIndex}]`;
+      if (!isNonempty(cell?.id) || !isNonempty(cell?.claim)) add('CELL_SCHEMA', `${cellLabel} needs id and claim`);
+      const references = list(cell?.source_ids);
+      if (references.length === 0 || !references.every((id) => isNonempty(id) && sourceIds.has(id))) {
+        add('CELL_SOURCE', `${cellLabel} must reference one or more known source ids`);
+      }
+    }
+  }
   return errors;
 }
 
@@ -431,6 +447,7 @@ function runG1MessengerSelfTest(pricing, asOf) {
   const mutations = [
     ['source older than 90 days', 'G1_SOURCE_STALE', (fixture) => { fixture.research_comparisons.g1_messengers.sources = [{ ...source, accessed_on: '2025-01-01', refresh_evidence: { ...source.refresh_evidence, checked_on: '2025-01-01' } }]; }],
     ['source from a non-allowlisted host', 'G1_SOURCE_DOMAIN', (fixture) => { fixture.research_comparisons.g1_messengers.sources = [{ ...source, url: 'https://example.com/signal' }]; }],
+    ['unsourced comparison cell', 'G1_CELL_SOURCE', (fixture) => { fixture.research_comparisons.g1_messengers.rows = [{ id: 'signal', product: 'Signal', comparability: 'not_equivalent', cells: [{ id: 'e2ee', claim: 'End-to-end encrypted', source_ids: ['missing'] }] }]; }],
   ];
   let failures = 0;
   for (const [name, code, mutate] of mutations) {
