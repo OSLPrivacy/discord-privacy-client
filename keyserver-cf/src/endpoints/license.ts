@@ -17,9 +17,16 @@
 
 import type { Env } from "../env.js";
 import { hashLicense, normalizeLicense, validateChecksum } from "../lib/license.js";
-import { getLicenseByHash, getSubscription } from "../lib/subscriptions.js";
+import { getSubscription } from "../lib/subscriptions.js";
 import { badRequest, json, serviceUnavailable, tooMany } from "../lib/http.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
+
+interface ValidationLicenseRow {
+  subscription_id: string;
+  revoked_at: number | null;
+  redeemed_at: number | null;
+  expires_at: number | null;
+}
 
 export async function handleLicenseValidate(
   request: Request,
@@ -65,12 +72,21 @@ export async function handleLicenseValidate(
   }
 
   const hash = await hashLicense(normalized);
-  const license = await getLicenseByHash(env.DB, hash);
+  const license = await env.DB.prepare(
+    `SELECT subscription_id, revoked_at, redeemed_at, expires_at
+       FROM licenses
+      WHERE license_hash = ?`,
+  ).bind(hash).first<ValidationLicenseRow>();
   if (!license) {
     return json({ status: "UNKNOWN", checksum_ok: true });
   }
   if (license.revoked_at !== null) {
-    return json({ status: "REVOKED", checksum_ok: true });
+    return json({
+      status: "REVOKED",
+      redeemed_at: license.redeemed_at,
+      expires_at: license.expires_at,
+      checksum_ok: true,
+    });
   }
   const sub = await getSubscription(env.DB, license.subscription_id);
   if (!sub) {
@@ -78,9 +94,45 @@ export async function handleLicenseValidate(
     // REVOKED so the client locks paid features.
     return json({ status: "REVOKED", checksum_ok: true });
   }
+  if (sub.status === "REVOKED" || sub.status === "EXPIRED") {
+    return json({
+      status: sub.status,
+      redeemed_at: license.redeemed_at,
+      expires_at: license.expires_at,
+      checksum_ok: true,
+    });
+  }
+  if (license.redeemed_at === null) {
+    return json({
+      status: "UNREDEEMED",
+      redeemed_at: null,
+      expires_at: license.expires_at,
+      checksum_ok: true,
+    });
+  }
+  if (license.expires_at === null) {
+    // A redeemed license must have an expiry. Treat a corrupt partial row as
+    // non-entitled rather than granting a perpetual Pro state.
+    return json({
+      status: "UNKNOWN",
+      redeemed_at: license.redeemed_at,
+      expires_at: null,
+      checksum_ok: true,
+    });
+  }
+  if (license.expires_at <= Math.floor(Date.now() / 1000)) {
+    return json({
+      status: "EXPIRED",
+      redeemed_at: license.redeemed_at,
+      expires_at: license.expires_at,
+      checksum_ok: true,
+    });
+  }
   return json({
     status: sub.status,
     current_period_end: sub.current_period_end,
+    redeemed_at: license.redeemed_at,
+    expires_at: license.expires_at,
     checksum_ok: true,
   });
 }
