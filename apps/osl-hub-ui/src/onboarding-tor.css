@@ -1,0 +1,58 @@
+.tor-onboarding {
+  width: min(100%, 43rem);
+  margin: auto;
+}
+
+.tor-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  border: 0;
+  margin: 1.5rem 0 1rem;
+  padding: 0;
+}
+
+.tor-choice-card {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr);
+  gap: .8rem;
+  align-items: center;
+  min-height: 9.5rem;
+  padding: 1rem;
+  border: 1px solid var(--line, #334155);
+  border-radius: .85rem;
+  cursor: pointer;
+}
+
+.tor-choice-card:focus-within,
+.tor-choice-card.selected {
+  border-color: var(--accent, #38bdf8);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #38bdf8) 28%, transparent);
+}
+
+.tor-choice-card input { accent-color: var(--accent, #38bdf8); }
+.tor-choice-copy { display: grid; gap: .3rem; }
+.tor-choice-copy strong { font-weight: 600; }
+.tor-choice-copy small, .tor-choice-note { font-size: .875rem; line-height: 1.4; }
+
+.tor-choice-icon {
+  display: block;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+
+.tor-choice-icon-tor { animation: tor-route-orbit 3s linear infinite; }
+.tor-choice-icon-direct { border-radius: .35rem; animation: tor-route-pulse 2.4s ease-in-out infinite; }
+
+@keyframes tor-route-orbit { to { transform: rotate(360deg); } }
+@keyframes tor-route-pulse { 50% { transform: scale(1.12); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .tor-choice-icon-tor, .tor-choice-icon-direct { animation: none; }
+}
+
+@media (max-width: 38rem) {
+  .tor-choice-grid { grid-template-columns: 1fr; }
+}
