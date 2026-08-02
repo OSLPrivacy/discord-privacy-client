@@ -1365,6 +1365,16 @@ impl NativeDiscordComposerState {
         carrier: &str,
     ) -> DiscordCarrierReceipt {
         let delay = compatibility_delay_ms(chars_per_second);
+        if !placement_context.is_some_and(|context| context.authorizes(scope_binding, mode)) {
+            #[cfg(target_os = "windows")]
+            windows::qa_place_stage("place_refused_product_context");
+            return carrier_failure(mode, delay, DiscordCarrierStatus::PlacementRejected);
+        }
+        if !valid_cover(carrier) {
+            #[cfg(target_os = "windows")]
+            windows::qa_place_stage("place_refused_invalid_cover");
+            return carrier_failure(mode, delay, DiscordCarrierStatus::PlacementRejected);
+        }
         let placement = CarrierPlacement::new(
             carrier,
             match mode {
@@ -1372,16 +1382,6 @@ impl NativeDiscordComposerState {
                 DiscordCarrierMode::Compatibility => CarrierPlacementTiming::Compatibility,
             },
         );
-        if !placement_context.is_some_and(|context| context.authorizes(scope_binding, mode)) {
-            #[cfg(target_os = "windows")]
-            windows::qa_place_stage("place_refused_product_context");
-            return carrier_failure(mode, delay, DiscordCarrierStatus::PlacementRejected);
-        }
-        if !valid_cover(placement.payload()) {
-            #[cfg(target_os = "windows")]
-            windows::qa_place_stage("place_refused_invalid_cover");
-            return carrier_failure(mode, delay, DiscordCarrierStatus::PlacementRejected);
-        }
         #[cfg(target_os = "windows")]
         {
             // Cleared on every exit path including an unwinding panic, so a failed
@@ -17816,11 +17816,11 @@ mod windows {
             },
         );
         let carrier = placement.payload();
-        let placed = match placement.timing() {
+        let placed = match mode {
             // Type the carrier as real Unicode keystrokes so Slate's own input
             // pipeline builds its document. Newlines are injected as
             // Shift+Enter; a bare Enter never appears inside the carrier.
-            CarrierPlacementTiming::Atomic => {
+            DiscordCarrierMode::Atomic => {
                 let mut ok =
                     may_continue_input(target, &focused.element, &expected, process_is_trusted, "");
                 // Paced and checked chunk by chunk rather than fired as one burst.
@@ -17942,7 +17942,7 @@ mod windows {
                 }
                 ok
             }
-            CarrierPlacementTiming::Compatibility => drive_compatibility_carrier(
+            DiscordCarrierMode::Compatibility => drive_compatibility_carrier(
                 carrier,
                 |placed_prefix| {
                     may_continue_input(
