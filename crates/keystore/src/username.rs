@@ -12,7 +12,7 @@ use thiserror::Error;
 const BUCKET_DOMAIN: &[u8] = b"OSL-USERNAME-BUCKET-v1";
 const BUCKET_ROWS: usize = 1024;
 const PREFIX_HEX_LEN: usize = 4;
-const SUFFIX_HEX_LEN: usize = 28;
+const SUFFIX_HEX_LEN: usize = 60;
 const DIRECTORY_ORIGIN: &str = "https://keyserver.oslprivacy.com";
 
 /// The identity information authenticated by a matching bucket row.

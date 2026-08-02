@@ -21,7 +21,7 @@ fn digest_hex(name: &str) -> String {
 
 fn bucket_for(name: &str, expected_key: [u8; 32]) -> String {
     let target = &digest_hex(name)[4..];
-    let mut suffixes: Vec<String> = (0..1023).map(|index| format!("{:028x}", index)).collect();
+    let mut suffixes: Vec<String> = (0..1023).map(|index| format!("{:060x}", index)).collect();
     suffixes.push(target.to_owned());
     suffixes.sort();
     suffixes
