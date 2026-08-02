@@ -11,6 +11,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::realtime_decoy::DecoyFetch;
+use crate::realtime_resume::{AcknowledgementCursor, ReconnectContract, SessionId};
 use crate::realtime_subscription::{DeliveryTag, SubscriptionWindowManager};
 
 /// Exact text-frame size accepted by `cipher-store-cf/src/realtime/connection.ts`.
@@ -205,6 +206,23 @@ impl RealtimeClient {
     /// account-identifier input.
     pub fn replace_subscription_tags(&mut self, tags: impl IntoIterator<Item = DeliveryTag>) {
         self.subscriptions.replace_tags(tags);
+    }
+
+    /// Capture precisely the state a reconnect needs. Callers give the fresh
+    /// per-socket nonce; neither this state machine nor its snapshot has an
+    /// account or durable connection identifier.
+    pub fn reconnect_contract(&self, session_id: SessionId, cursor: AcknowledgementCursor) -> ReconnectContract {
+        ReconnectContract {
+            session_id,
+            cursor,
+            subscriptions: self.subscriptions.all_tags(),
+        }
+    }
+
+    /// Restore the complete local tag set after a socket close. Frame cursors
+    /// deliberately remain reset for the new session.
+    pub fn restore_subscriptions(&mut self, contract: &ReconnectContract) {
+        self.subscriptions.replace_tags(contract.subscriptions.iter().copied());
     }
 
     /// The one outbound realtime write: a constant-sized cover frame paired

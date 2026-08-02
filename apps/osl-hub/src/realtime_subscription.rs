@@ -75,6 +75,13 @@ impl SubscriptionWindowManager {
         self.next_start = 0;
     }
 
+    /// Snapshot the complete local subscription set for a new socket.  The
+    /// server retains no subscription state after a close, so reconnect must
+    /// restore this locally derived set rather than an account association.
+    pub fn all_tags(&self) -> Vec<DeliveryTag> {
+        self.tags.iter().copied().collect()
+    }
+
     /// Return the full subscription set for the next tick and advance the
     /// rotation.  Each returned vector contains only raw delivery tags.
     pub fn next_window(&mut self) -> Vec<DeliveryTag> {
