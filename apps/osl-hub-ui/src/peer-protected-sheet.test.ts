@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import type { HubPerson } from "./adapters";
+import { peerIsVerified, type HubPerson } from "./adapters";
 import { LOCAL_TTL_OPTIONS } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, verifiedPeerFriends } from "./peer-protected-sheet";
 
@@ -23,6 +23,12 @@ function person(overrides: Partial<HubPerson> = {}): HubPerson {
 }
 
 describe("manual peer protected sheet", () => {
+  it("uses the shared trust predicate for verified and changed identities", () => {
+    expect(peerIsVerified(person())).toBe(true);
+    expect(peerIsVerified(person({ pendingKeyChange: true }))).toBe(false);
+    expect(peerIsVerified(person({ safetyNumberVerified: false }))).toBe(false);
+  });
+
   it("offers only verified stable friends and keeps local-only secondary", () => {
     const verified = person();
     const unverified = person({ personId: "person-2", alias: "Pat", safetyNumberVerified: false });
