@@ -315,6 +315,10 @@ let passwordRoleStatus: HubPasswordRoleStatus | null = null;
 let setup: SetupState = parseSetupState(null);
 let route: Route = "onboarding";
 let onboardingRoute: OnboardingRoute = "welcome";
+// The tour is deliberately separate from setup completion: people can replay
+// it from Settings without changing their account, app, or sending choices.
+let onboardingTourStep = 0;
+let replayingOnboardingTour = false;
 let torOnboarding: TorOnboardingState = initialTorOnboardingState();
 // A cache only. The authority is encrypted account state in the native hub;
 // WebView storage is deliberately not consulted because burn/duress erase it.
@@ -1726,7 +1730,19 @@ function proSetupContent(): string {
 }
 
 function tutorialContent(): string {
-  return chooseAppsOnboardingContent();
+  const steps = [
+    ["Lock", "Lock turns on protected input and protected send routing. Turn it off to use the host app’s ordinary composer."],
+    ["Eye", "Eye controls decrypted display only. With Eye off, OSL leaves the native carrier rows untouched."],
+    ["Cyan ring", "The small cyan ring around the native composer means protected input is active. No ring means you are typing into the host’s plaintext composer."],
+    ["Send mode", "Choose Manual, Clipboard, or Double Enter. No mode silently sends: OSL stops if it cannot prove the exact destination."],
+    ["App limits", "Protection is limited to the app, account, chat, and composer OSL can verify. If that proof changes, OSL refuses protected routing rather than guessing."],
+  ] as const;
+  const current = steps[onboardingTourStep];
+  if (!current) return replayingOnboardingTour
+    ? `<h1 id="route-heading" tabindex="-1">Tour complete</h1><p class="compact-lead onboarding-centered-copy">You can replay this tour any time from Settings → About.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="finish-onboarding-tour" type="button">Return to Home</button></div>`
+    : chooseAppsOnboardingContent();
+  const [title, detail] = current;
+  return `<section class="onboarding-tour" aria-labelledby="route-heading" data-onboarding-tour-step="${onboardingTourStep + 1}"><p class="eyebrow">Quick tour · ${onboardingTourStep + 1} of ${steps.length}</p><h1 id="route-heading" tabindex="-1">${title}</h1><p class="compact-lead onboarding-centered-copy">${detail}</p><p class="send-mode-truth">You can return to this tour later from Settings → About.</p><div class="setup-footer onboarding-actions"><button class="button ghost" id="onboarding-tour-back" type="button" ${onboardingTourStep === 0 ? "disabled" : ""}>Back</button><button class="button primary" id="onboarding-tour-next" type="button">${onboardingTourStep + 1 === steps.length ? "Choose apps" : "Next"}</button></div></section>`;
 }
 
 function chooseAppsOnboardingContent(): string {
@@ -2680,6 +2696,20 @@ function bindOnboarding(): void {
     if (!await ensureNativeCatalogForAppChoice()) return;
     persistCombinedHomeChoices();
     await completeOnboarding();
+  });
+  document.querySelector<HTMLButtonElement>("#onboarding-tour-back")?.addEventListener("click", () => {
+    if (onboardingTourStep > 0) onboardingTourStep -= 1;
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#onboarding-tour-next")?.addEventListener("click", () => {
+    onboardingTourStep += 1;
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#finish-onboarding-tour")?.addEventListener("click", () => {
+    replayingOnboardingTour = false;
+    onboardingTourStep = 0;
+    route = "home";
+    render();
   });
   document.querySelector<HTMLButtonElement>("#continue-detected-apps")?.addEventListener("click", () => {
     if (savedAccountMode === "ask") savedAccountMode = savedNativeApps.size ? "use" : "clean";
@@ -8213,7 +8243,7 @@ function updateSettingsContent(): string {
     : updateStatus.state === "error" ? "Update check failed"
     : "Updater backend unavailable";
   const actions = updateStatus.state === "available" ? `<button class="button" data-update-read>Read more on GitHub</button><button class="button primary" data-update-modal>Install</button>` : "";
-  return `<h2>About</h2><div class="update-status-card"><span class="dot"></span><div><strong>${status}</strong><small>Updates verified against OSL's own key · no UI telemetry</small></div></div><div class="settings-actions"><button class="button ${updateStatus.state === "available" ? "" : "primary"}" data-update-check ${updateStatus.state === "checking" || updateStatus.state === "installing" ? "disabled" : ""}>Check for updates</button>${actions}</div><details class="settings-disclosure update-details"><summary>Update privacy</summary><p>Checks and installs use the trusted local updater. Every update package is verified against OSL's own signing key before it installs. Release notes are plain text; remote HTML is never rendered.</p><p>OSL is not code-signed by a publisher Windows recognises, so Windows may warn you about the installer. That is separate from the update check above, which does not rely on Windows.</p></details>${developerSettingsContent()}<details class="device-diagnostics settings-disclosure"><summary><span><strong>Device status</strong><small>${deviceReady ? "Ready" : "Needs attention"}</small></span></summary><p>${escapeHtml(coreReadinessLabel(core.readiness))}</p></details>`;
+  return `<h2>About</h2><div class="update-status-card"><span class="dot"></span><div><strong>${status}</strong><small>Updates verified against OSL's own key · no UI telemetry</small></div></div><div class="settings-actions"><button class="button ${updateStatus.state === "available" ? "" : "primary"}" data-update-check ${updateStatus.state === "checking" || updateStatus.state === "installing" ? "disabled" : ""}>Check for updates</button>${actions}<button class="button" id="replay-onboarding-tour" type="button">Replay protected messaging tour</button></div><details class="settings-disclosure update-details"><summary>Update privacy</summary><p>Checks and installs use the trusted local updater. Every update package is verified against OSL's own signing key before it installs. Release notes are plain text; remote HTML is never rendered.</p><p>OSL is not code-signed by a publisher Windows recognises, so Windows may warn you about the installer. That is separate from the update check above, which does not rely on Windows.</p></details>${developerSettingsContent()}<details class="device-diagnostics settings-disclosure"><summary><span><strong>Device status</strong><small>${deviceReady ? "Ready" : "Needs attention"}</small></span></summary><p>${escapeHtml(coreReadinessLabel(core.readiness))}</p></details>`;
 }
 
 function bindUpdateControls(): void {
@@ -8226,6 +8256,13 @@ function bindUpdateControls(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-update-read]").forEach((button) => button.addEventListener("click", async () => { if (!(await openHubReleasesPage())) showToast("Could not open the fixed OSL releases page"); }));
   document.querySelectorAll<HTMLButtonElement>("[data-update-install]").forEach((button) => button.addEventListener("click", () => void installUpdateAfterClick()));
   document.querySelectorAll<HTMLButtonElement>("[data-source-repository]").forEach((button) => button.addEventListener("click", async () => { if (!(await openHubSourceRepository())) showToast("Could not open the fixed OSL source repository"); }));
+  document.querySelector<HTMLButtonElement>("#replay-onboarding-tour")?.addEventListener("click", () => {
+    replayingOnboardingTour = true;
+    onboardingTourStep = 0;
+    onboardingRoute = "tutorial";
+    route = "onboarding";
+    render();
+  });
 }
 
 async function refreshUpdateStatus(background = false): Promise<void> {
