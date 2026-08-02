@@ -18,6 +18,7 @@ use crate::broker;
 use crate::browser_footprint::{self, FootprintObservation, NativeBrowserImportBinding};
 use crate::core_bridge::HubCoreState;
 use crate::discord_carrier_geometry::CarrierDecision;
+use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::identity_binding_verifier::{
     AccountRef, BindingScope, IdentityBindingVerifier, PinnedOwner,
 };
@@ -43,6 +44,17 @@ pub fn build_review_ui_identity_binding_verifier(
     Ok(IdentityBindingVerifier::new(PinnedOwner::from_identity(
         &identity,
     )))
+}
+
+/// Compose an erasure request for the desktop command surface.
+///
+/// This is intentionally a local transform: the user receives text to review
+/// and send from their own mailbox; OSL never transports the request.
+pub fn compose_erasure_request_for_user(
+    input: ErasureRequestInput,
+) -> Result<ComposedErasureRequest, String> {
+    scrub_erasure::compose_erasure_request(&input)
+        .map_err(|_| "Complete provider, account identifier, and data categories are required".to_owned())
 }
 
 pub fn require_review_ui_identity_binding_from_verifier(
@@ -401,6 +413,7 @@ macro_rules! hub_tauri_commands {
             get_autoscrub_run_fl,
             start_autoscrub_reviewed_run,
             request_autoscrub_global_stop,
+            compose_scrub_erasure_request,
             validate_hub_activation_code,
             clear_hub_activation_code,
             unlock_hub_password_gate,
@@ -544,6 +557,25 @@ macro_rules! hub_tauri_commands {
             get_hub_revocation_status
         }
     };
+}
+
+#[cfg(test)]
+mod erasure_command_wiring_tests {
+    use super::compose_erasure_request_for_user;
+    use crate::scrub_erasure::{ErasureDataCategory, ErasureRequestInput};
+
+    #[test]
+    fn scr_g1_desktop_command_path_composes_locally_before_any_user_send() {
+        let request = compose_erasure_request_for_user(ErasureRequestInput {
+            provider_name: "Example Social".to_owned(),
+            provider_account_identifier: "@river".to_owned(),
+            data_categories: vec![ErasureDataCategory::PostsAndMessages],
+        })
+        .expect("the desktop command path must reach local erasure composition");
+
+        assert!(request.body.contains("Account identifier: @river"));
+        assert!(!request.body.contains("OSL"));
+    }
 }
 
 /// Test-only counterpart of `main.rs`'s handler-name callback: turns the one

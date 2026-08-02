@@ -4,8 +4,11 @@
 //! for the user to send from their own mailbox; it neither identifies the user
 //! to OSL nor transmits request data anywhere.
 
+use serde::{Deserialize, Serialize};
+
 /// A category of personal data the user asks a provider to erase.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
 pub enum ErasureDataCategory {
     AccountProfile,
     PostsAndMessages,
@@ -29,7 +32,8 @@ impl ErasureDataCategory {
 }
 
 /// The provider-specific details needed to write a request.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ErasureRequestInput {
     /// The service that holds the data, such as "Example Social".
     pub provider_name: String,
@@ -39,7 +43,8 @@ pub struct ErasureRequestInput {
 }
 
 /// Plain-text request for the user to review and send themselves.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ComposedErasureRequest {
     pub subject: String,
     pub body: String,
