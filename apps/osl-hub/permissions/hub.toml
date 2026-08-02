@@ -304,6 +304,11 @@ description = "A7: manual \"Lock now\". Drops every live secret this process hol
 commands.allow = ["lock_hub_session"]
 
 [[permission]]
+identifier = "allow-emit-active-session-reset"
+description = "Allow only the trusted main OSL window to send a ratchet-independent SESSION_RESET to its currently authorised peer conversation after desync detection. The renderer supplies no peer, scope, wire, or transport input."
+commands.allow = ["emit_active_session_reset"]
+
+[[permission]]
 identifier = "allow-get-hub-password-role-status"
 description = "Read whether trusted-local stealth and burn password roles are configured without returning hashes or marker contents."
 commands.allow = ["get_hub_password_role_status"]

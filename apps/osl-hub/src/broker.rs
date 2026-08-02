@@ -822,6 +822,44 @@ pub struct ActivatedManualPeerContext {
     pub scope: ScopeInput,
 }
 
+/// Transport facts for a recovery control message.  They are derived from the
+/// currently authorised manual-peer lease, never supplied by the renderer.
+#[derive(Clone)]
+pub struct SessionResetDeliveryTarget {
+    pub peer_id: String,
+    pub peer_osl_user_id: String,
+    pub scope_id: String,
+}
+
+impl HubBrokerState {
+    /// Resolve the one active manual-peer transport for a SESSION_RESET.
+    /// Recovery is intentionally confined to the already-authorised active
+    /// conversation; callers cannot select an arbitrary recipient or scope.
+    pub fn active_session_reset_delivery_target(
+        &self,
+    ) -> Result<SessionResetDeliveryTarget, String> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| "OSL broker state is unavailable".to_owned())?;
+        let active = inner
+            .active
+            .as_ref()
+            .filter(|active| active.authority == ContextAuthority::ManualPeer)
+            .ok_or_else(|| {
+                "OSL recovery requires an active verified peer conversation".to_owned()
+            })?;
+        let manual = active.manual_peer.as_ref().ok_or_else(|| {
+            "OSL recovery requires an active verified peer conversation".to_owned()
+        })?;
+        Ok(SessionResetDeliveryTarget {
+            peer_id: manual.person_id.clone(),
+            peer_osl_user_id: manual.peer_osl_user_id.clone(),
+            scope_id: native_overlay_relay_scope_id(&active.context.conversation_id)?,
+        })
+    }
+}
+
 impl core::fmt::Debug for ActivatedManualPeerContext {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ActivatedManualPeerContext")
