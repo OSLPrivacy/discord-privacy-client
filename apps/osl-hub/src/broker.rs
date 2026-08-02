@@ -6751,6 +6751,51 @@ fn post_due_revocations(
     posted
 }
 
+/// Drain the durable revocation outbox without relying on a conversation poll.
+///
+/// The outbox records the recipient and relay label at burn time.  Each tick
+/// re-resolves the current verified binding before sealing, so a changed or
+/// missing friend record fails closed and leaves the notice queued for retry.
+/// A single tick is deliberately bounded by the same cap as a poll drain.
+pub fn drain_due_revocations(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    now: i64,
+) -> u32 {
+    let Ok((identity, client)) = keyserver_transport(core) else {
+        return 0;
+    };
+    let Ok(due) = security::due_revocations(security_state, now) else {
+        return 0;
+    };
+    let mut posted = 0u32;
+    for entry in due.iter().take(MAX_REVOCATION_POSTS_PER_DRAIN) {
+        let Ok(verified) =
+            security::manual_peer_binding_for_osl_user_id(core, &entry.recipient_osl_user_id)
+        else {
+            continue;
+        };
+        let sent = post_revocation_frame(
+            core,
+            &client,
+            &identity,
+            &verified,
+            &entry.recipient_osl_user_id,
+            &entry.scope_id_label,
+            InboundRevocationControl::Notice,
+            &entry.notice_b64,
+            Some(keystore::control_inbox::CONTROL_INBOX_KIND_REVOCATION),
+            Some(entry.collapse_key_hex.as_str()),
+        )
+        .is_ok();
+        if sent {
+            posted = posted.saturating_add(1);
+        }
+        let _ = security::record_revocation_attempt(security_state, &entry.burn_id_hex, now);
+    }
+    posted
+}
+
 fn verify_manual_v3_type(
     core: &HubCoreState,
     peer: &ManualPeerBinding,

@@ -69,6 +69,7 @@ use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::PreviewState;
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
+use osl_privacy_hub::revocation_drain_timer;
 use osl_privacy_hub::scrub_index::{
     ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexManifest, ScrubIndexState,
     ScrubIndexStatus,
@@ -9186,6 +9187,7 @@ fn main() {
         app.manage(HubBrokerState::default());
         startup_breadcrumb("setup_step_25_broker_state_managed"); // STARTUP-TRACE
         app.manage(security_state);
+        revocation_drain_timer::spawn(app.handle().clone());
         startup_breadcrumb("setup_step_26_security_state_managed"); // STARTUP-TRACE
         app.manage(HubIdentityRegistryState::default());
         startup_breadcrumb("setup_step_27_identity_registry_state_managed"); // STARTUP-TRACE

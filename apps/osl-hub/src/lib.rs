@@ -81,6 +81,8 @@ pub mod scrub_erasure_tracker;
 pub mod scrub_erasure_queue;
 #[cfg(feature = "core")]
 pub mod rn_recovery;
+#[cfg(all(feature = "core", feature = "desktop"))]
+pub mod revocation_drain_timer;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
