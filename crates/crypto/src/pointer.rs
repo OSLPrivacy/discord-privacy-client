@@ -41,6 +41,16 @@ impl TryFrom<&[u8]> for Pointer {
     }
 }
 
+/// The two values a bare pointer authorizes on its own.
+///
+/// A recipient holding only `P` can address the object and fetch it, and can
+/// derive nothing else: acknowledgement and management authority are rooted in
+/// keys the pointer does not contain.
+pub struct PointerFetchAuthority {
+    pub blob_id: [u8; CAPABILITY_BYTES],
+    pub fetch_cap: [u8; CAPABILITY_BYTES],
+}
+
 /// Cipher-store values derived for one pointer delivery.
 pub struct PointerCapabilities {
     pub blob_id: [u8; CAPABILITY_BYTES],
@@ -62,10 +72,9 @@ pub fn derive_capabilities(
     send_key: &[u8],
     conversation_key: &[u8],
 ) -> Result<PointerCapabilities> {
-    let blob_id = derive_128(pointer.as_bytes(), BLOB_ID_INFO)?;
-    let fetch_cap = derive_128(pointer.as_bytes(), FETCH_CAP_INFO)?;
-    let ack_cap = derive_bound_128(message_key, ACK_CAP_LABEL, &blob_id)?;
-    let manage_cap = derive_bound_128(send_key, MANAGE_CAP_LABEL, &blob_id)?;
+    let PointerFetchAuthority { blob_id, fetch_cap } = derive_fetch_authority(pointer)?;
+    let ack_cap = derive_ack_capability(message_key, &blob_id)?;
+    let manage_cap = derive_manage_capability(send_key, &blob_id)?;
     let delivery_tag = derive_128(conversation_key, DELIVERY_TAG_INFO)?;
 
     Ok(PointerCapabilities {
@@ -75,6 +84,41 @@ pub fn derive_capabilities(
         manage_cap,
         delivery_tag,
     })
+}
+
+/// Derives exactly what a bare pointer authorizes: the object's id and the
+/// capability that reads it.
+///
+/// The receiving side has only `P`, so this is the whole of what it can
+/// compute.  It is the same derivation [`derive_capabilities`] performs — one
+/// definition, so a sender and a receiver can never drift apart.
+pub fn derive_fetch_authority(pointer: &Pointer) -> Result<PointerFetchAuthority> {
+    Ok(PointerFetchAuthority {
+        blob_id: derive_128(pointer.as_bytes(), BLOB_ID_INFO)?,
+        fetch_cap: derive_128(pointer.as_bytes(), FETCH_CAP_INFO)?,
+    })
+}
+
+/// Derives the receipt authority for one already-known object id.
+pub fn derive_ack_capability(
+    message_key: &[u8],
+    blob_id: &[u8; CAPABILITY_BYTES],
+) -> Result<[u8; CAPABILITY_BYTES]> {
+    derive_bound_128(message_key, ACK_CAP_LABEL, blob_id)
+}
+
+/// Derives the burn authority for one already-known object id.
+///
+/// A burn happens long after the send that created the object, by which time
+/// the pointer is gone; the sender keeps only the id it recorded.  Because the
+/// id is bound into the HKDF info rather than being the key, that recorded id
+/// plus the sender's own send key is enough, and remains insufficient for
+/// anybody else.
+pub fn derive_manage_capability(
+    send_key: &[u8],
+    blob_id: &[u8; CAPABILITY_BYTES],
+) -> Result<[u8; CAPABILITY_BYTES]> {
+    derive_bound_128(send_key, MANAGE_CAP_LABEL, blob_id)
 }
 
 fn derive_128(key_material: &[u8], info: &[u8]) -> Result<[u8; CAPABILITY_BYTES]> {
