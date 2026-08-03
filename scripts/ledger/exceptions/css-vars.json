@@ -1,0 +1,55 @@
+{
+  "note": "Ledger 2. Every entry is an ADMISSION that a declaration is dropped or a token name is wrong. The four `undefined-declaration-dropped` entries are open defect D-102 and are being fixed in a parallel lane; when that fix lands these entries stop matching a live violation and the stale-exception rule fails this ledger until they are deleted. That is the ratchet, working.",
+  "highWaterMark": 7,
+  "entries": [
+    {
+      "id": "--accent",
+      "class": "accepted",
+      "status": "known-defect",
+      "reason": "Not in the authoritative palette block; the intended token is --brand. Every use carries a fallback so nothing is dropped on screen, which is why the UI audit's no-fallback sweep did not surface it. Cosmetic drift, not a broken declaration; delete this entry when the name is corrected.",
+      "citation": "apps/osl-hub-ui/src/onboarding-tor.css:31"
+    },
+    {
+      "id": "--cyan",
+      "class": "accepted",
+      "status": "known-defect",
+      "reason": "Typo against --brand. Kills the border-colour and background of the four Home OSL tiles, which is the visible symptom filed as the Home tiles losing their cyan treatment. Open as D-102. NOT accepted as correct; delete this entry with the fix.",
+      "citation": "apps/osl-hub-ui/src/styles.css:5120"
+    },
+    {
+      "id": "--line-strong",
+      "class": "accepted",
+      "status": "known-defect",
+      "reason": "No exact equivalent in the palette; nearest is --line. Drops the colour on .window-controls button:disabled, though opacity .34 survives so the effect is cosmetic only. Open as D-102. Delete this entry with the fix.",
+      "citation": "apps/osl-hub-ui/src/styles.css:613"
+    },
+    {
+      "id": "--surface",
+      "class": "accepted",
+      "status": "known-defect",
+      "reason": "Token that does not exist in the palette, used with a fallback inside expiry-picker.css. That whole module is outside the bundle (ledger 7, category G), so nothing renders it today. Delete this entry when the picker is wired or removed.",
+      "citation": "apps/osl-hub-ui/src/expiry-picker.css:23"
+    },
+    {
+      "id": "--text-muted",
+      "class": "accepted",
+      "status": "known-defect",
+      "reason": "Typo against --muted. Drops the colour on .header-protection-control, the Lock/Eye protection strip in the Discord workspace header, which then inherits. Open as D-102. Delete this entry with the fix.",
+      "citation": "apps/osl-hub-ui/src/styles.css:2113"
+    },
+    {
+      "id": "--warn-soft",
+      "class": "accepted",
+      "status": "known-defect",
+      "reason": "Not in the palette block; both uses carry a fallback so the declarations survive. Same one-character-class family as the D-102 typos but harmless on screen. Delete this entry when the name is corrected.",
+      "citation": "apps/osl-hub-ui/src/styles.css:5013"
+    },
+    {
+      "id": "--warning",
+      "class": "accepted",
+      "status": "known-defect",
+      "reason": "Typo against --warn. Drops the colour on .osl-chat-message-state.is-queued so `Queued - not sent` loses its warning colour while the sibling .is-expired keeps it. Colour is not the sole signal here (the label still says `not sent`), so it is not an accessibility failure. Open as D-102. Delete this entry with the fix.",
+      "citation": "apps/osl-hub-ui/src/styles.css:7145"
+    }
+  ]
+}
