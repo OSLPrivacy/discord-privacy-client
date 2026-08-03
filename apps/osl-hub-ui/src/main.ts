@@ -5513,6 +5513,9 @@ function identityListState(): "locked" | "loading" | "unavailable" | "empty" | "
   return "empty";
 }
 
+export const IDENTITY_LIST_UNAVAILABLE =
+  "OSL is unlocked, but this device did not return a usable identity registry. Nothing was changed.";
+
 function identityListMarkup(): string {
   const state = identityListState();
   if (state === "list") {
@@ -5525,7 +5528,15 @@ function identityListMarkup(): string {
     return `<div class="empty-state" data-identity-list="loading"><strong>Reading identity slots</strong><p>OSL is opening the encrypted identity registry on this device.</p></div>`;
   }
   if (state === "unavailable") {
-    return `<div class="empty-state" data-identity-list="unavailable"><strong>Identity list could not be read</strong><p>OSL is unlocked, but this device did not return a usable identity registry. Nothing was changed.</p><button class="button compact" id="retry-identity-list" type="button">Try again</button></div>`;
+    // NEW-3: this screen held the answer and threw it away. The native side
+    // refuses with a specific sentence -- "OSL main password must be
+    // unlocked", "OSL identity migration failed: ...", "OSL identity registry
+    // is unavailable" -- and the journal already has it, bounded by age and by
+    // command. Repeating it verbatim is the difference between a dead end and
+    // a diagnosis, and `withBackendReason` never invents detail the backend
+    // chose not to give.
+    const reason = withBackendReason(IDENTITY_LIST_UNAVAILABLE, "list_hub_identities");
+    return `<div class="empty-state" data-identity-list="unavailable"><strong>Identity list could not be read</strong><p>${escapeHtml(reason)}</p><button class="button compact" id="retry-identity-list" type="button">Try again</button></div>`;
   }
   return `<div class="empty-state" data-identity-list="empty"><strong>No identity slots yet</strong><p>Create an identity below to start using OSL on this device.</p></div>`;
 }
