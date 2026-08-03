@@ -470,6 +470,9 @@ pub enum TransportOutcome {
     MalformedResponse,
     LocalIo,
     Refused,
+    /// Tor is selected and its tunnel is unavailable. Nothing was sent, and
+    /// nothing fell back to a direct route.
+    RouteUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -490,6 +493,7 @@ pub fn classify_cipher_store_error(
         Raw::RateLimited => TransportOutcome::RateLimited,
         Raw::ParseError(_) => TransportOutcome::MalformedResponse,
         Raw::Io(_) => TransportOutcome::LocalIo,
+        Raw::RouteUnavailable(_) => TransportOutcome::RouteUnavailable,
         Raw::Status { status, .. } => match *status {
             401 | 403 => TransportOutcome::CapabilityRejected,
             404 | 410 => TransportOutcome::Gone,
@@ -540,6 +544,10 @@ pub fn describe_transport_outcome(outcome: TransportOutcome, phase: TransportPha
         }
         TransportOutcome::LocalIo => "OSL could not read the sealed copy on this device",
         TransportOutcome::Refused => "the encrypted attachment storage refused the request",
+        TransportOutcome::RouteUnavailable => {
+            "Tor is selected and its tunnel is unavailable, so OSL refused rather than \
+             using a direct connection"
+        }
     };
     format!("{subject}: {reason}.")
 }

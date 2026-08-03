@@ -886,6 +886,22 @@ impl KeyServerClient {
     /// v1-stable feature.
     pub fn new(base_url: impl AsRef<str>) -> Result<Self> {
         let base_url = validate_keyserver_base_url(base_url.as_ref())?;
+        // The route decision comes before the client exists. `new` is the
+        // "nobody routed me" constructor, so while Tor is selected it must
+        // never hand back a direct client: it adopts the authorized tunnel, or
+        // it refuses. See `crate::egress`.
+        match crate::egress::direct_client_decision() {
+            crate::egress::DirectClientDecision::Build => {}
+            crate::egress::DirectClientDecision::Adopt(client) => {
+                return Ok(KeyServerClient {
+                    base_url,
+                    client: *client,
+                });
+            }
+            crate::egress::DirectClientDecision::Refuse => {
+                return Err(Error::Transport(crate::egress::TOR_UNAVAILABLE.to_string()));
+            }
+        }
         // `reqwest::blocking::Client::builder().build()` stands up a private
         // tokio runtime for the handshake and then drops it. Dropping a
         // runtime while another runtime's context is active aborts with

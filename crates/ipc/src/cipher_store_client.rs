@@ -134,6 +134,11 @@ pub enum CipherStoreError {
     RateLimited,
     #[error("attachment I/O failed: {0}")]
     Io(#[from] io::Error),
+    /// Tor is selected and no tunnel is ready, so no unrouted client could be
+    /// built. This is a refusal, not a network failure: nothing left the
+    /// device. See `keystore::egress`.
+    #[error("{0}")]
+    RouteUnavailable(String),
 }
 
 const MAX_BLOB_BYTES: usize = 64 * 1024;
@@ -202,13 +207,27 @@ pub struct CipherStoreClient {
 
 impl CipherStoreClient {
     pub fn new(base_url: impl Into<String>) -> Result<Self, CipherStoreError> {
-        // `Client::builder().build()` blocks on reqwest's private runtime
-        // handshake, which drops a shell runtime on this thread under debug
-        // assertions and panics if this thread is inside a Tokio runtime.
-        // Build off any async context; see `keystore::blocking_http`.
-        let http = keystore::blocking_http::off_async_context(|| {
-            Client::builder().timeout(REQUEST_TIMEOUT).build()
-        })?;
+        // This is the "nobody routed me" constructor. While Tor is selected it
+        // adopts the authorized tunnel or refuses -- it never quietly returns
+        // a direct client, because the caller cannot tell the difference and
+        // the user has been told Tor is on. See `keystore::egress`.
+        let http = match keystore::egress::direct_client_decision() {
+            keystore::egress::DirectClientDecision::Adopt(client) => *client,
+            keystore::egress::DirectClientDecision::Refuse => {
+                return Err(CipherStoreError::RouteUnavailable(
+                    keystore::egress::TOR_UNAVAILABLE.to_owned(),
+                ));
+            }
+            // `Client::builder().build()` blocks on reqwest's private runtime
+            // handshake, which drops a shell runtime on this thread under debug
+            // assertions and panics if this thread is inside a Tokio runtime.
+            // Build off any async context; see `keystore::blocking_http`.
+            keystore::egress::DirectClientDecision::Build => {
+                keystore::blocking_http::off_async_context(|| {
+                    Client::builder().timeout(REQUEST_TIMEOUT).build()
+                })?
+            }
+        };
         Ok(Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             http,

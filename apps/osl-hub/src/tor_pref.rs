@@ -142,12 +142,14 @@ impl TorPreferenceState {
         } else {
             None
         };
-        Self {
+        let state = Self {
             path,
             preference: Mutex::new(preference),
             tor_config,
             tor_client: Mutex::new(tor_client),
-        }
+        };
+        state.publish_process_route();
+        state
     }
 
     #[cfg(test)]
@@ -174,12 +176,34 @@ impl TorPreferenceState {
     pub fn set_preference(&self, preference: TorPreference) -> Result<TorPreference, String> {
         write_preference(&self.path, preference)?;
         self.update_tor_client_for_preference(preference)?;
-        let mut current = self
-            .preference
-            .lock()
-            .map_err(|_| "OSL network preference is unavailable".to_owned())?;
-        *current = Some(preference);
+        {
+            let mut current = self
+                .preference
+                .lock()
+                .map_err(|_| "OSL network preference is unavailable".to_owned())?;
+            *current = Some(preference);
+        }
+        self.publish_process_route();
         Ok(preference)
+    }
+
+    /// Push the current choice + tunnel health into the process-wide egress
+    /// interlock.
+    ///
+    /// The per-command gate below only covers commands somebody remembered to
+    /// gate. This covers the rest: while Tor is selected, every constructor in
+    /// the workspace that would otherwise build its own direct client either
+    /// adopts this tunnel or refuses. See `keystore::egress`.
+    pub fn publish_process_route(&self) {
+        match self.preference().ok().flatten() {
+            Some(TorPreference::Tor) => match self.ready_tor_client() {
+                Ok(Some(client)) => keystore::egress::route_through_tor(client),
+                // Selected but unhealthy, or the transport state itself is
+                // unreadable. Both are refusals, never a direct fallback.
+                Ok(None) | Err(_) => keystore::egress::seal(),
+            },
+            Some(TorPreference::Direct) | None => keystore::egress::permit_clearnet(),
+        }
     }
 
     /// Authorize before the caller can construct or send a store request.
@@ -190,6 +214,13 @@ impl TorPreferenceState {
         } else {
             None
         };
+        // Re-publish on every authorization: a tunnel that died since the last
+        // send must seal the rest of the process too, not only this command.
+        match (preference, tor_http.clone()) {
+            (Some(TorPreference::Tor), Some(client)) => keystore::egress::route_through_tor(client),
+            (Some(TorPreference::Tor), None) => keystore::egress::seal(),
+            _ => keystore::egress::permit_clearnet(),
+        }
         let authorization = authorize_network(
             preference,
             if tor_http.is_some() {
@@ -369,6 +400,7 @@ mod tests {
 
     #[test]
     fn persisted_tor_with_no_tunnel_cannot_reach_the_store() {
+        let _route = keystore::egress::restore_clearnet_on_drop();
         let directory = tempfile::tempdir().expect("temporary preference directory");
         let state = TorPreferenceState::load(directory.path().join("tor-preference.json"));
         state
@@ -383,6 +415,7 @@ mod tests {
 
     #[test]
     fn tor_healthy_store_route_uses_the_socks_tunnel() {
+        let _route = keystore::egress::restore_clearnet_on_drop();
         let backend = TcpListener::bind("127.0.0.1:0").expect("bind store backend");
         let backend_addr = backend.local_addr().expect("read backend address");
         let (request_seen_tx, request_seen_rx) = mpsc::channel();
@@ -448,6 +481,7 @@ mod tests {
 
     #[test]
     fn tor_selected_but_unhealthy_refuses_before_any_store_send() {
+        let _route = keystore::egress::restore_clearnet_on_drop();
         let backend = TcpListener::bind("127.0.0.1:0").expect("bind store backend");
         backend
             .set_nonblocking(true)

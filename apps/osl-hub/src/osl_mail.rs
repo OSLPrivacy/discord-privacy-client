@@ -259,11 +259,20 @@ fn mail_base_url() -> Result<String, String> {
 }
 
 fn http_client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|_| "OSL Mail network client is unavailable".to_owned())
+    // Mail is egress like every other path here. While Tor is selected this
+    // adopts the authorized tunnel or refuses; it never builds a direct
+    // client behind a UI that says Tor is on. See `keystore::egress`.
+    match keystore::egress::direct_client_decision() {
+        keystore::egress::DirectClientDecision::Adopt(client) => Ok(*client),
+        keystore::egress::DirectClientDecision::Refuse => {
+            Err(keystore::egress::TOR_UNAVAILABLE.to_owned())
+        }
+        keystore::egress::DirectClientDecision::Build => reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|_| "OSL Mail network client is unavailable".to_owned()),
+    }
 }
 
 fn ensure_capabilities(base_url: &str) -> Result<(), String> {
