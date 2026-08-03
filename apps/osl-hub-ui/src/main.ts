@@ -282,6 +282,29 @@ type OwnedConfirmation =
   | { kind: "removeFriend"; personId: string }
   | { kind: "clearActivation" };
 
+type ProtectionPreset = "basic" | "balanced" | "maximum";
+type InboxFilter = "all" | "osl" | "connected" | "requests";
+const protectionPresetStorageKey = "osl-protection-preset-v1";
+const oslMailNotificationsStorageKey = "osl-mail-notifications-v1";
+const protectionPresetValues: readonly ProtectionPreset[] = ["basic", "balanced", "maximum"];
+const inboxFilterValues: readonly InboxFilter[] = ["all", "osl", "connected", "requests"];
+
+function parseProtectionPreset(raw: unknown): ProtectionPreset {
+  return protectionPresetValues.includes(raw as ProtectionPreset) ? raw as ProtectionPreset : "balanced";
+}
+
+function parseInboxFilter(raw: unknown): InboxFilter {
+  return inboxFilterValues.includes(raw as InboxFilter) ? raw as InboxFilter : "all";
+}
+
+function loadProtectionPreset(storage: Pick<Storage, "getItem"> = localStorage): ProtectionPreset {
+  return parseProtectionPreset(storage.getItem(protectionPresetStorageKey));
+}
+
+function persistProtectionPreset(storage: Pick<Storage, "setItem"> = localStorage): void {
+  storage.setItem(protectionPresetStorageKey, protectionPreset);
+}
+
 function requireRoot(): HTMLDivElement {
   const element = document.querySelector<HTMLDivElement>("#app");
   if (!element) throw new Error("OSL Privacy root is missing");
@@ -354,7 +377,9 @@ let mullvadSetupNotice = "";
 let mullvadAutoStart = false;
 let mullvadAutoStartAttempted = false;
 let mullvadWindowHosted = false;
-let mullvadReturnRoute: "onboarding" | "home" = "home";
+let mullvadReturnRoute: "onboarding" | "home" | "connections" = "home";
+let protectionPreset: ProtectionPreset = loadProtectionPreset();
+let inboxFilter: InboxFilter = "all";
 let privacyProtectionReviewOpen = false;
 let activityAttentionReviewOpen = false;
 type PeoplePrimaryActionFocus = "add" | "verify";
@@ -444,7 +469,7 @@ let oslMailStatus: OslMailStatus | null = null;
 let oslMailThreads: OslMailThreadSummary[] = [];
 let oslMailActiveThread: OslMailRetrievedThread | null = null;
 let oslMailPane: OslMailPane = "inbox";
-let oslMailNotifications = true;
+let oslMailNotifications = localStorage.getItem(oslMailNotificationsStorageKey) !== "false";
 let oslMailDeleteReceipt: OslMailDeleteReceipt | null = null;
 let oslMailSendReceipt: OslMailSendReceipt | null = null;
 let oslMailBurnReceipt: OslMailBurnReceipt | null = null;
@@ -1223,6 +1248,8 @@ export async function loadUiPreferences(): Promise<void> {
   notificationScopeSuggestions = localStorage.getItem(notificationScopeStorageKey) !== "false";
   notificationChatActivity = localStorage.getItem(notificationChatStorageKey) !== "false";
   notificationSecurityActivity = localStorage.getItem(notificationSecurityStorageKey) !== "false";
+  protectionPreset = loadProtectionPreset();
+  oslMailNotifications = localStorage.getItem(oslMailNotificationsStorageKey) !== "false";
   rnWirePolicyRequested = localStorage.getItem(rnWirePolicyStorageKey) === "true";
   await loadOslChatSensitiveStateFromSecureStore();
   const notices = await loadMigratedOslChatNotifications(oslChatSecureStore, localStorage);
@@ -2610,7 +2637,7 @@ function protectionPresetOnboardingContent(): string {
     },
   ] as const;
   const presetChoices = presets.map((preset) => {
-    const selected = preset.id === "balanced";
+    const selected = preset.id === protectionPreset;
     const badge = "badge" in preset ? `<small class="send-mode-badge">${preset.badge}</small>` : "";
     return `<label class="send-mode-option ${selected ? "selected" : ""}" data-protection-preset="${preset.id}"><span><input class="sr-only" type="radio" name="protection-preset" value="${preset.id}" ${selected ? "checked" : ""}/><strong>${preset.title}</strong>${badge}</span><small>${preset.detail}</small></label>`;
   }).join("");
@@ -2871,6 +2898,13 @@ function bindOnboarding(): void {
       render();
     }).catch(() => undefined);
   });
+  document.querySelectorAll<HTMLInputElement>('input[name="protection-preset"]').forEach((input) => input.addEventListener("change", () => {
+    if (input.checked && protectionPresetValues.includes(input.value as ProtectionPreset)) {
+      protectionPreset = input.value as ProtectionPreset;
+      persistProtectionPreset();
+      render();
+    }
+  }));
   document.querySelector("#continue-cover-draft")?.addEventListener("click", () => { onboardingRoute = "passwords"; render(); });
   bindOnboardingPasswordRole();
   document.querySelectorAll<HTMLButtonElement>("button[data-password-role-next]").forEach((button) => button.addEventListener("click", () => {
@@ -3038,7 +3072,7 @@ async function hostMullvadUntilReady(label: string, waitMs = 60_000): Promise<Aw
   return result;
 }
 
-async function runMullvadSetupAction(action: "install" | "open"): Promise<void> {
+async function runMullvadSetupAction(action: "install" | "open", returnRoute: "onboarding" | "connections" = "onboarding"): Promise<void> {
   if (mullvadBusy) return;
   mullvadBusy = true;
   mullvadSetupNotice = action === "install" ? "Installing Mullvad…" : "Opening Mullvad…";
@@ -3062,7 +3096,7 @@ async function runMullvadSetupAction(action: "install" | "open"): Promise<void> 
     }
     mullvadSetupNotice = "";
     mullvadWindowHosted = true;
-    mullvadReturnRoute = "onboarding";
+    mullvadReturnRoute = returnRoute;
     route = "mullvad";
   } catch (failure) {
     mullvadSetupNotice = localActionError(failure, `Mullvad could not ${action === "install" ? "install" : "open"}`);
@@ -4230,13 +4264,30 @@ export function inboxDestinationContent(): string {
     }
     return `<article class="inbox-surface-card" data-inbox-osl-surface="${id}"><strong>${label}</strong><small>${protection}</small><p>${detail}</p></article>`;
   }).join("");
+  const filterTabs = ([
+    ["all", "All"],
+    ["osl", "OSL"],
+    ["connected", "Connected"],
+    ["requests", "Requests"],
+  ] as const).map(([filter, label]) => `<button type="button" data-inbox-filter="${filter}" aria-pressed="${inboxFilter === filter}">${label}</button>`).join("");
+  const visiblePanels = [
+    inboxFilter === "all" || inboxFilter === "osl"
+      ? `<section class="inbox-panel" aria-labelledby="inbox-osl-heading"><h2 id="inbox-osl-heading">OSL</h2><div class="inbox-surface-grid">${surfaceCards}</div>${chatRows}</section>`
+      : "",
+    inboxFilter === "all" || inboxFilter === "connected"
+      ? `<section class="inbox-panel" aria-labelledby="inbox-connected-heading"><h2 id="inbox-connected-heading">Connected</h2>${connectedRows}</section>`
+      : "",
+    inboxFilter === "all" || inboxFilter === "requests"
+      ? `<section class="inbox-panel" aria-labelledby="inbox-requests-heading"><h2 id="inbox-requests-heading">Requests</h2>${requestRows}</section>`
+      : "",
+  ].join("");
   // `id="route-heading"` sat on this <main>, not on its heading, so the landmark
   // had no accessible name and the post-navigation focus move (see the
   // `#route-heading` focus call in the render path) landed on an unnamed region:
   // a screen reader announced nothing at all on arriving at Inbox. Every other
   // destination puts the id on its own <h1> and names the landmark with
   // aria-labelledby; Inbox now matches.
-  return `<main class="content-viewport inbox-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Inbox</p><h1 id="route-heading" tabindex="-1">Conversations</h1><p>Optional views for OSL messages and connected accounts. OSL shows only supported conversations and refuses protected send when the conversation cannot be verified.</p></div><button class="button primary" data-inbox-start-private type="button">Start a private conversation</button></header><nav class="inbox-filter-tabs" aria-label="Inbox filters">${["All", "OSL", "Connected", "Requests"].map((label, index) => `<button type="button" data-inbox-filter="${label.toLowerCase()}" ${index === 0 ? 'aria-pressed="true"' : ""}>${label}</button>`).join("")}</nav><section class="inbox-grid"><section class="inbox-panel" aria-labelledby="inbox-osl-heading"><h2 id="inbox-osl-heading">OSL</h2><div class="inbox-surface-grid">${surfaceCards}</div>${chatRows}</section><section class="inbox-panel" aria-labelledby="inbox-connected-heading"><h2 id="inbox-connected-heading">Connected</h2>${connectedRows}</section><section class="inbox-panel" aria-labelledby="inbox-requests-heading"><h2 id="inbox-requests-heading">Requests</h2>${requestRows}</section></section>${publicPostGuardCarrierPreviewMarkup("Public platforms")}</main>`;
+  return `<main class="content-viewport inbox-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Inbox</p><h1 id="route-heading" tabindex="-1">Conversations</h1><p>Optional views for OSL messages and connected accounts. OSL shows only supported conversations and refuses protected send when the conversation cannot be verified.</p></div><button class="button primary" data-inbox-start-private type="button">Start a private conversation</button></header><nav class="inbox-filter-tabs" aria-label="Inbox filters">${filterTabs}</nav><section class="inbox-grid">${visiblePanels}</section>${publicPostGuardCarrierPreviewMarkup("Public platforms")}</main>`;
 }
 
 export interface ActivityPrimaryActionPlan {
@@ -4976,7 +5027,22 @@ export function privacyDestinationContent(): string {
   const protectionReview = privacyProtectionReviewOpen
     ? `<section class="privacy-review-card" data-privacy-protection-review><div><span class="privacy-local-mark">PROTECTION REVIEW</span><h2>Review or change protection</h2><p>Check the Balanced policy, app exceptions, cleanup limits, and local warning choices before OSL changes anything.</p></div><button class="button compact" data-route="settings" data-settings="scrub" type="button">Open detailed review</button></section>`
     : "";
-  return `<main class="content-viewport privacy-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action data-route="${primary.route}" data-review-target="${primary.reviewTarget}" type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">Balanced</h2><p>Basic account health plus local before-send warnings, attachment cleaning, monthly cleanup review, and private OSL suggestions for verified contacts.</p></div><button class="button compact" type="button" disabled>Change preset</button></section><section class="privacy-policy-stack" id="privacy-protection-review" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from Balanced until you make an exception.</p></div>${statusTag("Deletion off")}</header><p class="privacy-policy-path">Balanced preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be scanned, shown, previewed, confirmed, executed, and checked.</small></span>${statusTag("No auto delete")}</div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span>${statusTag("Limit shown")}</div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span>${statusTag(screenshotProtectionEnabled ? "Active" : "Unavailable")}</div></section></main>`;
+  const presetCopy: Record<ProtectionPreset, { title: string; detail: string }> = {
+    basic: {
+      title: "Basic",
+      detail: "Account health, email tracker blocking, attachment metadata warnings, and exposure alerts.",
+    },
+    balanced: {
+      title: "Balanced",
+      detail: "Basic account health plus local before-send warnings, attachment cleaning, monthly cleanup review, and private OSL suggestions for verified contacts.",
+    },
+    maximum: {
+      title: "Maximum",
+      detail: "Balanced protection plus stricter public-post checks, optional VPN-required actions, and OSL protection required for chosen contacts.",
+    },
+  };
+  const activePreset = presetCopy[protectionPreset];
+  return `<main class="content-viewport privacy-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action data-route="${primary.route}" data-review-target="${primary.reviewTarget}" type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">${activePreset.title}</h2><p>${activePreset.detail}</p></div><button class="button compact" data-change-protection-preset type="button">Change preset</button></section><section class="privacy-policy-stack" id="privacy-protection-review" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from ${activePreset.title} until you make an exception.</p></div>${statusTag("Deletion off")}</header><p class="privacy-policy-path">${activePreset.title} preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be scanned, shown, previewed, confirmed, executed, and checked.</small></span>${statusTag("No auto delete")}</div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span>${statusTag("Limit shown")}</div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span>${statusTag(screenshotProtectionEnabled ? "Active" : "Unavailable")}</div></section></main>`;
 }
 
 function massCleanupActionLabel(action: string): string {
@@ -6843,12 +6909,21 @@ function bindWorkspace(): void {
     void changeSendingMode(button.dataset.settingsSendMode as SendMode);
   }));
   document.querySelector<HTMLButtonElement>("[data-inbox-start-private]")?.addEventListener("click", () => inboxPrimaryAction());
+  document.querySelectorAll<HTMLButtonElement>("[data-inbox-filter]").forEach((button) => button.addEventListener("click", () => {
+    inboxFilter = parseInboxFilter(button.dataset.inboxFilter);
+    render();
+  }));
   document.querySelector<HTMLButtonElement>("#osl-mail-retry")?.addEventListener("click", () => void refreshOslMail());
   document.querySelector<HTMLButtonElement>("#osl-mail-provision")?.addEventListener("click", () => void provisionOslMailFromProfile());
   document.querySelectorAll<HTMLButtonElement>("[data-mail-pane]").forEach((button) => button.addEventListener("click", () => {
     oslMailPane = button.dataset.mailPane as OslMailPane;
     render();
   }));
+  document.querySelector<HTMLInputElement>("#osl-mail-notifications")?.addEventListener("change", (event) => {
+    oslMailNotifications = (event.currentTarget as HTMLInputElement).checked;
+    localStorage.setItem(oslMailNotificationsStorageKey, String(oslMailNotifications));
+    render();
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-mail-thread]").forEach((button) => button.addEventListener("click", async () => {
     const threadId = button.dataset.mailThread ?? "";
     oslMailActiveThread = await retrieveOslMailThread(threadId);
@@ -6875,12 +6950,18 @@ function bindWorkspace(): void {
     render();
   });
   document.querySelector<HTMLButtonElement>("[data-connections-primary-action]")?.addEventListener("click", () => connectionsPrimaryAction());
+  document.querySelector<HTMLButtonElement>("#install-mullvad-from-connections")?.addEventListener("click", () => void runMullvadSetupAction("install", "connections"));
   document.querySelector<HTMLButtonElement>("[data-activity-primary-action]")?.addEventListener("click", () => {
     route = "activity";
     render();
   });
   document.querySelector<HTMLButtonElement>("[data-privacy-primary-action]")?.addEventListener("click", () => {
     route = "privacy";
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("[data-change-protection-preset]")?.addEventListener("click", () => {
+    route = "onboarding";
+    onboardingRoute = "privacy";
     render();
   });
   document.querySelector<HTMLInputElement>("#rn-wire-policy-toggle")?.addEventListener("change", (event) => {
@@ -9339,6 +9420,9 @@ type OslHubUiTestStatePatch = {
   notificationPreviewContent?: boolean;
   appNotifications?: AppNotification[];
   mullvadAvailability?: MullvadStatus["availability"];
+  protectionPreset?: ProtectionPreset;
+  inboxFilter?: InboxFilter;
+  oslMailNotifications?: boolean;
   licenseAccess?: HubLicenseState["access"];
   autoScrubFleetStatus?: AutoScrubFleetStatus | null;
   hubIdentities?: HubIdentitySlot[];
@@ -9397,6 +9481,9 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   privacyProtectionReviewOpen = false;
   activityAttentionReviewOpen = false;
   peoplePrimaryActionFocus = null;
+  protectionPreset = patch.protectionPreset ?? loadProtectionPreset();
+  inboxFilter = patch.inboxFilter ?? "all";
+  oslMailNotifications = patch.oslMailNotifications ?? (localStorage.getItem(oslMailNotificationsStorageKey) !== "false");
   services = patch.services ?? [];
   linkedServicesChecked = patch.servicesChecked ?? patch.services !== undefined;
   hubPeople = (patch.hubPeople ?? []).map(testHubPerson);
@@ -9439,6 +9526,12 @@ export const __oslHubUiTest = {
   renderRouteShell(destination: Route): string {
     route = destination;
     return destination === "onboarding" ? onboardingShellMarkup() : workspaceShellMarkup();
+  },
+  bindOnboarding(): void {
+    bindOnboarding();
+  },
+  bindWorkspace(): void {
+    bindWorkspace();
   },
   /** Render the real service header without needing a companion window. */
   /**
@@ -9548,6 +9641,10 @@ export const __oslHubUiTest = {
     privacyProtectionReviewOpen: boolean;
     activityAttentionReviewOpen: boolean;
     peoplePrimaryActionFocus: PeoplePrimaryActionFocus | null;
+    protectionPreset: ProtectionPreset;
+    inboxFilter: InboxFilter;
+    oslMailNotifications: boolean;
+    mullvadSetupNotice: string;
     ownedConfirmationKind: OwnedConfirmation["kind"] | null;
     ownedConfirmationPersonId: string | null;
   } {
@@ -9559,6 +9656,10 @@ export const __oslHubUiTest = {
       privacyProtectionReviewOpen,
       activityAttentionReviewOpen,
       peoplePrimaryActionFocus,
+      protectionPreset,
+      inboxFilter,
+      oslMailNotifications,
+      mullvadSetupNotice,
       ownedConfirmationKind: ownedConfirmation?.kind ?? null,
       ownedConfirmationPersonId: ownedConfirmation?.kind === "verifyFriend" || ownedConfirmation?.kind === "removeFriend"
         ? ownedConfirmation.personId
