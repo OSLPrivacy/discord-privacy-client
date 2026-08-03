@@ -509,7 +509,18 @@ pub fn legacy_wide_decode_bits(bits: &[bool], target_bits: u32) -> Vec<usize> {
 }
 
 /// LEGACY, RECEIVE ONLY (B0-06). Inverse of [`legacy_wide_decode_bits`].
+///
+/// The word count is fixed by the format at `ceil(target_bits / 6)`. It must
+/// be checked before the loop, not implied by it: this function is fed every
+/// inbound Discord message (via `mode1::decode_token`), and a longer stream
+/// used to underflow `target_bits - index * WIDE_TOKEN_WORD_BITS` on the
+/// 33rd word — a remotely reachable panic in debug builds and a masked shift
+/// in release. Any in-vocabulary sentence over 32 words drawn from the first
+/// 64 vocabulary slots reached it.
 pub fn legacy_wide_encode_words(words: &[usize], target_bits: u32) -> Vec<bool> {
+    if words.len() != (target_bits as usize).div_ceil(WIDE_TOKEN_WORD_BITS) {
+        return vec![false; target_bits as usize];
+    }
     let mut bits = Vec::with_capacity(target_bits as usize);
     for (index, &word) in words.iter().enumerate() {
         if !(1..=64).contains(&word) {
