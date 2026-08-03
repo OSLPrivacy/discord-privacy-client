@@ -6342,14 +6342,31 @@ async fn decrypt_local_protected_capsule(
     .map_err(|error| format!("OSL protected worker failed: {error}"))?
 }
 
+/// NEW-3: this reads like a cheap getter and is not one. On a first run no slot
+/// marker exists yet, so the first call performs the whole flat-account
+/// migration — every account artifact moved, the SQLite message store closed
+/// and its directory renamed, then `run_autostart`, which re-registers the
+/// identity against the key server over blocking HTTP. That ran directly on the
+/// Tauri async runtime while every sibling in this module
+/// (`create_hub_identity_slot`, `recover_hub_identity_slot`,
+/// `switch_hub_identity`, `burn_active_hub_identity`) hops through
+/// `spawn_blocking` for far less work. Opening Settings → Account therefore
+/// stalled the runtime every other command shares, on the one call that does
+/// network I/O. It hops now, like its siblings.
 #[tauri::command]
 async fn list_hub_identities(
-    core: State<'_, HubCoreState>,
-    identities: State<'_, HubIdentityRegistryState>,
+    app: tauri::AppHandle,
     session: State<'_, HubAccountSessionState>,
 ) -> Result<Vec<HubIdentitySlotDto>, String> {
     let _session = session.transition.lock().await;
-    identity_registry::list_identity_slots(&core, &identities)
+    tauri::async_runtime::spawn_blocking(move || {
+        identity_registry::list_identity_slots(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubIdentityRegistryState>(),
+        )
+    })
+    .await
+    .map_err(|_| "OSL identity registry worker failed".to_owned())?
 }
 
 #[tauri::command]
