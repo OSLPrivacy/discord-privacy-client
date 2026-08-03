@@ -3,18 +3,28 @@
 //! encoder/decoder, and the per-conversation MAC-key derivation.
 //!
 //! On the wire:
-//!   * Sender: existing PQXDH+ratchet encryption produces a v=4/v=5
-//!     wire `DPC0::<base64(cipher)>`. We strip the prefix, decode the
-//!     base64, upload the raw bytes to the cipher-store (returns an
-//!     8-byte ID), and encode that ID as compact chat-like cover text
-//!     via `encode_token`. The cover text is what
-//!     gets posted to Discord — no `DPC0::` marker, no high-entropy
-//!     base64 blob.
+//!   * Sender: existing PQXDH encryption produces a `DPC0::<base64(cipher)>`
+//!     wire. We strip the prefix, decode the base64, frame and Padmé-pad the
+//!     ciphertext into a transport object, mint a fresh 160-bit pointer `P`,
+//!     derive this object's cipher-store authority from `P` and the sending
+//!     layer's keys, upload under the client-derived blob id, and encode `P`
+//!     itself as compact chat-like cover text via `encode_token`. The cover
+//!     text is what gets posted to Discord — no `DPC0::` marker, no
+//!     high-entropy base64 blob, and no server-assigned identifier.
 //!   * Receiver: every incoming Discord message in an OSL-enabled
 //!     scope runs through `decode_token`. If the HMAC tag validates,
-//!     the 8-byte ID is extracted, the cipher fetched from the store,
-//!     and re-wrapped as `DPC0::<base64>` so the existing decrypt
-//!     pipeline picks it up unchanged.
+//!     `P` is extracted, the blob id and fetch capability are derived from
+//!     `P` alone, the object is fetched and unframed, and the ciphertext is
+//!     re-wrapped as `DPC0::<base64>` so the existing decrypt pipeline picks
+//!     it up unchanged.
+//!
+//! Authority model (T1-30/T1-32/T6-R3): the pointer is the read capability and
+//! nothing else. `blob_id` and `fetch_cap` come from `P`, so a recipient can
+//! address and read exactly the object it was pointed at. `manage_cap` is
+//! rooted in the sender's own send key, so only the sender can burn, and
+//! `ack_cap` is rooted in the message key. None of the three is recoverable
+//! from the public carrier. This replaces the retired scope-derived fetch
+//! token, which any party that merely knew the public scope could compute.
 //!
 //! Detection-key derivation: the shipping caller supplies secret conversation
 //! material and this module expands it under [`DETECT_KEY_HKDF_INFO`]. Scope
@@ -22,14 +32,19 @@
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
+use crypto::pointer::{
+    derive_capabilities, derive_fetch_authority, derive_manage_capability, Pointer,
+    CAPABILITY_BYTES, POINTER_BYTES,
+};
 use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
 use crate::cipher_store_client::{
-    CipherStoreClient, CipherStoreError, UploadResult, FETCH_TOKEN_BYTES,
+    BlobCapabilities, BlobObjectClass, CipherStoreClient, CipherStoreError,
 };
 use crate::scope::ScopeInput;
+use crate::transport;
+use crate::transport_padding::{frame_padded_transport_object, unframe_padded_transport_object};
 
 const DPC0_PREFIX: &str = "DPC0::";
 const MAC_KEY_LEN: usize = 32;
@@ -37,26 +52,27 @@ pub const PROSE_TOKEN_MAC_HKDF_INFO: &[u8] = b"discord-privacy-client/prose-toke
 /// Domain separator for the private pointer-detection key in transport §6b.
 pub const DETECT_KEY_HKDF_INFO: &[u8] = b"osl/detect/v1";
 
-/// Phase 6 capability-token domain separator. The token is
-/// HMAC-SHA256(mac_key, FETCH_TOKEN_INFO || blob_id_bytes)[..16];
-/// truncated to 128 bits, kept the same length on both ends.
-const FETCH_TOKEN_INFO: &[u8] = b"discord-privacy-client/cipher-store/fetch-token/v1";
+/// The carrier transports the pointer and only the pointer. T1-32 widened the
+/// prose carrier to the 160-bit seed for exactly this reason, so a drift
+/// between the two constants must not compile.
+const _: () = assert!(stego::TOKEN_ID_BYTES == POINTER_BYTES);
 
-/// Derive the Phase 6 cipher-store fetch capability token from the
-/// per-conversation MAC key + the blob's 8-byte ID. Same scope + same
-/// blob_id on sender and receiver → same token, no roundtrip.
-fn derive_fetch_token(
-    mac_key: &[u8; MAC_KEY_LEN],
-    blob_id: &[u8; stego::TOKEN_ID_BYTES],
-) -> [u8; FETCH_TOKEN_BYTES] {
-    let mut mac =
-        <Hmac<Sha256> as Mac>::new_from_slice(mac_key).expect("HMAC-SHA256 accepts any key length");
-    mac.update(FETCH_TOKEN_INFO);
-    mac.update(blob_id);
-    let result = mac.finalize().into_bytes();
-    let mut out = [0u8; FETCH_TOKEN_BYTES];
-    out.copy_from_slice(&result[..FETCH_TOKEN_BYTES]);
-    out
+/// Key material the sending layer holds, threaded to the pointer derivation.
+///
+/// These are separate fields rather than one conversation secret because the
+/// three authorities they root are deliberately not interchangeable: whoever
+/// holds `send_key` can burn the object, and the recipient must not.
+#[derive(Clone, Copy)]
+pub struct ProseTokenSendKeys<'a> {
+    /// Roots the per-object receipt authority. Both ends of the conversation
+    /// derive it; the object id is bound into the derivation, so the resulting
+    /// capability is still per-object.
+    pub message_key: &'a [u8],
+    /// Roots the burn authority. Sender-private: a recipient that could derive
+    /// this could destroy the sender's copies.
+    pub send_key: &'a [u8],
+    /// Roots the delivery tag the store groups undelivered objects by.
+    pub conversation_key: &'a [u8],
 }
 
 /// Errors that surface from the composite send/recv paths.
@@ -70,10 +86,27 @@ pub enum ProseTokenError {
     BadBase64(String),
     #[error("cipher-store: {0}")]
     CipherStore(#[from] CipherStoreError),
-    #[error("blob id was not 16 hex chars: {0}")]
+    #[error("blob id was not 32 hex chars: {0}")]
     BadIdHex(String),
     #[error("a secret conversation detection key is required")]
     MissingDetectionKey,
+    #[error("pointer capability derivation failed")]
+    Capability,
+    /// The store echoed an id other than the one this client derived, so the
+    /// object it stored is not the object the carrier points at and the burn
+    /// ledger would record an id nobody can reach.
+    #[error("cipher-store acknowledged a different blob id")]
+    BlobIdMismatch,
+    #[error("transport object could not be framed for upload")]
+    ObjectTooLarge,
+    #[error("transport object framing was malformed")]
+    MalformedObject,
+}
+
+impl From<crypto::Error> for ProseTokenError {
+    fn from(_: crypto::Error) -> Self {
+        Self::Capability
+    }
 }
 
 /// Derive the per-conversation MAC key + ConversationCipher used by
@@ -114,14 +147,25 @@ pub fn derive_detection_key(
     Ok(key)
 }
 
-// T6-R3 replaces this temporary legacy capability key with P-derived
-// authority. It is deliberately separate from the private detector above.
-fn legacy_scope_fetch_key(scope_input: &ScopeInput) -> Result<[u8; MAC_KEY_LEN], ProseTokenError> {
-    let scope = crate::scope::Scope::try_from(scope_input.clone())?;
-    let salt = prose_token_salt(&scope);
-    let hk = Hkdf::<Sha256>::new(None, salt.as_bytes());
+/// Domain separator for the sender-private root of the burn authority.
+pub const SEND_KEY_HKDF_INFO: &[u8] = b"osl/prose/send-key/v1";
+
+/// Derive the sending device's private `send_key` from its own long-term
+/// secret.
+///
+/// This root must satisfy two things at once. It has to be unavailable to the
+/// recipient, or the recipient could burn the sender's objects; and it has to
+/// be recomputable at burn time, which happens long after the send, with only
+/// the account's own state -- a scope burn walks recorded ids and may have no
+/// peer left to resolve. A key derived from the device's identity secret is
+/// the only material at hand that is both.
+pub fn derive_send_key(identity_secret: &[u8]) -> Result<[u8; MAC_KEY_LEN], ProseTokenError> {
+    if identity_secret.is_empty() {
+        return Err(ProseTokenError::MissingDetectionKey);
+    }
+    let hk = Hkdf::<Sha256>::new(None, identity_secret);
     let mut key = [0u8; MAC_KEY_LEN];
-    hk.expand(PROSE_TOKEN_MAC_HKDF_INFO, &mut key)
+    hk.expand(SEND_KEY_HKDF_INFO, &mut key)
         .expect("HKDF expand to 32 bytes is infallible");
     Ok(key)
 }
@@ -151,24 +195,32 @@ fn prose_token_salt(scope: &crate::scope::Scope) -> String {
     }
 }
 
-fn id_hex_to_bytes(id_hex: &str) -> Result<[u8; stego::TOKEN_ID_BYTES], ProseTokenError> {
-    if id_hex.len() != stego::TOKEN_ID_BYTES * 2 || !id_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+/// Parse a canonical lowercase cipher-store blob id.
+///
+/// The id is the 128-bit value the client derives from `P`, never a
+/// server-assigned one, so its exact shape is a client-side invariant.
+fn blob_id_hex_to_bytes(id_hex: &str) -> Result<[u8; CAPABILITY_BYTES], ProseTokenError> {
+    if id_hex.len() != CAPABILITY_BYTES * 2
+        || !id_hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         return Err(ProseTokenError::BadIdHex(id_hex.to_string()));
     }
-    let mut bytes = [0u8; stego::TOKEN_ID_BYTES];
-    for i in 0..stego::TOKEN_ID_BYTES {
-        bytes[i] = u8::from_str_radix(&id_hex[i * 2..i * 2 + 2], 16)
+    let mut bytes = [0u8; CAPABILITY_BYTES];
+    for (index, slot) in bytes.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&id_hex[index * 2..index * 2 + 2], 16)
             .map_err(|_| ProseTokenError::BadIdHex(id_hex.to_string()))?;
     }
     Ok(bytes)
 }
 
-fn bytes_to_id_hex(bytes: &[u8; stego::TOKEN_ID_BYTES]) -> String {
-    let mut s = String::with_capacity(16);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
     }
-    s
+    out
 }
 
 /// Successful send result.
@@ -176,7 +228,8 @@ fn bytes_to_id_hex(bytes: &[u8; stego::TOKEN_ID_BYTES]) -> String {
 pub struct ProseTokenSendOutput {
     /// Natural-English cover text to post to Discord.
     pub cover_text: String,
-    /// 16-hex-char blob ID. Caller stashes for burn / lookup.
+    /// 32-hex-char client-derived blob ID. Caller stashes for burn / lookup.
+    /// It is not the pointer: the pointer never leaves the carrier.
     pub blob_id: String,
     /// Unix-epoch seconds when the server will delete the blob.
     pub expires_at: i64,
@@ -188,19 +241,26 @@ pub struct ProseTokenRecvOutput {
     /// `DPC0::<base64>` wire reconstructed from the fetched cipher.
     /// Caller feeds this into the existing decrypt pipeline.
     pub wire: String,
-    /// 16-hex-char blob ID extracted from the prose. Useful for
+    /// 32-hex-char blob ID derived from the pointer in the prose. Useful for
     /// matching against a burn-tracking ledger.
     pub blob_id: String,
 }
 
-/// Encrypt-and-upload: takes a `DPC0::<base64>` wire string produced
-/// by the existing encrypt pipeline, uploads the underlying cipher
-/// bytes to the cipher-store with the chosen TTL, and encodes the
-/// returned blob ID as marker-free, chat-like cover text.
+/// Encrypt-and-upload: takes a `DPC0::<base64>` wire string produced by the
+/// existing encrypt pipeline, uploads the underlying cipher bytes to the
+/// cipher-store under a client-derived id with the chosen TTL, and encodes the
+/// pointer that names it as marker-free, chat-like cover text.
+///
+/// The upload carries only SHA-256 digests of the three capabilities. The
+/// store therefore learns which authorities exist without ever holding one,
+/// and the pointer that produces the fetch capability never crosses the
+/// network at all — it travels in the public prose, readable only by a party
+/// that already holds this conversation's detection key.
 pub fn prose_token_send(
     config_dir: &std::path::Path,
     scope_input: &ScopeInput,
     detection_key: &[u8; MAC_KEY_LEN],
+    keys: ProseTokenSendKeys<'_>,
     dpc0_wire: &str,
     ttl_seconds: u32,
 ) -> Result<ProseTokenSendOutput, ProseTokenError> {
@@ -210,44 +270,52 @@ pub fn prose_token_send(
     let cipher_bytes = B64
         .decode(body)
         .map_err(|e| ProseTokenError::BadBase64(e.to_string()))?;
+    // The store accepts only Padmé lengths, and padding a bare ciphertext
+    // would move its AEAD tag, so the object carries its own length.
+    let object =
+        frame_padded_transport_object(&cipher_bytes).ok_or(ProseTokenError::ObjectTooLarge)?;
 
-    // Phase 6: derive a per-conversation capability token and pass it
-    // to the worker on upload. Since the blob_id is server-assigned
-    // and the token has to be in the upload POST itself, the token's
-    // input is fixed to (mac_key, FETCH_TOKEN_INFO || zeros) — the
-    // "blob_id" position holds a constant placeholder, making the
-    // token effectively per-scope rather than per-blob.
-    //
-    // This is the intended design, not a workaround:
-    // - Every recipient in the conversation has mac_key (it's
-    //   HKDF-derived from the public scope id, the same way the cover
-    //   HMAC tag is derived). So per-blob granularity wouldn't add
-    //   any access-control distinction inside the scope — anyone with
-    //   read access to one blob has read access to all blobs.
-    // - The token blocks fetch/delete by a bare leaked blob_id. It is
-    //   not an identity or membership credential: mac_key is derived
-    //   from public scope metadata, so a party that also knows the scope
-    //   can compute it. The worker returns 403 only when the token is
-    //   absent or different.
-    // - It does NOT defend against a compromised cipher-store
-    //   operator who can read DB rows directly. That requires
-    //   Privacy-Pass-style blind tokens (deferred).
+    // A fresh 160-bit seed per message. Two messages in one conversation share
+    // no store-visible value except the delivery tag, so the store cannot link
+    // them by id, capability digest or object key.
+    let pointer = transport::fresh_pointer();
+    let capabilities = derive_capabilities(
+        &pointer,
+        keys.message_key,
+        keys.send_key,
+        keys.conversation_key,
+    )?;
+    let blob_id_hex = hex_lower(&capabilities.blob_id);
+
     let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir);
     let client = CipherStoreClient::new(base_url)?;
+    let uploaded = client.upload_pointer(
+        &object,
+        ttl_seconds,
+        &capabilities.blob_id,
+        BlobCapabilities {
+            fetch_cap: capabilities.fetch_cap,
+            ack_cap: capabilities.ack_cap,
+            manage_cap: capabilities.manage_cap,
+            delivery_tag: capabilities.delivery_tag,
+        },
+        // One fan-out copy per recipient: a receipt destroys this copy.
+        BlobObjectClass::SingleAck,
+    )?;
+    // The id is ours, not the server's. If the store answers with a different
+    // one, the object it kept is not the object the carrier points at, and the
+    // burn ledger would record an id no manage capability matches.
+    if uploaded.id_hex != blob_id_hex {
+        return Err(ProseTokenError::BlobIdMismatch);
+    }
+
     let cipher = derive_scope_cipher(scope_input)?;
-    let fetch_key = legacy_scope_fetch_key(scope_input)?;
-    let fetch_token = derive_fetch_token(&fetch_key, &[0u8; stego::TOKEN_ID_BYTES]);
-
-    let UploadResult { id_hex, expires_at } =
-        client.upload(&cipher_bytes, ttl_seconds, &fetch_token)?;
-
-    let id_bytes = id_hex_to_bytes(&id_hex)?;
-    let cover_text = stego::encode_token(&cipher, detection_key, &id_bytes);
+    let cover_text = stego::encode_token(&cipher, detection_key, pointer.as_bytes());
 
     Ok(ProseTokenSendOutput {
         cover_text,
-        blob_id: id_hex,
-        expires_at,
+        blob_id: blob_id_hex,
+        expires_at: uploaded.expires_at,
     })
 }
 
@@ -293,21 +361,19 @@ pub fn prose_token_recv_classified(
     msg: &str,
 ) -> Result<ProseTokenRecv, ProseTokenError> {
     let cipher = derive_scope_cipher(scope_input)?;
-    let id_bytes = match stego::decode_token(&cipher, detection_key, msg) {
-        Some(id) => id,
+    let pointer = match stego::decode_token(&cipher, detection_key, msg) {
+        Some(seed) => Pointer::from_bytes(seed),
         None => return Ok(ProseTokenRecv::Missed(ProseTokenMiss::NoToken)),
     };
-    let id_hex = bytes_to_id_hex(&id_bytes);
+    // The pointer is the whole of the receiver's authority: the id it must ask
+    // for and the capability that reads it, both from `P` and nothing else. No
+    // roundtrip, and no scope metadata anywhere in the derivation.
+    let authority = derive_fetch_authority(&pointer)?;
+    let id_hex = hex_lower(&authority.blob_id);
 
     let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir);
     let client = CipherStoreClient::new(base_url)?;
-    // Phase 6: present the same scope-derived fetch token the sender
-    // used at upload. derive_fetch_token is deterministic over
-    // (mac_key, [0u8; 8]) so sender + receiver produce identical
-    // tokens without any wire roundtrip.
-    let fetch_key = legacy_scope_fetch_key(scope_input)?;
-    let fetch_token = derive_fetch_token(&fetch_key, &[0u8; stego::TOKEN_ID_BYTES]);
-    let cipher_bytes = match client.fetch(&id_hex, &fetch_token) {
+    let object = match client.fetch(&id_hex, &authority.fetch_cap) {
         Ok(b) => b,
         // The one line this split exists for. A clean 404 means the pointer was
         // real and its ciphertext is gone; it is NOT "this was never a token".
@@ -316,7 +382,9 @@ pub fn prose_token_recv_classified(
         }
         Err(e) => return Err(e.into()),
     };
-    let wire = format!("{}{}", DPC0_PREFIX, B64.encode(&cipher_bytes));
+    let cipher_bytes =
+        unframe_padded_transport_object(&object).ok_or(ProseTokenError::MalformedObject)?;
+    let wire = format!("{}{}", DPC0_PREFIX, B64.encode(cipher_bytes));
 
     Ok(ProseTokenRecv::Recovered(ProseTokenRecvOutput {
         wire,
@@ -355,20 +423,21 @@ pub fn prose_token_recv(
 /// side — second call is a no-op. Errors surface to the caller so
 /// the UI can decide whether to retry / toast.
 ///
-/// Phase 6: needs `scope_input` to derive the capability token the
-/// worker requires for DELETE. Without the token, the worker 401s
-/// (which protects against blob_id-leak DoS where an outsider with a
-/// blob_id could otherwise nuke a conversation's covers).
+/// The burn presents the sender's manage capability, derived from `send_key`
+/// and the recorded id. The pointer is not needed and is usually long gone by
+/// the time a scope is burned. Because the authority is rooted in a key only
+/// the sender holds, neither a leaked id nor the recipient's copy of the
+/// pointer can destroy a conversation's objects.
 pub fn prose_token_burn_id(
     config_dir: &std::path::Path,
-    scope_input: &ScopeInput,
+    send_key: &[u8],
     blob_id: &str,
 ) -> Result<(), ProseTokenError> {
+    let blob_id_bytes = blob_id_hex_to_bytes(blob_id)?;
+    let manage_cap = derive_manage_capability(send_key, &blob_id_bytes)?;
     let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir);
     let client = CipherStoreClient::new(base_url)?;
-    let fetch_key = legacy_scope_fetch_key(scope_input)?;
-    let fetch_token = derive_fetch_token(&fetch_key, &[0u8; stego::TOKEN_ID_BYTES]);
-    client.delete(blob_id, &fetch_token)?;
+    client.burn(blob_id, &manage_cap)?;
     Ok(())
 }
 
@@ -376,20 +445,100 @@ pub fn prose_token_burn_id(
 mod tests {
     use super::*;
 
-    #[test]
-    fn id_hex_round_trip() {
-        let id: [u8; stego::TOKEN_ID_BYTES] = [0x07; stego::TOKEN_ID_BYTES];
-        let s = bytes_to_id_hex(&id);
-        assert_eq!(s, "0707070707070707070707070707070707070707");
-        assert_eq!(id_hex_to_bytes(&s).unwrap(), id);
+    /// The retired scope-derived capability key. It is no longer part of any
+    /// send or receive path -- that is the point of this migration -- but the
+    /// tests below still need a key a party who knows only the *public* scope
+    /// could compute, in order to assert what such a party cannot do.
+    fn public_scope_derived_key(
+        scope_input: &ScopeInput,
+    ) -> Result<[u8; MAC_KEY_LEN], ProseTokenError> {
+        let scope = crate::scope::Scope::try_from(scope_input.clone())?;
+        let salt = prose_token_salt(&scope);
+        let hk = Hkdf::<Sha256>::new(None, salt.as_bytes());
+        let mut key = [0u8; MAC_KEY_LEN];
+        hk.expand(PROSE_TOKEN_MAC_HKDF_INFO, &mut key)
+            .expect("HKDF expand to 32 bytes is infallible");
+        Ok(key)
     }
 
     #[test]
-    fn id_hex_rejects_bad_input() {
-        assert!(id_hex_to_bytes("").is_err());
-        assert!(id_hex_to_bytes("zzzz").is_err());
-        assert!(id_hex_to_bytes("0774c922df45047").is_err()); // 15 chars
-        assert!(id_hex_to_bytes("0774c922df45047fab").is_err()); // 18 chars
+    fn blob_id_hex_round_trip() {
+        let id = [0x07; CAPABILITY_BYTES];
+        let s = hex_lower(&id);
+        assert_eq!(s, "07070707070707070707070707070707");
+        assert_eq!(blob_id_hex_to_bytes(&s).unwrap(), id);
+    }
+
+    #[test]
+    fn blob_id_hex_rejects_bad_input() {
+        assert!(blob_id_hex_to_bytes("").is_err());
+        assert!(blob_id_hex_to_bytes("zzzz").is_err());
+        // The retired server-assigned 16-hex id, which no manage capability
+        // matches and which the shipping worker would refuse outright.
+        assert!(blob_id_hex_to_bytes("0774c922df450477").is_err());
+        assert!(blob_id_hex_to_bytes("0707070707070707070707070707070").is_err()); // 31
+        assert!(blob_id_hex_to_bytes("070707070707070707070707070707070").is_err()); // 33
+        // Uppercase is not the canonical form the store indexes on.
+        assert!(blob_id_hex_to_bytes("0707070707070707070707070707070A").is_err());
+    }
+
+    /// The carrier must transport the pointer itself, and the store must be
+    /// addressed by a value derived from it. Encoding the blob id into the
+    /// prose instead would hand the store's own identifier to every observer
+    /// holding the detection key, and would make the fetch capability
+    /// underivable on the receiving side.
+    #[test]
+    fn the_carrier_transports_the_pointer_and_not_the_store_identifier() {
+        let scope = ScopeInput {
+            kind: crate::scope::ScopeKind::Dm,
+            id: "1234567890".to_string(),
+            server_id: None,
+            channel_id: Some("9999999999999999".to_string()),
+        };
+        let cipher = derive_scope_cipher(&scope).unwrap();
+        let detector = derive_detection_key(&[0x42; 32]).unwrap();
+        let pointer = transport::fresh_pointer();
+        let authority = derive_fetch_authority(&pointer).unwrap();
+
+        let cover = stego::encode_token(&cipher, &detector, pointer.as_bytes());
+        let decoded = stego::decode_token(&cipher, &detector, &cover).expect("carrier decodes");
+        assert_eq!(&decoded, pointer.as_bytes());
+        assert_eq!(
+            derive_fetch_authority(&Pointer::from_bytes(decoded))
+                .unwrap()
+                .blob_id,
+            authority.blob_id,
+            "the receiver reaches the sender's object from the carrier alone"
+        );
+        assert!(
+            !cover.contains(&hex_lower(&authority.blob_id)),
+            "the public carrier must not spell out the store identifier"
+        );
+    }
+
+    /// A recipient holds the pointer, so if burn authority followed from it the
+    /// recipient could destroy the sender's copies. It must follow from the
+    /// send key instead.
+    #[test]
+    fn burn_authority_does_not_follow_from_the_pointer() {
+        let pointer = transport::fresh_pointer();
+        let sender = derive_capabilities(&pointer, &[0x11; 32], &[0x22; 32], &[0x33; 32]).unwrap();
+        let recipient = derive_fetch_authority(&pointer).unwrap();
+
+        assert_eq!(recipient.blob_id, sender.blob_id);
+        assert_eq!(recipient.fetch_cap, sender.fetch_cap);
+        assert_ne!(recipient.fetch_cap, sender.manage_cap);
+        // What a recipient could try: its own key material over the id it can
+        // derive. It does not reproduce the sender's manage capability.
+        assert_ne!(
+            derive_manage_capability(&recipient.fetch_cap, &recipient.blob_id).unwrap(),
+            sender.manage_cap
+        );
+        assert_eq!(
+            derive_manage_capability(&[0x22; 32], &sender.blob_id).unwrap(),
+            sender.manage_cap,
+            "the sender recovers burn authority from its send key and the recorded id"
+        );
     }
 
     #[test]
@@ -426,8 +575,8 @@ mod tests {
             server_id: None,
             channel_id: None,
         };
-        let ka = legacy_scope_fetch_key(&a).unwrap();
-        let kb = legacy_scope_fetch_key(&b).unwrap();
+        let ka = public_scope_derived_key(&a).unwrap();
+        let kb = public_scope_derived_key(&b).unwrap();
         assert_ne!(ka, kb);
     }
 
@@ -451,8 +600,8 @@ mod tests {
             server_id: None,
             channel_id: Some("9999999999999999".to_string()), // DM channel
         };
-        let ka = legacy_scope_fetch_key(&desktop_view).unwrap();
-        let kb = legacy_scope_fetch_key(&laptop_view).unwrap();
+        let ka = public_scope_derived_key(&desktop_view).unwrap();
+        let kb = public_scope_derived_key(&laptop_view).unwrap();
         assert_eq!(
             ka, kb,
             "DM mac_keys must be symmetric across peers when channel_id is set"
@@ -478,8 +627,8 @@ mod tests {
             server_id: None,
             channel_id: Some("111".to_string()), // fallback equals id
         };
-        let k1 = legacy_scope_fetch_key(&no_ch).unwrap();
-        let k2 = legacy_scope_fetch_key(&ch_eq_id).unwrap();
+        let k1 = public_scope_derived_key(&no_ch).unwrap();
+        let k2 = public_scope_derived_key(&ch_eq_id).unwrap();
         // Both should produce the same key (both use storage_key()).
         assert_eq!(k1, k2);
     }
@@ -501,8 +650,8 @@ mod tests {
             server_id: None,
             channel_id: None,
         };
-        let k1 = legacy_scope_fetch_key(&with_ch).unwrap();
-        let k2 = legacy_scope_fetch_key(&without_ch).unwrap();
+        let k1 = public_scope_derived_key(&with_ch).unwrap();
+        let k2 = public_scope_derived_key(&without_ch).unwrap();
         assert_eq!(k1, k2);
     }
 
@@ -516,7 +665,7 @@ mod tests {
         };
         let cipher = derive_scope_cipher(&scope).unwrap();
         let detector = derive_detection_key(&[0x5a; 32]).unwrap();
-        let public_scope_key = legacy_scope_fetch_key(&scope).unwrap();
+        let public_scope_key = public_scope_derived_key(&scope).unwrap();
         let pointer = [0x17; stego::TOKEN_ID_BYTES];
         let cover = stego::encode_token(&cipher, &detector, &pointer);
 

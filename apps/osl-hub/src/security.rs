@@ -1995,7 +1995,15 @@ pub fn record_peer_prose_blob(
     blob_id: String,
 ) -> Result<(), String> {
     let file_key = require_unlocked()?;
-    if blob_id.len() != 16 || !blob_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    // The 128-bit client-derived cipher-store id, in the canonical lowercase
+    // form the store indexes on. A recorded id in any other shape names an
+    // object no manage capability can reach, so it is refused at the ledger
+    // rather than kept and retried forever.
+    if blob_id.len() != 32
+        || !blob_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         return Err("OSL remote message identifier is invalid".to_owned());
     }
     let scope: Scope = scope_input
@@ -2542,12 +2550,21 @@ pub fn burn_scope(
     }
 
     let blob_ids = ipc::scope_blobs_file::take_blobs(&mut blobs_file, &scope.storage_key());
+    // Burn authority is this device's, not the conversation's. Without it no
+    // remote object can be destroyed, but every other unilateral local step
+    // above still stands, so the ids are retained for a later attempt rather
+    // than failing the burn.
+    let send_key = crate::broker::prose_send_key(core).ok();
     let mut failed_blob_ids = Vec::new();
     let mut remote_blobs_deleted = 0usize;
     for blob_id in blob_ids {
-        match ipc::prose_token::prose_token_burn_id(&dir, &scope_input, &blob_id) {
-            Ok(()) => remote_blobs_deleted += 1,
-            Err(_) => failed_blob_ids.push(blob_id),
+        let burned = send_key.as_ref().is_some_and(|send_key| {
+            ipc::prose_token::prose_token_burn_id(&dir, send_key, &blob_id).is_ok()
+        });
+        if burned {
+            remote_blobs_deleted += 1;
+        } else {
+            failed_blob_ids.push(blob_id);
         }
     }
     for blob_id in &failed_blob_ids {
@@ -2657,12 +2674,20 @@ pub fn burn_manual_peer_scope(
     // shared channel during a local app+account burn.
     let rows_destroyed = 0;
 
+    // See `burn_scope`: the manage capability is rooted in this device's own
+    // send key, so a missing identity leaves remote objects counted as
+    // undeleted instead of aborting the local revocation.
+    let send_key = crate::broker::prose_send_key(core).ok();
     let mut failed_blob_ids = Vec::new();
     let mut remote_blobs_deleted = 0usize;
     for blob_id in blob_ids {
-        match ipc::prose_token::prose_token_burn_id(&dir, &scope_input, &blob_id) {
-            Ok(()) => remote_blobs_deleted = remote_blobs_deleted.saturating_add(1),
-            Err(_) => failed_blob_ids.push(blob_id),
+        let burned = send_key.as_ref().is_some_and(|send_key| {
+            ipc::prose_token::prose_token_burn_id(&dir, send_key, &blob_id).is_ok()
+        });
+        if burned {
+            remote_blobs_deleted = remote_blobs_deleted.saturating_add(1);
+        } else {
+            failed_blob_ids.push(blob_id);
         }
     }
     for blob_id in &failed_blob_ids {

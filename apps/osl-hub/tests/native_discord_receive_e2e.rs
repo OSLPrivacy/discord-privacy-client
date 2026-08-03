@@ -74,10 +74,31 @@ struct InboxRow {
     created_at: i64,
 }
 
+/// One stored cipher-store object, modelled on the shipping worker's
+/// `blob_capability_index` row: the payload plus the SHA-256 digests of the
+/// capabilities that authorize reading and burning it. The worker never holds
+/// a bearer capability, and neither does this fixture.
 #[derive(Clone)]
 struct BlobRow {
     bytes: Vec<u8>,
-    fetch_token: String,
+    fetch_digest: String,
+    manage_digest: String,
+}
+
+fn sha256_hex(value: &str) -> String {
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(value.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// `x-osl-blob-id` / `x-osl-delivery-tag` shape in
+/// `cipher-store-cf/src/endpoints/blob.ts`.
+fn canonical_hex_header(value: Option<&String>, length: usize) -> Option<String> {
+    let value = value?;
+    (value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then(|| value.clone())
 }
 
 /// One uploaded wrapped share. The loopback relay never implemented
@@ -475,46 +496,76 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
             let removed = state.wrapped_keys.remove(&content_id).is_some();
             json_response(200, json!({ "burned": removed }))
         }
+        // The pointer-addressed upload the shipping worker serves: the client
+        // supplies the id, the three capability digests, a delivery tag and an
+        // object class, and the body must already be Padmé-padded. A request
+        // missing any of them is refused here exactly as it would be in
+        // production, so the fixture cannot quietly accept a legacy POST.
         ("POST", "/v1/blob") => {
-            let mut state = state.lock().unwrap();
-            state.next_id += 1;
-            let id = format!("{:016x}", state.next_id);
-            let fetch_token = headers
-                .get("x-osl-fetch-token")
-                .cloned()
-                .unwrap_or_default();
-            state.blobs.insert(
-                id.clone(),
-                BlobRow {
-                    bytes: body,
-                    fetch_token,
-                },
-            );
-            json_response(200, json!({ "id": id, "expires_at": now + 3600 }))
+            let blob_id = canonical_hex_header(headers.get("x-osl-blob-id"), 32);
+            let fetch_digest = canonical_hex_header(headers.get("x-osl-fetch-digest"), 64);
+            let ack_digest = canonical_hex_header(headers.get("x-osl-ack-digest"), 64);
+            let manage_digest = canonical_hex_header(headers.get("x-osl-manage-digest"), 64);
+            let delivery_tag = canonical_hex_header(headers.get("x-osl-delivery-tag"), 32);
+            let object_class = headers
+                .get("x-osl-object-class")
+                .filter(|class| class.as_str() == "single-ack" || class.as_str() == "multi-fetch");
+            match (blob_id, fetch_digest, ack_digest, manage_digest, delivery_tag, object_class) {
+                (Some(blob_id), Some(fetch_digest), Some(_), Some(manage_digest), Some(_), Some(_)) => {
+                    if ipc::transport_padding::padded_transport_len(body.len()) != Some(body.len()) {
+                        json_response(400, json!({ "error": "invalid_padding" }))
+                    } else {
+                        let mut state = state.lock().unwrap();
+                        if state.blobs.contains_key(&blob_id) {
+                            json_response(409, json!({ "error": "blob_id_collision" }))
+                        } else {
+                            state.blobs.insert(
+                                blob_id.clone(),
+                                BlobRow {
+                                    bytes: body,
+                                    fetch_digest,
+                                    manage_digest,
+                                },
+                            );
+                            json_response(
+                                201,
+                                json!({ "id": blob_id, "expires_at": now + 3600 }),
+                            )
+                        }
+                    }
+                }
+                _ => json_response(400, json!({ "error": "bad_blob_metadata" })),
+            }
         }
         ("GET", path) if path.starts_with("/v1/blob/") => {
             let id = path.trim_start_matches("/v1/blob/");
             let state = state.lock().unwrap();
+            // The worker compares SHA-256 of the presented capability against
+            // the stored digest; it has no way to check the capability itself.
+            let presented = headers.get("x-osl-fetch-cap").map(|cap| sha256_hex(cap));
             match state.blobs.get(id) {
-                Some(blob) if headers.get("x-osl-fetch-token") == Some(&blob.fetch_token) => {
+                Some(blob) if presented.as_deref() == Some(blob.fetch_digest.as_str()) => {
                     bytes_response(200, "application/octet-stream", blob.bytes.clone())
                 }
-                Some(_) => json_response(403, json!({ "error": "fetch_token_mismatch" })),
+                Some(_) => json_response(403, json!({ "error": "fetch_cap_mismatch" })),
                 None => json_response(404, json!({ "error": "not_found" })),
             }
         }
         ("DELETE", path) if path.starts_with("/v1/blob/") => {
             let id = path.trim_start_matches("/v1/blob/");
             let mut state = state.lock().unwrap();
+            let presented = headers.get("x-osl-manage-cap").map(|cap| sha256_hex(cap));
+            // Burn is idempotent for an unknown id, and gated by the sender's
+            // manage capability for a known one.
             let allowed = state
                 .blobs
                 .get(id)
-                .is_none_or(|blob| headers.get("x-osl-fetch-token") == Some(&blob.fetch_token));
+                .is_none_or(|blob| presented.as_deref() == Some(blob.manage_digest.as_str()));
             if allowed {
                 state.blobs.remove(id);
                 bytes_response(204, "application/octet-stream", Vec::new())
             } else {
-                json_response(403, json!({ "error": "fetch_token_mismatch" }))
+                json_response(403, json!({ "error": "manage_cap_mismatch" }))
             }
         }
         // The shipping receive boundary observes a signed sender-filter

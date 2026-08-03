@@ -36,6 +36,11 @@ pub const TTL_24H: u32 = 24 * 60 * 60;
 pub const TTL_72H: u32 = 72 * 60 * 60;
 pub const TTL_7D: u32 = 7 * 24 * 60 * 60;
 
+/// `DEFAULT_DELIVERY_TTL_FLOOR` in `cipher-store-cf/src/lib/ttl.ts`. Below it
+/// the Worker requires an explicit `absolute` expiry mode, so that a shortened
+/// delivery window is always a stated intent and never a silent default.
+pub const DEFAULT_DELIVERY_TTL_FLOOR: u32 = TTL_7D;
+
 fn is_valid_ttl(ttl: u32) -> bool {
     ttl == TTL_1H || ttl == TTL_24H || ttl == TTL_72H || ttl == TTL_7D
 }
@@ -285,11 +290,24 @@ impl CipherStoreClient {
         if body.is_empty() || body.len() > MAX_BLOB_BYTES {
             return Err(CipherStoreError::BlobTooLarge { got: body.len(), max: MAX_BLOB_BYTES });
         }
-        let digest = |cap: &[u8]| hex_lower(&Sha256::digest(cap));
-        let response = self.http.post(format!("{}/v1/blob", self.base_url))
+        // The Worker digests the capability exactly as it arrives -- the ASCII
+        // of the lowercase hex header -- because that string is all it ever
+        // sees. Digesting the raw bytes here instead would upload a digest no
+        // later fetch, receipt or burn could ever reproduce.
+        let digest = |cap: &[u8]| hex_lower(&Sha256::digest(hex_lower(cap).as_bytes()));
+        let mut request = self.http.post(format!("{}/v1/blob", self.base_url))
             .header("content-type", "application/octet-stream")
             .header("x-osl-ttl-seconds", ttl_seconds.to_string())
-            .header("x-osl-blob-id", hex_lower(blob_id))
+            .header("x-osl-blob-id", hex_lower(blob_id));
+        // Default mode keeps an undelivered copy for the full seven days, so
+        // the Worker refuses a shorter window unless the sender says the
+        // expiry is deliberate. Every window below the floor here is one the
+        // operator chose for this conversation; silently lengthening it to
+        // seven days would extend retention nobody asked for.
+        if ttl_seconds < DEFAULT_DELIVERY_TTL_FLOOR {
+            request = request.header("x-osl-expiry-mode", "absolute");
+        }
+        let response = request
             .header("x-osl-fetch-digest", digest(&capabilities.fetch_cap))
             .header("x-osl-ack-digest", digest(&capabilities.ack_cap))
             .header("x-osl-manage-digest", digest(&capabilities.manage_cap))
@@ -736,16 +754,82 @@ mod tests {
         client.ack(&upload.id_hex, &caps.ack_cap).unwrap();
         client.burn(&upload.id_hex, &caps.manage_cap).unwrap();
         let requests = server.join().unwrap();
-        assert!(requests[0].contains("x-osl-fetch-digest:"));
-        assert!(requests[0].contains("x-osl-ack-digest:"));
-        assert!(requests[0].contains("x-osl-manage-digest:"));
+        // The digest is over the hex the header carries, which is the only
+        // form the Worker ever sees. Asserted as a value, not as a header
+        // name: a digest over the raw bytes would still be present, and would
+        // still be 64 hex chars, and no fetch would ever authenticate again.
+        let digest_of_hex = |cap: &[u8; FETCH_TOKEN_BYTES]| {
+            hex_lower(&Sha256::digest(hex_lower(cap).as_bytes()))
+        };
+        assert!(requests[0].contains(&format!(
+            "x-osl-fetch-digest: {}",
+            digest_of_hex(&caps.fetch_cap)
+        )));
+        assert!(requests[0].contains(&format!(
+            "x-osl-ack-digest: {}",
+            digest_of_hex(&caps.ack_cap)
+        )));
+        assert!(requests[0].contains(&format!(
+            "x-osl-manage-digest: {}",
+            digest_of_hex(&caps.manage_cap)
+        )));
         assert!(requests[0].contains("x-osl-object-class: single-ack"));
+        assert!(
+            !requests[0].contains("x-osl-expiry-mode"),
+            "the seven-day default window needs no opt-out"
+        );
         assert!(requests[1].contains("x-osl-fetch-cap: 01010101010101010101010101010101"));
         assert!(requests[2].contains("x-osl-fetch-cap: 01010101010101010101010101010101"));
         assert!(requests[3].starts_with("post /v1/blob/00000000000000000000000000000000/ack"));
         assert!(requests[3].contains("x-osl-ack-cap: 02020202020202020202020202020202"));
         assert!(requests[4].starts_with("delete /v1/blob/00000000000000000000000000000000"));
         assert!(requests[4].contains("x-osl-manage-cap: 03030303030303030303030303030303"));
+    }
+
+    /// A window shorter than the seven-day default floor is refused outright
+    /// by the Worker unless the sender declares it deliberate. Without this
+    /// header every conversation whose operator chose 1h, 24h or the shipping
+    /// 72h default fails to upload at all.
+    #[test]
+    fn a_shortened_delivery_window_declares_itself_absolute() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut raw = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let count = stream.read(&mut chunk).unwrap();
+                raw.extend_from_slice(&chunk[..count]);
+                let Some(headers_end) = raw.windows(4).position(|v| v == b"\r\n\r\n") else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&raw[..headers_end]);
+                let length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                if raw.len() >= headers_end + 4 + length {
+                    break;
+                }
+            }
+            stream.write_all(b"HTTP/1.1 201 Created\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: 56\r\n\r\n{\"id\":\"00000000000000000000000000000000\",\"expires_at\":1}").unwrap();
+            String::from_utf8_lossy(&raw).to_ascii_lowercase()
+        });
+        let client = CipherStoreClient::new(format!("http://{address}")).unwrap();
+        let caps = BlobCapabilities {
+            fetch_cap: [1; 16],
+            ack_cap: [2; 16],
+            manage_cap: [3; 16],
+            delivery_tag: [4; 16],
+        };
+        client
+            .upload_pointer(b"one", TTL_72H, &[9; 16], caps, BlobObjectClass::SingleAck)
+            .unwrap();
+        let request = server.join().unwrap();
+        assert!(request.contains("x-osl-ttl-seconds: 259200"));
+        assert!(request.contains("x-osl-expiry-mode: absolute"));
     }
 
     #[test]

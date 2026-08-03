@@ -380,9 +380,16 @@ fn rotation_simulated_via_state_replacement_uses_new_pub() {
         post_hints.contains(&post_pub.as_bytes()[0]),
         "post-rotation wire must include NEW liam's hint, got {post_hints:?}"
     );
+    // A hint is only the FIRST BYTE of a public key, and every key here is
+    // freshly generated, so any two collide with probability 1/256. The old
+    // guard excused a collision with the new liam key but not one with henry's,
+    // which made this assertion fail spuriously in roughly one run in 256 —
+    // enough to redden a full workspace run without any code being wrong.
+    let old_hint = old_id.x25519_public.as_bytes()[0];
+    let hint_is_coincidental =
+        old_hint == post_pub.as_bytes()[0] || old_hint == henry.x25519_public.as_bytes()[0];
     assert!(
-        !post_hints.contains(&old_id.x25519_public.as_bytes()[0])
-            || old_id.x25519_public.as_bytes()[0] == post_pub.as_bytes()[0],
+        !post_hints.contains(&old_hint) || hint_is_coincidental,
         "post-rotation wire must NOT include old liam's hint (unless coincident first byte)"
     );
 }

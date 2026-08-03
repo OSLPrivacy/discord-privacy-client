@@ -40,10 +40,10 @@ fn scope_storage_key(scope_input: &ScopeInput) -> Result<String, String> {
     Ok(scope.storage_key())
 }
 
-/// Derives the private carrier detector from the bilateral secret held by both
-/// ends of an approved manual-peer conversation. It never crosses the adapter
-/// boundary and uses a domain distinct from the delivery tag (D-SEP).
-fn prose_detection_key(
+/// The bilateral secret both ends of an approved manual-peer conversation
+/// hold. Every per-conversation prose value is expanded from it under its own
+/// domain, so no two of them can be substituted for each other.
+fn prose_conversation_secret(
     core: &HubCoreState,
     peer: &ManualPeerBinding,
 ) -> Result<[u8; 32], String> {
@@ -57,7 +57,36 @@ fn prose_detection_key(
     let peer_public = crypto::x25519::PublicKey::from_bytes(peer.peer_x25519_public);
     let shared = crypto::x25519::diffie_hellman(&identity.x25519_secret, &peer_public)
         .map_err(|_| "OSL protected conversation key is unavailable".to_owned())?;
-    ipc::prose_token::derive_detection_key(shared.as_bytes())
+    Ok(*shared.as_bytes())
+}
+
+/// Derives the private carrier detector from the bilateral secret held by both
+/// ends of an approved manual-peer conversation. It never crosses the adapter
+/// boundary and uses a domain distinct from the delivery tag (D-SEP).
+fn prose_detection_key(
+    core: &HubCoreState,
+    peer: &ManualPeerBinding,
+) -> Result<[u8; 32], String> {
+    let shared = prose_conversation_secret(core, peer)?;
+    ipc::prose_token::derive_detection_key(&shared)
+        .map_err(|_| "OSL protected conversation key is unavailable".to_owned())
+}
+
+/// Derives this device's private root for cipher-store burn authority.
+///
+/// It is deliberately not a conversation value: a recipient who could compute
+/// it could destroy the objects this device uploaded. It also has to survive
+/// the conversation, because a scope burn walks recorded blob ids at a point
+/// where the peer binding may be gone.
+pub(crate) fn prose_send_key(core: &HubCoreState) -> Result<[u8; 32], String> {
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .clone()
+        .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    ipc::prose_token::derive_send_key(identity.x25519_secret.as_bytes())
         .map_err(|_| "OSL protected conversation key is unavailable".to_owned())
 }
 const MAX_PARTICIPANTS: usize = 512;
@@ -1719,11 +1748,19 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
 
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
-    let detection_key = prose_detection_key(core, &verified)?;
+    let conversation_key = prose_conversation_secret(core, &verified)?;
+    let detection_key = ipc::prose_token::derive_detection_key(&conversation_key)
+        .map_err(|_| "OSL protected conversation key is unavailable".to_owned())?;
+    let send_key = prose_send_key(core)?;
     let uploaded = ipc::prose_token::prose_token_send(
         &dir,
         &scope,
         &detection_key,
+        ipc::prose_token::ProseTokenSendKeys {
+            message_key: &conversation_key,
+            send_key: &send_key,
+            conversation_key: &conversation_key,
+        },
         &encrypted,
         ttl_seconds,
     )
@@ -1731,7 +1768,7 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
     if security::record_peer_prose_blob(security_state, scope.clone(), uploaded.blob_id.clone())
         .is_err()
     {
-        if ipc::prose_token::prose_token_burn_id(&dir, &scope, &uploaded.blob_id).is_err() {
+        if ipc::prose_token::prose_token_burn_id(&dir, &send_key, &uploaded.blob_id).is_err() {
             let _ =
                 security::record_peer_prose_blob(security_state, scope, uploaded.blob_id.clone());
         }
@@ -1827,11 +1864,19 @@ fn prepare_peer_prose_text_inner_with_chunk(
 
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
-    let detection_key = prose_detection_key(core, &verified)?;
+    let conversation_key = prose_conversation_secret(core, &verified)?;
+    let detection_key = ipc::prose_token::derive_detection_key(&conversation_key)
+        .map_err(|_| "OSL protected conversation key is unavailable".to_owned())?;
+    let send_key = prose_send_key(core)?;
     let uploaded = ipc::prose_token::prose_token_send(
         &dir,
         &manual.scope,
         &detection_key,
+        ipc::prose_token::ProseTokenSendKeys {
+            message_key: &conversation_key,
+            send_key: &send_key,
+            conversation_key: &conversation_key,
+        },
         &encrypted,
         ttl_seconds,
     )
@@ -1843,7 +1888,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
     )
     .is_err()
     {
-        if ipc::prose_token::prose_token_burn_id(&dir, &manual.scope, &uploaded.blob_id).is_err() {
+        if ipc::prose_token::prose_token_burn_id(&dir, &send_key, &uploaded.blob_id).is_err() {
             // A transient primary-ledger failure must not become an
             // untracked remote blob if the authenticated DELETE also fails.
             // Retry the encrypted recoverable ledger before returning failure.
@@ -3348,7 +3393,10 @@ fn bind_authenticated_native_row(
         ),
         _ => return None,
     };
-    if !canonical_hex(&authenticated.blob_id, 16)
+    // 128-bit client-derived cipher-store id. It was 16 hex chars while the
+    // store assigned ids itself; the pointer migration made it the 32-hex
+    // value both ends derive from `P`.
+    if !canonical_hex(&authenticated.blob_id, 32)
         || !canonical_hex(&authenticated.ciphertext_sha256, 64)
         || !bounded_attribution_id(&authenticated.payload.message_id)
     {
