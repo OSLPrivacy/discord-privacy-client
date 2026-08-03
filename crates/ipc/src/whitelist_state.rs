@@ -141,9 +141,20 @@ pub const WHITELIST_STATE_FILE: &str = "whitelist_state.json";
 /// unrelated reasons (a whitelist toggle, the C1 migration, a rollback path);
 /// a field any of them could leave at `false` would let an ordinary preference
 /// write silently clear a security latch, and clearing it fails OPEN. Keeping
-/// it out of the struct means no caller can express "not enrolled" by
-/// accident — only [`write_whitelist_state`], the fresh-start reset writer,
-/// drops it, and only because dropping it there is the point.
+/// it out of the struct means no caller can express "not enrolled" by accident:
+/// every write through [`write_whitelist_state_file`] re-attaches whatever is
+/// on disk, and only [`write_whitelist_state`], the fresh-start reset writer,
+/// drops it — which is the point of that writer.
+///
+/// KNOWN GAP, needs a fix outside this crate: `apps/osl-hub/src/security.rs`
+/// does not use either writer. It serialises `WhitelistStateFile` straight
+/// through its own `write_encrypted_json` (three sites, around lines 1232,
+/// 1242 and 1448), so a whitelist toggle made through the hub drops the marker
+/// and re-opens this hole until the next unlock re-asserts it from a non-empty
+/// ledger (see `state_reload`). Routing those three writes through
+/// [`write_whitelist_state_file`] closes it; that writer already carries the
+/// full envelope, so the "legacy convenience writer drops server_defaults"
+/// comment at that call site does not apply to it.
 const BURN_LEDGER_ENROLLED_KEY: &str = "burn_ledger_enrolled";
 
 /// Whether this account has ever written a burn into its kill list.
