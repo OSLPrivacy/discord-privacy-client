@@ -381,6 +381,46 @@ impl CipherStoreClient {
         Ok(bytes.to_vec())
     }
 
+    /// BRIDGE (B0-01, temporary): fetch against the *deployed* Worker, which
+    /// still speaks the pre-capability protocol and reads `x-osl-fetch-token`.
+    ///
+    /// This is NOT the destination protocol. [`Self::fetch`] above sends
+    /// `x-osl-fetch-cap`, which is what `cipher-store-cf` in this repo expects
+    /// and what production will expect once the capability Worker is deployed.
+    /// Until then production answers `x-osl-fetch-cap` with
+    /// `401 fetch_token_required`, verified live on 2026-08-03.
+    ///
+    /// Delete this the moment the capability Worker ships. See the Phase 2
+    /// section of `plan-test/tasklogs/B0-01.md`.
+    pub fn fetch_legacy_token(
+        &self,
+        id_hex: &str,
+        fetch_token: &[u8; FETCH_TOKEN_BYTES],
+    ) -> Result<Vec<u8>, CipherStoreError> {
+        let url = format!("{}/v1/blob/{}", self.base_url, id_hex);
+        let resp = self
+            .http
+            .get(&url)
+            .header("x-osl-fetch-token", hex_lower(fetch_token))
+            .send()?;
+        let status = resp.status();
+        if status == StatusCode::NOT_FOUND {
+            return Err(CipherStoreError::NotFound);
+        }
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            return Err(CipherStoreError::RateLimited);
+        }
+        if !status.is_success() {
+            let body = resp.text().unwrap_or_default();
+            return Err(CipherStoreError::Status {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let bytes = resp.bytes()?;
+        Ok(bytes.to_vec())
+    }
+
     /// Acknowledges a durably persisted plaintext.  This is intentionally a
     /// separate verb from fetch: receipt authority cannot be used to fetch.
     pub fn ack(&self, id_hex: &str, ack_cap: &[u8; FETCH_TOKEN_BYTES]) -> Result<(), CipherStoreError> {
