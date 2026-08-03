@@ -50,6 +50,12 @@ pub struct WebSurfaceAdapter<B> {
 }
 
 impl<B> WebSurfaceAdapter<B> {
+    /// Read-only view of the backend, so conformance tests can assert on what
+    /// the adapter did without the field becoming publicly mutable.
+    pub fn backend(&self) -> &B {
+        &self.backend
+    }
+
     pub fn new(app: AdapterAppId, profile: adapter_profile::ProfilePayload, backend: B) -> Self {
         Self {
             app,

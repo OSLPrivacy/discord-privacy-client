@@ -21,18 +21,33 @@ fn fixture() -> (TempDir, BrowserProfileRoots, BrowserProfileScanState) {
     let profile = browser_root.join(PROFILE);
     fs::create_dir_all(&profile).expect("create browser profile");
 
-    // The consent covers browsing-history sites. Login Data is intentionally
-    // present but must never be read or reported by this flow.
-    fs::write(
-        profile.join("History"),
-        b"https://public.example/path\nhttps://second.example/\n",
-    )
-    .expect("write history fixture");
-    fs::write(
-        profile.join("Login Data"),
-        b"https://credential-origin.invalid/private\n",
-    )
-    .expect("write out-of-scope login fixture");
+    // The scanner reads a real Chrome history database (`SELECT url FROM urls`),
+    // so the fixture must be genuine SQLite rather than the newline-separated
+    // text this test used before that support landed.
+    let history = rusqlite::Connection::open(profile.join("History"))
+        .expect("create the Chrome history fixture database");
+    history
+        .execute_batch(
+            "CREATE TABLE urls (id INTEGER PRIMARY KEY, url TEXT);
+             INSERT INTO urls (url) VALUES ('https://public.example/path');
+             INSERT INTO urls (url) VALUES ('https://second.example/');",
+        )
+        .expect("seed the history fixture");
+    drop(history);
+
+    // Login Data is intentionally present and is a VALID credential database
+    // with the same column name, so that if this flow ever read it the scan
+    // would succeed and report a third observation — making the out-of-scope
+    // read visible as a failure rather than passing silently.
+    let logins = rusqlite::Connection::open(profile.join("Login Data"))
+        .expect("create the out-of-scope login fixture database");
+    logins
+        .execute_batch(
+            "CREATE TABLE urls (id INTEGER PRIMARY KEY, url TEXT);
+             INSERT INTO urls (url) VALUES ('https://credential-origin.invalid/private');",
+        )
+        .expect("seed the out-of-scope login fixture");
+    drop(logins);
 
     let roots = BrowserProfileRoots {
         chrome: Some(browser_root),

@@ -71,10 +71,10 @@ fn web_w3_c1_to_c10_conformance() {
     let a = adapter(Fixture { writes: AtomicUsize::new(0), wakeups: AtomicUsize::new(0), password: false, pixel: false, destination: DestinationMode::Attested, unknown_send: false, empty_exact_target: false, wake_fails: false });
     let stale = binding(6, false);
     assert_eq!(a.place(&stale, &PlacementAuthorization::for_scope("opaque-scope"), &Carrier("carrier".into())).status, PlacementStatus::NotPlaced);
-    assert_eq!(a.backend.writes.load(Ordering::SeqCst), 0);
+    assert_eq!(a.backend().writes.load(Ordering::SeqCst), 0);
     let b = a.locate(&current_target()).unwrap();
     assert_eq!(a.place(&b, &PlacementAuthorization::for_scope("opaque-scope"), &Carrier("carrier".into())).status, PlacementStatus::Placed);
-    assert_eq!(a.backend.writes.load(Ordering::SeqCst), 1, "place must not send");
+    assert_eq!(a.backend().writes.load(Ordering::SeqCst), 1, "place must not send");
 
     // C2: a password composer never accepts a carrier.
     let a = adapter(Fixture { writes: AtomicUsize::new(0), wakeups: AtomicUsize::new(0), password: true, pixel: false, destination: DestinationMode::Attested, unknown_send: false, empty_exact_target: false, wake_fails: false });
@@ -101,12 +101,12 @@ fn web_w3_c1_to_c10_conformance() {
     let a = adapter(Fixture { writes: AtomicUsize::new(0), wakeups: AtomicUsize::new(0), password: false, pixel: false, destination: DestinationMode::Attested, unknown_send: true, empty_exact_target: false, wake_fails: false });
     let b = a.locate(&current_target()).unwrap();
     assert_eq!(a.commit(&b, &SendAuthorization::for_scope("opaque-scope"), &placed()).outcome, SendOutcome::Unknown);
-    assert_eq!(a.backend.writes.load(Ordering::SeqCst), 1);
+    assert_eq!(a.backend().writes.load(Ordering::SeqCst), 1);
 
     // C9: wake precedes selector work and unavailable a11y is surfaced.
     let a = adapter(Fixture { writes: AtomicUsize::new(0), wakeups: AtomicUsize::new(0), password: false, pixel: false, destination: DestinationMode::Attested, unknown_send: false, empty_exact_target: false, wake_fails: true });
     assert_eq!(a.locate(&current_target()), Err(AdapterRefusal::AccessibilityUnavailable));
-    assert_eq!(a.backend.wakeups.load(Ordering::SeqCst), 1);
+    assert_eq!(a.backend().wakeups.load(Ordering::SeqCst), 1);
 
     // C10 is representation-level: adapter public results are enum states,
     // hashes and geometry; this distinctive provider input cannot escape.
