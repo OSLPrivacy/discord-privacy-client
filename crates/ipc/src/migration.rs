@@ -250,17 +250,6 @@ pub fn migrate_whitelist_state_in_place(
         .lock()
         .expect("server_defaults mutex poisoned") = server_defaults.clone();
 
-    // TA-T10-003a: mirror the burn-ledger enrolment marker into AppState so
-    // every later `persist_whitelist_state_now` carries it forward. Absent
-    // field (any pre-marker file) reads as "not enrolled".
-    state.burn_ledger_enrolled.store(
-        value
-            .get("burn_ledger_enrolled")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false),
-        std::sync::atomic::Ordering::SeqCst,
-    );
-
     if already_migrated {
         return Ok(Some(report));
     }
@@ -269,9 +258,6 @@ pub fn migrate_whitelist_state_in_place(
         migrated_c1: true,
         scopes: simplified,
         server_defaults,
-        burn_ledger_enrolled: state
-            .burn_ledger_enrolled
-            .load(std::sync::atomic::Ordering::SeqCst),
     };
     if let Err(e) = write_whitelist_state_file(&path, &envelope) {
         tracing::warn!(error = %e, "OSL migration: failed to stamp migrated_c1 marker");

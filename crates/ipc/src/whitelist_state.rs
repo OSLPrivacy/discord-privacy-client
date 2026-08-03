@@ -113,28 +113,38 @@ pub struct WhitelistStateFile {
     pub scopes: WhitelistState,
     #[serde(default)]
     pub server_defaults: HashMap<String, ServerDefaults>,
-
-    /// TA-T10-003a: burn-ledger enrolment marker.
-    ///
-    /// Set the first time this account records a burn, and never cleared by a
-    /// normal write (see the sticky merge in [`write_whitelist_state_file`]).
-    /// It exists so that a MISSING `burned_scopes.json` can be told apart from
-    /// a genuine first run: absent ledger + this flag means the kill list was
-    /// deleted after burns existed, which
-    /// [`crate::burned_scopes_file::load_burned_scopes`] must treat as
-    /// "everything is still burned" rather than "nothing was ever burned".
-    ///
-    /// It lives here, rather than in a marker file of its own, because
-    /// `whitelist_state.json` is already registered in every account-lifecycle
-    /// sweep that `burned_scopes.json` is registered in — the at-rest rotation
-    /// list, the encrypted identity export, the hub's identity-switch artifact
-    /// move, and the password lifecycle sweep. A new file would have to be
-    /// added to sweeps that live outside this crate; miss one and the marker
-    /// desynchronises from the ledger it guards, which either fails open (the
-    /// bug) or strands a fresh account permanently closed (worse).
-    #[serde(default)]
-    pub burn_ledger_enrolled: bool,
 }
+
+/// Filename of the whitelist/enrolment state, relative to an account dir.
+pub const WHITELIST_STATE_FILE: &str = "whitelist_state.json";
+
+/// TA-T10-003a: JSON key of the burn-ledger enrolment marker inside
+/// `whitelist_state.json`.
+///
+/// The marker records, durably and OUTSIDE `burned_scopes.json`, that this
+/// account has burned at least once. Without it the kill list is its own only
+/// evidence, so deleting the kill list also erases the proof that it ever had
+/// contents and [`crate::burned_scopes_file::load_burned_scopes`] cannot tell
+/// a deletion from a first run — which is the fail-open this closes.
+///
+/// It rides `whitelist_state.json` rather than a marker file of its own
+/// because this file is already registered in every account-lifecycle sweep
+/// `burned_scopes.json` is registered in (the at-rest rotation list, the
+/// encrypted identity export, the hub's identity-switch artifact move, the
+/// password lifecycle sweep). A new file would have to be added to sweeps that
+/// live outside this crate; miss one and the marker desynchronises from the
+/// ledger it guards, which either fails open (the original bug) or strands a
+/// working account permanently closed (worse).
+///
+/// It is deliberately NOT a field on [`WhitelistStateFile`]. Callers across
+/// the workspace build that envelope from their own in-memory view for
+/// unrelated reasons (a whitelist toggle, the C1 migration, a rollback path);
+/// a field any of them could leave at `false` would let an ordinary preference
+/// write silently clear a security latch, and clearing it fails OPEN. Keeping
+/// it out of the struct means no caller can express "not enrolled" by
+/// accident — only [`write_whitelist_state`], the fresh-start reset writer,
+/// drops it, and only because dropping it there is the point.
+const BURN_LEDGER_ENROLLED_KEY: &str = "burn_ledger_enrolled";
 
 /// Whether this account has ever written a burn into its kill list.
 ///
@@ -156,9 +166,18 @@ pub enum BurnLedgerEnrollment {
 
 /// Read the burn-ledger enrolment marker for the account rooted at `dir`.
 pub fn burn_ledger_enrollment(dir: &Path) -> BurnLedgerEnrollment {
-    match load_whitelist_state_file(&dir.join(WHITELIST_STATE_FILE)) {
-        Ok(file) if file.burn_ledger_enrolled => BurnLedgerEnrollment::Enrolled,
-        Ok(_) => BurnLedgerEnrollment::NeverEnrolled,
+    match read_whitelist_json(&dir.join(WHITELIST_STATE_FILE)) {
+        Ok(value) => {
+            if value
+                .get(BURN_LEDGER_ENROLLED_KEY)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                BurnLedgerEnrollment::Enrolled
+            } else {
+                BurnLedgerEnrollment::NeverEnrolled
+            }
+        }
         // No whitelist file at all is the fresh-install shape, and it is also
         // what `fresh_start` leaves behind after it deletes the file — the
         // deliberate "abandon this account's state" escape hatch. Both must
@@ -168,8 +187,98 @@ pub fn burn_ledger_enrollment(dir: &Path) -> BurnLedgerEnrollment {
     }
 }
 
-/// Filename of the whitelist/enrolment state, relative to an account dir.
-pub const WHITELIST_STATE_FILE: &str = "whitelist_state.json";
+/// Record that this account has burned at least once.
+///
+/// Read-modify-write on the raw JSON so every unrelated field survives, and so
+/// this needs no cooperation from the in-memory whitelist envelope. When the
+/// file does not exist yet (first burn on an account that has never toggled a
+/// whitelist) a minimal envelope is laid down; a later
+/// [`write_whitelist_state_file`] fills in the real scopes and carries the
+/// marker forward stickily.
+///
+/// Refuses to write over a file it could not read: overwriting an
+/// undecryptable whitelist with a near-empty stub would destroy real user
+/// state to record a flag.
+pub fn mark_burn_ledger_enrolled(dir: &Path) -> Result<(), WhitelistStateError> {
+    let path = dir.join(WHITELIST_STATE_FILE);
+    let mut value = match read_whitelist_json(&path) {
+        Ok(v) => v,
+        Err(WhitelistStateError::NotFound { .. }) => serde_json::json!({
+            "migrated_c1": true,
+            "scopes": {},
+            "server_defaults": {},
+        }),
+        Err(e) => return Err(e),
+    };
+    let Some(obj) = value.as_object_mut() else {
+        return Err(WhitelistStateError::ParseFailed {
+            path: path.clone(),
+            source: serde_json::Error::io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "whitelist_state.json is not a JSON object",
+            )),
+        });
+    };
+    if obj
+        .get(BURN_LEDGER_ENROLLED_KEY)
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return Ok(()); // already marked; no write needed
+    }
+    obj.insert(
+        BURN_LEDGER_ENROLLED_KEY.to_string(),
+        serde_json::Value::Bool(true),
+    );
+    write_whitelist_json(&path, &value)
+}
+
+/// Read + decrypt + parse `whitelist_state.json` as raw JSON, without imposing
+/// the [`WhitelistStateFile`] shape. Used by the enrolment-marker paths, which
+/// must see fields the struct deliberately does not carry.
+fn read_whitelist_json(path: &Path) -> Result<serde_json::Value, WhitelistStateError> {
+    let blob = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(WhitelistStateError::NotFound {
+                path: path.to_path_buf(),
+            });
+        }
+        Err(source) => {
+            return Err(WhitelistStateError::ReadFailed {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let plain = crate::main_password::maybe_decrypt_file(path, &blob).map_err(|e| {
+        WhitelistStateError::ParseFailed {
+            path: path.to_path_buf(),
+            source: serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        }
+    })?;
+    serde_json::from_slice(&plain).map_err(|source| WhitelistStateError::ParseFailed {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Encrypt + atomically write raw whitelist JSON. Mirrors the tempfile+rename
+/// discipline of the typed writers so a crash mid-write cannot truncate.
+fn write_whitelist_json(path: &Path, value: &serde_json::Value) -> Result<(), WhitelistStateError> {
+    let invalid = |e: std::io::Error| WhitelistStateError::ReadFailed {
+        path: path.to_path_buf(),
+        source: e,
+    };
+    let body = serde_json::to_string_pretty(value)
+        .map_err(|e| invalid(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+    let out_bytes = crate::main_password::maybe_encrypt(body.as_bytes())
+        .map_err(|e| invalid(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &out_bytes).map_err(invalid)?;
+    std::fs::rename(&tmp, path).map_err(invalid)?;
+    Ok(())
+}
 
 /// Errors returned by the loader. The fresh-start path produces
 /// an empty file on first launch, so [`NotFound`] is the
@@ -246,8 +355,6 @@ pub fn load_whitelist_state_file(path: &Path) -> Result<WhitelistStateFile, Whit
             migrated_c1: false,
             scopes,
             server_defaults: HashMap::default(),
-            // A pre-envelope v1 file predates the burn kill list entirely.
-            burn_ledger_enrolled: false,
         })
     }
 }
@@ -271,17 +378,18 @@ pub fn write_whitelist_state(path: &Path, state: &WhitelistState) -> Result<(), 
     // does post-9-C3). Used today only by `fresh_start` (writes an
     // empty file at first launch) — no risk of clobbering real data.
     //
-    // This writer is also the fresh-start RESET writer, so it deliberately
-    // does NOT carry the burn-ledger enrolment marker forward: `fresh_start`
-    // deletes this file and then calls us to lay down an empty one, which is
-    // the supported way for a user to abandon an account whose kill list can
-    // no longer be proven intact. Making it sticky would make that escape
-    // hatch a no-op.
+    // TA-T10-003a: this writer is also the fresh-start RESET writer, and it
+    // deliberately does NOT carry the burn-ledger enrolment marker forward.
+    // `fresh_start` deletes this file and then calls us to lay down an empty
+    // one; that is the supported way for a user to abandon an account whose
+    // kill list can no longer be proven intact, and it is what keeps a
+    // fail-closed latch from being a permanent brick. Making the marker sticky
+    // here would turn that escape hatch into a no-op. Everything else goes
+    // through `write_whitelist_state_file`, where the marker IS sticky.
     let file = WhitelistStateFile {
         migrated_c1: true,
         scopes: state.clone(),
         server_defaults: HashMap::default(),
-        burn_ledger_enrolled: false,
     };
     let body = serde_json::to_string_pretty(&file)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -301,23 +409,30 @@ pub fn write_whitelist_state_file(
     file: &WhitelistStateFile,
 ) -> Result<(), std::io::Error> {
     // TA-T10-003a: the burn-ledger enrolment marker is STICKY across every
-    // mutating write. Callers construct this envelope from their own in-memory
-    // view (a whitelist toggle, the C1 migration, a test fixture); any one of
-    // them that forgets the field would otherwise silently clear a
-    // security-relevant latch as a side effect of an unrelated preference
-    // change, and clearing it fails OPEN. Only deleting the file — what
-    // `fresh_start` does — resets enrolment.
-    let mut file = file.clone();
-    if !file.burn_ledger_enrolled {
-        let dir = path.parent().unwrap_or_else(|| Path::new("."));
-        // Indeterminate (unreadable/undecryptable existing file) leaves the
-        // caller's value alone: we are about to overwrite that file anyway,
-        // and forcing the marker on from an unreadable byte string would be
-        // inventing evidence.
-        file.burn_ledger_enrolled = burn_ledger_enrollment(dir) == BurnLedgerEnrollment::Enrolled;
+    // mutating write. Callers build this envelope from their own in-memory
+    // view — a whitelist toggle, the C1 migration, the hub's rollback path —
+    // and none of them know about the marker. Re-reading it from disk and
+    // re-attaching it here means an ordinary preference write cannot clear a
+    // security latch as a side effect, which would fail OPEN. Only deleting
+    // the file (what `fresh_start` does) resets enrolment.
+    //
+    // Indeterminate — the existing file is there but undecryptable — does NOT
+    // set the marker: we are about to overwrite that file anyway, and asserting
+    // enrolment from a byte string we could not read would be inventing
+    // evidence in the direction that permanently closes an account.
+    let mut body = serde_json::to_value(file)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if burn_ledger_enrollment(path.parent().unwrap_or_else(|| Path::new(".")))
+        == BurnLedgerEnrollment::Enrolled
+    {
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert(
+                BURN_LEDGER_ENROLLED_KEY.to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
     }
-    let file = &file;
-    let body = serde_json::to_string_pretty(file)
+    let body = serde_json::to_string_pretty(&body)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let out_bytes = crate::main_password::maybe_encrypt(body.as_bytes())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;

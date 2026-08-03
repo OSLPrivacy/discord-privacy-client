@@ -237,6 +237,18 @@ pub fn reload_encrypted_state_after_unlock(
         });
     }
     if bs_existed {
+        // TA-T10-003a self-heal: a ledger we just read with burns in it IS
+        // proof of enrolment, so re-assert the marker here. This closes the
+        // one window the write ordering in `record_burn_ledger_enrollment`
+        // leaves open — a burn whose marker write failed — at the cost of one
+        // no-op read on every unlock once the marker is already set.
+        if !bs.scopes.is_empty() {
+            if let Err(e) = crate::whitelist_state::mark_burn_ledger_enrolled(config_dir) {
+                report
+                    .errors
+                    .push(format!("burned_scopes: enrolment marker not refreshed: {e}"));
+            }
+        }
         report.burned_scopes_count = bs.scopes.len();
         report.burned_scopes_loaded = true;
         *state
