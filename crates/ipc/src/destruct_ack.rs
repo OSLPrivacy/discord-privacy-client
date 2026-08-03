@@ -55,10 +55,7 @@ impl fmt::Display for DestructionAckError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownKind(kind) => {
-                write!(
-                    formatter,
-                    "destruction acknowledgement kind {kind} is unknown"
-                )
+                write!(formatter, "destruction acknowledgement kind {kind} is unknown")
             }
         }
     }

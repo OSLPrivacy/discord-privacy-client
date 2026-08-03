@@ -7,7 +7,8 @@
 
 use base64::Engine as _;
 use ipc::wire_rn::{
-    select_wire_version, send_rn_with_sealer, RnPeerPin, RnPolicy, RnSessionStore, SelectedVersion,
+    select_wire_version, send_rn_with_sealer, RnPeerPin, RnPolicy, RnSessionStore,
+    SelectedVersion,
 };
 use ipc::wire_v2::{decrypt_v3_for_sender, encrypt_v3, RecipientV3, MSG_TYPE_CONTENT};
 use keystore::client::{PeerCapabilities, RN_CAP_WIRE_RN, RN_CAP_WIRE_RN_LIVE};

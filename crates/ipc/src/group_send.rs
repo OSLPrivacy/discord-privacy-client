@@ -82,7 +82,8 @@ pub(crate) fn encrypt_v5_send(
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned");
-        g.remove(&scope_key).unwrap_or_else(SenderKeyState::new)
+        g.remove(&scope_key)
+            .unwrap_or_else(SenderKeyState::new)
     };
 
     // Rotation/redistribution must track the ACTUAL recipient set —
@@ -702,9 +703,7 @@ pub(crate) fn apply_skdm_recv(
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned");
-        let live = g
-            .entry(scope_key.clone())
-            .or_insert_with(SenderKeyState::new);
+        let live = g.entry(scope_key.clone()).or_insert_with(SenderKeyState::new);
         let peer_bytes = sender_discord_id.as_bytes().to_vec();
         let physical_device_id = PhysicalDeviceId::from_bytes(payload.physical_device_id)
             .map_err(|e| format!("OSL: SKDM: physical_device_id binding invalid or absent: {e}"))?;

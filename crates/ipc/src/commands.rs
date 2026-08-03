@@ -8613,7 +8613,10 @@ mod v5_sender_key_attribution_tests {
                 .sender_key_state
                 .lock()
                 .expect("sender_key_state mutex poisoned");
-            on_disk.insert(scope_key.clone(), receiver_state);
+            on_disk.insert(
+                scope_key.clone(),
+                receiver_state,
+            );
         }
 
         let ctx = SenderContext {
@@ -16231,7 +16234,8 @@ fn cmd_osl_burn_engage_finish(
     *state
         .sender_key_state
         .lock()
-        .expect("sender_key_state mutex poisoned") = std::collections::HashMap::new();
+        .expect("sender_key_state mutex poisoned") =
+        std::collections::HashMap::new();
     state
         .channel_members
         .lock()
@@ -16648,7 +16652,10 @@ mod unit_a_sender_attribution_chain {
             .unwrap();
 
         let mut stored = bob_state.sender_key_state.lock().unwrap();
-        stored.insert(scope_key.to_string(), bob_sender_keys);
+        stored.insert(
+            scope_key.to_string(),
+            bob_sender_keys,
+        );
     }
 
     #[test]

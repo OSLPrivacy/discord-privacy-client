@@ -93,9 +93,7 @@ pub enum ProseTokenError {
 ///   - `gc` / `server_channel` / `server_full`: scope.storage_key()
 ///     is already symmetric across peers (uses channel_id /
 ///     server_id) so no change is needed.
-fn derive_scope_cipher(
-    scope_input: &ScopeInput,
-) -> Result<stego::ConversationCipher, ProseTokenError> {
+fn derive_scope_cipher(scope_input: &ScopeInput) -> Result<stego::ConversationCipher, ProseTokenError> {
     let scope = crate::scope::Scope::try_from(scope_input.clone())?;
     let salt = prose_token_salt(&scope);
     Ok(stego::ConversationCipher::from_salt(salt.as_bytes()))
@@ -522,23 +520,14 @@ mod tests {
         let pointer = [0x17; stego::TOKEN_ID_BYTES];
         let cover = stego::encode_token(&cipher, &detector, &pointer);
 
-        assert_eq!(
-            stego::decode_token(&cipher, &detector, &cover),
-            Some(pointer)
-        );
-        assert_eq!(
-            stego::decode_token(&cipher, &public_scope_key, &cover),
-            None
-        );
+        assert_eq!(stego::decode_token(&cipher, &detector, &cover), Some(pointer));
+        assert_eq!(stego::decode_token(&cipher, &public_scope_key, &cover), None);
 
         let delivery_tag = Hkdf::<Sha256>::new(None, &[0x5a; 32]);
         let mut delivery = [0u8; MAC_KEY_LEN];
         delivery_tag
             .expand(b"osl/tag/v1", &mut delivery)
             .expect("fixed HKDF output is valid");
-        assert_ne!(
-            detector, delivery,
-            "D-SEP requires independent HKDF outputs"
-        );
+        assert_ne!(detector, delivery, "D-SEP requires independent HKDF outputs");
     }
 }

@@ -281,19 +281,12 @@ impl CipherStoreClient {
         capabilities: BlobCapabilities,
         object_class: BlobObjectClass,
     ) -> Result<UploadResult, CipherStoreError> {
-        if !is_valid_ttl(ttl_seconds) {
-            return Err(CipherStoreError::BadTtl(ttl_seconds));
-        }
+        if !is_valid_ttl(ttl_seconds) { return Err(CipherStoreError::BadTtl(ttl_seconds)); }
         if body.is_empty() || body.len() > MAX_BLOB_BYTES {
-            return Err(CipherStoreError::BlobTooLarge {
-                got: body.len(),
-                max: MAX_BLOB_BYTES,
-            });
+            return Err(CipherStoreError::BlobTooLarge { got: body.len(), max: MAX_BLOB_BYTES });
         }
         let digest = |cap: &[u8]| hex_lower(&Sha256::digest(cap));
-        let response = self
-            .http
-            .post(format!("{}/v1/blob", self.base_url))
+        let response = self.http.post(format!("{}/v1/blob", self.base_url))
             .header("content-type", "application/octet-stream")
             .header("x-osl-ttl-seconds", ttl_seconds.to_string())
             .header("x-osl-blob-id", hex_lower(blob_id))
@@ -302,8 +295,7 @@ impl CipherStoreClient {
             .header("x-osl-manage-digest", digest(&capabilities.manage_cap))
             .header("x-osl-delivery-tag", hex_lower(&capabilities.delivery_tag))
             .header("x-osl-object-class", object_class.header_value())
-            .body(body.to_vec())
-            .send()?;
+            .body(body.to_vec()).send()?;
         parse_upload_response(response, FETCH_TOKEN_BYTES * 2)
     }
 
@@ -342,55 +334,22 @@ impl CipherStoreClient {
 
     /// Acknowledges a durably persisted plaintext.  This is intentionally a
     /// separate verb from fetch: receipt authority cannot be used to fetch.
-    pub fn ack(
-        &self,
-        id_hex: &str,
-        ack_cap: &[u8; FETCH_TOKEN_BYTES],
-    ) -> Result<(), CipherStoreError> {
-        self.no_content(
-            "POST",
-            &format!("{}/v1/blob/{id_hex}/ack", self.base_url),
-            "x-osl-ack-cap",
-            ack_cap,
-        )
+    pub fn ack(&self, id_hex: &str, ack_cap: &[u8; FETCH_TOKEN_BYTES]) -> Result<(), CipherStoreError> {
+        self.no_content("POST", &format!("{}/v1/blob/{id_hex}/ack", self.base_url), "x-osl-ack-cap", ack_cap)
     }
 
     /// Permanently burns a copy with the sender-derived manage authority.
     /// The Worker is unconditionally idempotent (`204`), including unknown ids.
-    pub fn burn(
-        &self,
-        id_hex: &str,
-        manage_cap: &[u8; FETCH_TOKEN_BYTES],
-    ) -> Result<(), CipherStoreError> {
-        self.no_content(
-            "DELETE",
-            &format!("{}/v1/blob/{id_hex}", self.base_url),
-            "x-osl-manage-cap",
-            manage_cap,
-        )
+    pub fn burn(&self, id_hex: &str, manage_cap: &[u8; FETCH_TOKEN_BYTES]) -> Result<(), CipherStoreError> {
+        self.no_content("DELETE", &format!("{}/v1/blob/{id_hex}", self.base_url), "x-osl-manage-cap", manage_cap)
     }
 
-    fn no_content(
-        &self,
-        method: &str,
-        url: &str,
-        header: &str,
-        cap: &[u8; FETCH_TOKEN_BYTES],
-    ) -> Result<(), CipherStoreError> {
-        let request = match method {
-            "POST" => self.http.post(url),
-            "DELETE" => self.http.delete(url),
-            _ => unreachable!(),
-        };
+    fn no_content(&self, method: &str, url: &str, header: &str, cap: &[u8; FETCH_TOKEN_BYTES]) -> Result<(), CipherStoreError> {
+        let request = match method { "POST" => self.http.post(url), "DELETE" => self.http.delete(url), _ => unreachable!() };
         let response = request.header(header, hex_lower(cap)).send()?;
-        if response.status() == StatusCode::TOO_MANY_REQUESTS {
-            return Err(CipherStoreError::RateLimited);
-        }
+        if response.status() == StatusCode::TOO_MANY_REQUESTS { return Err(CipherStoreError::RateLimited); }
         if !response.status().is_success() {
-            return Err(CipherStoreError::Status {
-                status: response.status().as_u16(),
-                body: response.text().unwrap_or_default(),
-            });
+            return Err(CipherStoreError::Status { status: response.status().as_u16(), body: response.text().unwrap_or_default() });
         }
         Ok(())
     }
@@ -752,18 +711,11 @@ mod tests {
                 loop {
                     let count = stream.read(&mut chunk).unwrap();
                     raw.extend_from_slice(&chunk[..count]);
-                    let Some(headers_end) = raw.windows(4).position(|v| v == b"\r\n\r\n") else {
-                        continue;
-                    };
+                    let Some(headers_end) = raw.windows(4).position(|v| v == b"\r\n\r\n") else { continue };
                     let headers = String::from_utf8_lossy(&raw[..headers_end]);
-                    let length = headers
-                        .lines()
-                        .find_map(|line| line.strip_prefix("content-length: "))
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(0);
-                    if raw.len() >= headers_end + 4 + length {
-                        break;
-                    }
+                    let length = headers.lines().find_map(|line| line.strip_prefix("content-length: "))
+                        .and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
+                    if raw.len() >= headers_end + 4 + length { break; }
                 }
                 requests.push(String::from_utf8_lossy(&raw).to_ascii_lowercase());
                 let response = match index {
@@ -776,24 +728,11 @@ mod tests {
             requests
         });
         let client = CipherStoreClient::new(format!("http://{address}")).unwrap();
-        let caps = BlobCapabilities {
-            fetch_cap: [1; 16],
-            ack_cap: [2; 16],
-            manage_cap: [3; 16],
-            delivery_tag: [4; 16],
-        };
-        let upload = client
-            .upload_pointer(b"one", TTL_7D, &[9; 16], caps, BlobObjectClass::SingleAck)
-            .unwrap();
+        let caps = BlobCapabilities { fetch_cap: [1; 16], ack_cap: [2; 16], manage_cap: [3; 16], delivery_tag: [4; 16] };
+        let upload = client.upload_pointer(b"one", TTL_7D, &[9; 16], caps, BlobObjectClass::SingleAck).unwrap();
         assert_eq!(upload.id_hex, "00000000000000000000000000000000");
-        assert_eq!(
-            client.fetch(&upload.id_hex, &caps.fetch_cap).unwrap(),
-            b"one"
-        );
-        assert_eq!(
-            client.fetch(&upload.id_hex, &caps.fetch_cap).unwrap(),
-            b"one"
-        );
+        assert_eq!(client.fetch(&upload.id_hex, &caps.fetch_cap).unwrap(), b"one");
+        assert_eq!(client.fetch(&upload.id_hex, &caps.fetch_cap).unwrap(), b"one");
         client.ack(&upload.id_hex, &caps.ack_cap).unwrap();
         client.burn(&upload.id_hex, &caps.manage_cap).unwrap();
         let requests = server.join().unwrap();

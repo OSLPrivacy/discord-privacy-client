@@ -356,6 +356,7 @@ impl MembershipEventLog {
     pub fn epoch(&self) -> SpaceEpoch {
         self.epoch
     }
+
 }
 
 /// Authoritative membership state for every locally known Space.
@@ -416,6 +417,7 @@ pub enum SpaceRosterError {
     InvalidMemberId,
     #[error("space roster already contains this Space")]
     SpaceAlreadyExists,
+
 }
 
 impl MembershipEventLog {
