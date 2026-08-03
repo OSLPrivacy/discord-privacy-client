@@ -104,7 +104,7 @@ describe("native Discord protected overlay routing", () => {
   it("truthfully limits capture resistance to OSL's private Protect layer", () => {
     expect(source).toContain('aria-label="Open Discord"');
     expect(source).toContain('id="discord-existing-session"');
-    expect(source).toContain(">Use existing account</button>");
+    expect(source).toContain('"Use existing account"');
     expect(source).toContain(">Use separate account</button>");
     expect(source).toContain("Discord itself is not capture-resistant; use Protect for OSL's private layer.");
   });
@@ -117,9 +117,9 @@ describe("native Discord protected overlay routing", () => {
     expect(binding).toContain('route === "service" && activeHomeAppId === appId && activeService');
     expect(binding).toContain("void setupEmbeddedApp()");
     expect(binding).toContain('finishNativeAccountChoice("discord")');
-    expect(binding).toContain('finishNativeAccountChoice("telegram")');
-    expect(binding).toContain('finishNativeAccountChoice("signal")');
-    expect(binding).toContain('finishNativeAccountChoice("whatsapp")');
+    expect(binding).not.toContain('finishNativeAccountChoice("telegram")');
+    expect(binding).not.toContain('finishNativeAccountChoice("signal")');
+    expect(binding).not.toContain('finishNativeAccountChoice("whatsapp")');
   });
 
   it("automatically reopens a closed dedicated app once without changing existing-session behavior", () => {

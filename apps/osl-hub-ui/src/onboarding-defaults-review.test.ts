@@ -38,7 +38,9 @@ describe("review defaults onboarding", () => {
 
   it("shows warnings, attachment cleaning, retention, cleanup, and inherited send behavior", () => {
     expect(review).toContain("Review defaults");
-    expect(review).toContain("Warn before sending");
+    expect(review).toContain("Warn before unprotected sends");
+    expect(review).toContain("Warn before protected sends");
+    expect(review).toContain('"Warn before protected sends", "Extra warning before already-protected handoff.", "Off"');
     expect(review).toContain("Clean attachments");
     expect(review).toContain("Keep protected drafts");
     expect(review).toContain("Delete or clean up history");
