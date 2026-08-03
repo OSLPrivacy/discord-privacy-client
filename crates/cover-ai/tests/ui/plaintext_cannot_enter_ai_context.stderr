@@ -4,7 +4,11 @@ error[E0277]: the trait bound `AiContext: From<PlaintextMessage>` is not satisfi
 5 |     let _: AiContext = plaintext.into();
   |                                  ^^^^ the trait `From<PlaintextMessage>` is not implemented for `AiContext`
   |
-  = help: the trait `From<PlaintextMessage>` is not implemented for `AiContext`
-          but trait `From<VisibleChannelCover>` is implemented for it
+help: the trait `From<PlaintextMessage>` is not implemented for `AiContext`
+      but trait `From<VisibleChannelCover>` is implemented for it
+ --> src/context.rs
+  |
+  | impl From<VisibleChannelCover> for AiContext {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   = help: for that trait implementation, expected `VisibleChannelCover`, found `PlaintextMessage`
   = note: required for `PlaintextMessage` to implement `Into<AiContext>`
