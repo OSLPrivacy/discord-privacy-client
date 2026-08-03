@@ -183,7 +183,8 @@ import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusC
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
 import { initialAccountRecoveryFlow, recoveryScreenMarkup } from "./account-recovery";
 import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
-import { clearRecoveryKitUnsaved, markRecoveryKitUnsaved, resumeOnboardingRoute } from "./onboarding-resume";
+import { resumeOnboardingRoute } from "./onboarding-resume";
+import { createRecoveryKitUnsavedFlag } from "./recovery-kit-flag";
 import { loadHubRecoveryKitUnsaved, setHubRecoveryKitUnsaved } from "./adapters";
 import { burnFeatureClaimsMarkup } from "./feature-claims";
 import { burnRevocationReceipt, type BurnRevocationReceipt } from "./burn-revocation-receipt";
@@ -327,7 +328,13 @@ let forwardSecrecyOnboarding: ForwardSecrecyOnboardingState = initialForwardSecr
 let forwardSecrecyMode: "protectPast" | "keepGroupDelivery" = "keepGroupDelivery";
 // A cache only. The authority is encrypted account state in the native hub;
 // WebView storage is deliberately not consulted because burn/duress erase it.
-let recoveryKitUnsavedDurable = false;
+// NEW-1: the mirror moves synchronously with the owner's decision, not with the
+// native write — see `recovery-kit-flag.ts` for why.
+const recoveryKitUnsavedFlag = createRecoveryKitUnsavedFlag({
+  storage: localStorage,
+  read: () => loadHubRecoveryKitUnsaved(),
+  write: (unsaved) => setHubRecoveryKitUnsaved(unsaved),
+});
 let settingsSection: SettingsSection = "account";
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
@@ -1064,21 +1071,21 @@ export function desktopCtaHandoffRoute(surface: DesktopCtaSurface): DesktopCtaRo
  * an unsaved recovery kit outranks every other pending step.
  */
 function pendingOnboardingRoute(): OnboardingRoute | null {
-  const resumed = recoveryKitUnsavedDurable
+  const resumed = recoveryKitUnsavedFlag.unsaved()
     ? "recovery"
     : resumeOnboardingRoute(localStorage, onboardingResumeStorageKey);
   return resumed === null ? null : onboardingRouteForBuild(resumed);
 }
 
+/**
+ * NEW-1: this used to hold the mirror back until the native write returned, so
+ * a caller that routed on the same turn — which is exactly what Continue does —
+ * read the pre-decision value and bounced the owner back to the gate. The
+ * mirror now moves first and the resolved value still reports whether anything
+ * durable was recorded, which is what the creation path warns about.
+ */
 async function persistRecoveryKitUnsaved(unsaved: boolean): Promise<boolean> {
-  const persisted = await setHubRecoveryKitUnsaved(unsaved);
-  if (!persisted) return false;
-  recoveryKitUnsavedDurable = unsaved;
-  // Keep this compatibility cache in step only; it is never consulted for the
-  // launch/resume decision.
-  if (unsaved) markRecoveryKitUnsaved(localStorage);
-  else clearRecoveryKitUnsaved(localStorage);
-  return true;
+  return recoveryKitUnsavedFlag.set(unsaved);
 }
 
 function persistCurrentOnboardingRoute(): void {
@@ -2421,7 +2428,7 @@ function recoveryKitStateNow(): RecoveryKitState {
     captureEnforcement: captureProtectionEnforced() ? "enforced" : "unenforced",
     shownWithoutProtection: recoveryShownWithoutProtection,
     savedAcknowledged: recoverySavedAcknowledged,
-    kitUnsaved: recoveryKitUnsavedDurable,
+    kitUnsaved: recoveryKitUnsavedFlag.unsaved(),
   };
 }
 
@@ -3218,7 +3225,7 @@ function bindPasswordForm(): void {
         // T15-A8: an unsaved recovery kit outranks a "finished" onboarding.
         // Deferring the kit used to be indistinguishable from never having
         // been offered it, because nothing survived the unlock.
-        if (onboardingComplete && !recoveryKitUnsavedDurable) {
+        if (onboardingComplete && !recoveryKitUnsavedFlag.unsaved()) {
           route = "home";
           void openMullvadOnStartup();
           void refreshUpdateStatus();
@@ -5506,6 +5513,9 @@ function identityListState(): "locked" | "loading" | "unavailable" | "empty" | "
   return "empty";
 }
 
+export const IDENTITY_LIST_UNAVAILABLE =
+  "OSL is unlocked, but this device did not return a usable identity registry. Nothing was changed.";
+
 function identityListMarkup(): string {
   const state = identityListState();
   if (state === "list") {
@@ -5518,7 +5528,15 @@ function identityListMarkup(): string {
     return `<div class="empty-state" data-identity-list="loading"><strong>Reading identity slots</strong><p>OSL is opening the encrypted identity registry on this device.</p></div>`;
   }
   if (state === "unavailable") {
-    return `<div class="empty-state" data-identity-list="unavailable"><strong>Identity list could not be read</strong><p>OSL is unlocked, but this device did not return a usable identity registry. Nothing was changed.</p><button class="button compact" id="retry-identity-list" type="button">Try again</button></div>`;
+    // NEW-3: this screen held the answer and threw it away. The native side
+    // refuses with a specific sentence -- "OSL main password must be
+    // unlocked", "OSL identity migration failed: ...", "OSL identity registry
+    // is unavailable" -- and the journal already has it, bounded by age and by
+    // command. Repeating it verbatim is the difference between a dead end and
+    // a diagnosis, and `withBackendReason` never invents detail the backend
+    // chose not to give.
+    const reason = withBackendReason(IDENTITY_LIST_UNAVAILABLE, "list_hub_identities");
+    return `<div class="empty-state" data-identity-list="unavailable"><strong>Identity list could not be read</strong><p>${escapeHtml(reason)}</p><button class="button compact" id="retry-identity-list" type="button">Try again</button></div>`;
   }
   return `<div class="empty-state" data-identity-list="empty"><strong>No identity slots yet</strong><p>Create an identity below to start using OSL on this device.</p></div>`;
 }
@@ -9001,7 +9019,7 @@ async function bootstrap(): Promise<void> {
       windowCaptureEnabled: true,
       forwardSecrecyMode: "keepGroupDelivery" as const,
     };
-    recoveryKitUnsavedDurable = await loadHubRecoveryKitUnsaved().catch(() => null) ?? false;
+    await recoveryKitUnsavedFlag.load();
     if (attempt !== bootstrapEpoch) return;
     setup = preferences.setup;
     windowCaptureEnabled = preferences.windowCaptureEnabled;
@@ -9024,7 +9042,7 @@ async function bootstrap(): Promise<void> {
       // T15-A8: "Remind me later" is a real state, not a dismissal. While a
       // recovery kit is unsaved the launch lands back on the recovery step
       // even for an account that already finished onboarding.
-      const recoveryKitOutstanding = recoveryKitUnsavedDurable;
+      const recoveryKitOutstanding = recoveryKitUnsavedFlag.unsaved();
       route = preferences.onboardingComplete && !recoveryKitOutstanding ? "home" : "onboarding";
       if (route === "onboarding") onboardingRoute = pendingOnboardingRoute() ?? onboardingRouteForBuild("pro");
     }
