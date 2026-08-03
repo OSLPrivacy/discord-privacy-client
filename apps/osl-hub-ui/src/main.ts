@@ -1643,6 +1643,14 @@ function dockOnboardingBackControl(): void {
   // Steps with no action row of their own (Pro code, the password-role forms)
   // keep the nav row itself, which is already a footer in the same position.
   if (!primaryRow) return;
+  // A step that navigates its own internal sequence renders its own Back and
+  // owns that direction entirely (the quick tour walks five sub-steps before
+  // it leaves the route). Docking the global Back beside it shipped two
+  // identically labelled "Back" buttons side by side on all five tour steps.
+  if (primaryRow.querySelector(".onboarding-step-back")) {
+    nav.remove();
+    return;
+  }
   primaryRow.prepend(back);
   nav.remove();
 }
@@ -1748,7 +1756,7 @@ function tutorialContent(): string {
     ? `<h1 id="route-heading" tabindex="-1">Tour complete</h1><p class="compact-lead onboarding-centered-copy">You can replay this tour any time from Settings → About.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="finish-onboarding-tour" type="button">Return to Home</button></div>`
     : chooseAppsOnboardingContent();
   const [title, detail] = current;
-  return `<section class="onboarding-tour" aria-labelledby="route-heading" data-onboarding-tour-step="${onboardingTourStep + 1}"><p class="eyebrow">Quick tour · ${onboardingTourStep + 1} of ${steps.length}</p><h1 id="route-heading" tabindex="-1">${title}</h1><p class="compact-lead onboarding-centered-copy">${detail}</p><p class="send-mode-truth">You can return to this tour later from Settings → About.</p><div class="setup-footer onboarding-actions"><button class="button ghost" id="onboarding-tour-back" type="button" ${onboardingTourStep === 0 ? "disabled" : ""}>Back</button><button class="button primary" id="onboarding-tour-next" type="button">${onboardingTourStep + 1 === steps.length ? "Choose apps" : "Next"}</button></div></section>`;
+  return `<section class="onboarding-tour" aria-labelledby="route-heading" data-onboarding-tour-step="${onboardingTourStep + 1}"><p class="eyebrow">Quick tour · ${onboardingTourStep + 1} of ${steps.length}</p><h1 id="route-heading" tabindex="-1">${title}</h1><p class="compact-lead onboarding-centered-copy">${detail}</p><p class="send-mode-truth">You can return to this tour later from Settings → About.</p><div class="setup-footer onboarding-actions"><button class="button ghost onboarding-back onboarding-step-back" id="onboarding-tour-back" type="button">Back</button><button class="button primary" id="onboarding-tour-next" type="button">${onboardingTourStep + 1 === steps.length ? "Choose apps" : "Next"}</button></div></section>`;
 }
 
 function chooseAppsOnboardingContent(): string {
@@ -2703,8 +2711,18 @@ function bindOnboarding(): void {
     persistCombinedHomeChoices();
     await completeOnboarding();
   });
+  // The tour's Back is the only Back on this step, so at the first sub-step it
+  // has to leave the route rather than sit there disabled: back out of a replay
+  // to Home, and out of first-run setup to the previous setup step.
   document.querySelector<HTMLButtonElement>("#onboarding-tour-back")?.addEventListener("click", () => {
-    if (onboardingTourStep > 0) onboardingTourStep -= 1;
+    if (onboardingTourStep > 0) {
+      onboardingTourStep -= 1;
+    } else if (replayingOnboardingTour) {
+      replayingOnboardingTour = false;
+      route = "home";
+    } else {
+      onboardingRoute = previousSetupRoute(onboardingRoute);
+    }
     render();
   });
   document.querySelector<HTMLButtonElement>("#onboarding-tour-next")?.addEventListener("click", () => {
