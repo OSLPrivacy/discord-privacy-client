@@ -55,8 +55,12 @@ function confirmation(label: string, hash: string): string {
  */
 export const OSL_MAIL_DELETION_UNVERIFIED_NOTE = "OSL has not re-read the mailbox, so server-side deletion is unverified.";
 
+// `warning` carries the amber label from `.warning strong` (styles.css:814); a
+// requested, unverified deletion must not read as a green success confirmation.
+// Completing the left rail needs one rule in styles.css (owned by another lane):
+// `.osl-mail-confirmation.warning { border-left-color: var(--warn); }`.
 function requestReceipt(label: string, detail: string, hash: string): string {
-  return `<div class="osl-mail-confirmation" role="status"><strong>${escape(label)}</strong><small>${escape(detail)} ${escape(OSL_MAIL_DELETION_UNVERIFIED_NOTE)}</small><code>OSL reference ${escape(hash.slice(0, 12))}…</code></div>`;
+  return `<div class="osl-mail-confirmation warning" role="status"><strong>${escape(label)}</strong><small>${escape(detail)} ${escape(OSL_MAIL_DELETION_UNVERIFIED_NOTE)}</small><code>OSL reference ${escape(hash.slice(0, 12))}…</code></div>`;
 }
 
 function deletionRequested(receipt: OslMailDeleteReceipt): string {

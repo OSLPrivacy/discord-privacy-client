@@ -123,6 +123,11 @@ describe("OSL Mail view", () => {
       expect(html).toContain("OSL reference bbbbbbbbbbbb…");
       expect(html).not.toMatch(/<code>[a-f0-9]{12}…<\/code>/u);
 
+      // Not presented with the plain success chrome the send receipt uses.
+      expect(html).not.toContain('<div class="osl-mail-confirmation" role="status"><strong>Server deletion');
+      expect(html).not.toContain('<div class="osl-mail-confirmation" role="status"><strong>Mailbox burn');
+      expect(html.match(/class="osl-mail-confirmation warning"/gu)?.length).toBeGreaterThanOrEqual(2);
+
       // A server-reported count is reported as the server's claim, never as a
       // verified erasure total.
       expect(html).toContain("The server reported the address disabled and 7 messages deleted.");
