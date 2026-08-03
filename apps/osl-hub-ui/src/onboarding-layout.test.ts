@@ -180,6 +180,44 @@ describe("clean onboarding sign in", () => {
     expect(controls).not.toMatch(/border-bottom:/u);
   });
 
+  it("gives every setup step the same action row: Back, primary, then any skip beneath", () => {
+    // Back/skip landed somewhere different on four consecutive steps -- above
+    // the primary on `browser`, inline beside it on `mullvad`, below a loose
+    // "Not now" on the two password steps. Order is decided by the sheet so no
+    // step can order itself differently, and it is in the sheet because the
+    // shipped CSP (`style-src 'self'`) drops inline styles.
+    const css = declarations(styles);
+    expect(css).toMatch(/\.onboarding-actions \.onboarding-back \{[^}]*order: -1/u);
+    expect(css).toMatch(/\.onboarding-actions \.button\.primary \{[^}]*order: 0/u);
+    const skip = css.match(/\.onboarding-actions \.text-button,\s*\n\.onboarding-actions \.browser-import-skip \{([^}]*)\}/u)?.[1] ?? "";
+    expect(skip, "the skip-order rule should be a top-level rule").not.toBe("");
+    expect(skip).toContain("order: 1");
+    expect(skip).toContain("flex-basis: 100%");
+    expect(css).toMatch(/\.onboarding-actions \{[^}]*flex-wrap: wrap/u);
+    // `browser` stacked its whole row vertically, which put Back above the
+    // primary button on the one step before the tour.
+    expect(css).not.toContain("browser-import-actions-primary");
+    expect(source).not.toContain("browser-import-actions-primary");
+
+    // Steps that used to render their primary outside a shared action row.
+    const pro = functionSource("proSetupContent", "tutorialContent");
+    expect(pro).toMatch(/<div class="setup-footer onboarding-actions">[^]*?type="submit">Continue<\/button><button class="text-button" id="skip-pro-setup"/u);
+    const stealth = onboardingPasswordRoleContent({
+      role: "stealth",
+      configured: false,
+      passwordEyeIcon: () => "",
+      statusTag: () => "",
+    });
+    expect(stealth).toMatch(/<div class="setup-footer onboarding-actions"><button class="button primary" type="submit" form="setup-stealth-form"/u);
+    expect(stealth).toContain('data-onboarding-role-submit');
+    // The submit is no longer inside the form element, so the binding cannot
+    // find it by walking the form's own subtree.
+    expect(functionSource("bindOnboardingPasswordRole", "bindPasswordVisibility"))
+      .toContain('document.querySelector<HTMLButtonElement>("[data-onboarding-role-submit]")');
+    // Every step in the spine renders Back, `forward-secrecy` included.
+    expect(functionSource("renderOnboarding", "onboardingContent")).toContain('"forward-secrecy"');
+  });
+
   it("centres the stealth/burn 'Not now' escape hatch under its centred card", () => {
     // It is a <button>, so it is inline-block and pinned itself to the left
     // edge of the centred card above it on both password steps.
@@ -595,7 +633,7 @@ describe("fresh-account continuation", () => {
     expect(onboardingRender).toContain('id="onboarding-back"');
     expect(onboardingRender).not.toContain('id="skip-onboarding"');
     expect(onboardingRender).not.toContain("Skip · manual setup");
-    expect(onboardingRender).toContain('["pro", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"]');
+    expect(onboardingRender).toContain('["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"]');
     expect(onboardingRender).not.toContain('"scrub"].includes(onboardingRoute)');
     expect(binding).not.toContain('document.querySelector("#skip-onboarding")');
     expect(binding).toContain('document.querySelector("#onboarding-back")?.addEventListener("click"');

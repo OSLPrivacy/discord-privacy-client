@@ -22,4 +22,13 @@ describe("D111 forward-secrecy onboarding choice", () => {
     expect(chooseForwardSecrecyMode(initialForwardSecrecyOnboardingState(), "protect-past").choice).toBe("protect-past");
     expect(chooseForwardSecrecyMode(initialForwardSecrecyOnboardingState(), "keep-group-delivery").choice).toBe("keep-group-delivery");
   });
+
+  it("renders the same two-child choice card and shared action row as the tor step", () => {
+    const markup = onboardingForwardSecrecyMarkup(initialForwardSecrecyOnboardingState());
+    // A third child in `.tor-choice-card` reflows the copy under the 1.125rem
+    // radio column and wraps the text one or two words per line.
+    expect(markup).not.toContain("tor-choice-icon");
+    expect(markup).toContain('class="compact-lead onboarding-centered-copy"');
+    expect(markup).toContain('class="setup-footer onboarding-actions"');
+  });
 });

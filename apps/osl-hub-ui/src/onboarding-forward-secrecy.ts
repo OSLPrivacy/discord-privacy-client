@@ -21,23 +21,27 @@ export function canContinuePastForwardSecrecyChoice(state: ForwardSecrecyOnboard
 }
 
 export function onboardingForwardSecrecyMarkup(state: ForwardSecrecyOnboardingState): string {
-  const card = (choice: Exclude<ForwardSecrecyChoice, null>, title: string, downside: string, icon: string): string => {
+  // The card is a two-column grid (radio | copy). A third child -- this step
+  // used to render a decorative icon span between them -- pushes the copy onto
+  // the grid's second row under the 1.125rem radio column, which squeezed the
+  // text into an ~80px ribbon wrapping one or two words per line. `tor` renders
+  // the same card with exactly two children and lays out correctly.
+  const card = (choice: Exclude<ForwardSecrecyChoice, null>, title: string, downside: string): string => {
     const selected = state.choice === choice;
     return `<label class="tor-choice-card${selected ? " selected" : ""}">
       <input type="radio" name="forward-secrecy-mode" value="${choice}"${selected ? " checked" : ""}/>
-      <span class="tor-choice-icon tor-choice-icon-${icon}" aria-hidden="true"></span>
       <span class="tor-choice-copy"><strong>${title}</strong><small>${downside}</small></span>
     </label>`;
   };
   return `<section class="tor-onboarding" aria-labelledby="forward-secrecy-heading">
     <p class="eyebrow">Message recovery choice</p>
     <h1 id="forward-secrecy-heading" tabindex="-1">Choose message protection</h1>
-    <p class="compact-lead">Pick one before continuing. You can review this choice later in Settings.</p>
+    <p class="compact-lead onboarding-centered-copy">Pick one before continuing. You can review this choice later in Settings.</p>
     <fieldset class="tor-choice-grid"><legend class="sr-only">Message protection</legend>
-      ${card("protect-past", "Protect past messages", "A stolen data copy cannot reconstruct earlier message keys. Cost: a restart begins a fresh chain and late messages are lost.", "tor")}
-      ${card("keep-group-delivery", "Keep group delivery as today", "Cost: a persisted snapshot can recover prior message keys.", "direct")}
+      ${card("protect-past", "Protect past messages", "A stolen data copy cannot reconstruct earlier message keys. Cost: a restart begins a fresh chain and late messages are lost.")}
+      ${card("keep-group-delivery", "Keep group delivery as today", "Cost: a persisted snapshot can recover prior message keys.")}
     </fieldset>
     <p class="tor-choice-note" role="status">${state.choice === null ? "Choose how message recovery works to continue." : "Your choice will be saved before OSL sends messages."}</p>
-    <button class="button primary" data-forward-secrecy-continue type="button" ${canContinuePastForwardSecrecyChoice(state) ? "" : "disabled"}>Continue</button>
+    <div class="setup-footer onboarding-actions"><button class="button primary" data-forward-secrecy-continue type="button" ${canContinuePastForwardSecrecyChoice(state) ? "" : "disabled"}>Continue</button></div>
   </section>`;
 }

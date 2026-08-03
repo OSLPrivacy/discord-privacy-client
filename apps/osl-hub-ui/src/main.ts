@@ -1643,6 +1643,14 @@ function dockOnboardingBackControl(): void {
   // Steps with no action row of their own (Pro code, the password-role forms)
   // keep the nav row itself, which is already a footer in the same position.
   if (!primaryRow) return;
+  // A step that navigates its own internal sequence renders its own Back and
+  // owns that direction entirely (the quick tour walks five sub-steps before
+  // it leaves the route). Docking the global Back beside it shipped two
+  // identically labelled "Back" buttons side by side on all five tour steps.
+  if (primaryRow.querySelector(".onboarding-step-back")) {
+    nav.remove();
+    return;
+  }
   primaryRow.prepend(back);
   nav.remove();
 }
@@ -1650,7 +1658,7 @@ function dockOnboardingBackControl(): void {
 function renderOnboarding(): void {
   onboardingRoute = onboardingRouteForBuild(onboardingRoute);
   persistCurrentOnboardingRoute();
-  const setupScreen = ["pro", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
+  const setupScreen = ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
   const setupNavigation = setupScreen
     ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
     : "";
@@ -1731,8 +1739,11 @@ function welcomeOnboardingContent(): string {
 
 function proSetupContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  if (pro) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><button class="button primary" data-onboarding="sending" type="button">Continue</button></section>`;
-  return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading"><p class="eyebrow">Optional</p><h1 id="route-heading" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Continue</button></form><button class="text-button" id="skip-pro-setup" type="button">Skip</button></section>`;
+  if (pro) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><div class="setup-footer onboarding-actions"><button class="button primary" data-onboarding="sending" type="button">Continue</button></div></section>`;
+  // The submit and the Skip escape hatch sit in the step's own action row, so
+  // the docking pass folds Back in beside them instead of leaving a third,
+  // separate footer below a loose text link.
+  return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading"><p class="eyebrow">Optional</p><h1 id="route-heading" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><div class="setup-footer onboarding-actions"><button class="button primary" type="submit">Continue</button><button class="text-button" id="skip-pro-setup" type="button">Skip</button></div></form></section>`;
 }
 
 function tutorialContent(): string {
@@ -1748,7 +1759,7 @@ function tutorialContent(): string {
     ? `<h1 id="route-heading" tabindex="-1">Tour complete</h1><p class="compact-lead onboarding-centered-copy">You can replay this tour any time from Settings → About.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="finish-onboarding-tour" type="button">Return to Home</button></div>`
     : chooseAppsOnboardingContent();
   const [title, detail] = current;
-  return `<section class="onboarding-tour" aria-labelledby="route-heading" data-onboarding-tour-step="${onboardingTourStep + 1}"><p class="eyebrow">Quick tour · ${onboardingTourStep + 1} of ${steps.length}</p><h1 id="route-heading" tabindex="-1">${title}</h1><p class="compact-lead onboarding-centered-copy">${detail}</p><p class="send-mode-truth">You can return to this tour later from Settings → About.</p><div class="setup-footer onboarding-actions"><button class="button ghost" id="onboarding-tour-back" type="button" ${onboardingTourStep === 0 ? "disabled" : ""}>Back</button><button class="button primary" id="onboarding-tour-next" type="button">${onboardingTourStep + 1 === steps.length ? "Choose apps" : "Next"}</button></div></section>`;
+  return `<section class="onboarding-tour" aria-labelledby="route-heading" data-onboarding-tour-step="${onboardingTourStep + 1}"><p class="eyebrow">Quick tour · ${onboardingTourStep + 1} of ${steps.length}</p><h1 id="route-heading" tabindex="-1">${title}</h1><p class="compact-lead onboarding-centered-copy">${detail}</p><p class="send-mode-truth">You can return to this tour later from Settings → About.</p><div class="setup-footer onboarding-actions"><button class="button ghost onboarding-back onboarding-step-back" id="onboarding-tour-back" type="button">Back</button><button class="button primary" id="onboarding-tour-next" type="button">${onboardingTourStep + 1 === steps.length ? "Choose apps" : "Next"}</button></div></section>`;
 }
 
 function chooseAppsOnboardingContent(): string {
@@ -2076,7 +2087,7 @@ function browserImportContent(): string {
     ? "Checking selected areas..."
     : selectionReady ? "Check selected areas" : "Choose areas";
   const secondaryLabel = browserImportBusy ? "Wait for scan..." : "Not now";
-  return `<h1 id="route-heading" tabindex="-1">Find saved browser accounts</h1><p class="compact-lead onboarding-centered-copy">Optional. Consent separately to each browser area OSL may inspect.</p>${detectedBrowsers}${progress}${ready}${failure}<div class="setup-footer onboarding-actions browser-import-actions-primary"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${importLabel}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportBusy || browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div><p class="saved-account-truth">OSL never reads browser databases before consent. After consent it copies one bounded history snapshot, reads that copy, deletes it, and never opens passwords or login stores.</p>`;
+  return `<h1 id="route-heading" tabindex="-1">Find saved browser accounts</h1><p class="compact-lead onboarding-centered-copy">Optional. Consent separately to each browser area OSL may inspect.</p>${detectedBrowsers}${progress}${ready}${failure}<p class="saved-account-truth">OSL never reads browser databases before consent. After consent it copies one bounded history snapshot, reads that copy, deletes it, and never opens passwords or login stores.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${importLabel}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportBusy || browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div>`;
 }
 
 function persistSavedAccountPreferences(): void {
@@ -2703,8 +2714,18 @@ function bindOnboarding(): void {
     persistCombinedHomeChoices();
     await completeOnboarding();
   });
+  // The tour's Back is the only Back on this step, so at the first sub-step it
+  // has to leave the route rather than sit there disabled: back out of a replay
+  // to Home, and out of first-run setup to the previous setup step.
   document.querySelector<HTMLButtonElement>("#onboarding-tour-back")?.addEventListener("click", () => {
-    if (onboardingTourStep > 0) onboardingTourStep -= 1;
+    if (onboardingTourStep > 0) {
+      onboardingTourStep -= 1;
+    } else if (replayingOnboardingTour) {
+      replayingOnboardingTour = false;
+      route = "home";
+    } else {
+      onboardingRoute = previousSetupRoute(onboardingRoute);
+    }
     render();
   });
   document.querySelector<HTMLButtonElement>("#onboarding-tour-next")?.addEventListener("click", () => {
@@ -2768,6 +2789,15 @@ function bindOnboarding(): void {
     render();
   });
   document.querySelector("#onboarding-back")?.addEventListener("click", () => {
+    // A replay opened from Settings is not first-run setup: Back there has to
+    // leave the way it came in, not walk backwards into the setup spine.
+    if (replayingOnboardingTour) {
+      replayingOnboardingTour = false;
+      onboardingTourStep = 0;
+      route = "home";
+      render();
+      return;
+    }
     onboardingRoute = previousSetupRoute(onboardingRoute);
     render();
     if (onboardingRoute === "browser") void refreshBrowserImportReadiness();
@@ -2864,7 +2894,11 @@ function bindOnboardingPasswordRole(): void {
   const current = form.elements.namedItem("current") as HTMLInputElement;
   const alternate = form.elements.namedItem("alternate") as HTMLInputElement;
   const confirm = form.elements.namedItem("confirm") as HTMLInputElement;
-  const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]');
+  // The submit sits in the step's shared action row outside the form card and
+  // is bound to it by the form-owner attribute, so it is not in the form's own
+  // subtree.
+  const submit = document.querySelector<HTMLButtonElement>("[data-onboarding-role-submit]")
+    ?? form.querySelector<HTMLButtonElement>('button[type="submit"]');
   const error = form.querySelector<HTMLElement>("[data-onboarding-role-error]");
   const validate = (): void => {
     if (!submit || !error) return;
