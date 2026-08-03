@@ -885,38 +885,23 @@ impl KeyServerClient {
     /// (Mozilla CA bundle). No certificate pinning — that's a
     /// v1-stable feature.
     pub fn new(base_url: impl AsRef<str>) -> Result<Self> {
-        let url = base_url.as_ref();
-        let parsed = reqwest::Url::parse(url)
-            .map_err(|e| Error::Transport(format!("invalid base_url {url:?}: {e}")))?;
-
-        let no_ambient_authority = parsed.username().is_empty()
-            && parsed.password().is_none()
-            && parsed.query().is_none()
-            && parsed.fragment().is_none();
-        let production = no_ambient_authority
-            && parsed.scheme() == "https"
-            && parsed.host_str() == Some("keyserver.oslprivacy.com")
-            && parsed.port_or_known_default() == Some(443)
-            && parsed.path() == "/";
-        let debug_loopback = cfg!(debug_assertions)
-            && no_ambient_authority
-            && matches!(parsed.scheme(), "http" | "https")
-            && parsed
-                .host_str()
-                .and_then(|host| {
-                    host.trim_start_matches('[')
-                        .trim_end_matches(']')
-                        .parse::<std::net::IpAddr>()
-                        .ok()
-                })
-                .is_some_and(|ip| ip.is_loopback());
-        if !production && !debug_loopback {
-            return Err(Error::Transport(
-                "keyserver origin is not trusted for this build".to_string(),
-            ));
+        let base_url = validate_keyserver_base_url(base_url.as_ref())?;
+        // The route decision comes before the client exists. `new` is the
+        // "nobody routed me" constructor, so while Tor is selected it must
+        // never hand back a direct client: it adopts the authorized tunnel, or
+        // it refuses. See `crate::egress`.
+        match crate::egress::direct_client_decision() {
+            crate::egress::DirectClientDecision::Build => {}
+            crate::egress::DirectClientDecision::Adopt(client) => {
+                return Ok(KeyServerClient {
+                    base_url,
+                    client: *client,
+                });
+            }
+            crate::egress::DirectClientDecision::Refuse => {
+                return Err(Error::Transport(crate::egress::TOR_UNAVAILABLE.to_string()));
+            }
         }
-
-        let base_url = parsed.as_str().trim_end_matches('/').to_string();
         // `reqwest::blocking::Client::builder().build()` stands up a private
         // tokio runtime for the handshake and then drops it. Dropping a
         // runtime while another runtime's context is active aborts with
@@ -943,6 +928,19 @@ impl KeyServerClient {
         .join()
         .map_err(|_| Error::Transport("reqwest client build panicked".to_string()))?
         .map_err(|e| Error::Transport(format!("reqwest client build: {e}")))?;
+        Ok(KeyServerClient { base_url, client })
+    }
+
+    /// Build a keyserver client with an already configured HTTP transport.
+    ///
+    /// This preserves the same origin policy as [`Self::new`]. Only the route
+    /// implementation changes, which lets the hub install a SOCKS-only
+    /// reqwest client after its Tor fail-closed gate has authorized the send.
+    pub fn with_http_client(
+        base_url: impl AsRef<str>,
+        client: reqwest::blocking::Client,
+    ) -> Result<Self> {
+        let base_url = validate_keyserver_base_url(base_url.as_ref())?;
         Ok(KeyServerClient { base_url, client })
     }
 
@@ -2298,6 +2296,40 @@ struct ControlInboxDeleteBody<'a> {
     user_id: &'a str,
     timestamp_ms: i64,
     signature_b64: String,
+}
+
+fn validate_keyserver_base_url(url: &str) -> Result<String> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| Error::Transport(format!("invalid base_url {url:?}: {e}")))?;
+
+    let no_ambient_authority = parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.query().is_none()
+        && parsed.fragment().is_none();
+    let production = no_ambient_authority
+        && parsed.scheme() == "https"
+        && parsed.host_str() == Some("keyserver.oslprivacy.com")
+        && parsed.port_or_known_default() == Some(443)
+        && parsed.path() == "/";
+    let debug_loopback = cfg!(debug_assertions)
+        && no_ambient_authority
+        && matches!(parsed.scheme(), "http" | "https")
+        && parsed
+            .host_str()
+            .and_then(|host| {
+                host.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::IpAddr>()
+                    .ok()
+            })
+            .is_some_and(|ip| ip.is_loopback());
+    if !production && !debug_loopback {
+        return Err(Error::Transport(
+            "keyserver origin is not trusted for this build".to_string(),
+        ));
+    }
+
+    Ok(parsed.as_str().trim_end_matches('/').to_string())
 }
 
 #[cfg(test)]

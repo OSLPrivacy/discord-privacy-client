@@ -25,6 +25,7 @@ pub mod burn_alert;
 pub mod client;
 pub mod control_inbox;
 pub mod duress;
+pub mod egress;
 pub mod identity;
 pub mod identity_bundle;
 pub mod keystore_anchor;

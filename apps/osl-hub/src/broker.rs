@@ -1705,6 +1705,30 @@ pub fn prepare_peer_prose_text_with_capture(
     .map(|envelope| envelope.prepared)
 }
 
+pub fn prepare_peer_prose_text_with_capture_and_store_client(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    context_token: &str,
+    plaintext: String,
+    view_once: bool,
+    require_capture_protection: bool,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
+) -> Result<PreparedPeerProseMessage, String> {
+    prepare_peer_prose_text_inner_with_chunk(
+        core,
+        security_state,
+        broker,
+        context_token,
+        plaintext,
+        view_once,
+        require_capture_protection,
+        None,
+        Some(store_client),
+    )
+    .map(|envelope| envelope.prepared)
+}
+
 /// QA-only seam used by the dedicated WhatsApp build after the exact native
 /// window, paired peer, chat headers, composer, and transcript have been
 /// explicitly visually bound. It does not place or send provider input.
@@ -1714,6 +1738,7 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
     verified: ManualPeerBinding,
     visual_context_sha256: &str,
     plaintext: String,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
 ) -> Result<PreparedPeerProseMessage, String> {
     if !canonical_hex(visual_context_sha256, 64) {
         return Err("WhatsApp QA visual context commitment is invalid".to_owned());
@@ -1752,8 +1777,8 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
     let detection_key = ipc::prose_token::derive_detection_key(&conversation_key)
         .map_err(|_| "OSL protected conversation key is unavailable".to_owned())?;
     let send_key = prose_send_key(core)?;
-    let uploaded = ipc::prose_token::prose_token_send(
-        &dir,
+    let uploaded = ipc::prose_token::prose_token_send_with_client(
+        store_client,
         &scope,
         &detection_key,
         ipc::prose_token::ProseTokenSendKeys {
@@ -1764,11 +1789,13 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
         &encrypted,
         ttl_seconds,
     )
-        .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
+    .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
     if security::record_peer_prose_blob(security_state, scope.clone(), uploaded.blob_id.clone())
         .is_err()
     {
-        if ipc::prose_token::prose_token_burn_id(&dir, &send_key, &uploaded.blob_id).is_err() {
+        // Same route for the rollback as for the upload it destroys.
+        if burn_uploaded_prose_blob(&dir, Some(store_client), &send_key, &uploaded.blob_id).is_err()
+        {
             let _ =
                 security::record_peer_prose_blob(security_state, scope, uploaded.blob_id.clone());
         }
@@ -1800,7 +1827,27 @@ fn prepare_peer_prose_text_inner(
         view_once,
         require_capture_protection,
         None,
+        None,
     )
+}
+
+/// Undo one prose-token upload over the exact route that performed it.
+///
+/// `store_client` is `Some` precisely when the upload was routed, so passing
+/// it straight through is what keeps a burn on its own upload's path. When it
+/// is `None` the upload was unrouted too, and the direct helper is reached
+/// through the same process-wide interlock the upload passed -- so a Tor
+/// choice that arrived in between refuses here instead of leaking a DELETE.
+fn burn_uploaded_prose_blob(
+    config_dir: &std::path::Path,
+    store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
+    send_key: &[u8],
+    blob_id: &str,
+) -> Result<(), ipc::prose_token::ProseTokenError> {
+    match store_client {
+        Some(client) => ipc::prose_token::prose_token_burn_id_with_client(client, send_key, blob_id),
+        None => ipc::prose_token::prose_token_burn_id(config_dir, send_key, blob_id),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1813,6 +1860,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
     view_once: bool,
     require_capture_protection: bool,
     chunk: Option<NativeTextChunkMeta>,
+    store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
 ) -> Result<PreparedPeerProseEnvelope, String> {
     let manual = broker.manual_peer_for(context_token)?;
     let verified = security::require_manual_peer_scope_approved(
@@ -1868,19 +1916,35 @@ fn prepare_peer_prose_text_inner_with_chunk(
     let detection_key = ipc::prose_token::derive_detection_key(&conversation_key)
         .map_err(|_| "OSL protected conversation key is unavailable".to_owned())?;
     let send_key = prose_send_key(core)?;
-    let uploaded = ipc::prose_token::prose_token_send(
-        &dir,
-        &manual.scope,
-        &detection_key,
-        ipc::prose_token::ProseTokenSendKeys {
-            message_key: &conversation_key,
-            send_key: &send_key,
-            conversation_key: &conversation_key,
-        },
-        &encrypted,
-        ttl_seconds,
-    )
-        .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
+    let send_keys = ipc::prose_token::ProseTokenSendKeys {
+        message_key: &conversation_key,
+        send_key: &send_key,
+        conversation_key: &conversation_key,
+    };
+    // Same pointer, same client-derived blob id, same capability set on every
+    // route. All the route decides is which HTTP client carries the upload:
+    // `store_client` is Some only once the Tor gate has authorized a route, and
+    // a selected-but-unhealthy Tor never reaches here at all.
+    let uploaded = if let Some(store_client) = store_client {
+        ipc::prose_token::prose_token_send_with_client(
+            store_client,
+            &manual.scope,
+            &detection_key,
+            send_keys,
+            &encrypted,
+            ttl_seconds,
+        )
+    } else {
+        ipc::prose_token::prose_token_send(
+            &dir,
+            &manual.scope,
+            &detection_key,
+            send_keys,
+            &encrypted,
+            ttl_seconds,
+        )
+    }
+    .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
     if security::record_peer_prose_blob(
         security_state,
         manual.scope.clone(),
@@ -1888,7 +1952,12 @@ fn prepare_peer_prose_text_inner_with_chunk(
     )
     .is_err()
     {
-        if ipc::prose_token::prose_token_burn_id(&dir, &send_key, &uploaded.blob_id).is_err() {
+        // The rollback DELETE must ride the same route as the upload it is
+        // undoing. Burning a Tor-uploaded blob over a direct client would tie
+        // that upload to this device's real address -- a correlation the
+        // upload itself never produced. Hand the burn the client the upload
+        // used; a route that had none is still the same route.
+        if burn_uploaded_prose_blob(&dir, store_client, &send_key, &uploaded.blob_id).is_err() {
             // A transient primary-ledger failure must not become an
             // untracked remote blob if the authenticated DELETE also fails.
             // Retry the encrypted recoverable ledger before returning failure.
@@ -3445,8 +3514,8 @@ fn authenticate_oriented_prose_pointer(
     }
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
-    let detection_key = prose_detection_key(core, &verified)
-        .map_err(|_| PeerProsePointerFailure::Rejected)?;
+    let detection_key =
+        prose_detection_key(core, &verified).map_err(|_| PeerProsePointerFailure::Rejected)?;
     let recovered = peer_prose_token_outcome(ipc::prose_token::prose_token_recv_classified(
         &dir,
         &manual.scope,
@@ -3544,6 +3613,36 @@ pub fn prepare_native_discord_overlay_text(
     )
 }
 
+/// The shipping Discord send, carried by an already-authorized route.
+///
+/// This is the same body as [`prepare_native_discord_overlay_text`]; the only
+/// difference is that the blob upload and the inbox post ride clients the Tor
+/// gate handed over rather than clients this path builds for itself.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_native_discord_overlay_text_with_route_clients(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
+    plaintext: String,
+    view_once: bool,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
+    keyserver_client: Option<&keystore::KeyServerClient>,
+) -> Result<PreparedNativeOverlayCarrier, String> {
+    let context_token = broker.active_native_manual_context_token()?;
+    prepare_peer_inbox_text_with_route_clients(
+        core,
+        security_state,
+        broker,
+        ai_carrier,
+        &context_token,
+        plaintext,
+        view_once,
+        Some(store_client),
+        keyserver_client,
+    )
+}
+
 pub fn prepare_osl_chat_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
@@ -3562,6 +3661,31 @@ pub fn prepare_osl_chat_text(
         &context_token,
         plaintext,
         view_once,
+    )
+    .map(|carrier| carrier.prepared)
+}
+
+pub fn prepare_osl_chat_text_with_route_clients(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
+    plaintext: String,
+    view_once: bool,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
+    keyserver_client: Option<&keystore::KeyServerClient>,
+) -> Result<PreparedNativeOverlayText, String> {
+    let context_token = broker.active_osl_chat_context_token()?;
+    prepare_peer_inbox_text_with_route_clients(
+        core,
+        security_state,
+        broker,
+        ai_carrier,
+        &context_token,
+        plaintext,
+        view_once,
+        Some(store_client),
+        keyserver_client,
     )
     .map(|carrier| carrier.prepared)
 }
@@ -3616,6 +3740,31 @@ fn prepare_peer_inbox_text(
     context_token: &str,
     plaintext: String,
     view_once: bool,
+) -> Result<PreparedNativeOverlayCarrier, String> {
+    prepare_peer_inbox_text_with_route_clients(
+        core,
+        security_state,
+        broker,
+        ai_carrier,
+        context_token,
+        plaintext,
+        view_once,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_peer_inbox_text_with_route_clients(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
+    context_token: &str,
+    plaintext: String,
+    view_once: bool,
+    store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
+    keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
     #[cfg(feature = "discord-qa-shell")]
     let is_fixed_discord_qa_probe = plaintext == "OSL Discord QA probe" && !view_once;
@@ -3688,7 +3837,7 @@ fn prepare_peer_inbox_text(
         "entered",
         None,
     )?;
-    let transport = keyserver_transport(core);
+    let transport = keyserver_transport_with_override(core, keyserver_client);
     #[cfg(feature = "discord-qa-shell")]
     if let Err(error) = &transport {
         record_fixed_discord_qa_broker_stage(
@@ -3775,6 +3924,7 @@ fn prepare_peer_inbox_text(
             view_once,
             true,
             Some(meta),
+            store_client,
         );
         #[cfg(feature = "discord-qa-shell")]
         if let Err(error) = &encrypted_result {
@@ -4241,14 +4391,8 @@ fn drain_peer_inbox_text(
             let wire = format!("DPC0::{}", STANDARD.encode(&bundle));
             let message_type = ipc::receipt_wire::MSG_TYPE_PRIVACY_RECEIPT;
             let admitted = (|| {
-                verify_manual_v3_type(
-                    core,
-                    &verified,
-                    &wire,
-                    ManualWireSender::Peer,
-                    message_type,
-                )
-                .map_err(|_| "OSL privacy receipt was invalid".to_owned())?;
+                verify_manual_v3_type(core, &verified, &wire, ManualWireSender::Peer, message_type)
+                    .map_err(|_| "OSL privacy receipt was invalid".to_owned())?;
                 let plaintext = decrypt_direct_manual_v3_payload(
                     core,
                     &verified,
@@ -5485,6 +5629,13 @@ fn validate_native_overlay_attachment_notice(
 fn keyserver_transport(
     core: &HubCoreState,
 ) -> Result<(keystore::Identity, keystore::KeyServerClient), String> {
+    keyserver_transport_with_override(core, None)
+}
+
+fn keyserver_transport_with_override(
+    core: &HubCoreState,
+    keyserver_client: Option<&keystore::KeyServerClient>,
+) -> Result<(keystore::Identity, keystore::KeyServerClient), String> {
     let identity = core
         .osl
         .identity
@@ -5492,6 +5643,9 @@ fn keyserver_transport(
         .map_err(|_| "OSL identity state is unavailable".to_owned())?
         .clone()
         .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    if let Some(client) = keyserver_client {
+        return Ok((identity, client.clone()));
+    }
     let client = core
         .osl
         .keyserver

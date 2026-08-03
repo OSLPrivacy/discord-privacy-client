@@ -126,7 +126,9 @@ impl From<crypto::Error> for ProseTokenError {
 ///   - `gc` / `server_channel` / `server_full`: scope.storage_key()
 ///     is already symmetric across peers (uses channel_id /
 ///     server_id) so no change is needed.
-fn derive_scope_cipher(scope_input: &ScopeInput) -> Result<stego::ConversationCipher, ProseTokenError> {
+fn derive_scope_cipher(
+    scope_input: &ScopeInput,
+) -> Result<stego::ConversationCipher, ProseTokenError> {
     let scope = crate::scope::Scope::try_from(scope_input.clone())?;
     let salt = prose_token_salt(&scope);
     Ok(stego::ConversationCipher::from_salt(salt.as_bytes()))
@@ -264,6 +266,33 @@ pub fn prose_token_send(
     dpc0_wire: &str,
     ttl_seconds: u32,
 ) -> Result<ProseTokenSendOutput, ProseTokenError> {
+    let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir);
+    let client = CipherStoreClient::new(base_url)?;
+    prose_token_send_with_client(
+        &client,
+        scope_input,
+        detection_key,
+        keys,
+        dpc0_wire,
+        ttl_seconds,
+    )
+}
+
+/// Same send, performed over a caller-supplied cipher-store client.
+///
+/// The hub's Tor gate uses this after it has resolved a route: when Tor is
+/// selected and healthy the client it hands in is SOCKS-only, and when Tor is
+/// selected and unhealthy the gate refuses before ever reaching here. Route
+/// policy is entirely the caller's; the pointer, capability derivation and
+/// client-chosen blob id below are identical on every route.
+pub fn prose_token_send_with_client(
+    client: &CipherStoreClient,
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    keys: ProseTokenSendKeys<'_>,
+    dpc0_wire: &str,
+    ttl_seconds: u32,
+) -> Result<ProseTokenSendOutput, ProseTokenError> {
     let body = dpc0_wire
         .strip_prefix(DPC0_PREFIX)
         .ok_or(ProseTokenError::NotDpc0Wire)?;
@@ -287,8 +316,6 @@ pub fn prose_token_send(
     )?;
     let blob_id_hex = hex_lower(&capabilities.blob_id);
 
-    let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir);
-    let client = CipherStoreClient::new(base_url)?;
     let uploaded = client.upload_pointer(
         &object,
         ttl_seconds,
@@ -433,10 +460,25 @@ pub fn prose_token_burn_id(
     send_key: &[u8],
     blob_id: &str,
 ) -> Result<(), ProseTokenError> {
-    let blob_id_bytes = blob_id_hex_to_bytes(blob_id)?;
-    let manage_cap = derive_manage_capability(send_key, &blob_id_bytes)?;
     let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir);
     let client = CipherStoreClient::new(base_url)?;
+    prose_token_burn_id_with_client(&client, send_key, blob_id)
+}
+
+/// Same burn, performed over a caller-supplied cipher-store client.
+///
+/// A burn must take the same route as the upload it destroys. A blob that was
+/// uploaded over Tor and then deleted over clearnet correlates the Tor upload
+/// with the sender's real address, which is worse than never having used Tor
+/// at all -- so the rollback path in the hub's broker hands in the very client
+/// its upload used rather than building a fresh direct one.
+pub fn prose_token_burn_id_with_client(
+    client: &CipherStoreClient,
+    send_key: &[u8],
+    blob_id: &str,
+) -> Result<(), ProseTokenError> {
+    let blob_id_bytes = blob_id_hex_to_bytes(blob_id)?;
+    let manage_cap = derive_manage_capability(send_key, &blob_id_bytes)?;
     client.burn(blob_id, &manage_cap)?;
     Ok(())
 }
@@ -669,14 +711,23 @@ mod tests {
         let pointer = [0x17; stego::TOKEN_ID_BYTES];
         let cover = stego::encode_token(&cipher, &detector, &pointer);
 
-        assert_eq!(stego::decode_token(&cipher, &detector, &cover), Some(pointer));
-        assert_eq!(stego::decode_token(&cipher, &public_scope_key, &cover), None);
+        assert_eq!(
+            stego::decode_token(&cipher, &detector, &cover),
+            Some(pointer)
+        );
+        assert_eq!(
+            stego::decode_token(&cipher, &public_scope_key, &cover),
+            None
+        );
 
         let delivery_tag = Hkdf::<Sha256>::new(None, &[0x5a; 32]);
         let mut delivery = [0u8; MAC_KEY_LEN];
         delivery_tag
             .expand(b"osl/tag/v1", &mut delivery)
             .expect("fixed HKDF output is valid");
-        assert_ne!(detector, delivery, "D-SEP requires independent HKDF outputs");
+        assert_ne!(
+            detector, delivery,
+            "D-SEP requires independent HKDF outputs"
+        );
     }
 }

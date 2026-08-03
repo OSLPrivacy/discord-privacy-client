@@ -85,16 +85,31 @@ impl Resolver {
             ));
         }
 
-        // `Client::builder().build()` blocks on its private runtime thread
-        // through `reqwest::blocking::wait::timeout`, which drops a shell
-        // runtime on this thread under debug assertions. On a Tokio worker
-        // that panics; build off any async context. See `crate::blocking_http`.
-        let client = crate::blocking_http::off_async_context(|| {
-            reqwest::blocking::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-        })
-        .map_err(|error| UsernameResolveError::Transport(error.to_string()))?;
+        // A directory lookup is egress like any other, and it carries the
+        // username someone is about to talk to. While Tor is selected this
+        // adopts the authorized tunnel or refuses; it never builds a direct
+        // client. See `crate::egress`.
+        let client = match crate::egress::direct_client_decision() {
+            crate::egress::DirectClientDecision::Adopt(client) => *client,
+            crate::egress::DirectClientDecision::Refuse => {
+                return Err(UsernameResolveError::Transport(
+                    crate::egress::TOR_UNAVAILABLE.to_owned(),
+                ));
+            }
+            // `Client::builder().build()` blocks on its private runtime thread
+            // through `reqwest::blocking::wait::timeout`, which drops a shell
+            // runtime on this thread under debug assertions. On a Tokio worker
+            // that panics; build off any async context. See
+            // `crate::blocking_http`.
+            crate::egress::DirectClientDecision::Build => {
+                crate::blocking_http::off_async_context(|| {
+                    reqwest::blocking::Client::builder()
+                        .redirect(reqwest::redirect::Policy::none())
+                        .build()
+                })
+                .map_err(|error| UsernameResolveError::Transport(error.to_string()))?
+            }
+        };
         Ok(Self {
             base_url: parsed.as_str().trim_end_matches('/').to_owned(),
             client,
