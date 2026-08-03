@@ -102,6 +102,7 @@ fn status_of(err: &CipherStoreError) -> String {
 /// `prose_token_recv` recovers byte-identical plaintext having been given
 /// nothing but the cover text.
 #[test]
+#[ignore = "live: needs OSL_LIVE_TESTS=1 + network to ciphers.oslprivacy.com. Run: cargo test -p ipc --test prose_token_bridge_live -- --ignored"]
 fn a_message_actually_travels_through_production() {
     if !live_tests_enabled() {
         eprintln!("skipping live test (set OSL_LIVE_TESTS=1 to run)");
@@ -161,6 +162,7 @@ fn upload_live(body: &[u8], token: &[u8; 16]) -> String {
 
 /// `mutant: wrong capability digest -> 4xx`
 #[test]
+#[ignore = "live: needs OSL_LIVE_TESTS=1 + network to ciphers.oslprivacy.com. Run: cargo test -p ipc --test prose_token_bridge_live -- --ignored"]
 fn a_wrong_capability_is_refused_by_production() {
     if !live_tests_enabled() {
         eprintln!("skipping live test (set OSL_LIVE_TESTS=1 to run)");
@@ -193,6 +195,7 @@ fn a_wrong_capability_is_refused_by_production() {
 
 /// `mutant: absent blob id -> 4xx`
 #[test]
+#[ignore = "live: needs OSL_LIVE_TESTS=1 + network to ciphers.oslprivacy.com. Run: cargo test -p ipc --test prose_token_bridge_live -- --ignored"]
 fn an_absent_blob_id_is_refused_by_production() {
     if !live_tests_enabled() {
         eprintln!("skipping live test (set OSL_LIVE_TESTS=1 to run)");
@@ -219,6 +222,7 @@ fn an_absent_blob_id_is_refused_by_production() {
 /// This is the assertion that starts failing the day Phase 2 deploys, which is
 /// exactly when someone must be forced back here to delete the bridge.
 #[test]
+#[ignore = "live: needs OSL_LIVE_TESTS=1 + network to ciphers.oslprivacy.com. Run: cargo test -p ipc --test prose_token_bridge_live -- --ignored"]
 fn the_destination_protocol_is_still_not_deployed() {
     if !live_tests_enabled() {
         eprintln!("skipping live test (set OSL_LIVE_TESTS=1 to run)");
