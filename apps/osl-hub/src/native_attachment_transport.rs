@@ -22,6 +22,24 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use zeroize::Zeroize;
 
+/// Build the attachment store client for whatever route this process is on.
+///
+/// `CipherStoreClient::new` is the unrouted constructor, so while Tor is
+/// selected it either adopts the authorized tunnel or refuses -- see
+/// `keystore::egress`. A refusal is reported in the interlock's own words so
+/// the user learns that Tor is down, not that "storage is unavailable".
+fn attachment_store_client(
+    config_root: &Path,
+) -> Result<ipc::cipher_store_client::CipherStoreClient, String> {
+    ipc::cipher_store_client::CipherStoreClient::new(
+        ipc::cipher_store_client::resolve_cipher_store_base_url(config_root),
+    )
+    .map_err(|error| match error {
+        ipc::cipher_store_client::CipherStoreError::RouteUnavailable(message) => message,
+        _ => "OSL attachment transport is unavailable".to_owned(),
+    })
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OpenedNativeOverlayAttachment {
@@ -145,10 +163,7 @@ fn select_encrypt_upload_deliver_inner(
         .path()
         .app_config_dir()
         .map_err(|_| "OSL attachment transport is unavailable".to_owned())?;
-    let client = ipc::cipher_store_client::CipherStoreClient::new(
-        ipc::cipher_store_client::resolve_cipher_store_base_url(&config_root),
-    )
-    .map_err(|_| "OSL attachment transport is unavailable".to_owned())?;
+    let client = attachment_store_client(&config_root)?;
     // Finish deletions an earlier rollback could not complete before adding
     // more remote ciphertext. Done before anything is staged locally so a
     // stuck outbox cannot also leave a sealed copy on this device.
@@ -440,10 +455,7 @@ fn deletion_drain_client(
         .path()
         .app_config_dir()
         .map_err(|_| "OSL attachment transport is unavailable".to_owned())?;
-    ipc::cipher_store_client::CipherStoreClient::new(
-        ipc::cipher_store_client::resolve_cipher_store_base_url(&config_root),
-    )
-    .map_err(|_| "OSL attachment transport is unavailable".to_owned())
+    attachment_store_client(&config_root)
 }
 
 /// Surface a drain outcome without letting it reach the caller's result.
@@ -600,10 +612,7 @@ fn open_pending_inner(
         .path()
         .app_config_dir()
         .map_err(|_| "OSL attachment transport is unavailable".to_owned())?;
-    let client = ipc::cipher_store_client::CipherStoreClient::new(
-        ipc::cipher_store_client::resolve_cipher_store_base_url(&config_root),
-    )
-    .map_err(|_| "OSL attachment transport is unavailable".to_owned())?;
+    let client = attachment_store_client(&config_root)?;
     // Retry outstanding deletions before consuming the pending record, so a
     // stuck outbox can never burn a replay slot for an attachment that then
     // fails to open.

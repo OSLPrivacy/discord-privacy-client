@@ -1738,6 +1738,7 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
     verified: ManualPeerBinding,
     visual_context_sha256: &str,
     plaintext: String,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
 ) -> Result<PreparedPeerProseMessage, String> {
     if !canonical_hex(visual_context_sha256, 64) {
         return Err("WhatsApp QA visual context commitment is invalid".to_owned());
@@ -1776,8 +1777,8 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
     let detection_key = ipc::prose_token::derive_detection_key(&conversation_key)
         .map_err(|_| "OSL protected conversation key is unavailable".to_owned())?;
     let send_key = prose_send_key(core)?;
-    let uploaded = ipc::prose_token::prose_token_send(
-        &dir,
+    let uploaded = ipc::prose_token::prose_token_send_with_client(
+        store_client,
         &scope,
         &detection_key,
         ipc::prose_token::ProseTokenSendKeys {
@@ -1788,11 +1789,13 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
         &encrypted,
         ttl_seconds,
     )
-        .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
+    .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
     if security::record_peer_prose_blob(security_state, scope.clone(), uploaded.blob_id.clone())
         .is_err()
     {
-        if ipc::prose_token::prose_token_burn_id(&dir, &send_key, &uploaded.blob_id).is_err() {
+        // Same route for the rollback as for the upload it destroys.
+        if burn_uploaded_prose_blob(&dir, Some(store_client), &send_key, &uploaded.blob_id).is_err()
+        {
             let _ =
                 security::record_peer_prose_blob(security_state, scope, uploaded.blob_id.clone());
         }
@@ -1826,6 +1829,25 @@ fn prepare_peer_prose_text_inner(
         None,
         None,
     )
+}
+
+/// Undo one prose-token upload over the exact route that performed it.
+///
+/// `store_client` is `Some` precisely when the upload was routed, so passing
+/// it straight through is what keeps a burn on its own upload's path. When it
+/// is `None` the upload was unrouted too, and the direct helper is reached
+/// through the same process-wide interlock the upload passed -- so a Tor
+/// choice that arrived in between refuses here instead of leaking a DELETE.
+fn burn_uploaded_prose_blob(
+    config_dir: &std::path::Path,
+    store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
+    send_key: &[u8],
+    blob_id: &str,
+) -> Result<(), ipc::prose_token::ProseTokenError> {
+    match store_client {
+        Some(client) => ipc::prose_token::prose_token_burn_id_with_client(client, send_key, blob_id),
+        None => ipc::prose_token::prose_token_burn_id(config_dir, send_key, blob_id),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1930,7 +1952,12 @@ fn prepare_peer_prose_text_inner_with_chunk(
     )
     .is_err()
     {
-        if ipc::prose_token::prose_token_burn_id(&dir, &send_key, &uploaded.blob_id).is_err() {
+        // The rollback DELETE must ride the same route as the upload it is
+        // undoing. Burning a Tor-uploaded blob over a direct client would tie
+        // that upload to this device's real address -- a correlation the
+        // upload itself never produced. Hand the burn the client the upload
+        // used; a route that had none is still the same route.
+        if burn_uploaded_prose_blob(&dir, store_client, &send_key, &uploaded.blob_id).is_err() {
             // A transient primary-ledger failure must not become an
             // untracked remote blob if the authenticated DELETE also fails.
             // Retry the encrypted recoverable ledger before returning failure.
@@ -3583,6 +3610,36 @@ pub fn prepare_native_discord_overlay_text(
         &context_token,
         plaintext,
         view_once,
+    )
+}
+
+/// The shipping Discord send, carried by an already-authorized route.
+///
+/// This is the same body as [`prepare_native_discord_overlay_text`]; the only
+/// difference is that the blob upload and the inbox post ride clients the Tor
+/// gate handed over rather than clients this path builds for itself.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_native_discord_overlay_text_with_route_clients(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
+    plaintext: String,
+    view_once: bool,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
+    keyserver_client: Option<&keystore::KeyServerClient>,
+) -> Result<PreparedNativeOverlayCarrier, String> {
+    let context_token = broker.active_native_manual_context_token()?;
+    prepare_peer_inbox_text_with_route_clients(
+        core,
+        security_state,
+        broker,
+        ai_carrier,
+        &context_token,
+        plaintext,
+        view_once,
+        Some(store_client),
+        keyserver_client,
     )
 }
 

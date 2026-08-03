@@ -2770,6 +2770,9 @@ fn prepare_whatsapp_qa_protected_text_blocking(
     app: &tauri::AppHandle,
     plaintext: String,
 ) -> Result<WhatsAppQaPreparedMessage, String> {
+    // Decide the route before any protected text exists. A Tor choice with no
+    // tunnel refuses here, so nothing is encrypted, uploaded, or placed.
+    let route = app.state::<TorPreferenceState>().authorize_store()?;
     native_whatsapp_overlay::hide(app);
     std::thread::sleep(std::time::Duration::from_millis(100));
     let before =
@@ -2791,12 +2794,14 @@ fn prepare_whatsapp_qa_protected_text_blocking(
             .map_err(|_| "qaStagePairing".to_owned())?;
     let peer = security::manual_peer_binding(&app.state::<HubCoreState>(), peer_person_id)
         .map_err(|_| "qaStagePeerBinding".to_owned())?;
+    let store_client = route.cipher_store_client(&config_dir)?;
     let prepared = broker::prepare_whatsapp_qa_peer_prose_text(
         &app.state::<HubCoreState>(),
         &app.state::<HubSecurityState>(),
         peer,
         &context_binding_sha256,
         plaintext,
+        &store_client,
     )
     .map_err(|error| {
         if error.contains("encrypted copy text") {
@@ -3741,16 +3746,25 @@ async fn prepare_native_discord_overlay_text(
     }
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
+        let route = app.state::<TorPreferenceState>().authorize_store()?;
+        let config_dir = app
+            .path()
+            .app_config_dir()
+            .map_err(|_| "OSL store transport is unavailable".to_owned())?;
+        let store_client = route.cipher_store_client(&config_dir)?;
+        let keyserver_client = route.tor_keyserver_client(&config_dir)?;
         let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
         let scope_binding = native_discord_scope_binding(&app)?;
         let visual = deidentify_prepared_visual_structure(&plaintext);
-        let carrier = broker::prepare_native_discord_overlay_text(
+        let carrier = broker::prepare_native_discord_overlay_text_with_route_clients(
             &app.state::<HubCoreState>(),
             &app.state::<HubSecurityState>(),
             &app.state::<HubBrokerState>(),
             &app.state::<AiCarrierState>(),
             plaintext,
             view_once,
+            &store_client,
+            keyserver_client.as_ref(),
         )?;
         require_same_overlay_context(&app, context_epoch, &host)?;
         // Exactly one String: the composer remembers the cover it will type, and

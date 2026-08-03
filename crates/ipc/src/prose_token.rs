@@ -460,10 +460,25 @@ pub fn prose_token_burn_id(
     send_key: &[u8],
     blob_id: &str,
 ) -> Result<(), ProseTokenError> {
-    let blob_id_bytes = blob_id_hex_to_bytes(blob_id)?;
-    let manage_cap = derive_manage_capability(send_key, &blob_id_bytes)?;
     let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir);
     let client = CipherStoreClient::new(base_url)?;
+    prose_token_burn_id_with_client(&client, send_key, blob_id)
+}
+
+/// Same burn, performed over a caller-supplied cipher-store client.
+///
+/// A burn must take the same route as the upload it destroys. A blob that was
+/// uploaded over Tor and then deleted over clearnet correlates the Tor upload
+/// with the sender's real address, which is worse than never having used Tor
+/// at all -- so the rollback path in the hub's broker hands in the very client
+/// its upload used rather than building a fresh direct one.
+pub fn prose_token_burn_id_with_client(
+    client: &CipherStoreClient,
+    send_key: &[u8],
+    blob_id: &str,
+) -> Result<(), ProseTokenError> {
+    let blob_id_bytes = blob_id_hex_to_bytes(blob_id)?;
+    let manage_cap = derive_manage_capability(send_key, &blob_id_bytes)?;
     client.burn(blob_id, &manage_cap)?;
     Ok(())
 }
