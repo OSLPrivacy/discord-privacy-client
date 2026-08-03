@@ -236,6 +236,26 @@ describe("bundled preview security boundary", () => {
     expect(capability).not.toHaveProperty("remote");
     const expectedPermissions = [
       "core:window:allow-close",
+      // B0-04, 2026-08-03. `decorations: false` means every title-bar behaviour
+      // is re-implemented in the frontend and must be granted explicitly or it
+      // is silently rejected at runtime with no build-time error. Each of the
+      // four below has a citable call site and all are local, main-window
+      // operations -- no remote or cross-app reach, so the boundary this test
+      // protects is unchanged:
+      //   internal-toggle-maximize <- Tauri's OWN bundled drag.js:103,124 issues
+      //     `plugin:window|internal_toggle_maximize` on title-bar double-click.
+      //     That is a DIFFERENT command from the already-granted toggle_maximize,
+      //     so without this grant double-clicking the title bar was dead.
+      //   is-maximized  <- main.ts:1527 getCurrentWindow().isMaximized()
+      //   set-focus     <- main.ts:5756 getCurrentWindow().setFocus()
+      //   is-focused    <- main.ts:2415 getCurrentWindow().isFocused()
+      // Verified by scripts/ledger/acl-diff.mjs, which derives the required set
+      // from both our source and Tauri's shipped scripts, and by an Adversary
+      // pass that starved each grant individually and confirmed the ledger RED.
+      "core:window:allow-internal-toggle-maximize",
+      "core:window:allow-is-focused",
+      "core:window:allow-is-maximized",
+      "core:window:allow-set-focus",
       "core:window:allow-is-fullscreen",
       "core:window:allow-minimize",
       "core:window:allow-set-fullscreen",
