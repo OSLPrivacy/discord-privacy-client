@@ -138,6 +138,19 @@ impl RelayServer {
             .count()
     }
 
+    fn single_wrapped_key_id_for(&self, sender_id: &str, recipient_id: &str) -> String {
+        let state = self.state.lock().unwrap();
+        let ids = state
+            .wrapped_keys
+            .iter()
+            .filter_map(|(id, row)| {
+                (row.sender_id == sender_id && row.recipient_id == recipient_id).then(|| id.clone())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 1, "expected exactly one wrapped key row");
+        ids.into_iter().next().unwrap()
+    }
+
     fn replay_first_message(
         &self,
         sender_id: &str,
@@ -788,9 +801,10 @@ pub fn osl_chat_message_survives_a_lost_wrapped_key_response() {
     // before Bob could retain or decrypt it. The retry below has to use the
     // actual OSL Chat receive path, not this request result.
     TestStorage::activate(&bob_dir);
+    let first_wrapped_key_id = relay.single_wrapped_key_id_for(&alice_id, &bob_id);
     keystore::KeyServerClient::new(&relay_url)
         .unwrap()
-        .fetch_wrapped_key(&bob_identity, &prepared.message_id)
+        .fetch_wrapped_key(&bob_identity, &first_wrapped_key_id)
         .unwrap();
 
     // A valid encrypted notice copied under a different relay scope is not
