@@ -748,7 +748,7 @@ pub(crate) fn decrypt_v5_recv(
     content: String,
     scope_opt: Option<crate::scope::Scope>,
 ) -> Result<String, String> {
-    use crypto::sender_keys::{SenderContext, SenderKeyState};
+    use crypto::sender_keys::SenderContext;
 
     let parsed =
         crate::wire_v2::decrypt_v5(&content).map_err(|e| format!("OSL: v=5 decode: {e}"))?;
@@ -791,53 +791,42 @@ pub(crate) fn decrypt_v5_recv(
         session_version: crypto::sender_keys::SESSION_VERSION_V1,
     };
 
-    // Load the per-scope SenderKeyState. If absent → no SKDM has
-    // arrived yet → return a clear retry-worthy error.
-    let mut sks: SenderKeyState = {
-        let mut g = state
-            .sender_key_state
-            .lock()
-            .expect("sender_key_state mutex poisoned");
-        if !g.contains_key(&scope_key) {
-            return Err(format!(
-                    "OSL: v=5 decode: no installed sender-key state for peer \
-                     {sender_discord_id} in scope {scope_key} — awaiting SKDM",
-                    sender_discord_id = crate::log_id::log_id(&sender_discord_id),
-                    scope_key = crate::log_id::log_id(&scope_key)
-            ));
-        }
-        g.remove(&scope_key)
-            .expect("sender-key state checked present immediately before removal")
-    };
-
+    // Mutate the live receiver state in place.  In particular, do not move it
+    // out of the map: a rejected ciphertext (including a pre-membership one)
+    // must not make the already-installed rotated chain disappear.
     let peer_bytes = sender_discord_id.as_bytes().to_vec();
-    if sks.receiver_chain(&peer_bytes).is_none() {
-        return Err(format!(
-            "OSL: v=5 decode: no installed sender-key state for peer \
-             {sender_discord_id} in scope {scope_key} — awaiting SKDM",
-            sender_discord_id = crate::log_id::log_id(&sender_discord_id),
-            scope_key = crate::log_id::log_id(&scope_key)
-        ));
-    }
-
     let em = crypto::sender_keys::EncryptedMessage {
         header_nonce: parsed.header_nonce,
         enc_header: parsed.enc_header,
         message_nonce: parsed.message_nonce,
         ciphertext: parsed.ciphertext,
     };
-    let plaintext_bytes = sks
-        .decrypt_from(&peer_bytes, &em, &ctx)
-        .map_err(|e| format!("OSL: v=5 decode: decrypt_from: {e}"))?;
-
-    // Persist updated state.
-    {
+    let plaintext_bytes = {
         let mut g = state
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned");
-        g.insert(scope_key.clone(), sks);
-    }
+        let sks = g.get_mut(&scope_key).ok_or_else(|| {
+            format!(
+                "OSL: v=5 decode: no installed sender-key state for peer \
+                 {sender_discord_id} in scope {scope_key} — awaiting SKDM",
+                sender_discord_id = crate::log_id::log_id(&sender_discord_id),
+                scope_key = crate::log_id::log_id(&scope_key)
+            )
+        })?;
+        if sks.receiver_chain(&peer_bytes).is_none() {
+            return Err(format!(
+                "OSL: v=5 decode: no installed sender-key state for peer \
+                 {sender_discord_id} in scope {scope_key} — awaiting SKDM",
+                sender_discord_id = crate::log_id::log_id(&sender_discord_id),
+                scope_key = crate::log_id::log_id(&scope_key)
+            ));
+        }
+        sks.decrypt_from(&peer_bytes, &em, &ctx)
+            .map_err(|e| format!("OSL: v=5 decode: decrypt_from: {e}"))?
+    };
+
+    // Persist any receiver advancement only after releasing the live-state lock.
     persist_sender_key_state_now(state);
 
     // 9-C1: permissive decrypt — no per-scope accept gate. The
