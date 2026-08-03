@@ -496,7 +496,7 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
             let id = path.trim_start_matches("/v1/blob/");
             let state = state.lock().unwrap();
             match state.blobs.get(id) {
-                Some(blob) if headers.get("x-osl-fetch-token") == Some(&blob.fetch_token) => {
+                Some(blob) if headers.get("x-osl-fetch-cap") == Some(&blob.fetch_token) => {
                     bytes_response(200, "application/octet-stream", blob.bytes.clone())
                 }
                 Some(_) => json_response(403, json!({ "error": "fetch_token_mismatch" })),
