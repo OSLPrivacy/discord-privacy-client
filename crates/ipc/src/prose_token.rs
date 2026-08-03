@@ -147,6 +147,29 @@ pub fn derive_detection_key(
     Ok(key)
 }
 
+/// Domain separator for the sender-private root of the burn authority.
+pub const SEND_KEY_HKDF_INFO: &[u8] = b"osl/prose/send-key/v1";
+
+/// Derive the sending device's private `send_key` from its own long-term
+/// secret.
+///
+/// This root must satisfy two things at once. It has to be unavailable to the
+/// recipient, or the recipient could burn the sender's objects; and it has to
+/// be recomputable at burn time, which happens long after the send, with only
+/// the account's own state -- a scope burn walks recorded ids and may have no
+/// peer left to resolve. A key derived from the device's identity secret is
+/// the only material at hand that is both.
+pub fn derive_send_key(identity_secret: &[u8]) -> Result<[u8; MAC_KEY_LEN], ProseTokenError> {
+    if identity_secret.is_empty() {
+        return Err(ProseTokenError::MissingDetectionKey);
+    }
+    let hk = Hkdf::<Sha256>::new(None, identity_secret);
+    let mut key = [0u8; MAC_KEY_LEN];
+    hk.expand(SEND_KEY_HKDF_INFO, &mut key)
+        .expect("HKDF expand to 32 bytes is infallible");
+    Ok(key)
+}
+
 /// Prose-token-specific salt. See [`derive_scope_primitives`] for the
 /// rationale — TL;DR: DMs need a symmetric value across peers, and
 /// the per-peer `dm:<peer_id>` form `Scope::storage_key()` produces
