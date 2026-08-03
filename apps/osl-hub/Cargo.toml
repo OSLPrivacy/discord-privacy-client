@@ -37,6 +37,7 @@ ipc = { path = "../../crates/ipc", optional = true }
 keystore = { path = "../../crates/keystore", optional = true }
 crypto = { path = "../../crates/crypto", optional = true }
 store = { path = "../../crates/store", optional = true }
+transport = { path = "../../crates/transport" }
 # The receipt state machine behind timed deletion and view-once expiry. Pure,
 # no I/O; `message_expiry` is the sealed-storage and scheduling shell around it.
 message-lifecycle = { path = "../../crates/message-lifecycle", optional = true }

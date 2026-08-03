@@ -43,10 +43,7 @@ fn scope_storage_key(scope_input: &ScopeInput) -> Result<String, String> {
 /// Derives the private carrier detector from the bilateral secret held by both
 /// ends of an approved manual-peer conversation. It never crosses the adapter
 /// boundary and uses a domain distinct from the delivery tag (D-SEP).
-fn prose_detection_key(
-    core: &HubCoreState,
-    peer: &ManualPeerBinding,
-) -> Result<[u8; 32], String> {
+fn prose_detection_key(core: &HubCoreState, peer: &ManualPeerBinding) -> Result<[u8; 32], String> {
     let identity = core
         .osl
         .identity
@@ -1676,6 +1673,30 @@ pub fn prepare_peer_prose_text_with_capture(
     .map(|envelope| envelope.prepared)
 }
 
+pub fn prepare_peer_prose_text_with_capture_and_store_client(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    context_token: &str,
+    plaintext: String,
+    view_once: bool,
+    require_capture_protection: bool,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
+) -> Result<PreparedPeerProseMessage, String> {
+    prepare_peer_prose_text_inner_with_chunk(
+        core,
+        security_state,
+        broker,
+        context_token,
+        plaintext,
+        view_once,
+        require_capture_protection,
+        None,
+        Some(store_client),
+    )
+    .map(|envelope| envelope.prepared)
+}
+
 /// QA-only seam used by the dedicated WhatsApp build after the exact native
 /// window, paired peer, chat headers, composer, and transcript have been
 /// explicitly visually bound. It does not place or send provider input.
@@ -1720,14 +1741,9 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
     let detection_key = prose_detection_key(core, &verified)?;
-    let uploaded = ipc::prose_token::prose_token_send(
-        &dir,
-        &scope,
-        &detection_key,
-        &encrypted,
-        ttl_seconds,
-    )
-        .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
+    let uploaded =
+        ipc::prose_token::prose_token_send(&dir, &scope, &detection_key, &encrypted, ttl_seconds)
+            .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
     if security::record_peer_prose_blob(security_state, scope.clone(), uploaded.blob_id.clone())
         .is_err()
     {
@@ -1763,6 +1779,7 @@ fn prepare_peer_prose_text_inner(
         view_once,
         require_capture_protection,
         None,
+        None,
     )
 }
 
@@ -1776,6 +1793,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
     view_once: bool,
     require_capture_protection: bool,
     chunk: Option<NativeTextChunkMeta>,
+    store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
 ) -> Result<PreparedPeerProseEnvelope, String> {
     let manual = broker.manual_peer_for(context_token)?;
     let verified = security::require_manual_peer_scope_approved(
@@ -1828,14 +1846,24 @@ fn prepare_peer_prose_text_inner_with_chunk(
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
     let detection_key = prose_detection_key(core, &verified)?;
-    let uploaded = ipc::prose_token::prose_token_send(
-        &dir,
-        &manual.scope,
-        &detection_key,
-        &encrypted,
-        ttl_seconds,
-    )
-        .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
+    let uploaded = if let Some(store_client) = store_client {
+        ipc::prose_token::prose_token_send_with_client(
+            store_client,
+            &manual.scope,
+            &detection_key,
+            &encrypted,
+            ttl_seconds,
+        )
+    } else {
+        ipc::prose_token::prose_token_send(
+            &dir,
+            &manual.scope,
+            &detection_key,
+            &encrypted,
+            ttl_seconds,
+        )
+    }
+    .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
     if security::record_peer_prose_blob(
         security_state,
         manual.scope.clone(),
@@ -3397,8 +3425,8 @@ fn authenticate_oriented_prose_pointer(
     }
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
-    let detection_key = prose_detection_key(core, &verified)
-        .map_err(|_| PeerProsePointerFailure::Rejected)?;
+    let detection_key =
+        prose_detection_key(core, &verified).map_err(|_| PeerProsePointerFailure::Rejected)?;
     let recovered = peer_prose_token_outcome(ipc::prose_token::prose_token_recv_classified(
         &dir,
         &manual.scope,
@@ -3518,6 +3546,31 @@ pub fn prepare_osl_chat_text(
     .map(|carrier| carrier.prepared)
 }
 
+pub fn prepare_osl_chat_text_with_route_clients(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
+    plaintext: String,
+    view_once: bool,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
+    keyserver_client: Option<&keystore::KeyServerClient>,
+) -> Result<PreparedNativeOverlayText, String> {
+    let context_token = broker.active_osl_chat_context_token()?;
+    prepare_peer_inbox_text_with_route_clients(
+        core,
+        security_state,
+        broker,
+        ai_carrier,
+        &context_token,
+        plaintext,
+        view_once,
+        Some(store_client),
+        keyserver_client,
+    )
+    .map(|carrier| carrier.prepared)
+}
+
 #[cfg(feature = "discord-qa-shell")]
 fn record_fixed_discord_qa_broker_stage(
     active: bool,
@@ -3568,6 +3621,31 @@ fn prepare_peer_inbox_text(
     context_token: &str,
     plaintext: String,
     view_once: bool,
+) -> Result<PreparedNativeOverlayCarrier, String> {
+    prepare_peer_inbox_text_with_route_clients(
+        core,
+        security_state,
+        broker,
+        ai_carrier,
+        context_token,
+        plaintext,
+        view_once,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_peer_inbox_text_with_route_clients(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
+    context_token: &str,
+    plaintext: String,
+    view_once: bool,
+    store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
+    keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
     #[cfg(feature = "discord-qa-shell")]
     let is_fixed_discord_qa_probe = plaintext == "OSL Discord QA probe" && !view_once;
@@ -3640,7 +3718,7 @@ fn prepare_peer_inbox_text(
         "entered",
         None,
     )?;
-    let transport = keyserver_transport(core);
+    let transport = keyserver_transport_with_override(core, keyserver_client);
     #[cfg(feature = "discord-qa-shell")]
     if let Err(error) = &transport {
         record_fixed_discord_qa_broker_stage(
@@ -3727,6 +3805,7 @@ fn prepare_peer_inbox_text(
             view_once,
             true,
             Some(meta),
+            store_client,
         );
         #[cfg(feature = "discord-qa-shell")]
         if let Err(error) = &encrypted_result {
@@ -4193,14 +4272,8 @@ fn drain_peer_inbox_text(
             let wire = format!("DPC0::{}", STANDARD.encode(&bundle));
             let message_type = ipc::receipt_wire::MSG_TYPE_PRIVACY_RECEIPT;
             let admitted = (|| {
-                verify_manual_v3_type(
-                    core,
-                    &verified,
-                    &wire,
-                    ManualWireSender::Peer,
-                    message_type,
-                )
-                .map_err(|_| "OSL privacy receipt was invalid".to_owned())?;
+                verify_manual_v3_type(core, &verified, &wire, ManualWireSender::Peer, message_type)
+                    .map_err(|_| "OSL privacy receipt was invalid".to_owned())?;
                 let plaintext = decrypt_direct_manual_v3_payload(
                     core,
                     &verified,
@@ -5437,6 +5510,13 @@ fn validate_native_overlay_attachment_notice(
 fn keyserver_transport(
     core: &HubCoreState,
 ) -> Result<(keystore::Identity, keystore::KeyServerClient), String> {
+    keyserver_transport_with_override(core, None)
+}
+
+fn keyserver_transport_with_override(
+    core: &HubCoreState,
+    keyserver_client: Option<&keystore::KeyServerClient>,
+) -> Result<(keystore::Identity, keystore::KeyServerClient), String> {
     let identity = core
         .osl
         .identity
@@ -5444,6 +5524,9 @@ fn keyserver_transport(
         .map_err(|_| "OSL identity state is unavailable".to_owned())?
         .clone()
         .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    if let Some(client) = keyserver_client {
+        return Ok((identity, client.clone()));
+    }
     let client = core
         .osl
         .keyserver
