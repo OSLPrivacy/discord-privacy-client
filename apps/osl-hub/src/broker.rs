@@ -5515,6 +5515,11 @@ fn send_delivered_privacy_receipt(
     message_id: &str,
     scope_id: &str,
 ) -> Result<(), String> {
+    if !crate::receipt_emit::privacy_receipt_kind_permitted(
+        ipc::receipt_wire::PrivacyReceiptKind::Delivered,
+    ) {
+        return Err("OSL delivery receipts are disabled by privacy policy".to_owned());
+    }
     let observed_at = u64::try_from(ipc::main_password::now_unix_secs_pub())
         .map_err(|_| "OSL could not emit the delivery receipt".to_owned())?;
     let receipt = crate::receipt_emit::sign_delivered(

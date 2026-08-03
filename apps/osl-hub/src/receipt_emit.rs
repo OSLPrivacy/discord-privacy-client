@@ -11,6 +11,16 @@ use sha2::{Digest, Sha256};
 
 const MESSAGE_DOMAIN: &[u8] = b"OSL/privacy-receipt/message/v1";
 
+/// Whether a privacy-receipt fact is allowed to cross the peer boundary.
+///
+/// `Opened` remains local-only until a durable, scope-bound mutual-consent
+/// grant exists. Keep this decision shared by receipt emission and inbox
+/// admission: accepting a fact that this device would never emit leaks the
+/// recipient's read state through the authenticated peer path.
+pub fn privacy_receipt_kind_permitted(kind: PrivacyReceiptKind) -> bool {
+    matches!(kind, PrivacyReceiptKind::Delivered)
+}
+
 /// Make the fixed-width, opaque receipt identifier for one logical message.
 ///
 /// The app's message identifiers are provider-facing strings, so they must not
@@ -30,6 +40,9 @@ pub fn sign_delivered(
     observed_at_unix_seconds: u64,
     signer: &SecretKey,
 ) -> SignedPrivacyReceipt {
+    debug_assert!(privacy_receipt_kind_permitted(
+        PrivacyReceiptKind::Delivered
+    ));
     SignedPrivacyReceipt::sign(
         PrivacyReceipt {
             kind: PrivacyReceiptKind::Delivered,
@@ -100,5 +113,13 @@ mod tests {
 
         assert_eq!(result, Err(()));
         assert!(!*emitted.borrow());
+    }
+
+    #[test]
+    fn opened_receipts_remain_suppressed_at_the_peer_boundary() {
+        assert!(privacy_receipt_kind_permitted(
+            PrivacyReceiptKind::Delivered
+        ));
+        assert!(!privacy_receipt_kind_permitted(PrivacyReceiptKind::Opened));
     }
 }

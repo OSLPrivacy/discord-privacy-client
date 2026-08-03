@@ -47,6 +47,9 @@ pub fn admit(
     if signed.receipt.conversation_commitment != expected_conversation {
         return Err(InboundReceiptError::WrongConversation);
     }
+    if !crate::receipt_emit::privacy_receipt_kind_permitted(signed.receipt.kind) {
+        return Err(InboundReceiptError::SuppressedKind(signed.receipt.kind));
+    }
     let kind = match signed.receipt.kind {
         PrivacyReceiptKind::Delivered => ReceiptKind::Delivered,
         PrivacyReceiptKind::Opened => ReceiptKind::Opened,
@@ -58,6 +61,7 @@ pub fn admit(
 pub enum InboundReceiptError {
     InvalidFrame(ReceiptWireError),
     WrongConversation,
+    SuppressedKind(PrivacyReceiptKind),
 }
 
 #[cfg(test)]
@@ -76,11 +80,11 @@ mod tests {
     }
 
     #[test]
-    fn tf_13_receipt_classified_at_the_inbox_drain_reaches_monotonic_reduction() {
+    fn tf_13_delivered_receipt_classified_at_the_inbox_drain_reaches_monotonic_reduction() {
         let (secret, public) = ed25519::generate_keypair();
         let commitment = conversation_commitment("active-conversation");
         let signed =
-            SignedPrivacyReceipt::sign(receipt(PrivacyReceiptKind::Opened, commitment), &secret);
+            SignedPrivacyReceipt::sign(receipt(PrivacyReceiptKind::Delivered, commitment), &secret);
         let mut bundle = vec![WIRE_VERSION_V3, MSG_TYPE_PRIVACY_RECEIPT];
         bundle.extend_from_slice(&signed.encode());
 
@@ -93,7 +97,24 @@ mod tests {
         let (_, mutation) = admit(plaintext, &public, commitment, &mut state).unwrap();
 
         assert_eq!(mutation, ReceiptMutation::Advanced);
-        assert_eq!(state, ReceiptState::Opened);
+        assert_eq!(state, ReceiptState::Delivered);
+    }
+
+    #[test]
+    fn opened_receipt_cannot_bypass_outbound_suppression_through_inbox_admission() {
+        let (secret, public) = ed25519::generate_keypair();
+        let commitment = conversation_commitment("active-conversation");
+        let signed =
+            SignedPrivacyReceipt::sign(receipt(PrivacyReceiptKind::Opened, commitment), &secret);
+        let mut state = ReceiptState::NotConfirmed;
+
+        assert_eq!(
+            admit(&signed.encode(), &public, commitment, &mut state),
+            Err(InboundReceiptError::SuppressedKind(
+                PrivacyReceiptKind::Opened
+            ))
+        );
+        assert_eq!(state, ReceiptState::NotConfirmed);
     }
 
     #[test]
