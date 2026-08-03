@@ -1658,7 +1658,7 @@ function dockOnboardingBackControl(): void {
 function renderOnboarding(): void {
   onboardingRoute = onboardingRouteForBuild(onboardingRoute);
   persistCurrentOnboardingRoute();
-  const setupScreen = ["pro", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
+  const setupScreen = ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
   const setupNavigation = setupScreen
     ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
     : "";
@@ -1739,8 +1739,11 @@ function welcomeOnboardingContent(): string {
 
 function proSetupContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  if (pro) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><button class="button primary" data-onboarding="sending" type="button">Continue</button></section>`;
-  return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading"><p class="eyebrow">Optional</p><h1 id="route-heading" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="button primary" type="submit">Continue</button></form><button class="text-button" id="skip-pro-setup" type="button">Skip</button></section>`;
+  if (pro) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><div class="setup-footer onboarding-actions"><button class="button primary" data-onboarding="sending" type="button">Continue</button></div></section>`;
+  // The submit and the Skip escape hatch sit in the step's own action row, so
+  // the docking pass folds Back in beside them instead of leaving a third,
+  // separate footer below a loose text link.
+  return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading"><p class="eyebrow">Optional</p><h1 id="route-heading" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><div class="setup-footer onboarding-actions"><button class="button primary" type="submit">Continue</button><button class="text-button" id="skip-pro-setup" type="button">Skip</button></div></form></section>`;
 }
 
 function tutorialContent(): string {
@@ -2084,7 +2087,7 @@ function browserImportContent(): string {
     ? "Checking selected areas..."
     : selectionReady ? "Check selected areas" : "Choose areas";
   const secondaryLabel = browserImportBusy ? "Wait for scan..." : "Not now";
-  return `<h1 id="route-heading" tabindex="-1">Find saved browser accounts</h1><p class="compact-lead onboarding-centered-copy">Optional. Consent separately to each browser area OSL may inspect.</p>${detectedBrowsers}${progress}${ready}${failure}<div class="setup-footer onboarding-actions browser-import-actions-primary"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${importLabel}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportBusy || browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div><p class="saved-account-truth">OSL never reads browser databases before consent. After consent it copies one bounded history snapshot, reads that copy, deletes it, and never opens passwords or login stores.</p>`;
+  return `<h1 id="route-heading" tabindex="-1">Find saved browser accounts</h1><p class="compact-lead onboarding-centered-copy">Optional. Consent separately to each browser area OSL may inspect.</p>${detectedBrowsers}${progress}${ready}${failure}<p class="saved-account-truth">OSL never reads browser databases before consent. After consent it copies one bounded history snapshot, reads that copy, deletes it, and never opens passwords or login stores.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${importLabel}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportBusy || browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div>`;
 }
 
 function persistSavedAccountPreferences(): void {
@@ -2786,6 +2789,15 @@ function bindOnboarding(): void {
     render();
   });
   document.querySelector("#onboarding-back")?.addEventListener("click", () => {
+    // A replay opened from Settings is not first-run setup: Back there has to
+    // leave the way it came in, not walk backwards into the setup spine.
+    if (replayingOnboardingTour) {
+      replayingOnboardingTour = false;
+      onboardingTourStep = 0;
+      route = "home";
+      render();
+      return;
+    }
     onboardingRoute = previousSetupRoute(onboardingRoute);
     render();
     if (onboardingRoute === "browser") void refreshBrowserImportReadiness();
@@ -2882,7 +2894,11 @@ function bindOnboardingPasswordRole(): void {
   const current = form.elements.namedItem("current") as HTMLInputElement;
   const alternate = form.elements.namedItem("alternate") as HTMLInputElement;
   const confirm = form.elements.namedItem("confirm") as HTMLInputElement;
-  const submit = form.querySelector<HTMLButtonElement>('button[type="submit"]');
+  // The submit sits in the step's shared action row outside the form card and
+  // is bound to it by the form-owner attribute, so it is not in the form's own
+  // subtree.
+  const submit = document.querySelector<HTMLButtonElement>("[data-onboarding-role-submit]")
+    ?? form.querySelector<HTMLButtonElement>('button[type="submit"]');
   const error = form.querySelector<HTMLElement>("[data-onboarding-role-error]");
   const validate = (): void => {
     if (!submit || !error) return;

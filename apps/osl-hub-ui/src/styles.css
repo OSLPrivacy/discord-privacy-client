@@ -1520,7 +1520,6 @@ code {
 }
 .browser-detected-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .browser-detected-item small { margin-top: 2px; color: var(--muted); font-size: 11px; }
-.browser-import-actions-primary { flex-direction: column; align-items: center; }
 /* Identical to .text-button, which is what every other onboarding step's
    secondary action ("Not now" on Stealth / Burn / Mullvad) already renders as.
    This one was grey while those were cyan, so the same affordance read as two
@@ -5170,6 +5169,7 @@ code {
   margin-top: 26px;
   padding-top: 16px;
   border-top: 1px solid var(--line);
+  flex-wrap: wrap;
   justify-content: center;
   gap: 12px;
 }
@@ -5180,6 +5180,22 @@ code {
   color: var(--muted);
 }
 .onboarding-actions .onboarding-back:hover:not(:disabled) { color: var(--text); }
+/* One order for the row on every step: Back, the primary action, then any
+   optional escape hatch on its own centred line beneath them. Back/skip used to
+   land somewhere different on four consecutive steps -- above the primary on
+   `browser`, inline beside it on `mullvad`, below a loose "Not now" on the two
+   password steps -- which is what made the spine read as separate screens
+   rather than one flow. Order lives here rather than in the markup so no step
+   can order itself differently, and it is in the sheet because the shipped CSP
+   is `style-src 'self'`. */
+.onboarding-actions .button.primary { order: 0; }
+.onboarding-actions .text-button,
+.onboarding-actions .browser-import-skip {
+  order: 1;
+  flex-basis: 100%;
+  margin-top: 2px;
+  text-align: center;
+}
 /* The nav row is the fallback footer for steps that render no Continue of
    their own (the Pro code form, the stealth/burn password forms), so Back sits
    in the same place on every step. */
