@@ -1,0 +1,30 @@
+TASK B0-08 ledger 2 (css-vars) transcript
+
+MISSING INPUT RED: node scripts/ledger/css-vars.mjs --root=/tmp/osl-ledger-empty
+LEDGER css-vars -- custom properties used vs defined, ledger 2 of 7
+  accepted exceptions: 0/7 (high-water mark 7)
+  STALE EXCEPTIONS (7) -- these no longer match any violation; delete them and lower highWaterMark:
+    - --accent  (apps/osl-hub-ui/src/onboarding-tor.css:31)
+    - --cyan  (apps/osl-hub-ui/src/styles.css:5120)
+    - --line-strong  (apps/osl-hub-ui/src/styles.css:613)
+    - --surface  (apps/osl-hub-ui/src/expiry-picker.css:23)
+    - --text-muted  (apps/osl-hub-ui/src/styles.css:2113)
+    - --warn-soft  (apps/osl-hub-ui/src/styles.css:5013)
+    - --warning  (apps/osl-hub-ui/src/styles.css:7145)
+  VIOLATIONS (2):
+    ledger-input-missing (2):
+      - missing-input:apps/osl-hub-ui/index.html -- required ledger input is missing: apps/osl-hub-ui/index.html
+          apps/osl-hub-ui/index.html:1
+      - missing-input:apps/osl-hub-ui/src -- required ledger input is missing: apps/osl-hub-ui/src
+          apps/osl-hub-ui/src:1
+  RESULT: RED
+
+REAL TREE RUN: node scripts/ledger/css-vars.mjs
+LEDGER css-vars -- custom properties used vs defined, ledger 2 of 7
+  css files scanned: 13
+  html pages scanned: 5
+  ts files scanned for setProperty definitions: 154
+  distinct properties defined: 85
+  var() uses: 1507
+  accepted exceptions: 7/7 (high-water mark 7)
+  RESULT: GREEN

@@ -19,7 +19,7 @@
 
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { repoRoot, walk, isTest, isDecl, LEDGER_DIR } from "./lib/io.mjs";
+import { repoRoot, walk, isTest, isDecl, LEDGER_DIR, inputProblems } from "./lib/io.mjs";
 import { report, finish } from "./lib/report.mjs";
 
 export const CACHE = join(LEDGER_DIR, ".cache", "bundle-modules.json");
@@ -130,6 +130,10 @@ export function analyse(candidates, bundled) {
 
 export async function main(argv = process.argv) {
   const root = repoRoot(argv);
+  const input = inputProblems(root, ["apps/osl-hub-ui/src", "apps/osl-hub-ui/package.json", "apps/osl-hub-ui/vite.config.ts"]).map((p) => ({ ...p, kind: "ledger-input-missing" }));
+  if (input.length) {
+    return finish(report({ id: "bundle", title: "real bundle membership (rollup getModuleIds), ledger 7 of 7", violations: input }));
+  }
   const cache = !argv.includes("--no-cache");
   const candidates = walk(
     root,

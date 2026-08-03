@@ -1,0 +1,78 @@
+TASK B0-08 ledger 7 (bundle) transcript
+
+MISSING INPUT RED: node scripts/ledger/bundle.mjs --root=/tmp/osl-ledger-empty
+LEDGER bundle -- real bundle membership (rollup getModuleIds), ledger 7 of 7
+  accepted exceptions: 0/55 (high-water mark 55)
+  STALE EXCEPTIONS (55) -- these no longer match any violation; delete them and lower highWaterMark:
+    - apps/osl-hub-ui/src/accessibility-preference.ts  (apps/osl-hub-ui/src/main.ts:877)
+    - apps/osl-hub-ui/src/autoscrub-progress.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/browser-service-qa-shell.ts  (apps/osl-hub-ui/vite.config.ts:26)
+    - apps/osl-hub-ui/src/cloud-autoscrub-provisioning.ts  (apps/osl-hub-ui/src/main.ts:877)
+    - apps/osl-hub-ui/src/cover-generation-eligibility.ts  (apps/osl-hub-ui/src/main.ts:2573)
+    - apps/osl-hub-ui/src/cover-generation-fallback.ts  (apps/osl-hub-ui/src/main.ts:2573)
+    - apps/osl-hub-ui/src/cover-generation-progress.ts  (apps/osl-hub-ui/src/main.ts:2573)
+    - apps/osl-hub-ui/src/cover-generation-visibility.ts  (apps/osl-hub-ui/src/main.ts:2573)
+    - apps/osl-hub-ui/src/cover-generation.css  (apps/osl-hub-ui/src/main.ts:2573)
+    - apps/osl-hub-ui/src/discord-media-staging.ts  (apps/osl-hub-ui/src/main.ts:877)
+    - apps/osl-hub-ui/src/expiry-picker.css  (apps/osl-hub-ui/src/main.ts:877)
+    - apps/osl-hub-ui/src/expiry-picker.ts  (apps/osl-hub-ui/src/main.ts:877)
+    - apps/osl-hub-ui/src/focus-retention.ts  (apps/osl-hub-ui/src/main.ts:877)
+    - apps/osl-hub-ui/src/hosted-session-scan.ts  (apps/osl-hub-ui/src/main.ts:877)
+    - apps/osl-hub-ui/src/latest.ts  (apps/osl-hub-ui/src/main.ts:877)
+    - apps/osl-hub-ui/src/native-qa-shell.ts  (apps/osl-hub-ui/vite.config.ts:26)
+    - apps/osl-hub-ui/src/osl-assets.ts  (docs/design/untracked-orphan-modules.md)
+    - apps/osl-hub-ui/src/osl-enclaves-members.ts  (apps/osl-hub-ui/src/osl-enclaves-view.ts:1)
+    - apps/osl-hub-ui/src/osl-enclaves-state.ts  (apps/osl-hub-ui/src/osl-enclaves-view.ts:1)
+    - apps/osl-hub-ui/src/osl-export.ts  (docs/design/untracked-orphan-modules.md)
+    - apps/osl-hub-ui/src/osl-formats.ts  (docs/design/untracked-orphan-modules.md)
+    - apps/osl-hub-ui/src/osl-import.ts  (docs/design/untracked-orphan-modules.md)
+    - apps/osl-hub-ui/src/osl-knowledge.ts  (docs/design/untracked-orphan-modules.md)
+    - apps/osl-hub-ui/src/osl-notes-mods.ts  (docs/design/untracked-orphan-modules.md)
+    - apps/osl-hub-ui/src/osl-notes.ts  (docs/design/untracked-orphan-modules.md)
+    - apps/osl-hub-ui/src/osl-office.ts  (docs/design/untracked-orphan-modules.md)
+    - apps/osl-hub-ui/src/osl-plugin-runtime.ts  (docs/design/untracked-orphan-modules.md)
+    - apps/osl-hub-ui/src/osl-properties.ts  (docs/design/untracked-orphan-modules.md)
+    - apps/osl-hub-ui/src/osl-property-query.ts  (docs/design/untracked-orphan-modules.md)
+    - apps/osl-hub-ui/src/scrub-attended-imap-run.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/scrub-confirm.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/scrub-coverage-view.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/scrub-dryrun-view.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/scrub-hosted-session-assisted.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/scrub-hosted-session-channel.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/scrub-hosted-session-port.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/scrub-hosted-session-scan.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/scrub-imap-adapter.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/scrub-imap-ipc.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/scrub-imap.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/scrub-protected.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/scrub-provider-policy.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/scrub-provider-preloads.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/scrub-receipt-view.ts  (apps/osl-hub-ui/src/scrub-reachability.test.ts:32)
+    - apps/osl-hub-ui/src/secure-local-store.ts  (apps/osl-hub-ui/src/main.ts:877)
+    - apps/osl-hub-ui/src/send-guard.ts  (apps/osl-hub-ui/src/main.ts:877)
+    - apps/osl-hub-ui/src/setup-persistence.ts  (apps/osl-hub-ui/src/main.ts:877)
+    - apps/osl-hub-ui/src/signal-qa-ipc.ts  (apps/osl-hub-ui/vite.config.ts:28)
+    - apps/osl-hub-ui/src/signal-qa-main.ts  (apps/osl-hub-ui/vite.config.ts:28)
+    - apps/osl-hub-ui/src/signal-qa-runtime.ts  (apps/osl-hub-ui/vite.config.ts:28)
+    - apps/osl-hub-ui/src/signal-qa-shell.ts  (apps/osl-hub-ui/vite.config.ts:28)
+    - apps/osl-hub-ui/src/signal-qa.css  (apps/osl-hub-ui/vite.config.ts:28)
+    - apps/osl-hub-ui/src/theme-mod.ts  (apps/osl-hub-ui/src/main.ts:877)
+    - apps/osl-hub-ui/src/view-once-timer.ts  (apps/osl-hub-ui/src/main.ts:877)
+    - apps/osl-hub-ui/src/whatsapp-protected-controls.ts  (apps/osl-hub-ui/src/main.ts:877)
+  VIOLATIONS (3):
+    ledger-input-missing (3):
+      - missing-input:apps/osl-hub-ui/package.json -- required ledger input is missing: apps/osl-hub-ui/package.json
+          apps/osl-hub-ui/package.json:1
+      - missing-input:apps/osl-hub-ui/src -- required ledger input is missing: apps/osl-hub-ui/src
+          apps/osl-hub-ui/src:1
+      - missing-input:apps/osl-hub-ui/vite.config.ts -- required ledger input is missing: apps/osl-hub-ui/vite.config.ts
+          apps/osl-hub-ui/vite.config.ts:1
+  RESULT: RED
+
+REAL TREE RUN: node scripts/ledger/bundle.mjs
+LEDGER bundle -- real bundle membership (rollup getModuleIds), ledger 7 of 7
+  production sources: 167
+  modules rollup loaded (in-tree): 119
+  outside the bundle: 55
+  accepted exceptions: 55/55 (high-water mark 55)
+  RESULT: GREEN

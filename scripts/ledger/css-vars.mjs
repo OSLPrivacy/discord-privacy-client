@@ -18,7 +18,7 @@
 //   node scripts/ledger/css-vars.mjs [--root=<dir>]
 
 import { resolve } from "node:path";
-import { repoRoot, read, walk, blankComments, lineIndex, lineOf, isTest } from "./lib/io.mjs";
+import { repoRoot, read, walk, blankComments, lineIndex, lineOf, isTest, inputProblems } from "./lib/io.mjs";
 import { report, finish } from "./lib/report.mjs";
 
 const blankCssComments = (css) => css.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " "));
@@ -119,6 +119,10 @@ export function analyse({ defs, uses }) {
 
 export function main(argv = process.argv) {
   const root = repoRoot(argv);
+  const input = inputProblems(root, ["apps/osl-hub-ui/src", "apps/osl-hub-ui/index.html"]).map((p) => ({ ...p, kind: "ledger-input-missing" }));
+  if (input.length) {
+    return finish(report({ id: "css-vars", title: "custom properties used vs defined, ledger 2 of 7", violations: input }));
+  }
   const collected = collect(root);
   const violations = analyse(collected);
   return finish(

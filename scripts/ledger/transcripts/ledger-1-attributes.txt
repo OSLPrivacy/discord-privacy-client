@@ -1,0 +1,82 @@
+TASK B0-08 ledger 1 (attributes) transcript
+
+MISSING INPUT RED: node scripts/ledger/attributes.mjs --root=/tmp/osl-ledger-empty
+LEDGER attributes -- interactive data-* emitted vs event-bound selectors, ledger 1 of 7
+  accepted exceptions: 0/5 (high-water mark 5)
+  STALE EXCEPTIONS (5) -- these no longer match any violation; delete them and lower highWaterMark:
+    - data-scrub-finding  (/home/liamw/osl-plan/plan-test/audit-results/UI-AUDIT.md:534)
+    - data-scrub-review-finding  (/home/liamw/osl-plan/plan-test/audit-results/UI-AUDIT.md:534)
+    - data-primary-destination  (/home/liamw/osl-plan/plan-test/audit-results/UI-AUDIT.md:537)
+    - data-review-target  (/home/liamw/osl-plan/plan-test/audit-results/UI-AUDIT.md:537)
+    - data-detected-account-choice  (/home/liamw/osl-plan/plan-test/audit-results/UI-AUDIT.md:538)
+  VIOLATIONS (2):
+    ledger-input-missing (2):
+      - missing-input:apps/osl-hub-ui/index.html -- required ledger input is missing: apps/osl-hub-ui/index.html
+          apps/osl-hub-ui/index.html:1
+      - missing-input:apps/osl-hub-ui/src/main.ts -- required ledger input is missing: apps/osl-hub-ui/src/main.ts
+          apps/osl-hub-ui/src/main.ts:1
+  RESULT: RED
+
+REAL TREE RUN: node scripts/ledger/attributes.mjs
+LEDGER attributes -- interactive data-* emitted vs event-bound selectors, ledger 1 of 7
+  frontend files scanned: 95
+  data-* attributes emitted anywhere in markup: 199
+  interactive data-* attributes emitted: 105
+  programmatic data-* writes: 15
+  event-bound data-* attributes selected: 88
+  accepted exceptions: 5/5 (high-water mark 5)
+  VIOLATIONS (22):
+    bound-data-attr-never-emitted (2):
+      - data-saved-account-mode -- event code selects this data-* attribute, but the scanned interactive markup never writes it
+          apps/osl-hub-ui/src/main.ts:2186
+      - data-service -- event code selects this data-* attribute, but the scanned interactive markup never writes it
+          apps/osl-hub-ui/src/main.ts:6823
+    emitted-interactive-data-attr-never-bound (20):
+      - data-account-recovery-password -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/account-recovery.ts:103
+      - data-account-recovery-phrase -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/account-recovery.ts:106
+      - data-inbox-filter -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:4239
+      - data-lock-state -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:3749
+      - data-max-bytes -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/local-protected-sheet.ts:133
+      - data-native-mode -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:1924
+          apps/osl-hub-ui/src/main.ts:1924
+      - data-onboarding-password-next -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/password-roles.ts:34
+      - data-osl-chat-send-context -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/osl-chats-view.ts:279
+      - data-password-mode -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:2550
+          apps/osl-hub-ui/src/main.ts:2551
+      - data-password-remove -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:5084
+      - data-profile-settings -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:4064
+          apps/osl-hub-ui/src/osl-mail-view.ts:45
+      - data-recovery-add-phrase-wrap -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/recovery-migration.ts:31
+      - data-recovery-fresh-start -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/recovery-migration.ts:31
+      - data-remove-person -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/ui-behavior.ts:331
+      - data-runtime-proof -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:3767
+      - data-transcript-mode -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:3712
+      - data-transcript-state -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:3712
+      - data-whitelist-reach-next -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:4710
+      - data-whitelist-scope-add -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:4697
+          apps/osl-hub-ui/src/main.ts:4701
+      - data-whitelist-scope-key -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:4697
+          apps/osl-hub-ui/src/main.ts:4697
+          apps/osl-hub-ui/src/main.ts:4701
+          apps/osl-hub-ui/src/main.ts:4701
+  RESULT: RED

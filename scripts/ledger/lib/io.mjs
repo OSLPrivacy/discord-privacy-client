@@ -23,6 +23,21 @@ export function read(root, rel) {
   return readFileSync(join(root, rel), "utf8");
 }
 
+export function inputProblems(root, rels) {
+  const problems = [];
+  for (const rel of rels) {
+    const path = join(root, rel);
+    if (!existsSync(path)) {
+      problems.push({ id: `missing-input:${rel}`, detail: `required ledger input is missing: ${rel}`, sites: [`${rel}:1`] });
+      continue;
+    }
+    if (statSync(path).isFile() && readFileSync(path, "utf8").length === 0) {
+      problems.push({ id: `empty-input:${rel}`, detail: `required ledger input is empty: ${rel}`, sites: [`${rel}:1`] });
+    }
+  }
+  return problems;
+}
+
 export function tryRead(root, rel) {
   const p = join(root, rel);
   return existsSync(p) ? readFileSync(p, "utf8") : null;

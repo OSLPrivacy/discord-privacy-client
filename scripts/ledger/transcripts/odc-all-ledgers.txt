@@ -1,0 +1,247 @@
+TASK B0-08 ODC transcript
+
+COMMAND: node scripts/ledger/all.mjs
+LEDGER attributes -- interactive data-* emitted vs event-bound selectors, ledger 1 of 7
+  frontend files scanned: 95
+  data-* attributes emitted anywhere in markup: 199
+  interactive data-* attributes emitted: 105
+  programmatic data-* writes: 15
+  event-bound data-* attributes selected: 88
+  accepted exceptions: 5/5 (high-water mark 5)
+  VIOLATIONS (22):
+    bound-data-attr-never-emitted (2):
+      - data-saved-account-mode -- event code selects this data-* attribute, but the scanned interactive markup never writes it
+          apps/osl-hub-ui/src/main.ts:2186
+      - data-service -- event code selects this data-* attribute, but the scanned interactive markup never writes it
+          apps/osl-hub-ui/src/main.ts:6823
+    emitted-interactive-data-attr-never-bound (20):
+      - data-account-recovery-password -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/account-recovery.ts:103
+      - data-account-recovery-phrase -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/account-recovery.ts:106
+      - data-inbox-filter -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:4239
+      - data-lock-state -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:3749
+      - data-max-bytes -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/local-protected-sheet.ts:133
+      - data-native-mode -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:1924
+          apps/osl-hub-ui/src/main.ts:1924
+      - data-onboarding-password-next -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/password-roles.ts:34
+      - data-osl-chat-send-context -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/osl-chats-view.ts:279
+      - data-password-mode -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:2550
+          apps/osl-hub-ui/src/main.ts:2551
+      - data-password-remove -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:5084
+      - data-profile-settings -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:4064
+          apps/osl-hub-ui/src/osl-mail-view.ts:45
+      - data-recovery-add-phrase-wrap -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/recovery-migration.ts:31
+      - data-recovery-fresh-start -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/recovery-migration.ts:31
+      - data-remove-person -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/ui-behavior.ts:331
+      - data-runtime-proof -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:3767
+      - data-transcript-mode -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:3712
+      - data-transcript-state -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:3712
+      - data-whitelist-reach-next -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:4710
+      - data-whitelist-scope-add -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:4697
+          apps/osl-hub-ui/src/main.ts:4701
+      - data-whitelist-scope-key -- interactive markup writes this data-* attribute, but no event-bound selector selects it
+          apps/osl-hub-ui/src/main.ts:4697
+          apps/osl-hub-ui/src/main.ts:4697
+          apps/osl-hub-ui/src/main.ts:4701
+          apps/osl-hub-ui/src/main.ts:4701
+  RESULT: RED
+LEDGER css-vars -- custom properties used vs defined, ledger 2 of 7
+  css files scanned: 13
+  html pages scanned: 5
+  ts files scanned for setProperty definitions: 154
+  distinct properties defined: 85
+  var() uses: 1507
+  accepted exceptions: 7/7 (high-water mark 7)
+  RESULT: GREEN
+LEDGER acl -- commands issued vs ACL-granted, including framework-internal, ledger 3 of 7
+  capability files covering webview main: 6
+  distinct permissions granted: 160
+  modules reachable from main-window entries: 104
+  distinct commands issued: 157
+  framework-injected issuers that fire here: 2
+  tauri version (Cargo.lock / vendored): 2.11.1 / 2.11.1
+  @tauri-apps/api version: 2.11.1
+  invoke() calls with a non-literal command (not analysable): 9
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (25):
+    ungranted (24):
+      - burn_native_discord_overlay_chat -- needs "allow-burn-native-discord-overlay-chat" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:557
+      - claim_hub_username -- needs "allow-claim-hub-username" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:934
+      - execute_discord_guided_deletion -- needs "allow-execute-discord-guided-deletion" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1433
+      - get_hub_recovery_kit_unsaved -- needs "allow-get-hub-recovery-kit-unsaved" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1091
+      - get_native_discord_overlay_state -- needs "allow-get-native-discord-overlay-state" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:137
+      - host_osl_lan_room -- needs "allow-host-osl-lan-room" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/osl-collab.ts:69
+      - join_osl_lan_room -- needs "allow-join-osl-lan-room" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/osl-collab.ts:70
+      - list_native_discord_overlay_attachments -- needs "allow-list-native-discord-overlay-attachments" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:595
+      - open_native_discord_overlay_attachment -- needs "allow-open-native-discord-overlay-attachment" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:605
+      - open_native_discord_overlay_text -- needs "allow-open-native-discord-overlay-text" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:527
+      - osl_mail_list_threads -- needs "allow-osl-mail-list-threads" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/osl-mail-adapter.ts:226
+      - plugin:window|is_focused -- needs "core:window:allow-is-focused" in a capability covering the main webview; issued via @tauri-apps/api getCurrentWindow().isFocused()
+          apps/osl-hub-ui/src/main.ts:2415
+      - plugin:window|is_maximized -- needs "core:window:allow-is-maximized" in a capability covering the main webview; issued via @tauri-apps/api getCurrentWindow().isMaximized()
+          apps/osl-hub-ui/src/main.ts:1527
+      - plugin:window|set_focus -- needs "core:window:allow-set-focus" in a capability covering the main webview; issued via @tauri-apps/api getCurrentWindow().setFocus()
+          apps/osl-hub-ui/src/main.ts:5756
+      - prepare_native_discord_overlay_text -- needs "allow-prepare-native-discord-overlay-text" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:273
+      - preview_discord_guided_deletion -- needs "allow-preview-discord-guided-deletion" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1415
+      - reveal_native_discord_overlay_view_once -- needs "allow-reveal-native-discord-overlay-view-once" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:537
+      - scan_discord_own_messages_for_deletion -- needs "allow-scan-discord-own-messages-for-deletion" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1402
+      - select_native_discord_overlay_attachment -- needs "allow-select-native-discord-overlay-attachment" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:587
+      - send_native_discord_overlay_carrier -- needs "allow-send-native-discord-overlay-carrier" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:471
+      - send_native_discord_qa_atomic_text -- needs "allow-send-native-discord-qa-atomic-text" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:507
+      - set_hub_recovery_kit_unsaved -- needs "allow-set-hub-recovery-kit-unsaved" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1099
+      - set_native_discord_overlay_security -- needs "allow-set-native-discord-overlay-security" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:576
+      - stop_osl_lan_room -- needs "allow-stop-osl-lan-room" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/osl-collab.ts:72
+    ungranted-framework-internal (1):
+      - plugin:window|internal_toggle_maximize -- needs "core:window:allow-internal-toggle-maximize" in a capability covering the main webview; issued via framework-injected
+          tauri/src/window/scripts/drag.js:103
+  RESULT: RED
+LEDGER commands -- frontend invokes vs Rust command registry, ledger 4 of 7
+  frontend source files scanned: 154
+  distinct frontend commands invoked: 178
+  registered Rust commands: 208
+  invoke() calls with a non-literal command (not analysable): 12
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (34):
+    frontend-invoke-not-registered (34):
+      - append_osl_asset_chunk -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:34
+      - begin_osl_asset_upload -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:31
+      - cancel_osl_asset_upload -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:40
+      - configure_scrub_imap_account -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap.ts:40
+      - decode_osl_office_asset -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-formats.ts:19
+      - delete_osl_saved_search -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:55
+      - discard_unreferenced_osl_asset -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:48
+      - execute_discord_guided_deletion -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/adapters.ts:1433
+      - finish_osl_asset_upload -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:37
+      - get_scrub_imap_capability -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap.ts:41
+      - host_osl_lan_room -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-collab.ts:69
+      - inspect_osl_plugin_asset -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-plugin-runtime.ts:5
+      - join_osl_lan_room -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-collab.ts:70
+      - link_osl_asset_project -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:41
+      - list_osl_assets -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:25
+      - list_osl_assets_for_project -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:26
+      - list_osl_note_revisions -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:49
+      - list_osl_notes -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:41
+      - list_osl_saved_searches -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:53
+      - osl_mail_list_threads -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-mail-adapter.ts:226
+      - permanently_delete_osl_note -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:59
+      - preview_discord_guided_deletion -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/adapters.ts:1415
+      - read_osl_asset_chunk -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:53
+      - reauth_scrub_imap_account -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap.ts:46
+      - release_osl_asset_project -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:42
+      - release_osl_assets_for_project -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:45
+      - restore_osl_note_revision -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:50
+      - run_osl_plugin_command -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-plugin-runtime.ts:6
+      - save_osl_note -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:42
+      - save_osl_saved_search -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:54
+      - scan_discord_own_messages_for_deletion -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/adapters.ts:1402
+      - scrub_imap_delete -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap-ipc.ts:102
+      - scrub_imap_prepare_delete -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap-ipc.ts:89
+      - stop_osl_lan_room -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-collab.ts:72
+  RESULT: RED
+LEDGER events -- Tauri events emitted vs listened, ledger 5 of 7
+  frontend source files scanned: 154
+  rust source files scanned: 158
+  distinct events emitted: 11
+  distinct events listened: 11
+  event calls with non-literal names: 0
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (2):
+    emitted-but-never-listened (1):
+      - osl://attachment-deletion-drain -- event is emitted on the Tauri event bus but no shipped frontend listener subscribes to it
+          apps/osl-hub/src/native_attachment_transport.rs:472
+    listened-but-never-emitted (1):
+      - osl://realtime-wakeup -- frontend subscribes to this Tauri event but no shipped frontend/Rust emitter was found
+          apps/osl-hub-ui/src/overlay.ts:2320
+  RESULT: RED
+LEDGER routes -- routes assigned vs dispatched, ledger 6 of 7
+  top-level routes assigned: 12
+  top-level routes dispatched: 13
+  onboarding routes assigned: 19
+  onboarding routes dispatched: 22
+  non-literal route assignments: 28
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (1):
+    assigned-route-not-dispatched (1):
+      - route:signal-qa -- route value can be assigned or declared but has no content dispatcher branch
+          apps/osl-hub-ui/src/main.ts:9096
+  RESULT: RED
+LEDGER bundle -- real bundle membership (rollup getModuleIds), ledger 7 of 7
+  production sources: 167
+  modules rollup loaded (in-tree): 119
+  outside the bundle: 55
+  accepted exceptions: 55/55 (high-water mark 55)
+  RESULT: GREEN

@@ -30,11 +30,12 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { repoRoot, read, walk, blankComments, lineIndex, lineOf, LEDGER_DIR } from "./lib/io.mjs";
+import { repoRoot, read, walk, blankComments, lineIndex, lineOf, LEDGER_DIR, inputProblems } from "./lib/io.mjs";
 import { report, finish } from "./lib/report.mjs";
 import { bundleSnapshot, reachableFrom } from "./bundle.mjs";
 
-const MAIN_ENTRY = "apps/osl-hub-ui/index.html";
+const MAIN_ENTRIES = ["apps/osl-hub-ui/index.html", "apps/osl-hub-ui/whatsapp-qa.html"];
+const EXTRA_MAIN_MODULES = ["apps/osl-hub-ui/src/signal-qa-main.ts"];
 
 /* ------------------------------------------------------------------ grants */
 
@@ -108,7 +109,8 @@ export function tauriApiMethodCommands(root) {
     }
     byFile.set(file, map);
   }
-  return { byFile, version, missing: false };
+  const extracted = [...byFile.values()].reduce((sum, map) => sum + map.size, 0);
+  return { byFile, version, missing: false, extracted };
 }
 
 /** Which @tauri-apps/api source file defines the handle a factory hands back. */
@@ -121,8 +123,6 @@ const FACTORY_RECEIVER = {
 
 /* ------------------------------------------------------------------ issuers */
 
-const HANDLE_FACTORIES = /\b(getCurrentWindow|getCurrentWebview|getCurrentWebviewWindow|getAllWindows)\s*\(/;
-
 export function scanIssuers(root, modules, apiMethods) {
   const issued = new Map(); // command -> [{site, via}]
   const add = (command, site, via) => {
@@ -130,6 +130,13 @@ export function scanIssuers(root, modules, apiMethods) {
     issued.get(command).push({ site, via });
   };
   const unresolved = [];
+  const commandsFor = (receiverFiles, method) => {
+    const out = new Set();
+    for (const file of receiverFiles) {
+      for (const cmd of apiMethods.byFile.get(file)?.get(method) ?? []) out.add(cmd);
+    }
+    return out;
+  };
 
   for (const rel of modules) {
     if (!rel.endsWith(".ts")) continue;
@@ -149,26 +156,34 @@ export function scanIssuers(root, modules, apiMethods) {
     //    direct `getCurrentWindow().m()` chain, or a variable that was assigned
     //    from one of the factory functions in this same file. Counting bare
     //    `.close()` anywhere would collide with our own methods and over-report.
-    const handles = new Set();
+    const handles = new Map();
     for (const m of src.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=\s*(?:await\s+)?(getCurrentWindow|getCurrentWebview|getCurrentWebviewWindow)\s*\(/g)) {
-      handles.add(m[1]);
+      handles.set(m[1], FACTORY_RECEIVER[m[2]]);
     }
-    const receivers = ["getCurrentWindow\\(\\)", "getCurrentWebview\\(\\)", "getCurrentWebviewWindow\\(\\)", ...handles].join("|");
-    const chain = new RegExp(`(?:${receivers})\\s*\\.\\s*([A-Za-z_$][\\w$]*)\\s*\\(`, "g");
-    for (const m of src.matchAll(chain)) {
-      const method = m[1];
+    const directFactory = /\b(getCurrentWindow|getCurrentWebview|getCurrentWebviewWindow)\s*\(\s*\)\s*\.\s*([A-Za-z_$][\w$]*)\s*\(/g;
+    for (const m of src.matchAll(directFactory)) {
+      const [, factory, method] = m;
       const site = `${rel}:${lineOf(starts, m.index)}`;
-      for (const cmd of apiMethods.get(method) ?? []) add(cmd, site, `@tauri-apps/api ${method}()`);
+      for (const cmd of commandsFor(FACTORY_RECEIVER[factory], method)) add(cmd, site, `@tauri-apps/api ${factory}().${method}()`);
+    }
+    const receivers = [...handles.keys()].join("|");
+    if (receivers) {
+      const chain = new RegExp(`\\b(${receivers})\\s*\\.\\s*([A-Za-z_$][\\w$]*)\\s*\\(`, "g");
+      for (const m of src.matchAll(chain)) {
+        const [, receiver, method] = m;
+        const site = `${rel}:${lineOf(starts, m.index)}`;
+        for (const cmd of commandsFor(handles.get(receiver) ?? [], method)) add(cmd, site, `@tauri-apps/api ${receiver}.${method}()`);
+      }
     }
 
     // 3. module-scope event helpers imported from @tauri-apps/api/event
     if (/from\s+"@tauri-apps\/api\/event"/.test(src)) {
       const imported = /import\s*\{([^}]*)\}\s*from\s+"@tauri-apps\/api\/event"/.exec(src)?.[1] ?? "";
       for (const name of imported.split(",").map((s) => s.trim().split(/\s+as\s+/)[0])) {
-        if (!apiMethods.has(name)) continue;
+        if (!apiMethods.byFile.get("event.js")?.has(name)) continue;
         const use = new RegExp(`\\b${name}\\s*(?:<[^>(]*>)?\\s*\\(`, "g");
         for (const m of src.matchAll(use)) {
-          for (const cmd of apiMethods.get(name)) {
+          for (const cmd of commandsFor(["event.js"], name)) {
             add(cmd, `${rel}:${lineOf(starts, m.index)}`, `@tauri-apps/api/event ${name}()`);
           }
         }
@@ -198,22 +213,44 @@ export function scanFrameworkInternals(root, modules) {
   const haystack = markup + html;
 
   const fired = [];
+  const inputProblems = [];
+  if (!doc.tauriVersion) inputProblems.push("framework-internals.json has no tauriVersion pin");
+  if (!Array.isArray(doc.issuers) || doc.issuers.length === 0) inputProblems.push("framework-internals.json has no issuers");
+  if (Array.isArray(doc.issuers) && !doc.issuers.some((issuer) => issuer.command && issuer.trigger?.kind !== "never")) {
+    inputProblems.push("framework-internals.json has no releasable command issuer; this would silently green if extraction returned zero commands");
+  }
   for (const issuer of doc.issuers) {
     if (issuer.trigger.kind === "never") continue;
     if (issuer.trigger.kind === "markup-contains" && !haystack.includes(issuer.trigger.needle)) continue;
     fired.push(issuer);
   }
-  return { fired, staleness, pinned, declared: doc.tauriVersion };
+  return { fired, staleness, pinned, declared: doc.tauriVersion, inputProblems };
 }
 
 /* ---------------------------------------------------------------- assemble */
 
 export async function main(argv = process.argv) {
   const root = repoRoot(argv);
+  const input = inputProblems(root, [
+    "apps/osl-hub-ui/src/main.ts",
+    "apps/osl-hub-ui/whatsapp-qa.html",
+    "apps/osl-hub-ui/vite.config.ts",
+    "apps/osl-hub/capabilities",
+    "apps/osl-hub/Cargo.lock",
+    "scripts/ledger/framework-internals.json",
+  ]).map((p) => ({ ...p, kind: "ledger-input-missing" }));
+  if (input.length) {
+    return finish(report({ id: "acl", title: "commands issued vs ACL-granted, including framework-internal, ledger 3 of 7", violations: input }));
+  }
   const snapshot = await bundleSnapshot(root, { cache: !argv.includes("--no-cache") });
-  const mainModules = [...reachableFrom(snapshot, MAIN_ENTRY)];
+  const mainModules = [
+    ...new Set([
+      ...MAIN_ENTRIES.flatMap((entry) => [...reachableFrom(snapshot, entry)]),
+      ...EXTRA_MAIN_MODULES,
+    ]),
+  ];
   const api = tauriApiMethodCommands(root);
-  const { issued, unresolved } = scanIssuers(root, mainModules, api.map);
+  const { issued, unresolved } = scanIssuers(root, mainModules, api);
   const internals = scanFrameworkInternals(root, mainModules);
   for (const issuer of internals.fired) {
     if (!issued.has(issuer.command)) issued.set(issuer.command, []);
@@ -231,6 +268,11 @@ export async function main(argv = process.argv) {
   }
   if (api.missing) {
     violations.push({ id: "tauri-api-missing", kind: "ledger-input-stale", detail: "@tauri-apps/api is not installed, so issuer class 2 could not be collected at all", sites: ["apps/osl-hub-ui/package.json:1"] });
+  } else if (api.extracted === 0) {
+    violations.push({ id: "tauri-api-empty", kind: "ledger-input-stale", detail: "@tauri-apps/api was present but no method-to-command bindings were extracted", sites: ["apps/osl-hub-ui/node_modules/@tauri-apps/api/package.json:1"] });
+  }
+  for (const problem of internals.inputProblems) {
+    violations.push({ id: `framework-internals-input:${problem}`, kind: "ledger-input-stale", detail: problem, sites: ["scripts/ledger/framework-internals.json:1"] });
   }
 
   for (const [command, sites] of [...issued.entries()].sort()) {
@@ -253,7 +295,7 @@ export async function main(argv = process.argv) {
       stats: {
         "capability files covering webview main": files.length,
         "distinct permissions granted": grants.size,
-        "modules reachable from index.html": mainModules.length,
+        "modules reachable from main-window entries": mainModules.length,
         "distinct commands issued": issued.size,
         "framework-injected issuers that fire here": internals.fired.length,
         "tauri version (Cargo.lock / vendored)": `${internals.pinned} / ${internals.declared}`,
