@@ -522,6 +522,14 @@ mod tests {
                 "async fn prepare_peer_prose_text(",
                 "broker::prepare_peer_prose_text_with_capture_and_store_client(",
             ),
+            (
+                "async fn prepare_native_discord_overlay_text(",
+                "broker::prepare_native_discord_overlay_text_with_route_clients(",
+            ),
+            (
+                "fn prepare_whatsapp_qa_protected_text_blocking(",
+                "broker::prepare_whatsapp_qa_peer_prose_text(",
+            ),
         ] {
             let body = &source[source
                 .find(command)
@@ -538,6 +546,392 @@ mod tests {
                 "the Tor gate must run before encrypted store traffic is constructed"
             );
         }
+    }
+
+    /// Every place in the workspace that builds its own HTTP client, counted.
+    ///
+    /// A gate that only checks the paths somebody remembered is how the
+    /// ungated sends got shipped in the first place. This is the census that
+    /// replaces remembering: five construction sites exist, four of them are
+    /// behind [`keystore::egress`], and the fifth *is* the Tor transport. Add
+    /// a sixth anywhere -- a new command, a new crate, a new helper -- and
+    /// this fails until it is either routed or added here on purpose.
+    const DIRECT_HTTP_CLIENT_CONSTRUCTION_SITES: &[(&str, usize)] = &[
+        // Interlocked: adopts the authorized tunnel or refuses.
+        ("apps/osl-hub/src/osl_mail.rs", 1),
+        ("crates/ipc/src/cipher_store_client.rs", 1),
+        ("crates/keystore/src/client.rs", 1),
+        ("crates/keystore/src/username.rs", 1),
+        // The Tor transport itself. This one builds the SOCKS client every
+        // other site adopts, so it must not consult the interlock.
+        ("crates/transport/src/tor.rs", 1),
+    ];
+
+    /// Files whose client construction must sit inside the interlock's
+    /// `Build` arm rather than running unconditionally.
+    const INTERLOCKED_CONSTRUCTION_SITES: &[&str] = &[
+        "apps/osl-hub/src/osl_mail.rs",
+        "crates/ipc/src/cipher_store_client.rs",
+        "crates/keystore/src/client.rs",
+        "crates/keystore/src/username.rs",
+    ];
+
+    fn workspace_root() -> PathBuf {
+        // `apps/osl-hub` -> workspace root.
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("workspace root is two levels above this crate")
+            .to_path_buf()
+    }
+
+    fn shipping_source_files(root: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let mut pending = vec![root.join("crates"), root.join("apps")];
+        while let Some(directory) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    // Build output is not source, and `tests/` is not shipping
+                    // code; both would only add noise to the census.
+                    if !matches!(
+                        path.file_name().and_then(|name| name.to_str()),
+                        Some("target") | Some("node_modules") | Some("tests")
+                    ) {
+                        pending.push(path);
+                    }
+                } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        files
+    }
+
+    /// The part of a file that ships, i.e. everything before its test module.
+    fn shipping_region(source: &str) -> &str {
+        match source.find("\n#[cfg(test)]\nmod ") {
+            Some(index) => &source[..index],
+            None => source,
+        }
+    }
+
+    fn direct_client_constructions(source: &str) -> usize {
+        shipping_region(source)
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .map(|line| line.matches("Client::builder()").count())
+            .sum()
+    }
+
+    #[test]
+    fn no_new_egress_path_can_build_its_own_http_client() {
+        let root = workspace_root();
+        let mut found = Vec::new();
+        for path in shipping_source_files(&root) {
+            let source = std::fs::read_to_string(&path).expect("read a workspace source file");
+            let count = direct_client_constructions(&source);
+            if count > 0 {
+                let relative = path
+                    .strip_prefix(&root)
+                    .expect("every scanned file is under the workspace root")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                found.push((relative, count));
+            }
+        }
+        let expected: Vec<(String, usize)> = DIRECT_HTTP_CLIENT_CONSTRUCTION_SITES
+            .iter()
+            .map(|(path, count)| ((*path).to_owned(), *count))
+            .collect();
+        assert_eq!(
+            found, expected,
+            "a new HTTP client is built somewhere the Tor gate does not cover. Route it through \
+             an authorized client, or send it through a constructor that consults \
+             keystore::egress, and only then record it here."
+        );
+
+        for relative in INTERLOCKED_CONSTRUCTION_SITES {
+            let source =
+                std::fs::read_to_string(root.join(relative)).expect("read an interlocked source");
+            assert!(
+                shipping_region(&source).contains("DirectClientDecision::Build"),
+                "{relative} builds an HTTP client without asking keystore::egress first"
+            );
+            assert!(
+                shipping_region(&source).contains("DirectClientDecision::Refuse"),
+                "{relative} has no refusal arm, so a selected Tor with no tunnel would fall \
+                 back to clearnet"
+            );
+        }
+    }
+
+    /// The commands the renderer can call, frozen.
+    ///
+    /// This list is not documentation: it is the point at which somebody
+    /// adding a command has to decide whether it can reach the network. A new
+    /// command fails this test until it is added here, and adding it means
+    /// having answered that question.
+    const HUB_COMMANDS: &[&str] = &[
+        "record_native_discord_qa_send_stage",
+        "get_onboarding_preferences",
+        "set_hub_screenshot_protection",
+        "save_onboarding_preferences",
+        "set_tor_preference",
+        "scan_local_privacy",
+        "open_hosted_session_scan",
+        "request_hosted_session_scan",
+        "request_hosted_session_scan_command",
+        "save_osl_profile",
+        "initialize_scrub_index",
+        "set_scrub_index_manifest",
+        "get_scrub_index_manifest",
+        "get_scrub_index_scan",
+        "append_scrub_index_chunk",
+        "get_scrub_index_status",
+        "pause_scrub_index",
+        "resume_scrub_index",
+        "cancel_scrub_index",
+        "list_linked_services",
+        "get_core_readiness",
+        "list_core_features",
+        "get_hub_license_state",
+        "osl_mail_get_status",
+        "osl_mail_provision",
+        "osl_mail_send",
+        "osl_mail_burn",
+        "get_mass_cleanup_capabilities",
+        "discover_mass_cleanup_targets",
+        "execute_mass_cleanup_batch",
+        "get_autoscrub_run_fl",
+        "start_autoscrub_reviewed_run",
+        "request_autoscrub_global_stop",
+        "compose_scrub_erasure_request",
+        "validate_hub_activation_code",
+        "clear_hub_activation_code",
+        "unlock_hub_password_gate",
+        "create_hub_osl_identity",
+        "import_hub_osl_identity_phrase",
+        "setup_hub_main_password",
+        "view_hub_recovery_phrase",
+        "get_hub_recovery_kit_unsaved",
+        "set_hub_recovery_kit_unsaved",
+        "lock_hub_session",
+        "emit_active_session_reset",
+        "get_hub_password_role_status",
+        "set_hub_stealth_password",
+        "remove_hub_stealth_password",
+        "set_hub_burn_password",
+        "remove_hub_burn_password",
+        "set_hub_notifications_enabled",
+        "list_hub_app_notifications",
+        "check_hub_for_updates",
+        "install_hub_update",
+        "open_hub_releases_page",
+        "open_hub_source_repository",
+        "list_native_apps",
+        "install_native_app",
+        "get_mullvad_status",
+        "install_mullvad",
+        "open_mullvad",
+        "list_components",
+        "install_component",
+        "remove_component",
+        "list_browser_imports",
+        "open_browser_import",
+        "list_browser_profiles_for_consent",
+        "grant_browser_profile_consent",
+        "scan_consented_browser_profile",
+        "load_detected_browser_footprint",
+        "revoke_detected_browser_footprint",
+        "get_firefox_status",
+        "install_firefox",
+        "begin_browser_account_import",
+        "begin_protected_browser_import",
+        "finish_protected_browser_import",
+        "launch_firefox_service",
+        "get_default_browser_companion_status",
+        "host_default_browser_companion",
+        "resize_default_browser_companion",
+        "focus_default_browser_companion",
+        "detach_default_browser_companion",
+        "host_native_app_window",
+        "native_app_takeover_requires_consent",
+        "discord_marker_available",
+        "resize_native_app_window",
+        "focus_native_app_window",
+        "detach_native_app_window",
+        "get_signal_protected_send_readiness",
+        "claim_whatsapp_qa_window",
+        "get_whatsapp_qa_protection_status",
+        "begin_whatsapp_visual_binding",
+        "confirm_whatsapp_visual_binding",
+        "prepare_whatsapp_qa_protected_text",
+        "open_whatsapp_qa_protected_text",
+        "resize_whatsapp_qa_window",
+        "set_native_discord_protected_overlay_open",
+        "request_native_discord_visible_row_qa_receipt",
+        "send_native_discord_overlay_carrier",
+        "set_native_discord_covertext_enabled",
+        "get_native_discord_overlay_state",
+        "set_native_discord_overlay_security",
+        "prepare_native_discord_overlay_text",
+        "send_native_discord_qa_atomic_text",
+        "send_native_discord_qa_probe",
+        "run_native_discord_headless_qa",
+        "poll_native_discord_headless_qa",
+        "rehydrate_native_discord_overlay_history",
+        "open_native_discord_overlay_text",
+        "reveal_native_discord_overlay_view_once",
+        "prepare_osl_chat_text",
+        "open_osl_chat_text",
+        "list_osl_chat_history",
+        "select_osl_chat_attachment",
+        "list_osl_chat_attachments",
+        "open_osl_chat_attachment",
+        "select_native_discord_overlay_attachment",
+        "list_native_discord_overlay_attachments",
+        "open_native_discord_overlay_attachment",
+        "burn_native_discord_overlay_chat",
+        "host_mullvad_window",
+        "resize_mullvad_window",
+        "focus_mullvad_window",
+        "restore_mullvad_window",
+        "create_service_account",
+        "open_service_host",
+        "close_service_host",
+        "set_local_protected_sheet_open",
+        "remove_service_account",
+        "activate_local_loopback_context",
+        "activate_manual_peer_context",
+        "activate_native_manual_peer_context",
+        "activate_osl_chat_context",
+        "close_osl_chat_context",
+        "prepare_peer_prose_text",
+        "open_peer_prose_text",
+        "prepare_encrypted_text",
+        "decrypt_hub_capsule",
+        "export_hub_friend_code",
+        "copy_hub_friend_invite",
+        "add_hub_friend",
+        "claim_hub_username",
+        "get_hub_username_status",
+        "add_hub_friend_by_username",
+        "get_osl_profile",
+        "verify_hub_friend_safety_number",
+        "remove_hub_friend",
+        "list_hub_people",
+        "set_hub_friend_nickname",
+        "set_active_hub_friend_permission",
+        "set_active_hub_friend_reach",
+        "revoke_active_hub_friend_scope",
+        "get_active_hub_context_security",
+        "set_active_hub_context_security",
+        "prepare_local_protected_text_with_policy",
+        "prepare_hub_attachment",
+        "open_hub_attachment",
+        "decrypt_local_protected_capsule",
+        "list_hub_identities",
+        "create_hub_identity_slot",
+        "recover_hub_identity_slot",
+        "switch_hub_identity",
+        "burn_active_hub_identity",
+        "execute_hub_full_cleanup",
+        "get_hub_service_burn_readiness",
+        "burn_hub_service_account",
+        "burn_active_hub_context",
+        "get_hub_revocation_status",
+        "ai_carrier_status",
+        "set_ai_carrier_preview_enabled",
+        "build_integrity_status",
+    ];
+
+    /// The commands that hold an authorized route open across their own send.
+    ///
+    /// Everything else reaches the network only through constructors that
+    /// consult [`keystore::egress`], which is what makes them safe without a
+    /// per-command gate. Losing a gate from this list is a regression, so the
+    /// set is compared exactly rather than by containment.
+    /// Declaration order, so a moved command is as visible as a removed gate.
+    const COMMANDS_HOLDING_AN_AUTHORIZED_ROUTE: &[&str] = &[
+        "prepare_whatsapp_qa_protected_text",
+        "prepare_native_discord_overlay_text",
+        "prepare_osl_chat_text",
+        "prepare_peer_prose_text",
+    ];
+
+    fn command_names(source: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        for (index, line) in source.lines().enumerate() {
+            if line.trim() != "#[tauri::command]" {
+                continue;
+            }
+            let name = source
+                .lines()
+                .skip(index + 1)
+                .find_map(|following| {
+                    let mut signature = following.trim_start();
+                    signature = signature.strip_prefix("pub ").unwrap_or(signature);
+                    signature = signature.strip_prefix("async ").unwrap_or(signature);
+                    signature.strip_prefix("fn ").map(|rest| {
+                        rest.split(['(', '<'])
+                            .next()
+                            .unwrap_or_default()
+                            .trim()
+                            .to_owned()
+                    })
+                })
+                .expect("every #[tauri::command] is followed by its function");
+            names.push(name);
+        }
+        names
+    }
+
+    /// The body of `name`, from its signature to the next command or the end.
+    fn command_body<'a>(source: &'a str, name: &str) -> &'a str {
+        let signature = format!("fn {name}(");
+        let start = source
+            .find(&signature)
+            .expect("a listed command exists in main.rs");
+        let rest = &source[start..];
+        match rest[1..].find("\n#[tauri::command]") {
+            Some(end) => &rest[..end + 1],
+            None => rest,
+        }
+    }
+
+    #[test]
+    fn every_hub_command_is_accounted_for_by_the_tor_gate() {
+        let source = include_str!("main.rs");
+        let names = command_names(source);
+        assert_eq!(
+            names,
+            HUB_COMMANDS
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect::<Vec<_>>(),
+            "the hub's command surface changed. Decide, for each added command, whether it can \
+             reach the network: hold an authorized route across the send like \
+             prepare_osl_chat_text does, or reach the network only through a constructor that \
+             consults keystore::egress. Then record it here."
+        );
+
+        let gated: Vec<&str> = HUB_COMMANDS
+            .iter()
+            .copied()
+            .filter(|name| {
+                command_body(source, name)
+                    .contains("app.state::<TorPreferenceState>().authorize_store()?")
+            })
+            .collect();
+        assert_eq!(
+            gated, COMMANDS_HOLDING_AN_AUTHORIZED_ROUTE,
+            "the set of commands that authorize a route before sending changed"
+        );
     }
 
     fn run_test_socks_proxy(
