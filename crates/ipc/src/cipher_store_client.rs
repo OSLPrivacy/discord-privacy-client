@@ -306,7 +306,7 @@ impl CipherStoreClient {
         let resp = self
             .http
             .get(&url)
-            .header("x-osl-fetch-token", hex_lower(fetch_token))
+            .header("x-osl-fetch-cap", hex_lower(fetch_token))
             .send()?;
         let status = resp.status();
         if status == StatusCode::NOT_FOUND {
@@ -713,7 +713,7 @@ mod tests {
                 }
                 requests.push(String::from_utf8_lossy(&raw).to_ascii_lowercase());
                 let response = match index {
-                    0 => "HTTP/1.1 201 Created\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: 59\r\n\r\n{\"id\":\"00000000000000000000000000000000\",\"expires_at\":1}",
+                    0 => "HTTP/1.1 201 Created\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: 56\r\n\r\n{\"id\":\"00000000000000000000000000000000\",\"expires_at\":1}",
                     1 | 2 => "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\none",
                     _ => "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n",
                 };
