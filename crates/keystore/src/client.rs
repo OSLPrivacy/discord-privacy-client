@@ -2060,17 +2060,27 @@ impl KeyServerClient {
             req = req.header("Content-Type", ctype).body(payload.to_vec());
         }
 
-        let response = req
-            .send()
-            .map_err(|e| Error::Transport(format!("send {method} {url}: {e}")))?;
-        let status = response.status().as_u16();
-        let body_bytes = response
-            .bytes()
-            .map_err(|e| Error::Transport(format!("read response body: {e}")))?
-            .to_vec();
-        Ok(HttpResponse {
-            status,
-            body: body_bytes,
+        // Send and drain the body on a thread with no Tokio context. Both
+        // halves go through `reqwest::blocking::wait::timeout`, whose
+        // debug-assertions `enter()` builds and drops a shell runtime; doing
+        // that on a Tokio worker (any `async fn` Tauri command) panics with
+        // "Cannot drop a runtime in a context where blocking is not allowed".
+        // See `crate::blocking_http`. The response body is fully materialised
+        // inside the hop on purpose — handing a `Response` back out would move
+        // the body read to the caller's thread and reopen the fault.
+        crate::blocking_http::off_async_context(move || {
+            let response = req
+                .send()
+                .map_err(|e| Error::Transport(format!("send {method} {url}: {e}")))?;
+            let status = response.status().as_u16();
+            let body_bytes = response
+                .bytes()
+                .map_err(|e| Error::Transport(format!("read response body: {e}")))?
+                .to_vec();
+            Ok(HttpResponse {
+                status,
+                body: body_bytes,
+            })
         })
     }
 }
