@@ -1,6 +1,25 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Scrub modules that compile and pass their own tests but have no non-test
+/// caller, so they do not ship. This registry exists so that fact stays VISIBLE
+/// — adding a name here is an admission, not a fix. Every entry must say why it
+/// is unreachable, and entries are meant to be replaced by a reachable module
+/// rather than accumulate.
+///
+/// All of these are the erasure/deletion lane. v1 ships Scrub as DISCOVERY
+/// (scan, consent, dry-run, index, grouped review), so live provider deletion
+/// being unreachable is the intended v1 scope, not an accident:
+///   - `cloud_autoscrub_*`  — cloud-executed AutoScrub: authority, consent,
+///     envelope, execution and run. Cloud execution is deferred.
+///   - `scrub_erasure_contacts` / `_queue` / `_tracker` — offline erasure-request
+///     queueing and follow-up (added by t12-g4), never wired to a caller.
+///   - `scrub_evidence_manifest`, `scrub_receipt` — proof-of-deletion artifacts,
+///     which cannot be honest until deletion itself ships.
+///   - `scrub_hosted_port` — hosted-session deletion port.
+///
+/// If deletion is ever scoped into a release, these are the modules to wire,
+/// and this list is the checklist.
 const KNOWN_ORPHANS: &[&str] = &[
     "cloud_autoscrub_authority",
     "cloud_autoscrub_consent",
