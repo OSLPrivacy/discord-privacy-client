@@ -242,6 +242,15 @@ pub struct AppState {
     /// to disk via `crate::whitelist_state::write_whitelist_state`.
     pub whitelist_state: Mutex<WhitelistState>,
 
+    /// TA-T10-003a: in-memory mirror of the burn-ledger enrolment marker
+    /// stored alongside the scopes in `whitelist_state.json`. Loaded by the
+    /// whitelist migration/load path, set the first time a burn is recorded,
+    /// and written back by `persist_whitelist_state_now`. It exists so that
+    /// the enrolment marker rides the same authoritative in-memory envelope as
+    /// the scopes map rather than needing a separate read-modify-write of the
+    /// file, which could race a concurrent whitelist toggle and lose it.
+    pub burn_ledger_enrolled: std::sync::atomic::AtomicBool,
+
     // 9-C1: `pending_invitations` field removed alongside the
     // invitation handshake subsystem. The on-disk
     // `pending_invitations.json` is unconditionally deleted at
@@ -405,6 +414,7 @@ impl Default for AppState {
             rn_session_sealer: keystore::select_best_sealer(),
             duress_engine: Mutex::new(default_production_duress_engine()),
             whitelist_state: Mutex::new(WhitelistState::default()),
+            burn_ledger_enrolled: AtomicBool::new(false),
             recovery_token: Mutex::new(None),
             stealth_active: Mutex::new(false),
             burned_scopes: Mutex::new(crate::burned_scopes_file::BurnedScopesFile::default()),

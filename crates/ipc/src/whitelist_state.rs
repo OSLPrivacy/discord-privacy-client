@@ -113,7 +113,63 @@ pub struct WhitelistStateFile {
     pub scopes: WhitelistState,
     #[serde(default)]
     pub server_defaults: HashMap<String, ServerDefaults>,
+
+    /// TA-T10-003a: burn-ledger enrolment marker.
+    ///
+    /// Set the first time this account records a burn, and never cleared by a
+    /// normal write (see the sticky merge in [`write_whitelist_state_file`]).
+    /// It exists so that a MISSING `burned_scopes.json` can be told apart from
+    /// a genuine first run: absent ledger + this flag means the kill list was
+    /// deleted after burns existed, which
+    /// [`crate::burned_scopes_file::load_burned_scopes`] must treat as
+    /// "everything is still burned" rather than "nothing was ever burned".
+    ///
+    /// It lives here, rather than in a marker file of its own, because
+    /// `whitelist_state.json` is already registered in every account-lifecycle
+    /// sweep that `burned_scopes.json` is registered in — the at-rest rotation
+    /// list, the encrypted identity export, the hub's identity-switch artifact
+    /// move, and the password lifecycle sweep. A new file would have to be
+    /// added to sweeps that live outside this crate; miss one and the marker
+    /// desynchronises from the ledger it guards, which either fails open (the
+    /// bug) or strands a fresh account permanently closed (worse).
+    #[serde(default)]
+    pub burn_ledger_enrolled: bool,
 }
+
+/// Whether this account has ever written a burn into its kill list.
+///
+/// Returned by [`burn_ledger_enrollment`]. Deliberately three-valued: pre-gate
+/// bootstrap runs before the at-rest file key is installed, so "I could not
+/// read the whitelist file" is a routine, temporary condition there and must
+/// NOT be confused with either answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BurnLedgerEnrollment {
+    /// No burn has ever been recorded for this account (or the account has no
+    /// state at all — a genuine first run).
+    NeverEnrolled,
+    /// At least one burn was recorded. A missing kill list is a deletion.
+    Enrolled,
+    /// The whitelist file exists but could not be read (no file key installed
+    /// yet, or the file is corrupt). No conclusion may be drawn.
+    Indeterminate,
+}
+
+/// Read the burn-ledger enrolment marker for the account rooted at `dir`.
+pub fn burn_ledger_enrollment(dir: &Path) -> BurnLedgerEnrollment {
+    match load_whitelist_state_file(&dir.join(WHITELIST_STATE_FILE)) {
+        Ok(file) if file.burn_ledger_enrolled => BurnLedgerEnrollment::Enrolled,
+        Ok(_) => BurnLedgerEnrollment::NeverEnrolled,
+        // No whitelist file at all is the fresh-install shape, and it is also
+        // what `fresh_start` leaves behind after it deletes the file — the
+        // deliberate "abandon this account's state" escape hatch. Both must
+        // stay usable, so this is the one absence that clears the marker.
+        Err(WhitelistStateError::NotFound { .. }) => BurnLedgerEnrollment::NeverEnrolled,
+        Err(_) => BurnLedgerEnrollment::Indeterminate,
+    }
+}
+
+/// Filename of the whitelist/enrolment state, relative to an account dir.
+pub const WHITELIST_STATE_FILE: &str = "whitelist_state.json";
 
 /// Errors returned by the loader. The fresh-start path produces
 /// an empty file on first launch, so [`NotFound`] is the
@@ -190,6 +246,8 @@ pub fn load_whitelist_state_file(path: &Path) -> Result<WhitelistStateFile, Whit
             migrated_c1: false,
             scopes,
             server_defaults: HashMap::default(),
+            // A pre-envelope v1 file predates the burn kill list entirely.
+            burn_ledger_enrolled: false,
         })
     }
 }
@@ -212,10 +270,18 @@ pub fn write_whitelist_state(path: &Path, state: &WhitelistState) -> Result<(), 
     // `write_whitelist_state_file` (which `persist_whitelist_state_now`
     // does post-9-C3). Used today only by `fresh_start` (writes an
     // empty file at first launch) — no risk of clobbering real data.
+    //
+    // This writer is also the fresh-start RESET writer, so it deliberately
+    // does NOT carry the burn-ledger enrolment marker forward: `fresh_start`
+    // deletes this file and then calls us to lay down an empty one, which is
+    // the supported way for a user to abandon an account whose kill list can
+    // no longer be proven intact. Making it sticky would make that escape
+    // hatch a no-op.
     let file = WhitelistStateFile {
         migrated_c1: true,
         scopes: state.clone(),
         server_defaults: HashMap::default(),
+        burn_ledger_enrolled: false,
     };
     let body = serde_json::to_string_pretty(&file)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -234,6 +300,23 @@ pub fn write_whitelist_state_file(
     path: &Path,
     file: &WhitelistStateFile,
 ) -> Result<(), std::io::Error> {
+    // TA-T10-003a: the burn-ledger enrolment marker is STICKY across every
+    // mutating write. Callers construct this envelope from their own in-memory
+    // view (a whitelist toggle, the C1 migration, a test fixture); any one of
+    // them that forgets the field would otherwise silently clear a
+    // security-relevant latch as a side effect of an unrelated preference
+    // change, and clearing it fails OPEN. Only deleting the file — what
+    // `fresh_start` does — resets enrolment.
+    let mut file = file.clone();
+    if !file.burn_ledger_enrolled {
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        // Indeterminate (unreadable/undecryptable existing file) leaves the
+        // caller's value alone: we are about to overwrite that file anyway,
+        // and forcing the marker on from an unreadable byte string would be
+        // inventing evidence.
+        file.burn_ledger_enrolled = burn_ledger_enrollment(dir) == BurnLedgerEnrollment::Enrolled;
+    }
+    let file = &file;
     let body = serde_json::to_string_pretty(file)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let out_bytes = crate::main_password::maybe_encrypt(body.as_bytes())

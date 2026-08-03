@@ -212,22 +212,31 @@ pub fn reload_encrypted_state_after_unlock(
         Err(e) => report.errors.push(format!("whitelist_state: {e}")),
     }
 
-    // burned_scopes.json — the loader is infallible by signature
-    // (returns default on any failure), but missing files are the
-    // fresh-install case, not an error. Use file existence as a
-    // proxy for "should have data."
+    // burned_scopes.json — the loader is infallible by signature (returns
+    // default on any failure).
+    //
+    // TA-T10-003a: this used to be gated on `bs_path.exists()`, which meant
+    // the one code path that runs with the at-rest file key installed never
+    // evaluated the missing-file case at all. A missing kill list is exactly
+    // what a deletion looks like, and the loader can only tell a deletion from
+    // a first run once it can read the enrolment marker — i.e. here, post-gate.
+    // So call it unconditionally and let it decide.
     let bs_path = config_dir.join("burned_scopes.json");
-    if bs_path.exists() {
-        let bs = crate::burned_scopes_file::load_burned_scopes(&bs_path);
-        if crate::burned_scopes_file::burn_state_unreadable() {
-            // Fail closed and say so. The empty list below is NOT authoritative
-            // while this holds — `is_message_in_burn_kill_list` reports every
-            // message as burned and writes are refused.
-            report.errors.push(
-                "burned_scopes: kill list unreadable — all scopes treated as still burned"
-                    .to_string(),
-            );
-        }
+    let bs_existed = bs_path.exists();
+    let bs = crate::burned_scopes_file::load_burned_scopes(&bs_path);
+    if crate::burned_scopes_file::burn_state_unreadable() {
+        // Fail closed and say so. The empty list below is NOT authoritative
+        // while this holds — `is_message_in_burn_kill_list` reports every
+        // message as burned and writes are refused.
+        report.errors.push(if bs_existed {
+            "burned_scopes: kill list unreadable — all scopes treated as still burned".to_string()
+        } else {
+            "burned_scopes: kill list is missing but this account has recorded burns — \
+             all scopes treated as still burned"
+                .to_string()
+        });
+    }
+    if bs_existed {
         report.burned_scopes_count = bs.scopes.len();
         report.burned_scopes_loaded = true;
         *state

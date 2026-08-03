@@ -1284,6 +1284,12 @@ pub fn persist_whitelist_state_now(state: &AppState) {
         migrated_c1: true,
         scopes: ws,
         server_defaults: sd,
+        // TA-T10-003a: carry the burn-ledger enrolment marker. The writer also
+        // merges it stickily from disk, so a stale `false` here cannot clear
+        // it; passing it explicitly keeps the in-memory state authoritative.
+        burn_ledger_enrolled: state
+            .burn_ledger_enrolled
+            .load(std::sync::atomic::Ordering::SeqCst),
     };
     if let Err(e) = crate::whitelist_state::write_whitelist_state_file(&path, &envelope) {
         record_persist_error(state, "whitelist_state.json", e);
@@ -15009,7 +15015,31 @@ pub fn cmd_osl_mark_scope_burned(
         g.version = 1;
     }
     persist_burned_scopes_now(state);
+    mark_burn_ledger_enrolled(state);
     Ok(())
+}
+
+/// TA-T10-003a: record, durably and OUTSIDE `burned_scopes.json`, that this
+/// account has burned at least once.
+///
+/// Without this the kill list is its own only evidence, so deleting it erases
+/// the proof that it ever had contents and `load_burned_scopes` cannot tell a
+/// deletion from a first run. The marker rides `whitelist_state.json`, which
+/// travels with the account through every lifecycle sweep the kill list
+/// travels through, and is cleared only when `fresh_start` deletes that file.
+///
+/// Best-effort by design: it runs AFTER the ledger write, so the failure mode
+/// is a burn that is recorded but not marked (fail open on the NEXT deletion),
+/// never a marked account with no ledger (which would fail closed for real
+/// data). `persist_whitelist_state_now` already surfaces its own write errors.
+fn mark_burn_ledger_enrolled(state: &AppState) {
+    if state
+        .burn_ledger_enrolled
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        return; // already marked; no write needed
+    }
+    persist_whitelist_state_now(state);
 }
 
 /// 9-A1c: burn kill list lookup. Returns true iff the given
@@ -16186,6 +16216,17 @@ fn cmd_osl_burn_engage_finish(
         .lock()
         .expect("burned_scopes mutex poisoned") =
         crate::burned_scopes_file::BurnedScopesFile::default();
+    // TA-T10-003a: the account these protected no longer exists. `fresh_start`
+    // deleted and rewrote whitelist_state.json, so the on-disk enrolment
+    // marker is already clear; drop the in-memory mirror to match, and release
+    // the fail-closed latch. This is the documented way out of a permanently
+    // refusing kill list (deleted or corrupt), and it is safe precisely
+    // because the identity was replaced: nothing the old list covered is
+    // decryptable by the new keys, so no burn promise is being broken.
+    state
+        .burn_ledger_enrolled
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    crate::burned_scopes_file::clear_burn_state_for_replaced_account();
     *state
         .sender_key_state
         .lock()
