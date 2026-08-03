@@ -15,6 +15,7 @@ async function upload(id: string, objectClass: "single-ack" | "multi-fetch") {
     method: "POST",
     headers: {
       "x-osl-ttl-seconds": "3600",
+      "x-osl-expiry-mode": "absolute",
       "x-osl-blob-id": id,
       "x-osl-fetch-digest": await sha256Hex(fetchCap),
       "x-osl-ack-digest": await sha256Hex(ackCap),
@@ -22,7 +23,7 @@ async function upload(id: string, objectClass: "single-ack" | "multi-fetch") {
       "x-osl-object-class": objectClass,
       "x-osl-delivery-tag": "5".repeat(31) + id[0]!,
     },
-    body: new Uint8Array([7, 8, 9]),
+    body: new Uint8Array([7]),
   }), workerEnv());
   expect(response.status).toBe(201);
   return { fetchCap, ackCap, objectKey: await sha256Hex(fetchCap) };

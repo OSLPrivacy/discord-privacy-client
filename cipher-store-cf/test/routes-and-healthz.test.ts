@@ -29,6 +29,9 @@ async function attemptedUpload(id: string) {
 
 describe("receipt-aware blob routes and health capability", () => {
   it("makes the real PUT route consume a storage grant before it can create a blob", async () => {
+    // This makes the test exercise a missing grant, rather than disabled
+    // admission on the isolated Worker binding.
+    env.LINK_GRANT_PUBKEY_B64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     const fetchId = "a".repeat(32);
     await attemptedUpload(fetchId);
     expect(await env.DB.prepare("SELECT 1 FROM blob_capability_index WHERE blob_id = ?")

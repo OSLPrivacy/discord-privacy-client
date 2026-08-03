@@ -8,6 +8,7 @@ import {
 } from "../src/endpoints/blob.js";
 import { BLOB_SWEEP_BATCH_SIZE, sweepExpired } from "../src/lib/sweep.js";
 import { d1Count, d1Run, workerEnv } from "./helpers/workerd.js";
+import { blobCapabilities, blobUploadHeaders } from "./helpers/blob.js";
 
 function writableEnv(): Env {
   return workerEnv();
@@ -101,11 +102,7 @@ describe("cipher upload body bounds", () => {
   it("refuses a 1,001-byte body that skips Padmé padding", async () => {
     const request = new Request("https://cipher.test/v1/blob", {
       method: "POST",
-      headers: {
-        "x-osl-ttl-seconds": "3600",
-        "x-osl-fetch-token": "0123456789abcdef0123456789abcdef",
-        "x-osl-manage-token": "fedcba9876543210fedcba9876543210",
-      },
+      headers: await blobUploadHeaders(blobCapabilities("1".repeat(32))),
       body: new Uint8Array(1_001),
     });
 
@@ -126,11 +123,7 @@ describe("cipher upload body bounds", () => {
     const before = Math.floor(Date.now() / 1000);
     const request = new Request("https://cipher.test/v1/blob", {
       method: "POST",
-      headers: {
-        "x-osl-ttl-seconds": ttlHeader,
-        "x-osl-fetch-token": "0123456789abcdef0123456789abcdef",
-        "x-osl-manage-token": "fedcba9876543210fedcba9876543210",
-      },
+      headers: await blobUploadHeaders(blobCapabilities(String(ttlSeconds % 10).repeat(32)), "single-ack", ttlHeader),
       body: new Uint8Array([1]),
     });
 
@@ -170,27 +163,39 @@ describe("cipher upload body bounds", () => {
     const expiredRows = BLOB_SWEEP_BATCH_SIZE + 1;
     for (let index = 0; index < expiredRows; index++) {
       await d1Run(
-        "INSERT INTO blobs (id, data, size_bytes, expires_at, created_at, fetch_token) VALUES (?, ?, ?, ?, ?, ?)",
-        blobId(index),
-        new Uint8Array([index % 256]),
+        `INSERT INTO blob_capability_index (
+          blob_id, fetch_digest_sha256_hex, ack_digest_sha256_hex,
+          manage_digest_sha256_hex, object_class, pool, delivery_tag,
+          size_bytes, expires_at, created_at
+        ) VALUES (?, ?, ?, ?, 'single-ack', 'undelivered', ?, ?, ?, ?)`,
+        index.toString(16).padStart(32, "0"),
+        "a".repeat(64),
+        "b".repeat(64),
+        "c".repeat(64),
+        "d".repeat(32),
         1,
         now - 60,
         now - 120,
-        null,
       );
     }
     await d1Run(
-      "INSERT INTO blobs (id, data, size_bytes, expires_at, created_at, fetch_token) VALUES (?, ?, ?, ?, ?, ?)",
-      blobId(expiredRows),
-      new Uint8Array([255]),
+      `INSERT INTO blob_capability_index (
+        blob_id, fetch_digest_sha256_hex, ack_digest_sha256_hex,
+        manage_digest_sha256_hex, object_class, pool, delivery_tag,
+        size_bytes, expires_at, created_at
+      ) VALUES (?, ?, ?, ?, 'single-ack', 'undelivered', ?, ?, ?, ?)`,
+      expiredRows.toString(16).padStart(32, "0"),
+      "e".repeat(64),
+      "f".repeat(64),
+      "a".repeat(64),
+      "b".repeat(32),
       1,
       now + 60,
       now - 120,
-      null,
     );
 
     await expect(sweepExpired(writableEnv())).resolves.toBe(expiredRows);
-    expect(await d1Count("SELECT COUNT(*) AS c FROM blobs WHERE expires_at < ?", now)).toBe(0);
-    expect(await d1Count("SELECT COUNT(*) AS c FROM blobs WHERE expires_at >= ?", now)).toBe(1);
+    expect(await d1Count("SELECT COUNT(*) AS c FROM blob_capability_index WHERE expires_at < ?", now)).toBe(0);
+    expect(await d1Count("SELECT COUNT(*) AS c FROM blob_capability_index WHERE expires_at >= ?", now)).toBe(1);
   });
 });

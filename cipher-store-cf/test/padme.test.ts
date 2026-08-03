@@ -10,6 +10,7 @@ const DELIVERY_TAG = "fedcba9876543210".repeat(2);
 function uploadHeaders(): HeadersInit {
   return {
     "x-osl-ttl-seconds": "3600",
+    "x-osl-expiry-mode": "absolute",
     "x-osl-blob-id": BLOB_ID,
     "x-osl-fetch-digest": DIGEST,
     "x-osl-ack-digest": DIGEST,

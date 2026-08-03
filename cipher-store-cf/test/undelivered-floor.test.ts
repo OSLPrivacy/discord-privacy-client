@@ -11,11 +11,12 @@ function fullPoolEnv(statements: string[]): Env {
       prepare(sql: string) {
         statements.push(sql);
         return {
+          first: async () => sql.includes("SELECT 1")
+            ? null
+            : { rows: MAX_LIVE_BLOB_ROWS, bytes: 1 },
           bind() {
             return {
-              first: async () => sql.includes("SELECT 1")
-                ? null
-                : { rows: MAX_LIVE_BLOB_ROWS, bytes: 1 },
+              first: async () => null,
             };
           },
         };
@@ -31,7 +32,7 @@ describe("undelivered storage floor", () => {
   it("refuses a full pool without evicting an existing undelivered blob", async () => {
     const statements: string[] = [];
     const request = new Request("https://cipher.test/v1/blob", {
-      method: "POST",
+      method: "PUT",
       headers: {
         "x-osl-ttl-seconds": "604800",
         "x-osl-blob-id": "1".repeat(32),

@@ -10,6 +10,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env.js";
 import { handleUpload } from "../src/endpoints/blob.js";
+import { sha256Hex } from "../src/lib/digest.js";
 import { rateLimit } from "../src/lib/rate-limit.js";
 import {
   d1All,
@@ -27,14 +28,22 @@ function harness() {
   return { env: workerEnv({ RATE_LIMIT_HASH_KEY: SECRET }) };
 }
 
-function blobRequest(bytes: Uint8Array): Request {
-  const token = "0123456789abcdef0123456789abcdef";
+async function blobRequest(bytes: Uint8Array): Promise<Request> {
+  const id = "1".repeat(32);
+  const fetchCap = "2".repeat(32);
+  const ackCap = "3".repeat(32);
+  const manageCap = "4".repeat(32);
   return new Request("https://cipher.test/v1/blob", {
     method: "POST",
     headers: {
       "x-osl-ttl-seconds": "3600",
-      "x-osl-fetch-token": token,
-      "x-osl-manage-token": "fedcba9876543210fedcba9876543210",
+      "x-osl-expiry-mode": "absolute",
+      "x-osl-blob-id": id,
+      "x-osl-fetch-digest": await sha256Hex(fetchCap),
+      "x-osl-ack-digest": await sha256Hex(ackCap),
+      "x-osl-manage-digest": await sha256Hex(manageCap),
+      "x-osl-delivery-tag": "5".repeat(32),
+      "x-osl-object-class": "single-ack",
       "content-length": String(bytes.byteLength),
     },
     body: bytes,
@@ -124,25 +133,31 @@ describe("generic blob storage has a database-level backstop (HIGH-2)", () => {
     const now = Math.floor(Date.now() / 1000);
 
     await d1Run(
-      "INSERT INTO blobs (id, data, size_bytes, expires_at, created_at, fetch_token) VALUES (?, ?, ?, ?, ?, ?)",
-      new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]),
-      new Uint8Array([1]),
+      `INSERT INTO blob_capability_index (
+        blob_id, fetch_digest_sha256_hex, ack_digest_sha256_hex,
+        manage_digest_sha256_hex, object_class, pool, delivery_tag,
+        size_bytes, expires_at, created_at
+      ) VALUES (?, ?, ?, ?, 'single-ack', 'undelivered', ?, ?, ?, ?)`,
+      "a".repeat(32),
+      "b".repeat(64),
+      "c".repeat(64),
+      "d".repeat(64),
+      "e".repeat(32),
       MAX_LIVE_BLOB_BYTES,
       now + 3600,
       now,
-      "0".repeat(32),
     );
 
     // Before the fix `handleUpload` has no aggregate predicate at all, so this
     // is a 201 and the table grows without bound.
-    const response = await handleUpload(blobRequest(new Uint8Array([9, 9, 9])), env);
+    const response = await handleUpload(await blobRequest(new Uint8Array([9])), env);
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ error: "storage_capacity" });
   });
 
   it("still accepts ordinary blobs well under the budget", async () => {
     const { env } = harness();
-    const response = await handleUpload(blobRequest(new Uint8Array([1, 2, 3])), env);
+    const response = await handleUpload(await blobRequest(new Uint8Array([1])), env);
     expect(response.status).toBe(201);
   });
 });
