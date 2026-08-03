@@ -271,6 +271,32 @@ describe("home workspace hierarchy", () => {
     expect(styles).toMatch(/\.home-command-bar\s*\{[^}]*padding:\s*0 24px[^}]*justify-content:\s*space-between/s);
     expect(styles).toMatch(/\.home-profile-dock\s*\{[^}]*position:\s*fixed[^}]*right:\s*26px[^}]*bottom:\s*24px/s);
   });
+
+  it("keeps the Home profile tooltip beside the circular dock and bounded for long names", async () => {
+    const profileTooltipRule = styles.match(/\.home-profile-dock > \.in-dom-tooltip\s*\{[^}]*\}/s)?.[0] ?? "";
+    expect(profileTooltipRule).toContain("right: calc(100% + 10px)");
+    expect(profileTooltipRule).toContain("top: 50%");
+    expect(profileTooltipRule).toContain("bottom: auto");
+    expect(profileTooltipRule).toContain("max-width: min(14rem, calc(100vw - 96px))");
+    expect(profileTooltipRule).toContain("transform: translateY(-50%)");
+    expect(profileTooltipRule).toContain("overflow-wrap: anywhere");
+
+    const { __oslHubUiTest } = await loadUi();
+
+    __oslHubUiTest.reset({ route: "home" });
+    const defaultHome = __oslHubUiTest.renderWorkspaceContent("home");
+    expect(defaultHome).toContain('class="home-profile-dock in-dom-tooltip-anchor"');
+    expect(defaultHome).toContain('class="in-dom-tooltip" role="tooltip">OSL Profile</span>');
+
+    const longName = "OSL Profile for Research Operations and Recovery Testing";
+    __oslHubUiTest.reset({
+      route: "home",
+      hubIdentities: [{ slotId: "slot-long", label: longName, oslUserId: "OSLUSER-long", active: true }],
+    });
+    const longHome = __oslHubUiTest.renderWorkspaceContent("home");
+    expect(longHome).toContain(`<strong>${longName}</strong>`);
+    expect(longHome).toContain(`role="tooltip">${longName}</span>`);
+  });
 });
 
 describe("home interaction regressions", () => {

@@ -6060,6 +6060,16 @@ code {
   font-size: 12px;
   font-weight: 700;
 }
+.home-profile-dock > .in-dom-tooltip {
+  left: auto;
+  right: calc(100% + 10px);
+  top: 50%;
+  bottom: auto;
+  max-width: min(14rem, calc(100vw - 96px));
+  transform: translateY(-50%);
+  overflow-wrap: anywhere;
+  text-align: right;
+}
 .home-profile-dock > strong { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 
 @media (max-width: 1120px) {
