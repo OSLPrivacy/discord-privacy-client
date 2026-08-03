@@ -195,6 +195,7 @@ export async function completeOneTimeStripeCheckoutClaim(
   const initialRevokedReason = priorTerminal
     ? observationRevocationReason(priorObservation.event_type)
     : null;
+  const entitlementId = oneTimeEntitlementId(claim.license_hash);
   await db.batch([
     db.prepare(
       `INSERT INTO subscriptions (
@@ -209,14 +210,14 @@ export async function completeOneTimeStripeCheckoutClaim(
          END,
          current_period_end = NULL,
          cancel_at_period_end = 0, updated_at = excluded.updated_at`,
-    ).bind(input.paymentIntentId, initialStatus, now, now),
+    ).bind(entitlementId, initialStatus, now, now),
     db.prepare(
       `INSERT OR IGNORE INTO licenses (
          license_hash, subscription_id, issued_at, grant_seconds, revoked_at, revoked_reason
        ) VALUES (?, ?, ?, ?, ?, ?)`,
     ).bind(
       claim.license_hash,
-      input.paymentIntentId,
+      entitlementId,
       now,
       PREPAID_PRO_GRANT_SECONDS,
       initialRevokedAt,
@@ -247,6 +248,10 @@ export async function completeOneTimeStripeCheckoutClaim(
   return "completed";
 }
 
+function oneTimeEntitlementId(licenseHash: string): string {
+  return `lic_${licenseHash}`;
+}
+
 function observationRevocationReason(eventType: string): "chargeback" | "manual" {
   return eventType === "charge.dispute.created" ? "chargeback" : "manual";
 }
@@ -264,10 +269,50 @@ async function reconcileTerminalOneTimeObservation(
 ): Promise<void> {
   const observed = await applyLatestSubscriptionObservation(db, paymentIntentId);
   if (observed?.status !== "REVOKED" && observed?.status !== "EXPIRED") return;
-  await revokeLicensesForSubscription(
+  await revokeOneTimeLicensesForPayment(
     db,
     paymentIntentId,
     observationRevocationReason(observed.event_type),
+  );
+}
+
+async function revokeOneTimeLicensesForPayment(
+  db: D1Database,
+  paymentIntentId: string,
+  reason: "chargeback" | "manual",
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db.batch([
+    db.prepare(
+      `UPDATE licenses
+          SET revoked_at = COALESCE(revoked_at, ?),
+              revoked_reason = COALESCE(revoked_reason, ?)
+        WHERE license_hash IN (
+          SELECT license_hash FROM stripe_checkout_claims
+           WHERE subscription_id = ?
+        )
+          AND revoked_at IS NULL`,
+    ).bind(now, reason, paymentIntentId),
+    db.prepare(
+      `UPDATE subscriptions
+          SET status = ?, updated_at = ?
+        WHERE subscription_id IN (
+          SELECT licenses.subscription_id
+            FROM licenses
+            JOIN stripe_checkout_claims
+              ON stripe_checkout_claims.license_hash = licenses.license_hash
+           WHERE stripe_checkout_claims.subscription_id = ?
+        )
+          AND status NOT IN ('REVOKED', 'EXPIRED')`,
+    ).bind(reason === "chargeback" ? "REVOKED" : "EXPIRED", now, paymentIntentId),
+  ]);
+
+  // Keep old rows revocable during migration; new prepaid rows never put a
+  // PaymentIntent id in licenses.subscription_id.
+  await revokeLicensesForSubscription(
+    db,
+    paymentIntentId,
+    reason,
   );
 }
 

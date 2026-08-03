@@ -294,11 +294,27 @@ describe("POST /v1/stripe/webhook state machine", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ kind: "applied" });
 
+    const license = await env.DB.prepare(
+      "SELECT subscription_id, redeemed_at, expires_at, grant_seconds FROM licenses WHERE license_hash = ?",
+    ).bind(licenseHash).first<{
+      subscription_id: string;
+      redeemed_at: number | null;
+      expires_at: number | null;
+      grant_seconds: number | null;
+    }>();
+    expect(license).toEqual({
+      subscription_id: expect.stringMatching(/^lic_/),
+      redeemed_at: null,
+      expires_at: null,
+      grant_seconds: 30 * 24 * 60 * 60,
+    });
+    expect(license?.subscription_id).not.toBe(paymentIntentId);
+
     const entitlement = await env.DB.prepare(
       `SELECT customer_id, customer_email, status, current_period_end,
               cancel_at_period_end
          FROM subscriptions WHERE subscription_id = ?`,
-    ).bind(paymentIntentId).first<{
+    ).bind(license?.subscription_id).first<{
       customer_id: string;
       customer_email: string;
       status: string;
@@ -311,20 +327,6 @@ describe("POST /v1/stripe/webhook state machine", () => {
       status: "PENDING",
       current_period_end: null,
       cancel_at_period_end: 0,
-    });
-    const license = await env.DB.prepare(
-      "SELECT subscription_id, redeemed_at, expires_at, grant_seconds FROM licenses WHERE license_hash = ?",
-    ).bind(licenseHash).first<{
-      subscription_id: string;
-      redeemed_at: number | null;
-      expires_at: number | null;
-      grant_seconds: number | null;
-    }>();
-    expect(license).toEqual({
-      subscription_id: paymentIntentId,
-      redeemed_at: null,
-      expires_at: null,
-      grant_seconds: 30 * 24 * 60 * 60,
     });
     const metric = await env.DB.prepare(
       `SELECT amount_cents FROM commerce_events
