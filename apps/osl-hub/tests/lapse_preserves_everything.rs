@@ -48,6 +48,19 @@ fn snapshot(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
             if path == root.join("license.json") {
                 continue;
             }
+            // SQLite's `-shm` sidecar is a shared-memory lock/index region, not
+            // account content. Merely reopening the database rewrites it, so
+            // comparing it reports a difference for every bootstrap while no
+            // user byte has moved. `-wal` is deliberately NOT excluded: it
+            // holds committed-but-uncheckpointed rows, so dropping it too
+            // would let real message loss pass this guard unnoticed.
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with("-shm"))
+            {
+                continue;
+            }
             if path.is_dir() {
                 visit(root, &path, output);
             } else {
