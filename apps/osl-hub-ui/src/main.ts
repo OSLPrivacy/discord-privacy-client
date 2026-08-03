@@ -3087,9 +3087,22 @@ function bindPasswordForm(): void {
         recoveryShownWithoutProtection = false;
         // T15-A8: from this instant a kit exists that nobody has confirmed
         // saving. Until they do, every launch comes back here.
-        if (!await persistRecoveryKitUnsaved(true)) throw new Error("OSL could not save the recovery-kit reminder");
+        //
+        // This used to `throw`, which routed a created account into the
+        // catch-all "the OSL account action failed" branch. The account was
+        // NOT undone by that throw and could not be: `identity.json` and
+        // `password_marker.json` are already on disk and the session is
+        // already unlocked. The owner was told creation failed, restarted, and
+        // was asked to unlock an account they had just been told did not
+        // exist. The reminder is a resume hint, not the account and not the
+        // secret, so a failure to persist it must not be reported as a failure
+        // to create the account. Go to the recovery screen — which is where
+        // the one-shot phrases are — and say plainly that this screen will not
+        // be offered again.
+        const recoveryKitReminderPersisted = await persistRecoveryKitUnsaved(true);
         onboardingRoute = "recovery";
         await proveRecoveryCaptureProtection();
+        if (!recoveryKitReminderPersisted) showToast("Save your recovery kit now. OSL could not store the reminder that brings you back to this screen.");
       } else {
         const gate = await checkUnlockScreenCredential(secret);
         secret = "";
@@ -3329,10 +3342,14 @@ function bindImportForm(): void {
       recoveryBundle = { userId: identity.userId, identityPhrase: null, passwordPhrase: passwordResult.passwordRecoveryPhrase };
       recoverySavedAcknowledged = false;
       recoveryShownWithoutProtection = false;
-      if (!await persistRecoveryKitUnsaved(true)) throw new Error("OSL could not save the recovery-kit reminder");
+      // Same rule as account creation above: the imported identity and its new
+      // password are already on disk, so a failed reminder write is a warning,
+      // not a failed recovery.
+      const recoveryKitReminderPersisted = await persistRecoveryKitUnsaved(true);
       onboardingRoute = "recovery";
       await proveRecoveryCaptureProtection();
       render();
+      if (!recoveryKitReminderPersisted) showToast("Save your recovery kit now. OSL could not store the reminder that brings you back to this screen.");
     } catch (failure) {
       phraseSecret = "";
       passwordSecret = "";

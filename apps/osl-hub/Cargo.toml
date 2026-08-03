@@ -89,8 +89,10 @@ windows = { version = "=0.56.0", features = ["Win32_Foundation", "Win32_Graphics
 rfd = { version = "=0.16.0", default-features = false, features = ["gtk3"] }
 
 [features]
-# The WhatsApp protected surface is part of the shipped desktop product. Keep
-# the feature name for its QA audit hooks, but compile it in the standard binary.
+# The WhatsApp protected surface is part of the shipped desktop product, so it
+# is compiled into the standard binary and keeps its historical feature name.
+# Nothing that provisions a disposable QA account may be listed here: see
+# `whatsapp-qa-identity` below for the half that was split back out.
 default = ["core", "whatsapp-qa-shell"]
 core = ["dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:tracing"]
 desktop = ["dep:runtime", "dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tokio", "core"]
@@ -101,6 +103,20 @@ custom-protocol = ["tauri/custom-protocol"]
 discord-qa-shell = []
 signal-qa-shell = []
 whatsapp-qa-shell = []
+# The disposable WhatsApp LAB IDENTITY. Never put this in `default`.
+#
+# `whatsapp-qa-shell` above is the shipped protected surface, and it stays in
+# the default set. This feature is the other half that used to ride along with
+# it: a startup hook that, on exactly the empty-profile case, creates a device
+# identity, installs a random machine password and zeroizes the 12-word
+# recovery phrase, plus the offer-file pairing exchange that only a paired lab
+# VM can complete. In a build a real user installs, that hook consumed the
+# first run: `identity.json` existed before the app drew a window, onboarding
+# skipped straight past account creation, and the recovery step reported "No
+# recovery secret is available" for an account whose phrase had already been
+# destroyed. Two-VM WhatsApp QA opts in explicitly:
+#   cargo build --features desktop,whatsapp-qa-identity
+whatsapp-qa-identity = ["whatsapp-qa-shell"]
 
 [lib]
 # The package is `osl-hub` so it can be selected with `cargo -p osl-hub`.

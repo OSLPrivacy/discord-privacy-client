@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-#[cfg(feature = "whatsapp-qa-shell")]
+#[cfg(feature = "whatsapp-qa-identity")]
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::account_recovery;
@@ -112,7 +112,7 @@ use std::sync::{
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 use runtime::UsbMonitor;
-#[cfg(feature = "whatsapp-qa-shell")]
+#[cfg(feature = "whatsapp-qa-identity")]
 use zeroize::{Zeroize, Zeroizing};
 
 /// Diagnostics-only startup breadcrumb trace. TEMPORARY: added to bracket the
@@ -1510,7 +1510,14 @@ async fn emit_active_session_reset(app: tauri::AppHandle) -> Result<(), String> 
     .map_err(|_| "OSL session recovery worker failed".to_owned())?
 }
 
-#[cfg(feature = "whatsapp-qa-shell")]
+/// Provision the disposable WhatsApp lab account.
+///
+/// Gated on `whatsapp-qa-identity`, which is deliberately NOT a default
+/// feature: the whole point of this function is to skip account creation on an
+/// empty profile, and an empty profile is what a real user's first launch
+/// looks like. It sets a random machine password and zeroizes both recovery
+/// phrases, so an account it creates cannot be recovered by anyone.
+#[cfg(feature = "whatsapp-qa-identity")]
 fn bootstrap_whatsapp_qa_device_identity(
     state: &HubCoreState,
     config_dir: &std::path::Path,
@@ -9440,7 +9447,13 @@ fn main() {
         osl_privacy_hub::discord_qa_identity::ensure_disposable_identity(&core)?;
         #[cfg(feature = "discord-qa-shell")]
         startup_breadcrumb("setup_step_20_qa_disposable_identity_after"); // STARTUP-TRACE
-        #[cfg(feature = "whatsapp-qa-shell")]
+        // NOT `whatsapp-qa-shell`. The shipped WhatsApp surface is in the
+        // default feature set; this lab-identity bootstrap must never be. It
+        // fires on exactly the empty-profile case, which is a real user's
+        // first launch: it created `identity.json`, installed a random machine
+        // password and zeroized the recovery phrase before the window was
+        // drawn, so onboarding resumed mid-flow with no recoverable account.
+        #[cfg(feature = "whatsapp-qa-identity")]
         bootstrap_whatsapp_qa_device_identity(&core, &config_dir)?;
         let security_state = HubSecurityState::default();
         startup_breadcrumb("setup_step_21_security_state_created"); // STARTUP-TRACE
@@ -9454,7 +9467,11 @@ fn main() {
         )?;
         #[cfg(feature = "discord-qa-shell")]
         startup_breadcrumb("setup_step_23_qa_pairing_after"); // STARTUP-TRACE
-        #[cfg(feature = "whatsapp-qa-shell")]
+        // Also lab-only, and coupled to the bootstrap above: this exports a
+        // friend code, so it fails closed on a profile that has no identity
+        // yet. Leaving it in the default set would have turned every real
+        // first launch into a refused startup once the bootstrap was gone.
+        #[cfg(feature = "whatsapp-qa-identity")]
         osl_privacy_hub::whatsapp_qa_pairing::publish_and_consume(
             &osl_core_dir,
             &core,
