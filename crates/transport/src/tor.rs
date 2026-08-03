@@ -135,12 +135,25 @@ impl TorTransport {
     }
 }
 
+/// Build a Tor-routed client for a SOCKS listener whose lifecycle is already
+/// owned by the caller. Production callers should prefer [`TorTransport`];
+/// tests use this to exercise routing against a local SOCKS fixture without a
+/// real Arti daemon.
+pub fn client_for_ready_socks_proxy(socks_addr: SocketAddr) -> Result<Client, TorError> {
+    if !socks_addr.ip().is_loopback() {
+        return Err(TorError::NonLoopbackProxy(socks_addr));
+    }
+    build_store_client(socks_addr)
+}
+
 fn build_store_client(socks_addr: SocketAddr) -> Result<Client, TorError> {
     let proxy = Proxy::all(format!("socks5h://{socks_addr}")).map_err(TorError::Proxy)?;
-    Client::builder()
-        .proxy(proxy)
-        .build()
-        .map_err(TorError::Client)
+    keystore::blocking_http::off_async_context(|| {
+        Client::builder()
+            .proxy(proxy)
+            .build()
+            .map_err(TorError::Client)
+    })
 }
 
 impl Drop for TorTransport {

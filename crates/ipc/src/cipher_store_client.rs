@@ -210,6 +210,18 @@ impl CipherStoreClient {
         })
     }
 
+    /// Build a cipher-store client with an already configured HTTP transport.
+    ///
+    /// The caller owns all route policy on `http`; this constructor is used by
+    /// the hub's Tor gate after it has refused unavailable tunnels and built a
+    /// SOCKS-only client through `crates/transport`.
+    pub fn with_http_client(base_url: impl Into<String>, http: Client) -> Self {
+        Self {
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            http,
+        }
+    }
+
     /// Upload a ciphertext blob with the chosen TTL + a per-blob
     /// capability token (Phase 6). Returns the server-assigned
     /// 16-hex-char ID and absolute expiry. The worker stores the
