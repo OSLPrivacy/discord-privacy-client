@@ -17,10 +17,19 @@ describe("Inbox destination content", () => {
   it("renders the conversation destination with the required filters", () => {
     expect(inbox).toContain('class="content-viewport inbox-destination"');
     expect(inbox).toContain('<h1 id="route-heading" tabindex="-1">Conversations</h1>');
-    expect(inbox).toContain('data-inbox-filter="${label.toLowerCase()}"');
-    for (const filter of ['"All"', '"OSL"', '"Connected"', '"Requests"']) {
+    expect(inbox).toContain('data-inbox-filter="${filter}"');
+    expect(inbox).toContain('aria-pressed="${inboxFilter === filter}"');
+    for (const filter of ['"all"', '"osl"', '"connected"', '"requests"', '"All"', '"OSL"', '"Connected"', '"Requests"']) {
       expect(inbox).toContain(filter);
     }
+  });
+
+  it("binds filter clicks to real panel state", () => {
+    const binding = functionSource("bindWorkspace", "withBackendReason");
+
+    expect(binding).toContain("[data-inbox-filter]");
+    expect(binding).toContain("inboxFilter = parseInboxFilter(button.dataset.inboxFilter)");
+    expect(binding).toContain("render();");
   });
 
   it("shows OSL Chat, Enclaves, Mail, and connected account sections with honest protection labels", () => {
