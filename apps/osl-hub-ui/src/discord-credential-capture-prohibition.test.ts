@@ -14,8 +14,7 @@ import { describe, expect, it } from "vitest";
  * `Authorization`-header sniffer in `src-tauri/src/injection/boot.js` is
  * invisible to it -- the scanner visits the directory and skips the file on an
  * extension check. This gate closes that blind spot for JavaScript and
- * TypeScript, and pins the two structural facts that keep the legacy shell out
- * of the product a user runs.
+ * TypeScript, and refuses the legacy shell as source material too.
  */
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
@@ -50,8 +49,8 @@ function sourceFiles(root: string, suffixes: readonly string[]): { path: string;
 /**
  * The shapes that constitute credential extraction. Each is the mechanism, not
  * a word: a header sniff, a stolen bearer replayed at Discord, a profile store
- * read. `src-tauri/src/injection/boot.js` matches several of these, which is
- * how these patterns were calibrated -- see the positive control below.
+ * read. The positive control below keeps the patterns calibrated without
+ * allowing a live source file to remain as the fixture.
  */
 const CREDENTIAL_CAPTURE = [
   { name: "setRequestHeader interception", pattern: /XMLHttpRequest\.prototype\.setRequestHeader\s*=/u },
@@ -97,18 +96,29 @@ describe("§7.13 · OSL never extracts a Discord credential", () => {
     expect(offences).toEqual([]);
   });
 
-  it("detects the legacy sniffer, proving the patterns are not decoration", () => {
-    // `src-tauri/src/injection/boot.js` is the known legacy violation. It does
-    // not ship (see the structural assertions below), but it is the calibration
-    // sample: if these patterns stopped matching it, the gate above would be
-    // passing because it can no longer see, not because the tree is clean.
-    const legacy = readFile("src-tauri", "src", "injection", "boot.js");
-    const matched = CREDENTIAL_CAPTURE.filter((rule) => rule.pattern.test(legacy)).map((rule) => rule.name);
+  it("detects a synthetic sniffer, proving the patterns are not decoration", () => {
+    const syntheticSniffer = String.raw`
+      XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+        if (name.toLowerCase() === "authorization") editOverlayAuthToken = value;
+      };
+      fetch("/api/v9/channels/1/messages/2", {
+        method: "PATCH",
+        headers: { Authorization: editOverlayAuthToken }
+      });
+    `;
+    const matched = CREDENTIAL_CAPTURE.filter((rule) => rule.pattern.test(syntheticSniffer)).map((rule) => rule.name);
 
-    expect(legacy).toContain("editOverlayAuthToken");
     expect(matched, "patterns no longer detect the known sniffer").toContain("setRequestHeader interception");
     expect(matched, "patterns no longer detect the known sniffer").toContain("Authorization header written into an outbound Discord request");
     expect(matched, "patterns no longer detect the known sniffer").toContain("discord.com/api call carrying a caller-supplied bearer");
+  });
+
+  it("finds no credential-capture mechanism in the legacy shell source either", () => {
+    const legacy = readFile("src-tauri", "src", "injection", "boot.js");
+    const matched = CREDENTIAL_CAPTURE.filter((rule) => rule.pattern.test(legacy)).map((rule) => rule.name);
+
+    expect(legacy).not.toContain("editOverlayAuthToken");
+    expect(matched).toEqual([]);
   });
 
   it("keeps the legacy shell structurally unreachable from the shipping build", () => {
