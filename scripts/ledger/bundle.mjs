@@ -36,6 +36,7 @@ export async function collectBundleModules(root) {
   const viteEntry = join(vitePkg, "..", "dist/node/index.js");
   const { build } = await import(pathToFileURL(viteEntry).href);
   const ids = new Set();
+  const graph = [];
   await build({
     root: uiRoot,
     configFile: join(uiRoot, "vite.config.ts"),
@@ -48,32 +49,68 @@ export async function collectBundleModules(root) {
       {
         name: "osl-ledger-module-ids",
         buildEnd() {
-          for (const id of this.getModuleIds()) ids.add(id);
+          for (const id of this.getModuleIds()) {
+            ids.add(id);
+            const info = this.getModuleInfo(id);
+            graph.push({
+              id,
+              imports: [...(info?.importedIds ?? []), ...(info?.dynamicallyImportedIds ?? [])],
+              isEntry: Boolean(info?.isEntry),
+            });
+          }
         },
       },
     ],
   });
+  const rel = (id) => {
+    if (!id || id.startsWith("\0")) return null;
+    const r = relative(root, id.split("?")[0]).split("\\").join("/");
+    if (r.startsWith("..") || r.includes("node_modules/")) return null;
+    return r;
+  };
   const out = [];
   for (const id of ids) {
-    if (id.startsWith("\0")) continue; // virtual modules
-    const clean = id.split("?")[0];
-    const rel = relative(root, clean).split("\\").join("/");
-    if (rel.startsWith("..")) continue; // node_modules outside the tree
-    if (rel.includes("node_modules/")) continue;
-    out.push(rel);
+    const r = rel(id);
+    if (r) out.push(r);
   }
-  return [...new Set(out)].sort();
+  const edges = {};
+  const entries = [];
+  for (const node of graph) {
+    const from = rel(node.id);
+    if (!from) continue;
+    if (node.isEntry) entries.push(from);
+    edges[from] = [...new Set(node.imports.map(rel).filter(Boolean))];
+  }
+  return { modules: [...new Set(out)].sort(), edges, entries: [...new Set(entries)].sort() };
 }
 
-export async function bundleModules(root, { cache = true } = {}) {
+export async function bundleSnapshot(root, { cache = true } = {}) {
   if (cache && existsSync(CACHE)) {
     const doc = JSON.parse(readFileSync(CACHE, "utf8"));
-    if (doc.root === root) return doc.modules;
+    if (doc.root === root) return doc;
   }
-  const modules = await collectBundleModules(root);
+  const snapshot = await collectBundleModules(root);
   mkdirSync(join(LEDGER_DIR, ".cache"), { recursive: true });
-  writeFileSync(CACHE, JSON.stringify({ root, generatedAt: new Date().toISOString(), modules }, null, 2));
-  return modules;
+  const doc = { root, generatedAt: new Date().toISOString(), ...snapshot };
+  writeFileSync(CACHE, JSON.stringify(doc, null, 2));
+  return doc;
+}
+
+export async function bundleModules(root, opts) {
+  return (await bundleSnapshot(root, opts)).modules;
+}
+
+/** Every module rollup can reach from `entry`, following real (post-erasure) edges. */
+export function reachableFrom(snapshot, entry) {
+  const seen = new Set();
+  const stack = [entry];
+  while (stack.length) {
+    const cur = stack.pop();
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    for (const next of snapshot.edges[cur] ?? []) stack.push(next);
+  }
+  return seen;
 }
 
 export function analyse(candidates, bundled) {
