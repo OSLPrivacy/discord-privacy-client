@@ -2,14 +2,11 @@
 
 #[cfg(feature = "whatsapp-qa-identity")]
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::account_recovery;
-use osl_privacy_hub::components;
 use osl_privacy_hub::ai_carrier::{
     ai_carrier_status_for, set_ai_carrier_preview_enabled_for, AiCarrierState,
 };
-use osl_privacy_hub::build_integrity::{check_current, BuildIntegrity};
-use osl_privacy_hub::chat_capture_protection::ChatCaptureProtectionState;
+use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
     OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, PreparedCoreMessage,
@@ -26,11 +23,14 @@ use osl_privacy_hub::browser_profile_scan::{
     BrowserProfileConsentGrant, BrowserProfileDescriptor, BrowserProfileRoots,
     BrowserProfileScanReceipt, BrowserProfileScanState,
 };
+use osl_privacy_hub::build_integrity::{check_current, BuildIntegrity};
+use osl_privacy_hub::chat_capture_protection::ChatCaptureProtectionState;
 use osl_privacy_hub::cleanup::{self, HubFullCleanupResult};
-use osl_privacy_hub::deadman;
+use osl_privacy_hub::components;
 use osl_privacy_hub::core_bridge::{
     self, CoreFeature, CoreReadiness, HubCoreState, HubLicenseState,
 };
+use osl_privacy_hub::deadman;
 use osl_privacy_hub::discord_carrier_geometry::CarrierDecision;
 use osl_privacy_hub::entitlement_refresh;
 use osl_privacy_hub::identity_binding_verifier::{
@@ -77,7 +77,6 @@ use osl_privacy_hub::password_lifecycle::{
 };
 use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::PreviewState;
-use osl_privacy_hub::tor_pref::{TorPreference, TorPreferenceState};
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
 use osl_privacy_hub::revocation_drain_timer;
@@ -94,6 +93,7 @@ use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
 use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, ServiceScopeIndexState};
 use osl_privacy_hub::services::ServiceRegistryState;
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
+use osl_privacy_hub::tor_pref::{TorPreference, TorPreferenceState};
 use osl_privacy_hub::updates::{
     bounded_plain_notes, bounded_version, RELEASES_URL, SOURCE_REPOSITORY_URL,
 };
@@ -102,6 +102,7 @@ use osl_privacy_hub::whatsapp_accessibility::{
     WhatsAppVisualBindingBeginReceipt, WhatsAppVisualBindingConfirmReceipt,
 };
 use osl_privacy_hub::whatsapp_qa_host::{WhatsAppQaHostState, WhatsAppQaResult};
+use runtime::UsbMonitor;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "whatsapp-qa-shell")]
 use std::io::Write as _;
@@ -111,7 +112,6 @@ use std::sync::{
 };
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
-use runtime::UsbMonitor;
 #[cfg(feature = "whatsapp-qa-identity")]
 use zeroize::{Zeroize, Zeroizing};
 
@@ -187,9 +187,9 @@ mod native_whatsapp_overlay;
 use native_discord_overlay::OverlaySessionState;
 use osl_privacy_hub::hub_command_surface::{
     build_review_ui_identity_binding_verifier, checked_browser_footprint_binding,
-    checked_hosted_session_scan_flow, require_native_discord_product_send_authority,
+    checked_hosted_session_scan_flow, compose_erasure_request_for_user,
+    require_native_discord_product_send_authority,
     require_review_ui_identity_binding_from_verifier, service_kind_id,
-    compose_erasure_request_for_user,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
     start_autoscrub_reviewed_run_inner, with_native_discord_product_send_authority,
     BrowserFootprintConsentRequest, CheckedHost, NativeDiscordProductSendAuthority,
@@ -853,7 +853,10 @@ fn require_current_context_host(
     // owner to this context_token, which only `activate_owned_osl_chat_context`
     // can have created. A caller cannot mint authority it was not granted.
     let osl_chat = broker::owned_osl_chat_host(&owner);
-    if broker.validate_active_host(context_token, &osl_chat).is_ok() {
+    if broker
+        .validate_active_host(context_token, &osl_chat)
+        .is_ok()
+    {
         return Ok(osl_chat);
     }
     let active = app
@@ -1194,8 +1197,16 @@ async fn osl_mail_send(
     }
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
-        osl_mail::send(&app.state::<HubCoreState>(), &app.state::<OslMailState>(), recipient, subject, body)
-    }).await.map_err(|_| "OSL Mail send worker failed".to_owned())?
+        osl_mail::send(
+            &app.state::<HubCoreState>(),
+            &app.state::<OslMailState>(),
+            recipient,
+            subject,
+            body,
+        )
+    })
+    .await
+    .map_err(|_| "OSL Mail send worker failed".to_owned())?
 }
 
 #[tauri::command]
@@ -1211,8 +1222,15 @@ async fn osl_mail_burn(
     }
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
-        osl_mail::burn(&app.state::<HubCoreState>(), &app.state::<OslMailState>(), address, confirmation)
-    }).await.map_err(|_| "OSL Mail burn worker failed".to_owned())?
+        osl_mail::burn(
+            &app.state::<HubCoreState>(),
+            &app.state::<OslMailState>(),
+            address,
+            confirmation,
+        )
+    })
+    .await
+    .map_err(|_| "OSL Mail burn worker failed".to_owned())?
 }
 
 fn require_active_pro_entitlement(core: &HubCoreState) -> Result<(), String> {
@@ -1469,10 +1487,12 @@ async fn get_hub_recovery_kit_unsaved() -> Result<bool, String> {
 
 #[tauri::command]
 async fn set_hub_recovery_kit_unsaved(unsaved: bool) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || if unsaved {
-        account_recovery::mark_recovery_kit_unsaved()
-    } else {
-        account_recovery::clear_recovery_kit_unsaved()
+    tauri::async_runtime::spawn_blocking(move || {
+        if unsaved {
+            account_recovery::mark_recovery_kit_unsaved()
+        } else {
+            account_recovery::clear_recovery_kit_unsaved()
+        }
     })
     .await
     .map_err(|_| "OSL recovery-kit status worker failed".to_owned())?
@@ -1486,9 +1506,7 @@ async fn set_hub_recovery_kit_unsaved(unsaved: bool) -> Result<(), String> {
 /// open `MessageStore`. Every secret-bearing IPC command then refuses until the
 /// password gate runs again.
 #[tauri::command]
-async fn lock_hub_session(
-    app: tauri::AppHandle,
-) -> Result<ipc::commands::SessionLockDto, String> {
+async fn lock_hub_session(app: tauri::AppHandle) -> Result<ipc::commands::SessionLockDto, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<HubCoreState>();
         ipc::commands::cmd_osl_lock_session(&state.osl)
@@ -1932,12 +1950,16 @@ fn component_store(app: &tauri::AppHandle) -> Result<components::ComponentStore,
         .path()
         .app_config_dir()
         .map_err(|_| "OSL Privacy component storage is unavailable".to_owned())?;
-    Ok(components::ComponentStore::new(config_dir.join("components-v1")))
+    Ok(components::ComponentStore::new(
+        config_dir.join("components-v1"),
+    ))
 }
 
 #[tauri::command]
 fn list_components(app: tauri::AppHandle) -> Result<Vec<components::ComponentStatus>, String> {
-    component_store(&app)?.list().map_err(|error| format!("could not list OSL components: {error:?}"))
+    component_store(&app)?
+        .list()
+        .map_err(|error| format!("could not list OSL components: {error:?}"))
 }
 
 #[tauri::command]
@@ -4880,14 +4902,22 @@ async fn prepare_osl_chat_text(
     }
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<TorPreferenceState>().authorize_store()?;
-        broker::prepare_osl_chat_text(
+        let route = app.state::<TorPreferenceState>().authorize_store()?;
+        let config_dir = app
+            .path()
+            .app_config_dir()
+            .map_err(|_| "OSL store transport is unavailable".to_owned())?;
+        let store_client = route.cipher_store_client(&config_dir)?;
+        let keyserver_client = route.tor_keyserver_client(&config_dir)?;
+        broker::prepare_osl_chat_text_with_route_clients(
             &app.state::<HubCoreState>(),
             &app.state::<HubSecurityState>(),
             &app.state::<HubBrokerState>(),
             &app.state::<AiCarrierState>(),
             plaintext,
             view_once,
+            &store_client,
+            keyserver_client.as_ref(),
         )
     })
     .await
@@ -5585,7 +5615,12 @@ async fn prepare_peer_prose_text(
 ) -> Result<PreparedPeerProseMessage, String> {
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<TorPreferenceState>().authorize_store()?;
+        let route = app.state::<TorPreferenceState>().authorize_store()?;
+        let config_dir = app
+            .path()
+            .app_config_dir()
+            .map_err(|_| "OSL store transport is unavailable".to_owned())?;
+        let store_client = route.cipher_store_client(&config_dir)?;
         let core = app.state::<HubCoreState>();
         let security_state = app.state::<HubSecurityState>();
         let broker_state = app.state::<HubBrokerState>();
@@ -5596,7 +5631,7 @@ async fn prepare_peer_prose_text(
             .unwrap_or(true);
         let _active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
         let prepared = with_indexed_context_write(&app, &broker_state, &context_token, || {
-            broker::prepare_peer_prose_text_with_capture(
+            broker::prepare_peer_prose_text_with_capture_and_store_client(
                 &core,
                 &security_state,
                 &broker_state,
@@ -5604,6 +5639,7 @@ async fn prepare_peer_prose_text(
                 plaintext,
                 view_once,
                 require_capture_protection,
+                &store_client,
             )
         })?;
         let _still_active =
@@ -5920,9 +5956,13 @@ async fn claim_hub_username(
 ) -> Result<HubUsernameClaim, String> {
     let _session = session.transition.lock().await;
     active_unlocked_osl_user_id(&core)?;
-    let identity = core.osl.identity.lock()
+    let identity = core
+        .osl
+        .identity
+        .lock()
         .map_err(|_| "OSL identity state is unavailable".to_owned())?
-        .as_ref().cloned()
+        .as_ref()
+        .cloned()
         .ok_or_else(|| "Unlock an OSL identity before claiming a username".to_owned())?;
     claim_username(&core, &identity, &username)
 }
@@ -5961,20 +6001,27 @@ async fn add_hub_friend_by_username(
     }) {
         return Err("OSL friend alias is invalid".to_owned());
     }
-    let identity = core.osl.identity.lock()
+    let identity = core
+        .osl
+        .identity
+        .lock()
         .map_err(|_| "OSL identity state is unavailable".to_owned())?
-        .as_ref().cloned()
+        .as_ref()
+        .cloned()
         .ok_or_else(|| "Unlock an OSL identity before adding a friend".to_owned())?;
     let client = username_directory_client()?;
-    let row = client.resolve_username(&username)
+    let row = client
+        .resolve_username(&username)
         .map_err(|error| format!("OSL username lookup failed: {error}"))?
         .ok_or_else(|| "OSL username was not found".to_owned())?;
-    let bundle = client.fetch_identity_bundle(&identity, &row.user_id)
+    let bundle = client
+        .fetch_identity_bundle(&identity, &row.user_id)
         .map_err(|_| "OSL username identity bundle verification failed".to_owned())?;
     if bundle.identity.ed25519_identity_pub != row.ed25519_public {
         return Err("OSL username identity bundle does not bind to the directory row".to_owned());
     }
-    let friend_code = client.lookup_username_friend_code(&username)
+    let friend_code = client
+        .lookup_username_friend_code(&username)
         .map_err(|error| format!("OSL username lookup failed: {error}"))?
         .ok_or_else(|| "OSL username was not found".to_owned())?;
     security::add_friend_code(&core, &security_state, friend_code, alias)
@@ -9101,7 +9148,9 @@ fn spawn_lifecycle_tick(app: tauri::AppHandle, local_data_dir: std::path::PathBu
 */
 
 #[tauri::command]
-fn ai_carrier_status(state: tauri::State<'_, AiCarrierState>) -> osl_privacy_hub::ai_carrier::AiCarrierStatus {
+fn ai_carrier_status(
+    state: tauri::State<'_, AiCarrierState>,
+) -> osl_privacy_hub::ai_carrier::AiCarrierStatus {
     ai_carrier_status_for(&state)
 }
 
@@ -9444,8 +9493,9 @@ fn main() {
             config_dir.join("preview-preferences.json"),
         ));
         startup_breadcrumb("setup_step_14_preview_state_managed"); // STARTUP-TRACE
-        app.manage(TorPreferenceState::load(
+        app.manage(TorPreferenceState::load_with_arti_proxy_config(
             config_dir.join("tor-preference.json"),
+            osl_privacy_hub::tor_pref::arti_proxy_config_from_env(),
         ));
         app.manage(ServiceRegistryState::load(
             config_dir.join("service-registry.json"),
@@ -9464,12 +9514,12 @@ fn main() {
         osl_privacy_hub::discord_qa_identity::ensure_disposable_identity(&core)?;
         #[cfg(feature = "discord-qa-shell")]
         startup_breadcrumb("setup_step_20_qa_disposable_identity_after"); // STARTUP-TRACE
-        // NOT `whatsapp-qa-shell`. The shipped WhatsApp surface is in the
-        // default feature set; this lab-identity bootstrap must never be. It
-        // fires on exactly the empty-profile case, which is a real user's
-        // first launch: it created `identity.json`, installed a random machine
-        // password and zeroized the recovery phrase before the window was
-        // drawn, so onboarding resumed mid-flow with no recoverable account.
+                                                                          // NOT `whatsapp-qa-shell`. The shipped WhatsApp surface is in the
+                                                                          // default feature set; this lab-identity bootstrap must never be. It
+                                                                          // fires on exactly the empty-profile case, which is a real user's
+                                                                          // first launch: it created `identity.json`, installed a random machine
+                                                                          // password and zeroized the recovery phrase before the window was
+                                                                          // drawn, so onboarding resumed mid-flow with no recoverable account.
         #[cfg(feature = "whatsapp-qa-identity")]
         bootstrap_whatsapp_qa_device_identity(&core, &config_dir)?;
         let security_state = HubSecurityState::default();
@@ -9484,10 +9534,10 @@ fn main() {
         )?;
         #[cfg(feature = "discord-qa-shell")]
         startup_breadcrumb("setup_step_23_qa_pairing_after"); // STARTUP-TRACE
-        // Also lab-only, and coupled to the bootstrap above: this exports a
-        // friend code, so it fails closed on a profile that has no identity
-        // yet. Leaving it in the default set would have turned every real
-        // first launch into a refused startup once the bootstrap was gone.
+                                                              // Also lab-only, and coupled to the bootstrap above: this exports a
+                                                              // friend code, so it fails closed on a profile that has no identity
+                                                              // yet. Leaving it in the default set would have turned every real
+                                                              // first launch into a refused startup once the bootstrap was gone.
         #[cfg(feature = "whatsapp-qa-identity")]
         osl_privacy_hub::whatsapp_qa_pairing::publish_and_consume(
             &osl_core_dir,
@@ -9512,11 +9562,11 @@ fn main() {
         startup_breadcrumb("setup_step_27_identity_registry_state_managed"); // STARTUP-TRACE
         app.manage(ServiceHostState::default());
         startup_breadcrumb("setup_step_28_service_host_state_managed"); // STARTUP-TRACE
-        // Keep the monitor owned by Tauri for the life of the process.  The
-        // callback receives a stable Windows volume-interface id, never a
-        // reassignable drive letter.  It first closes every OSL-owned service
-        // surface; if that boundary cannot be established, removal fails
-        // closed rather than running a partial wipe.
+                                                                        // Keep the monitor owned by Tauri for the life of the process.  The
+                                                                        // callback receives a stable Windows volume-interface id, never a
+                                                                        // reassignable drive letter.  It first closes every OSL-owned service
+                                                                        // surface; if that boundary cannot be established, removal fails
+                                                                        // closed rather than running a partial wipe.
         let deadman_app = app.handle().clone();
         let deadman_config_dir = config_dir.clone();
         let deadman_local_data_dir = local_data_dir.clone();
