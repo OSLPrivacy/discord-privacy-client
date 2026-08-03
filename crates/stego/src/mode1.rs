@@ -313,7 +313,6 @@ pub fn encode_token(
     // distinction is carried by the HMAC tag.
     let tag = compute_token_tag(mac_key, id);
     let mut bits = token_payload_bits(id, &tag);
-    bits[47] = !bits[47]; // MUTANT 2: corrupt one payload bit
     let words = crate::bigram::arithmetic_decode_bits(&bits, TOKEN_PAYLOAD_BITS);
     crate::bigram::render_words(&words)
 }
