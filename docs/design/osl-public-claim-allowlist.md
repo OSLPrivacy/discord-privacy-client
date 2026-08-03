@@ -154,10 +154,10 @@ cautious user actually wants — the product refuses to act rather than acting o
 
 | | |
 |---|---|
-| **Permitted wording** | "OSL's pairwise direct-message encryption adds forward secrecy and post-quantum ratcheting. Classical post-compromise recovery takes one round trip; post-quantum recovery takes about 82 round trips at default settings and requires traffic in both directions. It does not provide post-quantum authentication, groups, multi-device syncing, sealed-sender delivery, or authenticated prekey bundles. Recovery and reset messages do not have forward secrecy, a skipped-key ceiling can make delayed messages unavailable, and the design has had no formal analysis or external cryptographic review." |
-| **Status** | `test-proven-only` → **`Beta`** badge. The `0x10` OSL-RN path is enabled for pairwise direct messages, but it has no named release-build runtime proof. |
-| **Evidence** | `crates/ipc/src/wire_rn.rs:83` opens the compile-time fuse; `crates/ipc/src/state.rs:426` opens the runtime default; `crates/keystore/src/client.rs:204`, `:227-233` advertises live-capability bit 1. Properties and limits: `crates/osl-ratchet-next/DESIGN.md` §10 rows 3-6, 9, 16, 19-21, 24-25, 27 and §11. |
-| **Required alongside** | Use the permitted wording as one indivisible statement. It is direct-message/pairwise only; never abbreviate it to "post-quantum secure messaging," "post-quantum authentication," or an unqualified forward-secrecy or post-compromise claim. |
+| **Permitted wording** | "Pairwise forward secrecy and post-quantum ratcheting are planned for OSL-RN, but they are not enabled in the shipping runtime." |
+| **Status** | `implemented-unwired` → **`Planned`** badge. The `0x10` OSL-RN adapter and compile-time fuse exist, but a fresh shipping `AppState` keeps the runtime gate closed, so OSL-RN must not be marketed as carrying pairwise direct-message traffic. |
+| **Evidence** | `crates/ipc/src/wire_rn.rs:85` opens the compile-time fuse; `crates/ipc/src/state.rs:427` closes the runtime default; `crates/ipc/src/commands.rs:4560-4565` refuses an RN-required peer instead of downgrading while the runtime gate is closed. Properties and limits remain in `crates/osl-ratchet-next/DESIGN.md` §10 rows 3-6, 9, 16, 19-21, 24-25, 27 and §11, but they are not shipping traffic claims. |
+| **Required alongside** | Do not use this row as a present-tense public claim until the owner explicitly opens the runtime gate after the live evidence and recovery decisions are complete. Never abbreviate it to "post-quantum secure messaging," "post-quantum authentication," or an unqualified forward-secrecy or post-compromise claim. |
 
 <!-- ratchet_claims:end -->
 
