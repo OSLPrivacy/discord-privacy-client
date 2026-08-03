@@ -99,6 +99,12 @@ describe("B0-05 unhandled Tauri command rejection visibility", () => {
     expect(preventDefault).not.toHaveBeenCalled();
     expect(consoleError).toHaveBeenCalledWith("Unhandled background rejection", missingCommandRejection);
     expect(append).toHaveBeenCalledTimes(1);
-    expect((append.mock.calls[0]?.[0] as FakeElement | undefined)?.textContent).toBe("That action failed. Nothing changed.");
+    // Strengthened after the B0-05 Adversary FAIL: routing the command name to
+    // console.error alone left the only human-visible path a generic toast,
+    // which is indistinguishable from a network blip. The toast must NAME the
+    // command, or this task has not surfaced anything a person can act on.
+    const toast = (append.mock.calls[0]?.[0] as FakeElement | undefined)?.textContent ?? "";
+    expect(toast).toContain("That action failed. Nothing changed.");
+    expect(toast).toContain(missingCommand);
   });
 });
