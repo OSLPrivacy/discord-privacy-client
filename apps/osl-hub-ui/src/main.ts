@@ -137,6 +137,8 @@ import {
   type ScrubConsentGateState,
 } from "./scrub-consent-gate";
 import type { ScrubRouteState, ScrubRouteStep } from "./scrub-route";
+import { buildScrubReviewList, type ScrubReviewRow } from "./scrub-review-list";
+import { computeScopeFingerprint, type ScrubScopeFingerprintInput } from "./scrub-scope-fingerprint";
 import { nextServiceGuideStep, parseServiceGuideState, previousServiceGuideStep, type ServiceGuideStep } from "./service-guide";
 import { NativeDeadlineError, withNativeDeadline } from "./native-deadline";
 import { CoalescedRealignment, NativeCallGate } from "./native-realignment";
@@ -545,6 +547,10 @@ let selectedScrubFindings = new Set<number>();
 let scrubResultsPage = 0;
 let scrubReviewOpen = false;
 let scrubReviewPage = 0;
+// The fingerprint of the exact scope the owner is looking at, kept beside the
+// scan it describes. `key` is the input it was computed from, so a re-render
+// never recomputes and never shows a digest for a scope that has since changed.
+let scrubScopeFingerprint: { readonly key: string; readonly value: string } | null = null;
 const localScrubConsentRequest: ScrubConsentGateRequest = {
   serviceId: "local-export",
   serviceName: "message export",
@@ -5126,8 +5132,8 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const candidates = importLocalMessageExport(new TextDecoder("utf-8", { fatal: true }).decode(bytes), {
-      serviceId: "local_import",
-      accountId: "manual-export",
+      serviceId: localScrubScanServiceId,
+      accountId: localScrubScanAccountId,
       conversationId: "privacy-scan",
     });
     if (!candidates?.length) throw new Error("No supported messages were found");
@@ -5156,7 +5162,94 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
   } finally {
     privacyScanBusy = false;
     render();
+    void refreshScrubScopeFingerprint();
   }
+}
+
+/**
+ * The one scope this build can scan: a message export the owner picked, read on
+ * this device. These are the identifiers the findings are stamped with, and the
+ * same pair the scope fingerprint is computed over, so the digest always
+ * describes the scan it is shown next to.
+ */
+const localScrubScanServiceId = "local_import";
+const localScrubScanAccountId = "manual-export";
+const localScrubScanScope = "local message export chosen by the owner, read on this device";
+
+function scrubScopeFingerprintInput(): ScrubScopeFingerprintInput | null {
+  if (!privacyScanResult) return null;
+  const categories = defaultScrubSignalGroups.filter((group) => enabledScrubSignals.has(group));
+  if (!categories.length) return null;
+  return {
+    serviceId: localScrubScanServiceId,
+    accountId: localScrubScanAccountId,
+    scanScope: localScrubScanScope,
+    findingCategories: categories,
+  };
+}
+
+/**
+ * Recomputes the scope digest whenever the reviewed scope changes.
+ *
+ * This is a description of what was looked at -- service, account, scan scope,
+ * chosen categories -- and nothing else. It is deliberately not a deletion
+ * receipt: this build deletes nothing, so the copy beside it says so.
+ */
+async function refreshScrubScopeFingerprint(): Promise<void> {
+  const input = scrubScopeFingerprintInput();
+  if (!input) {
+    if (!scrubScopeFingerprint) return;
+    scrubScopeFingerprint = null;
+    render();
+    return;
+  }
+  const key = JSON.stringify(input);
+  if (scrubScopeFingerprint?.key === key) return;
+  try {
+    const value = await computeScopeFingerprint(input);
+    if (JSON.stringify(scrubScopeFingerprintInput()) !== key) return;
+    scrubScopeFingerprint = { key, value };
+  } catch {
+    // A refused input or an unavailable WebCrypto must show no digest at all
+    // rather than a placeholder the owner could mistake for a real one.
+    scrubScopeFingerprint = null;
+  }
+  render();
+}
+
+function scrubScopeFingerprintMarkup(): string {
+  if (!scrubScopeFingerprint) return "";
+  const digest = scrubScopeFingerprint.value;
+  return `<p class="scrub-scope-fingerprint"><span class="scrub-scope-fingerprint-label">Scope fingerprint</span><code class="scrub-scope-fingerprint-digest" title="${escapeHtml(digest)}">${escapeHtml(digest.slice(0, 32))}</code><small>Identifies the exact export, account, and categories this review covers. It changes when you change the categories. It is not proof that anything was deleted.</small></p>`;
+}
+
+function scrubSignalGroupLabel(group: ScrubSignalGroup): string {
+  return scrubSignalDefinitions.find((definition) => definition.id === group)?.label ?? "Review suggestion";
+}
+
+function scrubReviewRowDate(unixMs: number | null): string {
+  if (unixMs === null) return "date unknown";
+  const parsed = new Date(unixMs);
+  return Number.isNaN(parsed.getTime()) ? "date unknown" : parsed.toLocaleDateString();
+}
+
+/**
+ * The owner-review rows behind the flat suggestion list.
+ *
+ * The flat list shows one card per finding, so the same sentence posted five
+ * times reads as five unrelated problems. Grouping collapses identical items on
+ * the same account and site into one row with a count, which is what the owner
+ * actually has to act on. It is a second view of the same findings: it selects
+ * nothing, changes no selection, and deletes nothing.
+ */
+function scrubReviewRowsMarkup(rows: readonly ScrubReviewRow[]): string {
+  if (!rows.length) return "";
+  const items = rows.map((row) => {
+    const groups = row.signalGroups.map((group) => escapeHtml(scrubSignalGroupLabel(group))).join(" · ");
+    const count = `${row.findingCount} ${row.findingCount === 1 ? "item" : "items"}`;
+    return `<li class="scrub-review-row"><div class="scrub-review-row-head"><strong>${escapeHtml(row.logicalHost)}</strong><span class="scrub-review-row-count">${count}</span></div><blockquote class="scrub-review-row-sample">${escapeHtml(row.sample.localPreview)}</blockquote><small class="scrub-review-row-meta">${escapeHtml(row.serviceId)} · ${escapeHtml(row.accountId)} · ${groups} · newest ${escapeHtml(scrubReviewRowDate(row.newestCreatedAtUnixMs))}</small></li>`;
+  }).join("");
+  return `<details class="scrub-review-rows"><summary>Grouped review rows (${rows.length})</summary><ul class="scrub-review-row-list">${items}</ul><p class="scrub-review-rows-note">Identical items on the same account and site are counted once here. This view is for reading only: choosing what to review still happens in the list above, and this build deletes nothing.</p></details>`;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -5254,6 +5347,7 @@ function clearPrivacyScanState(): void {
   scrubResultsPage = 0;
   scrubReviewOpen = false;
   scrubReviewPage = 0;
+  scrubScopeFingerprint = null;
 }
 
 function privacyScanResultsMarkup(): string {
@@ -5268,7 +5362,8 @@ function privacyScanResultsMarkup(): string {
   const selected = [...selectedScrubFindings].filter((index) => matching.some((item) => item.index === index)).length;
   const selectionControls = matching.length ? `<div class="scrub-selection-controls"><button class="text-button" id="select-all-scrub" type="button">Select all ${matching.length}</button><button class="text-button" id="clear-scrub-selection" type="button" ${selected ? "" : "disabled"}>Clear selection</button></div>` : "";
   const pagination = pageCount > 1 ? `<nav class="scrub-pagination" aria-label="Scrub result pages"><button class="button compact" data-scrub-page="${scrubResultsPage - 1}" ${scrubResultsPage === 0 ? "disabled" : ""}>Previous</button><span>${scrubResultsPage + 1} / ${pageCount}</span><button class="button compact" data-scrub-page="${scrubResultsPage + 1}" ${scrubResultsPage + 1 >= pageCount ? "disabled" : ""}>Next</button></nav>` : "";
-  return `<section class="privacy-results" aria-live="polite"><header><div><strong>${matching.length} ${matching.length === 1 ? "suggestion" : "suggestions"}</strong><small>${privacyScanResult.messagesScanned} messages scanned${privacyScanFileName ? ` · ${escapeHtml(privacyScanFileName)}` : ""}</small></div><span class="privacy-local-mark">LOCAL · ENCRYPTED</span></header>${selectionControls}${items || `<div class="empty-state"><strong>No suggestions in the categories you chose</strong><p>OSL can miss things. Review important chats yourself too.</p></div>`}${pagination}${items ? `<footer class="scrub-review-footer"><span>${selected} selected</span><button class="button" id="review-scrub-selection" type="button" ${selected ? "" : "disabled"}>Review selected</button></footer>` : ""}</section>`;
+  const reviewRows = scrubReviewRowsMarkup(buildScrubReviewList(matching.map(({ finding }) => finding)));
+  return `<section class="privacy-results" aria-live="polite"><header><div><strong>${matching.length} ${matching.length === 1 ? "suggestion" : "suggestions"}</strong><small>${privacyScanResult.messagesScanned} messages scanned${privacyScanFileName ? ` · ${escapeHtml(privacyScanFileName)}` : ""}</small></div><span class="privacy-local-mark">LOCAL · ENCRYPTED</span></header>${scrubScopeFingerprintMarkup()}${selectionControls}${items || `<div class="empty-state"><strong>No suggestions in the categories you chose</strong><p>OSL can miss things. Review important chats yourself too.</p></div>`}${pagination}${reviewRows}${items ? `<footer class="scrub-review-footer"><span>${selected} selected</span><button class="button" id="review-scrub-selection" type="button" ${selected ? "" : "disabled"}>Review selected</button></footer>` : ""}</section>`;
 }
 
 function scrubFindingLabel(category: LocalPrivacyScanResult["findings"][number]["category"]): string {
@@ -5358,6 +5453,7 @@ function bindScrubControls(): void {
     scrubResultsPage = 0;
     scrubReviewOpen = false;
     render();
+    void refreshScrubScopeFingerprint();
   }));
   document.querySelectorAll<HTMLInputElement>("[data-scrub-finding]").forEach((input) => input.addEventListener("change", () => {
     const index = Number(input.dataset.scrubFinding);
@@ -6800,7 +6896,7 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-action]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = button.dataset.onboardingAction as OnboardingRoute; route = "onboarding"; render(); }));
   document.querySelector<HTMLInputElement>("#decrypt-display")?.addEventListener("change", (event) => void changeDecryptDisplay(event.currentTarget as HTMLInputElement));
   document.querySelector<HTMLInputElement>("#privacy-export-input")?.addEventListener("change", (event) => void scanPrivacyExport(event.currentTarget as HTMLInputElement));
-  document.querySelector<HTMLButtonElement>("#clear-privacy-scan")?.addEventListener("click", () => { privacyScanResult = null; privacyScanFileName = null; selectedScrubFindings.clear(); scrubReviewOpen = false; render(); });
+  document.querySelector<HTMLButtonElement>("#clear-privacy-scan")?.addEventListener("click", () => { clearPrivacyScanState(); render(); });
   bindScrubControls();
   document.querySelector<HTMLFormElement>("#activation-form")?.addEventListener("submit", (event) => void activatePro(event));
   document.querySelectorAll<HTMLFormElement>("[data-password-role]").forEach((form) => form.addEventListener("submit", (event) => void submitPasswordRole(event)));

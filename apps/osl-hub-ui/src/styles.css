@@ -4395,6 +4395,24 @@ code {
 .scrub-pagination span { color: var(--muted); font-size: 11px; }
 .scrub-review-footer { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .scrub-review-footer span { color: var(--muted); font-size: 11px; }
+/* Scope fingerprint and grouped review rows.
+   These rules have to live in this sheet: the shipped CSP is `style-src 'self'`
+   (apps/osl-hub/tauri.conf.json), so a runtime <style> element and an inline
+   style= attribute are both dropped and the panel would ship unstyled. */
+.scrub-scope-fingerprint { margin: 0 0 10px; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: var(--radius); background: var(--panel); display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.scrub-scope-fingerprint-label { color: var(--subtle); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.scrub-scope-fingerprint-digest { font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; font-size: 11px; color: var(--text); overflow-wrap: anywhere; }
+.scrub-scope-fingerprint > small { flex-basis: 100%; color: var(--subtle); font-size: 11px; line-height: 1.45; }
+.scrub-review-rows { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.scrub-review-rows > summary { color: var(--muted); font-size: 11px; font-weight: 700; cursor: pointer; }
+.scrub-review-row-list { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.scrub-review-row { padding: 9px 10px; border: 1px solid var(--line-soft); border-radius: var(--radius); background: var(--panel); }
+.scrub-review-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.scrub-review-row-head > strong { overflow-wrap: anywhere; font-size: 12px; }
+.scrub-review-row-count { flex: none; color: var(--brand); font-size: 11px; font-weight: 700; }
+.scrub-review-row-sample { margin: 7px 0 0; padding: 7px 9px; border-left: 2px solid var(--line); overflow-wrap: anywhere; background: var(--panel-2); color: var(--text); font-size: 11px; }
+.scrub-review-row-meta { margin-top: 6px; display: block; color: var(--subtle); font-size: 11px; overflow-wrap: anywhere; }
+.scrub-review-rows-note { margin: 10px 0 0; color: var(--subtle); font-size: 11px; line-height: 1.45; }
 .scrub-review-dialog {
   width: min(820px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
