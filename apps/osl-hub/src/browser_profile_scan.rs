@@ -1062,11 +1062,22 @@ mod tests {
     #[test]
     fn scan_consented_profile_requires_exact_unconsumed_grant() {
         let (mut state, root, roots) = inventory_with_profile("exact-grant", "Default");
-        std::fs::write(
-            root.join("Default").join("History"),
-            b"https://example.test/",
-        )
-        .unwrap();
+        // A real SQLite `History`, not the flat-text fixture this test used to
+        // write. The scanner reads history through SQLite now, and
+        // `ti_5_rejects_the_old_newline_fixture_instead_of_claiming_a_scan`
+        // pins that a non-database file is refused rather than scanned. This
+        // test's own fixture was still the refused kind, so the scan it treats
+        // as the success case could only fail — invisible until the lib test
+        // target compiled again. One row, because it asserts one observation.
+        let history = root.join("Default").join("History");
+        let connection = Connection::open(&history).unwrap();
+        connection
+            .execute("CREATE TABLE urls (url TEXT NOT NULL)", [])
+            .unwrap();
+        connection
+            .execute("INSERT INTO urls (url) VALUES (?1)", ["https://example.test/"])
+            .unwrap();
+        drop(connection);
         let grant = state
             .grant_profile_consent("owner-a", BrowserImportId::Chrome, "Default", 1_000)
             .unwrap();

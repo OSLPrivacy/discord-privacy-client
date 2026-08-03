@@ -355,7 +355,7 @@ fn canonical_json(value: &Value) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{pointer_envelope, signed_message, status_from_address};
+    use super::{pointer_envelope, signed_message, status_from_address, BurnResponse};
     use serde_json::{Map, Value};
 
     #[test]
