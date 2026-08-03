@@ -401,8 +401,6 @@ macro_rules! hub_tauri_commands {
             get_scrub_index_scan,
             append_scrub_index_chunk,
             get_scrub_index_status,
-            pause_scrub_index,
-            resume_scrub_index,
             cancel_scrub_index,
             list_linked_services,
             get_core_readiness,

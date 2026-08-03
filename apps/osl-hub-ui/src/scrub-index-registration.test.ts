@@ -110,8 +110,6 @@ describe("Scrub index registration", () => {
       "initialize_scrub_index",
       "append_scrub_index_chunk",
       "get_scrub_index_status",
-      "pause_scrub_index",
-      "resume_scrub_index",
       "cancel_scrub_index",
       "get_autoscrub_run_fl",
       "start_autoscrub_reviewed_run",
@@ -120,6 +118,9 @@ describe("Scrub index registration", () => {
 
     for (const command of commands) {
       expect(registeredAndGranted(handlers, permissions, capability, command), command).toBe(true);
+    }
+    for (const command of ["pause_scrub_index", "resume_scrub_index"] as const) {
+      expect(registeredAndGranted(handlers, permissions, capability, command), command).toBe(false);
     }
 
     const missing = new Set(handlers);

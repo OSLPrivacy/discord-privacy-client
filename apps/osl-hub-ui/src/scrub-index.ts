@@ -143,18 +143,6 @@ export async function getScrubIndexScan(importId: string): Promise<PersistedLoca
   return result;
 }
 
-export async function pauseScrubIndex(importId: string): Promise<ScrubIndexStatus> {
-  requireNative();
-  if (!validImportId(importId)) throw new Error("invalid Scrub import identifier");
-  return parseScrubIndexStatus(await invoke<unknown>("pause_scrub_index", { importId }));
-}
-
-export async function resumeScrubIndex(importId: string): Promise<ScrubIndexStatus> {
-  requireNative();
-  if (!validImportId(importId)) throw new Error("invalid Scrub import identifier");
-  return parseScrubIndexStatus(await invoke<unknown>("resume_scrub_index", { importId }));
-}
-
 export async function cancelScrubIndex(importId: string): Promise<void> {
   requireNative();
   if (!validImportId(importId)) throw new Error("invalid Scrub import identifier");

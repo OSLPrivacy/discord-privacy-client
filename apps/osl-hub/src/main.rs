@@ -973,36 +973,6 @@ async fn get_scrub_index_status(
 }
 
 #[tauri::command]
-async fn pause_scrub_index(
-    state: State<'_, ScrubIndexState>,
-    core: State<'_, HubCoreState>,
-    session: State<'_, HubAccountSessionState>,
-    import_id: String,
-) -> Result<ScrubIndexStatus, String> {
-    let _session = session.transition.lock().await;
-    let owner = active_unlocked_osl_user_id(&core)?;
-    let state = state.inner().clone();
-    tokio::task::spawn_blocking(move || state.pause(&owner, &import_id))
-        .await
-        .map_err(|_| "Scrub pause was interrupted".to_owned())?
-}
-
-#[tauri::command]
-async fn resume_scrub_index(
-    state: State<'_, ScrubIndexState>,
-    core: State<'_, HubCoreState>,
-    session: State<'_, HubAccountSessionState>,
-    import_id: String,
-) -> Result<ScrubIndexStatus, String> {
-    let _session = session.transition.lock().await;
-    let owner = active_unlocked_osl_user_id(&core)?;
-    let state = state.inner().clone();
-    tokio::task::spawn_blocking(move || state.resume(&owner, &import_id))
-        .await
-        .map_err(|_| "Scrub resume was interrupted".to_owned())?
-}
-
-#[tauri::command]
 async fn cancel_scrub_index(
     state: State<'_, ScrubIndexState>,
     core: State<'_, HubCoreState>,
