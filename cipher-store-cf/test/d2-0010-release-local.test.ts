@@ -277,7 +277,12 @@ describe("local D2 migration-0010 release witness", () => {
         marker: D2_CYCLE_MARKER,
       },
       migration: {
-        applied_migrations: applied.map((row) => row.name),
+        // This is a release-0010 witness. Later, additive migrations are
+        // intentionally present in the current test database, but cannot
+        // rewrite the historical release manifest that this verifier pins.
+        applied_migrations: applied
+          .map((row) => row.name)
+          .filter((name) => D2_REQUIRED_MIGRATIONS.includes(name)),
         migration_0010_sha256: D2_MIGRATION_0010_SHA256,
         recovery_marker: recovery,
         claim_columns: ["claim_origin", "storage_fence_state"],

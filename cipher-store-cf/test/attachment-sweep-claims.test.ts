@@ -133,6 +133,8 @@ describe("transactional attachment sweep claims", () => {
       "state",
       "upload_id",
       "content_expires_at",
+      "single_fetch",
+      "reserved_until",
     ]);
 
     const uncommented = migration0008.replace(/--[^\n]*/g, "");
