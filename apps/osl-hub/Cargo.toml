@@ -70,6 +70,10 @@ rustls = { version = "=0.23.42", default-features = false, features = ["ring", "
 
 [dev-dependencies]
 tempfile = "=3.13"
+# `tests/osl_chat_eager_fetch.rs` builds a unique temp path with `Uuid::new_v4`.
+# This crate is excluded from the workspace, so the version is pinned explicitly
+# to the one already resolved in this crate's own lockfile.
+uuid = { version = "=1.24.0", features = ["v4"] }
 osl-ratchet-next = { path = "../../crates/osl-ratchet-next" }
 
 [target.'cfg(windows)'.dependencies]

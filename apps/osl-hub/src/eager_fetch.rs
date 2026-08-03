@@ -91,8 +91,11 @@ impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
     }
 }
 
+// `pending()` below is `pub` and returns `Vec<PendingBurn>`, so this type is
+// already part of the public surface; leaving it private only broke the
+// integration tests that consume that method.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct PendingBurn {
+pub struct PendingBurn {
     blob_id: String,
     manage_cap: Vec<u8>,
 }

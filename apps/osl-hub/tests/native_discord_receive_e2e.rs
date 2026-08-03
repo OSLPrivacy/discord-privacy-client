@@ -38,6 +38,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// OSL chat and the native Discord overlay do not consume carrier flagtext on
+/// these fixture paths, so a default carrier state is the correct stand-in.
+fn ai_carrier_fixture() -> osl_privacy_hub::ai_carrier::AiCarrierState {
+    osl_privacy_hub::ai_carrier::AiCarrierState::default()
+}
+
+
 const TEST_MAIN_PASSWORD: &str = "native-discord-receive-fixture-password";
 
 /// `MAX_DRAIN_ROWS` in `keyserver-cf/src/endpoints/control-inbox.ts`. One
@@ -949,6 +956,7 @@ fn p1_sends_encrypted_message_into_live_conversation() {
         &alice.core,
         &alice.security,
         &alice.broker,
+        &ai_carrier_fixture(),
         FIXTURE.to_owned(),
         false,
     )
@@ -1056,6 +1064,7 @@ fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_
         &alice.core,
         &alice.security,
         &alice.broker,
+        &ai_carrier_fixture(),
         "fixture text addressed to a third identity".to_owned(),
         false,
     )
@@ -1099,6 +1108,7 @@ fn native_discord_inbound_opens_once_and_refuses_foreign_malformed_and_replayed_
         &alice.core,
         &alice.security,
         &alice.broker,
+        &ai_carrier_fixture(),
         FIXTURE.to_owned(),
         false,
     )
@@ -1398,6 +1408,7 @@ fn view_once_list_appears_on_b() {
         &alice.core,
         &alice.security,
         &alice.broker,
+        &ai_carrier_fixture(),
         FIXTURE.to_owned(),
         true,
     )
@@ -1477,6 +1488,7 @@ fn reveal_once_consumes_on_b() {
         &alice.core,
         &alice.security,
         &alice.broker,
+        &ai_carrier_fixture(),
         FIXTURE.to_owned(),
         true,
     )
@@ -1591,6 +1603,7 @@ fn native_discord_multi_chunk_message_reassembles_exactly_once() {
         &alice.core,
         &alice.security,
         &alice.broker,
+        &ai_carrier_fixture(),
         fixture.clone(),
         false,
     )
@@ -1693,6 +1706,7 @@ fn native_discord_chunk_group_survives_reversed_and_split_arrival() {
         &alice.core,
         &alice.security,
         &alice.broker,
+        &ai_carrier_fixture(),
         fixture.clone(),
         false,
     )
@@ -1868,6 +1882,7 @@ fn sender_filtered_text_and_attachment_drains_bypass_64_foreign_rows_and_preserv
         &sender_b.core,
         &sender_b.security,
         &sender_b.broker,
+        &ai_carrier_fixture(),
         B_FIXTURE.to_owned(),
         false,
     )
@@ -1903,6 +1918,7 @@ fn sender_filtered_text_and_attachment_drains_bypass_64_foreign_rows_and_preserv
         &sender_a.core,
         &sender_a.security,
         &sender_a.broker,
+        &ai_carrier_fixture(),
         A_FIXTURE.to_owned(),
         false,
     )
@@ -2072,6 +2088,7 @@ fn assert_text_and_attachment_refuse_reply(reply: ControlInboxGetReply) {
         &sender.core,
         &sender.security,
         &sender.broker,
+        &ai_carrier_fixture(),
         "closed-path text fixture".to_owned(),
         false,
     )

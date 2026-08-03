@@ -717,10 +717,14 @@ pub fn osl_chat_message_survives_a_lost_wrapped_key_response() {
 
     let plaintext = "sealed relay fixture: alpha → beta".to_owned();
     TestStorage::activate(&alice_dir);
+    // OSL chat has no Discord row, so the carrier flagtext this produces is
+    // unused by this path; a default carrier state is the correct fixture.
+    let ai_carrier = osl_privacy_hub::ai_carrier::AiCarrierState::default();
     let prepared = prepare_osl_chat_text(
         &alice,
         &alice_security,
         &alice_broker,
+        &ai_carrier,
         plaintext.clone(),
         true,
     )
