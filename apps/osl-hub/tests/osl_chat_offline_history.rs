@@ -105,9 +105,12 @@ fn already_delivered_osl_chat_history_reads_with_no_keyserver_client() {
         .message_store
         .lock()
         .expect("message store lock") = Some(message_store);
+    let history_channel_id = ipc::scope::Scope::try_from(chat.scope.clone())
+        .expect("OSL Chat scope")
+        .storage_key();
     ipc::commands::cmd_osl_persist_inbound(
         &bob_core.osl,
-        chat.scope.channel_id.expect("OSL Chat channel"),
+        history_channel_id,
         "peer-offline-history-0000000000000001".to_owned(),
         alice_identity.user_id.clone(),
         "already delivered while online".to_owned(),
