@@ -3719,6 +3719,7 @@ async fn prepare_native_discord_overlay_text(
             &app.state::<HubCoreState>(),
             &app.state::<HubSecurityState>(),
             &app.state::<HubBrokerState>(),
+            &app.state::<AiCarrierState>(),
             plaintext,
             view_once,
         )?;
@@ -3841,6 +3842,7 @@ async fn send_native_discord_qa_atomic_text(
             &app.state::<HubCoreState>(),
             &app.state::<HubSecurityState>(),
             &app.state::<HubBrokerState>(),
+            &app.state::<AiCarrierState>(),
             plaintext,
             view_once,
         ) {
@@ -4151,6 +4153,7 @@ async fn send_native_discord_qa_probe(
             &app.state::<HubCoreState>(),
             &app.state::<HubSecurityState>(),
             &app.state::<HubBrokerState>(),
+            &app.state::<AiCarrierState>(),
             QA_PROBE_PLAINTEXT.to_owned(),
             false,
         ) {
@@ -4367,6 +4370,7 @@ async fn run_native_discord_headless_qa(
                 &core,
                 &security_state,
                 &broker_state,
+                &app.state::<AiCarrierState>(),
                 QA_PROBE_PLAINTEXT.to_owned(),
                 false,
             )?
@@ -4874,6 +4878,7 @@ async fn prepare_osl_chat_text(
             &app.state::<HubCoreState>(),
             &app.state::<HubSecurityState>(),
             &app.state::<HubBrokerState>(),
+            &app.state::<AiCarrierState>(),
             plaintext,
             view_once,
         )
