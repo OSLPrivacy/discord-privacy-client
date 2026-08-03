@@ -21,10 +21,8 @@ use thiserror::Error;
 // `From` impl is not a const trait, so that form does not compile in a const
 // and took the whole `transport` crate -- and therefore every Rust test in the
 // workspace -- down with it.
-pub const DEFAULT_SOCKS_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(
-    Ipv4Addr::new(127, 0, 0, 1),
-    9150,
-));
+pub const DEFAULT_SOCKS_ADDR: SocketAddr =
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 9150));
 
 /// Configuration for the signed Arti proxy executable packaged with OSL.
 #[derive(Debug, Clone)]
@@ -151,6 +149,10 @@ fn build_store_client(socks_addr: SocketAddr) -> Result<Client, TorError> {
     keystore::blocking_http::off_async_context(|| {
         Client::builder()
             .proxy(proxy)
+            .timeout(Duration::from_secs(30))
+            .http1_title_case_headers()
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent("discord-privacy-client/0.0.1")
             .build()
             .map_err(TorError::Client)
     })
