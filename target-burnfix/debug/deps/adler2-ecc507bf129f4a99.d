@@ -1,8 +1,0 @@
-/home/liamw/osl-burnfix/target-burnfix/debug/deps/adler2-ecc507bf129f4a99.d: /home/liamw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/adler2-2.0.1/src/lib.rs /home/liamw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/adler2-2.0.1/src/algo.rs
-
-/home/liamw/osl-burnfix/target-burnfix/debug/deps/libadler2-ecc507bf129f4a99.rlib: /home/liamw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/adler2-2.0.1/src/lib.rs /home/liamw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/adler2-2.0.1/src/algo.rs
-
-/home/liamw/osl-burnfix/target-burnfix/debug/deps/libadler2-ecc507bf129f4a99.rmeta: /home/liamw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/adler2-2.0.1/src/lib.rs /home/liamw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/adler2-2.0.1/src/algo.rs
-
-/home/liamw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/adler2-2.0.1/src/lib.rs:
-/home/liamw/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/adler2-2.0.1/src/algo.rs:

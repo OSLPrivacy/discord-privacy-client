@@ -1,5 +1,0 @@
-/home/liamw/osl-burnfix/target-burnfix/debug/deps/register_self_snowflake_requires_account_ownership_proof-bc9e0061152d8499.d: crates/ipc/tests/register_self_snowflake_requires_account_ownership_proof.rs
-
-/home/liamw/osl-burnfix/target-burnfix/debug/deps/libregister_self_snowflake_requires_account_ownership_proof-bc9e0061152d8499.rmeta: crates/ipc/tests/register_self_snowflake_requires_account_ownership_proof.rs
-
-crates/ipc/tests/register_self_snowflake_requires_account_ownership_proof.rs:
