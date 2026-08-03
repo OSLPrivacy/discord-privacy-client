@@ -3480,6 +3480,7 @@ pub fn prepare_native_discord_overlay_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
     broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
     plaintext: String,
     view_once: bool,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
@@ -3488,6 +3489,7 @@ pub fn prepare_native_discord_overlay_text(
         core,
         security_state,
         broker,
+        ai_carrier,
         &context_token,
         plaintext,
         view_once,
@@ -3498,6 +3500,7 @@ pub fn prepare_osl_chat_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
     broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
     plaintext: String,
     view_once: bool,
 ) -> Result<PreparedNativeOverlayText, String> {
@@ -3507,6 +3510,7 @@ pub fn prepare_osl_chat_text(
         core,
         security_state,
         broker,
+        ai_carrier,
         &context_token,
         plaintext,
         view_once,
@@ -3560,6 +3564,7 @@ fn prepare_peer_inbox_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
     broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
     context_token: &str,
     plaintext: String,
     view_once: bool,
@@ -3573,6 +3578,9 @@ fn prepare_peer_inbox_text(
             "Private message must be between 1 and {MAX_NATIVE_OVERLAY_LOGICAL_TEXT_BYTES} UTF-8 bytes"
         ));
     }
+    // Resolve the optional carrier before any pointer is encoded. Cloud is not
+    // an option in this path, so it cannot be reached around consent.
+    let _carrier_decision = ai_carrier.select_for_shipping_send();
     let manual = broker.manual_peer_for(context_token)?;
     let context = broker.context_for(context_token)?;
     let now = ipc::main_password::now_unix_secs_pub();

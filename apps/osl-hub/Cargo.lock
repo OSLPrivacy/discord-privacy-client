@@ -831,6 +831,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cover-ai"
+version = "0.0.1"
+dependencies = [
+ "encoding_rs",
+ "osl-cover-draft",
+ "rand 0.8.7",
+ "zeroize",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3147,6 +3157,7 @@ dependencies = [
  "base64 0.22.1",
  "bip39",
  "calamine",
+ "cover-ai",
  "crypto",
  "flate2",
  "imap",

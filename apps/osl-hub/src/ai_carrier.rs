@@ -5,6 +5,7 @@
 
 use crate::ai_consent::AiCloudConsent;
 use crate::credits::{unavailable_balance, BalanceDisplay};
+use cover_ai::fallback::{select_carrier, CarrierCapabilities, CarrierDecision};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -62,6 +63,18 @@ impl AiCarrierState {
                 .preview_enabled_scopes
                 .lock()
                 .is_ok_and(|scopes| scopes.contains(scope_id))
+    }
+
+    /// Resolve the optional carrier policy at the protected-send boundary.
+    ///
+    /// This is deliberately local-only. Cloud generation is deferred, so a
+    /// consent record can never become an egress route. An unavailable local
+    /// model resolves to the word-bank floor and never prevents encryption.
+    pub fn select_for_shipping_send(&self) -> CarrierDecision {
+        select_carrier(CarrierCapabilities {
+            ai_model_available: self.local_model_ready.load(Ordering::Acquire),
+            word_bank_selection_available: true,
+        })
     }
 
     fn status(&self) -> AiCarrierStatus {
@@ -164,5 +177,22 @@ mod tests {
             !state.can_preview_for("conversation-a", true),
             "revocation takes effect before the next potential native write"
         );
+    }
+
+    #[test]
+    fn t13_carrier_policy_is_called_by_every_shipping_send_before_encoding() {
+        let source = include_str!("broker.rs");
+        let send_boundary = source
+            .find("fn prepare_peer_inbox_text(")
+            .expect("shipping protected-send boundary");
+        let policy = source[send_boundary..]
+            .find("ai_carrier.select_for_shipping_send()")
+            .map(|offset| send_boundary + offset)
+            .expect("shipping send must resolve the carrier policy");
+        let encode = source[send_boundary..]
+            .find("prepare_peer_prose_text_inner_with_chunk(")
+            .map(|offset| send_boundary + offset)
+            .expect("shipping send must encode its pointer carrier");
+        assert!(policy < encode, "policy must precede carrier encoding");
     }
 }
