@@ -5,7 +5,11 @@
 //! metadata: callers must not accidentally serialize the seed `P` into an
 //! HTTP request.  Encoding `P` into the prose carrier is owned by T1-32.
 
-use crypto::pointer::{derive_capabilities, Pointer, CAPABILITY_BYTES, POINTER_BYTES};
+use crypto::pointer::{
+    derive_capabilities, derive_conversation_message_key, derive_delivery_tag_window,
+    resolve_delivery_tag, DeliveryTagMatch, DeliveryTagResolveError, Pointer, CAPABILITY_BYTES,
+    POINTER_BYTES,
+};
 use sha2::{Digest, Sha256};
 
 /// The upload class declared to the cipher store.
@@ -36,6 +40,8 @@ pub struct UploadMetadata {
     pub object_class: ObjectClass,
 }
 
+pub use crypto::pointer::DELIVERY_TAG_LOOKAHEAD;
+
 /// Generates a fresh 160-bit carrier seed with the workspace CSPRNG.
 pub fn fresh_pointer() -> Pointer {
     let bytes = crypto::random::random_bytes(POINTER_BYTES);
@@ -52,10 +58,13 @@ pub fn upload_metadata(
     pointer: &Pointer,
     message_key: &[u8],
     send_key: &[u8],
-    conversation_key: &[u8],
+    conversation_epoch_secret: &[u8],
+    send_counter: u32,
     object_class: ObjectClass,
 ) -> Result<UploadMetadata, crypto::Error> {
-    let caps = derive_capabilities(pointer, message_key, send_key, conversation_key)?;
+    let conversation_message_key =
+        derive_conversation_message_key(conversation_epoch_secret, send_counter)?;
+    let caps = derive_capabilities(pointer, message_key, send_key, &conversation_message_key)?;
     Ok(UploadMetadata {
         blob_id: hex(&caps.blob_id),
         fetch_digest: digest_hex(&caps.fetch_cap),
@@ -64,6 +73,26 @@ pub fn upload_metadata(
         delivery_tag: hex(&caps.delivery_tag),
         object_class,
     })
+}
+
+pub fn subscription_delivery_tags(
+    conversation_epoch_secret: &[u8],
+    receiver_counter: u32,
+) -> Result<Vec<[u8; CAPABILITY_BYTES]>, crypto::Error> {
+    Ok(
+        derive_delivery_tag_window(conversation_epoch_secret, receiver_counter)?
+            .into_iter()
+            .map(|candidate| candidate.delivery_tag)
+            .collect(),
+    )
+}
+
+pub fn resolve_subscription_delivery_tag(
+    conversation_epoch_secret: &[u8],
+    receiver_counter: u32,
+    observed: &[u8; CAPABILITY_BYTES],
+) -> core::result::Result<DeliveryTagMatch, DeliveryTagResolveError> {
+    resolve_delivery_tag(conversation_epoch_secret, receiver_counter, observed)
 }
 
 fn hex(bytes: &[u8; CAPABILITY_BYTES]) -> String {
@@ -86,15 +115,19 @@ mod tests {
         assert_ne!(p1, p2, "each message must use a fresh carrier seed");
 
         let key = [0x42; 32];
-        let first = upload_metadata(&p1, &key, &key, &key, ObjectClass::SingleAck).unwrap();
-        let second = upload_metadata(&p2, &key, &key, &key, ObjectClass::SingleAck).unwrap();
+        let first = upload_metadata(&p1, &key, &key, &key, 0, ObjectClass::SingleAck).unwrap();
+        let second = upload_metadata(&p2, &key, &key, &key, 1, ObjectClass::SingleAck).unwrap();
 
         assert_ne!(first.blob_id, second.blob_id);
         assert_ne!(first.fetch_digest, second.fetch_digest);
         assert_ne!(first.ack_digest, second.ack_digest);
         assert_ne!(first.manage_digest, second.manage_digest);
 
-        let p1_hex: String = p1.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
+        let p1_hex: String = p1
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         let server_values = [
             &first.blob_id,
             &first.fetch_digest,
@@ -103,5 +136,91 @@ mod tests {
             &first.delivery_tag,
         ];
         assert!(server_values.iter().all(|value| **value != p1_hex));
+    }
+
+    fn public_observer_can_link_only_by_repeated_delivery_tag(
+        first: &UploadMetadata,
+        second: &UploadMetadata,
+    ) -> bool {
+        first.delivery_tag == second.delivery_tag
+    }
+
+    fn tag_hex_to_bytes(value: &str) -> [u8; CAPABILITY_BYTES] {
+        assert_eq!(value.len(), CAPABILITY_BYTES * 2);
+        let mut out = [0u8; CAPABILITY_BYTES];
+        for (index, slot) in out.iter_mut().enumerate() {
+            *slot = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn b0_14_upload_delivery_tags_rotate_without_a_public_conversation_link_key() {
+        let key = [0x42; 32];
+        let first = upload_metadata(
+            &Pointer::from_bytes([0x01; POINTER_BYTES]),
+            &key,
+            &key,
+            &key,
+            0,
+            ObjectClass::SingleAck,
+        )
+        .unwrap();
+        let second = upload_metadata(
+            &Pointer::from_bytes([0x02; POINTER_BYTES]),
+            &key,
+            &key,
+            &key,
+            1,
+            ObjectClass::SingleAck,
+        )
+        .unwrap();
+
+        assert_ne!(first.delivery_tag, second.delivery_tag);
+        assert!(
+            !public_observer_can_link_only_by_repeated_delivery_tag(&first, &second),
+            "an observer holding only stored tags must not get a repeated conversation key"
+        );
+    }
+
+    #[test]
+    fn b0_14_receiver_resolves_one_message_desync_and_names_a_window_miss() {
+        let key = [0x42; 32];
+        let start = 7;
+        let one_ahead = upload_metadata(
+            &Pointer::from_bytes([0x03; POINTER_BYTES]),
+            &key,
+            &key,
+            &key,
+            start + 1,
+            ObjectClass::SingleAck,
+        )
+        .unwrap();
+        let mut observed = tag_hex_to_bytes(&one_ahead.delivery_tag);
+
+        let resolved = resolve_subscription_delivery_tag(&key, start, &observed).unwrap();
+        assert_eq!(resolved.counter, start + 1);
+
+        let too_far = upload_metadata(
+            &Pointer::from_bytes([0x04; POINTER_BYTES]),
+            &key,
+            &key,
+            &key,
+            start + DELIVERY_TAG_LOOKAHEAD as u32,
+            ObjectClass::SingleAck,
+        )
+        .unwrap();
+        observed = tag_hex_to_bytes(&too_far.delivery_tag);
+
+        assert!(
+            matches!(
+                resolve_subscription_delivery_tag(&key, start, &observed),
+                Err(DeliveryTagResolveError::LookaheadMiss {
+                    start_counter,
+                    window: DELIVERY_TAG_LOOKAHEAD
+                }) if start_counter == start
+            ),
+            "past-window desync must be a named clean miss"
+        );
     }
 }
