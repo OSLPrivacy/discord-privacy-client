@@ -1155,6 +1155,7 @@ dependencies = [
  "subtle",
  "tempfile",
  "thiserror 1.0.69",
+ "tokio",
  "tracing",
  "windows",
  "zeroize",
