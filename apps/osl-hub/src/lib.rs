@@ -15,11 +15,14 @@ pub mod attachment_scan;
 pub mod attachment_thumbnail;
 #[cfg(feature = "core")]
 pub mod attachment_thumbnail_policy;
-// ai_carrier declares a #[tauri::command]. tauri is an optional dependency
-// pulled in by the `desktop` feature (NOT `core`), so an ungated declaration
-// failed to resolve `tauri` in every non-desktop build of the product lib.
 pub mod adapters;
-#[cfg(feature = "desktop")]
+// ai_carrier was once gated on `desktop` because it declared a
+// #[tauri::command] and tauri only arrives with that feature. The command
+// wrapper now lives in main.rs (the macro's __cmd__* helpers must sit beside
+// the invoke_handler), so nothing here needs tauri: cover_ai is a
+// non-optional dependency and credits/ai_consent are ungated. The gate had
+// outlived its reason and broke the default-feature build, because
+// broker.rs takes `&crate::ai_carrier::AiCarrierState` unconditionally.
 pub mod ai_carrier;
 pub mod ai_consent;
 pub mod attended_imap;
