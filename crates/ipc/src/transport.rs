@@ -94,7 +94,11 @@ mod tests {
         assert_ne!(first.ack_digest, second.ack_digest);
         assert_ne!(first.manage_digest, second.manage_digest);
 
-        let p1_hex: String = p1.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect();
+        let p1_hex: String = p1
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
         let server_values = [
             &first.blob_id,
             &first.fetch_digest,

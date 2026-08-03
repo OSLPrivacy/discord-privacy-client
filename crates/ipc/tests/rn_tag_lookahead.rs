@@ -5,9 +5,7 @@
 //! partner will choose for the next sending chain until that wire arrives.
 
 use crypto::pointer::{derive_capabilities, Pointer};
-use osl_ratchet_next::{
-    test_support::established_pair_with_params, Session, SessionParams,
-};
+use osl_ratchet_next::{test_support::established_pair_with_params, Session, SessionParams};
 
 const LOOKAHEAD_CHAINS: usize = 1;
 const POINTER: Pointer = Pointer::from_bytes([0x27; 20]);
@@ -42,7 +40,9 @@ fn receiver_can_honestly_subscribe_to_one_current_chain_not_across_an_unseen_dh_
     // Alice receives Bob's reply. That ratchets Alice's next sending chain
     // with a freshly generated DH public key Bob cannot know yet.
     let reply = bob.encrypt(0, b"reply", &mut rng).expect("bob reply");
-    alice.decrypt(&reply, &mut rng).expect("alice receives reply");
+    alice
+        .decrypt(&reply, &mut rng)
+        .expect("alice receives reply");
     let future = alice
         .encrypt(0, b"first message on Alice's new DH chain", &mut rng)
         .expect("alice sends next chain");
