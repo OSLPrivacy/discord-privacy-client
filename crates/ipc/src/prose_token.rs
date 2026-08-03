@@ -285,7 +285,6 @@ pub fn prose_token_send(
 /// selected and unhealthy the gate refuses before ever reaching here. Route
 /// policy is entirely the caller's; the pointer, capability derivation and
 /// client-chosen blob id below are identical on every route.
-#[allow(clippy::too_many_arguments)]
 pub fn prose_token_send_with_client(
     client: &CipherStoreClient,
     scope_input: &ScopeInput,
