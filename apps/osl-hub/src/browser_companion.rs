@@ -494,7 +494,12 @@ mod windows {
                 && hosted_window_is_valid(hosted)
             {
                 hosted.trusted_parent = trusted_parent;
-                if unsafe { present(hosted) } {
+                // activate: this is the user re-requesting a companion that is
+                // already hosted, so it should come to the front, matching the
+                // other user-initiated call sites. `present` gained the flag
+                // and this Windows-only path was missed because the Linux build
+                // never compiles it.
+                if unsafe { present(hosted, true) } {
                     return BrowserCompanionAction::success(
                         BrowserCompanionActionKind::Hosted,
                         hosted.browser_id,
