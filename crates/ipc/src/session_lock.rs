@@ -233,7 +233,6 @@ pub fn session_holds_live_secrets(state: &AppState) -> bool {
         .sender_key_state
         .lock()
         .expect("sender_key_state mutex poisoned")
-        .states
         .is_empty()
     {
         return true;
@@ -299,8 +298,8 @@ pub fn lock_session(state: &AppState, trigger: SessionLockTrigger) -> SessionLoc
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned");
-        report.sender_key_chains_cleared = sk.states.len();
-        *sk = crate::sender_key_state::SenderKeyStateFile::default();
+        report.sender_key_chains_cleared = sk.len();
+        sk.clear();
     }
     state
         .sender_key_rotation

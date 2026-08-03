@@ -274,13 +274,10 @@ pub struct AppState {
     /// fresh messages decrypt normally).
     pub burned_scopes: Mutex<crate::burned_scopes_file::BurnedScopesFile>,
 
-    /// Phase 9-A3: per-group sender-keys state, mirroring
-    /// `sender_key_state.json`. One row per group/server scope. The
-    /// send-side dispatcher consults this to decide v=5 vs v=3,
-    /// installs/rotates sender chains, and persists on every send.
-    /// The recv-side path consults it to recover the
-    /// per-(scope, sender) receiver chain.
-    pub sender_key_state: Mutex<crate::sender_key_state::SenderKeyStateFile>,
+    /// Live, session-only sender-key state, keyed by group/server scope.
+    /// Disk snapshots are deliberately lossy and are produced only at the
+    /// persistence boundary; command-boundary delivery must never reload one.
+    pub sender_key_state: Mutex<HashMap<String, crypto::sender_keys::SenderKeyState>>,
 
     /// Live rotation-policy state for each outbound sender-key scope. This is
     /// deliberately in-memory: the durable sender-chain record remains the
@@ -411,7 +408,7 @@ impl Default for AppState {
             recovery_token: Mutex::new(None),
             stealth_active: Mutex::new(false),
             burned_scopes: Mutex::new(crate::burned_scopes_file::BurnedScopesFile::default()),
-            sender_key_state: Mutex::new(crate::sender_key_state::SenderKeyStateFile::default()),
+            sender_key_state: Mutex::new(HashMap::new()),
             sender_key_rotation: Mutex::new(HashMap::new()),
             sender_keys_enabled: AtomicBool::new(true),
             channel_members: Mutex::new(HashMap::new()),
@@ -811,9 +808,9 @@ mod tests {
                 .sender_key_state
                 .lock()
                 .expect("sender_key_state mutex poisoned");
-            sender_keys.states.insert(
+            sender_keys.insert(
                 "gc:state-test".to_owned(),
-                crypto::sender_keys::SenderKeyStateOnDisk::default(),
+                crypto::sender_keys::SenderKeyState::new(),
             );
         }
         std::fs::write(dir.path().join("identity.json"), b"identity").unwrap();
@@ -921,7 +918,6 @@ mod tests {
                 .sender_key_state
                 .lock()
                 .expect("sender_key_state mutex poisoned")
-                .states
                 .is_empty(),
             "production duress engine must use the sender-key wipe handler"
         );

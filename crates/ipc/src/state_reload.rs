@@ -260,10 +260,28 @@ pub fn reload_encrypted_state_after_unlock(
         let sk = crate::sender_key_state::load_sender_key_state(&sk_path);
         report.sender_keys_count = sk.states.len();
         report.sender_keys_loaded = true;
+        let live = sk
+            .states
+            .into_iter()
+            .filter_map(|(scope, disk)| match crypto::sender_keys::SenderKeyState::try_from(disk) {
+                Ok(mut state) => {
+                    // A persisted sender root is intentionally absent. Do not
+                    // synthesize one here: the next outbound send must create
+                    // a chain and redistribute its SKDM.
+                    state.discard_sender_chain();
+                    Some((scope, state))
+                }
+                Err(error) => {
+                    tracing::warn!(scope = %crate::log_id::log_id(&scope), %error,
+                        "OSL: ignoring unreadable persisted sender-key state");
+                    None
+                }
+            })
+            .collect();
         *state
             .sender_key_state
             .lock()
-            .expect("sender_key_state mutex poisoned") = sk;
+            .expect("sender_key_state mutex poisoned") = live;
     }
 
     // membership.json — dynamic recipient observations. Same encrypted-at-rest

@@ -313,14 +313,14 @@ pub fn wipe_double_ratchet_session_state(state: &AppState) -> Result<(), keystor
 /// Duress callback for per-channel sender-key session state.
 pub fn wipe_sender_keys_session_state(state: &AppState) -> Result<(), keystore::DuressError> {
     let changed = {
-        let mut file = state.sender_key_state.lock().map_err(|_| {
+        let mut states = state.sender_key_state.lock().map_err(|_| {
             keystore::DuressError::Handler(
                 "sender_key_state mutex poisoned during duress wipe".to_owned(),
             )
         })?;
-        let changed = !file.states.is_empty();
+        let changed = !states.is_empty();
         if changed {
-            *file = crate::sender_key_state::SenderKeyStateFile::default();
+            states.clear();
         }
         changed
     };
@@ -444,10 +444,9 @@ mod production_duress_session_wipe_tests {
                 .sender_key_state
                 .lock()
                 .expect("sender_key_state mutex poisoned");
-            sender_keys.version = 1;
-            sender_keys.states.insert(
+            sender_keys.insert(
                 "gc:alpha".to_owned(),
-                crypto::sender_keys::SenderKeyStateOnDisk::default(),
+                crypto::sender_keys::SenderKeyState::new(),
             );
         }
         persist_peer_map_now(&state);
@@ -498,7 +497,6 @@ mod production_duress_session_wipe_tests {
                 .sender_key_state
                 .lock()
                 .expect("sender_key_state mutex poisoned")
-                .states
                 .is_empty(),
             "leaving sender-key rows would preserve group decrypt session state"
         );
@@ -612,7 +610,7 @@ pub fn cmd_osl_reset_v5_sender_key(
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned");
-        g.states.remove(&scope_key).is_some()
+        g.remove(&scope_key).is_some()
     };
     if v5_cleared {
         persist_sender_key_state_now(state);
@@ -1237,11 +1235,23 @@ pub(crate) fn persist_sender_key_state_now(state: &AppState) {
         }
     };
     let path = dir.join("sender_key_state.json");
-    let g = state
+    let states = state
         .sender_key_state
         .lock()
         .expect("sender_key_state mutex poisoned");
-    if let Err(e) = crate::sender_key_state::write_sender_key_state(&path, &g) {
+    let file = crate::sender_key_state::SenderKeyStateFile {
+        version: 1,
+        states: states
+            .iter()
+            .map(|(scope, live)| {
+                (
+                    scope.clone(),
+                    crypto::sender_keys::SenderKeyStateOnDisk::from(live),
+                )
+            })
+            .collect(),
+    };
+    if let Err(e) = crate::sender_key_state::write_sender_key_state(&path, &file) {
         record_persist_error(state, "sender_key_state.json", e);
     }
 }
@@ -8546,7 +8556,7 @@ mod control_inbox_dead_letter_policy_tests {
 #[cfg(test)]
 mod v5_sender_key_attribution_tests {
     use super::*;
-    use crypto::sender_keys::{SenderContext, SenderKeyState, SenderKeyStateOnDisk};
+    use crypto::sender_keys::{SenderContext, SenderKeyState};
 
     const REAL_SENDER_DID: &str = "900000000000000092";
     const FORGED_SENDER_DID: &str = "900000000000000193";
@@ -8614,11 +8624,10 @@ mod v5_sender_key_attribution_tests {
                 .sender_key_state
                 .lock()
                 .expect("sender_key_state mutex poisoned");
-            on_disk.states.insert(
+            on_disk.insert(
                 scope_key.clone(),
-                SenderKeyStateOnDisk::from(&receiver_state),
+                receiver_state,
             );
-            on_disk.version = 1;
         }
 
         let ctx = SenderContext {
@@ -16194,7 +16203,7 @@ fn cmd_osl_burn_engage_finish(
         .sender_key_state
         .lock()
         .expect("sender_key_state mutex poisoned") =
-        crate::sender_key_state::SenderKeyStateFile::default();
+        std::collections::HashMap::new();
     state
         .channel_members
         .lock()
@@ -16611,11 +16620,10 @@ mod unit_a_sender_attribution_chain {
             .unwrap();
 
         let mut stored = bob_state.sender_key_state.lock().unwrap();
-        stored.states.insert(
+        stored.insert(
             scope_key.to_string(),
-            crypto::sender_keys::SenderKeyStateOnDisk::from(&bob_sender_keys),
+            bob_sender_keys,
         );
-        stored.version = 1;
     }
 
     #[test]
