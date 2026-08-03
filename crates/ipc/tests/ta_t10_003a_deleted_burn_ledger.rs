@@ -310,3 +310,48 @@ fn enrollment_is_idempotent_and_preserves_the_envelope() {
         "marking enrolment must not flatten the envelope it rides on"
     );
 }
+
+/// A legacy v1 whitelist has no envelope — the top-level object IS the
+/// scope-keyed map. Dropping a bare marker key beside those scopes would make
+/// the loader try to read `burn_ledger_enrolled: true` as a scope named
+/// "burn_ledger_enrolled", which fails to deserialise and takes the entire
+/// whitelist down with it. Marking must lift the file into the envelope form
+/// instead, preserving the scopes.
+#[test]
+fn marking_a_legacy_v1_whitelist_does_not_corrupt_it() {
+    let fx = Fixture::new();
+    let wl_path = fx.whitelist();
+
+    // Shape of a pre-9-C1 file: no `scopes`, no `migrated_c1`.
+    let legacy = serde_json::json!({
+        "dm:900000000000000003": {
+            "encrypt_toggle": true,
+            "auto_enabled": false,
+        }
+    });
+    fs::write(
+        &wl_path,
+        serde_json::to_vec_pretty(&legacy).expect("serialize legacy whitelist"),
+    )
+    .expect("write legacy whitelist");
+    let before = load_whitelist_state_file(&wl_path).expect("legacy file loads before marking");
+    assert_eq!(before.scopes.len(), 1, "fixture must have one legacy scope");
+
+    mark_burn_ledger_enrolled(fx.dir()).expect("mark a legacy file");
+
+    assert_eq!(
+        burn_ledger_enrollment(fx.dir()),
+        BurnLedgerEnrollment::Enrolled
+    );
+    let after = load_whitelist_state_file(&wl_path)
+        .expect("legacy whitelist must still load after marking");
+    assert_eq!(
+        after.scopes.len(),
+        1,
+        "marking enrolment destroyed the legacy scopes"
+    );
+    assert!(
+        !after.migrated_c1,
+        "wrapping is not migrating — the C1 migration must still run"
+    );
+}

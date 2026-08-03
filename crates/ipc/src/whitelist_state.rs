@@ -221,7 +221,7 @@ pub fn mark_burn_ledger_enrolled(dir: &Path) -> Result<(), WhitelistStateError> 
         }),
         Err(e) => return Err(e),
     };
-    let Some(obj) = value.as_object_mut() else {
+    if !value.is_object() {
         return Err(WhitelistStateError::ParseFailed {
             path: path.clone(),
             source: serde_json::Error::io(std::io::Error::new(
@@ -229,7 +229,25 @@ pub fn mark_burn_ledger_enrolled(dir: &Path) -> Result<(), WhitelistStateError> 
                 "whitelist_state.json is not a JSON object",
             )),
         });
-    };
+    }
+    // A legacy v1 file IS the scope-keyed map at top level, so a bare marker
+    // key added beside the scopes would be read back as a scope named
+    // "burn_ledger_enrolled" whose value is a bool — the loader's legacy branch
+    // would fail to deserialise it and the whole whitelist would stop loading.
+    // Lift it into the envelope form first, which is the shape the C1 migration
+    // produces anyway and which the loader already prefers. `migrated_c1` stays
+    // false: wrapping is not migrating, and claiming otherwise would skip the
+    // real migration.
+    if !is_envelope(&value) {
+        value = serde_json::json!({
+            "migrated_c1": false,
+            "scopes": value,
+            "server_defaults": {},
+        });
+    }
+    let obj = value
+        .as_object_mut()
+        .expect("value is an object; just checked");
     if obj
         .get(BURN_LEDGER_ENROLLED_KEY)
         .and_then(serde_json::Value::as_bool)
@@ -242,6 +260,13 @@ pub fn mark_burn_ledger_enrolled(dir: &Path) -> Result<(), WhitelistStateError> 
         serde_json::Value::Bool(true),
     );
     write_whitelist_json(&path, &value)
+}
+
+/// True when this JSON is the 9-C1 envelope rather than a legacy v1 file whose
+/// top-level object IS the scope-keyed map. Single definition so the loader and
+/// the enrolment-marker writer cannot drift apart on what a legacy file is.
+fn is_envelope(value: &serde_json::Value) -> bool {
+    value.get("scopes").is_some() || value.get("migrated_c1").is_some()
 }
 
 /// Read + decrypt + parse `whitelist_state.json` as raw JSON, without imposing
@@ -347,8 +372,7 @@ pub fn load_whitelist_state_file(path: &Path) -> Result<WhitelistStateFile, Whit
             path: path.to_path_buf(),
             source,
         })?;
-    let is_envelope = value.get("scopes").is_some() || value.get("migrated_c1").is_some();
-    if is_envelope {
+    if is_envelope(&value) {
         let file: WhitelistStateFile =
             serde_json::from_value(value).map_err(|source| WhitelistStateError::ParseFailed {
                 path: path.to_path_buf(),
