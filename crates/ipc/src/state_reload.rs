@@ -241,9 +241,7 @@ pub fn reload_encrypted_state_after_unlock(
         Ok(true) => {
             report.prekeys_loaded = true;
             report.prekey_opks = state
-                .prekey_state
-                .lock()
-                .expect("prekey_state mutex poisoned")
+                .prekey_state_slot()
                 .as_ref()
                 .map(|prekeys| prekeys.opk_pool.len())
                 .unwrap_or(0);
@@ -423,9 +421,7 @@ pub fn load_persisted_prekey_state_with_sealer(
 
     let loaded = (|| {
         let identity = state
-            .identity
-            .lock()
-            .map_err(|_| "identity mutex poisoned".to_string())?
+            .identity_slot()
             .clone()
             .ok_or_else(|| "identity is not loaded".to_string())?;
         let prekeys = keystore::load_prekey_state(&path, sealer)

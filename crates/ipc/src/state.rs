@@ -471,6 +471,64 @@ impl AppState {
             .map_err(|_| "OSL: duress engine failed to run".to_owned())
     }
 
+    // ------------------------------------------------------------------
+    // Poison-tolerant accessors for the three whole-value AppState slots.
+    //
+    // A panic anywhere in a frame that holds one of these guards poisons the
+    // mutex for the rest of the process. `lock().expect(...)` then turns that
+    // one recoverable panic into a *permanent* one on every later touch — and
+    // when the next toucher is a Tauri command invoked from the webview's
+    // FFI callback, unwinding out of an `extern "C"` frame is not allowed and
+    // the runtime aborts the whole process. That is how a single background
+    // panic became "crash to desktop": the panic itself was survivable, the
+    // `expect()` on the poisoned lock was not.
+    //
+    // Recovering via `into_inner()` is only sound where the guarded value
+    // cannot be observed half-updated. It is sound for these three because
+    // each is a `Mutex<Option<T>>` written exclusively by whole-value
+    // assignment (`*slot = Some(v)` / `= None` / `.take()`). There is no
+    // in-place, multi-step mutation of the guarded value, so no panic can
+    // interrupt one: whatever is behind a poisoned guard is either the
+    // complete previous value or the complete new one.
+    //
+    // The identity/prekey pair is written under both guards at once in
+    // `try_install_identity_with_prekey_state`, and the two assignments
+    // between the acquisitions are infallible moves, so the pair cannot be
+    // torn either.
+    //
+    // This deliberately does NOT extend to the aggregate slots — `peer_map`,
+    // `whitelist_state`, `sender_key_state`, `scope_membership`,
+    // `burned_scopes`, `message_store`. Those are mutated field-by-field and
+    // entry-by-entry under a held guard, so a panic mid-update can genuinely
+    // leave a half-applied ratchet advance or a partially rewritten
+    // whitelist. Silently continuing on that state in a privacy tool is worse
+    // than failing loudly, so those keep their `expect()`.
+
+    /// Loaded identity slot, recovering the value if a previous holder
+    /// panicked. See the note above for why this is sound.
+    pub fn identity_slot(&self) -> std::sync::MutexGuard<'_, Option<Identity>> {
+        self.identity
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Live prekey slot, recovering the value if a previous holder panicked.
+    pub fn prekey_state_slot(&self) -> std::sync::MutexGuard<'_, Option<keystore::PrekeyState>> {
+        self.prekey_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Installed keyserver-client slot, recovering the value if a previous
+    /// holder panicked. `KeyServerClient` is immutable once built (a base URL
+    /// plus an `Arc`-backed reqwest client), so a poisoned guard can only be
+    /// holding a fully constructed client or `None`.
+    pub fn keyserver_slot(&self) -> std::sync::MutexGuard<'_, Option<KeyServerClient>> {
+        self.keyserver
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Install an identity and construct its live prekey state in the
     /// same AppState transition. Callers that bypass this helper leave
     /// prekey-dependent production paths unavailable.
@@ -519,14 +577,14 @@ impl AppState {
         identity: Identity,
         prekeys: keystore::PrekeyState,
     ) -> Result<(), &'static str> {
-        let mut identity_slot = self
-            .identity
-            .lock()
-            .map_err(|_| "identity mutex poisoned")?;
-        let mut prekey_slot = self
-            .prekey_state
-            .lock()
-            .map_err(|_| "prekey_state mutex poisoned")?;
+        // Both guards are taken before either write, and both writes are
+        // infallible moves, so the identity/prekey pair cannot be observed
+        // torn. Refusing to install over a poisoned slot would strand the
+        // user: after one background panic every later account switch,
+        // import and unlock would fail permanently. Overwriting is the
+        // recovery, not a risk — see the note above `identity_slot`.
+        let mut identity_slot = self.identity_slot();
+        let mut prekey_slot = self.prekey_state_slot();
         *identity_slot = Some(identity);
         *prekey_slot = Some(prekeys);
         Ok(())
@@ -535,44 +593,34 @@ impl AppState {
     /// Recovered from 9c1894bb: a merge dropped this accessor from the impl block
     /// while every caller kept using it, so the crate stopped compiling.
     pub fn has_prekey_state(&self) -> bool {
-        self.prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned")
+        self.prekey_state_slot()
             .is_some()
     }
 
     pub fn set_prekey_state(&self, prekeys: keystore::PrekeyState) {
         *self
-            .prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned") = Some(prekeys);
+            .prekey_state_slot() = Some(prekeys);
     }
 
     pub fn clear_prekey_state(&self) {
         *self
-            .prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned") = None;
+            .prekey_state_slot() = None;
     }
 
     /// Clear identity-owned live state. Account switches, imports, and burn
     /// resets must not leave a stale prekey pool associated with no identity.
     pub fn clear_identity(&self) {
-        *self.identity.lock().expect("identity mutex poisoned") = None;
+        *self.identity_slot() = None;
         self.clear_prekey_state();
     }
 
     pub fn has_identity(&self) -> bool {
-        self.identity
-            .lock()
-            .expect("identity mutex poisoned")
+        self.identity_slot()
             .is_some()
     }
 
     pub fn has_keyserver(&self) -> bool {
-        self.keyserver
-            .lock()
-            .expect("keyserver mutex poisoned")
+        self.keyserver_slot()
             .is_some()
     }
 
@@ -685,11 +733,11 @@ fn unregister_account_handler(state: Arc<AppState>) -> keystore::WipeFn {
 
 fn unregister_account_for_duress(state: &AppState) -> Result<(), keystore::DuressError> {
     let (user_id, signature_b64, timestamp_ms) = {
-        let guard = state.identity.lock().map_err(|_| {
-            keystore::DuressError::Handler(
-                "identity mutex poisoned during duress unregister".to_owned(),
-            )
-        })?;
+        // A duress wipe must not be blocked by an unrelated earlier panic:
+        // the identity behind a poisoned guard is complete (whole-value slot),
+        // and refusing here would mean the remote unregister silently stops
+        // happening for the rest of the process.
+        let guard = state.identity_slot();
         let identity = guard.as_ref().ok_or_else(|| {
             keystore::DuressError::Handler(
                 "identity authority missing for duress unregister".to_owned(),
@@ -709,13 +757,7 @@ fn unregister_account_for_duress(state: &AppState) -> Result<(), keystore::Dures
         )
     };
     let client = state
-        .keyserver
-        .lock()
-        .map_err(|_| {
-            keystore::DuressError::Handler(
-                "keyserver mutex poisoned during duress unregister".to_owned(),
-            )
-        })?
+        .keyserver_slot()
         .clone()
         .ok_or_else(|| {
             keystore::DuressError::Handler(
@@ -1026,9 +1068,7 @@ mod identity_authority_tests {
 
         assert!(state.has_identity());
         assert!(state
-            .prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned")
+            .prekey_state_slot()
             .is_some());
     }
 
@@ -1042,18 +1082,14 @@ mod identity_authority_tests {
         state.install_identity_at(identity, installed_at);
 
         let stored_identity = state
-            .identity
-            .lock()
-            .expect("identity mutex poisoned")
+            .identity_slot()
             .as_ref()
             .expect("identity installed")
             .clone();
         assert_eq!(stored_identity.user_id, installed_identity.user_id);
 
         let prekeys = state
-            .prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned");
+            .prekey_state_slot();
         let prekeys = prekeys.as_ref().expect("live prekey state installed");
         assert_eq!(
             prekeys.current_spk.rotated_at_unix_seconds, installed_at,
@@ -1096,9 +1132,7 @@ mod identity_authority_tests {
         state.install_identity_with_prekey_state(identity, persisted);
 
         let prekeys = state
-            .prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned");
+            .prekey_state_slot();
         let prekeys = prekeys.as_ref().expect("prekey state installed");
         assert_eq!(prekeys.current_spk.rotated_at_unix_seconds, 42);
     }
@@ -1115,9 +1149,7 @@ mod identity_authority_tests {
 
         assert!(!state.has_identity());
         assert!(state
-            .prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned")
+            .prekey_state_slot()
             .is_none());
     }
 

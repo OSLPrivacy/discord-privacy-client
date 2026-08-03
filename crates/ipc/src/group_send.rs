@@ -59,7 +59,7 @@ pub(crate) fn encrypt_v5_send(
 
     let scope_key = scope.storage_key();
     let self_mlkem_pub_bytes: Vec<u8> = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         let identity = id_guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -271,7 +271,7 @@ pub(crate) fn encrypt_v5_send(
         // self-slot decode hits apply_skdm_recv which is idempotent
         // for an already-installed receiver chain.
         let self_mlkem = {
-            let id_guard = state.identity.lock().expect("identity mutex poisoned");
+            let id_guard = state.identity_slot();
             id_guard
                 .as_ref()
                 .ok_or_else(|| "OSL: identity not loaded".to_string())?
@@ -499,7 +499,7 @@ pub(crate) fn apply_skdm_request_recv(
 
     // Self identity material for the v=4 wrap.
     let (sender_sk, self_pk, self_mlkem_pub, self_discord_id) = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         let identity = id_guard
             .as_ref()
             .ok_or_else(|| "OSL: SKDM_REQUEST: identity not loaded".to_string())?;
@@ -766,7 +766,7 @@ pub(crate) fn decrypt_v5_recv(
     //     not yet known — AD will then differ and AEAD fails with
     //     a clear error.
     let sender_mlkem_pub_bytes: Vec<u8> = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         let identity = id_guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -845,7 +845,7 @@ fn verify_v5_sender_discord_binding(
     wire_sender_pub: &crypto::x25519::PublicKey,
 ) -> Result<(), String> {
     let self_expected = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         let identity = id_guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -889,7 +889,7 @@ mod tests {
         let peer_refs: Vec<&(String, crate::wire_v2::RecipientV3)> = peers.iter().collect();
 
         {
-            let mut identity = state.identity.lock().expect("identity mutex poisoned");
+            let mut identity = state.identity_slot();
             *identity = Some(sender.clone());
         }
 

@@ -193,7 +193,7 @@ pub fn verify_peer_map_self_entry(state: &AppState) -> Result<(String, bool), St
     use base64::{engine::general_purpose::STANDARD, Engine};
 
     let (osl_user_id, pubkey_b64, mlkem_b64, snowflake) = {
-        let guard = state.identity.lock().expect("identity mutex poisoned");
+        let guard = state.identity_slot();
         let id = guard
             .as_ref()
             .ok_or_else(|| "identity_not_loaded".to_string())?;
@@ -713,7 +713,7 @@ fn build_session_reset_wire(
     let body = crate::control_messages::serialize_session_reset(&rst)
         .map_err(|e| format!("OSL: SESSION_RESET: serialize: {e}"))?;
     let sender_sk = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         id_guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?
@@ -781,7 +781,7 @@ pub fn cmd_osl_build_skdm_request(
     let body = crate::control_messages::serialize_skdm_request(&req)
         .map_err(|e| format!("OSL: SKDM_REQUEST: serialize: {e}"))?;
     let sender_sk = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         id_guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?
@@ -927,7 +927,7 @@ pub fn cmd_osl_register_self_snowflake_with_dir(
         AlreadySet,
     }
     let step = {
-        let guard = state.identity.lock().expect("identity mutex poisoned");
+        let guard = state.identity_slot();
         let id = guard
             .as_ref()
             .ok_or_else(|| "OSL: register_self_snowflake: identity not loaded".to_string())?;
@@ -1022,7 +1022,7 @@ fn verify_register_self_snowflake_ownership_proof(
         "OSL: register_self_snowflake: account ownership proof required".to_string()
     })?;
     let identity = {
-        let guard = state.identity.lock().expect("identity mutex poisoned");
+        let guard = state.identity_slot();
         guard
             .as_ref()
             .cloned()
@@ -1481,7 +1481,7 @@ pub fn cmd_load_identity(state: &AppState, path: String) -> IpcResult<GenerateId
 
 pub fn cmd_save_identity(state: &AppState, path: String) -> IpcResult<()> {
     record_activity_on_command_entry();
-    let guard = state.identity.lock().expect("identity mutex poisoned");
+    let guard = state.identity_slot();
     let id = guard.as_ref().ok_or(IpcError::IdentityMissing)?;
     let sealer = select_best_sealer();
     keystore::save_identity(&PathBuf::from(path), id, sealer.as_ref())?;
@@ -1493,15 +1493,15 @@ pub fn cmd_save_identity(state: &AppState, path: String) -> IpcResult<()> {
 pub fn cmd_init_keyserver(state: &AppState, base_url: String) -> IpcResult<()> {
     record_activity_on_command_entry();
     let client = KeyServerClient::new(base_url)?;
-    *state.keyserver.lock().expect("keyserver mutex poisoned") = Some(client);
+    *state.keyserver_slot() = Some(client);
     Ok(())
 }
 
 pub fn cmd_register(state: &AppState) -> IpcResult<RegisterResponse> {
     record_activity_on_command_entry();
-    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let id_guard = state.identity_slot();
     let identity = id_guard.as_ref().ok_or(IpcError::IdentityMissing)?;
-    let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+    let ks_guard = state.keyserver_slot();
     let client = ks_guard.as_ref().ok_or(IpcError::KeyserverMissing)?;
     let resp = client.register(identity)?;
     Ok(RegisterResponse {
@@ -1514,7 +1514,7 @@ pub fn cmd_register(state: &AppState) -> IpcResult<RegisterResponse> {
 
 pub fn cmd_fetch_pubkeys(state: &AppState, user_id: String) -> IpcResult<FetchPubkeysResponse> {
     record_activity_on_command_entry();
-    let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+    let ks_guard = state.keyserver_slot();
     let client = ks_guard.as_ref().ok_or(IpcError::KeyserverMissing)?;
     let resp = client.fetch_pubkeys(&user_id)?;
     Ok(FetchPubkeysResponse {
@@ -1537,16 +1537,12 @@ pub fn cmd_osl_fetch_identity_bundle(
 ) -> Result<FetchIdentityBundleResponse, String> {
     record_activity_on_command_entry();
     let identity = state
-        .identity
-        .lock()
-        .expect("identity mutex poisoned")
+        .identity_slot()
         .as_ref()
         .cloned()
         .ok_or_else(|| "OSL: identity bundle fetch needs a loaded identity".to_string())?;
     let client = state
-        .keyserver
-        .lock()
-        .expect("keyserver mutex poisoned")
+        .keyserver_slot()
         .as_ref()
         .cloned()
         .ok_or_else(|| "OSL: identity bundle fetch needs a key server".to_string())?;
@@ -1628,15 +1624,11 @@ fn run_prekey_replenishment_tick_at(
     now_unix_seconds: u64,
 ) -> Result<PrekeyReplenishmentOutcome, String> {
     let identity = state
-        .identity
-        .lock()
-        .expect("identity mutex poisoned")
+        .identity_slot()
         .clone()
         .ok_or_else(|| "OSL: prekey replenish refused: identity is not loaded".to_string())?;
     let client = state
-        .keyserver
-        .lock()
-        .expect("keyserver mutex poisoned")
+        .keyserver_slot()
         .clone()
         .ok_or_else(|| "OSL: prekey replenish refused: keyserver is not configured".to_string())?;
 
@@ -2119,7 +2111,7 @@ fn derive_ui_session_encryption_key(identity: &keystore::Identity) -> IpcResult<
 
 pub fn cmd_status(state: &AppState) -> StatusResponse {
     record_activity_on_command_entry();
-    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let id_guard = state.identity_slot();
     let id_ref = id_guard.as_ref();
     let sealer = select_best_sealer();
     StatusResponse {
@@ -2137,7 +2129,7 @@ pub fn cmd_status(state: &AppState) -> StatusResponse {
 
 pub fn cmd_osl_ui_session_encryption_key(state: &AppState) -> IpcResult<UiSessionEncryptionKeyDto> {
     record_activity_on_command_entry();
-    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let id_guard = state.identity_slot();
     let identity = id_guard.as_ref().ok_or(IpcError::IdentityMissing)?;
     Ok(UiSessionEncryptionKeyDto {
         key_b64: STANDARD.encode(derive_ui_session_encryption_key(identity)?),
@@ -2564,11 +2556,11 @@ pub fn cmd_osl_encrypt_message(
     let mut sorted = recipients;
     sorted.sort();
 
-    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let id_guard = state.identity_slot();
     let identity = id_guard
         .as_ref()
         .ok_or_else(|| "OSL: identity not loaded".to_string())?;
-    let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+    let ks_guard = state.keyserver_slot();
     let client = ks_guard
         .as_ref()
         .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
@@ -3058,7 +3050,7 @@ pub fn cmd_osl_decrypt_message_with_id(
     content: String,
 ) -> Result<String, String> {
     guard_session_on_command_entry(state)?;
-    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let id_guard = state.identity_slot();
     let identity = id_guard
         .as_ref()
         .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -3105,7 +3097,7 @@ pub fn cmd_osl_decrypt_message_with_id(
     let sender_pub = if let Some(cached) = state.sender_pubkey_cache.get(&osl_user_id) {
         cached
     } else {
-        let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+        let ks_guard = state.keyserver_slot();
         let client = ks_guard
             .as_ref()
             .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
@@ -3205,7 +3197,7 @@ mod legacy_v1_decrypt_sender_binding_tests {
         .expect("valid legacy v1 cover");
 
         let state = AppState::new();
-        *state.identity.lock().expect("identity mutex poisoned") = Some(recipient);
+        *state.identity_slot() = Some(recipient);
         {
             let mut peers = state.peer_map.lock().expect("peer_map mutex poisoned");
             peers.insert(
@@ -3372,7 +3364,7 @@ pub fn cmd_osl_persist_outbound(
 ) -> Result<(), String> {
     record_activity_on_command_entry();
     let self_id = {
-        let guard = state.identity.lock().expect("identity mutex poisoned");
+        let guard = state.identity_slot();
         match guard.as_ref() {
             Some(id) => id.user_id.clone(),
             None => {
@@ -3712,7 +3704,7 @@ pub fn cmd_osl_persist_edit(
                 return Ok(());
             };
             let self_id = {
-                let id_guard = state.identity.lock().expect("identity mutex poisoned");
+                let id_guard = state.identity_slot();
                 let Some(id) = id_guard.as_ref() else {
                     return Ok(());
                 };
@@ -4431,7 +4423,7 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
-    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let id_guard = state.identity_slot();
     let identity = id_guard
         .as_ref()
         .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -4656,7 +4648,7 @@ fn try_encrypt_rn_first_contact_from_state(
         .map(|peer| peer.0.as_str())
         .ok_or_else(|| "OSL: OSL-RN first contact: missing peer".to_string())?;
     let (identity, peer_entry) = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         let identity = id_guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?
@@ -4733,7 +4725,7 @@ fn verified_rn_capabilities_for_live_peer(
         return Ok(keystore::client::PeerCapabilities::Absent);
     }
     let resp = {
-        let ks = state.keyserver.lock().expect("keyserver mutex poisoned");
+        let ks = state.keyserver_slot();
         let client = ks
             .as_ref()
             .ok_or_else(|| "OSL: OSL-RN first contact: key-server not initialised".to_string())?;
@@ -4778,7 +4770,7 @@ fn fetch_rn_prekey_bundle_for_peer(
         return Ok(None);
     }
     let bundle = {
-        let ks = state.keyserver.lock().expect("keyserver mutex poisoned");
+        let ks = state.keyserver_slot();
         let client = ks
             .as_ref()
             .ok_or_else(|| "OSL: OSL-RN first contact: key-server not initialised".to_string())?;
@@ -5719,7 +5711,7 @@ pub fn cmd_osl_encrypt_attachment_envelope(
     let env_bytes = crate::control_messages::serialize_attachment_envelope(&env)
         .map_err(|e| format!("OSL: serialize attachment envelope: {e}"))?;
 
-    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let id_guard = state.identity_slot();
     let identity = id_guard
         .as_ref()
         .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -5837,7 +5829,7 @@ pub fn cmd_osl_seal_attachment_with_cover_v2(
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
-    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let id_guard = state.identity_slot();
     let identity = id_guard
         .as_ref()
         .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -5937,7 +5929,7 @@ pub fn cmd_osl_seal_attachment_with_cover_v3(
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
-    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let id_guard = state.identity_slot();
     let identity = id_guard
         .as_ref()
         .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -6022,9 +6014,7 @@ fn fetch_wrapped_attachment_key_for_open(
     }
 
     let identity = state
-        .identity
-        .lock()
-        .expect("identity mutex poisoned")
+        .identity_slot()
         .as_ref()
         .cloned()
         .ok_or_else(|| "OSL: wrapped-key open needs a loaded identity".to_string())?;
@@ -6033,9 +6023,7 @@ fn fetch_wrapped_attachment_key_for_open(
         expected_wrapped_attachment_sender_osl_id(state, &identity, sender_ref)?;
 
     let client = state
-        .keyserver
-        .lock()
-        .expect("keyserver mutex poisoned")
+        .keyserver_slot()
         .as_ref()
         .cloned()
         .ok_or_else(|| "OSL: wrapped-key open needs a key server".to_string())?;
@@ -6102,16 +6090,12 @@ where
     F: FnOnce() -> Result<String, String>,
 {
     let identity = state
-        .identity
-        .lock()
-        .expect("identity mutex poisoned")
+        .identity_slot()
         .as_ref()
         .cloned()
         .ok_or_else(|| "OSL: wrapped-key post needs a loaded identity".to_string())?;
     let client = state
-        .keyserver
-        .lock()
-        .expect("keyserver mutex poisoned")
+        .keyserver_slot()
         .as_ref()
         .cloned()
         .ok_or_else(|| "OSL: wrapped-key post needs a key server".to_string())?;
@@ -6520,7 +6504,7 @@ pub fn cmd_osl_send_burn_marker(
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
-    let id_guard = state.identity.lock().expect("identity mutex poisoned");
+    let id_guard = state.identity_slot();
     let identity = id_guard
         .as_ref()
         .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -6711,7 +6695,7 @@ pub fn cmd_osl_decrypt_message_v2(
     let recovered = match version {
         Some(crate::wire_v2::WIRE_VERSION_V2) => {
             // v=2 path — X25519-only wrap.
-            let id_guard = state.identity.lock().expect("identity mutex poisoned");
+            let id_guard = state.identity_slot();
             let identity = id_guard
                 .as_ref()
                 .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -6735,7 +6719,7 @@ pub fn cmd_osl_decrypt_message_v2(
             // the locally pinned key for the claimed peer.
             let expected_sender =
                 resolve_pinned_sender_pubkey(state, &sender_discord_id).map_err(str::to_owned)?;
-            let id_guard = state.identity.lock().expect("identity mutex poisoned");
+            let id_guard = state.identity_slot();
             let identity = id_guard
                 .as_ref()
                 .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -7078,7 +7062,7 @@ fn accept_rn_bootstrap_inbound_unknown_with_selected_sealer(
     }
 
     let (local, own_identity_public, own_mlkem768_ek) = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         let identity = id_guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -7120,7 +7104,7 @@ fn accept_rn_bootstrap_inbound_unknown_with_sealer(
     }
 
     let (local, own_identity_public, own_mlkem768_ek) = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         let identity = id_guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -7276,7 +7260,7 @@ mod rn_inbound_unknown_tests {
             .expect("encrypt");
 
         let state = AppState::new();
-        *state.identity.lock().expect("identity mutex poisoned") =
+        *state.identity_slot() =
             Some(identity_from_rn_prekeys("bob", &bob_prekeys, &bob_bundle));
         (
             state,
@@ -7456,7 +7440,7 @@ mod rn_inbound_unknown_tests {
             .expect("bootstrap encrypt");
 
         let bob_state = AppState::new();
-        *bob_state.identity.lock().expect("identity mutex poisoned") = Some(
+        *bob_state.identity_slot() = Some(
             identity_from_rn_prekeys("bob-b78", &bob_prekeys, &bob_bundle),
         );
         let bob_dir = TempDir::new().expect("bob tempdir");
@@ -7531,7 +7515,7 @@ mod rn_inbound_unknown_tests {
             .expect("encrypt RN bootstrap");
 
         let bob_state = AppState::new();
-        *bob_state.identity.lock().expect("identity mutex poisoned") = Some(
+        *bob_state.identity_slot() = Some(
             identity_from_rn_prekeys("bob-b77", &bob_prekeys, &bob_bundle),
         );
         let bob_dir = TempDir::new().expect("bob tempdir");
@@ -7624,7 +7608,7 @@ mod rn_inbound_unknown_tests {
 
         let bob_state = AppState::new();
         bob_state.set_rn_wire_in_enabled(true);
-        *bob_state.identity.lock().expect("identity mutex poisoned") = Some(
+        *bob_state.identity_slot() = Some(
             identity_from_rn_prekeys("bob-b93", &bob_prekeys, &bob_bundle),
         );
         let bob_dir = TempDir::new().expect("bob tempdir");
@@ -7764,7 +7748,7 @@ fn decrypt_v4_recv(
     use crypto::ratchet::{DoubleRatchet, RatchetStateOnDisk, SessionContext, SESSION_VERSION_V1};
 
     let (our_sk, our_mlkem_sk, our_pk, self_mlkem_pub_bytes) = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         let identity = id_guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -7851,7 +7835,7 @@ fn decrypt_v4_recv(
             .map_err(|e| format!("OSL: v=4: load ratchet state: {e}"))?,
         (None, true) => {
             let ratchet_initial_secret = {
-                let id_guard = state.identity.lock().expect("identity mutex poisoned");
+                let id_guard = state.identity_slot();
                 id_guard
                     .as_ref()
                     .and_then(|i| i.ratchet_initial_secret.clone())
@@ -8118,13 +8102,13 @@ pub fn cmd_osl_control_inbox_post(
     // every send (encrypt needs state.identity) — that was the
     // "messages take insanely long to send" regression.
     let identity = {
-        let g = state.identity.lock().expect("identity mutex poisoned");
+        let g = state.identity_slot();
         g.as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?
             .clone()
     };
     let client = {
-        let g = state.keyserver.lock().expect("keyserver mutex poisoned");
+        let g = state.keyserver_slot();
         g.as_ref()
             .ok_or_else(|| "OSL: key-server not initialised".to_string())?
             .clone()
@@ -8222,13 +8206,13 @@ pub fn cmd_osl_control_inbox_drain(
     // insanely long time." With clones, the locks are held only for
     // the microseconds it takes to clone.
     let identity = {
-        let g = state.identity.lock().expect("identity mutex poisoned");
+        let g = state.identity_slot();
         g.as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?
             .clone()
     };
     let client = {
-        let g = state.keyserver.lock().expect("keyserver mutex poisoned");
+        let g = state.keyserver_slot();
         g.as_ref()
             .ok_or_else(|| "OSL: key-server not initialised".to_string())?
             .clone()
@@ -8566,7 +8550,7 @@ mod v5_sender_key_attribution_tests {
         let state = AppState::new();
         let mut recipient = keystore::generate_identity("recipient-a92".to_string());
         recipient.discord_snowflake = Some("900000000000000291".to_string());
-        *state.identity.lock().expect("identity mutex poisoned") = Some(recipient);
+        *state.identity_slot() = Some(recipient);
 
         let real_sender = keystore::generate_identity("real-sender-a92".to_string());
         let forged_claim = keystore::generate_identity("forged-claim-a92".to_string());
@@ -8692,7 +8676,7 @@ fn resolve_sender_pubkey(
     if let Some(cached) = state.sender_pubkey_cache.get(&osl_user_id) {
         return Ok(cached);
     }
-    let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+    let ks_guard = state.keyserver_slot();
     let client = ks_guard
         .as_ref()
         .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
@@ -9628,7 +9612,7 @@ pub fn cmd_osl_peer_safety_number(state: &AppState, discord_id: String) -> Resul
 /// Safety number for our complete public-key bundle.
 pub fn cmd_osl_self_safety_number(state: &AppState) -> Result<String, String> {
     record_activity_on_command_entry();
-    let g = state.identity.lock().expect("identity mutex poisoned");
+    let g = state.identity_slot();
     let id = g
         .as_ref()
         .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -9671,7 +9655,7 @@ fn refresh_peer_pubkeys_from_keyserver(state: &AppState, discord_id: &str) -> Re
         return Err("OSL: Discord identifiers cannot resolve keys".to_string());
     }
     let resp = {
-        let ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+        let ks_guard = state.keyserver_slot();
         let client = ks_guard
             .as_ref()
             .ok_or_else(|| "OSL: key-server not initialised".to_string())?;
@@ -9853,7 +9837,7 @@ pub fn cmd_osl_apply_burn(
     // server burn doesn't blank the whole channel (everyone reverting to
     // the DPC0 cover). None falls back to full-scope (account-burn case).
     let self_did = {
-        let g = state.identity.lock().expect("identity mutex poisoned");
+        let g = state.identity_slot();
         g.as_ref().and_then(|id| id.discord_snowflake.clone())
     };
     if let Some(store) = state
@@ -10193,7 +10177,7 @@ fn cmd_osl_send_friend_request_with_dir(
     }
 
     let local_authority = {
-        let guard = state.identity.lock().expect("identity mutex poisoned");
+        let guard = state.identity_slot();
         let identity = guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -10290,7 +10274,7 @@ fn guard_friend_request_peer_binding(
         return Err("OSL: friend request peer binding is missing".to_string());
     }
 
-    let g = state.identity.lock().expect("identity mutex poisoned");
+    let g = state.identity_slot();
     if let Some(id) = g.as_ref() {
         if id
             .discord_snowflake
@@ -11006,14 +10990,14 @@ fn burn_wrapped_keys_for_peer(state: &AppState, peer_discord_id: &str) -> Result
         return Err("OSL: Discord identifiers cannot address wrapped-key burn".to_string());
     }
     let identity = {
-        let guard = state.identity.lock().expect("identity mutex poisoned");
+        let guard = state.identity_slot();
         guard
             .as_ref()
             .cloned()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?
     };
     let client = {
-        let guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+        let guard = state.keyserver_slot();
         guard
             .as_ref()
             .cloned()
@@ -11284,7 +11268,7 @@ fn whitelist_entry_matches(w: &crate::peer_map::WhitelistEntry, s: &crate::scope
 /// is nothing to compare against, so the guard is a no-op (the
 /// normal pre-snowflake state is unaffected).
 fn guard_not_self(state: &AppState, peer_discord_id: &str) -> Result<(), String> {
-    let g = state.identity.lock().expect("identity mutex poisoned");
+    let g = state.identity_slot();
     if let Some(id) = g.as_ref() {
         if let Some(self_sf) = id.discord_snowflake.as_deref() {
             if self_sf == peer_discord_id {
@@ -11837,7 +11821,7 @@ pub fn cmd_osl_set_scope_encrypt(
 pub fn cmd_osl_get_self_user_id(state: &AppState) -> Result<String, String> {
     record_activity_on_command_entry();
     let osl_user_id = {
-        let guard = state.identity.lock().expect("identity mutex poisoned");
+        let guard = state.identity_slot();
         let identity = guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -11883,7 +11867,7 @@ pub fn cmd_osl_get_identity_info(state: &AppState) -> Result<IdentityInfoDto, St
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
     let (osl_user_id, pubkey_b64) = {
-        let guard = state.identity.lock().expect("identity mutex poisoned");
+        let guard = state.identity_slot();
         let identity = guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -12605,7 +12589,7 @@ where
 pub fn ensure_keyserver_registered(state: &AppState, base_url: &str, client_token: Option<String>) {
     // Identity gate — nothing to register until one exists.
     {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         if id_guard.is_none() {
             state.set_cloud_registration_state(crate::state::CloudRegistrationState::NotAttempted);
             tracing::info!(
@@ -12677,7 +12661,7 @@ pub fn ensure_keyserver_registered(state: &AppState, base_url: &str, client_toke
     // scope, never nested — so there is no lock-order deadlock with
     // any other subsystem).
     {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         let Some(id) = id_guard.as_ref() else {
             // Cleared between the gate check and here (e.g. a
             // concurrent burn). Nothing to do.
@@ -12883,7 +12867,7 @@ pub fn ensure_keyserver_registered(state: &AppState, base_url: &str, client_toke
     // later unlock must not stomp the client bootstrap (or an earlier
     // unlock) already installed.
     {
-        let mut ks_guard = state.keyserver.lock().expect("keyserver mutex poisoned");
+        let mut ks_guard = state.keyserver_slot();
         if ks_guard.is_none() {
             *ks_guard = Some(client);
             tracing::info!(
@@ -13421,7 +13405,7 @@ pub fn cmd_osl_view_recovery_phrase(current: String) -> Result<String, String> {
 pub fn cmd_osl_view_identity_recovery_phrase(state: &AppState) -> Result<String, String> {
     record_activity_on_command_entry();
     let entropy = {
-        let g = state.identity.lock().expect("identity mutex poisoned");
+        let g = state.identity_slot();
         let id = g
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -13474,7 +13458,7 @@ pub fn cmd_osl_recover_identity_from_phrase_with_dir(
 
     // Bind to the currently-active Discord account.
     let snowflake = {
-        let g = state.identity.lock().expect("identity mutex poisoned");
+        let g = state.identity_slot();
         g.as_ref()
             .and_then(|i| i.discord_snowflake.clone())
             .ok_or_else(|| {
@@ -13495,14 +13479,14 @@ pub fn cmd_osl_recover_identity_from_phrase_with_dir(
     // disk.  In particular, a network failure is not permission to replace
     // conflicting local evidence.
     let local_ed_matches = {
-        let g = state.identity.lock().expect("identity mutex poisoned");
+        let g = state.identity_slot();
         g.as_ref()
             .map(|id| recovery_identity_key_matches(id, &recovered))
             .unwrap_or(false)
     };
     if !local_ed_matches {
         let client = {
-            let g = state.keyserver.lock().expect("keyserver mutex poisoned");
+            let g = state.keyserver_slot();
             g.clone()
         }
         .ok_or_else(|| {
@@ -13572,7 +13556,7 @@ fn recovery_identity_key_matches(
 pub fn cmd_osl_ensure_recovery_phrase(state: &AppState) -> Result<(), String> {
     record_activity_on_command_entry();
     let already = {
-        let g = state.identity.lock().expect("identity mutex poisoned");
+        let g = state.identity_slot();
         match g.as_ref() {
             Some(id) => id.recovery_entropy.is_some(),
             None => return Ok(()), // no identity yet; nothing to do
@@ -13585,7 +13569,7 @@ pub fn cmd_osl_ensure_recovery_phrase(state: &AppState) -> Result<(), String> {
     let mut entropy = [0u8; 16];
     entropy.copy_from_slice(&bytes);
     {
-        let mut g = state.identity.lock().expect("identity mutex poisoned");
+        let mut g = state.identity_slot();
         if let Some(id) = g.as_mut() {
             id.recovery_entropy = Some(entropy);
         }
@@ -13593,7 +13577,7 @@ pub fn cmd_osl_ensure_recovery_phrase(state: &AppState) -> Result<(), String> {
     // Persist (re-seal) so the phrase survives restart.
     let dir =
         keystore::osl_config_dir().map_err(|e| format!("OSL: cannot resolve config dir: {e}"))?;
-    let g = state.identity.lock().expect("identity mutex poisoned");
+    let g = state.identity_slot();
     if let Some(id) = g.as_ref() {
         let sealer = keystore::select_best_sealer();
         keystore::save_identity(&dir.join("identity.json"), id, sealer.as_ref())
@@ -13667,7 +13651,7 @@ fn export_aead_key(entropy: &[u8; 16]) -> Result<crypto::aead::Key, String> {
 }
 
 fn require_recovery_entropy(state: &AppState, why: &str) -> Result<[u8; 16], String> {
-    let g = state.identity.lock().expect("identity mutex poisoned");
+    let g = state.identity_slot();
     let id = g
         .as_ref()
         .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -14110,7 +14094,7 @@ fn cmd_osl_export_data_with_dir(state: &AppState, dir: &Path) -> Result<String, 
     // re-sealed locally on import). Encrypted under the phrase like the
     // rest of the bundle.
     let identity_obj = {
-        let g = state.identity.lock().expect("identity mutex poisoned");
+        let g = state.identity_slot();
         g.as_ref().map(|id| {
             serde_json::json!({
                 "x25519_secret": STANDARD.encode(id.x25519_secret.as_bytes()),
@@ -14210,9 +14194,7 @@ fn cmd_osl_recover_account_from_export_with_dir(
     let id = decode_export_identity(idobj, entropy)?;
     let imported_snowflake = id.discord_snowflake.as_deref().unwrap_or_default();
     let active_snowflake = state
-        .identity
-        .lock()
-        .expect("identity mutex poisoned")
+        .identity_slot()
         .as_ref()
         .and_then(|current| current.discord_snowflake.as_deref())
         .map(str::to_string);
@@ -16029,7 +16011,7 @@ pub fn cmd_osl_burn_engage(state: &AppState) -> Result<(), String> {
     // with the OLD ed25519_secret, which is destroyed once
     // `fresh_start` overwrites identity.json.
     let unregister_request: Option<(String, String, i64)> = {
-        let guard = state.identity.lock().expect("identity mutex poisoned");
+        let guard = state.identity_slot();
         match guard.as_ref() {
             Some(id) => {
                 let timestamp_ms: i64 = std::time::SystemTime::now()
@@ -16165,7 +16147,7 @@ fn cmd_osl_burn_engage_finish(
     // navigating away sees a fully-zeroed session — no pre-burn key
     // material, recipient sets, or membership accrual remain visible.
     state.install_identity(new_identity);
-    *state.keyserver.lock().expect("keyserver mutex poisoned") = None;
+    *state.keyserver_slot() = None;
     *state
         .registration_alert
         .lock()
