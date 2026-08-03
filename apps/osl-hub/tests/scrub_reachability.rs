@@ -7,7 +7,11 @@ const KNOWN_ORPHANS: &[&str] = &[
     "cloud_autoscrub_envelope",
     "cloud_autoscrub_execution",
     "cloud_autoscrub_run",
+    "scrub_erasure_contacts",
+    "scrub_erasure_queue",
+    "scrub_erasure_tracker",
     "scrub_evidence_manifest",
+    "scrub_hosted_port",
     "scrub_receipt",
 ];
 
