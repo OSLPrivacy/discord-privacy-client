@@ -19,6 +19,7 @@
 
 pub mod account_ownership_error;
 pub mod account_ownership_proof;
+pub mod blocking_http;
 pub mod burn;
 pub mod burn_alert;
 pub mod client;
