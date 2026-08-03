@@ -35,7 +35,24 @@ struct InboxRow {
 #[derive(Clone)]
 struct BlobRow {
     bytes: Vec<u8>,
-    fetch_token: String,
+    fetch_digest: String,
+    manage_digest: String,
+}
+
+fn sha256_hex(value: &str) -> String {
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(value.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// `x-osl-blob-id` / `x-osl-delivery-tag` shape in
+/// `cipher-store-cf/src/endpoints/blob.ts`.
+fn canonical_hex_header(value: Option<&String>, length: usize) -> Option<String> {
+    let value = value?;
+    (value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then(|| value.clone())
 }
 
 #[derive(Default)]
@@ -340,45 +357,78 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
             json_response(200, json!({ "burned": removed }))
         }
         ("POST", "/v1/blob") => {
-            let mut state = state.lock().unwrap();
-            state.next_id += 1;
-            let id = format!("{:016x}", state.next_id);
-            let fetch_token = headers
-                .get("x-osl-fetch-token")
-                .cloned()
-                .unwrap_or_default();
-            state.blobs.insert(
-                id.clone(),
-                BlobRow {
-                    bytes: body,
-                    fetch_token,
-                },
-            );
-            json_response(200, json!({ "id": id, "expires_at": now + 3600 }))
+            let blob_id = canonical_hex_header(headers.get("x-osl-blob-id"), 32);
+            let fetch_digest = canonical_hex_header(headers.get("x-osl-fetch-digest"), 64);
+            let ack_digest = canonical_hex_header(headers.get("x-osl-ack-digest"), 64);
+            let manage_digest = canonical_hex_header(headers.get("x-osl-manage-digest"), 64);
+            let delivery_tag = canonical_hex_header(headers.get("x-osl-delivery-tag"), 32);
+            let object_class = headers
+                .get("x-osl-object-class")
+                .filter(|class| class.as_str() == "single-ack" || class.as_str() == "multi-fetch");
+            match (
+                blob_id,
+                fetch_digest,
+                ack_digest,
+                manage_digest,
+                delivery_tag,
+                object_class,
+            ) {
+                (
+                    Some(blob_id),
+                    Some(fetch_digest),
+                    Some(_),
+                    Some(manage_digest),
+                    Some(_),
+                    Some(_),
+                ) => {
+                    if ipc::transport_padding::padded_transport_len(body.len()) != Some(body.len())
+                    {
+                        json_response(400, json!({ "error": "invalid_padding" }))
+                    } else {
+                        let mut state = state.lock().unwrap();
+                        if state.blobs.contains_key(&blob_id) {
+                            json_response(409, json!({ "error": "blob_id_collision" }))
+                        } else {
+                            state.blobs.insert(
+                                blob_id.clone(),
+                                BlobRow {
+                                    bytes: body,
+                                    fetch_digest,
+                                    manage_digest,
+                                },
+                            );
+                            json_response(201, json!({ "id": blob_id, "expires_at": now + 3600 }))
+                        }
+                    }
+                }
+                _ => json_response(400, json!({ "error": "bad_blob_metadata" })),
+            }
         }
         ("GET", path) if path.starts_with("/v1/blob/") => {
             let id = path.trim_start_matches("/v1/blob/");
             let state = state.lock().unwrap();
+            let presented = headers.get("x-osl-fetch-cap").map(|cap| sha256_hex(cap));
             match state.blobs.get(id) {
-                Some(blob) if headers.get("x-osl-fetch-token") == Some(&blob.fetch_token) => {
+                Some(blob) if presented.as_deref() == Some(blob.fetch_digest.as_str()) => {
                     bytes_response(200, "application/octet-stream", blob.bytes.clone())
                 }
-                Some(_) => json_response(403, json!({ "error": "fetch_token_mismatch" })),
+                Some(_) => json_response(403, json!({ "error": "fetch_cap_mismatch" })),
                 None => json_response(404, json!({ "error": "not_found" })),
             }
         }
         ("DELETE", path) if path.starts_with("/v1/blob/") => {
             let id = path.trim_start_matches("/v1/blob/");
             let mut state = state.lock().unwrap();
+            let presented = headers.get("x-osl-manage-cap").map(|cap| sha256_hex(cap));
             let allowed = state
                 .blobs
                 .get(id)
-                .is_none_or(|blob| headers.get("x-osl-fetch-token") == Some(&blob.fetch_token));
+                .is_none_or(|blob| presented.as_deref() == Some(blob.manage_digest.as_str()));
             if allowed {
                 state.blobs.remove(id);
                 bytes_response(204, "application/octet-stream", Vec::new())
             } else {
-                json_response(403, json!({ "error": "fetch_token_mismatch" }))
+                json_response(403, json!({ "error": "manage_cap_mismatch" }))
             }
         }
         ("POST", "/v1/control-inbox") => {
