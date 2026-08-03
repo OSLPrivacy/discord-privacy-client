@@ -1643,15 +1643,8 @@
     }
 
     /**
-     * Phase 7b: ship a pre-encrypted wire string to `channelId`
-     * via Discord's REST API. The send-side `interceptBody` has a
-     * DPC0:: passthrough guard so this fetch doesn't get
-     * re-encrypted on the way out. Authenticated via the same
-     * Disabled in this legacy shell because sending through Discord REST would
-     * require reading the host account credential.
-     *
-     * Fire-and-forget: returns the fetch Response on success or
-     * null on failure (logged).
+     * Legacy Discord REST control delivery is disabled because it would require
+     * reading the host account credential. Use keyserver OOB control delivery.
      */
     async function oslSendControlMessage(channelId, wireString, scopeInput) {
         console.log("[OSL] oslSendControlMessage FAIL reason=legacy_rest_send_disabled");
