@@ -24,10 +24,7 @@ use std::net::TcpListener;
 /// kernel-assigned free port, then drop the listener.
 fn closed_loopback_url() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback probe port");
-    let port = listener
-        .local_addr()
-        .expect("read the probe port")
-        .port();
+    let port = listener.local_addr().expect("read the probe port").port();
     drop(listener);
     format!("http://127.0.0.1:{port}")
 }
@@ -43,7 +40,10 @@ fn runtime() -> tokio::runtime::Runtime {
 fn keyserver_client_can_be_built_inside_an_async_context() {
     let url = closed_loopback_url();
     let built = runtime().block_on(async { keystore::KeyServerClient::new(&url).is_ok() });
-    assert!(built, "the keyserver client must build from an async context");
+    assert!(
+        built,
+        "the keyserver client must build from an async context"
+    );
 }
 
 #[test]

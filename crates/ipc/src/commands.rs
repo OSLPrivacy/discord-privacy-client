@@ -7260,8 +7260,7 @@ mod rn_inbound_unknown_tests {
             .expect("encrypt");
 
         let state = AppState::new();
-        *state.identity_slot() =
-            Some(identity_from_rn_prekeys("bob", &bob_prekeys, &bob_bundle));
+        *state.identity_slot() = Some(identity_from_rn_prekeys("bob", &bob_prekeys, &bob_bundle));
         (
             state,
             TempDir::new().expect("tempdir"),
@@ -7440,9 +7439,11 @@ mod rn_inbound_unknown_tests {
             .expect("bootstrap encrypt");
 
         let bob_state = AppState::new();
-        *bob_state.identity_slot() = Some(
-            identity_from_rn_prekeys("bob-b78", &bob_prekeys, &bob_bundle),
-        );
+        *bob_state.identity_slot() = Some(identity_from_rn_prekeys(
+            "bob-b78",
+            &bob_prekeys,
+            &bob_bundle,
+        ));
         let bob_dir = TempDir::new().expect("bob tempdir");
         let opened = accept_rn_bootstrap_inbound_unknown_with_sealer(
             &bob_state,
@@ -7515,9 +7516,11 @@ mod rn_inbound_unknown_tests {
             .expect("encrypt RN bootstrap");
 
         let bob_state = AppState::new();
-        *bob_state.identity_slot() = Some(
-            identity_from_rn_prekeys("bob-b77", &bob_prekeys, &bob_bundle),
-        );
+        *bob_state.identity_slot() = Some(identity_from_rn_prekeys(
+            "bob-b77",
+            &bob_prekeys,
+            &bob_bundle,
+        ));
         let bob_dir = TempDir::new().expect("bob tempdir");
         let opened = accept_rn_bootstrap_inbound_unknown_with_sealer(
             &bob_state,
@@ -7608,9 +7611,11 @@ mod rn_inbound_unknown_tests {
 
         let bob_state = AppState::new();
         bob_state.set_rn_wire_in_enabled(true);
-        *bob_state.identity_slot() = Some(
-            identity_from_rn_prekeys("bob-b93", &bob_prekeys, &bob_bundle),
-        );
+        *bob_state.identity_slot() = Some(identity_from_rn_prekeys(
+            "bob-b93",
+            &bob_prekeys,
+            &bob_bundle,
+        ));
         let bob_dir = TempDir::new().expect("bob tempdir");
         accept_rn_bootstrap_inbound_unknown_with_sealer(
             &bob_state,

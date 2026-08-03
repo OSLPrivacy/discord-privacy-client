@@ -593,18 +593,15 @@ impl AppState {
     /// Recovered from 9c1894bb: a merge dropped this accessor from the impl block
     /// while every caller kept using it, so the crate stopped compiling.
     pub fn has_prekey_state(&self) -> bool {
-        self.prekey_state_slot()
-            .is_some()
+        self.prekey_state_slot().is_some()
     }
 
     pub fn set_prekey_state(&self, prekeys: keystore::PrekeyState) {
-        *self
-            .prekey_state_slot() = Some(prekeys);
+        *self.prekey_state_slot() = Some(prekeys);
     }
 
     pub fn clear_prekey_state(&self) {
-        *self
-            .prekey_state_slot() = None;
+        *self.prekey_state_slot() = None;
     }
 
     /// Clear identity-owned live state. Account switches, imports, and burn
@@ -615,13 +612,11 @@ impl AppState {
     }
 
     pub fn has_identity(&self) -> bool {
-        self.identity_slot()
-            .is_some()
+        self.identity_slot().is_some()
     }
 
     pub fn has_keyserver(&self) -> bool {
-        self.keyserver_slot()
-            .is_some()
+        self.keyserver_slot().is_some()
     }
 
     pub fn set_cloud_registration_state(&self, state: CloudRegistrationState) {
@@ -756,14 +751,11 @@ fn unregister_account_for_duress(state: &AppState) -> Result<(), keystore::Dures
             timestamp_ms,
         )
     };
-    let client = state
-        .keyserver_slot()
-        .clone()
-        .ok_or_else(|| {
-            keystore::DuressError::Handler(
-                "keyserver authority missing for duress unregister".to_owned(),
-            )
-        })?;
+    let client = state.keyserver_slot().clone().ok_or_else(|| {
+        keystore::DuressError::Handler(
+            "keyserver authority missing for duress unregister".to_owned(),
+        )
+    })?;
     client
         .unregister_signed(&user_id, &signature_b64, timestamp_ms)
         .map_err(|_| keystore::DuressError::Handler("keyserver unregister failed".to_owned()))
@@ -1067,9 +1059,7 @@ mod identity_authority_tests {
         state.install_identity(identity);
 
         assert!(state.has_identity());
-        assert!(state
-            .prekey_state_slot()
-            .is_some());
+        assert!(state.prekey_state_slot().is_some());
     }
 
     #[test]
@@ -1088,8 +1078,7 @@ mod identity_authority_tests {
             .clone();
         assert_eq!(stored_identity.user_id, installed_identity.user_id);
 
-        let prekeys = state
-            .prekey_state_slot();
+        let prekeys = state.prekey_state_slot();
         let prekeys = prekeys.as_ref().expect("live prekey state installed");
         assert_eq!(
             prekeys.current_spk.rotated_at_unix_seconds, installed_at,
@@ -1131,8 +1120,7 @@ mod identity_authority_tests {
 
         state.install_identity_with_prekey_state(identity, persisted);
 
-        let prekeys = state
-            .prekey_state_slot();
+        let prekeys = state.prekey_state_slot();
         let prekeys = prekeys.as_ref().expect("prekey state installed");
         assert_eq!(prekeys.current_spk.rotated_at_unix_seconds, 42);
     }
@@ -1148,9 +1136,7 @@ mod identity_authority_tests {
         state.clear_identity();
 
         assert!(!state.has_identity());
-        assert!(state
-            .prekey_state_slot()
-            .is_none());
+        assert!(state.prekey_state_slot().is_none());
     }
 
     #[test]
