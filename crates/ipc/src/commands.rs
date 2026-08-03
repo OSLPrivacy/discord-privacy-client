@@ -15009,7 +15009,39 @@ pub fn cmd_osl_mark_scope_burned(
         g.version = 1;
     }
     persist_burned_scopes_now(state);
+    record_burn_ledger_enrollment(state);
     Ok(())
+}
+
+/// TA-T10-003a: record, durably and OUTSIDE `burned_scopes.json`, that this
+/// account has burned at least once.
+///
+/// Without this the kill list is its own only evidence, so deleting it also
+/// erases the proof that it ever had contents and `load_burned_scopes` cannot
+/// tell a deletion from a first run. The marker rides `whitelist_state.json`
+/// (see `whitelist_state::BURN_LEDGER_ENROLLED_KEY` for why that file) and is
+/// cleared only when `fresh_start` deletes it.
+///
+/// Ordering is deliberate: this runs AFTER the ledger write, never before.
+/// Marked-with-no-ledger is indistinguishable on the next boot from
+/// deleted-after-enrolment, so a transient disk error on a user's FIRST burn
+/// would latch the account permanently closed over a burn that never
+/// persisted. Marking second means the worst case is a burn that is fully in
+/// effect but unmarked — deletion-detection is lost for that window only, and
+/// `state_reload` re-establishes the marker on the next boot that reads a
+/// non-empty ledger. Losing detection on a disk hiccup is recoverable;
+/// bricking an account on one is not.
+fn record_burn_ledger_enrollment(state: &AppState) {
+    let dir = match keystore::osl_config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            record_persist_error(state, "burn ledger enrolment dir resolve", e);
+            return;
+        }
+    };
+    if let Err(e) = crate::whitelist_state::mark_burn_ledger_enrolled(&dir) {
+        record_persist_error(state, "burn ledger enrolment marker", e.to_string());
+    }
 }
 
 /// 9-A1c: burn kill list lookup. Returns true iff the given
@@ -16186,6 +16218,19 @@ fn cmd_osl_burn_engage_finish(
         .lock()
         .expect("burned_scopes mutex poisoned") =
         crate::burned_scopes_file::BurnedScopesFile::default();
+    // TA-T10-003a: the account these protected no longer exists. `fresh_start`
+    // has already deleted and rewritten whitelist_state.json, so the on-disk
+    // enrolment marker is clear; release the process-global fail-closed latch
+    // to match, since it would otherwise outlive the account it was protecting
+    // and keep refusing until a restart.
+    //
+    // This is the ONLY non-test way out of a kill list that can no longer be
+    // proven intact — deleted or corrupt — and it is what stops the
+    // fail-closed posture from being a permanent brick. It is safe precisely
+    // because the identity was replaced: nothing the old list covered is
+    // decryptable under the new keys, so there is no burn promise left to
+    // break.
+    crate::burned_scopes_file::clear_burn_state_for_replaced_account();
     *state
         .sender_key_state
         .lock()
