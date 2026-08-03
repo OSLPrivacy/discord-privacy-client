@@ -1513,6 +1513,13 @@ function containBackgroundFailure(): void {
   showToast("That action failed. Nothing changed.");
 }
 
+const unhandledRejectionEventType = "unhandledrejection";
+
+function handleUnhandledRejection(event: PromiseRejectionEvent): void {
+  console.error("Unhandled background rejection", event.reason);
+  containBackgroundFailure();
+}
+
 function desktopTitlebar(): string {
   const controlsBlocked = activeNativeHostId || activeDefaultBrowserCompanion;
   const nativeControlsBlocked = controlsBlocked ? ' disabled aria-describedby="desktop-controls-unavailable"' : "";
@@ -9615,6 +9622,9 @@ export const __oslHubUiTest = {
   persistOslChatNotifications(): void {
     persistOslChatNotifications();
   },
+  handleUnhandledRejection(event: PromiseRejectionEvent): void {
+    handleUnhandledRejection(event);
+  },
   /** Run one OSL Chat delivery tick, exactly as the cadence would. */
   deliverOslChats(): Promise<void> {
     return oslChatDelivery.sync();
@@ -9700,7 +9710,7 @@ if (!runningUnderVitest) {
     }
   });
   window.addEventListener("error", (event) => { event.preventDefault(); containBackgroundFailure(); });
-  window.addEventListener("unhandledrejection", (event) => { event.preventDefault(); containBackgroundFailure(); });
+  window.addEventListener(unhandledRejectionEventType, handleUnhandledRejection);
   void bootstrap();
   scheduleOslChatBackgroundSync(1_000);
 }
