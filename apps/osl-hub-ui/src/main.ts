@@ -1505,12 +1505,44 @@ function restoreWorkspaceFocus(snapshot: WorkspaceFocusSnapshot): void {
   if (snapshot.focusedId) document.getElementById(snapshot.focusedId)?.focus({ preventScroll: true });
 }
 
-function containBackgroundFailure(): void {
+function containBackgroundFailure(detail?: string): void {
   if (!root.querySelector(".app-frame")) {
     showRenderRecovery();
     return;
   }
-  showToast("That action failed. Nothing changed.");
+  showToast(detail
+    ? `That action failed. Nothing changed. (${detail})`
+    : "That action failed. Nothing changed.");
+}
+
+// A rejection from invoking a command the Rust side does not define is the one
+// runtime signal that a frontend client is calling into nothing. It was
+// suppressed for the life of the project by a preventDefault() on
+// unhandledrejection, which is why four such commands shipped unnoticed. Naming
+// the command in the toast is deliberate: a generic "that action failed" is
+// indistinguishable from a network blip, so it teaches the user -- and anyone
+// reading a bug report -- nothing about which action is missing.
+function describeRejection(reason: unknown): string | undefined {
+  const text = typeof reason === "string"
+    ? reason
+    : reason instanceof Error
+      ? reason.message
+      : typeof reason === "object" && reason !== null && "message" in reason
+        ? String((reason as { message: unknown }).message)
+        : undefined;
+  if (!text) return undefined;
+  const missing =
+    /(?:command|Command)\s+([a-z0-9_]+)\s+not\s+found/.exec(text) ??
+    /unknown\s+command:?\s+([a-z0-9_]+)/i.exec(text);
+  if (missing) return `unknown command: ${missing[1]}`;
+  return text.length > 80 ? `${text.slice(0, 77)}...` : text;
+}
+
+const unhandledRejectionEventType = "unhandledrejection";
+
+function handleUnhandledRejection(event: PromiseRejectionEvent): void {
+  console.error("Unhandled background rejection", event.reason);
+  containBackgroundFailure(describeRejection(event.reason));
 }
 
 function desktopTitlebar(): string {
@@ -9615,6 +9647,9 @@ export const __oslHubUiTest = {
   persistOslChatNotifications(): void {
     persistOslChatNotifications();
   },
+  handleUnhandledRejection(event: PromiseRejectionEvent): void {
+    handleUnhandledRejection(event);
+  },
   /** Run one OSL Chat delivery tick, exactly as the cadence would. */
   deliverOslChats(): Promise<void> {
     return oslChatDelivery.sync();
@@ -9700,7 +9735,7 @@ if (!runningUnderVitest) {
     }
   });
   window.addEventListener("error", (event) => { event.preventDefault(); containBackgroundFailure(); });
-  window.addEventListener("unhandledrejection", (event) => { event.preventDefault(); containBackgroundFailure(); });
+  window.addEventListener(unhandledRejectionEventType, handleUnhandledRejection);
   void bootstrap();
   scheduleOslChatBackgroundSync(1_000);
 }

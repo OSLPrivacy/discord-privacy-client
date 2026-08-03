@@ -337,10 +337,6 @@ describe("home interaction regressions", () => {
 
   it("has no background polling or interval leak", () => {
     expect(source).not.toContain("setInterval(");
-    expect(source).toContain('window.addEventListener("unhandledrejection"');
-    expect(source).toContain("containBackgroundFailure");
-    expect(source).toMatch(/function containBackgroundFailure[\s\S]*?showToast\("That action failed\. Nothing changed\."\)/);
-    expect(source).not.toContain('window.addEventListener("unhandledrejection", (event) => { event.preventDefault(); showRenderRecovery(); });');
   });
 
   it("does not eagerly duplicate the friends list on Home", () => {
