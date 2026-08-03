@@ -8,8 +8,25 @@
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use ipc::prose_token::{prose_token_burn_id, prose_token_recv, prose_token_send};
+use ipc::prose_token::{
+    prose_token_burn_id, prose_token_recv, prose_token_send, ProseTokenSendKeys,
+};
 use ipc::scope::{ScopeInput, ScopeKind};
+
+/// Stand-ins for the three roots the shipping sender threads in. They are kept
+/// distinct here for the same reason they are distinct in production: a send
+/// key the recipient could also derive would hand it burn authority.
+const MESSAGE_KEY: [u8; 32] = [0x11; 32];
+const SEND_KEY: [u8; 32] = [0x22; 32];
+const CONVERSATION_KEY: [u8; 32] = [0x33; 32];
+
+fn send_keys() -> ProseTokenSendKeys<'static> {
+    ProseTokenSendKeys {
+        message_key: &MESSAGE_KEY,
+        send_key: &SEND_KEY,
+        conversation_key: &CONVERSATION_KEY,
+    }
+}
 
 fn live_tests_enabled() -> bool {
     std::env::var("OSL_LIVE_TESTS").ok().as_deref() == Some("1")
@@ -52,11 +69,20 @@ fn end_to_end_round_trip_via_live_store() {
     println!("[send] wire = {wire}");
 
     let key = detection_key();
-    let sent = prose_token_send(&dir, &scope, &key, &wire, 86400).expect("prose_token_send");
+    let sent =
+        prose_token_send(&dir, &scope, &key, send_keys(), &wire, 86400).expect("prose_token_send");
     println!("[send] blob_id = {}", sent.blob_id);
     println!("[send] cover_text = {}", sent.cover_text);
     println!("[send] expires_at = {}", sent.expires_at);
-    assert_eq!(sent.blob_id.len(), 16);
+    // The id is the 128-bit value this client derived from its own pointer,
+    // in the canonical lowercase form the store indexes on. It was 16 hex
+    // chars while the store assigned ids itself; that shape is now
+    // unreachable, and a store that answered with one would be refused.
+    assert_eq!(sent.blob_id.len(), 32);
+    assert!(sent
+        .blob_id
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
     assert!(!sent.cover_text.starts_with("DPC"));
 
     let recv = prose_token_recv(&dir, &scope, &key, &sent.cover_text)
@@ -68,8 +94,8 @@ fn end_to_end_round_trip_via_live_store() {
     assert_eq!(recv.wire, wire);
 
     // Burn — second call should be idempotent.
-    prose_token_burn_id(&dir, &scope, &sent.blob_id).expect("burn succeeds");
-    prose_token_burn_id(&dir, &scope, &sent.blob_id).expect("burn idempotent");
+    prose_token_burn_id(&dir, &SEND_KEY, &sent.blob_id).expect("burn succeeds");
+    prose_token_burn_id(&dir, &SEND_KEY, &sent.blob_id).expect("burn idempotent");
 
     // After burn, recv should map to None (server returns 404 →
     // prose_token_recv folds that to Ok(None)).
@@ -78,6 +104,37 @@ fn end_to_end_round_trip_via_live_store() {
         after_burn.is_none(),
         "expected None after burn, got {after_burn:?}"
     );
+}
+
+/// Burn authority is the sender's alone. A party holding the recorded id but
+/// not the send key -- which includes every recipient, since the pointer they
+/// do hold derives the id -- must not be able to destroy the object.
+#[test]
+fn a_foreign_send_key_cannot_burn() {
+    if !live_tests_enabled() {
+        eprintln!("skipping live test (set OSL_LIVE_TESTS=1 to run)");
+        return;
+    }
+    let dir = config_dir();
+    let scope = dm_scope();
+    let key = detection_key();
+    let wire = fake_wire(b"burn-authority-payload");
+    let sent =
+        prose_token_send(&dir, &scope, &key, send_keys(), &wire, 86400).expect("prose_token_send");
+
+    assert!(
+        prose_token_burn_id(&dir, &[0x99; 32], &sent.blob_id).is_err(),
+        "a foreign send key must not be able to burn"
+    );
+    let survived = prose_token_recv(&dir, &scope, &key, &sent.cover_text)
+        .expect("recv ok")
+        .expect("the object survived the unauthorized burn");
+    assert_eq!(survived.wire, wire);
+
+    prose_token_burn_id(&dir, &SEND_KEY, &sent.blob_id).expect("the sender's own burn succeeds");
+    assert!(prose_token_recv(&dir, &scope, &key, &sent.cover_text)
+        .expect("recv ok")
+        .is_none());
 }
 
 #[test]
@@ -115,11 +172,11 @@ fn cross_scope_does_not_decode() {
     let payload = b"cross-scope-payload".to_vec();
     let wire = fake_wire(&payload);
     let key = detection_key();
-    let sent = prose_token_send(&dir, &scope_a, &key, &wire, 86400).expect("send");
+    let sent = prose_token_send(&dir, &scope_a, &key, send_keys(), &wire, 86400).expect("send");
     // Decoding under scope_b with the same cover should NOT recover
     // the token (different cipher permutation + different MAC key).
     let recv_b = prose_token_recv(&dir, &scope_b, &key, &sent.cover_text).expect("recv ok");
     assert!(recv_b.is_none(), "cross-scope decode must return None");
     // Cleanup.
-    let _ = prose_token_burn_id(&dir, &scope_a, &sent.blob_id);
+    let _ = prose_token_burn_id(&dir, &SEND_KEY, &sent.blob_id);
 }
