@@ -833,3 +833,66 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod b0_01_scope_isolation {
+    //! B0-01 finding: what actually isolates one conversation's cover text
+    //! from another's is the *detection key*, not the scope cipher.
+    //!
+    //! `crates/ipc/tests/prose_token_live.rs::cross_scope_does_not_decode`
+    //! asserts the opposite -- "different cipher permutation + different MAC
+    //! key" -- while holding the detection key constant across both scopes. It
+    //! passed only because the blob id it derived from the recovered carrier
+    //! had never been uploaded, so the store answered 404 and the client
+    //! folded that to `None`. The assertion was reading a storage miss as a
+    //! cryptographic refusal. These two tests pin the real behaviour so the
+    //! next reader does not have to rediscover it.
+
+    use super::*;
+    use crate::scope::{ScopeInput, ScopeKind};
+
+    fn scope(id: &str) -> ScopeInput {
+        ScopeInput { kind: ScopeKind::Dm, id: id.to_string(), server_id: None, channel_id: None }
+    }
+
+    /// The scope cipher permutes word choice, not payload bits: a cover text
+    /// encoded under one scope decodes to the identical carrier under another
+    /// when the detection key is shared. Not a leak in shipping use -- the
+    /// shipping caller derives the detection key from secret conversation
+    /// material, so two conversations never share one -- but it does mean the
+    /// scope label carries no isolation of its own, and nothing should be
+    /// built on the assumption that it does.
+    #[test]
+    fn scope_cipher_alone_does_not_isolate_the_carrier() {
+        let key = derive_detection_key(&[0x44; 32]).unwrap();
+        let a = derive_scope_cipher(&scope("scope-a-id")).unwrap();
+        let b = derive_scope_cipher(&scope("scope-b-id")).unwrap();
+        let carrier = [0x5Au8; stego::TOKEN_ID_BYTES];
+        let cover = stego::encode_token(&a, &key, &carrier);
+        assert_eq!(stego::decode_token(&a, &key, &cover), Some(carrier));
+        assert_eq!(
+            stego::decode_token(&b, &key, &cover),
+            Some(carrier),
+            "the scope cipher does not key the payload; only the detector does"
+        );
+    }
+
+    /// The property the live test meant to assert, stated against the value
+    /// that actually carries it. A distinct conversation secret yields a
+    /// distinct detector, and the cover text stops decoding entirely -- no
+    /// carrier, no id, and therefore no request to the store at all.
+    #[test]
+    fn a_distinct_detection_key_is_what_isolates() {
+        let mine = derive_detection_key(&[0x44; 32]).unwrap();
+        let theirs = derive_detection_key(&[0x77; 32]).unwrap();
+        let cipher = derive_scope_cipher(&scope("scope-a-id")).unwrap();
+        let carrier = [0x5Au8; stego::TOKEN_ID_BYTES];
+        let cover = stego::encode_token(&cipher, &mine, &carrier);
+        assert_eq!(stego::decode_token(&cipher, &mine, &cover), Some(carrier));
+        assert_eq!(
+            stego::decode_token(&cipher, &theirs, &cover),
+            None,
+            "a foreign conversation must not recover the carrier"
+        );
+    }
+}
