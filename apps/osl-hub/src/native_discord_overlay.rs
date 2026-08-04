@@ -9230,7 +9230,8 @@ mod tests {
         // deleted by someone cleaning up "dead" code on a Linux checkout, and the
         // deletion would compile clean here.
         assert!(
-            probe.contains("fn native_drag_frame_cost() {") && probe.contains("BeginDeferWindowPos(2)"),
+            probe.contains("fn native_drag_frame_cost() {")
+                && probe.contains("BeginDeferWindowPos(2)"),
             "the Windows drag-cost probe must still exist"
         );
         // And still doubly unable to run by accident: `#[ignore]` keeps it out of
