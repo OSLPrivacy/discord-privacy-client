@@ -50,6 +50,10 @@ stego = { path = "../../crates/stego" }
 sensitive-classify = { path = "../../crates/sensitive-classify" }
 sha2 = "=0.10.9"
 tracing = { version = "=0.1.44", optional = true }
+# D-142: this binary shipped with `tracing` events and no subscriber, so every
+# `tracing::error!` in the workspace was dropped by `NoSubscriber`. Same pin the
+# legacy src-tauri shell already resolves (src-tauri/Cargo.toml:41).
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter"], optional = true }
 bip39 = { version = "=2.2.2", default-features = false, features = ["std"], optional = true }
 # Attachment scanning is available outside `core` and decodes its bounded,
 # in-memory transport envelope directly, so this is not a core-only dependency.
@@ -103,7 +107,7 @@ rfd = { version = "=0.16.0", default-features = false, features = ["gtk3"] }
 # Nothing that provisions a disposable QA account may be listed here: see
 # `whatsapp-qa-identity` below for the half that was split back out.
 default = ["core", "whatsapp-qa-shell"]
-core = ["dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:tracing"]
+core = ["dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:tracing", "dep:tracing-subscriber"]
 desktop = ["dep:runtime", "dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tokio", "core"]
 custom-protocol = ["tauri/custom-protocol"]
 # Disposable two-VM Discord testing only. This is deliberately a native build
