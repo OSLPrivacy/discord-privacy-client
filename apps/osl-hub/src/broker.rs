@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -38,6 +38,48 @@ fn scope_storage_key(scope_input: &ScopeInput) -> Result<String, String> {
         .try_into()
         .map_err(|_| "OSL protected scope is invalid".to_owned())?;
     Ok(scope.storage_key())
+}
+
+fn persist_osl_chat_inbound(
+    core: &HubCoreState,
+    channel_id: String,
+    message_id: String,
+    sender_osl_user_id: String,
+    plaintext: String,
+) -> Result<(), String> {
+    if channel_id.is_empty()
+        || channel_id.len() > 160
+        || message_id.is_empty()
+        || message_id.len() > 96
+        || sender_osl_user_id.is_empty()
+        || sender_osl_user_id.len() > 160
+        || plaintext.is_empty()
+    {
+        return Err("OSL: invalid first-party chat history row".to_owned());
+    }
+    let guard = core
+        .osl
+        .message_store
+        .lock()
+        .map_err(|_| "OSL Chat history is unavailable".to_owned())?;
+    let Some(store) = guard.as_ref() else {
+        return Err("OSL Chat history is unavailable".to_owned());
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    store
+        .put(&store::StoredMessage {
+            discord_message_id: message_id,
+            channel_id,
+            sender_discord_id: sender_osl_user_id.clone(),
+            sender_osl_user_id,
+            plaintext,
+            decrypted_at: now,
+            burned: false,
+        })
+        .map_err(|error| format!("OSL: first-party chat history: {error}"))
 }
 
 /// The bilateral secret both ends of an approved manual-peer conversation
@@ -4777,8 +4819,8 @@ fn drain_peer_inbox_text(
         // before their best-effort history write failed.
         if context.service_id == "osl-chat"
             && !payload.view_once
-            && ipc::commands::cmd_osl_persist_inbound(
-                &core.osl,
+            && persist_osl_chat_inbound(
+                core,
                 scope_storage_key(&manual.scope)?,
                 payload.message_id.clone(),
                 manual.peer_osl_user_id.clone(),
@@ -4957,8 +4999,8 @@ fn drain_peer_inbox_text(
         }
         if context.service_id == "osl-chat"
             && !logical.view_once
-            && ipc::commands::cmd_osl_persist_inbound(
-                &core.osl,
+            && persist_osl_chat_inbound(
+                core,
                 scope_storage_key(&manual.scope)?,
                 logical.message_id.clone(),
                 manual.peer_osl_user_id.clone(),
@@ -12584,6 +12626,84 @@ mod tests {
                 && one_phase_chunked.contains("!received_already_sent")
                 && one_phase_chunked.contains("send_native_overlay_received_acknowledgment("),
             "one-phase chunked view-once opens and replays must post Received before deletion"
+        );
+    }
+
+    #[test]
+    fn first_party_osl_chat_persist_refuses_missing_store() {
+        let core = HubCoreState::default();
+
+        let error = persist_osl_chat_inbound(
+            &core,
+            "manual-dm-history".to_owned(),
+            "peer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            "osl-peer".to_owned(),
+            "private".to_owned(),
+        )
+        .expect_err("missing MessageStore is a loud receive failure");
+
+        assert!(error.contains("history is unavailable"), "{error}");
+    }
+
+    #[test]
+    fn first_party_osl_chat_receive_persists_before_consume_or_delete() {
+        let source = include_str!("broker.rs");
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests {")
+            .map(|(production, _)| production)
+            .expect("broker test module boundary remains visible");
+        let drain = production
+            .split_once("fn drain_peer_inbox_text(")
+            .and_then(|(_, tail)| tail.split_once("pub fn load_osl_chat_history("))
+            .map(|(drain, _)| drain)
+            .expect("drain body remains visible");
+
+        assert!(
+            !drain.contains("cmd_osl_persist_inbound("),
+            "the receive drain must not call the best-effort IPC persistence API"
+        );
+
+        let single = drain
+            .split_once("let received_already_sent = two_phase_view_once")
+            .and_then(|(_, tail)| tail.split_once("messages.push(OpenedNativeOverlayText"))
+            .map(|(segment, _)| segment)
+            .expect("single-row receive branch remains visible");
+        let single_persist = single
+            .find("persist_osl_chat_inbound(")
+            .expect("single-row OSL Chat receive persists first");
+        let single_already_consumed = single
+            .find("if already_consumed {")
+            .expect("single-row already-consumed deletion branch remains visible");
+        let single_consume = single
+            .find("security::consume_peer_message(")
+            .expect("single-row consume call remains visible");
+        let single_delete = single
+            .find("delete_control_inbox")
+            .expect("single-row delete call remains visible");
+        assert!(
+            single_persist < single_already_consumed
+                && single_persist < single_consume
+                && single_persist < single_delete,
+            "single-row OSL Chat must persist before already-consumed deletion, consume, or delete"
+        );
+
+        let chunked = drain
+            .split_once("let mut logical = group.template;")
+            .and_then(|(_, tail)| tail.split_once("// Outbound half of the bilateral burn"))
+            .map(|(segment, _)| segment)
+            .expect("chunked receive branch remains visible");
+        let chunked_persist = chunked
+            .find("persist_osl_chat_inbound(")
+            .expect("chunked OSL Chat receive persists first");
+        let chunked_consume = chunked
+            .find("security::consume_peer_message(")
+            .expect("chunked consume call remains visible");
+        let chunked_delete = chunked
+            .find("delete_control_inbox")
+            .expect("chunked delete call remains visible");
+        assert!(
+            chunked_persist < chunked_consume && chunked_persist < chunked_delete,
+            "chunked OSL Chat must persist before consume or delete"
         );
     }
 
