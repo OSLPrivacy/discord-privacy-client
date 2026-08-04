@@ -138,11 +138,45 @@ mod tests {
         assert!(server_values.iter().all(|value| **value != p1_hex));
     }
 
+    /// An Adversary correctly rejected the previous version of this helper: it
+    /// returned `first.delivery_tag == second.delivery_tag`, so the test above it
+    /// only asserted that two tags differ. Any counter satisfies that. It caught a
+    /// static tag and nothing else, while reading like a privacy proof.
+    ///
+    /// Linkability is the real property: given two tags, can an observer WITHOUT
+    /// the conversation secret tell whether they belong to one conversation? So
+    /// this models the observer's actual power — every relation computable from
+    /// the two tag values alone — and reports whether any of them separates a
+    /// same-conversation pair from a cross-conversation pair.
     fn public_observer_can_link_only_by_repeated_delivery_tag(
         first: &UploadMetadata,
         second: &UploadMetadata,
     ) -> bool {
-        first.delivery_tag == second.delivery_tag
+        let a = tag_hex_to_bytes(&first.delivery_tag);
+        let b = tag_hex_to_bytes(&second.delivery_tag);
+
+        // 1. equality -- a static or repeated tag
+        if a == b {
+            return true;
+        }
+        // 2. shared prefix or suffix -- a conversation id spliced into the tag
+        let shared_prefix = a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count();
+        let shared_suffix = a.iter().rev().zip(b.iter().rev()).take_while(|(x, y)| x == y).count();
+        if shared_prefix >= 4 || shared_suffix >= 4 {
+            return true;
+        }
+        // 3. a constant XOR delta -- tags advancing by a fixed, guessable step
+        let delta: Vec<u8> = a.iter().zip(b.iter()).map(|(x, y)| x ^ y).collect();
+        if delta.windows(2).all(|w| w[0] == w[1]) {
+            return true;
+        }
+        // 4. low Hamming distance -- a counter incremented in the clear
+        let differing_bits: u32 = delta.iter().map(|byte| byte.count_ones()).sum();
+        let total_bits = (CAPABILITY_BYTES * 8) as u32;
+        if differing_bits * 4 < total_bits {
+            return true;
+        }
+        false
     }
 
     fn tag_hex_to_bytes(value: &str) -> [u8; CAPABILITY_BYTES] {
@@ -152,6 +186,52 @@ mod tests {
             *slot = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).unwrap();
         }
         out
+    }
+
+    /// A test of the test. The previous linkability helper could not fail for any
+    /// input that was not literally identical, so it passed while proving nothing.
+    /// This starves the new one: each crafted pair exhibits exactly one linkage
+    /// shape, and the helper must catch every one. If any assertion here goes
+    /// green-when-it-should-be-red, the privacy assertion above is decoration.
+    #[test]
+    fn b0_14_the_linkability_helper_actually_detects_each_linkage_shape() {
+        fn meta(tag: [u8; CAPABILITY_BYTES]) -> UploadMetadata {
+            let key = [0x42u8; 32];
+            let mut m = upload_metadata(
+                &Pointer::from_bytes([0x01; POINTER_BYTES]),
+                &key,
+                &key,
+                &key,
+                0,
+                ObjectClass::SingleAck,
+            )
+            .unwrap();
+            m.delivery_tag = tag.iter().map(|b| format!("{b:02x}")).collect();
+            m
+        }
+        let base = [0xA5u8; CAPABILITY_BYTES];
+
+        // 1. identical tags
+        assert!(public_observer_can_link_only_by_repeated_delivery_tag(&meta(base), &meta(base)));
+
+        // 2. shared prefix -- a conversation id spliced in
+        let mut prefixed = [0x11u8; CAPABILITY_BYTES];
+        prefixed[..6].copy_from_slice(&base[..6]);
+        assert!(public_observer_can_link_only_by_repeated_delivery_tag(&meta(base), &meta(prefixed)));
+
+        // 3. constant XOR delta -- a fixed, guessable step
+        let stepped: [u8; CAPABILITY_BYTES] = base.map(|b| b ^ 0x0F);
+        assert!(public_observer_can_link_only_by_repeated_delivery_tag(&meta(base), &meta(stepped)));
+
+        // 4. low Hamming distance -- a counter incremented in the clear
+        let mut nudged = base;
+        nudged[CAPABILITY_BYTES - 1] ^= 0x01;
+        assert!(public_observer_can_link_only_by_repeated_delivery_tag(&meta(base), &meta(nudged)));
+
+        // and the control: two genuinely unrelated tags must NOT be flagged,
+        // or the helper would fail everything and be equally useless.
+        let unrelated: [u8; CAPABILITY_BYTES] = std::array::from_fn(|i| (i as u8).wrapping_mul(37) ^ 0x5C);
+        assert!(!public_observer_can_link_only_by_repeated_delivery_tag(&meta(base), &meta(unrelated)));
     }
 
     #[test]
