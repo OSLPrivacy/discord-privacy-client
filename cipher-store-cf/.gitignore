@@ -1,5 +1,7 @@
 node_modules
 .wrangler
+# D-162 build gate output: `npm run verify:worker-build` bundles the Worker here.
+.wrangler-dry-run
 .dev.vars
 *.log
 dist

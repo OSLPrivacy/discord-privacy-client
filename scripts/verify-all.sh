@@ -10,8 +10,26 @@
 #                         `cargo test --workspace` never touches the product app.
 #   * node --test        - 3 screenshot tests use node:test and were run by
 #                         nothing at all while vitest called the file a failure.
+#   * keyserver bundle   - D-162. db4172f7b imported a normalizeUsername() that
+#                         was never written, so the keyserver Worker could not
+#                         be bundled AT ALL from 2026-08-02. Nothing here built
+#                         it, no workflow runs on integrate/first-usable, and
+#                         `npm run typecheck` was already red for unrelated
+#                         reasons, so a hard deploy blocker sat unnoticed under
+#                         every pending deploy for two days. `wrangler deploy
+#                         --dry-run` is the ONLY check that runs the real
+#                         esbuild bundle the deploy uses. It is a dry run: it
+#                         writes a local outdir and touches no remote state.
 set -u
-cd /home/liamw/osl-integrate || exit 1
+# D-162 adversary, hole 1. This used to be `cd /home/liamw/osl-integrate`, which
+# meant every gate below measured ONE hardcoded checkout no matter where the
+# script was invoked from. Run from a lane worktree it silently graded a
+# different tree -- so a broken worktree could print SHIPPABLE, which is the
+# exact class of false green the keyserver gate below was added to close.
+# Verify the tree this script actually lives in; pass a path to override.
+root="${1:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null)}"
+cd "${root:-/home/liamw/osl-integrate}" || exit 1
+printf 'verifying: %s\n' "$PWD"
 fail=0
 
 step() { printf '\n=== %s ===\n' "$1"; }
@@ -41,6 +59,28 @@ grep -E '^test result' /tmp/verify-hub.txt | tail -1 | sed 's/^/  /'
 grep -qE '^test result: ok' /tmp/verify-hub.txt || fail=1
 sed -n '/^failures:$/,/^test result/p' /tmp/verify-hub.txt |
     grep -E '^    [a-z]' | sort -u | sed 's/^/    /'
+
+step "Workers bundle (the exact esbuild the deploy runs -- DRY RUN, no remote state)"
+for worker in keyserver-cf cipher-store-cf; do
+    log="/tmp/verify-$worker-build.txt"
+    if [ ! -d "$worker/node_modules" ]; then
+        # An absent node_modules must NOT read as a pass. This gate exists
+        # because D-162 went unnoticed for two days; a silent skip on a starved
+        # input would recreate that exactly.
+        echo "  $worker: node_modules missing -- run 'npm ci' in $worker"
+        echo "FAIL"; fail=1
+        continue
+    fi
+    # NOT --silent: npm's own failures (a missing script, a bad cwd) are
+    # precisely what --silent eats, leaving a bare FAIL with a zero-byte log
+    # and no way to tell "the Worker does not bundle" from "wrong tree".
+    if ( cd "$worker" && npm run verify:worker-build ) > "$log" 2>&1; then
+        grep -E '^Total Upload' "$log" | sed "s|^|  $worker: |"
+    else
+        grep -E 'ERROR|error' "$log" | head -5
+        echo "  $worker: FAIL"; echo "FAIL"; fail=1
+    fi
+done
 
 step "frontend production build (tsc + vite -- vitest does NOT typecheck)"
 cd apps/osl-hub-ui || exit 1

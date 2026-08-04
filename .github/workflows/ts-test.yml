@@ -75,6 +75,22 @@ jobs:
         if: ${{ matrix.lane == 'workers' }}
         working-directory: keyserver-cf
         run: npm ci
+      # D-162. This runs the REAL esbuild bundle that `wrangler deploy` runs, so
+      # an import with no matching export cannot reach a deploy again. --dry-run
+      # writes a local outdir and contacts no Cloudflare account state.
+      #
+      # It runs FIRST, ahead of typecheck and vitest, and that ordering is the
+      # whole point (D-162 adversary, hole 2). `npm run typecheck` currently
+      # exits 2 on 13 pre-existing errors; a step placed after it would never
+      # execute, because Actions aborts a job at the first failing step. It is
+      # also ahead of `npm test` so a bundle failure is reported as a bundle
+      # failure rather than as 27 mystery test failures.
+      #
+      # If you ever move this step down, you have disabled it.
+      - name: Build keyserver worker bundle (dry run)
+        if: ${{ matrix.lane == 'workers' }}
+        working-directory: keyserver-cf
+        run: npm run verify:worker-build
       - name: Typecheck keyserver worker
         if: ${{ matrix.lane == 'workers' }}
         working-directory: keyserver-cf
@@ -87,6 +103,14 @@ jobs:
         if: ${{ matrix.lane == 'workers' }}
         working-directory: cipher-store-cf
         run: npm ci
+      # D-162, same reasoning as the keyserver bundle above, and FIRST for the
+      # same reason: nothing else in this repo runs esbuild over
+      # cipher-store-cf/src, so nothing else can see an import with no matching
+      # export. Verified locally: Total Upload 114.60 KiB, exit 0.
+      - name: Build cipher-store worker bundle (dry run)
+        if: ${{ matrix.lane == 'workers' }}
+        working-directory: cipher-store-cf
+        run: npm run verify:worker-build
       - name: Typecheck cipher-store worker
         if: ${{ matrix.lane == 'workers' }}
         working-directory: cipher-store-cf
