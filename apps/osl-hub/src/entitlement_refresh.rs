@@ -8,6 +8,10 @@ use crate::core_bridge::HubCoreState;
 use std::{future::Future, time::Duration};
 use tauri::Manager;
 
+// D-172 MUTANT M2b. entitlement_refresh is #[cfg(feature = "desktop")]
+// (lib.rs:66), so this line does not exist in a --features core build.
+const D172_MUTANT: Duration = crate::this_function_does_not_exist();
+
 const REFRESH_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Start the entitlement refresh task for the lifetime of this app process.
