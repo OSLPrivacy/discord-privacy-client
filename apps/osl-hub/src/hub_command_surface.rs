@@ -401,8 +401,6 @@ macro_rules! hub_tauri_commands {
             get_scrub_index_scan,
             append_scrub_index_chunk,
             get_scrub_index_status,
-            pause_scrub_index,
-            resume_scrub_index,
             cancel_scrub_index,
             list_linked_services,
             get_core_readiness,
@@ -540,6 +538,7 @@ macro_rules! hub_tauri_commands {
             get_hub_username_status,
             add_hub_friend_by_username,
             get_osl_profile,
+            get_osl_chat_local_state_key,
             save_osl_profile,
             verify_hub_friend_safety_number,
             remove_hub_friend,
@@ -1378,6 +1377,32 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["view_hub_recovery_phrase"],
+        );
+    }
+
+    /// D-108 — the missing construction site for the UI's `SecureLocalStore`.
+    ///
+    /// The store is implemented and unit-tested in `secure-local-store.ts` and
+    /// production never built it, because there was no key to build it with.
+    /// The key command is that missing line, so it has to clear the same three
+    /// surfaces as every other reachable command: without the `hub.toml`
+    /// declaration and the `hub.json` grant the webview's `invoke` is rejected
+    /// by the ACL before the handler runs, and the UI would silently fall back
+    /// to "no store" — which is exactly the state the defect describes.
+    #[test]
+    fn osl_chat_local_state_key_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "get_osl_chat_local_state_key",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["get_osl_chat_local_state_key"],
         );
     }
 

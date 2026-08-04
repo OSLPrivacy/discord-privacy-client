@@ -294,11 +294,27 @@ describe("POST /v1/stripe/webhook state machine", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ kind: "applied" });
 
+    const license = await env.DB.prepare(
+      "SELECT subscription_id, redeemed_at, expires_at, grant_seconds FROM licenses WHERE license_hash = ?",
+    ).bind(licenseHash).first<{
+      subscription_id: string;
+      redeemed_at: number | null;
+      expires_at: number | null;
+      grant_seconds: number | null;
+    }>();
+    expect(license).toEqual({
+      subscription_id: expect.stringMatching(/^lic_/),
+      redeemed_at: null,
+      expires_at: null,
+      grant_seconds: 30 * 24 * 60 * 60,
+    });
+    expect(license?.subscription_id).not.toBe(paymentIntentId);
+
     const entitlement = await env.DB.prepare(
       `SELECT customer_id, customer_email, status, current_period_end,
               cancel_at_period_end
          FROM subscriptions WHERE subscription_id = ?`,
-    ).bind(paymentIntentId).first<{
+    ).bind(license?.subscription_id).first<{
       customer_id: string;
       customer_email: string;
       status: string;
@@ -311,20 +327,6 @@ describe("POST /v1/stripe/webhook state machine", () => {
       status: "PENDING",
       current_period_end: null,
       cancel_at_period_end: 0,
-    });
-    const license = await env.DB.prepare(
-      "SELECT subscription_id, redeemed_at, expires_at, grant_seconds FROM licenses WHERE license_hash = ?",
-    ).bind(licenseHash).first<{
-      subscription_id: string;
-      redeemed_at: number | null;
-      expires_at: number | null;
-      grant_seconds: number | null;
-    }>();
-    expect(license).toEqual({
-      subscription_id: paymentIntentId,
-      redeemed_at: null,
-      expires_at: null,
-      grant_seconds: 30 * 24 * 60 * 60,
     });
     const metric = await env.DB.prepare(
       `SELECT amount_cents FROM commerce_events
@@ -399,14 +401,18 @@ describe("POST /v1/stripe/webhook state machine", () => {
       });
       expect(completion.status).toBe(200);
 
+      // P-44: the subscription is keyed by the licence, not by the Stripe payment
+      // identifier. `licenseSubscriptionId` (stripe-checkout-claims.ts:252) returns
+      // `lic_<licenseHash>`; binding paymentIntentId here selects a row that no
+      // longer exists and the assertion reads `undefined`, not "not revoked".
       const entitlement = await env.DB.prepare(
         "SELECT status FROM subscriptions WHERE subscription_id = ?",
-      ).bind(paymentIntentId).first<{ status: string }>();
+      ).bind(`lic_${licenseHash}`).first<{ status: string }>();
       expect(entitlement?.status).toBe("REVOKED");
       const license = await env.DB.prepare(
         `SELECT revoked_at, revoked_reason FROM licenses
           WHERE license_hash = ? AND subscription_id = ?`,
-      ).bind(licenseHash, paymentIntentId).first<{
+      ).bind(licenseHash, `lic_${licenseHash}`).first<{
         revoked_at: number | null;
         revoked_reason: string | null;
       }>();

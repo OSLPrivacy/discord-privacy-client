@@ -29,7 +29,7 @@
 //   node scripts/ledger/acl-diff.mjs [--root=<dir>]
 
 import { readFileSync, existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, normalize, resolve } from "node:path";
 import { repoRoot, read, walk, blankComments, lineIndex, lineOf, LEDGER_DIR, inputProblems, stringConstants, resolveArg } from "./lib/io.mjs";
 import { report, finish } from "./lib/report.mjs";
 import { bundleSnapshot, reachableFrom } from "./bundle.mjs";
@@ -60,8 +60,25 @@ export function grantsForWebview(root, label) {
   return { grants, unresolvable, files };
 }
 
+export function commandPermissions(root) {
+  const out = new Map();
+  for (const rel of walk(root, "apps/osl-hub/permissions", (r) => r.endsWith(".toml"))) {
+    const src = read(root, rel);
+    for (const m of src.matchAll(/\[\[permission\]\]([\s\S]*?)(?=\n\[\[permission\]\]|\s*$)/g)) {
+      const body = m[1];
+      const identifier = /\bidentifier\s*=\s*"([^"]+)"/.exec(body)?.[1] ?? null;
+      const commands = /\bcommands\.allow\s*=\s*\[([^\]]*)\]/.exec(body)?.[1] ?? "";
+      if (!identifier) continue;
+      for (const cmd of commands.matchAll(/"([^"]+)"/g)) out.set(cmd[1], identifier);
+    }
+  }
+  return out;
+}
+
 /** `plugin:window|is_maximized` -> `core:window:allow-is-maximized`; `foo_bar` -> `allow-foo-bar`. */
-export function permissionFor(command) {
+export function permissionFor(command, permissionDefs = new Map()) {
+  const configured = permissionDefs.get(command);
+  if (configured) return configured;
   const m = /^plugin:([a-z]+)\|(.+)$/.exec(command);
   const kebab = (s) => s.replace(/_/g, "-");
   if (m) {
@@ -128,11 +145,183 @@ const REQUIRED_API_METHODS = {
 
 /* ------------------------------------------------------------------ issuers */
 
-export function scanIssuers(root, modules, apiMethods) {
+function relativeModule(from, spec, root) {
+  if (!spec.startsWith(".")) return null;
+  const base = normalize(join(dirname(from), spec)).split("\\").join("/");
+  const candidates = [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.css`, join(base, "index.ts").split("\\").join("/")];
+  return candidates.find((rel) => existsSync(join(root, rel))) ?? null;
+}
+
+export function entryReachability(snapshot) {
+  const byEntry = new Map();
+  const byModule = new Map();
+  for (const entry of snapshot.entries ?? []) {
+    const modules = reachableFrom(snapshot, entry);
+    byEntry.set(entry, modules);
+    for (const rel of modules) {
+      if (!byModule.has(rel)) byModule.set(rel, new Set());
+      byModule.get(rel).add(entry);
+    }
+  }
+  return { byEntry, byModule };
+}
+
+export function importedValuesByEntry(root, byEntry) {
+  const byEntryImport = new Map();
+  for (const [entry, modules] of byEntry) {
+    const imports = new Map();
+    for (const rel of modules) {
+      if (!rel.endsWith(".ts")) continue;
+      const src = blankComments(read(root, rel));
+      for (const m of src.matchAll(/\bimport\s+([\s\S]*?)\s+from\s+["']([^"']+)["']/g)) {
+        const target = relativeModule(rel, m[2], root);
+        if (!target) continue;
+        if (!imports.has(target)) imports.set(target, new Set());
+        const names = imports.get(target);
+        const clause = m[1].trim();
+        const named = /\{([\s\S]*?)\}/.exec(clause)?.[1] ?? "";
+        if (/\*\s+as\s+/.test(clause)) names.add("*");
+        for (const raw of named.split(",")) {
+          const part = raw.trim();
+          if (!part || part.startsWith("type ")) continue;
+          names.add(part.split(/\s+as\s+/)[0].trim());
+        }
+        const withoutNamed = clause.replace(/\{[\s\S]*?\}/g, "").trim();
+        if (withoutNamed && !withoutNamed.startsWith("type ") && !withoutNamed.startsWith("*") && !withoutNamed.startsWith(",")) names.add("default");
+      }
+    }
+    byEntryImport.set(entry, imports);
+  }
+  return byEntryImport;
+}
+
+function matchingBrace(src, open) {
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === "{") depth += 1;
+    else if (src[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return src.length;
+}
+
+export function functionSpans(src) {
+  const spans = [];
+  for (const m of src.matchAll(/\b(export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*(?:<[^>{}]+>)?\s*\(/g)) {
+    const open = src.indexOf("{", m.index);
+    if (open !== -1) spans.push({ name: m[2], exported: Boolean(m[1]), start: m.index, end: matchingBrace(src, open) });
+  }
+  for (const m of src.matchAll(/\b(export\s+)?const\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]+)?=>/g)) {
+    const semi = src.indexOf(";", m.index);
+    const open = src.indexOf("{", m.index);
+    const end = open !== -1 && (semi === -1 || open < semi) ? matchingBrace(src, open) : semi === -1 ? src.length : semi + 1;
+    spans.push({ name: m[2], exported: Boolean(m[1]), start: m.index, end });
+  }
+  return spans.sort((a, b) => a.start - b.start);
+}
+
+export function enclosingFunction(spans, index) {
+  return spans
+    .filter((span) => span.start <= index && index < span.end)
+    .sort((a, b) => (a.end - a.start) - (b.end - b.start))[0] ?? null;
+}
+
+function entriesForExport(rel, exportName, importsByEntry) {
+  const out = new Set();
+  for (const [entry, imports] of importsByEntry) {
+    const names = imports.get(rel);
+    if (names?.has(exportName) || names?.has("*")) out.add(entry);
+  }
+  return out;
+}
+
+export function localFunctionEntryResolver(rel, spans, src, moduleEntries, importsByEntry) {
+  const byName = new Map(spans.map((span) => [span.name, span]));
+  const resolveFunction = (name, seen = new Set()) => {
+    if (seen.has(name)) return new Set();
+    seen.add(name);
+    const span = byName.get(name);
+    if (!span) return new Set(moduleEntries.get(rel) ?? []);
+    if (span.exported) return entriesForExport(rel, name, importsByEntry);
+    const out = new Set();
+    const call = new RegExp(`\\b${name}\\s*(?:<[^>(]*>)?\\s*\\(`, "g");
+    for (const m of src.matchAll(call)) {
+      if (m.index >= span.start && m.index < span.end) continue;
+      const caller = enclosingFunction(spans, m.index);
+      const entries = caller ? resolveFunction(caller.name, new Set(seen)) : new Set(moduleEntries.get(rel) ?? []);
+      for (const entry of entries) out.add(entry);
+    }
+    return out;
+  };
+  return (fn) => fn ? resolveFunction(fn.name) : new Set(moduleEntries.get(rel) ?? []);
+}
+
+function parseParamNames(params) {
+  return params.split(",").map((p) => p.trim().split(/[:?=]/)[0]?.trim()).filter(Boolean);
+}
+
+function invokeWrappers(src, spans) {
+  const wrappers = new Map();
+  const add = (name, params, bodyStart, bodyEnd) => {
+    const first = parseParamNames(params)[0];
+    if (!first) return;
+    if (!/^[A-Za-z_$][\w$]*$/.test(first)) return;
+    const body = src.slice(bodyStart, bodyEnd);
+    const re = new RegExp(`\\binvoke\\s*(?:<[^>(]*>)?\\s*\\(\\s*${first}\\b`);
+    if (re.test(body)) wrappers.set(name, { param: first, start: bodyStart, end: bodyEnd });
+  };
+  for (const span of spans) {
+    const header = src.slice(span.start, src.indexOf("{", span.start) === -1 ? span.end : src.indexOf("{", span.start));
+    const params = /\(([\s\S]*)\)/.exec(header)?.[1] ?? "";
+    add(span.name, params, span.start, span.end);
+  }
+  return wrappers;
+}
+
+function parseCommandExpression(text) {
+  const lit = /^"((?:[^"\\]|\\.)*)"$|^'((?:[^'\\]|\\.)*)'$|^`([^`$\\]*)`$/.exec(text.trim());
+  if (lit) return [lit[1] ?? lit[2] ?? lit[3]];
+  const ternary = /\?\s*"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"|\?\s*'((?:[^'\\]|\\.)*)'\s*:\s*'((?:[^'\\]|\\.)*)'/.exec(text);
+  if (ternary) return [ternary[1] ?? ternary[3], ternary[2] ?? ternary[4]];
+  return [];
+}
+
+function resolveCommands(arg, constants, src, beforeIndex) {
+  const direct = resolveArg(arg, constants);
+  if (direct.value) return [direct.value];
+  const text = arg.trim();
+  const parsed = parseCommandExpression(text);
+  if (parsed.length) return parsed;
+  if (/^[A-Za-z_$][\w$]*$/.test(text)) {
+    const prefix = src.slice(0, beforeIndex);
+    const defs = [...prefix.matchAll(new RegExp(`\\bconst\\s+${text}\\s*(?::[^=]+)?=\\s*([^;]+);`, "g"))];
+    const last = defs.at(-1)?.[1];
+    if (last) return parseCommandExpression(last);
+  }
+  return [];
+}
+
+export function scanIssuers(root, modules, apiMethods, scope) {
   const issued = new Map(); // command -> [{site, via}]
+  const dead = [];
   const add = (command, site, via) => {
+    const entries = site.entries ?? new Set();
+    const entryNames = [...entries].sort();
+    if (entryNames.length === 0) {
+      dead.push({
+        id: `dead-issuer:${command}:${site.text}`,
+        kind: "dead-issuer",
+        command,
+        detail: `${command} is in an exported issuer that no production entry imports; adding this exception admits the issuer does not ship`,
+        sites: [site.text],
+      });
+      return;
+    }
+    if (scope?.mainEntries && !entryNames.some((entry) => scope.mainEntries.has(entry))) return;
     if (!issued.has(command)) issued.set(command, []);
-    issued.get(command).push({ site, via });
+    issued.get(command).push({ site: site.text, via });
   };
   const unresolved = [];
   const constants = stringConstants(modules, (rel) => read(root, rel));
@@ -148,14 +337,39 @@ export function scanIssuers(root, modules, apiMethods) {
     if (!rel.endsWith(".ts")) continue;
     const src = blankComments(read(root, rel));
     const starts = lineIndex(src);
+    const spans = functionSpans(src);
+    const localEntries = localFunctionEntryResolver(rel, spans, src, scope?.moduleEntries ?? new Map(), scope?.importsByEntry ?? new Map());
+    const wrappers = invokeWrappers(src, spans);
+    const site = (index) => ({
+      rel,
+      text: `${rel}:${lineOf(starts, index)}`,
+      entries: localEntries(enclosingFunction(spans, index)),
+    });
+
+    for (const [wrapperName, wrapper] of wrappers) {
+      const calls = new RegExp(`\\b${wrapperName}\\s*(?:<[^>(]*>)?\\s*\\(\\s*([^,)]+)`, "g");
+      for (const m of src.matchAll(calls)) {
+        if (m.index >= wrapper.start && m.index < wrapper.end) continue;
+        for (const command of resolveCommands(m[1], constants, src, m.index)) add(command, site(m.index), `direct ${wrapperName}()`);
+      }
+    }
 
     // 1. direct invoke("name") / invoke<T>("name") / __TAURI_INTERNALS__.invoke("name")
     for (const m of src.matchAll(/\binvoke\s*(?:<[^>(]*>)?\s*\(\s*([^,)]+)/g)) {
       const arg = m[1].trim();
-      const site = `${rel}:${lineOf(starts, m.index)}`;
-      const command = resolveArg(arg, constants);
-      if (command.value) add(command.value, site, "direct");
-      else unresolved.push({ site, expr: arg.slice(0, 60), via: "direct invoke()" });
+      if (/^[A-Za-z_$][\w$]*\s*:/.test(arg)) continue;
+      if (arg === "command" && /=>\s*invoke\s*(?:<[^>(]*>)?\s*\(\s*command\b/.test(src.slice(Math.max(0, m.index - 80), m.index + 80))) continue;
+      const wrapped = [...wrappers.values()].some((wrapper) => m.index >= wrapper.start && m.index < wrapper.end && arg === wrapper.param);
+      if (wrapped) continue;
+      const commands = resolveCommands(arg, constants, src, m.index);
+      if (commands.length) for (const command of commands) add(command, site(m.index), "direct");
+      else unresolved.push({ site: site(m.index).text, expr: arg.slice(0, 60), via: "direct invoke()" });
+    }
+
+    if (rel === "apps/osl-hub-ui/src/core.ts") {
+      for (const m of src.matchAll(/\bnativeInvoke\s*\(\s*([^,)]+)/g)) {
+        for (const command of resolveCommands(m[1].trim(), constants, src, m.index)) add(command, site(m.index), "direct nativeInvoke()");
+      }
     }
 
     // 2. @tauri-apps/api handle methods. Only counted on a handle: either a
@@ -169,16 +383,14 @@ export function scanIssuers(root, modules, apiMethods) {
     const directFactory = /\b(getCurrentWindow|getCurrentWebview|getCurrentWebviewWindow)\s*\(\s*\)\s*\.\s*([A-Za-z_$][\w$]*)\s*\(/g;
     for (const m of src.matchAll(directFactory)) {
       const [, factory, method] = m;
-      const site = `${rel}:${lineOf(starts, m.index)}`;
-      for (const cmd of commandsFor(FACTORY_RECEIVER[factory], method)) add(cmd, site, `@tauri-apps/api ${factory}().${method}()`);
+      for (const cmd of commandsFor(FACTORY_RECEIVER[factory], method)) add(cmd, site(m.index), `@tauri-apps/api ${factory}().${method}()`);
     }
     const receivers = [...handles.keys()].join("|");
     if (receivers) {
       const chain = new RegExp(`\\b(${receivers})\\s*\\.\\s*([A-Za-z_$][\\w$]*)\\s*\\(`, "g");
       for (const m of src.matchAll(chain)) {
         const [, receiver, method] = m;
-        const site = `${rel}:${lineOf(starts, m.index)}`;
-        for (const cmd of commandsFor(handles.get(receiver) ?? [], method)) add(cmd, site, `@tauri-apps/api ${receiver}.${method}()`);
+        for (const cmd of commandsFor(handles.get(receiver) ?? [], method)) add(cmd, site(m.index), `@tauri-apps/api ${receiver}.${method}()`);
       }
     }
 
@@ -190,13 +402,13 @@ export function scanIssuers(root, modules, apiMethods) {
         const use = new RegExp(`\\b${name}\\s*(?:<[^>(]*>)?\\s*\\(`, "g");
         for (const m of src.matchAll(use)) {
           for (const cmd of commandsFor(["event.js"], name)) {
-            add(cmd, `${rel}:${lineOf(starts, m.index)}`, `@tauri-apps/api/event ${name}()`);
+            add(cmd, site(m.index), `@tauri-apps/api/event ${name}()`);
           }
         }
       }
     }
   }
-  return { issued, unresolved };
+  return { issued, unresolved, dead };
 }
 
 function tauriApiExtractionProblems(api) {
@@ -286,8 +498,11 @@ export async function main(argv = process.argv) {
       ...EXTRA_MAIN_MODULES,
     ]),
   ];
+  const reachability = entryReachability(snapshot);
+  const importsByEntry = importedValuesByEntry(root, reachability.byEntry);
+  const mainEntries = new Set(MAIN_ENTRIES);
   const api = tauriApiMethodCommands(root);
-  const { issued, unresolved } = scanIssuers(root, mainModules, api);
+  const { issued, unresolved, dead } = scanIssuers(root, mainModules, api, { mainEntries, moduleEntries: reachability.byModule, importsByEntry });
   const internals = scanFrameworkInternals(root, mainModules);
   for (const issuer of internals.fired) {
     if (!issued.has(issuer.command)) issued.set(issuer.command, []);
@@ -295,6 +510,7 @@ export async function main(argv = process.argv) {
   }
 
   const { grants, unresolvable, files } = grantsForWebview(root, "main");
+  const permissionDefs = commandPermissions(root);
   const violations = [];
 
   if (internals.staleness) {
@@ -316,7 +532,7 @@ export async function main(argv = process.argv) {
   }
 
   for (const [command, sites] of [...issued.entries()].sort()) {
-    const perm = permissionFor(command);
+    const perm = permissionFor(command, permissionDefs);
     if (grants.has(perm)) continue;
     const viaInternal = sites.some((s) => s.via === "framework-injected");
     violations.push({
@@ -334,6 +550,8 @@ export async function main(argv = process.argv) {
       sites: [u.site],
     });
   }
+  const liveDead = dead.filter((d) => !grants.has(permissionFor(d.command, permissionDefs)));
+  violations.push(...liveDead);
 
   return finish(
     report({
@@ -349,6 +567,7 @@ export async function main(argv = process.argv) {
         "tauri version (Cargo.lock / vendored)": `${internals.pinned} / ${internals.declared}`,
         "@tauri-apps/api version": api.version,
         "invoke() calls with a non-literal command (not analysable)": unresolved.length,
+        "dead exported command issuers excepted": liveDead.length,
       },
     }),
   );

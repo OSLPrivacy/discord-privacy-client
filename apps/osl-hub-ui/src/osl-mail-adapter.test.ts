@@ -6,14 +6,13 @@ vi.mock("./preferences", () => ({ isTauriRuntime: () => true }));
 
 import {
   OSL_MAIL_STATUS_CONTRACT,
-  acknowledgeOslMailRetrieval,
   burnOslMailbox,
-  listOslMailThreads,
   loadOslMailStatus,
   parseOslMailDeleteReceipt,
   parseOslMailRetrievedThread,
   parseOslMailSendReceipt,
   parseOslMailStatus,
+  parseOslMailThreadSummary,
   registerOslMailStatusAdapterTests,
   sendOslMail,
   type OslMailAddress,
@@ -117,9 +116,7 @@ describe("OSL Mail strict adapter", () => {
   });
 
   it("fails closed on invalid lists, acknowledgments, and burn confirmations", async () => {
-    invoke.mockResolvedValueOnce([{ threadId: id, subject: "Hi", correspondent: "a@example.com", latestAt: 100, unread: false, transit: "externalSmtp", extra: true }]);
-    await expect(listOslMailThreads()).resolves.toBeNull();
-    await expect(acknowledgeOslMailRetrieval(id, [])).resolves.toBeNull();
+    expect(parseOslMailThreadSummary({ threadId: id, subject: "Hi", correspondent: "a@example.com", latestAt: 100, unread: false, transit: "externalSmtp", extra: true })).toBeNull();
     await expect(burnOslMailbox("liam@oslprivacy.com", "wrong@oslprivacy.com")).resolves.toBeNull();
   });
 });

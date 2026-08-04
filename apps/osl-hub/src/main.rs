@@ -973,36 +973,6 @@ async fn get_scrub_index_status(
 }
 
 #[tauri::command]
-async fn pause_scrub_index(
-    state: State<'_, ScrubIndexState>,
-    core: State<'_, HubCoreState>,
-    session: State<'_, HubAccountSessionState>,
-    import_id: String,
-) -> Result<ScrubIndexStatus, String> {
-    let _session = session.transition.lock().await;
-    let owner = active_unlocked_osl_user_id(&core)?;
-    let state = state.inner().clone();
-    tokio::task::spawn_blocking(move || state.pause(&owner, &import_id))
-        .await
-        .map_err(|_| "Scrub pause was interrupted".to_owned())?
-}
-
-#[tauri::command]
-async fn resume_scrub_index(
-    state: State<'_, ScrubIndexState>,
-    core: State<'_, HubCoreState>,
-    session: State<'_, HubAccountSessionState>,
-    import_id: String,
-) -> Result<ScrubIndexStatus, String> {
-    let _session = session.transition.lock().await;
-    let owner = active_unlocked_osl_user_id(&core)?;
-    let state = state.inner().clone();
-    tokio::task::spawn_blocking(move || state.resume(&owner, &import_id))
-        .await
-        .map_err(|_| "Scrub resume was interrupted".to_owned())?
-}
-
-#[tauri::command]
 async fn cancel_scrub_index(
     state: State<'_, ScrubIndexState>,
     core: State<'_, HubCoreState>,
@@ -6049,6 +6019,31 @@ async fn get_osl_profile(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     osl_profile::get_active_profile(&owner)
+}
+
+/// Hand the renderer the HKDF subkey for OSL Chat's local (webview) state.
+///
+/// This is the construction site D-108 was missing: the UI's `SecureLocalStore`
+/// is implemented and unit-tested, and had no key, so nothing ever built it and
+/// the four OSL Chat correspondent-shaped keys were never persisted through it.
+///
+/// It returns a *derived* key, never the file storage key itself
+/// (`osl_chat_local_state_key::HKDF_INFO_OSL_CHAT_LOCAL_STATE`), and it returns
+/// `Err` while a main-password gate is locked — the UI then leaves its store
+/// unconfigured and writes nothing, rather than falling back to plaintext.
+#[tauri::command]
+fn get_osl_chat_local_state_key() -> Result<String, String> {
+    let directory = keystore::osl_config_dir().map_err(|error| {
+        format!("OSL Chat local-state directory is unavailable: {error}")
+    })?;
+    let key = osl_privacy_hub::osl_chat_local_state_key::osl_chat_local_state_key(&directory)?;
+    // Fully qualified on purpose: the `URL_SAFE_NO_PAD` import at :4 is gated behind
+    // `whatsapp-qa-identity`, so a bare reference here compiles under that feature and
+    // fails under `--features desktop` -- i.e. it fails in the build that ships. See D-146.
+    Ok(base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        &*key,
+    ))
 }
 
 #[tauri::command]

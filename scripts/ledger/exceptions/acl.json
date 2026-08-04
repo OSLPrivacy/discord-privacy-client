@@ -1,5 +1,96 @@
 {
-  "note": "seed",
-  "highWaterMark": 0,
-  "entries": []
+  "note": "ACL ledger dead-issuer ratchet. Adding an entry here is an admission that the issuer does not ship in a production entry.",
+  "highWaterMark": 15,
+  "entries": [
+    {
+      "id": "dead-issuer:claim_hub_username:apps/osl-hub-ui/src/adapters.ts:934",
+      "class": "accepted",
+      "reason": "claim_hub_username is in an exported adapter function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/adapters.ts:934"
+    },
+    {
+      "id": "dead-issuer:execute_discord_guided_deletion:apps/osl-hub-ui/src/adapters.ts:1433",
+      "class": "accepted",
+      "reason": "execute_discord_guided_deletion is in an exported guided-deletion function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/adapters.ts:1433"
+    },
+    {
+      "id": "dead-issuer:host_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:69",
+      "class": "accepted",
+      "reason": "host_osl_lan_room is in an exported LAN collaboration function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/osl-collab.ts:69"
+    },
+    {
+      "id": "dead-issuer:join_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:70",
+      "class": "accepted",
+      "reason": "join_osl_lan_room is in an exported LAN collaboration function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/osl-collab.ts:70"
+    },
+    {
+      "id": "dead-issuer:preview_discord_guided_deletion:apps/osl-hub-ui/src/adapters.ts:1415",
+      "class": "accepted",
+      "reason": "preview_discord_guided_deletion is in an exported guided-deletion function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/adapters.ts:1415"
+    },
+    {
+      "id": "dead-issuer:scan_discord_own_messages_for_deletion:apps/osl-hub-ui/src/adapters.ts:1402",
+      "class": "accepted",
+      "reason": "scan_discord_own_messages_for_deletion is in an exported guided-deletion function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/adapters.ts:1402"
+    },
+    {
+      "id": "dead-issuer:stop_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:72",
+      "class": "accepted",
+      "reason": "stop_osl_lan_room is in an exported LAN collaboration function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/osl-collab.ts:72"
+    },
+    {
+      "id": "dead-issuer:surface_adapter_commit:apps/osl-hub-ui/src/native-overlay-adapter.ts:119",
+      "class": "accepted",
+      "reason": "surface_adapter_commit is in the exported surface-adapter client factory that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/native-overlay-adapter.ts:119"
+    },
+    {
+      "id": "dead-issuer:surface_adapter_destination:apps/osl-hub-ui/src/native-overlay-adapter.ts:95",
+      "class": "accepted",
+      "reason": "surface_adapter_destination is in the exported surface-adapter client factory that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/native-overlay-adapter.ts:95"
+    },
+    {
+      "id": "dead-issuer:surface_adapter_paint_targets:apps/osl-hub-ui/src/native-overlay-adapter.ts:124",
+      "class": "accepted",
+      "reason": "surface_adapter_paint_targets is in the exported surface-adapter client factory that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/native-overlay-adapter.ts:124"
+    },
+    {
+      "id": "dead-issuer:surface_adapter_place:apps/osl-hub-ui/src/native-overlay-adapter.ts:111",
+      "class": "accepted",
+      "reason": "surface_adapter_place is in the exported surface-adapter client factory that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/native-overlay-adapter.ts:111"
+    },
+    {
+      "id": "dead-issuer:surface_adapter_prepare:apps/osl-hub-ui/src/native-overlay-adapter.ts:101",
+      "class": "accepted",
+      "reason": "surface_adapter_prepare is in the exported surface-adapter client factory that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/native-overlay-adapter.ts:101"
+    },
+    {
+      "id": "dead-issuer:surface_adapter_state:apps/osl-hub-ui/src/native-overlay-adapter.ts:92",
+      "class": "accepted",
+      "reason": "surface_adapter_state is in the exported surface-adapter client factory that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/native-overlay-adapter.ts:92"
+    },
+    {
+      "id": "dead-issuer:sync_hosted_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:71",
+      "class": "accepted",
+      "reason": "sync_hosted_osl_lan_room is in an exported LAN collaboration function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/osl-collab.ts:71"
+    },
+    {
+      "id": "dead-issuer:sync_joined_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:71",
+      "class": "accepted",
+      "reason": "sync_joined_osl_lan_room is in an exported LAN collaboration function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/osl-collab.ts:71"
+    }
+  ]
 }

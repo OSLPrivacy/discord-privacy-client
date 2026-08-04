@@ -229,16 +229,6 @@ description = "Read bounded progress metadata for the active identity's encrypte
 commands.allow = ["get_scrub_index_status"]
 
 [[permission]]
-identifier = "allow-pause-scrub-index"
-description = "Pause the exact active local Scrub import by its random identifier."
-commands.allow = ["pause_scrub_index"]
-
-[[permission]]
-identifier = "allow-resume-scrub-index"
-description = "Resume the exact active local Scrub import by its random identifier."
-commands.allow = ["resume_scrub_index"]
-
-[[permission]]
 identifier = "allow-cancel-scrub-index"
 description = "Cancel and remove only the active identity's fixed encrypted Scrub index directory; cannot delete service messages."
 commands.allow = ["cancel_scrub_index"]
@@ -832,6 +822,11 @@ commands.allow = ["burn_active_hub_context"]
 identifier = "allow-get-hub-revocation-status"
 description = "Read whether the burn notices already queued for one canonical OSL scope key have been acknowledged by the peers who had access; reads no message content and changes nothing."
 commands.allow = ["get_hub_revocation_status"]
+
+[[permission]]
+identifier = "allow-get-osl-chat-local-state-key"
+description = "Hand the local UI an HKDF subkey, derived from the existing at-rest storage-key authority under its own info label, so OSL Chat's muted people, unread counts, preview visibility and message notifications are sealed in the webview store instead of sitting in localStorage. It never returns the file storage key itself and refuses while a main-password gate is locked."
+commands.allow = ["get_osl_chat_local_state_key"]
 
 [[permission]]
 identifier = "allow-add-hub-friend-by-username"

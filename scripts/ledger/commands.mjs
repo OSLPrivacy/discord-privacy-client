@@ -15,6 +15,7 @@ import { resolve } from "node:path";
 import { repoRoot, read, uiSources, blankComments, lineIndex, lineOf, inputProblems, stringConstants, resolveArg } from "./lib/io.mjs";
 import { report, finish } from "./lib/report.mjs";
 import { bundleSnapshot } from "./bundle.mjs";
+import { entryReachability, importedValuesByEntry, functionSpans, enclosingFunction, localFunctionEntryResolver } from "./acl-diff.mjs";
 
 const REQUIRED = [
   "apps/osl-hub-ui/src/main.ts",
@@ -38,23 +39,40 @@ function bundleEvidence(sites, bundled) {
   return { modules, outside, inside };
 }
 
-export function frontendInvokes(root) {
+export function frontendInvokes(root, snapshot = null) {
   const invokes = new Map();
   const unresolved = [];
+  const deadBundled = [];
   const files = uiSources(root);
   const constants = stringConstants(files, (rel) => read(root, rel));
+  const bundled = new Set(snapshot?.modules ?? []);
+  const reachability = snapshot ? entryReachability(snapshot) : null;
+  const importsByEntry = reachability ? importedValuesByEntry(root, reachability.byEntry) : new Map();
   for (const rel of files) {
     const src = blankComments(read(root, rel));
     const starts = lineIndex(src);
+    const spans = snapshot ? functionSpans(src) : [];
+    const entriesForFunction = snapshot
+      ? localFunctionEntryResolver(rel, spans, src, reachability?.byModule ?? new Map(), importsByEntry)
+      : null;
+    const liveEntriesAt = (index) => entriesForFunction?.(enclosingFunction(spans, index)) ?? new Set();
+    const addReachable = (command, index) => {
+      const site = `${rel}:${lineOf(starts, index)}`;
+      if (snapshot && bundled.has(rel) && liveEntriesAt(index).size === 0) {
+        deadBundled.push({ command, site });
+        return;
+      }
+      add(invokes, command, site);
+    };
     for (const m of src.matchAll(/\binvoke\s*(?:<[^>(]*>)?\s*\(\s*([^,)]+)/g)) {
       const arg = m[1].trim();
       const site = `${rel}:${lineOf(starts, m.index)}`;
       const command = resolveArg(arg, constants);
-      if (command.value) add(invokes, command.value, site);
+      if (command.value) addReachable(command.value, m.index);
       else unresolved.push({ site, expr: arg.slice(0, 80) });
     }
   }
-  return { invokes, unresolved };
+  return { invokes, unresolved, deadBundled };
 }
 
 function collectIdentifiers(body, rel, fullSource, offset = 0) {
@@ -138,7 +156,7 @@ export async function main(argv = process.argv) {
     }));
   }
   const bundled = new Set(snapshot.modules);
-  const { invokes, unresolved } = frontendInvokes(root);
+  const { invokes, unresolved, deadBundled } = frontendInvokes(root, snapshot);
   const { registry, problems } = rustRegistry(root);
   const violations = [
     ...input,
@@ -176,6 +194,7 @@ export async function main(argv = process.argv) {
       "distinct frontend commands invoked": invokes.size,
       "registered Rust commands": registry.size,
       "invoke() calls with a non-literal command (not analysable)": unresolved.length,
+      "bundled invoke() call sites reclassified dead by function attribution": deadBundled.length,
       "modules rollup loaded (in-tree)": bundled.size,
       "bundle cache mode": noCache ? "bypass" : refresh ? "refresh" : "read",
     },
