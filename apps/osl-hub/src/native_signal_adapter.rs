@@ -1,11 +1,222 @@
-//! Pure Signal Desktop accessibility selectors.
+//! Signal Desktop accessibility selectors and placement contract.
 //!
-//! This module is intentionally scan-only. It contains no process launch,
-//! keyboard, pointer, focus, value-pattern, database, credential, or network
-//! capability. Localized names and placeholder text are modeled only so tests
-//! can prove selectors do not depend on them.
+//! The structural selectors are pure. The live-placement contract models one
+//! bounded `ValuePattern.SetValue` into an already-bound composer and a read-back
+//! proof, but never models Enter, send-button invocation, process launch,
+//! credentials, message-history scraping, or network capability. Localized names
+//! and placeholder text are modeled only so tests can prove selectors do not
+//! depend on them.
 
 use sha2::{Digest, Sha256};
+
+pub use crate::native_a11y::{
+    ELECTRON_OUTER_WINDOW_CLASS, ELECTRON_RENDERER_WINDOW_CLASS,
+    ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
+};
+
+/// Process/window facts for the shared Electron UIA2 substrate.
+///
+/// Signal Desktop is an Electron app. The accessibility tree that matters is on
+/// the Chromium renderer child, not the outer `Chrome_WidgetWin_1` host.
+pub const SIGNAL_DESKTOP_PROCESS_NAME: &str = "Signal";
+pub const SIGNAL_UIA2_DEFAULT_WAIT_MS: u64 = 90_000;
+pub const SIGNAL_UIA2_DEFAULT_CALL_TIMEOUT_MS: u64 = 750;
+pub const SIGNAL_LIVE_CARRIER_MAX_BYTES: usize = 4096;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SignalUia2ProbeConfig {
+    Corrected,
+    OuterWindow,
+    RendererNoWake,
+    RendererImmediate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SignalUia2ProbePlan {
+    pub bind_renderer_child: bool,
+    pub send_wm_getobject: bool,
+    pub poll_until_populated: bool,
+}
+
+impl SignalUia2ProbeConfig {
+    pub const SIDE_BY_SIDE: [Self; 4] = [
+        Self::Corrected,
+        Self::OuterWindow,
+        Self::RendererNoWake,
+        Self::RendererImmediate,
+    ];
+
+    pub fn plan(self) -> SignalUia2ProbePlan {
+        match self {
+            Self::Corrected => SignalUia2ProbePlan {
+                bind_renderer_child: true,
+                send_wm_getobject: true,
+                poll_until_populated: true,
+            },
+            Self::OuterWindow => SignalUia2ProbePlan {
+                bind_renderer_child: false,
+                send_wm_getobject: true,
+                poll_until_populated: true,
+            },
+            Self::RendererNoWake => SignalUia2ProbePlan {
+                bind_renderer_child: true,
+                send_wm_getobject: false,
+                poll_until_populated: true,
+            },
+            Self::RendererImmediate => SignalUia2ProbePlan {
+                bind_renderer_child: true,
+                send_wm_getobject: true,
+                poll_until_populated: false,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SignalPlacementStatus {
+    Placed,
+    PlatformUnsupported,
+    InvalidCarrier,
+    AccessibilityUnavailable,
+    ComposerUnavailable,
+    ComposerAmbiguous,
+    ComposerNotWritable,
+    ComposerNotEmpty,
+    ReadbackMismatch,
+}
+
+pub struct SignalLivePlacementRequest<'a> {
+    pub carrier: &'a str,
+    pub allow_replace_existing: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignalLivePlacementReceipt {
+    pub placed: bool,
+    pub enter_sent: bool,
+    pub status: SignalPlacementStatus,
+    pub element_count: usize,
+    pub writable_composer_count: usize,
+    pub readback_contains_carrier: bool,
+}
+
+impl SignalLivePlacementReceipt {
+    fn refused(status: SignalPlacementStatus) -> Self {
+        Self {
+            placed: false,
+            enter_sent: false,
+            status,
+            element_count: 0,
+            writable_composer_count: 0,
+            readback_contains_carrier: false,
+        }
+    }
+}
+
+pub trait SignalComposerPlacementBackend {
+    fn element_count(&mut self) -> Result<usize, SignalPlacementStatus>;
+    fn writable_composer_count(&mut self) -> Result<usize, SignalPlacementStatus>;
+    fn current_value(&mut self) -> Result<Option<String>, SignalPlacementStatus>;
+    fn set_value(&mut self, carrier: &str) -> Result<(), SignalPlacementStatus>;
+    fn read_value(&mut self) -> Result<Option<String>, SignalPlacementStatus>;
+}
+
+/// Place text into the already-bound Signal composer and verify by containment.
+///
+/// This is deliberately not a send path. It never presses Enter, invokes a send
+/// button, or reports `enter_sent = true`; the only mutation it can authorize is
+/// a value-pattern placement followed by read-back.
+pub fn drive_signal_composer_placement(
+    backend: &mut dyn SignalComposerPlacementBackend,
+    request: SignalLivePlacementRequest<'_>,
+) -> SignalLivePlacementReceipt {
+    if !valid_candidate_text(request.carrier, SIGNAL_LIVE_CARRIER_MAX_BYTES) {
+        return SignalLivePlacementReceipt::refused(SignalPlacementStatus::InvalidCarrier);
+    }
+
+    let element_count = match backend.element_count() {
+        Ok(count) if count > ELECTRON_UIA2_POPULATED_MIN_ELEMENTS => count,
+        Ok(_) => {
+            return SignalLivePlacementReceipt::refused(
+                SignalPlacementStatus::AccessibilityUnavailable,
+            )
+        }
+        Err(status) => return SignalLivePlacementReceipt::refused(status),
+    };
+
+    let writable_composer_count = match backend.writable_composer_count() {
+        Ok(1) => 1,
+        Ok(0) => {
+            let mut receipt =
+                SignalLivePlacementReceipt::refused(SignalPlacementStatus::ComposerUnavailable);
+            receipt.element_count = element_count;
+            return receipt;
+        }
+        Ok(count) => {
+            let mut receipt =
+                SignalLivePlacementReceipt::refused(SignalPlacementStatus::ComposerAmbiguous);
+            receipt.element_count = element_count;
+            receipt.writable_composer_count = count;
+            return receipt;
+        }
+        Err(status) => {
+            let mut receipt = SignalLivePlacementReceipt::refused(status);
+            receipt.element_count = element_count;
+            return receipt;
+        }
+    };
+
+    if !request.allow_replace_existing {
+        match backend.current_value() {
+            Ok(Some(value)) if !value.is_empty() => {
+                let mut receipt =
+                    SignalLivePlacementReceipt::refused(SignalPlacementStatus::ComposerNotEmpty);
+                receipt.element_count = element_count;
+                receipt.writable_composer_count = writable_composer_count;
+                return receipt;
+            }
+            Ok(_) => {}
+            Err(status) => {
+                let mut receipt = SignalLivePlacementReceipt::refused(status);
+                receipt.element_count = element_count;
+                receipt.writable_composer_count = writable_composer_count;
+                return receipt;
+            }
+        }
+    }
+
+    if let Err(status) = backend.set_value(request.carrier) {
+        let mut receipt = SignalLivePlacementReceipt::refused(status);
+        receipt.element_count = element_count;
+        receipt.writable_composer_count = writable_composer_count;
+        return receipt;
+    }
+
+    let readback_contains_carrier = backend
+        .read_value()
+        .ok()
+        .flatten()
+        .is_some_and(|readback| readback.contains(request.carrier));
+    SignalLivePlacementReceipt {
+        placed: readback_contains_carrier,
+        enter_sent: false,
+        status: if readback_contains_carrier {
+            SignalPlacementStatus::Placed
+        } else {
+            SignalPlacementStatus::ReadbackMismatch
+        },
+        element_count,
+        writable_composer_count,
+        readback_contains_carrier,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn place_signal_desktop_carrier(
+    _request: SignalLivePlacementRequest<'_>,
+) -> SignalLivePlacementReceipt {
+    SignalLivePlacementReceipt::refused(SignalPlacementStatus::PlatformUnsupported)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SignalRect {
@@ -395,6 +606,52 @@ fn hex_lower(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    struct FakeSignalBackend {
+        elements: Result<usize, SignalPlacementStatus>,
+        writable: Result<usize, SignalPlacementStatus>,
+        current: Result<Option<String>, SignalPlacementStatus>,
+        readback_suffix: &'static str,
+        set_values: Vec<String>,
+    }
+
+    impl FakeSignalBackend {
+        fn empty() -> Self {
+            Self {
+                elements: Ok(696),
+                writable: Ok(1),
+                current: Ok(Some(String::new())),
+                readback_suffix: "",
+                set_values: Vec::new(),
+            }
+        }
+    }
+
+    impl SignalComposerPlacementBackend for FakeSignalBackend {
+        fn element_count(&mut self) -> Result<usize, SignalPlacementStatus> {
+            self.elements.clone()
+        }
+
+        fn writable_composer_count(&mut self) -> Result<usize, SignalPlacementStatus> {
+            self.writable.clone()
+        }
+
+        fn current_value(&mut self) -> Result<Option<String>, SignalPlacementStatus> {
+            self.current.clone()
+        }
+
+        fn set_value(&mut self, carrier: &str) -> Result<(), SignalPlacementStatus> {
+            self.set_values.push(carrier.to_owned());
+            Ok(())
+        }
+
+        fn read_value(&mut self) -> Result<Option<String>, SignalPlacementStatus> {
+            Ok(self
+                .set_values
+                .last()
+                .map(|value| format!("{value}{}", self.readback_suffix)))
+        }
+    }
+
     fn rect(left: i32, top: i32, right: i32, bottom: i32) -> SignalRect {
         SignalRect {
             left,
@@ -424,6 +681,97 @@ mod tests {
         node.evidence = SignalNodeEvidence::Body;
         node.text = Some(text.to_owned());
         node
+    }
+
+    #[test]
+    fn signal_uia2_probe_configs_name_the_three_required_mutants() {
+        let corrected = SignalUia2ProbeConfig::Corrected.plan();
+        assert!(corrected.bind_renderer_child);
+        assert!(corrected.send_wm_getobject);
+        assert!(corrected.poll_until_populated);
+
+        let outer = SignalUia2ProbeConfig::OuterWindow.plan();
+        assert!(!outer.bind_renderer_child);
+        assert!(outer.send_wm_getobject);
+        assert!(outer.poll_until_populated);
+
+        let no_wake = SignalUia2ProbeConfig::RendererNoWake.plan();
+        assert!(no_wake.bind_renderer_child);
+        assert!(!no_wake.send_wm_getobject);
+        assert!(no_wake.poll_until_populated);
+
+        let immediate = SignalUia2ProbeConfig::RendererImmediate.plan();
+        assert!(immediate.bind_renderer_child);
+        assert!(immediate.send_wm_getobject);
+        assert!(!immediate.poll_until_populated);
+    }
+
+    #[test]
+    fn signal_live_placement_uses_contains_readback_and_never_sends() {
+        let mut backend = FakeSignalBackend::empty();
+        backend.readback_suffix = " augmented by live UI";
+
+        let receipt = drive_signal_composer_placement(
+            &mut backend,
+            SignalLivePlacementRequest {
+                carrier: "alpha-7731-osl",
+                allow_replace_existing: false,
+            },
+        );
+
+        assert_eq!(backend.set_values, vec!["alpha-7731-osl"]);
+        assert_eq!(receipt.status, SignalPlacementStatus::Placed);
+        assert!(receipt.placed);
+        assert!(receipt.readback_contains_carrier);
+        assert!(!receipt.enter_sent);
+    }
+
+    #[test]
+    fn signal_live_placement_refuses_to_replace_an_operator_draft_by_default() {
+        let mut backend = FakeSignalBackend::empty();
+        backend.current = Ok(Some("operator draft".to_owned()));
+
+        let receipt = drive_signal_composer_placement(
+            &mut backend,
+            SignalLivePlacementRequest {
+                carrier: "bravo-9042-osl",
+                allow_replace_existing: false,
+            },
+        );
+
+        assert_eq!(receipt.status, SignalPlacementStatus::ComposerNotEmpty);
+        assert!(!receipt.placed);
+        assert!(!receipt.enter_sent);
+        assert!(backend.set_values.is_empty());
+    }
+
+    #[test]
+    fn signal_live_placement_requires_one_writable_composer() {
+        let mut missing = FakeSignalBackend::empty();
+        missing.writable = Ok(0);
+        assert_eq!(
+            drive_signal_composer_placement(
+                &mut missing,
+                SignalLivePlacementRequest {
+                    carrier: "charlie-1207-osl",
+                    allow_replace_existing: false,
+                },
+            )
+            .status,
+            SignalPlacementStatus::ComposerUnavailable
+        );
+
+        let mut ambiguous = FakeSignalBackend::empty();
+        ambiguous.writable = Ok(2);
+        let receipt = drive_signal_composer_placement(
+            &mut ambiguous,
+            SignalLivePlacementRequest {
+                carrier: "delta-6214-osl",
+                allow_replace_existing: false,
+            },
+        );
+        assert_eq!(receipt.status, SignalPlacementStatus::ComposerAmbiguous);
+        assert_eq!(receipt.writable_composer_count, 2);
     }
 
     #[test]

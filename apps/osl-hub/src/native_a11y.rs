@@ -10,6 +10,15 @@ pub(crate) const EVENT_SYSTEM_ALERT: u32 = 0x0002;
 /// Chromium's documented custom accessibility object id.
 pub(crate) const ELECTRON_A11Y_OBJECT_ID: i32 = 1;
 
+/// Electron's top-level Chromium host window class.
+pub const ELECTRON_OUTER_WINDOW_CLASS: &str = "Chrome_WidgetWin_1";
+
+/// Electron's content-bearing Chromium renderer child window class.
+pub const ELECTRON_RENDERER_WINDOW_CLASS: &str = "Chrome_RenderWidgetHostHWND";
+
+/// A UIA tree below this size is treated as not yet asynchronously populated.
+pub const ELECTRON_UIA2_POPULATED_MIN_ELEMENTS: usize = 10;
+
 /// Execute Chromium's two-part accessibility activation handshake.
 ///
 /// Kept generic so the ordering and object-id invariant are unit-testable on
