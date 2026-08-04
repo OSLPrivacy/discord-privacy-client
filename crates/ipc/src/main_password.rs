@@ -307,6 +307,153 @@ pub fn marker_exists(dir: &Path) -> bool {
     marker_path(dir).exists()
 }
 
+// =====================================================================
+// D-207: ONE directory owns device-level storage-key authority.
+//
+// The password gate is DEVICE-level, not per-account: `password_dir()`
+// (commands.rs) resolves `keystore::osl_base_dir()` on purpose, because one
+// password unlocks the device and the key it yields encrypts every account's
+// files. The `file_storage_key` slot it fills is likewise a single
+// PROCESS-GLOBAL value -- there is exactly one, for the whole process, no
+// matter how many accounts exist.
+//
+// The device-bound fallback key is the *alternative authority for that same
+// single slot*. It therefore has to be resolved in the same directory the
+// marker lives in. It was not: callers passed `keystore::osl_config_dir()`
+// (the per-identity directory, `<base>/hub-identities/<slot>/`), so
+// `marker_exists(dir)` asked the wrong directory, always answered "no", and a
+// password-protected install minted a fresh random key over its own gate on
+// every launch -- D-207.
+//
+// The disagreement is resolved in favour of the BASE directory, because that
+// is where the authority it competes with already lives and because a
+// per-account answer cannot be correct for a process-global slot. Two accounts
+// would mint two different keys into one slot; whichever ran last would win and
+// silently orphan the other's files.
+//
+// `dir` is still taken as an argument rather than being resolved internally so
+// that tests, imports and the account tools can operate on an explicit tree.
+// What changed is that the argument no longer decides the answer: the refusal
+// is evaluated over the whole LINEAGE from `dir` up to the base, so a caller
+// that names an inner directory cannot vote itself out of the gate.
+// =====================================================================
+
+/// Every directory that can carry device-level storage-key authority for
+/// `dir`: `dir` itself, then each ancestor up to and including
+/// [`keystore::osl_base_dir`] when `dir` lives inside it.
+///
+/// Ordered innermost-first. The LAST element is the authority directory.
+///
+/// A `dir` that is not inside the base (tests on a `tempdir`, an offline
+/// account tool pointed at a copied tree) yields just itself: an unrelated
+/// directory is not part of this install's lineage, and consulting the running
+/// machine's own base for it would be a different bug.
+pub fn storage_key_authority_lineage(dir: &Path) -> Vec<PathBuf> {
+    let mut chain = vec![dir.to_path_buf()];
+    let base = match keystore::osl_base_dir() {
+        Ok(base) => base,
+        Err(_) => return chain,
+    };
+    if dir == base || !dir.starts_with(&base) {
+        return chain;
+    }
+    let mut cursor = dir.parent();
+    while let Some(parent) = cursor {
+        chain.push(parent.to_path_buf());
+        if parent == base {
+            break;
+        }
+        cursor = parent.parent();
+    }
+    chain
+}
+
+/// The single directory that owns device-level storage-key authority for
+/// `dir` -- the base directory when `dir` is inside it, otherwise `dir`.
+///
+/// This is the directory a device-bound fallback key is MINTED into, and the
+/// first one consulted when opening an existing one.
+pub fn storage_key_authority_dir(dir: &Path) -> PathBuf {
+    storage_key_authority_lineage(dir)
+        .pop()
+        .unwrap_or_else(|| dir.to_path_buf())
+}
+
+/// The directory in `dir`'s lineage that holds a main-password marker, if any.
+///
+/// This is the predicate the device-bound fallback refusal is evaluated on. It
+/// deliberately does NOT trust the caller's choice of directory: a marker
+/// anywhere in the lineage means this install is password-gated, and the
+/// password-derived key is the only authority allowed to fill the slot.
+pub fn marker_dir_in_lineage(dir: &Path) -> Option<PathBuf> {
+    storage_key_authority_lineage(dir)
+        .into_iter()
+        .find(|candidate| marker_exists(candidate))
+}
+
+/// Convenience predicate over [`marker_dir_in_lineage`].
+pub fn marker_exists_in_lineage(dir: &Path) -> bool {
+    marker_dir_in_lineage(dir).is_some()
+}
+
+/// Stable text of the device-bound fallback refusal.
+///
+/// Carries no path: it reaches logs and, through the callers, the renderer.
+/// The directories involved are recorded by the loud local trace instead
+/// (D-198 -- user paths do not belong in shippable log lines).
+pub const DEVICE_BOUND_FALLBACK_REFUSED: &str =
+    "OSL: main password marker exists; refusing device-bound fallback storage key";
+
+/// One recorded refusal to mint a device-bound fallback key over a
+/// password-gated install.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeviceBoundMintRefusals {
+    pub count: u64,
+    pub last_message: Option<String>,
+}
+
+static DEVICE_BOUND_MINT_REFUSALS: OnceLock<Mutex<DeviceBoundMintRefusals>> = OnceLock::new();
+
+fn device_bound_mint_refusal_slot() -> &'static Mutex<DeviceBoundMintRefusals> {
+    DEVICE_BOUND_MINT_REFUSALS.get_or_init(|| Mutex::new(DeviceBoundMintRefusals::default()))
+}
+
+/// D-207 / D-150: a refused mint is a state the user cannot recover from by
+/// waiting, so it must not be swallowed. Every caller of
+/// [`ensure_device_bound_fallback_file_storage_key`] turns the `Err` into its
+/// own local failure; this latch is what makes the underlying cause visible
+/// afterwards -- to the log, and to any surface that wants to say so.
+fn record_device_bound_mint_refusal(detail: &str) {
+    if let Ok(mut slot) = device_bound_mint_refusal_slot().lock() {
+        slot.count += 1;
+        slot.last_message = Some(detail.to_owned());
+    }
+    tracing::error!(
+        detail = %detail,
+        "OSL: REFUSED to mint a device-bound fallback storage key over a \
+         password-protected install; the main password is the only authority \
+         that can open this profile"
+    );
+    eprintln!("[OSL][crypto] device-bound fallback storage key REFUSED: {detail}");
+}
+
+/// Read the refusal latch. Non-zero means at least one caller tried to mint a
+/// device-bound key over a password-gated profile during this process.
+pub fn device_bound_mint_refusals() -> DeviceBoundMintRefusals {
+    device_bound_mint_refusal_slot()
+        .lock()
+        .map(|slot| slot.clone())
+        .unwrap_or_default()
+}
+
+/// Clear the refusal latch. Tests only -- nothing in the product resets it,
+/// because a refusal that happened stays true for the life of the process.
+pub fn reset_device_bound_mint_refusals() {
+    if let Ok(mut slot) = device_bound_mint_refusal_slot().lock() {
+        *slot = DeviceBoundMintRefusals::default();
+    }
+}
+
 fn read_marker(dir: &Path) -> Result<PasswordMarker, String> {
     let path = marker_path(dir);
     let bytes = std::fs::read(&path).map_err(|e| format!("OSL: read {}: {e}", path.display()))?;
@@ -1149,11 +1296,58 @@ fn marker_phrase_hash(marker: &PasswordMarker) -> Option<String> {
 // =====================================================================
 
 static FILE_STORAGE_KEY: OnceLock<Mutex<Option<[u8; 32]>>> = OnceLock::new();
+static FILE_STORAGE_KEY_AUTHORITY: OnceLock<Mutex<Option<FileStorageKeyAuthority>>> =
+    OnceLock::new();
 static INACTIVITY_AUTO_LOCK_TIMER: OnceLock<Mutex<Option<keystore::InactivityTimer>>> =
     OnceLock::new();
 
+/// Where the key currently in the process slot came from.
+///
+/// D-207 defence in depth. The slot holds 32 bytes and nothing else, so
+/// `get_file_storage_key().is_some()` was read as "the gate is satisfied" --
+/// which is exactly what a minted device-bound key made true while the user
+/// had never typed their password. Recording the authority alongside the key
+/// means a device-bound key cannot answer a question only the password can
+/// answer, even if some future caller manages to mint one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileStorageKeyAuthority {
+    /// Derived from the main password (or a recovery-phrase reset of it), or
+    /// installed by a path that has already satisfied the gate.
+    MainPassword,
+    /// Minted/opened from `file_storage_key_fallback.json` under the device
+    /// sealer. Valid only for installs with NO main password.
+    DeviceBound,
+}
+
 fn file_storage_slot() -> &'static Mutex<Option<[u8; 32]>> {
     FILE_STORAGE_KEY.get_or_init(|| Mutex::new(None))
+}
+
+fn file_storage_authority_slot() -> &'static Mutex<Option<FileStorageKeyAuthority>> {
+    FILE_STORAGE_KEY_AUTHORITY.get_or_init(|| Mutex::new(None))
+}
+
+/// The authority of the key currently installed, if any.
+pub fn file_storage_key_authority() -> Option<FileStorageKeyAuthority> {
+    *file_storage_authority_slot()
+        .lock()
+        .expect("file_storage_key authority mutex poisoned")
+}
+
+/// True only when the process holds a file storage key whose authority is the
+/// one a main-password gate demands.
+///
+/// This is what `readiness.unlocked` must consult. A device-bound fallback key
+/// is a legitimate authority for an install with no password and no authority
+/// at all for one with a password: on a gated profile it opens nothing, so a
+/// session that reports itself unlocked on the strength of one is lying.
+pub fn file_storage_key_satisfies_password_gate() -> bool {
+    // Order matters: this runs the inactivity auto-lock, which may clear both
+    // the key and its authority.
+    if get_file_storage_key().is_none() {
+        return false;
+    }
+    file_storage_key_authority() != Some(FileStorageKeyAuthority::DeviceBound)
 }
 
 fn inactivity_auto_lock_slot() -> &'static Mutex<Option<keystore::InactivityTimer>> {
@@ -1247,7 +1441,34 @@ pub fn get_file_storage_key() -> Option<[u8; 32]> {
         .expect("file_storage_key mutex poisoned")
 }
 
+/// Install (or clear) the process file storage key.
+///
+/// Everything that is not the device-bound fallback minter reaches the slot
+/// through here, and all of those paths have already satisfied whatever gate
+/// applies -- a verified password, a recovery-phrase reset, a password removal
+/// that deleted the marker first, or a test that is standing in for one. They
+/// are therefore recorded as [`FileStorageKeyAuthority::MainPassword`]. Only
+/// `ensure_device_bound_fallback_file_storage_key_with_sealer` records
+/// `DeviceBound`, because it is the only caller whose key was never authorised
+/// by the user.
 pub fn set_file_storage_key(key: Option<[u8; 32]>) {
+    set_file_storage_key_with_authority(key, FileStorageKeyAuthority::MainPassword);
+}
+
+fn set_file_storage_key_with_authority(
+    key: Option<[u8; 32]>,
+    authority: FileStorageKeyAuthority,
+) {
+    {
+        let mut slot = file_storage_authority_slot()
+            .lock()
+            .expect("file_storage_key authority mutex poisoned");
+        *slot = key.is_some().then_some(authority);
+    }
+    set_file_storage_key_bytes(key);
+}
+
+fn set_file_storage_key_bytes(key: Option<[u8; 32]>) {
     let mut slot = file_storage_slot()
         .lock()
         .expect("file_storage_key mutex poisoned");
@@ -1280,9 +1501,15 @@ pub fn run_inactivity_auto_lock_timer() -> bool {
 /// `file_storage_key` rather than falling back to protected plaintext.
 ///
 /// The fallback key is generated once, sealed with the existing device sealer
-/// stack, written under the OSL config dir, and installed in the process slot.
-/// It is available only when no main password marker exists; if the user has a
-/// main password, that password-derived key remains the only authority.
+/// stack, written under the directory that owns device-level storage-key
+/// authority for `dir` ([`storage_key_authority_dir`] -- the OSL base
+/// directory in a real install), and installed in the process slot.
+///
+/// **It is available only when no main password marker exists ANYWHERE in
+/// `dir`'s lineage.** If the user has a main password, that password-derived
+/// key remains the only authority. The refusal is not the caller's
+/// responsibility: passing an inner directory does not change the answer
+/// (D-207).
 pub fn ensure_device_bound_fallback_file_storage_key(dir: &Path) -> Result<[u8; 32], String> {
     let sealer = keystore::select_best_sealer();
     ensure_device_bound_fallback_file_storage_key_with_sealer(dir, sealer.as_ref())
@@ -1292,15 +1519,34 @@ pub fn ensure_device_bound_fallback_file_storage_key_with_sealer(
     dir: &Path,
     sealer: &dyn keystore::Sealer,
 ) -> Result<[u8; 32], String> {
-    if marker_exists(dir) {
-        return Err(
-            "OSL: main password marker exists; refusing device-bound fallback storage key"
-                .to_owned(),
-        );
+    // D-207. The predicate is the LINEAGE, not `dir`: `password_marker.json`
+    // lives in the base directory (commands.rs `password_dir()`), while every
+    // product caller here passes the per-identity directory beneath it.
+    // Asking only `dir` is what let a password-gated profile mint a random key
+    // over its own gate on every launch, mark the session unlocked, and then
+    // fail every encrypted read behind a Home screen that said "Protected".
+    if let Some(owner) = marker_dir_in_lineage(dir) {
+        record_device_bound_mint_refusal(&format!(
+            "marker owner={} requested for={}",
+            owner.display(),
+            dir.display()
+        ));
+        return Err(DEVICE_BOUND_FALLBACK_REFUSED.to_owned());
     }
 
-    let key = if device_bound_fallback_key_path(dir).exists() {
-        let dto = read_device_bound_fallback_key(dir)?;
+    // Prefer the authority directory, then fall back to any inner directory in
+    // the lineage that already holds a key file. The inner case is the
+    // pre-D-207 layout: installs that legitimately had no password minted
+    // their key per-identity, and their state files are sealed under it.
+    // Adopting it keeps those profiles readable; only NEW keys are minted at
+    // the authority, so the two layouts can never disagree twice.
+    let existing = storage_key_authority_lineage(dir)
+        .into_iter()
+        .rev()
+        .find(|candidate| device_bound_fallback_key_path(candidate).exists());
+
+    let key = if let Some(home) = existing {
+        let dto = read_device_bound_fallback_key(&home)?;
         if dto.sealer_method != sealer.method_label() {
             return Err(
                 "OSL: file_storage_key_fallback.json was sealed by a different device backend"
@@ -1327,7 +1573,7 @@ pub fn ensure_device_bound_fallback_file_storage_key_with_sealer(
             .seal(&out)
             .map_err(|e| format!("OSL: seal fallback storage key: {e}"))?;
         write_device_bound_fallback_key(
-            dir,
+            &storage_key_authority_dir(dir),
             &DeviceBoundFallbackStorageKey {
                 version: DEVICE_BOUND_FALLBACK_KEY_VERSION,
                 sealer_method: sealer.method_label().to_owned(),
@@ -1337,7 +1583,7 @@ pub fn ensure_device_bound_fallback_file_storage_key_with_sealer(
         out
     };
 
-    set_file_storage_key(Some(key));
+    set_file_storage_key_with_authority(Some(key), FileStorageKeyAuthority::DeviceBound);
     Ok(key)
 }
 
