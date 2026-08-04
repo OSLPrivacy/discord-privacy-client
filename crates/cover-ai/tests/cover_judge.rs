@@ -30,66 +30,117 @@
 //! 400-line bigram table that has never read the transitions of fluent English,
 //! so it penalises attested human transitions it happens not to have seen.
 //!
-//! # The judge added here: a closed-alphabet syntactic-frame model
+//! # THE ANSWER, BEFORE ANY OF THE MACHINERY
 //!
-//! The fix is not more corpus. It is to **close the alphabet**, so that "this text
-//! came from somewhere else" cannot be expressed at all.
+//! **No scorer in this file may have a number quoted from it, including the two
+//! new ones.** `QUOTABLE` is empty and Control 2 asserts that it is empty because
+//! the measurement says so. Three human corpora, each in turn excluded from
+//! training and used as the control, 200 length-matched forced-choice trials per
+//! row, both sides always human — and the worst distance from the only correct
+//! answer of 0.500 is:
 //!
-//! Every word is mapped to one of ~200 symbols:
+//! ```text
+//!   legacy default          0.500     legacy known-only       0.435
+//!   frame-bigram density    0.470     frame-trigram density   0.460
+//!   frame-bigram PMI        0.325     frame-trigram PMI       0.460
+//! ```
 //!
-//! * if it is an English **closed-class** word — determiner, pronoun, preposition,
-//!   auxiliary, modal, conjunction, negator, wh-word, or a common contraction of
-//!   those — it maps to **itself**;
-//! * otherwise it maps to a single symbol `<OPEN>`.
+//! against a tolerance of 0.20 that admits anything in `[0.30, 0.70]`. Every one
+//! of them is a provenance detector. The new judge is a large and demonstrable
+//! improvement on three separate axes and it is **still not good enough to quote**,
+//! and saying so is worth more than a number would be.
 //!
-//! Closed-class inventories are a property of the **language**, not of a corpus:
-//! `the`, `of`, `is`, `not` are the same words in a hand-written fixture, in
-//! scraped SMS, and in text a transformer wrote. So a model over this alphabet has
-//! **no channel through which provenance can leak** — a word it has never seen
-//! before is not a hole in its vocabulary, it is `<OPEN>`, which it has seen tens
-//! of thousands of times.
+//! What follows is what was built, what it fixed, and exactly where it stops.
 //!
-//! What survives that mapping is **syntactic frame**: `a <OPEN>`, `<OPEN> of the`,
-//! `i do not`. That is exactly what the shipping word-table codec destroys — it
-//! draws high-frequency chat words independently, producing frames like `a you`,
-//! `of not`, `in the of` that no English speaker writes — and exactly what fluent
-//! text preserves regardless of who wrote it or what it is about.
+//! # Attempt 1: close the alphabet — necessary, not sufficient
 //!
-//! The model is trained on **the same 400 lines** the broken judge trains on, so
-//! the comparison below isolates the *representation* and not the amount of data.
+//! Map every word to one of ~200 symbols: English **closed-class** words
+//! (determiner, pronoun, preposition, auxiliary, modal, conjunction, negator,
+//! wh-word, common contractions) map to themselves, everything else maps to a
+//! single `<OPEN>`. Closed-class inventories are a property of the **language**,
+//! not of a corpus, so a word the model has never met is not a hole in its
+//! vocabulary — it is `<OPEN>`, which it has read tens of thousands of times.
+//!
+//! What survives is **syntactic frame**: `a <OPEN>`, `<OPEN> of the`, `i do not`.
+//!
+//! Trained on the same 400 lines as the broken judge, `density_score` **failed
+//! Control 2 at 1.000** on both outside provenances, as hard as the scorer it
+//! replaced. Closing the alphabet removes vocabulary *identity* as a channel and
+//! leaves vocabulary *density*: `<OPEN> <OPEN>` is the commonest transition there
+//! is, so the score tracks how many function words a text contains — 45.9% in the
+//! judge's own corpus, 54.0% in the outside hand-written corpus, 61.1% in scraped
+//! SMS. It also rated uniform random words from its own vocabulary as **more human
+//! than real text** (Control 3, rate 0.045), because random chat words are 91%
+//! open-class.
+//!
+//! # Attempt 2: score the order, not the composition
+//!
+//! `pmi` is a likelihood **ratio against the model's own marginal**, not a
+//! likelihood: `mean[ ln P(next | context) − ln P(next) ]`. Order carries
+//! information; composition does not. Word salad is near zero by construction
+//! rather than by threshold.
+//!
+//! This fixed Control 1 and Control 3 outright — it is the only scorer here that
+//! flags both shuffled human text (1.000) and vocabulary-matched random words
+//! (1.000) while staying unbiased inside its own corpus (0.460). It did **not**
+//! fix Control 2.
+//!
+//! # Attempt 3: pool provenances and give it more data
+//!
+//! `the_control_is_passable_only_above_a_training_scale` measures the mechanism
+//! directly. The channel is coverage — how much of an outside corpus's syntax the
+//! judge has ever read:
+//!
+//! ```text
+//!   400 lines, one provenance   70.0% of the control's frames seen   rate 0.635
+//!  1845 lines, two provenances  98.1%                                rate 0.170
+//! ```
+//!
+//! Coverage closes and the rate keeps moving — straight through 0.500 and out the
+//! other side. More data does not converge this judge on fairness; it swaps which
+//! corpus it prefers. That is the finding that ends the line of attack.
+//!
+//! # Why the control is leave-one-out and two-sided
+//!
+//! An earlier form of Control 2 gated one corpus in one direction at a ceiling of
+//! 0.70, and **that gate is passable by accident**: swapping the sides of a forced
+//! choice turns rate `r` into `1 − r`. The frame-PMI trigram scorer sat at
+//! **0.000** against `bigram_corpus.txt` and **0.980** on the same two corpora with
+//! the sides swapped. One number, dressed as a pass. `|rate − 0.500|` regardless of
+//! sign is the only honest statistic, and a row at 0.000 is exactly as broken as a
+//! row at 1.000.
 //!
 //! ## Parameters, fixed before measuring
 //!
-//! Interpolation weights are stated here and were **not** adjusted after seeing a
-//! result. A judge tuned until it agrees with what we already believe is not a
-//! judge. `BIGRAM_LAMBDA = 0.7`; trigram weights `0.5 / 0.3 / 0.2`. Both orders are
-//! reported, and both must pass every control — a parameter that only works at one
-//! setting would itself be the finding.
+//! `BIGRAM_LAMBDA = 0.7`; trigram weights `0.5 / 0.3 / 0.2`; `PROVENANCE_TOLERANCE
+//! = 0.20`; `SALAD_FLOOR = 0.85`. None was adjusted after seeing a result, and the
+//! measured numbers are nowhere near any of them, so no conclusion here turns on a
+//! threshold. There is also **no threshold on the score itself**: every number is a
+//! forced choice between two texts, so the judge only ever orders a pair.
 //!
-//! There is **no threshold on the score**. Every number here comes from a
-//! forced-choice trial between two texts, so the judge only ever has to order a
-//! pair. There is nothing to calibrate and therefore nothing to tune.
+//! # The controls, and they all run by default
 //!
-//! # The controls, and they run by default
+//! | control | requirement | asserted on |
+//! |---|---|---|
+//! | 1 — bias inside the judge's own corpora | ≈0.500 | frame PMI |
+//! | 2 — human text of a provenance excluded from training, **all three ways round** | within 0.20 of 0.500 | agreement with `QUOTABLE` |
+//! | 3 — word salad: human words, shuffled | **must** be flagged ≥0.85 | frame PMI |
+//! | 3 — word salad: uniform draws from the judge's own vocabulary | **must** be flagged ≥0.85 | frame PMI |
 //!
-//! | control | requirement |
-//! |---|---|
-//! | held-out text from the judge's **own** corpus | must **not** be flagged (≈0.50) |
-//! | human chat of a **different provenance** (`stego/src/bigram_corpus.txt`) | must **not** be flagged |
-//! | **external, scraped** human chat (NPS Chat + UCI SMS ham) | must **not** be flagged |
-//! | word salad — human words, shuffled | **must** be flagged |
-//! | word salad — uniform draws from the judge's own vocabulary | **must** be flagged |
-//!
-//! The last two are not decoration. A judge that cannot fail on obvious word salad
-//! is as broken as one that fires on real human writing, and the second control
-//! alone can be passed by a judge that says "human" to everything.
+//! Control 3 is not decoration. Control 2 alone is passed perfectly by a judge that
+//! says "human" to everything, and Control 3 is what stops this file being made
+//! green by tuning: a scorer bent toward provenance-blindness loses the ability to
+//! flag salad, and both are asserted at once.
 //!
 //! # The old scorer is kept, not deleted
 //!
-//! `LegacyReader` below is the D-161/B0-06 reader **verbatim**, including
-//! `mean_log_prob_known_only`. Every control is run through it as well, so its
-//! failure is visible in the same output as the new judge's result rather than
-//! having to be taken on trust from a prose defect entry. NEVER REMOVE A SPEC.
+//! `LegacyReader` is the D-161/B0-06 reader **verbatim**, including
+//! `mean_log_prob_known_only`. It is run through every control beside the new ones,
+//! and `the_old_protocol_still_reproduces_its_published_numbers` **asserts** that it
+//! still returns D-161's exact published row (`1.000`, `+0.8306`). D-215 can
+//! therefore be re-observed on demand instead of taken on trust, and the
+//! re-measured rows are known to be comparable with the withdrawn ones.
+//! NEVER REMOVE A SPEC.
 //!
 //! # Running the rows
 //!
@@ -1353,6 +1404,11 @@ fn control_3_the_judge_flags_word_salad() {
 fn the_three_rows_remeasured() {
     let bench = bench();
     println!("\n==================== THE ROWS, RE-MEASURED ====================");
+    println!("  *** NOT QUOTABLE. QUOTABLE is {:?} -- see Control 2. ***", QUOTABLE);
+    println!("  Every rate below comes from a scorer that Control 2 classifies as a provenance");
+    println!("  detector. These rows are DIRECTIONAL EVIDENCE about where the difference lies,");
+    println!("  not measurements of how often a person would look twice. Row 1b is the only one");
+    println!("  in which provenance is controlled on both sides.");
     println!(
         "  judge: closed-class frame PMI, {} training lines, two pooled provenances",
         bench.training_lines
