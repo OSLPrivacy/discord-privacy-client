@@ -115,6 +115,107 @@ use tauri_plugin_updater::UpdaterExt;
 #[cfg(feature = "whatsapp-qa-identity")]
 use zeroize::{Zeroize, Zeroizing};
 
+/// D-142: the desktop binary registered **no `tracing` subscriber at all**, so
+/// every `tracing::error!` in the workspace was dispatched to a `NoSubscriber`
+/// and dropped on the floor. That is a defect in its own right, not missing
+/// scaffolding: the post-gate reload refusal
+/// (`crates/ipc/src/commands.rs:14761-14766`) surfaces one sentence to the user
+/// — "OSL encrypted security state could not be reloaded safely" — and the
+/// adjacent `tracing::error!(errors = ?u.reload.errors, …)` that names *which*
+/// state loader refused went nowhere. A user who hit it had no cause on screen
+/// and no diagnostic anywhere on the machine, and neither did anyone debugging
+/// it. `RUST_LOG` did nothing because nothing was listening.
+///
+/// This installs the listener. Two sinks, one shared env filter:
+///
+/// * **stderr** — for `cargo tauri dev`, the e2e harness (whose launcher
+///   redirects the process's stderr into `.profiles/<name>/logs/backend.log`)
+///   and anyone who starts the app from a terminal.
+/// * **a capped file** at `std::env::temp_dir()/osl-diagnostics.log` — the
+///   "somewhere on the machine" half. Same location convention as
+///   [`startup_breadcrumb`]'s trace, i.e. deliberately **outside** the
+///   encrypted profile directory, so a diagnostic write can never touch
+///   at-rest state.
+///
+/// **Default level is `warn`.** That is the whole diagnostic surface and no
+/// more: `WARN`/`ERROR` in this workspace are refusals and self-heals — the
+/// sealed identity would not reopen, a state file was quarantined, the message
+/// store did not come back — and they name files and hashed `log_id`s, never
+/// message content. `INFO`/`DEBUG` do carry peer counts, scope ids and per-send
+/// activity, so they stay off unless the operator asks for them by hand with
+/// `OSL_LOG` (preferred) or `RUST_LOG`, e.g. `OSL_LOG=ipc=debug`. This is a
+/// privacy product; verbose logging is an explicit per-launch choice.
+#[cfg(feature = "core")]
+fn init_diagnostic_subscriber() {
+    use std::io::Write as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+
+    /// Hard cap on the on-disk diagnostic so a wedged loop cannot fill the
+    /// disk. Checked once per process: past the cap the file is truncated and
+    /// this launch starts a fresh one.
+    const MAX_DIAGNOSTIC_BYTES: u64 = 4 * 1024 * 1024;
+
+    fn diagnostic_log_path() -> std::path::PathBuf {
+        std::env::temp_dir().join("osl-diagnostics.log")
+    }
+
+    /// Opened per event rather than held: `ERROR` is rare by construction, and
+    /// a handle that is opened, written, flushed and dropped survives a process
+    /// that wedges or is killed immediately afterwards — which is exactly the
+    /// failure shape this exists to diagnose.
+    fn diagnostic_writer() -> Box<dyn std::io::Write + Send> {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(diagnostic_log_path())
+        {
+            Ok(file) => Box::new(file),
+            // A diagnostic sink must never be able to take the app down, so an
+            // unwritable temp dir degrades to stderr-only.
+            Err(_) => Box::new(std::io::sink()),
+        }
+    }
+
+    let path = diagnostic_log_path();
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_DIAGNOSTIC_BYTES) {
+        let _ = std::fs::write(&path, b"");
+    }
+
+    let filter = tracing_subscriber::EnvFilter::try_from_env("OSL_LOG")
+        .or_else(|_| tracing_subscriber::EnvFilter::try_from_default_env())
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_target(true)
+        .with_writer(diagnostic_writer as fn() -> Box<dyn std::io::Write + Send>);
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_target(true)
+        .with_writer(std::io::stderr);
+
+    // `try_init`, not `init`: a second call (a test harness, a re-entrant
+    // shell) must not panic the app over logging.
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(stderr_layer)
+        .with(file_layer)
+        .try_init();
+
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(diagnostic_log_path())
+    {
+        let _ = writeln!(
+            file,
+            "--- OSL diagnostics: pid {} started; set OSL_LOG to raise the level ---",
+            std::process::id()
+        );
+    }
+}
+
 /// Diagnostics-only startup breadcrumb trace. TEMPORARY: added to bracket the
 /// exact point where a freshly built binary hangs during launch before any
 /// window is created. Every call site is marked `// STARTUP-TRACE` so the
@@ -9274,6 +9375,11 @@ fn main() {
     }
 
     startup_breadcrumb("main_enter"); // STARTUP-TRACE
+    // D-142: before anything that can fail. Until this runs, every
+    // `tracing::error!` in the process — including the post-gate reload
+    // refusal that keeps a session locked — is discarded unread.
+    #[cfg(feature = "core")]
+    init_diagnostic_subscriber();
     startup_breadcrumb("guardian_check_before"); // STARTUP-TRACE
     if osl_privacy_hub::native_window_host::run_borrowed_window_guardian_if_requested() {
         startup_breadcrumb("guardian_check_after_early_return"); // STARTUP-TRACE
