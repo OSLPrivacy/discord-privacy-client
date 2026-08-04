@@ -1,6 +1,6 @@
 {
-  "note": "Ledger 2. Every entry is an ADMISSION that a declaration is dropped or a token name is wrong. The four `undefined-declaration-dropped` entries are open defect D-102 and are being fixed in a parallel lane; when that fix lands these entries stop matching a live violation and the stale-exception rule fails this ledger until they are deleted. That is the ratchet, working.",
-  "highWaterMark": 7,
+  "note": "Ledger 2. Every entry is an ADMISSION that a declaration is dropped or a token name is wrong. 2026-08-03: --cyan, --line-strong, --text-muted and --warning were DELETED here because B0-03 defined them; the ledger caught the stale entries itself and went RED until they were removed. That is the ratchet working as designed, and it is why highWaterMark may only ever decrease.",
+  "highWaterMark": 3,
   "entries": [
     {
       "id": "--accent",
@@ -10,20 +10,6 @@
       "citation": "apps/osl-hub-ui/src/onboarding-tor.css:31"
     },
     {
-      "id": "--cyan",
-      "class": "accepted",
-      "status": "known-defect",
-      "reason": "Typo against --brand. Kills the border-colour and background of the four Home OSL tiles, which is the visible symptom filed as the Home tiles losing their cyan treatment. Open as D-102. NOT accepted as correct; delete this entry with the fix.",
-      "citation": "apps/osl-hub-ui/src/styles.css:5120"
-    },
-    {
-      "id": "--line-strong",
-      "class": "accepted",
-      "status": "known-defect",
-      "reason": "No exact equivalent in the palette; nearest is --line. Drops the colour on .window-controls button:disabled, though opacity .34 survives so the effect is cosmetic only. Open as D-102. Delete this entry with the fix.",
-      "citation": "apps/osl-hub-ui/src/styles.css:613"
-    },
-    {
       "id": "--surface",
       "class": "accepted",
       "status": "known-defect",
@@ -31,25 +17,11 @@
       "citation": "apps/osl-hub-ui/src/expiry-picker.css:23"
     },
     {
-      "id": "--text-muted",
-      "class": "accepted",
-      "status": "known-defect",
-      "reason": "Typo against --muted. Drops the colour on .header-protection-control, the Lock/Eye protection strip in the Discord workspace header, which then inherits. Open as D-102. Delete this entry with the fix.",
-      "citation": "apps/osl-hub-ui/src/styles.css:2113"
-    },
-    {
       "id": "--warn-soft",
       "class": "accepted",
       "status": "known-defect",
       "reason": "Not in the palette block; both uses carry a fallback so the declarations survive. Same one-character-class family as the D-102 typos but harmless on screen. Delete this entry when the name is corrected.",
       "citation": "apps/osl-hub-ui/src/styles.css:5013"
-    },
-    {
-      "id": "--warning",
-      "class": "accepted",
-      "status": "known-defect",
-      "reason": "Typo against --warn. Drops the colour on .osl-chat-message-state.is-queued so `Queued - not sent` loses its warning colour while the sibling .is-expired keeps it. Colour is not the sole signal here (the label still says `not sent`), so it is not an accessibility failure. Open as D-102. Delete this entry with the fix.",
-      "citation": "apps/osl-hub-ui/src/styles.css:7145"
     }
   ]
 }
