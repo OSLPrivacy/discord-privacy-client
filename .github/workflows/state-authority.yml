@@ -3,7 +3,12 @@ name: State authority
 on:
   pull_request:
   push:
-    branches: [main]
+    # D-172. Note this workflow does not exist on the default branch at all --
+    # `gh run list --workflow state-authority.yml` answers 404 -- so before this
+    # line it had never run anywhere, on any branch, ever. It is green on
+    # integrate/first-usable today (measured 2026-08-04), which is the whole
+    # reason it is worth switching on rather than quarantining.
+    branches: [main, 'integrate/**']
 
 permissions:
   contents: read

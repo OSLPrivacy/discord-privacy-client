@@ -8,6 +8,12 @@ permissions:
   contents: read
   issues: write
 
+# D-172 deliberately did NOT wire this to `integrate/**`. It probes live
+# third-party surfaces on a timer and opens issues (`issues: write`), so on a
+# branch it would produce network-flaky red that says nothing about the commit
+# that triggered it -- and issue noise attributed to whoever pushed. The offline
+# half of this check already runs per-push as the `selector-check` job in
+# ts-test.yml, which IS now wired to integrate/**.
 on:
   schedule:
     - cron: '0 */6 * * *'   # every 6 hours

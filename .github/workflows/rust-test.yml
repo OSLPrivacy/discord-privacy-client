@@ -6,7 +6,13 @@ concurrency:
 
 on:
   push:
-    branches: [main]
+    # D-172. This workflow owns the two most expensive truths in the repo -- the
+    # workspace suite and `hub-desktop-bin`, the only job that builds the app as
+    # it ships -- and until this line existed it asserted them about `main` only.
+    # D-146 was an integration head that could not build the shipping app at all
+    # while three suites were green; this job would have caught it on the push
+    # that broke it, and could not, because it never ran on that branch.
+    branches: [main, 'integrate/**']
   pull_request:
 
 jobs:
@@ -189,3 +195,13 @@ jobs:
         run: |
           python3 -m pip install --quiet pyyaml
           python3 .github/workflows/rust-test.workflow-test.py
+      # D-172. A trigger is one line and one line is easy to lose in a merge.
+      # This asserts that the five workflows that gate `integrate/**` still do,
+      # that the five that deploy/publish/open-issues still do not, and that
+      # integration-gate.yml still contains all four shipping-artifact build
+      # gates as SEPARATE jobs. It runs from this job -- a different workflow
+      # from the one it mostly guards -- for the same reason the rust contract
+      # above does: a contract enforced only by the thing it constrains is not
+      # enforced.
+      - name: Integration-branch gating contract
+        run: python3 .github/workflows/integration-branch-gating.test.py

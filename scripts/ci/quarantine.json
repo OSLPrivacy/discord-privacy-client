@@ -1,0 +1,78 @@
+{
+  "ledger": "integration-branch quarantine",
+  "note": "D-172. THIS IS A RATCHET, NOT AN EXCUSE. Every entry below is a check that is RED on integrate/first-usable today. None of them is fixed here and none of them is suppressed: each one still runs in full on every push to the integration branch and its findings are printed verbatim. What this file adds is the only thing a permanently-red step cannot give you -- a number that can FAIL. scripts/ci/quarantine-ratchet.mjs fails if a count goes UP (a regression slipped in) and also if a count goes DOWN without this file being lowered in the same change (a ratchet checked in one direction rots into a floor nobody ever lowers). Identical policy to scripts/ledger/state-baseline.json. To lower a number you must land the fix and the new number together.",
+  "measured": "scripts/ci/quarantine-ratchet.mjs on fix/d172-gate-integration-branch, 2026-08-04",
+  "provenance": "ts-test.yml, rust-test.yml and public-release-audit.yml last ran on main at 30658453352 / 30658453451 / 30658453416 on 2026-07-31, ALL GREEN. claims.yml, site-tests.yml and state-authority.yml do not exist on the default branch at all and have therefore never run anywhere. Every count below is therefore red that arrived on integrate/first-usable AFTER 2026-07-31 and was never seen, because no workflow has ever run on that branch. That is D-172 itself, measured.",
+  "entries": [
+    {
+      "id": "app-claims",
+      "count": 6,
+      "cwd": ".",
+      "cmd": ["node", "scripts/check-app-claims.mjs"],
+      "extract": "violations-found",
+      "runsIn": ".github/workflows/ts-test.yml job claim-gates",
+      "why": "6 in-app copy claims outside docs/design/osl-public-claim-allowlist.md. This step is the FIRST step of every ts-test lane, so while it is red every other lane of that workflow aborts before it starts -- which is exactly how the D-162 build gate was rendered inert. Hoisted into its own job by this change so it can be red without masking anything.",
+      "owner": "unassigned - surfaced by D-172, needs a claims lane"
+    },
+    {
+      "id": "a11y-overflow",
+      "count": 6,
+      "cwd": ".",
+      "cmd": ["node", "scripts/check-a11y.mjs"],
+      "extract": "blocking-findings",
+      "runsIn": ".github/workflows/site-tests.yml (NOT enabled on integrate/**; see the D-172 tasklog)",
+      "why": "6 horizontal-overflow combinations on /docs/compare, /docs/download and /docs/faq at 320px and 390px @200% zoom. Website copy, not the desktop app; site-tests.yml is deliberately not wired to the integration branch, so this ratchet is the only thing watching it there.",
+      "owner": "unassigned - website lane"
+    },
+    {
+      "id": "public-release-audit",
+      "count": 18,
+      "cwd": ".",
+      "cmd": ["python3", "scripts/audit_public_release.py"],
+      "extract": "dash-findings",
+      "runsIn": ".github/workflows/public-release-audit.yml (NOT enabled on integrate/**; see the D-172 tasklog)",
+      "why": "18 tracked files carry a personal WSL path. scripts/verify-all.sh is one of them and stays one: this change removes its hardcoded fallback CHECKOUT (D-172 part 2) but leaves the comment that records what the fallback used to be, because that comment is the lesson. Note this file itself is graded by that audit -- an early draft of this entry quoted the offending path and pushed the count to 19, which the ratchet caught on its first real run. Do not quote absolute home paths here.",
+      "owner": "unassigned - surfaced by D-172"
+    },
+    {
+      "id": "keyserver-typecheck",
+      "count": 13,
+      "cwd": "keyserver-cf",
+      "cmd": ["npx", "tsc", "--noEmit"],
+      "extract": "tsc-errors",
+      "runsIn": ".github/workflows/ts-test.yml lane keyserver-worker",
+      "why": "13 pre-existing TypeScript errors. This is the step the D-162 lane's build gate was originally placed BEHIND, so the gate could never execute. The bundle gate now lives in its own job (worker-bundles) and no longer depends on this being green.",
+      "owner": "unassigned - keyserver lane"
+    },
+    {
+      "id": "cipher-store-typecheck",
+      "count": 7,
+      "cwd": "cipher-store-cf",
+      "cmd": ["npx", "tsc", "--noEmit"],
+      "extract": "tsc-errors",
+      "runsIn": ".github/workflows/ts-test.yml lane cipher-store-worker",
+      "why": "7 pre-existing TypeScript errors. NOT previously recorded anywhere: the cipher-store steps sat after the keyserver typecheck in the same ts-test lane, so they had never run in CI at all. Split into their own lane by this change.",
+      "owner": "unassigned - surfaced by D-172"
+    },
+    {
+      "id": "keyserver-tests",
+      "count": 13,
+      "cwd": "keyserver-cf",
+      "cmd": ["npm", "test"],
+      "extract": "vitest-failed",
+      "runsIn": ".github/workflows/ts-test.yml lane keyserver-worker",
+      "why": "13 failing vitest cases, 527 passing: 10 in test/integration/mail.test.ts, plus pool-separation, telegram-route and stripe-checkout. Unrelated to the username/bundle path.",
+      "owner": "unassigned - keyserver lane"
+    },
+    {
+      "id": "cipher-store-tests",
+      "count": 4,
+      "cwd": "cipher-store-cf",
+      "cmd": ["npm", "test"],
+      "extract": "vitest-failed",
+      "runsIn": ".github/workflows/ts-test.yml lane cipher-store-worker",
+      "why": "4 failing cases in the vitest.node.config.ts pass (the worker pass is 219/219 green). Same reason as cipher-store-typecheck: never ran in CI, because the lane died earlier.",
+      "owner": "unassigned - surfaced by D-172"
+    }
+  ]
+}
