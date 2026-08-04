@@ -240,7 +240,9 @@ mod tests {
         if home.is_empty() {
             return;
         }
-        let path = std::path::Path::new(&home).join("osl-core").join("peer_map.json");
+        let path = std::path::Path::new(&home)
+            .join("osl-core")
+            .join("peer_map.json");
         let redacted = redact_path(&path);
         assert!(redacted.starts_with('~'), "{redacted}");
         assert!(redacted.ends_with("peer_map.json"), "{redacted}");

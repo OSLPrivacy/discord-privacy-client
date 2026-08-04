@@ -112,7 +112,8 @@ fn write_unopenable_identity(account: &Path) {
 /// gate will never hold, so the post-gate quarantine sweep fires.
 fn write_wrong_key_peer_map(account: &Path) {
     let wrong_key = [7u8; 32];
-    let blob = ipc::main_password::encrypt_at_rest(b"{}", &wrong_key).expect("seal under wrong key");
+    let blob =
+        ipc::main_password::encrypt_at_rest(b"{}", &wrong_key).expect("seal under wrong key");
     std::fs::write(account.join("peer_map.json"), blob).expect("write peer_map.json");
 }
 

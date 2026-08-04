@@ -9273,10 +9273,10 @@ fn main() {
     }
 
     startup_breadcrumb("main_enter"); // STARTUP-TRACE
-    // D-142/D-191: before anything that can fail. Until this runs, every
-    // `tracing::error!` in the process — including the post-gate reload
-    // refusal that keeps a session locked — is discarded unread. This is in
-    // the release build on purpose; see `osl_privacy_hub::diagnostics`.
+                                      // D-142/D-191: before anything that can fail. Until this runs, every
+                                      // `tracing::error!` in the process — including the post-gate reload
+                                      // refusal that keeps a session locked — is discarded unread. This is in
+                                      // the release build on purpose; see `osl_privacy_hub::diagnostics`.
     #[cfg(feature = "core")]
     osl_privacy_hub::diagnostics::init_diagnostic_subscriber();
     startup_breadcrumb("guardian_check_before"); // STARTUP-TRACE
