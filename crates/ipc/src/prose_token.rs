@@ -365,7 +365,7 @@ pub fn prose_token_send(
     dpc0_wire: &str,
     ttl_seconds: u32,
 ) -> Result<ProseTokenSendOutput, ProseTokenError> {
-    let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir);
+    let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir)?;
     let client = CipherStoreClient::new(base_url)?;
     prose_token_send_with_client(
         &client,
@@ -494,7 +494,7 @@ pub fn prose_token_recv_classified(
     let id_hex = hex_lower(&id);
     let fetch_token = bridge_fetch_token(&seed);
 
-    let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir);
+    let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir)?;
     let client = CipherStoreClient::new(base_url)?;
     let object = match client.fetch_legacy_token(&id_hex, &fetch_token) {
         Ok(b) => b,
@@ -556,7 +556,7 @@ pub fn prose_token_burn_id(
     send_key: &[u8],
     blob_id: &str,
 ) -> Result<(), ProseTokenError> {
-    let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir);
+    let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir)?;
     let client = CipherStoreClient::new(base_url)?;
     prose_token_burn_id_with_client(&client, send_key, blob_id)
 }

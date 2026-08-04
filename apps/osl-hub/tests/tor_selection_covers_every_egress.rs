@@ -91,10 +91,9 @@ fn the_attachment_transport_refuses_instead_of_uploading_direct() {
     let witness = ClearnetWitness::bind();
     let (_state, _restore) = tor_selected_without_a_tunnel(directory.path(), &witness);
 
-    let attempted = ipc::cipher_store_client::CipherStoreClient::new(
-        ipc::cipher_store_client::resolve_cipher_store_base_url(directory.path()),
-    )
-    .and_then(|client| {
+    let base_url = ipc::cipher_store_client::resolve_cipher_store_base_url(directory.path())
+        .expect("empty test config uses the pinned cipher-store URL");
+    let attempted = ipc::cipher_store_client::CipherStoreClient::new(base_url).and_then(|client| {
         client.upload(
             b"ciphertext",
             ipc::cipher_store_client::TTL_1H,

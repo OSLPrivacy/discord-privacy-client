@@ -2704,13 +2704,20 @@ pub fn burn_manual_peer_scope(
     // Unrouted constructor: while Tor is selected this adopts the authorized
     // tunnel or refuses, so a burn never deletes over clearnet what a Tor
     // upload put there. See `keystore::egress`.
-    let attachment_client = ipc::cipher_store_client::CipherStoreClient::new(
-        ipc::cipher_store_client::resolve_cipher_store_base_url(&dir),
-    )
-    .map_err(|error| match error {
-        ipc::cipher_store_client::CipherStoreError::RouteUnavailable(message) => message,
-        _ => "OSL attachment cleanup is unavailable".to_owned(),
-    })?;
+    let attachment_base_url = ipc::cipher_store_client::resolve_cipher_store_base_url(&dir)
+        .map_err(|error| error.to_string())?;
+    let attachment_client =
+        ipc::cipher_store_client::CipherStoreClient::new(attachment_base_url).map_err(
+            |error| match &error {
+                ipc::cipher_store_client::CipherStoreError::RouteUnavailable(message) => {
+                    message.clone()
+                }
+                ipc::cipher_store_client::CipherStoreError::ConfigOverrideRefused { .. } => {
+                    error.to_string()
+                }
+                _ => "OSL attachment cleanup is unavailable".to_owned(),
+            },
+        )?;
     let mut failed_attachment_entries = Vec::new();
     let mut remote_attachments_deleted = 0usize;
     for entry in attachment_entries {

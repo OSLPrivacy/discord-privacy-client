@@ -494,6 +494,7 @@ pub fn classify_cipher_store_error(
         Raw::ParseError(_) => TransportOutcome::MalformedResponse,
         Raw::Io(_) => TransportOutcome::LocalIo,
         Raw::RouteUnavailable(_) => TransportOutcome::RouteUnavailable,
+        Raw::ConfigOverrideRefused { .. } => TransportOutcome::Refused,
         // B0-01 phase 2's storage grants. All three are the store refusing the
         // credential we presented, which is exactly `CapabilityRejected` -- the
         // same outcome as a 401/403 above, and deliberately NOT `Refused`: the
