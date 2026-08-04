@@ -165,9 +165,23 @@ export function oslChatHistoryMessages(
       direction: incoming ? "incoming" as const : "outgoing" as const,
       body: row.plaintext,
       state: incoming ? "received" as const : "sent" as const,
-      timestampLabel: formatTimestamp(row.decryptedAt),
+      timestampLabel: formatTimestamp(row.createdAt),
     };
   });
+}
+
+export function receivedOslChatBatchMessage(
+  localMessageId: string,
+  incoming: NativeDiscordOverlayOpenedBatch["messages"][number],
+  formatTimestamp: (epochSeconds: number) => string,
+): OslChatMessage {
+  return {
+    messageId: localMessageId,
+    direction: "incoming",
+    body: incoming.plaintext,
+    state: incoming.viewOnceConsumed ? "opened" : "received",
+    timestampLabel: formatTimestamp(incoming.createdAt),
+  };
 }
 
 /**
@@ -189,6 +203,7 @@ function unrecognizedWireRowsBatch(count: number): NativeDiscordOverlayOpenedBat
       contextVerified: true,
       personToPersonE2ee: true,
       viewOnceConsumed: false,
+      createdAt: 4_000_000_000,
       expiresAt: 4_000_000_000,
     }],
     pendingViewOnce: [],

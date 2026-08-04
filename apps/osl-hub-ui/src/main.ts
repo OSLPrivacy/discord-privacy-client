@@ -174,8 +174,8 @@ export {
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
-import { firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, type OslChatMessage } from "./osl-chats-view";
-import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, type OslChatDeliveryHost } from "./osl-chat-runtime";
+import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, type OslChatMessage } from "./osl-chats-view";
+import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
 import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
@@ -7067,6 +7067,12 @@ function syncOslChatComposer(): void {
   }
 }
 
+function setOslChatDraft(nextDraft: string, syncElement = true): void {
+  oslChatDraft = nextDraft;
+  if (syncElement) applyOslChatDraftToElement(document.querySelector<HTMLTextAreaElement>("#osl-chat-draft"), nextDraft);
+  syncOslChatComposer();
+}
+
 function bindWorkspace(): void {
   bindPasswordVisibility();
   bindLocalProtectedSheet();
@@ -7105,9 +7111,8 @@ function bindWorkspace(): void {
   document.querySelector<HTMLButtonElement>("#osl-chat-approve")?.addEventListener("click", () => void approveOslChat());
   const oslChatDraftInput = document.querySelector<HTMLTextAreaElement>("#osl-chat-draft");
   oslChatDraftInput?.addEventListener("input", () => {
-    oslChatDraft = oslChatDraftInput.value;
     // The Send button's disabled state and the byte counter are computed in
-    // activeThread() at RENDER time. This listener only assigned the draft, so
+    // activeThread() at RENDER time. This listener used to only assign the draft, so
     // after typing a message Send kept the stale `disabled` from the previous
     // render and stayed dead until some unrelated event repainted -- measured on
     // a real VM: byteCounter=0 sendEnabled=False after typing, then 50/True
@@ -7118,7 +7123,7 @@ function bindWorkspace(): void {
     // rebuild the textarea under the caret and lose focus and cursor position
     // mid-word. The preconditions that cannot change while typing (verified,
     // ready, not busy) are carried on the button by the view.
-    syncOslChatComposer();
+    setOslChatDraft(oslChatDraftInput.value, false);
   });
   document.querySelector<HTMLInputElement>("#osl-chat-view-once")?.addEventListener("change", (event) => { oslChatViewOnce = (event.currentTarget as HTMLInputElement).checked; });
   document.querySelector<HTMLFormElement>("[data-osl-chat-compose]")?.addEventListener("submit", (event) => void sendOslChat(event));
@@ -8060,13 +8065,7 @@ function commitOslChatBatch(personId: string, batch: NativeDiscordOverlayOpenedB
   }
   for (const incoming of batch.messages) {
     const localMessageId = `received-${crypto.randomUUID()}`;
-    messages.push({
-      messageId: localMessageId,
-      direction: "incoming",
-      body: incoming.plaintext,
-      state: incoming.viewOnceConsumed ? "opened" : "received",
-      timestampLabel: oslChatTimestamp(),
-    });
+    messages.push(receivedOslChatBatchMessage(localMessageId, incoming, oslChatHistoryTimestamp));
     if (background) {
       oslChatUnread.set(personId, Math.min(10_000, (oslChatUnread.get(personId) ?? 0) + 1));
       if (notificationsEnabled && notificationChatActivity && !oslChatMutedPeople.has(personId)) {
@@ -8252,7 +8251,7 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
     timestampLabel: oslChatTimestamp(),
   }];
   oslChatMessages.set(personId, messages);
-  oslChatDraft = "";
+  setOslChatDraft("");
   oslChatViewOnce = false;
   oslChatBusy = false;
   render();

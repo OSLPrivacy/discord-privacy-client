@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   OSL_CHAT_DELIVERY_STATES,
   OSL_CHAT_MAX_DRAFT_BYTES,
+  applyOslChatDraftToElement,
   oslChatDraftBytes,
   oslChatsViewMarkup,
   type OslChatFriend,
@@ -169,5 +171,18 @@ describe("send button re-enablement while typing", () => {
     const markup = oslChatsViewMarkup(model({ draft: "hello" }));
     expect(markup).toContain('data-osl-chat-send-context="1"');
     expect(markup).not.toMatch(/class="osl-chat-send"[^>]*disabled/u);
+  });
+
+  it("send success clears the live textarea element through the draft source of truth", () => {
+    const textarea = { value: "message that was just sent" };
+    applyOslChatDraftToElement(textarea, "");
+    expect(textarea.value).toBe("");
+
+    const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    const sendStart = main.indexOf("async function sendOslChat(event: SubmitEvent): Promise<void> {");
+    const resetStart = main.indexOf("function resetOslChatUiState", sendStart);
+    expect(sendStart).toBeGreaterThan(-1);
+    expect(resetStart).toBeGreaterThan(sendStart);
+    expect(main.slice(sendStart, resetStart)).toContain('setOslChatDraft("");');
   });
 });
