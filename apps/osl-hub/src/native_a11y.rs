@@ -3550,8 +3550,12 @@ pub(crate) mod tests {
         let host = win32::Uia2Win32Host::desktop();
 
         // The shipping constant, on this host, first and unmodified.
-        let shipping =
-            resolve_uia2_wake_target(crate::native_discord_adapter::DISCORD_UIA2_WINDOW_PLAN, &host);
+        let shipping = resolve_uia2_wake_target(
+            crate::native_discord_adapter::discord_uia2_window_plan(
+                crate::native_window_host::dedicated_discord_process_name(),
+            ),
+            &host,
+        );
         match shipping {
             Ok(window) => eprintln!(
                 "discord: SHIPPING plan (image \"Discord\") resolved: bound_pid={} route={:?}",
@@ -3563,7 +3567,8 @@ pub(crate) mod tests {
             ),
         }
 
-        let image = std::env::var("OSL_D205_DISCORD_IMAGE").unwrap_or_else(|_| "Discord".to_owned());
+        let image =
+            std::env::var("OSL_D205_DISCORD_IMAGE").unwrap_or_else(|_| "Discord".to_owned());
         let image: &'static str = Box::leak(image.into_boxed_str());
         let plan = Uia2WindowPlan::chromium_outer_msaa_root(
             "Discord",
@@ -3596,7 +3601,10 @@ pub(crate) mod tests {
         eprintln!(
             "discord: editable={} writable={}",
             editables.len(),
-            editables.iter().filter(|element| element.writable()).count()
+            editables
+                .iter()
+                .filter(|element| element.writable())
+                .count()
         );
         for element in &editables {
             eprintln!(
@@ -3650,8 +3658,14 @@ pub(crate) mod tests {
              empty_modulo_zero_width={replace_zero_width_only}"
         );
 
-        let receipt = place_uia2_carrier(&host, acquired, &composer, &carrier, replace_zero_width_only)
-            .unwrap_or_else(|error| panic!("discord: placement refused: {error:?}"));
+        let receipt = place_uia2_carrier(
+            &host,
+            acquired,
+            &composer,
+            &carrier,
+            replace_zero_width_only,
+        )
+        .unwrap_or_else(|error| panic!("discord: placement refused: {error:?}"));
         let readback = host
             .value_of(
                 acquired.window.bound_hwnd,
@@ -3662,7 +3676,10 @@ pub(crate) mod tests {
             .expect("the readback must answer inside its deadline");
         eprintln!(
             "discord: placed={} readback_holds_carrier={} submit_shaped={} readback={:?}",
-            receipt.placed, receipt.readback_holds_carrier, receipt.submit_shaped_observed, readback
+            receipt.placed,
+            receipt.readback_holds_carrier,
+            receipt.submit_shaped_observed,
+            readback
         );
 
         // A window in which the carrier is on screen and can be photographed.
