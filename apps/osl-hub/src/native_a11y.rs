@@ -3424,17 +3424,20 @@ pub(crate) mod tests {
             .find(|window| window.hwnd == MEASURED_WEBVIEW_OUTER_HWND)
             .expect("the host is in the graph");
 
-        // Parentage alone still says yes. That is precisely the danger.
+        // Parentage alone still says yes. That is precisely the danger, so the
+        // resolver's own answer is asserted first: without the corroboration
+        // this returns `Ok` and binds a window that says it is hosting another
+        // application.
         assert_eq!(contradicted.parent_process_id, shell.process_id);
-        assert_eq!(
-            classify_sibling_host(shell, contradicted),
-            SiblingHostAssociation::Contradicted
-        );
         assert_eq!(
             resolve_uia2_window(measured_whatsapp_plan(), &windows),
             Err(Uia2WindowResolveError::MissingSiblingContentOuter),
             "when the two signals disagree the resolver must refuse rather than \
              pick the one that says yes"
+        );
+        assert_eq!(
+            classify_sibling_host(shell, contradicted),
+            SiblingHostAssociation::Contradicted
         );
     }
 
