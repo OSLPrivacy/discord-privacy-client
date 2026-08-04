@@ -200,6 +200,7 @@ import {
   runNativeDiscordHeadlessQa,
 } from "./discord-headless-qa-adapter";
 import type { SecureLocalStore } from "./secure-local-store";
+import { createOslChatSecureLocalStore } from "./osl-chat-secure-store";
 
 export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
 
@@ -926,6 +927,64 @@ export function configureOslChatSecureLocalStore(store: OslChatSecureStore | nul
   oslChatSecureStore = store;
 }
 
+// D-108. Everything above this line was written, unit-tested and never called:
+// `configureOslChatSecureLocalStore` had no production caller, so
+// `persistSensitiveOslChatJson` returned early on every write and the four
+// `migrate*ToSecureLocalStore` functions were exported with none. This is the
+// missing construction site.
+//
+// The migrations are guarded per key on the legacy plaintext actually being
+// present, mirroring `encrypt_existing_state_files`'s `migrate skip <file>:
+// not present` in crates/ipc/src/main_password.rs. Running one unconditionally
+// would re-encrypt the parse of `null` — the defaults — over a good sealed
+// value on the second launch and silently destroy it.
+let oslChatSecureLocalStoreReady: Promise<void> | null = null;
+
+async function migrateOslChatKeyOffPlaintext(
+  key: string,
+  migrate: () => Promise<unknown>,
+): Promise<void> {
+  if (localStorage.getItem(key) === null) {
+    console.info(`[OSL][chat] migrate skip ${key}: not present`);
+    return;
+  }
+  await migrate();
+  console.info(`[OSL][chat] migrated ${key} to the secure local store; plaintext removed`);
+}
+
+export async function ensureOslChatSecureLocalStore(): Promise<void> {
+  if (oslChatSecureStore) return;
+  oslChatSecureLocalStoreReady ??= (async () => {
+    const store = await createOslChatSecureLocalStore(localStorage);
+    if (!store) return;
+    configureOslChatSecureLocalStore(store);
+    await migrateOslChatKeyOffPlaintext(
+      oslChatPreviewStorageKey,
+      () => migrateOslChatPreviewVisibilityToSecureLocalStore(store, localStorage),
+    );
+    await migrateOslChatKeyOffPlaintext(
+      oslChatUnreadStorageKey,
+      () => migrateOslChatUnreadToSecureLocalStore(store, localStorage),
+    );
+    await migrateOslChatKeyOffPlaintext(
+      oslChatMutedStorageKey,
+      () => migrateOslChatMutedPeopleToSecureLocalStore(store, localStorage),
+    );
+    await migrateOslChatKeyOffPlaintext(
+      oslChatNotificationStorageKey,
+      () => migrateOslChatNotificationsToSecureLocalStore(store, localStorage),
+    );
+  })().catch((error: unknown) => {
+    console.info(`[OSL][chat] secure local store bootstrap failed: ${String(error)}`);
+  });
+  await oslChatSecureLocalStoreReady;
+  // A main-password gate that is still locked at bootstrap has no key yet, and
+  // that attempt must not be cached as the answer forever: `loadUiPreferences`
+  // runs before the unlock screen. Clearing the memo lets the post-unlock call
+  // in startReadyWorkspaceLoads() migrate the profile off plaintext.
+  if (!oslChatSecureStore) oslChatSecureLocalStoreReady = null;
+}
+
 export function oslChatUiPreferenceSnapshot(): OslChatUiPreferenceSnapshot {
   return {
     previewsVisible: oslChatPreviewsVisible,
@@ -1274,6 +1333,7 @@ export async function loadUiPreferences(): Promise<void> {
   protectionPreset = loadProtectionPreset();
   oslMailNotifications = localStorage.getItem(oslMailNotificationsStorageKey) !== "false";
   rnWirePolicyRequested = localStorage.getItem(rnWirePolicyStorageKey) === "true";
+  await ensureOslChatSecureLocalStore();
   await loadOslChatSensitiveStateFromSecureStore();
   const notices = await loadMigratedOslChatNotifications(oslChatSecureStore, localStorage);
   if (notices.length) appNotifications = notices;
@@ -8788,6 +8848,11 @@ function startReadyWorkspaceLoads(): void {
     showToast("Windows capture resistance is unavailable on this Windows session");
   });
   if (route === "onboarding") return;
+  // The second half of the D-108 construction site. loadUiPreferences() runs
+  // before the unlock screen, so on a password-gated profile the key command
+  // refuses there and the store stays absent; by here the gate is open, so this
+  // is the point at which such a profile actually gets migrated off plaintext.
+  void ensureOslChatSecureLocalStore();
   void openMullvadOnStartup();
   void loadHubPasswordRoleStatus().then((status) => { passwordRoleStatus = status; if (route === "settings" && settingsSection === "account") renderWhenIdle(); }).catch(() => undefined);
   void refreshUpdateStatus(true);

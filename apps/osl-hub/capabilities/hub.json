@@ -161,6 +161,7 @@
     "allow-burn-hub-service-account",
     "allow-burn-active-hub-context",
     "allow-get-hub-revocation-status",
+    "allow-get-osl-chat-local-state-key",
     "allow-get-recovery-kit-unsaved",
     "allow-set-recovery-kit-unsaved"
   ]

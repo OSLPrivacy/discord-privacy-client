@@ -820,6 +820,10 @@ mod tests {
         "get_hub_username_status",
         "add_hub_friend_by_username",
         "get_osl_profile",
+        // Local-only: derives an HKDF subkey from the on-device storage-key
+        // authority and returns it to the local webview. No socket, no
+        // constructor that consults keystore::egress.
+        "get_osl_chat_local_state_key",
         "verify_hub_friend_safety_number",
         "remove_hub_friend",
         "list_hub_people",
