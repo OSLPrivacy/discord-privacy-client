@@ -265,7 +265,11 @@ pub fn migrate_whitelist_state_in_place(
     let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
     let pm_path = dir.join("peer_map.json");
     if let Err(e) = write_peer_map(&pm_path, &pm_guard) {
-        tracing::warn!(error = %e, path = %pm_path.display(), "OSL migration: persist peer_map.json failed");
+        tracing::warn!(
+            error = %e,
+            path = %crate::log_id::redact_path(&pm_path),
+            "OSL migration: persist peer_map.json failed"
+        );
     }
     Ok(Some(report))
 }

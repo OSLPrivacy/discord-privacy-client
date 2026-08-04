@@ -104,7 +104,7 @@ pub fn reload_encrypted_state_after_unlock(
             Ok(Some(q)) => {
                 tracing::warn!(
                     file = name,
-                    quarantined_to = %q.display(),
+                    quarantined_to = %crate::log_id::redact_path(&q),
                     "OSL: state_reload — {name} sealed by a different key; \
                      quarantined (rename, not delete), recreating under \
                      current key"
@@ -119,9 +119,12 @@ pub fn reload_encrypted_state_after_unlock(
                 // keeps the session locked, which is the correct outcome —
                 // previously only a failed RENAME was reported, so the
                 // ordinary success path lost the file quietly.
+                // D-191: this string is what `cmd_osl_verify_gate_password`
+                // puts in its `tracing::error!`, so it must not carry the
+                // account name the profile path embeds.
                 report.errors.push(format!(
                     "{name}: sealed by a different key; quarantined to {}",
-                    q.display()
+                    crate::log_id::redact_path(&q)
                 ));
             }
             Ok(None) => {}
@@ -139,7 +142,7 @@ pub fn reload_encrypted_state_after_unlock(
     if device_prefs_path != legacy_prefs_path {
         match quarantine_if_wrong_key(&device_prefs_path) {
             Ok(Some(q)) => tracing::warn!(
-                quarantined_to = %q.display(),
+                quarantined_to = %crate::log_id::redact_path(&q),
                 "OSL: device app_preferences sealed by a different key; \
                  quarantined (rename, not delete)"
             ),

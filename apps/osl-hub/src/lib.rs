@@ -62,6 +62,11 @@ pub mod control_contract;
 // resolve the moment ai_carrier started using it - the file shipped as an
 // orphan and only broke the build once something imported it.
 pub mod credits;
+// D-191: the process-wide `tracing` subscriber. In the lib, not in `main.rs`,
+// so an integration test can install it against a hermetic path and read back
+// the bytes it produced.
+#[cfg(feature = "core")]
+pub mod diagnostics;
 pub mod discord_carrier_geometry;
 #[cfg(feature = "desktop")]
 pub mod entitlement_refresh;

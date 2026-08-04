@@ -7772,10 +7772,16 @@ fn decrypt_v4_recv(
     // this machine's current identity no longer holds (NoMatchingSlot
     // = "not a recipient of this message"). Logged BEFORE decrypt_v4
     // so it is visible even when the slot scan fails.
+    // D-191: the raw snowflake and the full identity X25519 public key used to
+    // be interpolated here. Both are durable identifiers for a person — the
+    // snowflake names a real Discord account and the public key is the
+    // long-term handle every peer knows this install by — and this event went
+    // into a file the moment a subscriber existed. The slot hash below is what
+    // the triage actually compares against the sender's `recipient_slot_hash`,
+    // so nothing diagnostic is lost by keeping only it.
     tracing::info!(
         target: "osl::v4",
-        sender_did = %sender_discord_id,
-        our_x25519_b64 = %STANDARD.encode(our_pk.as_bytes()),
+        sender_did = %crate::log_id::log_id(&sender_discord_id),
         our_slot_hash = %STANDARD.encode(crate::wire_v2::pubkey_hash_prefix(&our_pk)),
         "OSL: v=4 recv — slot scan will match against our identity X25519"
     );
@@ -12768,7 +12774,7 @@ pub fn ensure_keyserver_registered(state: &AppState, base_url: &str, client_toke
                                  to you may be unsafe until resolved. (server: {body})"
                             );
                             tracing::error!(
-                                detail = %body,
+                                detail = ?crate::log_id::bounded_detail(&body),
                                 "OSL: ensure_keyserver_registered: REGISTRATION \
                                  CONFLICT (403) after rotation proof + plain \
                                  fallback both rejected; keeping proof for a \
@@ -12844,7 +12850,7 @@ pub fn ensure_keyserver_registered(state: &AppState, base_url: &str, client_toke
                      to you may be unsafe until resolved. (server: {body})"
                     );
                     tracing::error!(
-                        detail = %body,
+                        detail = ?crate::log_id::bounded_detail(&body),
                         "OSL: ensure_keyserver_registered: REGISTRATION CONFLICT \
                          (403) — user_id held by a different key; surfacing blocking \
                          alert (NOT swallowed)"
@@ -14044,7 +14050,7 @@ impl Drop for MessageStorePause<'_> {
             }
             Err(e) => tracing::error!(
                 error = %e,
-                path = %self.dir.display(),
+                path = %crate::log_id::redact_path(&self.dir),
                 "OSL: failed to reopen message store after account I/O"
             ),
         }
@@ -16167,7 +16173,7 @@ fn cmd_osl_burn_engage_finish(
             if let Err(e) = std::fs::remove_file(&path) {
                 tracing::error!(
                     file = name,
-                    path = %path.display(),
+                    path = %crate::log_id::redact_path(&path),
                     error = %e,
                     "OSL: burn_engage: file wipe failed -- stale state \
                      may survive into the next session"
@@ -16322,9 +16328,14 @@ pub struct OslTestDeepLinkResponse {
 /// works independently of the JS event channel.
 pub fn cmd_osl_test_deep_link(url: String) -> Result<OslTestDeepLinkResponse, String> {
     record_activity_on_command_entry();
+    // D-191: an `osl://` URL is a capability — the query string is where a
+    // pairing/invite token rides — so neither the URL nor the token may reach
+    // the diagnostic file. The scheme and the presence of a query are what a
+    // "did the deep link arrive at all" diagnosis needs.
     tracing::info!(
         target: "osl::deep_link",
-        url = %url,
+        prefix = %url.split(['?', '#']).next().unwrap_or_default(),
+        has_query = url.contains('?'),
         "[OSL deep-link] received"
     );
 
@@ -16332,7 +16343,7 @@ pub fn cmd_osl_test_deep_link(url: String) -> Result<OslTestDeepLinkResponse, St
 
     tracing::info!(
         target: "osl::deep_link",
-        token = ?token,
+        token = %crate::log_id::log_id_opt(token.as_deref()),
         path = %path,
         "[OSL deep-link] parsed token"
     );
