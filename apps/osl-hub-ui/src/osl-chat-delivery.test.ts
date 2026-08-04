@@ -156,6 +156,33 @@ describe("OSL Chat delivery is not gated on the Home screen", () => {
     expect(__oslHubUiTest.oslChatUnreadCount("p1")).toBe(2);
   });
 
+  it("backfills waiting messages on reopen through the durable history marker", async () => {
+    const { __oslHubUiTest } = await loadUi();
+    __oslHubUiTest.reset({ route: "settings", coreReady: true, hubPeople: verifiedFriends(1) });
+    mocks.openOslChatText.mockResolvedValue(batchWith(["first", "second", "third"]));
+    mocks.listOslChatHistory.mockResolvedValue([
+      { messageId: "peer-0003", senderOslUserId: "OSLUSER-p1", plaintext: "third", decryptedAt: 1_700_000_003 },
+      { messageId: "peer-0002", senderOslUserId: "OSLUSER-p1", plaintext: "second", decryptedAt: 1_700_000_002 },
+      { messageId: "peer-0001", senderOslUserId: "OSLUSER-p1", plaintext: "first", decryptedAt: 1_700_000_001 },
+    ]);
+
+    await __oslHubUiTest.deliverOslChats();
+
+    expect(__oslHubUiTest.oslChatConversation("p1").map((message) => message.body))
+      .toEqual(["first", "second", "third"]);
+    expect(__oslHubUiTest.oslChatConversation("p1").map((message) => message.messageId))
+      .toEqual(["peer-0001", "peer-0002", "peer-0003"]);
+    expect(__oslHubUiTest.oslChatUnreadCount("p1")).toBe(3);
+
+    mocks.openOslChatText.mockResolvedValue(batchWith([]));
+    await __oslHubUiTest.deliverOslChats();
+
+    expect(__oslHubUiTest.oslChatConversation("p1").map((message) => message.messageId))
+      .toEqual(["peer-0001", "peer-0002", "peer-0003"]);
+    expect(mocks.openOslChatText).toHaveBeenCalledTimes(2);
+    expect(mocks.listOslChatHistory).toHaveBeenCalledTimes(2);
+  });
+
   it("re-drains the conversation the user has open instead of sitting idle", async () => {
     const { __oslHubUiTest } = await loadUi();
     __oslHubUiTest.reset({ route: "home", coreReady: true, hubPeople: verifiedFriends(1) });

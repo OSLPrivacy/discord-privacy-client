@@ -16,10 +16,12 @@
 #![cfg(feature = "core")]
 
 use osl_privacy_hub::broker::{
-    activate_owned_native_manual_peer_context, begin_native_overlay_attachment,
-    deliver_native_overlay_attachment, drain_native_discord_overlay_text,
-    list_native_overlay_attachments, prepare_native_discord_overlay_text,
-    reveal_native_discord_overlay_view_once, take_native_overlay_attachment, HubBrokerState,
+    activate_owned_native_manual_peer_context, activate_owned_osl_chat_context,
+    begin_native_overlay_attachment, deliver_native_overlay_attachment,
+    drain_native_discord_overlay_text, drain_osl_chat_text, list_native_overlay_attachments,
+    load_osl_chat_history, prepare_native_discord_overlay_text,
+    prepare_osl_chat_text_with_route_clients, reveal_native_discord_overlay_view_once,
+    take_native_overlay_attachment, HubBrokerState,
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
 use osl_privacy_hub::security::{
@@ -37,13 +39,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use store::MessageStore;
 
 /// OSL chat and the native Discord overlay do not consume carrier flagtext on
 /// these fixture paths, so a default carrier state is the correct stand-in.
 fn ai_carrier_fixture() -> osl_privacy_hub::ai_carrier::AiCarrierState {
     osl_privacy_hub::ai_carrier::AiCarrierState::default()
 }
-
 
 const TEST_MAIN_PASSWORD: &str = "native-discord-receive-fixture-password";
 
@@ -291,6 +293,10 @@ impl RelayServer {
         taken
     }
 
+    fn put_inbox_rows(&self, rows: impl IntoIterator<Item = InboxRow>) {
+        self.state.lock().unwrap().inbox.extend(rows);
+    }
+
     /// Whether one specific injected row is still waiting. Row-level truth,
     /// so a consumption assertion names the row it means instead of leaning
     /// on a total that several different behaviours could produce.
@@ -510,9 +516,24 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
             let object_class = headers
                 .get("x-osl-object-class")
                 .filter(|class| class.as_str() == "single-ack" || class.as_str() == "multi-fetch");
-            match (blob_id, fetch_digest, ack_digest, manage_digest, delivery_tag, object_class) {
-                (Some(blob_id), Some(fetch_digest), Some(_), Some(manage_digest), Some(_), Some(_)) => {
-                    if ipc::transport_padding::padded_transport_len(body.len()) != Some(body.len()) {
+            match (
+                blob_id,
+                fetch_digest,
+                ack_digest,
+                manage_digest,
+                delivery_tag,
+                object_class,
+            ) {
+                (
+                    Some(blob_id),
+                    Some(fetch_digest),
+                    Some(_),
+                    Some(manage_digest),
+                    Some(_),
+                    Some(_),
+                ) => {
+                    if ipc::transport_padding::padded_transport_len(body.len()) != Some(body.len())
+                    {
                         json_response(400, json!({ "error": "invalid_padding" }))
                     } else {
                         let mut state = state.lock().unwrap();
@@ -527,10 +548,7 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                                     manage_digest,
                                 },
                             );
-                            json_response(
-                                201,
-                                json!({ "id": blob_id, "expires_at": now + 3600 }),
-                            )
+                            json_response(201, json!({ "id": blob_id, "expires_at": now + 3600 }))
                         }
                     }
                 }
@@ -978,6 +996,74 @@ impl Peer {
         set_scope_security(&self.security, scope, 3600, enabled)
             .expect("set decrypted display for this scope");
     }
+
+    /// Add + verify `other` as a friend and open the first-party OSL Chat
+    /// context against them, with decrypted display enabled.
+    fn open_osl_chat_context_to(&self, other_code: &str) -> String {
+        self.activate();
+        let friend = add_friend_code(
+            &self.core,
+            &self.security,
+            other_code.to_owned(),
+            Some("fixture chat peer".to_owned()),
+        )
+        .expect("add OSL Chat friend code");
+        verify_friend_safety_number(
+            &self.core,
+            &self.security,
+            friend.person_id.clone(),
+            friend.safety_number.clone(),
+        )
+        .expect("verify OSL Chat safety number");
+        self.reopen_osl_chat_context(&friend.person_id)
+    }
+
+    /// Re-activate an already verified first-party OSL Chat friend.
+    fn reopen_osl_chat_context(&self, person_id: &str) -> String {
+        self.activate();
+        let binding =
+            manual_peer_binding(&self.core, person_id.to_owned()).expect("manual peer binding");
+        let activated = activate_owned_osl_chat_context(&self.broker, &self.identity_id, binding)
+            .expect("activate OSL Chat context");
+        set_manual_peer_scope_permission(
+            &self.core,
+            &self.security,
+            "osl-chat",
+            "osl-main",
+            activated.person_id.clone(),
+            activated.scope.clone(),
+            true,
+        )
+        .expect("approve OSL Chat scope");
+        set_scope_security(&self.security, activated.scope.clone(), 3600, true)
+            .expect("enable decrypted display for OSL Chat");
+        *self.scope.lock().unwrap_or_else(|error| error.into_inner()) =
+            Some(activated.scope.clone());
+        activated.person_id
+    }
+
+    fn open_history_store(&self, label: &str) -> PathBuf {
+        self.activate();
+        let identity = self
+            .core
+            .osl
+            .identity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+            .expect("identity is loaded");
+        let path = self.dir.join(format!("message-store-{label}"));
+        fs::create_dir_all(&path).expect("create message store directory");
+        let store = MessageStore::open(&path, identity.x25519_secret.as_bytes())
+            .expect("open OSL Chat history store");
+        *self
+            .core
+            .osl
+            .message_store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(store);
+        path
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,6 +1161,163 @@ fn p1_sends_encrypted_message_into_live_conversation() {
     drop(alice);
     drop(bob);
     drop(storage);
+}
+
+#[test]
+fn first_party_osl_chat_reopen_backfills_waiting_rows_in_order_without_push() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("osl-chat-reopen-backfill");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice-chat-backfill", &relay_url, "a1a17777");
+    let bob = Peer::new(&storage, "bob-chat-backfill", &relay_url, "b2b27777");
+    alice.open_osl_chat_context_to(&bob.friend_code);
+    let bob_person_id = bob.open_osl_chat_context_to(&alice.friend_code);
+    let _bob_history_dir = bob.open_history_store("backfill");
+    let store_client = ipc::cipher_store_client::CipherStoreClient::new(relay_url.clone())
+        .expect("loopback cipher-store client");
+
+    // Bob is now "closed": no receive drain runs while Alice posts these rows.
+    const ONE: &str = "OSL Chat reopen backfill fixture one";
+    const TWO: &str = "OSL Chat reopen backfill fixture two";
+    const THREE: &str = "OSL Chat reopen backfill fixture three";
+    let mut prepared_ids = Vec::new();
+    for fixture in [ONE, TWO, THREE] {
+        alice.activate();
+        let prepared = prepare_osl_chat_text_with_route_clients(
+            &alice.core,
+            &alice.security,
+            &alice.broker,
+            &ai_carrier_fixture(),
+            fixture.to_owned(),
+            false,
+            &store_client,
+            alice.core.osl.keyserver.lock().unwrap().as_ref(),
+        )
+        .expect("sender queues an OSL Chat row while receiver is closed");
+        prepared_ids.push(prepared.message_id);
+    }
+    assert_eq!(
+        relay.pending_for(&bob.identity_id),
+        3,
+        "three encrypted OSL Chat rows wait while the receiver is closed"
+    );
+
+    // Reopen: activate the same verified chat and drain once. No push wakeup or
+    // realtime event participates in this path.
+    bob.reopen_osl_chat_context(&bob_person_id);
+    bob.activate();
+    let opened = drain_osl_chat_text(&bob.core, &bob.security, &bob.broker, true)
+        .expect("reopen drain backfills waiting OSL Chat rows");
+    assert_eq!(
+        opened.messages.len(),
+        3,
+        "all three waiting messages appear on reopen"
+    );
+    assert!(
+        opened
+            .messages
+            .iter()
+            .map(|message| message.message_id.as_str())
+            .eq(prepared_ids.iter().map(String::as_str)),
+        "the reopen sweep preserves authenticated inbox order"
+    );
+    assert!(
+        opened
+            .messages
+            .iter()
+            .map(|message| message.plaintext.as_str())
+            .eq([ONE, TWO, THREE]),
+        "the reopen sweep decrypts byte-identical plaintexts"
+    );
+    assert_eq!(
+        opened.deferred_rows, 0,
+        "the happy-path reopen has no deferred receive debt"
+    );
+    assert_eq!(
+        relay.pending_for(&bob.identity_id),
+        0,
+        "drained rows are retired so a restart cannot fetch them twice"
+    );
+    let history = load_osl_chat_history(&bob.core, &bob.broker).expect("load durable chat history");
+    assert_eq!(
+        history.len(),
+        3,
+        "ordinary inbound OSL Chat messages are durable after the reopen drain"
+    );
+    assert!(
+        history
+            .iter()
+            .map(|row| row.discord_message_id.as_str())
+            .eq(prepared_ids.iter().rev().map(String::as_str)),
+        "durable history dedupes on the authenticated message id"
+    );
+
+    let replayed = relay.inject(
+        &alice.identity_id,
+        &bob.identity_id,
+        &relay
+            .posted_row(&alice.identity_id, &bob.identity_id)
+            .scope_id,
+        &relay
+            .posted_row(&alice.identity_id, &bob.identity_id)
+            .bundle_b64,
+    );
+    let replay = drain_osl_chat_text(&bob.core, &bob.security, &bob.broker, true)
+        .expect("replayed OSL Chat row drains without redisplay");
+    assert!(
+        replay.messages.is_empty(),
+        "a replayed authenticated message is not displayed twice"
+    );
+    assert!(
+        !relay.still_pending(&replayed),
+        "the replay row is retired by stable message-id dedupe"
+    );
+
+    // Corrupt middle row: the bad row is retained and counted, but the rows
+    // after it still arrive. This is the regression shape that matters most:
+    // one undecodable row must not turn the whole reopened inbox into empty.
+    for fixture in [ONE, TWO, THREE] {
+        alice.activate();
+        prepare_osl_chat_text_with_route_clients(
+            &alice.core,
+            &alice.security,
+            &alice.broker,
+            &ai_carrier_fixture(),
+            fixture.to_owned(),
+            false,
+            &store_client,
+            alice.core.osl.keyserver.lock().unwrap().as_ref(),
+        )
+        .expect("sender queues another OSL Chat row");
+    }
+    let mut rows = relay.take_inbox_for(&bob.identity_id);
+    assert_eq!(
+        rows.len(),
+        3,
+        "the corrupt-run fixture has three waiting rows"
+    );
+    rows[1].bundle_b64 = base64_encode(&[0x7f; 96]);
+    let corrupt_id = rows[1].id.clone();
+    relay.put_inbox_rows(rows);
+    let partial = drain_osl_chat_text(&bob.core, &bob.security, &bob.broker, true)
+        .expect("one corrupt row does not abort the reopen drain");
+    assert_eq!(
+        partial.messages.len(),
+        2,
+        "the rows before and after one corrupt middle row still arrive"
+    );
+    assert!(
+        partial.unrecognized_wire_rows > 0,
+        "the corrupt middle row is surfaced, not swallowed as an empty inbox"
+    );
+    assert!(
+        relay.still_pending(&corrupt_id),
+        "the corrupt row is retained for investigation/retry"
+    );
 }
 
 /// The whole inbound contract for one single-chunk protected message:
