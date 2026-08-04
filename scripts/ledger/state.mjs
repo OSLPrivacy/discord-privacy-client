@@ -152,7 +152,7 @@ function isRenderOnlyContext(context) {
 }
 
 function isBehaviourContext(context, functionName = "") {
-  const actionBoundary = /\binvoke\s*\(|\bfetch\s*\(|\bqueue\b|\btransport\b|\bdeliver\b|\bupload\b|\bdownload\b|\baead\b|\bseal\b|\bunseal\b|\bdigest\b|\banchor\b|\bcanary\b|\bshred\b|\bcheckpoint\b|\bvalidate\b|\bmaterialize\b|\btrim\b|\bopen_record\b|\bdecrypt\b|\bencrypt\b|\bcrypto\b|\bset_window|\bcapture\b|\bwhitelist\b|\bfriend\b|\bscope\b|\bburn\b|\bdelete\b|\brevoke\b|\bscrub\b|\btor\b|\bmullvad\b|\bwrite_[A-Za-z0-9_]+\b|\bread_[A-Za-z0-9_]+\b|\.put\s*\(|\.get\s*\(|\.save\s*\(|\.load\s*\(/u;
+  const actionBoundary = /\binvoke\s*\(|\bfetch\s*\(|\bqueue\b|\btransport\b|\bdeliver\b|\bupload\b|\bdownload\b|\baead\b|\bseal\b|\bunseal\b|\bdigest\b|\banchor\b|\bcanary\b|\bshred\b|\bcheckpoint\b|\bvalidate\b|\bmaterialize\b|\btrim\b|\bopen_record\b|\bdecrypt\b|\bencrypt\b|\bcrypto\b|\bset_window|\bcapture\b|\bwhitelist\b|\bfriend\b|\bscope\b|\bburn\b|\bdelete\b|\brevoke\b|\bscrub\b|ScrubSignal|enabledScrub|\btor\b|\bmullvad\b|\bwrite_[A-Za-z0-9_]+\b|\bread_[A-Za-z0-9_]+\b|\.put\s*\(|\.get\s*\(|\.save\s*\(|\.load\s*\(/u;
   const decision = /\bif\s*\(|\bswitch\s*\(|\bmatch\s+|\bwhile\s*\(|\?[^:]+:/u;
   const renderOnly = isRenderOnlyContext(context);
   if (actionBoundary.test(context) && (!renderOnly || decision.test(context))) return true;
@@ -161,6 +161,11 @@ function isBehaviourContext(context, functionName = "") {
   }
   return false;
 }
+
+const KNOWN_RENDER_ONLY_STORAGE_KEYS = new Set([
+  "osl-mail-notifications-v1",
+  "osl-rn-wire-policy-requested-v1",
+]);
 
 function classifyUse(source, index) {
   const context = contextWindow(source, index);
@@ -220,7 +225,7 @@ function collectFrontendStorage(root, files, constants) {
       const key = resolveKeyAt(src, m[2], m.index, constants);
       const site = `${rel}:${lineOf(starts, m.index)}`;
       const id = `frontend-localStorage:${key.label}`;
-      const classification = classifyUse(src, m.index);
+      const classification = KNOWN_RENDER_ONLY_STORAGE_KEYS.has(key.value) ? "render-only" : classifyUse(src, m.index);
       addSite(state, id, site, {
         read: true,
         [classification === "behavioural" ? "behavioural" : "renderOnly"]: true,
