@@ -14,6 +14,7 @@ export interface OslMailViewModel {
   sendReceipt: OslMailSendReceipt | null;
   burnReceipt: OslMailBurnReceipt | null;
   error: string | null;
+  threadSyncUnavailable: boolean;
 }
 
 function escape(value: string): string {
@@ -86,6 +87,7 @@ function provision(model: OslMailViewModel): string {
 }
 
 function threadList(model: OslMailViewModel): string {
+  if (model.threadSyncUnavailable && !model.threads.length) return '<div class="osl-mail-empty warning"><strong>Inbox sync unavailable</strong><span>Messages are not being reported as empty.</span></div>';
   if (!model.threads.length) return '<div class="osl-mail-empty"><strong>Inbox clear</strong><span>No server-confirmed messages.</span></div>';
   return model.threads.map((thread) => `<button class="osl-mail-thread ${thread.unread ? "is-unread" : ""}" data-mail-thread="${escape(thread.threadId)}" type="button"><span class="osl-mail-thread-copy"><strong>${escape(thread.correspondent)}</strong><span>${escape(thread.subject || "(No subject)")}</span></span><span class="osl-mail-thread-meta">${transitBadge(thread.transit)}<time>${escape(date(thread.latestAt))}</time></span></button>`).join("");
 }

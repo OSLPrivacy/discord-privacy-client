@@ -152,7 +152,7 @@ function relativeModule(from, spec, root) {
   return candidates.find((rel) => existsSync(join(root, rel))) ?? null;
 }
 
-function entryReachability(snapshot) {
+export function entryReachability(snapshot) {
   const byEntry = new Map();
   const byModule = new Map();
   for (const entry of snapshot.entries ?? []) {
@@ -166,7 +166,7 @@ function entryReachability(snapshot) {
   return { byEntry, byModule };
 }
 
-function importedValuesByEntry(root, byEntry) {
+export function importedValuesByEntry(root, byEntry) {
   const byEntryImport = new Map();
   for (const [entry, modules] of byEntry) {
     const imports = new Map();
@@ -207,7 +207,7 @@ function matchingBrace(src, open) {
   return src.length;
 }
 
-function functionSpans(src) {
+export function functionSpans(src) {
   const spans = [];
   for (const m of src.matchAll(/\b(export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*(?:<[^>{}]+>)?\s*\(/g)) {
     const open = src.indexOf("{", m.index);
@@ -222,7 +222,7 @@ function functionSpans(src) {
   return spans.sort((a, b) => a.start - b.start);
 }
 
-function enclosingFunction(spans, index) {
+export function enclosingFunction(spans, index) {
   return spans
     .filter((span) => span.start <= index && index < span.end)
     .sort((a, b) => (a.end - a.start) - (b.end - b.start))[0] ?? null;
@@ -237,7 +237,7 @@ function entriesForExport(rel, exportName, importsByEntry) {
   return out;
 }
 
-function localFunctionEntryResolver(rel, spans, src, moduleEntries, importsByEntry) {
+export function localFunctionEntryResolver(rel, spans, src, moduleEntries, importsByEntry) {
   const byName = new Map(spans.map((span) => [span.name, span]));
   const resolveFunction = (name, seen = new Set()) => {
     if (seen.has(name)) return new Set();
