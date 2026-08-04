@@ -241,6 +241,10 @@ fn the_destination_protocol_is_still_not_deployed() {
             &[0x05; 16],
             caps,
             BlobObjectClass::SingleAck,
+            // No grant: production has no grant verifier on this route at all,
+            // and phase 2 could not mint a blob-upload grant even with one —
+            // see `a_link_creation_grant_cannot_be_spent_on_a_blob_upload`.
+            None,
         )
         .expect_err("production does not implement the capability upload");
     println!("[mutant absent-grant / destination-protocol] {}", status_of(&err));

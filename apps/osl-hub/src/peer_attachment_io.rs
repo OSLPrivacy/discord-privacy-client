@@ -494,6 +494,19 @@ pub fn classify_cipher_store_error(
         Raw::ParseError(_) => TransportOutcome::MalformedResponse,
         Raw::Io(_) => TransportOutcome::LocalIo,
         Raw::RouteUnavailable(_) => TransportOutcome::RouteUnavailable,
+        // B0-01 phase 2's storage grants. All three are the store refusing the
+        // credential we presented, which is exactly `CapabilityRejected` -- the
+        // same outcome as a 401/403 above, and deliberately NOT `Refused`: the
+        // caller retries a refusal and must not retry a bad credential.
+        //
+        // Enumerated rather than caught by a wildcard on purpose. This match is
+        // the only thing that made phase 2's three new variants visible at all:
+        // `crates/ipc` compiled and tested clean (480/0) because `apps/osl-hub`
+        // is EXCLUDED from the cargo workspace, so the lane could not see this.
+        // A `_ =>` arm here would silently swallow the next variant too.
+        Raw::GrantAudience { .. } | Raw::GrantExpired | Raw::GrantMalformed(_) => {
+            TransportOutcome::CapabilityRejected
+        }
         Raw::Status { status, .. } => match *status {
             401 | 403 => TransportOutcome::CapabilityRejected,
             404 | 410 => TransportOutcome::Gone,
