@@ -99,8 +99,15 @@ describe("OSL chats view", () => {
   it("offers view-once with exact open-and-history semantics", () => {
     const markup = oslChatsViewMarkup(model({ viewOnce: true }));
     expect(markup).toContain('id="osl-chat-view-once"');
-    expect(markup).toContain("Removed after it is opened");
-    expect(markup).toContain("kept out of OSL history");
+    // D-135. This assertion used to be `toContain("Removed after it is
+    // opened")`, and that sentence was the defect: OSL asks for the sent copy
+    // to be deleted, learns nothing back, and counted the failures into
+    // `DeletionDrainReport::retained` where they were discarded. The local half
+    // of the promise is real and still pinned; the remote half is now stated as
+    // a request, and pinned as NOT a completion. Master 7.5.
+    expect(markup).toContain("Kept out of OSL history");
+    expect(markup).toContain("asks for the sent copy to be deleted");
+    expect(markup).not.toMatch(/\bRemoved after it is opened\b/u);
     expect(markup).toMatch(/id="osl-chat-view-once" type="checkbox" checked/u);
   });
 

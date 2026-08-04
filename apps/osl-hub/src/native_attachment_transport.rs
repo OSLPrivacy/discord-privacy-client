@@ -167,7 +167,7 @@ fn select_encrypt_upload_deliver_inner(
     // Finish deletions an earlier rollback could not complete before adding
     // more remote ciphertext. Done before anything is staged locally so a
     // stuck outbox cannot also leave a sealed copy on this device.
-    retry_pending_deletions(&client)?;
+    report_deletion_drain(app, &retry_pending_deletions(&client)?);
     let plan = if overlay_context.is_some() {
         broker::begin_native_overlay_attachment(
             core,
@@ -389,9 +389,53 @@ fn delete_remote_ciphertext(
 /// rather than stalling an attachment behind a long-dead store.
 const MAX_DELETION_RETRIES_PER_PASS: usize = 8;
 
+/// The renderer event that carries [`peer_attachment_io::DeletionDrainReport::retained`].
+///
+/// D-135. `retained` is the only evidence OSL holds that a remote copy it
+/// promised to remove may still be on the relay, and this function used to end
+/// `.map(|_report| ())` -- computed correctly, then dropped, while the OSL Chat
+/// composer promised "Removed after it is opened".
+///
+/// This name is subscribed by the main webview: see
+/// `bindAttachmentDeletionEvents` in `apps/osl-hub-ui/src/main.ts`, which feeds
+/// `OslChatsViewModel.deletionUnconfirmed` and renders
+/// `.osl-chat-deletion-unconfirmed`. That listener is the whole reason this
+/// emit exists -- the previous `"osl://attachment-deletion-drain"` advisory was
+/// deleted rather than repaired because it went to `emit_to("main", ...)` and
+/// nothing anywhere subscribed to it. Do not add an emit here without checking
+/// that the listener is still there, and never point it at the overlay: the
+/// overlay runs under `native_discord_overlay::OVERLAY_LABEL`, so a `"main"`
+/// emit can never reach it.
+pub(crate) const ATTACHMENT_DELETION_UNCONFIRMED_EVENT: &str =
+    "osl://attachment-deletion-unconfirmed";
+
+/// Tell the renderer how many remote copies are still owed after a pass.
+///
+/// Deliberately reported on EVERY completed pass, including `retained == 0`:
+/// the count is a level, not an alarm, so a pass that finally succeeds has to
+/// be able to clear a warning an earlier pass raised. A pass that failed
+/// outright reports nothing at all, because a drain that could not run has not
+/// learned that nothing is owed.
+///
+/// `retained` is the only field crossing this boundary. `deleted` and
+/// `already_gone` are not sent: neither is a readback, so neither is evidence
+/// that anything is gone, and shipping them invites a surface that reads as a
+/// confirmed deletion.
+fn report_deletion_drain(app: &tauri::AppHandle, report: &peer_attachment_io::DeletionDrainReport) {
+    // Scoped like `native_attachment_jobs_bridge.rs:166`: `Emitter` is only in
+    // scope under `--features desktop`, and a module-level import compiles
+    // clean on default features while breaking the shipping build (D-146).
+    use tauri::Emitter;
+    let _ = app.emit_to(
+        "main",
+        ATTACHMENT_DELETION_UNCONFIRMED_EVENT,
+        serde_json::json!({ "retained": report.retained }),
+    );
+}
+
 pub(crate) fn retry_pending_deletions(
     client: &ipc::cipher_store_client::CipherStoreClient,
-) -> Result<(), String> {
+) -> Result<peer_attachment_io::DeletionDrainReport, String> {
     let mut attempted = 0usize;
     let mut transport_down = false;
     peer_attachment_io::drain_attachment_deletions(|pending| {
@@ -413,7 +457,6 @@ pub(crate) fn retry_pending_deletions(
             }
         }
     })
-    .map(|_report| ())
 }
 
 /// How often the background drain retries the deletion outbox.
@@ -436,56 +479,42 @@ pub(crate) fn retry_pending_deletions(
 ///   roughly one tick plus one retry pass.
 pub(crate) const DELETION_DRAIN_INTERVAL: Duration = Duration::from_secs(900);
 
-// THE DETACHED DRAIN HAS NO RENDERER CHANNEL, AND NO LONGER PRETENDS TO.
+// THE DRAIN NOW HAS A RENDERER CHANNEL, AND A LISTENER ON THE OTHER END OF IT.
+// D-135. Read this before touching `report_deletion_drain` above.
 //
-// A `"osl://attachment-deletion-drain"` advisory used to be emitted from
-// `report_deletion_drain` here, documented as a "renderer-visible advisory that
-// OSL still owes a remote deletion". Both halves of that sentence were false,
-// which is why it is gone rather than wired up:
+// An earlier `"osl://attachment-deletion-drain"` advisory was deleted, not
+// repaired, for two reasons that the replacement had to answer:
 //
-// * It was never renderer-visible. It went out as `emit_to("main", …)`, and no
-//   webview in this repo has ever subscribed to the name -- not `main.ts`, not
-//   `overlay.ts`, and not in any preserved patch that carries the emit (each
-//   mentions the string exactly twice: this constant and the emit). Ledger 5
-//   reported it as emitted-but-never-listened. It was born dead, so this is not
-//   a listener lost in a merge.
-// * It did not report a still-owed deletion. The case it names -- the cipher
+// * It was never renderer-visible. It went out as `emit_to("main", …)` and no
+//   webview in this repo subscribed to the name -- not `main.ts`, not
+//   `overlay.ts`. Ledger 5 reported it as emitted-but-never-listened; it was
+//   born dead. ANSWERED: the current event is subscribed by
+//   `bindAttachmentDeletionEvents` in `apps/osl-hub-ui/src/main.ts`, which is
+//   the `"main"` webview, and its value is rendered as
+//   `.osl-chat-deletion-unconfirmed` by `osl-chats-view.ts`. A listener in
+//   `overlay.ts` would still be wrong -- the overlay runs under
+//   `native_discord_overlay::OVERLAY_LABEL`, so a `"main"` emit can never reach
+//   it and the pair would read green while firing never.
+// * It did not report a still-owed deletion. The case it named -- the cipher
 //   store is down, so records stay in the outbox -- returns
 //   `DeletionAttempt::Retry`, which `drain_attachment_deletions` counts into
-//   `DeletionDrainReport::retained` and returns as `Ok`. See
-//   `retry_pending_deletions` above, whose `.map(|_report| ())` drops that count
-//   on the floor. The advisory therefore fired only when the outbox subsystem
-//   itself was broken (outbox malformed / not encrypted / unwritable / over its
-//   storage limit, or no route at all) and stayed silent in exactly the
-//   situation it claimed to announce.
+//   `DeletionDrainReport::retained` and returns as `Ok`, and
+//   `retry_pending_deletions` then dropped that count with `.map(|_report| ())`.
+//   The advisory therefore fired only when the outbox SUBSYSTEM was broken and
+//   stayed silent in exactly the situation it claimed to announce. ANSWERED:
+//   the current event carries `retained` itself and fires on the `Ok` path, so
+//   it reports the case it names. The broken-subsystem strings keep reaching
+//   the operator the way they already did -- synchronously, in the same words,
+//   through the `?` on `retry_pending_deletions` at the head of the attachment
+//   send and open paths.
 //
-// A third fact found while establishing the above and recorded rather than
-// quietly fixed: `spawn_deletion_outbox_drain` below has NO CALLER, on this
-// branch or at `integrate/first-usable`, despite its own doc saying "Started
-// from `setup`". `rustc` reports it as dead code. So the 15-minute tick that
-// [`DELETION_DRAIN_INTERVAL`] spends thirty lines justifying never runs, and
-// the only drain that happens is `drain_pending_deletions_detached` at the
-// password gate (apps/osl-hub/src/main.rs:1350, apps/osl-hub/src/main.rs:9150)
-// plus the two synchronous retries on send/open. Wiring it belongs to whoever
-// owns `main.rs`; it is a behaviour change, not a ledger cleanup.
-//
-// Those broken-subsystem strings are already delivered to the operator
-// synchronously, in the same words, by the `retry_pending_deletions(&client)?`
-// at the head of the attachment send and open paths (see the `?` uses of it in
-// this file) -- so nothing a user could see is lost by deleting the emit.
-//
-// WHAT IS STILL MISSING, RECORDED RATHER THAN QUIETLY FIXED: "View once ·
-// Removed after it is opened and kept out of OSL history"
-// (apps/osl-hub-ui/src/osl-chats-view.ts:279) is a promise about a remote copy,
-// and there is currently NO signal of any kind -- event, badge or toast -- when
-// that copy is still on the relay because the drain could not reach it. The
-// durable outbox and the 15-minute tick keep trying, which is why this is a
-// missing report and not a missing deletion. Closing it means surfacing
-// `DeletionDrainReport::retained`, which needs a UI owner; re-adding an event
-// with no listener is not that, and a listener in `overlay.ts` would be worse
-// still -- the overlay runs under `native_discord_overlay::OVERLAY_LABEL`, so
-// an `emit_to("main", …)` can never reach it, and the pair would read green
-// while firing never.
+// WHAT THIS DOES NOT CLAIM. Nothing here reads the relay back, so `retained ==
+// 0` means "no record is owed in the outbox", never "the copy is confirmed
+// gone" -- master §7.5. `deleted` and `already_gone` are deliberately not sent
+// to the renderer for the same reason: neither is a readback, and shipping them
+// invites a surface that reads as a verified deletion. The UI copy this closes
+// (`osl-chats-view.ts`, the View once composer label) now states what OSL asks
+// the relay for, not what it achieved.
 
 fn deletion_drain_client(
     app: &tauri::AppHandle,
@@ -509,14 +538,18 @@ fn deletion_drain_client(
 pub(crate) fn drain_pending_deletions_detached(app: &tauri::AppHandle) {
     let worker = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        // Dropped on purpose, not forgotten: see the block above `deletion_drain_client`
-        // for why this pass has no renderer channel and what is still owed here.
-        let _ = deletion_drain_client(&worker).and_then(|client| {
+        let outcome = deletion_drain_client(&worker).and_then(|client| {
             // The outbox is sealed with the file storage key, so this is only
             // ever meaningful after the gate has opened. Before that
             // `drain_attachment_deletions` reports an empty pass by design.
             retry_pending_deletions(&client)
         });
+        // The error is still dropped -- this pass must not become an unlock
+        // failure -- but the report no longer is. A failed pass reports
+        // nothing, so a dead store cannot be read as "nothing is owed".
+        if let Ok(report) = outcome {
+            report_deletion_drain(&worker, &report);
+        }
     });
 }
 
@@ -535,9 +568,11 @@ pub(crate) fn spawn_deletion_outbox_drain(app: tauri::AppHandle) {
         .name("osl-attachment-deletion-drain".to_owned())
         .spawn(move || loop {
             std::thread::sleep(DELETION_DRAIN_INTERVAL);
-            // Dropped on purpose, not forgotten: see the block above
-            // `deletion_drain_client`.
-            let _ = deletion_drain_client(&app).and_then(|client| retry_pending_deletions(&client));
+            if let Ok(report) =
+                deletion_drain_client(&app).and_then(|client| retry_pending_deletions(&client))
+            {
+                report_deletion_drain(&app, &report);
+            }
         });
 }
 
@@ -637,7 +672,7 @@ fn open_pending_inner(
     // Retry outstanding deletions before consuming the pending record, so a
     // stuck outbox can never burn a replay slot for an attachment that then
     // fails to open.
-    retry_pending_deletions(&client)?;
+    report_deletion_drain(app, &retry_pending_deletions(&client)?);
     let plan = if overlay_context.is_some() {
         broker::take_native_overlay_attachment(core, security, broker_state, attachment_id)?
     } else {
