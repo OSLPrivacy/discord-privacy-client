@@ -32,6 +32,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { dirname, join, normalize, resolve } from "node:path";
 import { repoRoot, read, walk, blankComments, lineIndex, lineOf, LEDGER_DIR, inputProblems, stringConstants, resolveArg } from "./lib/io.mjs";
 import { report, finish } from "./lib/report.mjs";
+import { rustRegistry } from "./lib/rust-registry.mjs";
 import { bundleSnapshot, reachableFrom } from "./bundle.mjs";
 
 const MAIN_ENTRIES = ["apps/osl-hub-ui/index.html", "apps/osl-hub-ui/whatsapp-qa.html"];
@@ -130,6 +131,77 @@ export function grantsAnyWebview(root) {
     }
   }
   return grants;
+}
+
+/* ------------------------------------------------- the Rust command surface */
+
+const COMMAND_SOURCES = ["apps/osl-hub/src/main.rs", "apps/osl-hub/src/hub_command_surface.rs"];
+// `#[tauri::command]`, then any further attributes, then the fn it decorates.
+// Anchored to the fn on purpose: a loose "attribute, then the next fn within N
+// characters" match walks past prose that merely mentions the attribute and
+// invents five commands that do not exist (`ai_carrier.rs:107` is a comment
+// saying where the wrapper lives; `tor_pref.rs:897` is a test helper).
+const COMMAND_ATTRIBUTE = /#\[tauri::command(?:\s*\([^)]*\))?\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\s*\([^)]*\))?\s+)?(?:async\s+)?fn\s+([a-z_][A-Za-z0-9_]*)/g;
+
+function attributedCommands(root, rel) {
+  const src = blankComments(read(root, rel));
+  const starts = lineIndex(src);
+  const found = new Map();
+  for (const m of src.matchAll(COMMAND_ATTRIBUTE)) found.set(m[1], `${rel}:${lineOf(starts, m.index)}`);
+  return found;
+}
+
+/**
+ * The commands Tauri actually exposes: the registry INTERSECTED with the names
+ * that carry a `#[tauri::command]` attribute.
+ *
+ * The registry alone is identifier soup -- it is every lowercase word inside the
+ * macro body and the generate_handler list, so it contains `assert`, `body`,
+ * `command`, `vec`, `mod`. Reporting those as ungranted commands makes the
+ * output unusable. The attribute is the authority on what is a command.
+ */
+export function registeredCommands(root) {
+  const { registry, problems } = rustRegistry(root);
+  const attributed = new Map();
+  for (const rel of COMMAND_SOURCES) {
+    for (const [name, site] of attributedCommands(root, rel)) if (!attributed.has(name)) attributed.set(name, site);
+  }
+  const commands = new Map();
+  for (const [name, site] of attributed) {
+    if (registry.has(name)) commands.set(name, { definedAt: site, registeredAt: registry.get(name) });
+  }
+  // Both halves of the intersection can starve independently, and either one
+  // going to zero would make "registered but granted nowhere" silently pass.
+  if (attributed.size === 0) {
+    problems.push({
+      id: "empty-input:tauri-command-attributes",
+      detail: `no #[tauri::command] attribute was extracted from ${COMMAND_SOURCES.join(" or ")}; the registry intersection would be empty and the ACL directions below would pass vacuously`,
+      sites: COMMAND_SOURCES.map((rel) => `${rel}:1`),
+    });
+  } else if (commands.size === 0) {
+    problems.push({
+      id: "empty-input:registered-command-intersection",
+      detail: `${attributed.size} #[tauri::command] attributes and ${registry.size} registry identifiers were extracted but they intersect in nothing; one of the two extractors is reading the wrong shape`,
+      sites: COMMAND_SOURCES.map((rel) => `${rel}:1`),
+    });
+  }
+  // A command defined outside the two files this ledger reads would be invisible
+  // to the intersection, so the assumption starves itself rather than silently
+  // narrowing the check.
+  const strays = [];
+  for (const rel of walk(root, "apps/osl-hub/src", (r) => r.endsWith(".rs") && !COMMAND_SOURCES.includes(r))) {
+    for (const [name, site] of attributedCommands(root, rel)) {
+      if (registry.has(name) && !commands.has(name)) strays.push({ name, site });
+    }
+  }
+  for (const stray of strays) {
+    problems.push({
+      id: `stray-command-definition:${stray.name}`,
+      detail: `${stray.name} is registered and carries #[tauri::command], but it is defined outside ${COMMAND_SOURCES.join(" / ")}; this ledger reads only those two files, so it would not see this command at all`,
+      sites: [stray.site],
+    });
+  }
+  return { commands, registry, problems };
 }
 
 /** `plugin:window|is_maximized` -> `core:window:allow-is-maximized`; `foo_bar` -> `allow-foo-bar`. */
@@ -567,8 +639,20 @@ export async function main(argv = process.argv) {
   }
 
   const { grants, unresolvable, files } = grantsForWebview(root, "main");
-  const permissionDefs = commandPermissions(root);
+  const blocks = permissionBlocks(root);
+  const permissionDefs = commandPermissions(root, blocks);
+  const allowedBy = permissionsAllowingCommand(blocks);
+  const anyGrant = grantsAnyWebview(root);
+  // Direction 1 is checked against the RAW registry, not the attribute-filtered
+  // intersection: existence is what tauri-build checks, and the raw list is a
+  // superset, so a grant is only reported dangling when nothing in either
+  // handler list mentions the name at all.
+  const { commands: registered, registry: registeredRegistry, problems: registryProblems } = registeredCommands(root);
   const violations = [];
+
+  for (const problem of registryProblems) {
+    violations.push({ ...problem, kind: "ledger-input-stale" });
+  }
 
   if (internals.staleness) {
     violations.push({ id: "framework-internals-stale", kind: "ledger-input-stale", detail: internals.staleness, sites: ["scripts/ledger/framework-internals.json:1"] });
@@ -599,6 +683,40 @@ export async function main(argv = process.argv) {
       sites: sites.map((s) => s.site),
     });
   }
+  // Inverse direction 1 -- a grant naming a command that does not exist. This is
+  // the direction that breaks the BUILD: tauri-build validates every capability
+  // against the command registry, so D-146 took the shipping app from compiling
+  // to not compiling while all three test suites stayed green.
+  for (const block of blocks) {
+    for (const command of block.commands) {
+      if (registeredRegistry.has(command)) continue;
+      violations.push({
+        id: `granted-command-does-not-exist:${block.identifier}:${command}`,
+        kind: "granted-command-does-not-exist",
+        detail: `permission "${block.identifier}" allows command "${command}", which no Rust invoke_handler registers${anyGrant.has(block.identifier) ? `; ${anyGrant.get(block.identifier)} grants this permission, so tauri-build validates it against the registry and fails` : "; no capability grants this permission today, so it is a dead definition waiting to break the build the moment one does"}`,
+        sites: [block.site],
+      });
+    }
+  }
+
+  // Inverse direction 2 -- a registered command that NO capability grants to ANY
+  // webview, so the ACL rejects it before its handler runs. Not "ungranted to
+  // main": the overlay capabilities legitimately hold commands main must never
+  // have, and scoring those is the 54-false-positive version of this check.
+  for (const [command, where] of [...registered.entries()].sort()) {
+    const candidates = allowedBy.get(command) ?? [];
+    const identifiers = candidates.length ? candidates.map((b) => b.identifier) : [permissionFor(command, permissionDefs)];
+    if (identifiers.some((id) => anyGrant.has(id))) continue;
+    violations.push({
+      id: `registered-but-granted-to-no-webview:${command}`,
+      kind: "registered-but-granted-to-no-webview",
+      detail: candidates.length
+        ? `registered on the IPC surface, and permission ${identifiers.map((i) => `"${i}"`).join(" / ")} exists, but no capability file grants it to any webview; the ACL rejects this command before its handler runs`
+        : `registered on the IPC surface with no [[permission]] block and no capability grant anywhere; the ACL rejects this command before its handler runs`,
+      sites: [where.definedAt, ...where.registeredAt, ...candidates.map((b) => b.site)],
+    });
+  }
+
   for (const u of unresolved) {
     violations.push({
       id: `unresolved-command:${u.site}`,
@@ -620,6 +738,9 @@ export async function main(argv = process.argv) {
         "distinct permissions granted": grants.size,
         "modules reachable from main-window entries": mainModules.length,
         "distinct commands issued": issued.size,
+        "permission identifiers granted to any webview": anyGrant.size,
+        "[[permission]] blocks defined": blocks.length,
+        "registered Rust commands (registry n #[tauri::command])": `${registered.size} (of ${registeredRegistry.size} registry identifiers)`,
         "framework-injected issuers that fire here": internals.fired.length,
         "tauri version (Cargo.lock / vendored)": `${internals.pinned} / ${internals.declared}`,
         "@tauri-apps/api version": api.version,
