@@ -315,14 +315,21 @@ function messageRow(message: OslChatMessage, friend: OslChatFriend): string {
  *
  * Two states, not three. "Nothing owed that OSL knows of" renders nothing at
  * all; "we asked and cannot confirm" renders this. There is deliberately no
- * third, friendlier word for the second case, and nothing here may ever say
- * removed, deleted or gone -- the drain is still retrying, and a request is not
- * a confirmation.
+ * third, friendlier word for the second case, and nothing here may ever state
+ * removal as an accomplished fact -- the drain is still retrying, and a request
+ * is not a confirmation.
+ *
+ * The wording says "the copy that was sent", never where it is being kept. This
+ * view is barred by `osl-chats-view.test.ts` from naming transport internals --
+ * no "relay", no "server" -- which is why the status attribute here is
+ * `data-deletion-status` rather than the `data-server-status` that
+ * `destruct-status.ts` uses on surfaces that are allowed to say it. The value
+ * vocabulary is deliberately the same one.
  */
 function deletionUnconfirmedRow(count: number): string {
   if (!Number.isSafeInteger(count) || count <= 0) return "";
   const copies = count === 1 ? "1 attachment copy" : `${count.toLocaleString("en-US")} attachment copies`;
-  return `<p class="osl-chat-deletion-unconfirmed warning" role="status" data-osl-deletion-unconfirmed="${count}" data-server-status="not-confirmed"><strong>Relay deletion was not confirmed</strong><small>OSL asked the relay to delete ${copies} and has not been able to confirm it. It keeps retrying. Until it can confirm, assume the copy is still there.</small></p>`;
+  return `<p class="osl-chat-deletion-unconfirmed warning" role="status" data-osl-deletion-unconfirmed="${count}" data-deletion-status="not-confirmed"><strong>Deletion was not confirmed</strong><small>OSL asked for ${copies} it sent to be deleted, and has not been able to confirm it. It keeps trying. Until it can confirm, assume the copy is still there.</small></p>`;
 }
 
 function emptyThread(): string {
@@ -355,7 +362,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     ${deletionUnconfirmedRow(model.deletionUnconfirmed ?? 0)}
     <form class="osl-chat-composer" data-osl-chat-compose="${escapeHtml(friend.personId)}">
       <label for="osl-chat-draft">Message</label>
-      <div class="osl-chat-composer-bar"><label class="osl-chat-view-once" title="View once"><input id="osl-chat-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${onceIcon}<span><strong>View once</strong><small>Kept out of OSL history. OSL asks the relay to delete its copy once it is opened and says here when it cannot confirm the copy is gone.</small></span></label><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-send-context="${friend.verified && friend.ready && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
+      <div class="osl-chat-composer-bar"><label class="osl-chat-view-once" title="View once"><input id="osl-chat-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${onceIcon}<span><strong>View once</strong><small>Kept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that.</small></span></label><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-send-context="${friend.verified && friend.ready && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
       <div class="osl-chat-composer-meta"><span id="osl-chat-readiness" class="osl-chat-readiness">${readiness}</span><output id="osl-chat-draft-count" class="osl-chat-byte-count${withinLimit ? "" : " is-over"}">${bytes.toLocaleString("en-US")} / ${OSL_CHAT_MAX_DRAFT_BYTES.toLocaleString("en-US")}</output></div>
     </form>
   </section>`;
