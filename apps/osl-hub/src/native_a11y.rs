@@ -2292,7 +2292,9 @@ pub(crate) mod tests {
         );
 
         // The scanner must be able to fire, or this guard is decoration.
-        assert!(hands_back_a_deadline("    pub fn new(millis: u64) -> Self {"));
+        assert!(hands_back_a_deadline(
+            "    pub fn new(millis: u64) -> Self {"
+        ));
         assert!(hands_back_a_deadline(
             "    pub const fn of(ms: u64) -> Uia2Deadline {"
         ));
