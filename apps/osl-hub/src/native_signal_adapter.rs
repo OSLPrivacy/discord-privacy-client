@@ -14,10 +14,15 @@ pub use crate::native_a11y::{
     ELECTRON_RENDERER_WINDOW_CLASS, ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
 };
 
-/// Process/window facts for the shared Electron UIA2 substrate.
+/// Process/window facts for Signal's UIA2 window shape.
 ///
 /// Signal Desktop is an Electron app. The accessibility tree that matters is on
 /// the Chromium renderer child, not the outer `Chrome_WidgetWin_1` host.
+///
+/// This plan is a description, not a binding: `native_a11y` is a taxonomy with
+/// no producer yet, so nothing enumerates the windows this plan would be
+/// resolved against. `call_timeout_ms` is the exception -- it is read, both by
+/// this module's placement budget and by `Uia2ResolvedWindow::bounded_call`.
 pub const SIGNAL_DESKTOP_PROCESS_NAME: &str = "Signal";
 pub const SIGNAL_UIA2_DEFAULT_WAIT_MS: u64 = 90_000;
 pub const SIGNAL_UIA2_DEFAULT_CALL_TIMEOUT_MS: u64 = 750;
@@ -87,6 +92,10 @@ pub enum SignalPlacementStatus {
     ComposerNotEmpty,
     ReadbackMismatch,
     ProbeClearFailed,
+    /// A backend call overran the plan's `call_timeout_ms`. A provider that is
+    /// answering that slowly is the state that precedes a cross-process freeze,
+    /// so the path is abandoned rather than driven further.
+    CallTimedOut,
     /// The backend reported a submit-shaped interaction. Placement is abandoned:
     /// OSL never authorizes a send, so a backend that performed one is refused
     /// rather than trusted for the rest of the path.
@@ -173,6 +182,25 @@ pub trait SignalComposerProbeBackend: SignalComposerPlacementBackend {
 ///    module's own source for submit-shaped mechanisms that would bypass the
 ///    backend entirely (`SendInput`, `keybd_event`, `VK_RETURN`, a posted
 ///    keyboard message, an invoke pattern, or a newline-carrying literal).
+/// Time one backend call against the plan's `call_timeout_ms` and abandon the
+/// path if it overran.
+///
+/// This bounds how long OSL is willing to keep driving a slow provider. It is
+/// not the hang guard: a call that never returns is bounded by
+/// [`crate::native_a11y::call_with_timeout`], which the Windows implementor of
+/// [`SignalComposerPlacementBackend`] must issue its cross-process calls
+/// through. Both read the same `call_timeout_ms`.
+macro_rules! bounded_backend_call {
+    ($call:expr) => {{
+        let started = std::time::Instant::now();
+        let value = $call;
+        if started.elapsed().as_millis() as u64 > SIGNAL_UIA2_WINDOW_PLAN.call_timeout_ms {
+            return SignalLivePlacementReceipt::refused(SignalPlacementStatus::CallTimedOut);
+        }
+        value
+    }};
+}
+
 pub fn drive_signal_composer_placement(
     backend: &mut dyn SignalComposerPlacementBackend,
     request: SignalLivePlacementRequest<'_>,
@@ -183,12 +211,12 @@ pub fn drive_signal_composer_placement(
         return SignalLivePlacementReceipt::refused(SignalPlacementStatus::InvalidCarrier);
     }
 
-    let submit_shaped_baseline = backend.submit_shaped_calls();
+    let submit_shaped_baseline = bounded_backend_call!(backend.submit_shaped_calls());
     if submit_shaped_baseline > 0 {
         return SignalLivePlacementReceipt::refused_after_submit_shaped_call();
     }
 
-    let element_count = match backend.element_count() {
+    let element_count = match bounded_backend_call!(backend.element_count()) {
         Ok(count) if count > ELECTRON_UIA2_POPULATED_MIN_ELEMENTS => count,
         Ok(_) => {
             return SignalLivePlacementReceipt::refused(
@@ -198,7 +226,7 @@ pub fn drive_signal_composer_placement(
         Err(status) => return SignalLivePlacementReceipt::refused(status),
     };
 
-    let writable_composer_count = match backend.writable_composer_count() {
+    let writable_composer_count = match bounded_backend_call!(backend.writable_composer_count()) {
         Ok(1) => 1,
         Ok(0) => {
             let mut receipt =
@@ -221,7 +249,7 @@ pub fn drive_signal_composer_placement(
     };
 
     if !request.allow_replace_existing {
-        match backend.current_value() {
+        match bounded_backend_call!(backend.current_value()) {
             Ok(Some(value)) if !value.is_empty() => {
                 let mut receipt =
                     SignalLivePlacementReceipt::refused(SignalPlacementStatus::ComposerNotEmpty);
@@ -239,19 +267,18 @@ pub fn drive_signal_composer_placement(
         }
     }
 
-    if let Err(status) = backend.set_value(request.carrier) {
+    if let Err(status) = bounded_backend_call!(backend.set_value(request.carrier)) {
         let mut receipt = SignalLivePlacementReceipt::refused(status);
         receipt.element_count = element_count;
         receipt.writable_composer_count = writable_composer_count;
         return receipt;
     }
 
-    let readback_contains_carrier = backend
-        .read_value()
+    let readback_contains_carrier = bounded_backend_call!(backend.read_value())
         .ok()
         .flatten()
         .is_some_and(|readback| readback.contains(request.carrier));
-    let enter_sent = backend.submit_shaped_calls() > submit_shaped_baseline;
+    let enter_sent = bounded_backend_call!(backend.submit_shaped_calls()) > submit_shaped_baseline;
     if enter_sent {
         return SignalLivePlacementReceipt::refused_after_submit_shaped_call();
     }
@@ -285,12 +312,12 @@ pub fn probe_signal_composer_write_then_clear(
         receipt.status,
         SignalPlacementStatus::Placed | SignalPlacementStatus::ReadbackMismatch
     ) {
-        let submit_shaped_before_clear = backend.submit_shaped_calls();
-        if backend.clear_value().is_err() {
+        let submit_shaped_before_clear = bounded_backend_call!(backend.submit_shaped_calls());
+        if bounded_backend_call!(backend.clear_value()).is_err() {
             receipt.placed = false;
             receipt.status = SignalPlacementStatus::ProbeClearFailed;
         }
-        if backend.submit_shaped_calls() > submit_shaped_before_clear {
+        if bounded_backend_call!(backend.submit_shaped_calls()) > submit_shaped_before_clear {
             return SignalLivePlacementReceipt::refused_after_submit_shaped_call();
         }
     }
@@ -681,15 +708,49 @@ fn writable_signal_edit(node: &SignalNode, window_bounds: SignalRect) -> bool {
         && node.bounds.contained_by(window_bounds)
 }
 
+/// Name stems that prove a writable `Edit` is NOT the composer.
+///
+/// Signal's search, filter and message-request fields all *contain* a composer
+/// stem in their own locale -- "Search messages", "Nachrichten durchsuchen",
+/// "Buscar mensajes", "Message requests" -- so a positive stem alone cannot
+/// decide this. When such a field is the only writable Edit present (the
+/// not-signed-in / no-conversation-open state) a substring-only matcher would
+/// place the carrier into it.
+const SIGNAL_NON_COMPOSER_NAME_STEMS: &[&str] = &[
+    "search",
+    "find",
+    "filter",
+    "suchen",
+    "suche",
+    "filtern",
+    "buscar",
+    "busca",
+    "b\u{fa}squeda",
+    "busqueda",
+    "filtrar",
+    "filtro",
+    "request",
+    "anfrage",
+    "solicitud",
+];
+
+const SIGNAL_COMPOSER_NAME_STEMS: &[&str] = &["message", "nachricht", "mensaje"];
+
 fn signal_composer_accessible_name(name: &str) -> bool {
     let normalized = name
         .trim()
         .trim_end_matches('.')
-        .to_ascii_lowercase()
+        .to_lowercase()
         .replace('\u{2026}', "");
-    normalized.contains("message")
-        || normalized.contains("nachricht")
-        || normalized.contains("mensaje")
+    if SIGNAL_NON_COMPOSER_NAME_STEMS
+        .iter()
+        .any(|stem| normalized.contains(stem))
+    {
+        return false;
+    }
+    SIGNAL_COMPOSER_NAME_STEMS
+        .iter()
+        .any(|stem| normalized.contains(stem))
 }
 
 fn signal_transcript_candidate(
@@ -801,6 +862,8 @@ mod tests {
         /// synthesises a key — the exact thing the prohibition forbids.
         submits_after_set_value: bool,
         submits_after_clear: bool,
+        /// Milliseconds every backend call takes to answer.
+        call_delay_ms: u64,
     }
 
     impl FakeSignalBackend {
@@ -816,12 +879,22 @@ mod tests {
                 submit_shaped: 0,
                 submits_after_set_value: false,
                 submits_after_clear: false,
+                call_delay_ms: 0,
+            }
+        }
+    }
+
+    impl FakeSignalBackend {
+        fn answer(&self) {
+            if self.call_delay_ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(self.call_delay_ms));
             }
         }
     }
 
     impl SignalComposerPlacementBackend for FakeSignalBackend {
         fn element_count(&mut self) -> Result<usize, SignalPlacementStatus> {
+            self.answer();
             self.elements.clone()
         }
 
@@ -852,6 +925,7 @@ mod tests {
         }
 
         fn submit_shaped_calls(&mut self) -> usize {
+            self.answer();
             self.submit_shaped
         }
     }
@@ -1033,6 +1107,32 @@ mod tests {
         );
         assert!(receipt.enter_sent);
         assert!(!receipt.placed);
+    }
+
+    #[test]
+    fn signal_live_placement_abandons_a_backend_call_that_overruns_its_deadline() {
+        let mut backend = FakeSignalBackend::empty();
+        backend.call_delay_ms = SIGNAL_UIA2_WINDOW_PLAN.call_timeout_ms + 150;
+
+        let started = std::time::Instant::now();
+        let receipt = drive_signal_composer_placement(
+            &mut backend,
+            SignalLivePlacementRequest {
+                carrier: "india-2204-osl",
+                allow_replace_existing: false,
+            },
+        );
+
+        assert_eq!(receipt.status, SignalPlacementStatus::CallTimedOut);
+        assert!(!receipt.placed);
+        assert!(
+            backend.set_values.is_empty(),
+            "a provider answering past its deadline must not be written to"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "the path must abandon at the deadline, not accumulate every slow call"
+        );
     }
 
     #[test]
@@ -1276,11 +1376,61 @@ mod tests {
     #[test]
     fn signal_composer_refuses_login_or_search_field_instead_of_placing_there() {
         let window = rect(0, 0, 1200, 900);
-        let nodes = vec![editable(rect(460, 735, 1120, 820), "Search")];
 
+        // Realistic search-field names, each carrying its locale's composer stem,
+        // each sitting exactly where the composer would be, each the only
+        // writable Edit present -- the not-signed-in / no-conversation state.
+        for name in [
+            "Search messages",
+            "Nachrichten durchsuchen",
+            "Buscar mensajes",
+            "Message requests",
+            "Filter chats",
+        ] {
+            let nodes = vec![editable(rect(460, 735, 1120, 820), name)];
+            assert_eq!(
+                discover_signal_composer(&nodes, window),
+                Err(SignalSelectorError::Missing),
+                "{name:?} is a search or filter field, not a composer"
+            );
+        }
+
+        // A search field must not make a real composer ambiguous either.
+        let with_composer = vec![
+            editable(rect(20, 30, 340, 72), "Search messages"),
+            editable(rect(460, 735, 1120, 820), "Message"),
+        ];
+        assert_eq!(discover_signal_composer(&with_composer, window), Ok(1));
+    }
+
+    #[test]
+    fn signal_composer_geometry_fallback_refuses_an_unnamed_login_field() {
+        let window = rect(0, 0, 1200, 900);
+
+        // Signal's link/registration screen: one unnamed writable phone-number
+        // entry, centred. The named path cannot fire, so this is the fallback's
+        // own refusal, which had no test before.
+        let centred_phone_entry = vec![{
+            let mut node = editable(rect(430, 430, 770, 480), "");
+            node.localized_name = None;
+            node
+        }];
         assert_eq!(
-            discover_signal_composer(&nodes, window),
+            resolve_signal_composer(&centred_phone_entry, window).map(|r| r.method),
             Err(SignalSelectorError::Missing)
+        );
+
+        // Same field, still unnamed, but in the conversation pane's composer
+        // band -- the fallback is allowed to accept that one, which proves the
+        // refusal above came from geometry and not from an inert fallback.
+        let composer_band = vec![{
+            let mut node = editable(rect(460, 735, 1120, 820), "");
+            node.localized_name = None;
+            node
+        }];
+        assert_eq!(
+            resolve_signal_composer(&composer_band, window).map(|r| r.method),
+            Ok(SignalComposerResolutionMethod::UnnamedGeometryFallback)
         );
     }
 

@@ -1,4 +1,30 @@
-//! Shared Windows accessibility primitives for native UIA2 adapters.
+//! Windows accessibility primitives, plus a UIA2 window taxonomy with no
+//! producer yet.
+//!
+//! # This is a taxonomy with no producer yet
+//!
+//! `Uia2WindowShape`, `Uia2WindowPlan` and `resolve_uia2_window` record the
+//! three window shapes A-00 measured, and `resolve_uia2_window` is a pure
+//! function over an already-enumerated window graph. Nothing in this repository
+//! *produces* a `Uia2WindowCandidate`. There is no window enumeration, no
+//! process-name resolution, no wake dispatch keyed on `wake_policy`, no poll
+//! loop honouring `poll_until_populated`, no binding and no tree walk. The live
+//! Windows layer that does those things is still unlifted inside
+//! `native_discord_adapter.rs`.
+//!
+//! Do not read the presence of a plan as evidence that a provider is driven.
+//! Adopting a `Uia2WindowPlan` buys you the shape decision, the wake and poll
+//! policy, and the deadline; you must still write, or lift, the enumeration
+//! that feeds it. Two lanes have already lost time consuming this API as if it
+//! were a working mechanism.
+//!
+//! The three live items here are the exception, and `native_discord_adapter.rs`
+//! consumes them today: `wake_electron_accessibility`,
+//! `element_from_ia_accessible` and `msaa_bridge_call_class`. `call_with_timeout`
+//! is live too, and is the deadline every cross-process call must be issued
+//! through.
+//!
+//! # Chromium's lazy accessibility tree
 //!
 //! Chromium enables its accessibility tree lazily.  Its documented handshake is
 //! an `EVENT_SYSTEM_ALERT` for custom object id 1, followed by `WM_GETOBJECT`
@@ -130,6 +156,9 @@ impl Uia2WindowPlan {
         }
     }
 
+    /// Deliberately wrong: binds the outer host window instead of the
+    /// renderer child. For the side-by-side probe only, never for production
+    /// binding. Kept public so the probe can name it.
     pub const fn chromium_outer_mutant(
         provider_name: &'static str,
         app_process_name: &'static str,
@@ -152,6 +181,8 @@ impl Uia2WindowPlan {
         }
     }
 
+    /// Deliberately wrong: binds the renderer child but skips Chromium's
+    /// wake handshake. Probe only, never for production binding.
     pub const fn chromium_renderer_no_wake_mutant(
         provider_name: &'static str,
         app_process_name: &'static str,
@@ -174,6 +205,9 @@ impl Uia2WindowPlan {
         }
     }
 
+    /// Deliberately wrong: binds and reads immediately, without waiting for
+    /// the asynchronously populated tree. Probe only, never for production
+    /// binding.
     pub const fn chromium_renderer_immediate_mutant(
         provider_name: &'static str,
         app_process_name: &'static str,
@@ -219,6 +253,45 @@ pub struct Uia2ResolvedWindow {
     pub poll_until_populated: bool,
     pub populated_min_elements: usize,
     pub call_timeout_ms: u64,
+}
+
+/// A cross-process accessibility call that did not answer inside its deadline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Uia2CallTimeout {
+    pub timeout_ms: u64,
+}
+
+/// Issue one cross-process accessibility call under a hard deadline.
+///
+/// A UIA or MSAA call into another process cannot be cancelled once issued: if
+/// the provider stops answering, the calling thread blocks forever, and both
+/// OSL and Discord have been frozen exactly that way on this machine. So the
+/// call is issued on a worker thread and the caller stops waiting at the
+/// deadline, returning `Err(Uia2CallTimeout)` rather than blocking. The worker
+/// may still be parked in the stuck call afterwards; that is unavoidable, and
+/// it is precisely why the deadline has to belong to the caller.
+pub fn call_with_timeout<T: Send + 'static>(
+    timeout_ms: u64,
+    call: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Uia2CallTimeout> {
+    let (answer, wait) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = answer.send(call());
+    });
+    wait.recv_timeout(std::time::Duration::from_millis(timeout_ms))
+        .map_err(|_| Uia2CallTimeout { timeout_ms })
+}
+
+impl Uia2ResolvedWindow {
+    /// Every cross-process accessibility call against this window must be
+    /// issued through here. This is what reads `call_timeout_ms`, and what
+    /// makes it a deadline rather than a declaration.
+    pub fn bounded_call<T: Send + 'static>(
+        &self,
+        call: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, Uia2CallTimeout> {
+        call_with_timeout(self.call_timeout_ms, call)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -647,6 +720,65 @@ mod tests {
         assert_eq!(resolved.bound_process_id, 400);
         assert_eq!(resolved.wake_policy, Uia2WakePolicy::WmGetObjectChromium);
         assert!(resolved.poll_until_populated);
+    }
+
+    fn slow_provider() -> &'static str {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        "the provider finally answered"
+    }
+
+    #[test]
+    fn bounded_call_returns_instead_of_hanging_when_the_provider_never_answers() {
+        let plan = Uia2WindowPlan::chromium_renderer_child("Signal", "Signal", WAIT_MS, 40);
+        let windows = [
+            window(
+                10,
+                None,
+                None,
+                100,
+                "Signal.exe",
+                ELECTRON_OUTER_WINDOW_CLASS,
+                900,
+            ),
+            window(
+                11,
+                Some(10),
+                None,
+                100,
+                "Signal.exe",
+                ELECTRON_RENDERER_WINDOW_CLASS,
+                700,
+            ),
+        ];
+        let resolved = resolve_uia2_window(plan, &windows).expect("Signal renderer should resolve");
+        assert_eq!(resolved.call_timeout_ms, 40);
+
+        let started = std::time::Instant::now();
+        let outcome = resolved.bounded_call(|| {
+            // A provider that never answers, exactly like the freezes measured
+            // on this machine.
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            "unreachable"
+        });
+
+        assert_eq!(outcome, Err(Uia2CallTimeout { timeout_ms: 40 }));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "a bounded call must return at its deadline, not wait for the provider"
+        );
+        assert_eq!(resolved.bounded_call(|| 41), Ok(41));
+    }
+
+    #[test]
+    fn call_timeout_ms_is_the_deadline_and_not_a_declaration() {
+        assert_eq!(
+            call_with_timeout(30, slow_provider),
+            Err(Uia2CallTimeout { timeout_ms: 30 })
+        );
+        assert_eq!(
+            call_with_timeout(10_000, slow_provider),
+            Ok("the provider finally answered")
+        );
     }
 
     #[test]
