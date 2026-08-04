@@ -7,9 +7,14 @@ fn compositor_repair_has_one_shipping_definition() {
     let mut definitions = 0;
     for entry in std::fs::read_dir(root).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|x| x.to_str()) != Some("rs") { continue; }
+        if path.extension().and_then(|x| x.to_str()) != Some("rs") {
+            continue;
+        }
         let text = std::fs::read_to_string(path).unwrap();
         definitions += text.matches("fn borrowed_tether_repair_plan(").count();
     }
-    assert_eq!(definitions, 1, "a substrate forked compositor repair instead of sharing BORROW-CORE");
+    assert_eq!(
+        definitions, 1,
+        "a substrate forked compositor repair instead of sharing BORROW-CORE"
+    );
 }

@@ -20,7 +20,11 @@ fn scr_v1_each_ambiguity_is_unknown_and_counted_separately() {
             DeleteVerification::Unknown,
             "{source:?} must never be promoted to VerifiedGone"
         );
-        assert_eq!(counts.count(source), 1, "{source:?} is separately accounted");
+        assert_eq!(
+            counts.count(source),
+            1,
+            "{source:?} is separately accounted"
+        );
     }
     assert_eq!(counts.count(VerificationAmbiguity::DroppedConnection), 1);
     assert_eq!(counts.count(VerificationAmbiguity::PriorUnknown), 1);

@@ -64,7 +64,9 @@ fn map_category(category: PrivacyRiskCategory) -> DetectorCategory {
         PrivacyRiskCategory::SexualContent => DetectorCategory::SexualContent,
         PrivacyRiskCategory::SensitiveHealth => DetectorCategory::SensitiveHealth,
         PrivacyRiskCategory::ControlledSubstances => DetectorCategory::ControlledSubstances,
-        PrivacyRiskCategory::PotentiallyUnlawfulConduct => DetectorCategory::PotentiallyUnlawfulConduct,
+        PrivacyRiskCategory::PotentiallyUnlawfulConduct => {
+            DetectorCategory::PotentiallyUnlawfulConduct
+        }
         PrivacyRiskCategory::WorkSensitiveInformation => DetectorCategory::WorkSensitiveInformation,
     }
 }

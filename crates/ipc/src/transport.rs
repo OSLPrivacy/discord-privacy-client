@@ -161,7 +161,12 @@ mod tests {
         }
         // 2. shared prefix or suffix -- a conversation id spliced into the tag
         let shared_prefix = a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count();
-        let shared_suffix = a.iter().rev().zip(b.iter().rev()).take_while(|(x, y)| x == y).count();
+        let shared_suffix = a
+            .iter()
+            .rev()
+            .zip(b.iter().rev())
+            .take_while(|(x, y)| x == y)
+            .count();
         if shared_prefix >= 4 || shared_suffix >= 4 {
             return true;
         }
@@ -212,26 +217,42 @@ mod tests {
         let base = [0xA5u8; CAPABILITY_BYTES];
 
         // 1. identical tags
-        assert!(public_observer_can_link_only_by_repeated_delivery_tag(&meta(base), &meta(base)));
+        assert!(public_observer_can_link_only_by_repeated_delivery_tag(
+            &meta(base),
+            &meta(base)
+        ));
 
         // 2. shared prefix -- a conversation id spliced in
         let mut prefixed = [0x11u8; CAPABILITY_BYTES];
         prefixed[..6].copy_from_slice(&base[..6]);
-        assert!(public_observer_can_link_only_by_repeated_delivery_tag(&meta(base), &meta(prefixed)));
+        assert!(public_observer_can_link_only_by_repeated_delivery_tag(
+            &meta(base),
+            &meta(prefixed)
+        ));
 
         // 3. constant XOR delta -- a fixed, guessable step
         let stepped: [u8; CAPABILITY_BYTES] = base.map(|b| b ^ 0x0F);
-        assert!(public_observer_can_link_only_by_repeated_delivery_tag(&meta(base), &meta(stepped)));
+        assert!(public_observer_can_link_only_by_repeated_delivery_tag(
+            &meta(base),
+            &meta(stepped)
+        ));
 
         // 4. low Hamming distance -- a counter incremented in the clear
         let mut nudged = base;
         nudged[CAPABILITY_BYTES - 1] ^= 0x01;
-        assert!(public_observer_can_link_only_by_repeated_delivery_tag(&meta(base), &meta(nudged)));
+        assert!(public_observer_can_link_only_by_repeated_delivery_tag(
+            &meta(base),
+            &meta(nudged)
+        ));
 
         // and the control: two genuinely unrelated tags must NOT be flagged,
         // or the helper would fail everything and be equally useless.
-        let unrelated: [u8; CAPABILITY_BYTES] = std::array::from_fn(|i| (i as u8).wrapping_mul(37) ^ 0x5C);
-        assert!(!public_observer_can_link_only_by_repeated_delivery_tag(&meta(base), &meta(unrelated)));
+        let unrelated: [u8; CAPABILITY_BYTES] =
+            std::array::from_fn(|i| (i as u8).wrapping_mul(37) ^ 0x5C);
+        assert!(!public_observer_can_link_only_by_repeated_delivery_tag(
+            &meta(base),
+            &meta(unrelated)
+        ));
     }
 
     #[test]

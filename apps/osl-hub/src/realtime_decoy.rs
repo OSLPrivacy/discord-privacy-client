@@ -77,7 +77,9 @@ mod tests {
         let blob = BlobId::from_bytes([7; ID_BYTES]);
         client.remember_carrier_pointer(blob, CarrierPointer::from_carrier("real-capability"));
         let frame = wakeup([9; ID_BYTES], [7; ID_BYTES]);
-        client.receive_frame(&frame).expect("valid fixed-size wakeup");
+        client
+            .receive_frame(&frame)
+            .expect("valid fixed-size wakeup");
 
         match client.take_fetch_work().expect("one action for the reply") {
             ScheduledFetch::Authorized(fetch) => fetch
@@ -92,8 +94,13 @@ mod tests {
 
         // An idle/unknown reply still has one fetch-shaped follow-up, so the
         // observer cannot infer a pointer match from the cadence.
-        client.receive_frame(&wakeup([8; ID_BYTES], [6; ID_BYTES])).unwrap();
-        assert!(matches!(client.take_fetch_work(), Some(ScheduledFetch::Decoy(_))));
+        client
+            .receive_frame(&wakeup([8; ID_BYTES], [6; ID_BYTES]))
+            .unwrap();
+        assert!(matches!(
+            client.take_fetch_work(),
+            Some(ScheduledFetch::Decoy(_))
+        ));
         let (_, first) = client.next_outbound_frame();
         let (_, second) = client.next_outbound_frame();
         assert_eq!(first.len(), second.len());
@@ -105,6 +112,9 @@ mod tests {
             hex(&tag),
             hex(&blob)
         );
-        format!("{body:<width$}", width = crate::realtime_client::FRAME_BYTES)
+        format!(
+            "{body:<width$}",
+            width = crate::realtime_client::FRAME_BYTES
+        )
     }
 }

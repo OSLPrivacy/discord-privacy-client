@@ -100,35 +100,44 @@ fn ti_6_consent_flow_is_bound_one_shot_expiring_revocable_and_history_only() {
     assert_eq!(receipt.account, "browser-history");
     assert_eq!(receipt.scope, "history-footprint");
     assert_eq!(receipt.observation_count, 2);
-    assert!(receipt.snapshot_deleted, "the temporary history copy is removed");
+    assert!(
+        receipt.snapshot_deleted,
+        "the temporary history copy is removed"
+    );
 
     // Sabotage proof: changing the implementation to retain a consumed grant
     // makes this replay succeed and this test red.
-    assert!(state
-        .scan_consented_profile(
-            OWNER,
-            &roots,
-            BrowserImportId::Chrome,
-            PROFILE,
-            &grant.grant_id,
-            NOW + 2,
-        )
-        .is_err(), "a consumed grant must never be replayable");
+    assert!(
+        state
+            .scan_consented_profile(
+                OWNER,
+                &roots,
+                BrowserImportId::Chrome,
+                PROFILE,
+                &grant.grant_id,
+                NOW + 2,
+            )
+            .is_err(),
+        "a consumed grant must never be replayable"
+    );
 
     inventory(&mut state, &roots);
     let expired = state
         .grant_profile_consent(OWNER, BrowserImportId::Chrome, PROFILE, NOW)
         .expect("mint expiring grant");
-    assert!(state
-        .scan_consented_profile(
-            OWNER,
-            &roots,
-            BrowserImportId::Chrome,
-            PROFILE,
-            &expired.grant_id,
-            expired.expires_at_unix_ms,
-        )
-        .is_err(), "a five-minute grant must not work at its expiry");
+    assert!(
+        state
+            .scan_consented_profile(
+                OWNER,
+                &roots,
+                BrowserImportId::Chrome,
+                PROFILE,
+                &expired.grant_id,
+                expired.expires_at_unix_ms,
+            )
+            .is_err(),
+        "a five-minute grant must not work at its expiry"
+    );
 
     for transition in [
         BrowserProfileTransition::Lock,
@@ -140,15 +149,18 @@ fn ti_6_consent_flow_is_bound_one_shot_expiring_revocable_and_history_only() {
             .grant_profile_consent(OWNER, BrowserImportId::Chrome, PROFILE, NOW + 10)
             .expect("mint grant before security transition");
         state.apply_transition(transition);
-        assert!(state
-            .scan_consented_profile(
-                OWNER,
-                &roots,
-                BrowserImportId::Chrome,
-                PROFILE,
-                &revoked.grant_id,
-                NOW + 11,
-            )
-            .is_err(), "security transition must revoke browser-read consent");
+        assert!(
+            state
+                .scan_consented_profile(
+                    OWNER,
+                    &roots,
+                    BrowserImportId::Chrome,
+                    PROFILE,
+                    &revoked.grant_id,
+                    NOW + 11,
+                )
+                .is_err(),
+            "security transition must revoke browser-read consent"
+        );
     }
 }

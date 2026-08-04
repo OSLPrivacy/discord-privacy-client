@@ -971,7 +971,9 @@ impl KeyServerClient {
         friend_code: &str,
     ) -> Result<UsernameClaimResponse> {
         if !is_normalized_username(username) {
-            return Err(Error::Transport("username must already be normalized".into()));
+            return Err(Error::Transport(
+                "username must already be normalized".into(),
+            ));
         }
         let request_id = URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32));
         let timestamp_ms = unix_timestamp_ms();
@@ -982,9 +984,8 @@ impl KeyServerClient {
             &request_id,
             timestamp_ms,
         );
-        let signature_b64 = STANDARD.encode(
-            crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes(),
-        );
+        let signature_b64 =
+            STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes());
         let body = UsernameClaimRequest {
             username,
             user_id: &identity.user_id,
@@ -1007,7 +1008,9 @@ impl KeyServerClient {
     /// in a POST body so it is not retained in the request URI.
     pub fn lookup_username_friend_code(&self, username: &str) -> Result<Option<String>> {
         if !is_normalized_username(username) {
-            return Err(Error::Transport("username must already be normalized".into()));
+            return Err(Error::Transport(
+                "username must already be normalized".into(),
+            ));
         }
         let bytes = serde_json::to_vec(&serde_json::json!({ "username": username }))?;
         let response = self.send_request(

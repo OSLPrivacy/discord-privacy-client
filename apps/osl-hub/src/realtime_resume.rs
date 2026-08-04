@@ -177,7 +177,10 @@ mod tests {
         let _ = schedule.next_delay(0);
         let second_ceiling = schedule.next_delay(u64::MAX);
         assert!(second_ceiling > MIN_RECONNECT_DELAY);
-        assert_eq!(schedule.resume_token().map(ResumeToken::as_str), Some("resume-opaque"));
+        assert_eq!(
+            schedule.resume_token().map(ResumeToken::as_str),
+            Some("resume-opaque")
+        );
         assert!(schedule.contract().is_some());
         schedule.connected();
         assert!(schedule.next_delay(u64::MAX) <= Duration::from_millis(500));
@@ -189,10 +192,15 @@ mod tests {
         let mut schedule = ReconnectSchedule::new();
         schedule.set_contract(ReconnectContract {
             session_id: SessionId::from_bytes([1; 16]),
-            cursor: AcknowledgementCursor { last_sent: 9, last_accepted_peer_frame: 8 },
+            cursor: AcknowledgementCursor {
+                last_sent: 9,
+                last_accepted_peer_frame: 8,
+            },
             subscriptions: vec![tag],
         });
-        let restored = schedule.restore_for_new_session(SessionId::from_bytes([2; 16])).unwrap();
+        let restored = schedule
+            .restore_for_new_session(SessionId::from_bytes([2; 16]))
+            .unwrap();
         assert_eq!(restored.session_id.as_bytes(), [2; 16]);
         assert_eq!(restored.cursor, AcknowledgementCursor::default());
         assert_eq!(restored.subscriptions, vec![tag]);

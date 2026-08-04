@@ -19,12 +19,21 @@ fn cover_text_is_canonical_for_a_scoped_pointer() {
     let repeated = encode_token(&first_cipher, mac_key, &id);
     let across_cipher = encode_token(&second_cipher, mac_key, &id);
 
-    assert_eq!(first, repeated, "the same scoped pointer must render identically");
-    assert_eq!(first, across_cipher, "the cipher parameter must not alter the cover");
+    assert_eq!(
+        first, repeated,
+        "the same scoped pointer must render identically"
+    );
+    assert_eq!(
+        first, across_cipher,
+        "the cipher parameter must not alter the cover"
+    );
     assert_eq!(decode_token(&first_cipher, mac_key, &first), Some(id));
 
     let mut words: Vec<_> = first.split_ascii_whitespace().map(str::to_owned).collect();
-    assert!(!words.is_empty(), "a rendered cover must contain at least one word");
+    assert!(
+        !words.is_empty(),
+        "a rendered cover must contain at least one word"
+    );
     words[0] = if words[0] == "lol" { "yeah" } else { "lol" }.to_owned();
     let one_word_edit = words.join(" ");
 
@@ -41,5 +50,8 @@ fn cover_text_changes_when_the_scope_key_changes() {
     let cover = encode_token(&cipher(b"test-cipher"), b"first-scope-key", &id);
     let other = encode_token(&cipher(b"test-cipher"), b"second-scope-key", &id);
 
-    assert_ne!(cover, other, "the scope key is part of the rendered token payload");
+    assert_ne!(
+        cover, other,
+        "the scope key is part of the rendered token payload"
+    );
 }

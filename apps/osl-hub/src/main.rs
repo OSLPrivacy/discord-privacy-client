@@ -6134,9 +6134,8 @@ async fn get_osl_profile(
 /// unconfigured and writes nothing, rather than falling back to plaintext.
 #[tauri::command]
 fn get_osl_chat_local_state_key() -> Result<String, String> {
-    let directory = keystore::osl_config_dir().map_err(|error| {
-        format!("OSL Chat local-state directory is unavailable: {error}")
-    })?;
+    let directory = keystore::osl_config_dir()
+        .map_err(|error| format!("OSL Chat local-state directory is unavailable: {error}"))?;
     let key = osl_privacy_hub::osl_chat_local_state_key::osl_chat_local_state_key(&directory)?;
     // Fully qualified on purpose: the `URL_SAFE_NO_PAD` import at :4 is gated behind
     // `whatsapp-qa-identity`, so a bare reference here compiles under that feature and
@@ -9375,9 +9374,9 @@ fn main() {
     }
 
     startup_breadcrumb("main_enter"); // STARTUP-TRACE
-    // D-142: before anything that can fail. Until this runs, every
-    // `tracing::error!` in the process — including the post-gate reload
-    // refusal that keeps a session locked — is discarded unread.
+                                      // D-142: before anything that can fail. Until this runs, every
+                                      // `tracing::error!` in the process — including the post-gate reload
+                                      // refusal that keeps a session locked — is discarded unread.
     #[cfg(feature = "core")]
     init_diagnostic_subscriber();
     startup_breadcrumb("guardian_check_before"); // STARTUP-TRACE

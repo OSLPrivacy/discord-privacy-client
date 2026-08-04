@@ -123,14 +123,26 @@ fn post_gate_reload_against_a_real_profile() {
     let fresh = ipc::AppState::new();
     match ipc::session_lock::unlock_session(&fresh, &fx.account) {
         Ok(report) => {
-            println!("[D-142] identity_reloaded      = {}", report.identity_reloaded);
+            println!(
+                "[D-142] identity_reloaded      = {}",
+                report.identity_reloaded
+            );
             println!(
                 "[D-142] message_store_reopened = {}",
                 report.message_store_reopened
             );
-            println!("[D-142] peer_map_entries       = {}", report.reload.peer_map_entries);
-            println!("[D-142] prekeys_loaded         = {}", report.reload.prekeys_loaded);
-            println!("[D-142] u.reload.errors        = {:?}", report.reload.errors);
+            println!(
+                "[D-142] peer_map_entries       = {}",
+                report.reload.peer_map_entries
+            );
+            println!(
+                "[D-142] prekeys_loaded         = {}",
+                report.reload.prekeys_loaded
+            );
+            println!(
+                "[D-142] u.reload.errors        = {:?}",
+                report.reload.errors
+            );
             assert!(
                 report.reload.errors.is_empty(),
                 "post-gate reload reported errors: {:?}",

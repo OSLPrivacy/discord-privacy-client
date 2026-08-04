@@ -107,7 +107,10 @@ fn pointer_cover_tracks_the_model_entropy_rate() {
 #[test]
 fn twenty_thousand_pointers_round_trip_bit_exact() {
     for case in 0..20_000u64 {
-        let bits = payload_bits(0x9e37_79b9_7f4a_7c15 ^ case.wrapping_mul(0x2545_f491_4f6c_dd1d), TOKEN_PAYLOAD_BITS);
+        let bits = payload_bits(
+            0x9e37_79b9_7f4a_7c15 ^ case.wrapping_mul(0x2545_f491_4f6c_dd1d),
+            TOKEN_PAYLOAD_BITS,
+        );
         let words = bigram::arithmetic_decode_bits(&bits, TOKEN_PAYLOAD_BITS);
         assert!(!words.is_empty(), "case {case} produced an empty cover");
         assert_eq!(

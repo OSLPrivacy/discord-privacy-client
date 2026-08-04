@@ -6,6 +6,7 @@ pub mod account_identity_authority;
 #[cfg(feature = "core")]
 pub mod account_recovery;
 pub mod adapter_profile_boot;
+pub mod adapters;
 #[cfg(feature = "core")]
 pub mod attachment_formats;
 #[cfg(feature = "core")]
@@ -15,7 +16,6 @@ pub mod attachment_scan;
 pub mod attachment_thumbnail;
 #[cfg(feature = "core")]
 pub mod attachment_thumbnail_policy;
-pub mod adapters;
 // ai_carrier was once gated on `desktop` because it declared a
 // #[tauri::command] and tauri only arrives with that feature. The command
 // wrapper now lives in main.rs (the macro's __cmd__* helpers must sit beside
@@ -90,9 +90,9 @@ pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
 pub mod native_window_host;
 #[cfg(feature = "core")]
-pub mod osl_mail;
-#[cfg(feature = "core")]
 pub mod osl_chat_local_state_key;
+#[cfg(feature = "core")]
+pub mod osl_mail;
 #[cfg(feature = "core")]
 pub mod osl_profile;
 pub mod owner_presence;
@@ -116,13 +116,13 @@ pub mod scrub_hosted {
     pub mod verify_surface;
     pub mod x_web;
 }
-pub mod scrub_hosted_port;
 #[cfg(all(feature = "core", feature = "desktop"))]
 pub mod revocation_drain_timer;
 #[cfg(feature = "core")]
 pub mod rn_attribution;
 #[cfg(feature = "core")]
 pub mod rn_recovery;
+pub mod scrub_hosted_port;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
@@ -164,8 +164,6 @@ pub mod discord_qa_identity;
 pub mod discord_qa_inbound_receipt;
 #[cfg(feature = "core")]
 pub mod eager_fetch;
-pub mod osl_chat_delivery;
-pub mod osl_chat_queue;
 #[cfg(feature = "core")]
 pub mod eager_fetch_retry;
 pub mod identity_binding_verifier;
@@ -176,6 +174,8 @@ pub mod inbound_receipts;
 pub mod isolated_worker;
 #[cfg(feature = "core")]
 pub mod mass_cleanup;
+pub mod osl_chat_delivery;
+pub mod osl_chat_queue;
 pub mod realtime_client;
 pub mod realtime_decoy;
 pub mod realtime_resume;

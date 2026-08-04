@@ -259,8 +259,8 @@ mod windows {
     use ::windows::Win32::UI::Accessibility::{
         CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTreeWalker,
         IUIAutomationValuePattern, UIA_ButtonControlTypeId, UIA_EditControlTypeId,
-        UIA_CONTROLTYPE_ID, UIA_ListControlTypeId, UIA_PaneControlTypeId,
-        UIA_TextControlTypeId, UIA_ValuePatternId, UIA_WindowControlTypeId,
+        UIA_ListControlTypeId, UIA_PaneControlTypeId, UIA_TextControlTypeId, UIA_ValuePatternId,
+        UIA_WindowControlTypeId, UIA_CONTROLTYPE_ID,
     };
 
     struct ComGuard(bool);

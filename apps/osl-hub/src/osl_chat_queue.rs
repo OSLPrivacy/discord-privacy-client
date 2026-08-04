@@ -6,7 +6,9 @@
 //! never draft plaintext.
 
 use ipc::{
-    offline_send_queue::{DrainOutcome, EnqueueOutcome, OfflineSendQueue, OfflineSendQueueError, PendingSend},
+    offline_send_queue::{
+        DrainOutcome, EnqueueOutcome, OfflineSendQueue, OfflineSendQueueError, PendingSend,
+    },
     secure_local_store::SecureLocalStore,
 };
 
@@ -15,7 +17,9 @@ pub struct OslChatSendQueue<S: SecureLocalStore> {
 }
 
 impl<S: SecureLocalStore> OslChatSendQueue<S> {
-    pub fn new(queue: OfflineSendQueue<S>) -> Self { Self { queue } }
+    pub fn new(queue: OfflineSendQueue<S>) -> Self {
+        Self { queue }
+    }
 
     /// Persists an already-encrypted OSL Chat envelope for reconnect delivery.
     /// A full queue fails closed; it never discards a live message to make room.
@@ -24,12 +28,16 @@ impl<S: SecureLocalStore> OslChatSendQueue<S> {
         idempotency_key: impl Into<String>,
         encrypted_envelope: Vec<u8>,
     ) -> Result<EnqueueOutcome, OfflineSendQueueError> {
-        self.queue.enqueue(PendingSend::new(idempotency_key, encrypted_envelope))
+        self.queue
+            .enqueue(PendingSend::new(idempotency_key, encrypted_envelope))
     }
 
     /// Drain only after the transport reports a reconnect.  The transport must
     /// use the provided stable idempotency key unchanged.
-    pub fn drain_on_reconnect<F, E>(&self, deliver: F) -> Result<DrainOutcome, OfflineSendQueueError>
+    pub fn drain_on_reconnect<F, E>(
+        &self,
+        deliver: F,
+    ) -> Result<DrainOutcome, OfflineSendQueueError>
     where
         F: FnMut(&PendingSend) -> Result<(), E>,
         E: std::fmt::Display,
@@ -37,5 +45,7 @@ impl<S: SecureLocalStore> OslChatSendQueue<S> {
         self.queue.drain_after_reconnect(deliver)
     }
 
-    pub fn pending(&self) -> Result<Vec<PendingSend>, OfflineSendQueueError> { self.queue.pending() }
+    pub fn pending(&self) -> Result<Vec<PendingSend>, OfflineSendQueueError> {
+        self.queue.pending()
+    }
 }

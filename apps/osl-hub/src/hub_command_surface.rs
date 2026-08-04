@@ -18,13 +18,13 @@ use crate::broker;
 use crate::browser_footprint::{self, FootprintObservation, NativeBrowserImportBinding};
 use crate::core_bridge::HubCoreState;
 use crate::discord_carrier_geometry::CarrierDecision;
-use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::identity_binding_verifier::{
     AccountRef, BindingScope, IdentityBindingVerifier, PinnedOwner,
 };
 use crate::models::ServiceKind;
 use crate::native_apps::BrowserImportId;
 use crate::native_discord_adapter::{DiscordCarrierLayout, NativeDiscordComposerState};
+use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
 use serde::Deserialize;
 #[cfg(feature = "discord-qa-shell")]
@@ -53,8 +53,9 @@ pub fn build_review_ui_identity_binding_verifier(
 pub fn compose_erasure_request_for_user(
     input: ErasureRequestInput,
 ) -> Result<ComposedErasureRequest, String> {
-    scrub_erasure::compose_erasure_request(&input)
-        .map_err(|_| "Complete provider, account identifier, and data categories are required".to_owned())
+    scrub_erasure::compose_erasure_request(&input).map_err(|_| {
+        "Complete provider, account identifier, and data categories are required".to_owned()
+    })
 }
 
 pub fn require_review_ui_identity_binding_from_verifier(
@@ -1410,8 +1411,13 @@ mod tauri_registration_surface_tests {
     fn recovery_kit_status_commands_are_registered_and_granted() {
         let (handlers, permissions, capability) = registration_inputs();
         assert_each_registration_surface_is_required(
-            &handlers, &permissions, &capability,
-            &["get_hub_recovery_kit_unsaved", "set_hub_recovery_kit_unsaved"],
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "get_hub_recovery_kit_unsaved",
+                "set_hub_recovery_kit_unsaved",
+            ],
         );
     }
 

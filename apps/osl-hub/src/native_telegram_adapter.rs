@@ -237,11 +237,7 @@ struct TelegramPlacedComposer {
 ///
 /// Split out because "can OSL reach Telegram's composer?" is a question worth
 /// answering without writing into a real person's chat to find out.
-type TelegramResolved = (
-    TelegramLivePlacementReceipt,
-    Uia2Acquired,
-    Uia2Editable,
-);
+type TelegramResolved = (TelegramLivePlacementReceipt, Uia2Acquired, Uia2Editable);
 
 fn resolve_through_substrate(
     host: &dyn Uia2Syscalls,
@@ -286,10 +282,7 @@ fn resolve_through_substrate(
 fn place_through_substrate(
     host: &dyn Uia2Syscalls,
     request: TelegramLivePlacementRequest<'_>,
-) -> (
-    TelegramLivePlacementReceipt,
-    Option<TelegramPlacedComposer>,
-) {
+) -> (TelegramLivePlacementReceipt, Option<TelegramPlacedComposer>) {
     if !valid_candidate_text(request.carrier, TELEGRAM_LIVE_CARRIER_MAX_BYTES) {
         return (
             TelegramLivePlacementReceipt::refused(TelegramPlacementStatus::InvalidCarrier),
@@ -319,10 +312,7 @@ fn place_through_substrate(
             receipt.placed = placement.placed;
             receipt.readback_contains_carrier = placement.readback_holds_carrier;
             receipt.status = TelegramPlacementStatus::Placed;
-            (
-                receipt,
-                Some(TelegramPlacedComposer { acquired, composer }),
-            )
+            (receipt, Some(TelegramPlacedComposer { acquired, composer }))
         }
         Err(Uia2PlacementRefusal::SubmitShaped) => (
             TelegramLivePlacementReceipt::refused_after_submit_shaped_call(),
@@ -402,7 +392,10 @@ pub fn probe_telegram_composer_reachable(host: &dyn Uia2Syscalls) -> TelegramLiv
 pub fn place_telegram_desktop_carrier(
     request: TelegramLivePlacementRequest<'_>,
 ) -> TelegramLivePlacementReceipt {
-    drive_telegram_composer_placement(&crate::native_a11y::win32::Uia2Win32Host::desktop(), request)
+    drive_telegram_composer_placement(
+        &crate::native_a11y::win32::Uia2Win32Host::desktop(),
+        request,
+    )
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -681,12 +674,12 @@ mod tests {
     // Only the recorded-host fakes below still name the syscall seam's own
     // types; the production half reaches `editable_elements` through
     // `acquire_uia2_editables` and never handles a deadline itself.
-    use crate::native_a11y::{Uia2CallTimeout, Uia2Deadline, Uia2OwnedWindow, Uia2TreeRoute};
     use crate::native_a11y::tests::{composer, telegram_graph, RecordedHost};
     use crate::native_a11y::{
         uia2_name_is_composer, Uia2WakePolicy, Uia2WindowShape, ELECTRON_OUTER_WINDOW_CLASS,
         ELECTRON_RENDERER_WINDOW_CLASS,
     };
+    use crate::native_a11y::{Uia2CallTimeout, Uia2Deadline, Uia2OwnedWindow, Uia2TreeRoute};
 
     const CARRIER: &str = "alpha-7731-osl";
 
@@ -826,7 +819,10 @@ mod tests {
         assert!(!receipt.enter_sent);
         assert_eq!(receipt.element_count, TELEGRAM_UIA2_MEASURED_ELEMENTS);
         assert_eq!(receipt.writable_composer_count, 1);
-        assert!(!receipt.woke, "a Qt window must never be sent Chromium's wake");
+        assert!(
+            !receipt.woke,
+            "a Qt window must never be sent Chromium's wake"
+        );
         assert_eq!(receipt.settled_ms, 0);
         assert!(!host.woken.get());
         assert!(

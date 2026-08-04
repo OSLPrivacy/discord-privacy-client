@@ -24,8 +24,8 @@ const MANIFEST_DOMAIN: &[u8] = b"osl-logical-message-manifest-v2";
 mod composition;
 
 pub use composition::{
-    AckOutcome, BlobState, DestructReason, LifecycleControl, LocalCopyState,
-    MessageDirection, Tombstone,
+    AckOutcome, BlobState, DestructReason, LifecycleControl, LocalCopyState, MessageDirection,
+    Tombstone,
 };
 
 pub const HARD_MAX_PARTS: u16 = 4_096;

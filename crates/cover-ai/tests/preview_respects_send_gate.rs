@@ -13,6 +13,8 @@ fn preview_and_final_carrier_are_distinct_send_states() {
     // value.  Equality is intentionally the entire predicate: changing it to
     // an "a preview exists" predicate makes this assertion false.
     let composer_contents = &preview;
-    assert_ne!(composer_contents, &final_carrier,
-        "a preview must never satisfy the exact-carrier send gate");
+    assert_ne!(
+        composer_contents, &final_carrier,
+        "a preview must never satisfy the exact-carrier send gate"
+    );
 }

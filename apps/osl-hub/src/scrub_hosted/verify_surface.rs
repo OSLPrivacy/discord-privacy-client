@@ -42,10 +42,17 @@ pub fn verify_on_independent_surface(
         return HostedVerification::Unknown;
     }
     match surface.resolve_item_id(item_id) {
-        Ok(HostedVerifyResult { covered: true, present: false }) => HostedVerification::VerifiedGone,
+        Ok(HostedVerifyResult {
+            covered: true,
+            present: false,
+        }) => HostedVerification::VerifiedGone,
         Ok(HostedVerifyResult { present: true, .. }) => HostedVerification::StillPresent,
         // A filtered, virtualised or paginated UI cannot establish absence.
-        Ok(HostedVerifyResult { covered: false, present: false }) | Err(_) => HostedVerification::Unknown,
+        Ok(HostedVerifyResult {
+            covered: false,
+            present: false,
+        })
+        | Err(_) => HostedVerification::Unknown,
     }
 }
 
@@ -55,18 +62,38 @@ mod tests {
 
     struct Fixture(Result<HostedVerifyResult, HostedVerifyError>);
     impl IndependentHostedSurface for Fixture {
-        fn resolve_item_id(&mut self, _: &str) -> Result<HostedVerifyResult, HostedVerifyError> { self.0 }
+        fn resolve_item_id(&mut self, _: &str) -> Result<HostedVerifyResult, HostedVerifyError> {
+            self.0
+        }
     }
 
     #[test]
     fn scr_h7_virtualised_or_filtered_row_absence_is_unknown() {
-        let mut virtualised = Fixture(Ok(HostedVerifyResult { covered: false, present: false }));
-        assert_eq!(verify_on_independent_surface(&mut virtualised, "tweet-1"), HostedVerification::Unknown);
+        let mut virtualised = Fixture(Ok(HostedVerifyResult {
+            covered: false,
+            present: false,
+        }));
+        assert_eq!(
+            verify_on_independent_surface(&mut virtualised, "tweet-1"),
+            HostedVerification::Unknown
+        );
 
-        let mut present = Fixture(Ok(HostedVerifyResult { covered: true, present: true }));
-        assert_eq!(verify_on_independent_surface(&mut present, "tweet-1"), HostedVerification::StillPresent);
+        let mut present = Fixture(Ok(HostedVerifyResult {
+            covered: true,
+            present: true,
+        }));
+        assert_eq!(
+            verify_on_independent_surface(&mut present, "tweet-1"),
+            HostedVerification::StillPresent
+        );
 
-        let mut gone = Fixture(Ok(HostedVerifyResult { covered: true, present: false }));
-        assert_eq!(verify_on_independent_surface(&mut gone, "tweet-1"), HostedVerification::VerifiedGone);
+        let mut gone = Fixture(Ok(HostedVerifyResult {
+            covered: true,
+            present: false,
+        }));
+        assert_eq!(
+            verify_on_independent_surface(&mut gone, "tweet-1"),
+            HostedVerification::VerifiedGone
+        );
     }
 }

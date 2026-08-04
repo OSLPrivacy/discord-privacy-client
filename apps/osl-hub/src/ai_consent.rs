@@ -55,7 +55,10 @@ mod tests {
         assert!(consent.grant(CloudAutoScrubHighSensitivityAcknowledgement::all()));
         assert!(consent.permits_cloud_send(pro_active, true));
         consent.revoke();
-        assert!(!consent.permits_cloud_send(pro_active, true), "the next send observes revocation");
+        assert!(
+            !consent.permits_cloud_send(pro_active, true),
+            "the next send observes revocation"
+        );
         assert!(pro_active, "revocation must not disable Pro");
     }
 

@@ -79,7 +79,11 @@ fn the_default_feature_set_provisions_no_disposable_qa_account() {
         "the WhatsApp protected surface is part of the product; default = {default:?}"
     );
 
-    for provisioning_feature in ["whatsapp-qa-identity", "discord-qa-shell", "signal-qa-shell"] {
+    for provisioning_feature in [
+        "whatsapp-qa-identity",
+        "discord-qa-shell",
+        "signal-qa-shell",
+    ] {
         assert!(
             !default.contains(&provisioning_feature.to_owned()),
             "{provisioning_feature} provisions a disposable QA account at startup and must never \

@@ -904,10 +904,7 @@ where
                 removed_remotely.push(entry.object_id.clone());
             }
             DeletionAttempt::Retry => {
-                attempted_counts.push((
-                    entry.object_id.clone(),
-                    entry.attempts.saturating_add(1),
-                ));
+                attempted_counts.push((entry.object_id.clone(), entry.attempts.saturating_add(1)));
             }
         }
     }

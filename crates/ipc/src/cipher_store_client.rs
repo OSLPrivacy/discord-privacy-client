@@ -309,7 +309,11 @@ where
     let base = keyserver_base_url.trim_end_matches('/');
     let request_id = new_link_grant_request_id();
     let timestamp_ms = now_unix_millis();
-    let signature = sign(&canonical_link_grant_bytes(user_id, timestamp_ms, &request_id));
+    let signature = sign(&canonical_link_grant_bytes(
+        user_id,
+        timestamp_ms,
+        &request_id,
+    ));
     let response = http
         .post(format!("{base}/v1/link-grant"))
         .json(&serde_json::json!({
@@ -589,9 +593,14 @@ impl CipherStoreClient {
         object_class: BlobObjectClass,
         grant: Option<&StorageGrant>,
     ) -> Result<UploadResult, CipherStoreError> {
-        if !is_valid_ttl(ttl_seconds) { return Err(CipherStoreError::BadTtl(ttl_seconds)); }
+        if !is_valid_ttl(ttl_seconds) {
+            return Err(CipherStoreError::BadTtl(ttl_seconds));
+        }
         if body.is_empty() || body.len() > MAX_BLOB_BYTES {
-            return Err(CipherStoreError::BlobTooLarge { got: body.len(), max: MAX_BLOB_BYTES });
+            return Err(CipherStoreError::BlobTooLarge {
+                got: body.len(),
+                max: MAX_BLOB_BYTES,
+            });
         }
         if let Some(grant) = grant {
             grant.check_spendable_on_blob_upload(now_unix_seconds())?;
@@ -601,7 +610,9 @@ impl CipherStoreClient {
         // sees. Digesting the raw bytes here instead would upload a digest no
         // later fetch, receipt or burn could ever reproduce.
         let digest = |cap: &[u8]| hex_lower(&Sha256::digest(hex_lower(cap).as_bytes()));
-        let mut request = self.http.put(format!("{}/v1/blob", self.base_url))
+        let mut request = self
+            .http
+            .put(format!("{}/v1/blob", self.base_url))
             .header("content-type", "application/octet-stream")
             .header("x-osl-ttl-seconds", ttl_seconds.to_string())
             .header("x-osl-blob-id", hex_lower(blob_id));
@@ -622,7 +633,8 @@ impl CipherStoreClient {
             .header("x-osl-manage-digest", digest(&capabilities.manage_cap))
             .header("x-osl-delivery-tag", hex_lower(&capabilities.delivery_tag))
             .header("x-osl-object-class", object_class.header_value())
-            .body(body.to_vec()).send()?;
+            .body(body.to_vec())
+            .send()?;
         parse_upload_response(response, FETCH_TOKEN_BYTES * 2)
     }
 
@@ -701,22 +713,55 @@ impl CipherStoreClient {
 
     /// Acknowledges a durably persisted plaintext.  This is intentionally a
     /// separate verb from fetch: receipt authority cannot be used to fetch.
-    pub fn ack(&self, id_hex: &str, ack_cap: &[u8; FETCH_TOKEN_BYTES]) -> Result<(), CipherStoreError> {
-        self.no_content("POST", &format!("{}/v1/blob/{id_hex}/ack", self.base_url), "x-osl-ack-cap", ack_cap)
+    pub fn ack(
+        &self,
+        id_hex: &str,
+        ack_cap: &[u8; FETCH_TOKEN_BYTES],
+    ) -> Result<(), CipherStoreError> {
+        self.no_content(
+            "POST",
+            &format!("{}/v1/blob/{id_hex}/ack", self.base_url),
+            "x-osl-ack-cap",
+            ack_cap,
+        )
     }
 
     /// Permanently burns a copy with the sender-derived manage authority.
     /// The Worker is unconditionally idempotent (`204`), including unknown ids.
-    pub fn burn(&self, id_hex: &str, manage_cap: &[u8; FETCH_TOKEN_BYTES]) -> Result<(), CipherStoreError> {
-        self.no_content("DELETE", &format!("{}/v1/blob/{id_hex}", self.base_url), "x-osl-manage-cap", manage_cap)
+    pub fn burn(
+        &self,
+        id_hex: &str,
+        manage_cap: &[u8; FETCH_TOKEN_BYTES],
+    ) -> Result<(), CipherStoreError> {
+        self.no_content(
+            "DELETE",
+            &format!("{}/v1/blob/{id_hex}", self.base_url),
+            "x-osl-manage-cap",
+            manage_cap,
+        )
     }
 
-    fn no_content(&self, method: &str, url: &str, header: &str, cap: &[u8; FETCH_TOKEN_BYTES]) -> Result<(), CipherStoreError> {
-        let request = match method { "POST" => self.http.post(url), "DELETE" => self.http.delete(url), _ => unreachable!() };
+    fn no_content(
+        &self,
+        method: &str,
+        url: &str,
+        header: &str,
+        cap: &[u8; FETCH_TOKEN_BYTES],
+    ) -> Result<(), CipherStoreError> {
+        let request = match method {
+            "POST" => self.http.post(url),
+            "DELETE" => self.http.delete(url),
+            _ => unreachable!(),
+        };
         let response = request.header(header, hex_lower(cap)).send()?;
-        if response.status() == StatusCode::TOO_MANY_REQUESTS { return Err(CipherStoreError::RateLimited); }
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            return Err(CipherStoreError::RateLimited);
+        }
         if !response.status().is_success() {
-            return Err(CipherStoreError::Status { status: response.status().as_u16(), body: response.text().unwrap_or_default() });
+            return Err(CipherStoreError::Status {
+                status: response.status().as_u16(),
+                body: response.text().unwrap_or_default(),
+            });
         }
         Ok(())
     }
@@ -1077,11 +1122,18 @@ mod tests {
                 loop {
                     let count = stream.read(&mut chunk).unwrap();
                     raw.extend_from_slice(&chunk[..count]);
-                    let Some(headers_end) = raw.windows(4).position(|v| v == b"\r\n\r\n") else { continue };
+                    let Some(headers_end) = raw.windows(4).position(|v| v == b"\r\n\r\n") else {
+                        continue;
+                    };
                     let headers = String::from_utf8_lossy(&raw[..headers_end]);
-                    let length = headers.lines().find_map(|line| line.strip_prefix("content-length: "))
-                        .and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
-                    if raw.len() >= headers_end + 4 + length { break; }
+                    let length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if raw.len() >= headers_end + 4 + length {
+                        break;
+                    }
                 }
                 requests.push(String::from_utf8_lossy(&raw).to_ascii_lowercase());
                 let response = match index {
@@ -1094,13 +1146,31 @@ mod tests {
             requests
         });
         let client = CipherStoreClient::new(format!("http://{address}")).unwrap();
-        let caps = BlobCapabilities { fetch_cap: [1; 16], ack_cap: [2; 16], manage_cap: [3; 16], delivery_tag: [4; 16] };
+        let caps = BlobCapabilities {
+            fetch_cap: [1; 16],
+            ack_cap: [2; 16],
+            manage_cap: [3; 16],
+            delivery_tag: [4; 16],
+        };
         let upload = client
-            .upload_pointer(b"one", TTL_7D, &[9; 16], caps, BlobObjectClass::SingleAck, None)
+            .upload_pointer(
+                b"one",
+                TTL_7D,
+                &[9; 16],
+                caps,
+                BlobObjectClass::SingleAck,
+                None,
+            )
             .unwrap();
         assert_eq!(upload.id_hex, "00000000000000000000000000000000");
-        assert_eq!(client.fetch(&upload.id_hex, &caps.fetch_cap).unwrap(), b"one");
-        assert_eq!(client.fetch(&upload.id_hex, &caps.fetch_cap).unwrap(), b"one");
+        assert_eq!(
+            client.fetch(&upload.id_hex, &caps.fetch_cap).unwrap(),
+            b"one"
+        );
+        assert_eq!(
+            client.fetch(&upload.id_hex, &caps.fetch_cap).unwrap(),
+            b"one"
+        );
         client.ack(&upload.id_hex, &caps.ack_cap).unwrap();
         client.burn(&upload.id_hex, &caps.manage_cap).unwrap();
         let requests = server.join().unwrap();
@@ -1108,9 +1178,8 @@ mod tests {
         // form the Worker ever sees. Asserted as a value, not as a header
         // name: a digest over the raw bytes would still be present, and would
         // still be 64 hex chars, and no fetch would ever authenticate again.
-        let digest_of_hex = |cap: &[u8; FETCH_TOKEN_BYTES]| {
-            hex_lower(&Sha256::digest(hex_lower(cap).as_bytes()))
-        };
+        let digest_of_hex =
+            |cap: &[u8; FETCH_TOKEN_BYTES]| hex_lower(&Sha256::digest(hex_lower(cap).as_bytes()));
         // The Worker routes upload on PUT and nothing else; POST /v1/blob is
         // pinned at 404 by `cipher-store-cf/test/routes-and-healthz.test.ts`.
         assert!(
@@ -1181,7 +1250,14 @@ mod tests {
             delivery_tag: [4; 16],
         };
         client
-            .upload_pointer(b"one", TTL_72H, &[9; 16], caps, BlobObjectClass::SingleAck, None)
+            .upload_pointer(
+                b"one",
+                TTL_72H,
+                &[9; 16],
+                caps,
+                BlobObjectClass::SingleAck,
+                None,
+            )
             .unwrap();
         let request = server.join().unwrap();
         assert!(request.contains("x-osl-ttl-seconds: 259200"));
@@ -1252,7 +1328,8 @@ mod tests {
     /// module's own encoder, which would agree with itself no matter what.
     #[test]
     fn canonical_link_grant_bytes_match_the_keyserver_encoding() {
-        let bytes = canonical_link_grant_bytes("user-1", 1_753_500_600_000, "R".repeat(43).as_str());
+        let bytes =
+            canonical_link_grant_bytes("user-1", 1_753_500_600_000, "R".repeat(43).as_str());
         let mut expected = Vec::new();
         for field in [
             b"discord-privacy-client/link-grant/v1".as_slice(),
@@ -1296,9 +1373,7 @@ mod tests {
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let request = read_request(&mut stream);
-            let body = format!(
-                "{{\"authorization\":\"{served}\",\"expires_at\":{expires_at}}}"
-            );
+            let body = format!("{{\"authorization\":\"{served}\",\"expires_at\":{expires_at}}}");
             stream
                 .write_all(
                     format!(
@@ -1313,15 +1388,10 @@ mod tests {
 
         let http = Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap();
         let mut signed_over: Vec<u8> = Vec::new();
-        let grant = mint_storage_grant(
-            &http,
-            &format!("http://{address}"),
-            "user-1",
-            |message| {
-                signed_over = message.to_vec();
-                [7u8; 64]
-            },
-        )
+        let grant = mint_storage_grant(&http, &format!("http://{address}"), "user-1", |message| {
+            signed_over = message.to_vec();
+            [7u8; 64]
+        })
         .unwrap();
 
         let request = server.join().unwrap();
@@ -1394,7 +1464,10 @@ mod tests {
             "the Worker routes upload on PUT only; got: {}",
             request.lines().next().unwrap_or_default()
         );
-        assert!(request.contains(&format!("authorization: {}", authorization.to_ascii_lowercase())));
+        assert!(request.contains(&format!(
+            "authorization: {}",
+            authorization.to_ascii_lowercase()
+        )));
     }
 
     /// D-117's neighbour, and the reason this client checks the audience at
@@ -1471,7 +1544,10 @@ mod tests {
         ] {
             let error = StorageGrant::from_authorization(bad)
                 .expect_err("malformed grants must not be adopted");
-            assert!(matches!(error, CipherStoreError::GrantMalformed(_)), "{error}");
+            assert!(
+                matches!(error, CipherStoreError::GrantMalformed(_)),
+                "{error}"
+            );
             assert!(!error.to_string().contains(bad), "{error}");
         }
     }

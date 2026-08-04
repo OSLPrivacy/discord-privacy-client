@@ -84,14 +84,22 @@ mod tests {
     fn requires_avx2_and_the_measured_core_floor() {
         assert_eq!(
             admit_model(
-                MachineCapabilities { avx2: false, physical_cores: 8, free_memory_bytes: u64::MAX },
+                MachineCapabilities {
+                    avx2: false,
+                    physical_cores: 8,
+                    free_memory_bytes: u64::MAX
+                },
                 REQUIREMENTS,
             ),
             ModelAdmission::MissingAvx2
         );
         assert_eq!(
             admit_model(
-                MachineCapabilities { avx2: true, physical_cores: 2, free_memory_bytes: u64::MAX },
+                MachineCapabilities {
+                    avx2: true,
+                    physical_cores: 2,
+                    free_memory_bytes: u64::MAX
+                },
                 REQUIREMENTS,
             ),
             ModelAdmission::InsufficientCores
@@ -105,7 +113,8 @@ mod tests {
                 MachineCapabilities {
                     avx2: true,
                     physical_cores: 4,
-                    free_memory_bytes: REQUIREMENTS.peak_working_set_bytes + super::DESKTOP_MEMORY_RESERVE_BYTES,
+                    free_memory_bytes: REQUIREMENTS.peak_working_set_bytes
+                        + super::DESKTOP_MEMORY_RESERVE_BYTES,
                 },
                 REQUIREMENTS,
             ),

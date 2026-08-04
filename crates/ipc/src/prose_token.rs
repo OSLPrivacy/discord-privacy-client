@@ -585,9 +585,9 @@ mod tests {
     // destination's authority split, which the bridge send path does not yet
     // exercise. They are the standing proof that Phase 2 has something to
     // return to, so they must keep passing.
+    use super::*;
     use crate::transport;
     use crypto::pointer::{derive_capabilities, derive_fetch_authority, Pointer};
-    use super::*;
 
     /// The retired scope-derived capability key. It is no longer part of any
     /// send or receive path -- that is the point of this migration -- but the
@@ -622,7 +622,7 @@ mod tests {
         assert!(blob_id_hex_to_bytes("0774c922df450477").is_err());
         assert!(blob_id_hex_to_bytes("0707070707070707070707070707070").is_err()); // 31
         assert!(blob_id_hex_to_bytes("070707070707070707070707070707070").is_err()); // 33
-        // Uppercase is not the canonical form the store indexes on.
+                                                                                     // Uppercase is not the canonical form the store indexes on.
         assert!(blob_id_hex_to_bytes("0707070707070707070707070707070A").is_err());
     }
 
@@ -852,7 +852,12 @@ mod b0_01_scope_isolation {
     use crate::scope::{ScopeInput, ScopeKind};
 
     fn scope(id: &str) -> ScopeInput {
-        ScopeInput { kind: ScopeKind::Dm, id: id.to_string(), server_id: None, channel_id: None }
+        ScopeInput {
+            kind: ScopeKind::Dm,
+            id: id.to_string(),
+            server_id: None,
+            channel_id: None,
+        }
     }
 
     /// The scope cipher permutes word choice, not payload bits: a cover text

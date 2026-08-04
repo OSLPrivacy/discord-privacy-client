@@ -909,8 +909,7 @@ pub trait Uia2Syscalls {
 
     /// Run Chromium's accessibility handshake at this window. `Ok(false)` means
     /// the handshake was refused, which is not a timeout.
-    fn wake_chromium(&self, hwnd: isize, deadline: Uia2Deadline)
-        -> Result<bool, Uia2CallTimeout>;
+    fn wake_chromium(&self, hwnd: isize, deadline: Uia2Deadline) -> Result<bool, Uia2CallTimeout>;
 
     fn element_count(
         &self,
@@ -1177,9 +1176,12 @@ pub fn resolve_uia2_composer(
 /// smuggled into the carrier *is* the send. Refused at the mechanism, before
 /// anything reaches a live composer.
 pub fn uia2_carrier_carries_submit(carrier: &str) -> bool {
-    carrier
-        .chars()
-        .any(|character| matches!(character, '\n' | '\r' | '\u{000b}' | '\u{2028}' | '\u{2029}'))
+    carrier.chars().any(|character| {
+        matches!(
+            character,
+            '\n' | '\r' | '\u{000b}' | '\u{2028}' | '\u{2029}'
+        )
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1301,8 +1303,9 @@ pub fn clear_uia2_composer(
 #[cfg(target_os = "windows")]
 pub(crate) mod win32 {
     use super::{
-        call_with_timeout, same_process_name, webview2_host_exe_name, Uia2CallTimeout, Uia2Deadline,
-        Uia2Editable, Uia2OwnedWindow, Uia2Syscalls, Uia2TreeRoute, WEBVIEW2_PROCESS_NAME,
+        call_with_timeout, same_process_name, webview2_host_exe_name, Uia2CallTimeout,
+        Uia2Deadline, Uia2Editable, Uia2OwnedWindow, Uia2Syscalls, Uia2TreeRoute,
+        WEBVIEW2_PROCESS_NAME,
     };
 
     use ::windows::core::Interface;
@@ -1317,8 +1320,8 @@ pub(crate) mod win32 {
     };
     use ::windows::Win32::UI::Accessibility::{
         CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationValuePattern,
-        TreeScope_Subtree, UIA_DocumentControlTypeId, UIA_EditControlTypeId,
-        UIA_TextControlTypeId, UIA_ValuePatternId,
+        TreeScope_Subtree, UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_TextControlTypeId,
+        UIA_ValuePatternId,
     };
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1647,12 +1650,7 @@ pub(crate) mod win32 {
         match scope {
             Uia2EnumerationScope::Desktop => {
                 let mut tops = Vec::<isize>::new();
-                unsafe {
-                    EnumWindows(
-                        Some(collect_window),
-                        &mut tops as *mut Vec<isize> as isize,
-                    )
-                };
+                unsafe { EnumWindows(Some(collect_window), &mut tops as *mut Vec<isize> as isize) };
                 for top in tops {
                     handles.push(top);
                     descendants_of(top, &mut handles);
@@ -1687,9 +1685,7 @@ pub(crate) mod win32 {
         let host_exe_name = same_process_name(&name, WEBVIEW2_PROCESS_NAME)
             .then(|| command_line_of(process_id))
             .flatten()
-            .and_then(|command_line| {
-                webview2_host_exe_name(&command_line).map(str::to_owned)
-            });
+            .and_then(|command_line| webview2_host_exe_name(&command_line).map(str::to_owned));
         ProcessFacts {
             name,
             parent_process_id: parent_process_id_of(process_id),
@@ -1764,7 +1760,10 @@ pub(crate) mod win32 {
         }
     }
 
-    fn subtree(root: &IUIAutomationElement, automation: &IUIAutomation) -> Vec<IUIAutomationElement> {
+    fn subtree(
+        root: &IUIAutomationElement,
+        automation: &IUIAutomation,
+    ) -> Vec<IUIAutomationElement> {
         let Ok(condition) = (unsafe { automation.CreateTrueCondition() }) else {
             return Vec::new();
         };
@@ -1939,8 +1938,7 @@ pub(crate) mod win32 {
                 let Some(automation) = automation() else {
                     return false;
                 };
-                let Some(found) =
-                    element_by_runtime_id(&automation, hwnd, route, &runtime_id)
+                let Some(found) = element_by_runtime_id(&automation, hwnd, route, &runtime_id)
                 else {
                     return false;
                 };
@@ -2433,8 +2431,8 @@ pub(crate) mod tests {
             if self.submit_shaped_on_set {
                 self.submit_shaped.set(self.submit_shaped.get() + 1);
             }
-            *self.value.borrow_mut() = (!value.is_empty())
-                .then(|| format!("{value}{}", self.readback_suffix));
+            *self.value.borrow_mut() =
+                (!value.is_empty()).then(|| format!("{value}{}", self.readback_suffix));
             Ok(true)
         }
 
@@ -2599,7 +2597,12 @@ pub(crate) mod tests {
                 743,
             ),
             (
-                Uia2WindowPlan::chromium_renderer_child("Signal", "Signal", WAIT_MS, CALL_TIMEOUT_MS),
+                Uia2WindowPlan::chromium_renderer_child(
+                    "Signal",
+                    "Signal",
+                    WAIT_MS,
+                    CALL_TIMEOUT_MS,
+                ),
                 signal_graph(),
                 0x3002,
                 49,
@@ -2664,7 +2667,10 @@ pub(crate) mod tests {
         let acquired = acquire_uia2_window(plan, &host).expect("Telegram acquires");
         assert_eq!(acquired.settled_ms, 0);
         assert!(!acquired.woke);
-        assert!(host.settles.borrow().is_empty(), "Qt needs no settle at all");
+        assert!(
+            host.settles.borrow().is_empty(),
+            "Qt needs no settle at all"
+        );
 
         let plan = Uia2WindowPlan::sibling_chromium_renderer(
             "WhatsApp",
@@ -3144,7 +3150,9 @@ pub(crate) mod tests {
                 90_000,
                 PROBE_CALL_TIMEOUT_MS,
             ),
-            other => panic!("OSL_UIA2_PROBE={other} is not one of discord|telegram|signal|whatsapp"),
+            other => {
+                panic!("OSL_UIA2_PROBE={other} is not one of discord|telegram|signal|whatsapp")
+            }
         };
 
         let host = win32::Uia2Win32Host::desktop();
@@ -3165,7 +3173,10 @@ pub(crate) mod tests {
         eprintln!(
             "{provider}: editable={} writable={}",
             editables.len(),
-            editables.iter().filter(|element| element.writable()).count()
+            editables
+                .iter()
+                .filter(|element| element.writable())
+                .count()
         );
         for element in &editables {
             eprintln!(
@@ -3680,12 +3691,9 @@ pub(crate) mod tests {
         // And it is ambiguity that refuses, not the mere presence of a second
         // window: drop the impostor and the same plan binds WhatsApp's host.
         assert_eq!(
-            resolve_uia2_window(
-                measured_whatsapp_plan(),
-                &two_webview2_hosts_decoy_larger()
-            )
-            .expect("one owned host resolves")
-            .bound_hwnd,
+            resolve_uia2_window(measured_whatsapp_plan(), &two_webview2_hosts_decoy_larger())
+                .expect("one owned host resolves")
+                .bound_hwnd,
             MEASURED_RENDERER_HWND
         );
     }
@@ -3834,7 +3842,9 @@ pub(crate) mod tests {
             Some("WhatsApp.Root.exe")
         );
         assert_eq!(
-            webview2_host_exe_name("msedgewebview2.exe --webview-exe-name=SearchApp.exe --type=gpu"),
+            webview2_host_exe_name(
+                "msedgewebview2.exe --webview-exe-name=SearchApp.exe --type=gpu"
+            ),
             Some("SearchApp.exe")
         );
         // Last argument, no trailing whitespace.
@@ -3844,7 +3854,9 @@ pub(crate) mod tests {
         );
         // Quoted, because a hosting application's file name may contain spaces.
         assert_eq!(
-            webview2_host_exe_name("msedgewebview2.exe --webview-exe-name=\"My App.exe\" --type=gpu"),
+            webview2_host_exe_name(
+                "msedgewebview2.exe --webview-exe-name=\"My App.exe\" --type=gpu"
+            ),
             Some("My App.exe")
         );
         // Absent and empty are both "no corroboration", never a match.
@@ -3867,7 +3879,10 @@ pub(crate) mod tests {
             crate::native_whatsapp_adapter::WHATSAPP_DESKTOP_PROCESS_NAME,
             MEASURED_SHELL_PROCESS
         );
-        assert!(same_process_name(MEASURED_SHELL_IMAGE, MEASURED_SHELL_PROCESS));
+        assert!(same_process_name(
+            MEASURED_SHELL_IMAGE,
+            MEASURED_SHELL_PROCESS
+        ));
         assert!(
             !same_process_name(MEASURED_SHELL_IMAGE, "WhatsApp"),
             "`WhatsApp` matching `WhatsApp.Root.exe` is the trap, not the fix"
@@ -3876,7 +3891,10 @@ pub(crate) mod tests {
         // The corroboration compares two OBSERVED names, both of which carry
         // `.exe`. `same_process_name` strips only one side, so using it here
         // classified WhatsApp's own WebView2 as `Contradicted` and refused.
-        assert!(!same_process_name(MEASURED_SHELL_IMAGE, MEASURED_SHELL_IMAGE));
+        assert!(!same_process_name(
+            MEASURED_SHELL_IMAGE,
+            MEASURED_SHELL_IMAGE
+        ));
         assert!(same_image_name(MEASURED_SHELL_IMAGE, MEASURED_SHELL_IMAGE));
         assert!(same_image_name("WhatsApp.Root.EXE", "whatsapp.root.exe"));
         assert!(same_image_name("WhatsApp.Root", MEASURED_SHELL_IMAGE));
@@ -3927,8 +3945,7 @@ pub(crate) mod tests {
 
         let discord = discord_plan();
         let discord_host = RecordedHost::new(discord_graph(), 696).chromium(2);
-        let acquired =
-            acquire_uia2_window(discord, &discord_host).expect("Discord still acquires");
+        let acquired = acquire_uia2_window(discord, &discord_host).expect("Discord still acquires");
         assert_eq!(acquired.window.bound_hwnd, 0x1001);
         assert_eq!(acquired.window.tree_route, Uia2TreeRoute::MsaaBridge);
     }

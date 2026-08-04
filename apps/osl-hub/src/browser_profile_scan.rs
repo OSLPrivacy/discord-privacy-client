@@ -1075,7 +1075,10 @@ mod tests {
             .execute("CREATE TABLE urls (url TEXT NOT NULL)", [])
             .unwrap();
         connection
-            .execute("INSERT INTO urls (url) VALUES (?1)", ["https://example.test/"])
+            .execute(
+                "INSERT INTO urls (url) VALUES (?1)",
+                ["https://example.test/"],
+            )
             .unwrap();
         drop(connection);
         let grant = state

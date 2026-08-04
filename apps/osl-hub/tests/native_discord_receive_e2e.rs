@@ -1388,7 +1388,9 @@ fn first_party_osl_chat_reopen_order_assertions_remain_present() {
     );
     assert!(
         source
-            .matches("the reopen sweep preserves authenticated sender order despite shuffled arrival")
+            .matches(
+                "the reopen sweep preserves authenticated sender order despite shuffled arrival"
+            )
             .count()
             >= 2,
         "the shuffled-arrival reopen ordering assertion must stay live"

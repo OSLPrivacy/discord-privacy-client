@@ -58,7 +58,8 @@ pub const fn object_class() -> ObjectClass {
 /// sealed under that recipient's own key, so another member cannot recover
 /// the capability even though every member downloads the same blob.
 pub fn seal(entries: &[ManifestEntry<'_>]) -> Result<Vec<u8>, GroupManifestError> {
-    let count = u16::try_from(entries.len()).map_err(|_| GroupManifestError::RecipientCount(u16::MAX as usize))?;
+    let count = u16::try_from(entries.len())
+        .map_err(|_| GroupManifestError::RecipientCount(u16::MAX as usize))?;
     if count == 0 {
         return Err(GroupManifestError::RecipientCount(0));
     }
@@ -75,7 +76,12 @@ pub fn seal(entries: &[ManifestEntry<'_>]) -> Result<Vec<u8>, GroupManifestError
     }
 
     let raw_len = HEADER_BYTES
-        .checked_add(entries.len().checked_mul(SEALED_ENTRY_BYTES).ok_or(GroupManifestError::TooLarge)?)
+        .checked_add(
+            entries
+                .len()
+                .checked_mul(SEALED_ENTRY_BYTES)
+                .ok_or(GroupManifestError::TooLarge)?,
+        )
         .ok_or(GroupManifestError::TooLarge)?;
     if raw_len > 64 * 1024 {
         return Err(GroupManifestError::TooLarge);
@@ -111,7 +117,11 @@ pub fn open_for(
 ) -> Result<[u8; CAPABILITY_BYTES], GroupManifestError> {
     let count = parse_count(manifest)?;
     let entries_end = HEADER_BYTES
-        .checked_add(count.checked_mul(SEALED_ENTRY_BYTES).ok_or(GroupManifestError::Malformed)?)
+        .checked_add(
+            count
+                .checked_mul(SEALED_ENTRY_BYTES)
+                .ok_or(GroupManifestError::Malformed)?,
+        )
         .ok_or(GroupManifestError::Malformed)?;
     if entries_end > manifest.len() {
         return Err(GroupManifestError::Malformed);
@@ -121,14 +131,20 @@ pub fn open_for(
         .chunks_exact(SEALED_ENTRY_BYTES)
         .enumerate()
     {
-        let nonce = Nonce::from_bytes(entry[..aead::NONCE_SIZE].try_into().expect("fixed nonce slice"));
+        let nonce = Nonce::from_bytes(
+            entry[..aead::NONCE_SIZE]
+                .try_into()
+                .expect("fixed nonce slice"),
+        );
         if let Ok(plaintext) = aead::open(
             &recipient_key.0,
             &nonce,
             &entry_aad(u16::try_from(count).expect("parsed count fits u16"), index),
             &entry[aead::NONCE_SIZE..],
         ) {
-            return plaintext.try_into().map_err(|_| GroupManifestError::Malformed);
+            return plaintext
+                .try_into()
+                .map_err(|_| GroupManifestError::Malformed);
         }
     }
     Err(GroupManifestError::Authentication)
@@ -168,9 +184,16 @@ mod tests {
         let alice_cap = [0x11; CAPABILITY_BYTES];
         let bob_cap = [0x22; CAPABILITY_BYTES];
         let manifest = seal(&[
-            ManifestEntry { recipient_key: &alice, capability: alice_cap },
-            ManifestEntry { recipient_key: &bob, capability: bob_cap },
-        ]).expect("manifest seals");
+            ManifestEntry {
+                recipient_key: &alice,
+                capability: alice_cap,
+            },
+            ManifestEntry {
+                recipient_key: &bob,
+                capability: bob_cap,
+            },
+        ])
+        .expect("manifest seals");
 
         // Each member gets only its own per-copy capability.  If sealing is
         // changed to use one group key, Bob's entry either fails to open or
@@ -179,7 +202,10 @@ mod tests {
         assert_eq!(open_for(&manifest, &bob).unwrap(), bob_cap);
 
         let mallory = RecipientManifestKey::from_bytes([0xc3; aead::KEY_SIZE]);
-        assert_eq!(open_for(&manifest, &mallory), Err(GroupManifestError::Authentication));
+        assert_eq!(
+            open_for(&manifest, &mallory),
+            Err(GroupManifestError::Authentication)
+        );
 
         // The class is part of the upload declaration, not an inference from
         // ciphertext. T6-W5 makes its ACK a 204 no-op; therefore an ACK by

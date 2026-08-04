@@ -211,7 +211,11 @@ impl RealtimeClient {
     /// Capture precisely the state a reconnect needs. Callers give the fresh
     /// per-socket nonce; neither this state machine nor its snapshot has an
     /// account or durable connection identifier.
-    pub fn reconnect_contract(&self, session_id: SessionId, cursor: AcknowledgementCursor) -> ReconnectContract {
+    pub fn reconnect_contract(
+        &self,
+        session_id: SessionId,
+        cursor: AcknowledgementCursor,
+    ) -> ReconnectContract {
         ReconnectContract {
             session_id,
             cursor,
@@ -222,7 +226,8 @@ impl RealtimeClient {
     /// Restore the complete local tag set after a socket close. Frame cursors
     /// deliberately remain reset for the new session.
     pub fn restore_subscriptions(&mut self, contract: &ReconnectContract) {
-        self.subscriptions.replace_tags(contract.subscriptions.iter().copied());
+        self.subscriptions
+            .replace_tags(contract.subscriptions.iter().copied());
     }
 
     /// The one outbound realtime write: a constant-sized cover frame paired
@@ -266,10 +271,11 @@ impl RealtimeClient {
         // `blob_id` is an unauthorised hint. Only a pointer already held before
         // this frame turns it into locally scheduled bearer-authenticated work.
         if let Some(pointer) = self.pointers.get(&wakeup.1).cloned() {
-            self.scheduled_fetches.push_back(ScheduledFetch::Authorized(AuthorizedFetch {
-                blob_id: wakeup.1,
-                pointer,
-            }));
+            self.scheduled_fetches
+                .push_back(ScheduledFetch::Authorized(AuthorizedFetch {
+                    blob_id: wakeup.1,
+                    pointer,
+                }));
         } else {
             self.scheduled_fetches
                 .push_back(ScheduledFetch::Decoy(DecoyFetch::random()));

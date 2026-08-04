@@ -95,7 +95,11 @@ fn request() -> DraftRequest<'static> {
 
 fn cpu_seconds() -> Option<f64> {
     let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
-    let fields = stat.rsplit_once(") ")?.1.split_whitespace().collect::<Vec<_>>();
+    let fields = stat
+        .rsplit_once(") ")?
+        .1
+        .split_whitespace()
+        .collect::<Vec<_>>();
     // `utime` and `stime` are fields 14/15; after removing pid+comm, they are
     // indexes 11/12.
     let ticks = fields.get(11)?.parse::<f64>().ok()? + fields.get(12)?.parse::<f64>().ok()?;
@@ -132,7 +136,9 @@ fn t13_tl1_reports_wall_cpu_and_peak_rss_with_a_strict_budget() {
     let started = Instant::now();
 
     for _ in 0..SAMPLE_COUNT {
-        let mut model = MeasuredAdapter { pack: trusted_pack() };
+        let mut model = MeasuredAdapter {
+            pack: trusted_pack(),
+        };
         engine
             .prepare(&mut model, request(), &CancellationToken::default())
             .expect("the bounded adapter produces a carrier draft");
@@ -147,9 +153,15 @@ fn t13_tl1_reports_wall_cpu_and_peak_rss_with_a_strict_budget() {
         "T13-L1 measurement: wall={wall_per_carrier:?}/carrier cpu={cpu_per_carrier:?}/carrier peak_rss={peak_rss:?} bytes"
     );
 
-    assert!(wall_per_carrier <= MAX_WALL_PER_CARRIER, "wall-clock budget exceeded");
+    assert!(
+        wall_per_carrier <= MAX_WALL_PER_CARRIER,
+        "wall-clock budget exceeded"
+    );
     if let Some(cpu_per_carrier) = cpu_per_carrier {
-        assert!(cpu_per_carrier <= MAX_CPU_PER_CARRIER, "CPU budget exceeded");
+        assert!(
+            cpu_per_carrier <= MAX_CPU_PER_CARRIER,
+            "CPU budget exceeded"
+        );
     }
     if let Some(peak_rss) = peak_rss {
         assert!(peak_rss <= MAX_PEAK_RSS_BYTES, "peak RSS budget exceeded");

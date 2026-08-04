@@ -33,13 +33,21 @@ pub struct WarmModel<M> {
 
 impl<M: ResidentModel> WarmModel<M> {
     pub fn new(max_working_set_bytes: u64, idle_after: Duration) -> Self {
-        Self { model: None, max_working_set_bytes, idle_after, last_used: None, loading: false }
+        Self {
+            model: None,
+            max_working_set_bytes,
+            idle_after,
+            last_used: None,
+            loading: false,
+        }
     }
 
     /// Mark that a background worker has begun loading.  A send sees Loading
     /// and must use a ready pool entry or the word-bank fallback.
     pub fn begin_load(&mut self) -> bool {
-        if self.model.is_some() || self.loading { return false; }
+        if self.model.is_some() || self.loading {
+            return false;
+        }
         self.loading = true;
         true
     }
@@ -49,13 +57,17 @@ impl<M: ResidentModel> WarmModel<M> {
     /// become resident.
     pub fn finish_load(&mut self, model: M, now: Instant) -> Result<(), M> {
         self.loading = false;
-        if model.working_set_bytes() > self.max_working_set_bytes { return Err(model); }
+        if model.working_set_bytes() > self.max_working_set_bytes {
+            return Err(model);
+        }
         self.model = Some(model);
         self.last_used = Some(now);
         Ok(())
     }
 
-    pub fn fail_load(&mut self) { self.loading = false; }
+    pub fn fail_load(&mut self) {
+        self.loading = false;
+    }
 
     /// This is the only access generation has. It cannot load weights.
     pub fn for_generation(&mut self, now: Instant) -> Resident<'_, M> {
@@ -63,15 +75,28 @@ impl<M: ResidentModel> WarmModel<M> {
             self.last_used = Some(now);
             return Resident::Ready(model);
         }
-        if self.loading { Resident::Loading } else { Resident::Unavailable }
+        if self.loading {
+            Resident::Loading
+        } else {
+            Resident::Unavailable
+        }
     }
 
     /// Drop a dormant model so an unused optional feature does not retain its
     /// working set indefinitely. Returns whether memory was released.
     pub fn release_if_idle(&mut self, now: Instant) -> bool {
-        let idle = self.last_used.is_some_and(|used| now.saturating_duration_since(used) >= self.idle_after);
-        if idle && self.model.take().is_some() { self.last_used = None; true } else { false }
+        let idle = self
+            .last_used
+            .is_some_and(|used| now.saturating_duration_since(used) >= self.idle_after);
+        if idle && self.model.take().is_some() {
+            self.last_used = None;
+            true
+        } else {
+            false
+        }
     }
 
-    pub fn is_resident(&self) -> bool { self.model.is_some() }
+    pub fn is_resident(&self) -> bool {
+        self.model.is_some()
+    }
 }

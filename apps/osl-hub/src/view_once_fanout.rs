@@ -91,7 +91,6 @@ mod tests {
             recipient_id: "recipient".to_owned(),
             device_id: "device-a".to_owned(),
         };
-        assert!(fan_out_view_once(vec![target.clone(), target], |_| Ok::<_, String>(()))
-            .is_err());
+        assert!(fan_out_view_once(vec![target.clone(), target], |_| Ok::<_, String>(())).is_err());
     }
 }

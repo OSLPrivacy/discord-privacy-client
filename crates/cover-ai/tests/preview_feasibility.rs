@@ -19,6 +19,12 @@ fn a_preview_without_the_final_pointer_cannot_be_the_final_carrier() {
     let final_carrier = encode_token(&cipher, scope, &uploaded_pointer);
 
     assert_ne!(preview, final_carrier, "a carrier changes with its pointer");
-    assert_eq!(decode_token(&cipher, scope, &preview), Some(preview_pointer));
-    assert_eq!(decode_token(&cipher, scope, &final_carrier), Some(uploaded_pointer));
+    assert_eq!(
+        decode_token(&cipher, scope, &preview),
+        Some(preview_pointer)
+    );
+    assert_eq!(
+        decode_token(&cipher, scope, &final_carrier),
+        Some(uploaded_pointer)
+    );
 }

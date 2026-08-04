@@ -22,9 +22,7 @@ fn render_cover(_tier: Tier, payload: &[bool]) -> String {
 
 #[test]
 fn visible_carrier_bytes_do_not_reveal_the_subscription_tier() {
-    let payload: Vec<bool> = (0..96)
-        .map(|bit| bit % 3 == 0 || bit % 7 == 0)
-        .collect();
+    let payload: Vec<bool> = (0..96).map(|bit| bit % 3 == 0 || bit % 7 == 0).collect();
 
     let free_cover = render_cover(Tier::Free, &payload);
     let pro_cover = render_cover(Tier::Pro, &payload);

@@ -2330,9 +2330,17 @@ fn constant_time_eq_32(left: &[u8; 32], right: &[u8; 32]) -> bool {
     difference == 0
 }
 
-fn ensure_friend_can_be_enabled(metadata: &PersonMetadata, people_version: u32) -> Result<(), String> {
-    let pending_key_change = metadata.pending_ed25519_public.is_some() || metadata.pending_key_bundle.is_some();
-    if !peer_is_verified(people_version, metadata.safety_number_verified, pending_key_change) {
+fn ensure_friend_can_be_enabled(
+    metadata: &PersonMetadata,
+    people_version: u32,
+) -> Result<(), String> {
+    let pending_key_change =
+        metadata.pending_ed25519_public.is_some() || metadata.pending_key_bundle.is_some();
+    if !peer_is_verified(
+        people_version,
+        metadata.safety_number_verified,
+        pending_key_change,
+    ) {
         if pending_key_change {
             return Err(
                 "Resolve this friend's pending key change before enabling encryption".to_owned(),
@@ -2408,12 +2416,9 @@ pub fn set_scope_security(
     }
     let ttl_path = dir.join("scope_ttl.json");
     let mut ttl_file = load_encrypted_json::<ipc::scope_ttl_file::ScopeTtlFile>(&ttl_path)?;
-    let effective_ttl = ipc::scope_ttl_file::set_scope_ttl(
-        &mut ttl_file,
-        storage_key.clone(),
-        ttl_seconds,
-    )
-    .map_err(|error| format!("OSL scope TTL is invalid: {error}"))?;
+    let effective_ttl =
+        ipc::scope_ttl_file::set_scope_ttl(&mut ttl_file, storage_key.clone(), ttl_seconds)
+            .map_err(|error| format!("OSL scope TTL is invalid: {error}"))?;
     write_encrypted_json(&ttl_path, &ttl_file)?;
     prefs.version = 2;
     prefs
@@ -2485,9 +2490,10 @@ pub fn burn_scope(
             Some(store) => {
                 let mut rows = 0usize;
                 for channel_id in &channels {
-                    rows = rows.saturating_add(store.delete_messages_in_channel(channel_id).map_err(
-                        |_| "OSL scope history could not be securely deleted".to_owned(),
-                    )?);
+                    rows =
+                        rows.saturating_add(store.delete_messages_in_channel(channel_id).map_err(
+                            |_| "OSL scope history could not be securely deleted".to_owned(),
+                        )?);
                 }
                 rows
             }

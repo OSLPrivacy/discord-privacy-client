@@ -1285,14 +1285,21 @@ impl TryFrom<SenderChainOnDisk> for SenderChain {
                     Vec::new(),
                 )
             } else {
-                let root = RotationRoot::from_bytes(decode_32(&d.rotation_root_b64, "sender.rotation_root")?);
+                let root = RotationRoot::from_bytes(decode_32(
+                    &d.rotation_root_b64,
+                    "sender.rotation_root",
+                )?);
                 let members = d
                     .last_known_members_b64
                     .iter()
-                    .map(|member| STANDARD.decode(member).map_err(|source| SenderKeyPersistError::Base64 {
-                        field: "sender.last_known_members",
-                        source,
-                    }))
+                    .map(|member| {
+                        STANDARD
+                            .decode(member)
+                            .map_err(|source| SenderKeyPersistError::Base64 {
+                                field: "sender.last_known_members",
+                                source,
+                            })
+                    })
                     .collect::<std::result::Result<Vec<_>, _>>()?;
                 (
                     d.chain_id,
@@ -1306,7 +1313,8 @@ impl TryFrom<SenderChainOnDisk> for SenderChain {
         let mut ck_n = derive_ck_0(&rotation_root, chain_id)
             .map_err(|_| SenderKeyPersistError::SenderChainIdOverflow)?;
         for _ in 0..n {
-            ck_n.advance().map_err(|_| SenderKeyPersistError::SenderChainIdOverflow)?;
+            ck_n.advance()
+                .map_err(|_| SenderKeyPersistError::SenderChainIdOverflow)?;
         }
         Ok(SenderChain {
             physical_device_id,
