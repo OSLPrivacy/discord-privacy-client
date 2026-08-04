@@ -183,7 +183,7 @@ import { peopleReverificationNoticeMarkup } from "./people-reverification-notice
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
 import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
-import { initialAccountRecoveryFlow, recoveryScreenMarkup } from "./account-recovery";
+import { addLegacyPhraseWrap, initialAccountRecoveryFlow, legacyMarkerRecoveryRefused, legacyRecoveryMigrationMarkup, recoveryScreenMarkup, submitRecoveredPassword, submitRecoveryPhrase, type AccountRecoveryDependencies, type AccountRecoveryFlow, type LegacyRecoveryMigration, type RecoveryMigrationDependencies } from "./account-recovery";
 import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
 import { resumeOnboardingRoute } from "./onboarding-resume";
 import { createRecoveryKitUnsavedFlag } from "./recovery-kit-flag";
@@ -341,6 +341,31 @@ let autoScrubFleetStatus: AutoScrubFleetStatus | null = null;
 let autoScrubStatusLoading = false;
 let autoScrubStopPending = false;
 let passwordRoleStatus: HubPasswordRoleStatus | null = null;
+// "Forgot password?" (the `data-onboarding="account-recovery"` link on the
+// unlock card) rendered `recoveryScreenMarkup(initialAccountRecoveryFlow)` --
+// always the *initial* flow, with no submit handler on either form. Typing a
+// recovery phrase and pressing "Verify phrase" did nothing at all, silently.
+// The flow now lives here so the already-specified state machine in
+// account-recovery.ts actually runs and its refusals reach the screen.
+let accountRecoveryFlow: AccountRecoveryFlow = initialAccountRecoveryFlow;
+let legacyRecoveryMigration: LegacyRecoveryMigration | null = null;
+/**
+ * There is no native verifier behind this yet: no Tauri command exists that
+ * turns a password recovery phrase into a recovery token, and none that sets a
+ * password from one (see the task log for L-ATTR). The shipping dependency
+ * therefore fails closed with a message the user can act on, exactly like the
+ * "not available in this build" wording the alternate-password roles use, and
+ * introduces no IPC. Tests inject a real one through `__oslHubUiTest`.
+ */
+const passwordRecoveryUnavailable = "Password recovery is not available in this build. Your password was not changed.";
+let accountRecoveryDependencies: AccountRecoveryDependencies = {
+  verifyPhrase: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
+  setPassword: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
+};
+let recoveryMigrationDependencies: RecoveryMigrationDependencies = {
+  addPhraseWrap: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
+  freshStart: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
+};
 let setup: SetupState = parseSetupState(null);
 let route: Route = "onboarding";
 let onboardingRoute: OnboardingRoute = "welcome";
@@ -1769,7 +1794,13 @@ function onboardingContent(): string {
 
   if (onboardingRoute === "create") return identityPasswordForm("Create a password", "Create account", "setup");
   if (onboardingRoute === "unlock") return identityPasswordForm("Unlock OSL", "Unlock", "unlock");
-  if (onboardingRoute === "account-recovery") return recoveryScreenMarkup(initialAccountRecoveryFlow);
+  if (onboardingRoute === "account-recovery") {
+    // A legacy marker refusal is not a generic reset failure: it keeps its own
+    // migration screen, which is the only place the two repair paths exist.
+    return legacyRecoveryMigration
+      ? legacyRecoveryMigrationMarkup(legacyRecoveryMigration)
+      : recoveryScreenMarkup(accountRecoveryFlow);
+  }
   if (onboardingRoute === "import") return importIdentityForm();
   if (onboardingRoute === "recovery") return recoveryContent();
   if (onboardingRoute === "tutorial") return tutorialContent();
@@ -2211,16 +2242,12 @@ function bindSavedAccountControls(): void {
     persistDetectedAccountChoices();
     render();
   }));
-  document.querySelectorAll<HTMLButtonElement>("[data-saved-account-mode]").forEach((button) => button.addEventListener("click", () => {
-    savedAccountMode = parseSavedAccountMode(button.dataset.savedAccountMode ?? null);
-    if (savedAccountMode === "use" && savedNativeApps.size === 0) {
-      savedNativeApps = new Set(nativeApps
-        .filter((app) => supportedNativeAppIds.has(app.id) && app.availability === "installed" && app.isolatedProfileAvailable)
-        .map((app) => app.id));
-    }
-    persistSavedAccountPreferences();
-    render();
-  }));
+  // A `[data-saved-account-mode]` click binding used to sit here. No markup in
+  // this build -- or anywhere else in the repo -- writes that attribute, so the
+  // listener could never run; `savedAccountMode` is now driven entirely by the
+  // per-app `[data-saved-native]` choices below and by the launch paths. Kept as
+  // a note rather than a binding, because a listener with no control is not a
+  // feature, and ledger 1 reported it as a live selector waiting on dead markup.
   document.querySelectorAll<HTMLInputElement>("[data-saved-native]").forEach((input) => input.addEventListener("change", () => {
     const appId = input.dataset.savedNative as NativeAppId;
     if (!supportedNativeAppIds.has(appId)) return;
@@ -2669,7 +2696,14 @@ function previousSetupRoute(current: OnboardingRoute): OnboardingRoute {
 }
 
 function bindOnboarding(): void {
-  document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = onboardingRouteForBuild(button.dataset.onboarding as OnboardingRoute); render(); }));
+  document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => {
+    onboardingRoute = onboardingRouteForBuild(button.dataset.onboarding as OnboardingRoute);
+    // Arriving at recovery always starts at the phrase step: a half-finished
+    // flow, or a token from a previous attempt, must never be inherited.
+    if (onboardingRoute === "account-recovery") resetAccountRecovery();
+    render();
+  }));
+  bindAccountRecovery();
   document.querySelector<HTMLButtonElement>("#skip-pro-setup")?.addEventListener("click", () => {
     onboardingRoute = onboardingRouteForBuild(continueFromProOnboarding("skipped").route);
     render();
@@ -2938,6 +2972,83 @@ function bindOnboarding(): void {
   document.querySelector("#install-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("install"));
   document.querySelector("#open-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("open"));
   document.querySelector("#close-decoy")?.addEventListener("click", () => void getCurrentWindow().close().catch(() => undefined));
+}
+
+function resetAccountRecovery(): void {
+  accountRecoveryFlow = initialAccountRecoveryFlow;
+  legacyRecoveryMigration = null;
+}
+
+function formValue(form: HTMLFormElement, name: string): string {
+  const field = form.elements.namedItem(name) as { value?: unknown } | null;
+  return typeof field?.value === "string" ? field.value : "";
+}
+
+async function runAccountRecoveryPhrase(phrase: string): Promise<void> {
+  // submitRecoveryPhrase deliberately swallows the verifier's error into one
+  // safe message, so the legacy-marker refusal is captured on the way past
+  // rather than re-derived from the message it returns.
+  let refusal: unknown = null;
+  accountRecoveryFlow = await submitRecoveryPhrase(accountRecoveryFlow, phrase, {
+    setPassword: (newPassword, recoveryToken) => accountRecoveryDependencies.setPassword(newPassword, recoveryToken),
+    verifyPhrase: async (value) => {
+      try {
+        return await accountRecoveryDependencies.verifyPhrase(value);
+      } catch (failure) {
+        refusal = failure;
+        throw failure;
+      }
+    },
+  });
+  if (legacyMarkerRecoveryRefused(refusal)) legacyRecoveryMigration = { kind: "needs-current-password", phraseVerified: true };
+  render();
+}
+
+async function runAccountRecoveryPassword(newPassword: string, confirmPassword: string): Promise<void> {
+  accountRecoveryFlow = await submitRecoveredPassword(accountRecoveryFlow, newPassword, confirmPassword, accountRecoveryDependencies);
+  render();
+}
+
+async function runLegacyPhraseWrap(currentPassword: string): Promise<void> {
+  try {
+    const repaired = await addLegacyPhraseWrap(currentPassword, recoveryMigrationDependencies);
+    // Repaired means the phrase alone can drive recovery again, so the user is
+    // returned to the phrase step rather than left on the migration screen.
+    legacyRecoveryMigration = repaired.kind === "recoverable" ? null : repaired;
+    if (repaired.kind === "recoverable") accountRecoveryFlow = initialAccountRecoveryFlow;
+  } catch (failure) {
+    showToast(localActionError(failure, "The recovery wrap was not added. Nothing was changed."));
+  }
+  render();
+}
+
+async function runRecoveryFreshStart(): Promise<void> {
+  const accepted = window.confirm("Start over? This permanently removes this device's OSL account, including your burn list and all encrypted local state. It cannot be undone.");
+  if (!accepted) return;
+  try {
+    await recoveryMigrationDependencies.freshStart();
+    legacyRecoveryMigration = { kind: "fresh-start" };
+  } catch (failure) {
+    showToast(localActionError(failure, "OSL could not start over. Nothing was removed."));
+  }
+  render();
+}
+
+function bindAccountRecovery(): void {
+  document.querySelector<HTMLFormElement>("[data-account-recovery-phrase]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void runAccountRecoveryPhrase(formValue(event.currentTarget as HTMLFormElement, "recoveryPhrase"));
+  });
+  document.querySelector<HTMLFormElement>("[data-account-recovery-password]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    void runAccountRecoveryPassword(formValue(form, "newPassword"), formValue(form, "confirmPassword"));
+  });
+  document.querySelector<HTMLFormElement>("[data-recovery-add-phrase-wrap]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void runLegacyPhraseWrap(formValue(event.currentTarget as HTMLFormElement, "currentPassword"));
+  });
+  document.querySelector<HTMLButtonElement>("[data-recovery-fresh-start]")?.addEventListener("click", () => void runRecoveryFreshStart());
 }
 
 function bindOnboardingPasswordRole(): void {
@@ -4759,11 +4870,11 @@ function whitelistRosterPersonMarkup(person: HubPerson, activePersonId: string |
   const hiddenScopeCount = Math.max(0, person.whitelistCount - visibleScopes.length);
   const scopeRows = visibleScopes.map((scope) => {
     const label = friendScopeLabel(scope);
-    return `<div class="whitelist-roster-scope"><span class="friend-scope">${escapeHtml(label)}${scope.userSpecific ? ` <small>only this person</small>` : ""}</span><div class="discord-qa-whitelist" role="group" aria-label="Trust for ${escapeHtml(label)}"><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-add="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}" aria-label="Approve ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>+${inDomTooltipMarkup("Already approved")}</button><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}" aria-label="Revoke ${escapeHtml(label)} for ${escapeHtml(nickname)}" ${!isActive || busy ? "disabled" : ""}>−${inDomTooltipMarkup(isActive ? "Revoke this chat now" : "Open this person's protected chat to revoke")}</button></div></div>`;
+    return `<div class="whitelist-roster-scope"><span class="friend-scope">${escapeHtml(label)}${scope.userSpecific ? ` <small>only this person</small>` : ""}</span><div class="discord-qa-whitelist" role="group" aria-label="Trust for ${escapeHtml(label)}"><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}" aria-label="Approve ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>+${inDomTooltipMarkup("Already approved")}</button><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}" aria-label="Revoke ${escapeHtml(label)} for ${escapeHtml(nickname)}" ${!isActive || busy ? "disabled" : ""}>−${inDomTooltipMarkup(isActive ? "Revoke this chat now" : "Open this person's protected chat to revoke")}</button></div></div>`;
   }).join("");
   const narrowedRows = person.reachNarrowedScopes.slice(0, whitelistRosterScopeLimit).map((key) => {
     const label = narrowedScopeLabel(key);
-    return `<div class="whitelist-roster-scope narrowed"><span class="friend-scope narrowed">${escapeHtml(label)} <small>taken back</small></span><div class="discord-qa-whitelist" role="group" aria-label="Trust for ${escapeHtml(label)}"><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-add="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(key)}" aria-label="Approve ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>+${inDomTooltipMarkup("Approve this chat from inside it")}</button><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(key)}" aria-label="Revoke ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>−${inDomTooltipMarkup("Not approved")}</button></div></div>`;
+    return `<div class="whitelist-roster-scope narrowed"><span class="friend-scope narrowed">${escapeHtml(label)} <small>taken back</small></span><div class="discord-qa-whitelist" role="group" aria-label="Trust for ${escapeHtml(label)}"><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-key="${escapeHtml(key)}" aria-label="Approve ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>+${inDomTooltipMarkup("Approve this chat from inside it")}</button><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(key)}" aria-label="Revoke ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>−${inDomTooltipMarkup("Not approved")}</button></div></div>`;
   }).join("");
   const scopes = scopeRows || `<span class="friend-none">No chats approved</span>`;
   const truncated = hiddenScopeCount > 0 || person.whitelistedScopesTruncated
@@ -6912,7 +7023,11 @@ function bindWorkspace(): void {
     serviceAccountPickerOpen = false;
     render();
   }));
-  document.querySelectorAll<HTMLButtonElement>("[data-service]").forEach((button) => button.addEventListener("click", () => { const service = services.find((item) => item.id === button.dataset.service); if (service) openServiceRoute(service, null); }));
+  // A `[data-service]` click binding used to sit here. Nothing in the repo emits
+  // a bare `data-service` attribute (`data-service-kind`, `data-service-account`
+  // and `data-service-current-session` are different attributes and have their
+  // own handlers), so the selector matched no element and `openServiceRoute` is
+  // reached through the `[data-home-app]` launch path instead.
   document.querySelectorAll<HTMLButtonElement>("[data-home-app]").forEach((button) => button.addEventListener("click", () => {
     if (appLaunchPendingId) return;
     const appId = button.dataset.homeApp as HomeAppId;
@@ -9509,6 +9624,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   peoplePrimaryActionFocus = null;
   protectionPreset = patch.protectionPreset ?? loadProtectionPreset();
   inboxFilter = patch.inboxFilter ?? "all";
+  resetAccountRecovery();
   oslMailNotifications = patch.oslMailNotifications ?? (localStorage.getItem(oslMailNotificationsStorageKey) !== "false");
   services = patch.services ?? [];
   linkedServicesChecked = patch.servicesChecked ?? patch.services !== undefined;
@@ -9632,6 +9748,25 @@ export const __oslHubUiTest = {
     route = "onboarding";
     onboardingRoute = onboardingRouteForBuild(destination);
     return onboardingContent();
+  },
+  /**
+   * Supply the account-recovery back end. The shipping build has none (no Tauri
+   * command turns a password recovery phrase into a recovery token), so tests
+   * inject one to exercise the flow the two forms are now bound to.
+   */
+  setAccountRecoveryDependencies(
+    recovery: AccountRecoveryDependencies,
+    migration?: RecoveryMigrationDependencies,
+  ): void {
+    accountRecoveryDependencies = recovery;
+    if (migration) recoveryMigrationDependencies = migration;
+  },
+  accountRecoverySnapshot(): { step: AccountRecoveryFlow["step"]; error: string | null; migration: LegacyRecoveryMigration["kind"] | null } {
+    return {
+      step: accountRecoveryFlow.step,
+      error: accountRecoveryFlow.error,
+      migration: legacyRecoveryMigration?.kind ?? null,
+    };
   },
   /** Seed detected browser areas before rendering the consent route in UI tests. */
   setBrowserProfilesForTest(profiles: BrowserProfileDescriptor[]): void {
