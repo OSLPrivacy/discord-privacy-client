@@ -3087,10 +3087,16 @@ pub(crate) mod tests {
                 90_000,
                 PROBE_CALL_TIMEOUT_MS,
             ),
+            // The running image is `WhatsApp.Root.exe`, not `WhatsApp.exe`, so
+            // the literal that used to sit here matched nothing and this probe
+            // would have reported `MissingAppOuter` -- "not running" -- on a
+            // machine where WhatsApp was on screen. The process name and the
+            // window class come from the shipping plan; only the per-call budget
+            // is the probe's own, as it is for the other three.
             "whatsapp" => Uia2WindowPlan::sibling_chromium_renderer(
-                "WhatsApp",
-                "WhatsApp",
-                WHATSAPP_OUTER_WINDOW_CLASS,
+                crate::native_whatsapp_adapter::WHATSAPP_UIA2_WINDOW_PLAN.provider_name,
+                crate::native_whatsapp_adapter::WHATSAPP_UIA2_WINDOW_PLAN.app_process_name,
+                crate::native_whatsapp_adapter::WHATSAPP_UIA2_WINDOW_PLAN.app_outer_class,
                 WEBVIEW2_PROCESS_NAME,
                 90_000,
                 PROBE_CALL_TIMEOUT_MS,
@@ -3650,6 +3656,86 @@ pub(crate) mod tests {
             acquire_uia2_window(discord, &discord_host).expect("Discord still acquires");
         assert_eq!(acquired.window.bound_hwnd, 0x1001);
         assert_eq!(acquired.window.tree_route, Uia2TreeRoute::MsaaBridge);
+    }
+
+    /// Dump the sibling association on a live Windows host, read-only.
+    ///
+    /// This exists because the two facts D-156 turns on -- `ParentProcessId` and
+    /// `--webview-exe-name` -- are read by `cfg(windows)` code that no Linux
+    /// build compiles, so a green suite here says nothing about whether the
+    /// producer can actually read them. It writes nothing, touches no composer,
+    /// and needs neither a signed-in account nor an open conversation: the
+    /// association is decided before any of that.
+    ///
+    /// ```text
+    /// # from WSL, build the Windows test binary:
+    /// flock -o /tmp/osl-cargo.lock cargo test --manifest-path apps/osl-hub/Cargo.toml \
+    ///   --lib --target x86_64-pc-windows-gnu -j 4 --no-run
+    /// # then on the Windows host, WhatsApp SHOWN (not closed to the tray):
+    /// osl_privacy_hub-<hash>.exe --ignored --nocapture --test-threads=1 \
+    ///   report_the_live_sibling_association
+    /// ```
+    ///
+    /// Expected on the owner's host: WhatsApp's `msedgewebview2` prints
+    /// `ppid=23884 host_exe=Some("WhatsApp.Root.exe") assoc=OwnedByApp`, Windows
+    /// Search's prints `assoc=Foreign`, and the resolve line reports the
+    /// WhatsApp-parented pid. An `assoc=Uncorroborated` on WhatsApp's own host
+    /// means the command-line read was refused, and the refusal that follows is
+    /// then correct rather than a mis-bind.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "reads the live process table on a Windows host; run explicitly"]
+    fn report_the_live_sibling_association() {
+        use crate::native_a11y::win32::Uia2Win32Host;
+
+        let plan = crate::native_whatsapp_adapter::WHATSAPP_UIA2_WINDOW_PLAN;
+        let host = Uia2Win32Host::desktop();
+        let windows = host
+            .enumerate_windows(Uia2Deadline::from_plan(plan))
+            .expect("the desktop enumeration must answer inside the plan's budget");
+        let candidates: Vec<_> = windows.iter().map(Uia2OwnedWindow::candidate).collect();
+
+        let app_outer = candidates
+            .iter()
+            .copied()
+            .filter(|window| {
+                same_process_name(window.process_name, plan.app_process_name)
+                    && window.class_name == plan.app_outer_class
+                    && window.visible
+            })
+            .max_by_key(|window| window.area);
+
+        for window in candidates.iter().copied().filter(|window| {
+            let name = window.process_name.to_ascii_lowercase();
+            name.contains("whatsapp") || name.contains("webview2")
+        }) {
+            let association = app_outer
+                .map(|app_outer| format!("{:?}", classify_sibling_host(app_outer, window)))
+                .unwrap_or_else(|| "no-shell".to_owned());
+            eprintln!(
+                "  candidate hwnd={} pid={} ppid={} image={:?} host_exe={:?} class={:?} \
+                 visible={} area={} parent={:?} associated_app={:?} assoc={association}",
+                window.hwnd,
+                window.process_id,
+                window.parent_process_id,
+                window.process_name,
+                window.host_exe_name,
+                window.class_name,
+                window.visible,
+                window.area,
+                window.parent_hwnd,
+                window.associated_app_hwnd,
+            );
+        }
+
+        match resolve_uia2_window(plan, &candidates) {
+            Ok(resolved) => eprintln!(
+                "whatsapp: RESOLVED bound_pid={} bound_is_app_shell={}",
+                resolved.bound_process_id,
+                resolved.bound_hwnd == resolved.app_outer_hwnd
+            ),
+            Err(error) => eprintln!("whatsapp: REFUSED {error:?}"),
+        }
     }
 
     #[test]
