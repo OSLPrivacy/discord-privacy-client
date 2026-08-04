@@ -73,23 +73,6 @@
       "owner": "unassigned - keyserver lane"
     },
     {
-      "id": "keyserver-tests-node",
-      "count": 12,
-      "cwd": "keyserver-cf",
-      "cmd": [
-        "npx",
-        "vitest",
-        "run",
-        "--config",
-        "vitest.node.config.ts",
-        "--passWithNoTests"
-      ],
-      "extract": "vitest-failed",
-      "runsIn": "nothing, until this change",
-      "why": "12 failing cases IN CI, 11 locally, and NOBODY HAS EVER SEEN EITHER NUMBER. `npm test` is `vitest run && vitest run --config vitest.node.config.ts`, and the worker pass above has been red the whole time, so this config has never run in CI or in any hand-run of the four-command verification. The baseline is the CI number, because CI is where this ratchet runs and is therefore the authority; the one test that passes locally and fails on a runner is scripts/deployment-evidence-receipt.test.ts > 'admits nonempty exact Artifact B and Artifact A observation fixtures' (measured on run 30931210322). Expect a STALE report if you run this ratchet on a workstation -- that is the ratchet telling the truth about a check whose result depends on where it runs, not a bug in the baseline.",
-      "owner": "unassigned - surfaced by D-172"
-    },
-    {
       "id": "cipher-store-tests-node",
       "count": 4,
       "cwd": "cipher-store-cf",
@@ -120,6 +103,13 @@
       "runsIn": ".github/workflows/ts-test.yml lane cipher-store-worker",
       "why": "NOT ratcheted because it is FLAKY, which is the finding. 219/219 green locally and on run 30929905893; on run 30930446967, with byte-identical cipher-store code, `test/attachment-sweep.test.ts > attachment quota and expiry sweep > retains marked legacy metadata when multipart abort fails` failed. A count that changes without the code changing cannot be a ratchet in either direction. It also demonstrated the short-circuit: when this pass failed, the 134 tests of the node config did not run at all, and the naive total dropped from 4 to 1, which the ratchet correctly refused as a stale baseline rather than banking.",
       "owner": "unassigned - cipher-store lane; surfaced by D-172"
+    },
+    {
+      "id": "keyserver-tests-node",
+      "check": "npx vitest run --config vitest.node.config.ts --passWithNoTests   (in keyserver-cf)",
+      "runsIn": "nothing, until D-172 split it out; `npm test` is `vitest run && vitest run --config vitest.node.config.ts`, and the worker pass has been red the whole time, so this config had NEVER run in CI or in any hand-run of the four-command verification",
+      "why": "NOT ratcheted because the count is not stable: 11 locally, 12 on run 30931210322, 11 again on run 30931563092, all on unchanged keyserver code. The consistently-failing set is scripts/sender-filter-deployment-admission.test.ts (4), scripts/sender-filter-rollout-contract.test.ts (2) and scripts/trusted-release-selection.test.ts (5); the twelfth, when it appears, is scripts/deployment-evidence-receipt.test.ts > 'admits nonempty exact Artifact B and Artifact A observation fixtures'. Eleven-to-twelve failing tests nobody had ever seen is the finding; a number that moves on its own cannot also be the ratchet. It DOES now run in CI for the first time, as its own step in the ts-test keyserver-worker lane.",
+      "owner": "unassigned - keyserver lane; surfaced by D-172"
     }
   ]
 }

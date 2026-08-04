@@ -109,14 +109,23 @@ jobs:
         if: ${{ matrix.lane == 'osl-hub-ui' }}
         working-directory: apps/osl-hub-ui
         run: npm ci
-      - name: Test OSL Privacy UI
-        if: ${{ matrix.lane == 'osl-hub-ui' }}
-        working-directory: apps/osl-hub-ui
-        run: npm test
+      # D-172: BUILD FIRST. `npm test` is `vitest run && node --test
+      # screenshots/*.test.mjs` and it is red on integrate/first-usable, so on
+      # run 30931564095 `Build OSL Privacy UI` -- which is
+      # `tsc --noEmit && vite build`, the production build of the renderer that
+      # SHIPS -- was reported `skipped`. The suite that says whether the code is
+      # correct was standing in front of the check that says whether the code
+      # can be built at all. If you ever move this step down, you have disabled
+      # it. (integration-gate.yml owns the same check as its own job, which is
+      # why the branch still had a build gate while this one was skipped.)
       - name: Build OSL Privacy UI
         if: ${{ matrix.lane == 'osl-hub-ui' }}
         working-directory: apps/osl-hub-ui
         run: npm run build
+      - name: Test OSL Privacy UI
+        if: ${{ matrix.lane == 'osl-hub-ui' }}
+        working-directory: apps/osl-hub-ui
+        run: npm test
       - name: Install keyserver worker deps
         if: ${{ matrix.lane == 'keyserver-worker' }}
         working-directory: keyserver-cf

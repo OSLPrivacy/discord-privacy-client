@@ -173,19 +173,37 @@ class IntegrationBranchGatingTest(unittest.TestCase):
         self.assertNotIn("continue-on-error", (WORKFLOWS / "integration-gate.yml").read_text(encoding="utf-8"))
 
     def test_no_cheap_check_stands_in_front_of_an_expensive_one(self) -> None:
-        # D-172 found four instances of one pattern: a gate placed downstream of
+        # D-172 found seven instances of one pattern: a gate placed downstream of
         # a step that is already red never executes, because Actions aborts a job
         # at its first failing step. The two structural rules that came out of it
         # are asserted here so they cannot be undone by a merge.
         rust = load("rust-test.yml").get("jobs") or {}
+        self.assertIn("clippy", rust, "cargo clippy must be its own job; as step 5 of `test` it "
+                                      "skipped cargo test --workspace, nextest and both "
+                                      "apps/osl-hub steps on run 30931561981, immediately after "
+                                      "fmt was moved out from in front of it")
         self.assertIn("fmt", rust, "cargo fmt must be its own job; as step 5 of `test` it "
                                    "skipped clippy, cargo test --workspace, nextest and both "
                                    "apps/osl-hub steps on run 30930446508")
         test_runs = " ".join(str(step.get("run", "")) for step in (rust.get("test") or {}).get("steps") or [])
         self.assertNotIn("cargo fmt", test_runs,
                          "cargo fmt is back in front of the Rust suite")
+        self.assertNotIn("cargo clippy", test_runs,
+                         "cargo clippy is back in front of the Rust suite")
 
         ts = load("ts-test.yml").get("jobs") or {}
+        # The renderer's production build must precede its test suite: the suite
+        # is red, and on run 30931564095 it reported `Build OSL Privacy UI` as
+        # skipped -- the check that says the shipping renderer can be built at
+        # all, standing behind the one that says it is correct.
+        all_steps = (ts.get("ts-test") or {}).get("steps") or []
+        ui_steps = [st for st in all_steps if "osl-hub-ui" in str(st.get("if", ""))]
+        names = [st.get("name", "") for st in ui_steps]
+        self.assertLess(
+            names.index("Build OSL Privacy UI"),
+            names.index("Test OSL Privacy UI"),
+            "the osl-hub-ui production build must run before the vitest suite",
+        )
         self.assertIs(
             False,
             ((ts.get("ts-test") or {}).get("strategy") or {}).get("fail-fast"),

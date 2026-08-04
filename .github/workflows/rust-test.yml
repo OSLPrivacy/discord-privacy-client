@@ -19,6 +19,27 @@ jobs:
   # D-172. Its own job, and that is the entire point -- see the comment where it
   # used to live, in `test` below. A formatting check is the cheapest possible
   # step and it was gating the most expensive truth in the repository.
+  # D-172, same reason as `fmt`. On run 30931561981, with fmt already moved out,
+  # `cargo clippy --workspace --all-targets -- -D warnings` was the next thing to
+  # fail as step 5 of `test` -- and `cargo test --workspace`, nextest and both
+  # apps/osl-hub `--features core` steps were reported `skipped` all over again.
+  # Two lints in a row had been standing in front of the entire Rust suite.
+  # Still required, still red, no longer in front of anything.
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: '1.97.1'
+          components: clippy
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          workspaces: . -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
   fmt:
     name: cargo fmt
     runs-on: ubuntu-latest
@@ -60,7 +81,6 @@ jobs:
       # at its first failing step, so a formatting nit was hiding the entire Rust
       # test suite. It is now the `fmt` job below: still required, still red,
       # and no longer standing in front of anything.
-      - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       # nextest runs each test in its own process for fast isolated feedback.
       # Keep cargo test above: its shared test-process shape can expose
