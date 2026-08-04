@@ -6,12 +6,15 @@
 
 use sha2::{Digest, Sha256};
 
+// `Uia2Deadline` is deliberately NOT re-exported here. D-155 gave the substrate
+// a public `acquire_uia2_editables`, so this module no longer handles a budget
+// at any point, and a scan test below pins that it never starts again.
 pub use crate::native_a11y::{
-    acquire_uia2_window, clear_uia2_composer, place_uia2_carrier, resolve_uia2_composer,
-    uia2_carrier_carries_submit, Uia2AcquireError, Uia2CallTimeout, Uia2ComposerError,
-    Uia2ComposerMatcher, Uia2Deadline, Uia2Editable, Uia2OwnedWindow, Uia2PlacementRefusal,
-    Uia2ResolvedWindow, Uia2Syscalls, Uia2TreeRoute, Uia2WakePolicy, Uia2WindowPlan,
-    Uia2WindowResolveError, Uia2WindowShape, WEBVIEW2_PROCESS_NAME,
+    acquire_uia2_editables, acquire_uia2_window, clear_uia2_composer, place_uia2_carrier,
+    resolve_uia2_composer, uia2_carrier_carries_submit, Uia2AcquireError, Uia2Acquired,
+    Uia2CallTimeout, Uia2ComposerError, Uia2ComposerMatcher, Uia2Editable, Uia2OwnedWindow,
+    Uia2PlacementRefusal, Uia2ResolvedWindow, Uia2Syscalls, Uia2TreeRoute, Uia2WakePolicy,
+    Uia2WindowPlan, Uia2WindowResolveError, Uia2WindowShape, WEBVIEW2_PROCESS_NAME,
 };
 
 pub const WHATSAPP_ROOT_WINDOW_CLASS: &str = "WinUIDesktopWin32WindowClass";
@@ -750,6 +753,13 @@ pub enum WhatsAppPlacementStatus {
     BoundTheAppShell,
     /// The substrate's syscall seam could not be reached with a deadline the
     /// acquisition derived from the plan.
+    ///
+    /// **Unreachable since D-155.** It described the one way A-02c's deadline
+    /// relay could fail: being asked for the editable scan before the
+    /// acquisition had handed it a budget. The substrate now derives that budget
+    /// itself inside `acquire_uia2_editables`, so the state cannot occur. Kept
+    /// rather than deleted -- a receipt status is observable contract, and this
+    /// is the owner's call to retire, not a lane's to drop in passing.
     DeadlineUnavailable,
     /// No editable element is WhatsApp's composer -- not signed in, no
     /// conversation open, or only a search or login field is exposed.
@@ -799,126 +809,17 @@ impl WhatsAppLivePlacementReceipt {
     }
 }
 
-/// A borrowed `Uia2Syscalls` that keeps the deadline the substrate handed it.
-///
-/// A-03c reached the same wall on Telegram and built the same thing; the names
-/// are kept identical on purpose so the real fix -- one `acquire_uia2_editables`
-/// in the substrate -- deletes both relays in one commit.
-///
-/// [`Uia2Deadline`]'s only constructor is private to `native_a11y`, on purpose:
-/// a syscall cannot be reached except with a deadline the acquisition derived
-/// from the plan. The consequence for a *consumer* is that the editable scan --
-/// which sits between acquisition and placement and has no wrapper of its own
-/// in the substrate -- cannot be called from outside that module at all, because
-/// no deadline can be minted here.
-///
-/// This wrapper resolves that without weakening the token: it never constructs
-/// a deadline, it only remembers the one `acquire_uia2_window` already passed
-/// through it, and [`whatsapp_editables`] refuses unless that remembered
-/// deadline is still the plan's. `submit_shaped_calls` is forwarded, not
-/// answered -- a wrapper that answered `0` would blind the placement guard.
-struct Uia2DeadlineRelay<'host> {
-    host: &'host dyn Uia2Syscalls,
-    deadline: std::cell::Cell<Option<Uia2Deadline>>,
-}
-
-impl<'host> Uia2DeadlineRelay<'host> {
-    fn new(host: &'host dyn Uia2Syscalls) -> Self {
-        Self {
-            host,
-            deadline: std::cell::Cell::new(None),
-        }
-    }
-
-    /// The deadline the substrate derived from the plan, or `None` if the
-    /// substrate has not issued a single bounded call through this relay yet.
-    fn issued_deadline(&self) -> Option<Uia2Deadline> {
-        self.deadline.get()
-    }
-
-    fn record(&self, deadline: Uia2Deadline) -> Uia2Deadline {
-        self.deadline.set(Some(deadline));
-        deadline
-    }
-}
-
-impl Uia2Syscalls for Uia2DeadlineRelay<'_> {
-    fn enumerate_windows(
-        &self,
-        deadline: Uia2Deadline,
-    ) -> Result<Vec<Uia2OwnedWindow>, Uia2CallTimeout> {
-        self.host.enumerate_windows(self.record(deadline))
-    }
-
-    fn wake_chromium(&self, hwnd: isize, deadline: Uia2Deadline) -> Result<bool, Uia2CallTimeout> {
-        self.host.wake_chromium(hwnd, self.record(deadline))
-    }
-
-    fn element_count(
-        &self,
-        hwnd: isize,
-        route: Uia2TreeRoute,
-        deadline: Uia2Deadline,
-    ) -> Result<usize, Uia2CallTimeout> {
-        self.host.element_count(hwnd, route, self.record(deadline))
-    }
-
-    fn editable_elements(
-        &self,
-        hwnd: isize,
-        route: Uia2TreeRoute,
-        deadline: Uia2Deadline,
-    ) -> Result<Vec<Uia2Editable>, Uia2CallTimeout> {
-        self.host
-            .editable_elements(hwnd, route, self.record(deadline))
-    }
-
-    fn set_value(
-        &self,
-        hwnd: isize,
-        route: Uia2TreeRoute,
-        element: &Uia2Editable,
-        value: &str,
-        deadline: Uia2Deadline,
-    ) -> Result<bool, Uia2CallTimeout> {
-        self.host
-            .set_value(hwnd, route, element, value, self.record(deadline))
-    }
-
-    fn value_of(
-        &self,
-        hwnd: isize,
-        route: Uia2TreeRoute,
-        element: &Uia2Editable,
-        deadline: Uia2Deadline,
-    ) -> Result<Option<String>, Uia2CallTimeout> {
-        self.host
-            .value_of(hwnd, route, element, self.record(deadline))
-    }
-
-    fn submit_shaped_calls(&self) -> usize {
-        self.host.submit_shaped_calls()
-    }
-
-    fn settle(&self, millis: u64) {
-        self.host.settle(millis);
-    }
-}
-
 /// Scan the bound window's editable elements under the plan's own deadline.
+///
+/// The deadline is no longer this module's problem: [`acquire_uia2_editables`]
+/// derives it inside the substrate from the acquisition's own
+/// `call_timeout_ms`, which is why the relay that used to sit here is gone
+/// (D-155). Nothing in this module can name a budget, let alone invent one.
 fn whatsapp_editables(
-    relay: &Uia2DeadlineRelay<'_>,
-    window: Uia2ResolvedWindow,
+    host: &dyn Uia2Syscalls,
+    acquired: Uia2Acquired,
 ) -> Result<Vec<Uia2Editable>, WhatsAppPlacementStatus> {
-    let deadline = relay
-        .issued_deadline()
-        .ok_or(WhatsAppPlacementStatus::DeadlineUnavailable)?;
-    if deadline.millis() != window.call_timeout_ms {
-        return Err(WhatsAppPlacementStatus::DeadlineUnavailable);
-    }
-    relay
-        .editable_elements(window.bound_hwnd, window.tree_route, deadline)
-        .map_err(|_| WhatsAppPlacementStatus::CallTimedOut)
+    acquire_uia2_editables(host, acquired).map_err(|_| WhatsAppPlacementStatus::CallTimedOut)
 }
 
 fn whatsapp_acquire_failure(error: Uia2AcquireError) -> WhatsAppPlacementStatus {
@@ -991,8 +892,7 @@ fn whatsapp_placement(
         _ => return WhatsAppLivePlacementReceipt::unbound(WhatsAppPlacementStatus::InvalidCarrier),
     };
 
-    let relay = Uia2DeadlineRelay::new(host);
-    let acquired = match acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &relay) {
+    let acquired = match acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, host) {
         Ok(acquired) => acquired,
         Err(error) => {
             return WhatsAppLivePlacementReceipt::unbound(whatsapp_acquire_failure(error))
@@ -1018,7 +918,7 @@ fn whatsapp_placement(
         return bound(WhatsAppPlacementStatus::BoundTheAppShell);
     }
 
-    let editables = match whatsapp_editables(&relay, window) {
+    let editables = match whatsapp_editables(host, acquired) {
         Ok(editables) => editables,
         Err(status) => return bound(status),
     };
@@ -1027,36 +927,31 @@ fn whatsapp_placement(
         Err(error) => return bound(whatsapp_composer_failure(error)),
     };
 
-    let receipt = match place_uia2_carrier(
-        &relay,
-        acquired,
-        &composer,
-        &carrier,
-        allow_replace_existing,
-    ) {
-        Ok(receipt) => receipt,
-        Err(Uia2PlacementRefusal::SubmitShaped) => {
-            let mut refusal = bound(WhatsAppPlacementStatus::SubmitShapedCallObserved);
-            refusal.enter_sent = true;
-            return refusal;
-        }
-        Err(Uia2PlacementRefusal::ExistingDraft) => {
-            return bound(WhatsAppPlacementStatus::ComposerNotEmpty)
-        }
-        Err(Uia2PlacementRefusal::SetValueRefused) => {
-            return bound(WhatsAppPlacementStatus::ComposerNotWritable)
-        }
-        Err(Uia2PlacementRefusal::ReadbackMissingCarrier) => {
-            return bound(WhatsAppPlacementStatus::ReadbackMismatch)
-        }
-        Err(Uia2PlacementRefusal::EmptyCarrier)
-        | Err(Uia2PlacementRefusal::CarrierCarriesSubmit) => {
-            return bound(WhatsAppPlacementStatus::InvalidCarrier)
-        }
-        Err(Uia2PlacementRefusal::CallTimedOut(_)) => {
-            return bound(WhatsAppPlacementStatus::CallTimedOut)
-        }
-    };
+    let receipt =
+        match place_uia2_carrier(host, acquired, &composer, &carrier, allow_replace_existing) {
+            Ok(receipt) => receipt,
+            Err(Uia2PlacementRefusal::SubmitShaped) => {
+                let mut refusal = bound(WhatsAppPlacementStatus::SubmitShapedCallObserved);
+                refusal.enter_sent = true;
+                return refusal;
+            }
+            Err(Uia2PlacementRefusal::ExistingDraft) => {
+                return bound(WhatsAppPlacementStatus::ComposerNotEmpty)
+            }
+            Err(Uia2PlacementRefusal::SetValueRefused) => {
+                return bound(WhatsAppPlacementStatus::ComposerNotWritable)
+            }
+            Err(Uia2PlacementRefusal::ReadbackMissingCarrier) => {
+                return bound(WhatsAppPlacementStatus::ReadbackMismatch)
+            }
+            Err(Uia2PlacementRefusal::EmptyCarrier)
+            | Err(Uia2PlacementRefusal::CarrierCarriesSubmit) => {
+                return bound(WhatsAppPlacementStatus::InvalidCarrier)
+            }
+            Err(Uia2PlacementRefusal::CallTimedOut(_)) => {
+                return bound(WhatsAppPlacementStatus::CallTimedOut)
+            }
+        };
 
     let mut placed = bound(WhatsAppPlacementStatus::Placed);
     placed.placed = receipt.placed;
@@ -1064,7 +959,7 @@ fn whatsapp_placement(
     placed.enter_sent = receipt.submit_shaped_observed;
 
     if clear_after {
-        match clear_uia2_composer(&relay, acquired, &composer) {
+        match clear_uia2_composer(host, acquired, &composer) {
             Ok(()) => placed.cleared = true,
             Err(_) => placed.status = WhatsAppPlacementStatus::ProbeClearFailed,
         }
@@ -1603,6 +1498,11 @@ mod tests {
 
     use crate::native_a11y::tests::{composer, owned, RecordedHost};
 
+    // Only the live probe's enumeration capture still names the syscall seam's
+    // deadline token; the production half no longer handles a budget anywhere.
+    #[cfg(target_os = "windows")]
+    use crate::native_a11y::Uia2Deadline;
+
     // The window graph MEASURED on the owner's Windows host on 2026-08-04, by
     // enumerating every top-level window and its descendants and printing class,
     // image name, parent, GA_ROOT, GA_ROOTOWNER, GW_OWNER and GWLP_HWNDPARENT:
@@ -1703,6 +1603,103 @@ mod tests {
     const WHATSAPP_SHELL_PROCESS_ID: u32 = 23884;
     const PAYLOAD: &str = "alpha7731osl";
     const CARRIER: &str = "OSL1.WA.alpha7731osl";
+
+    /// Keep the window list the substrate enumerated, so a failed live acquire
+    /// can report the evidence the acquisition itself saw.
+    ///
+    /// **This is not the relay coming back.** It never touches a deadline: it
+    /// forwards every call unchanged, budget included, and records only the
+    /// `Vec<Uia2OwnedWindow>` the substrate had already asked for and been
+    /// given. `submit_shaped_calls` is forwarded, never answered. It exists for
+    /// the one `#[ignore]`d live probe below, whose candidate dump is what
+    /// produced A-02c's `associated_app=None` finding; the sibling-association
+    /// lane still needs it.
+    #[cfg(target_os = "windows")]
+    struct CapturedEnumeration<'host> {
+        host: &'host dyn Uia2Syscalls,
+        windows: std::cell::RefCell<Vec<Uia2OwnedWindow>>,
+    }
+
+    #[cfg(target_os = "windows")]
+    impl<'host> CapturedEnumeration<'host> {
+        fn new(host: &'host dyn Uia2Syscalls) -> Self {
+            Self {
+                host,
+                windows: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+
+        fn captured(&self) -> Vec<Uia2OwnedWindow> {
+            self.windows.borrow().clone()
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    impl Uia2Syscalls for CapturedEnumeration<'_> {
+        fn enumerate_windows(
+            &self,
+            deadline: Uia2Deadline,
+        ) -> Result<Vec<Uia2OwnedWindow>, Uia2CallTimeout> {
+            let windows = self.host.enumerate_windows(deadline)?;
+            *self.windows.borrow_mut() = windows.clone();
+            Ok(windows)
+        }
+
+        fn wake_chromium(
+            &self,
+            hwnd: isize,
+            deadline: Uia2Deadline,
+        ) -> Result<bool, Uia2CallTimeout> {
+            self.host.wake_chromium(hwnd, deadline)
+        }
+
+        fn element_count(
+            &self,
+            hwnd: isize,
+            route: Uia2TreeRoute,
+            deadline: Uia2Deadline,
+        ) -> Result<usize, Uia2CallTimeout> {
+            self.host.element_count(hwnd, route, deadline)
+        }
+
+        fn editable_elements(
+            &self,
+            hwnd: isize,
+            route: Uia2TreeRoute,
+            deadline: Uia2Deadline,
+        ) -> Result<Vec<Uia2Editable>, Uia2CallTimeout> {
+            self.host.editable_elements(hwnd, route, deadline)
+        }
+
+        fn set_value(
+            &self,
+            hwnd: isize,
+            route: Uia2TreeRoute,
+            element: &Uia2Editable,
+            value: &str,
+            deadline: Uia2Deadline,
+        ) -> Result<bool, Uia2CallTimeout> {
+            self.host.set_value(hwnd, route, element, value, deadline)
+        }
+
+        fn value_of(
+            &self,
+            hwnd: isize,
+            route: Uia2TreeRoute,
+            element: &Uia2Editable,
+            deadline: Uia2Deadline,
+        ) -> Result<Option<String>, Uia2CallTimeout> {
+            self.host.value_of(hwnd, route, element, deadline)
+        }
+
+        fn submit_shaped_calls(&self) -> usize {
+            self.host.submit_shaped_calls()
+        }
+
+        fn settle(&self, millis: u64) {
+            self.host.settle(millis);
+        }
+    }
 
     /// WhatsApp as A-00 measured it: the WinUI shell, and the content in a
     /// sibling WebView2 process, woken and polled before it populates.
@@ -2067,62 +2064,89 @@ mod tests {
         );
     }
 
+    /// Was `whatsapp_editable_scan_refuses_without_a_deadline_the_acquisition_derived`.
+    ///
+    /// A-02c's relay could be asked for the scan before the acquisition had
+    /// handed it a budget, and refused with `DeadlineUnavailable`. D-155 made
+    /// that state unrepresentable: the scan takes a `Uia2Acquired`, so there is
+    /// no way to reach it without an acquisition, and the substrate derives the
+    /// budget from that acquisition's own plan. The assertion is pointed at the
+    /// property that replaced the refusal.
     #[test]
-    fn whatsapp_editable_scan_refuses_without_a_deadline_the_acquisition_derived() {
-        // The relay never mints a deadline; it only keeps the one the
-        // substrate handed it. Before the substrate has made any call there is
-        // nothing to keep, and the scan refuses rather than inventing a bound.
+    fn whatsapp_editable_scan_can_only_run_under_the_deadline_the_acquisition_derived() {
         let host = whatsapp_host(vec![composer("Type a message")]);
-        let relay = Uia2DeadlineRelay::new(&host);
-        assert!(relay.issued_deadline().is_none());
-
-        let window = Uia2ResolvedWindow {
-            app_outer_hwnd: SHELL_HWND,
-            bound_hwnd: RENDERER_HWND,
-            bound_process_id: WEBVIEW2_PROCESS_ID,
-            wake_policy: Uia2WakePolicy::WmGetObjectChromium,
-            tree_route: Uia2TreeRoute::UiaNative,
-            poll_until_populated: true,
-            populated_min_elements: crate::native_a11y::ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
-            call_timeout_ms: WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS,
-        };
-        assert_eq!(
-            whatsapp_editables(&relay, window),
-            Err(WhatsAppPlacementStatus::DeadlineUnavailable)
-        );
-
-        let acquired = acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &relay)
+        let acquired = acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &host)
             .expect("WhatsApp acquires through the substrate");
         assert_eq!(
-            relay.issued_deadline().map(Uia2Deadline::millis),
-            Some(WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS)
+            acquired.window.call_timeout_ms,
+            WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS
+        );
+        host.deadlines.borrow_mut().clear();
+
+        assert_eq!(
+            whatsapp_editables(&host, acquired).map(|editables| editables.len()),
+            Ok(1)
         );
         assert_eq!(
-            whatsapp_editables(&relay, acquired.window).map(|editables| editables.len()),
-            Ok(1)
+            *host.deadlines.borrow(),
+            vec![WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS],
+            "the scan must issue exactly one call, under the plan's own budget"
         );
     }
 
+    /// Was `the_deadline_relay_cannot_blind_the_submit_shaped_guard_or_invent_a_budget`.
+    /// The relay is gone; both things it was pinned for still have to hold of
+    /// the direct path.
     #[test]
-    fn the_deadline_relay_cannot_blind_the_submit_shaped_guard_or_invent_a_budget() {
-        let mut host = whatsapp_host(vec![composer("Type a message")]);
-        host.submit_shaped_on_set = true;
+    fn nothing_stands_between_the_placement_guard_and_the_backends_own_counter() {
+        // The submit-shaped counter is read straight off the backend. Anything
+        // in the way that answered it itself would blind every placement guard.
+        let host = whatsapp_host(vec![composer("Type a message")]);
         host.submit_shaped.set(3);
-        let relay = Uia2DeadlineRelay::new(&host);
-
+        let receipt = drive_whatsapp_composer_placement(&host, PAYLOAD, false);
         assert_eq!(
-            relay.submit_shaped_calls(),
-            3,
-            "a relay that answered this itself would blind every placement guard"
+            receipt.status,
+            WhatsAppPlacementStatus::SubmitShapedCallObserved,
+            "a backend already admitting a submit-shaped call must refuse the path"
         );
+        assert!(receipt.enter_sent);
+        assert!(!receipt.placed);
 
-        // And it never mints a budget of its own: the only deadline it can hand
-        // back is the one the acquisition derived from the plan.
-        assert!(relay.issued_deadline().is_none());
-        let _ = acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &relay);
+        // And no budget is invented anywhere along the way: every call the whole
+        // path issues carries the plan's own deadline.
+        let host = whatsapp_host(vec![composer("Type a message")]);
         assert_eq!(
-            relay.issued_deadline().map(Uia2Deadline::millis),
-            Some(WHATSAPP_UIA2_WINDOW_PLAN.call_timeout_ms)
+            drive_whatsapp_composer_placement(&host, PAYLOAD, false).status,
+            WhatsAppPlacementStatus::Placed
+        );
+        let deadlines = host.deadlines.borrow();
+        assert!(!deadlines.is_empty());
+        assert!(
+            deadlines
+                .iter()
+                .all(|deadline| *deadline == WHATSAPP_UIA2_WINDOW_PLAN.call_timeout_ms),
+            "every call, including the editable scan, must carry the plan's own \
+             deadline, saw {deadlines:?}"
+        );
+    }
+
+    /// Neither adapter may grow a budget of its own again. Both reach
+    /// `editable_elements` only through the substrate's door, which derives the
+    /// deadline from the plan; a `Uia2Deadline` named in this module would be
+    /// the first step back to a relay.
+    #[test]
+    fn the_adapter_never_builds_a_deadline_of_its_own() {
+        for (module, code) in whatsapp_production_regions() {
+            assert!(
+                !code.contains("uia2deadline"),
+                "{module} must not name the deadline token at all: the substrate \
+                 derives every budget from the plan"
+            );
+        }
+        let (_, live) = whatsapp_production_regions().remove(0);
+        assert!(
+            live.contains("acquire_uia2_editables"),
+            "the editable scan must go through the substrate's public door"
         );
     }
 
@@ -2163,40 +2187,33 @@ mod tests {
     #[test]
     #[ignore = "drives live WhatsApp Desktop on a Windows host; run explicitly"]
     fn drive_the_real_whatsapp_composer_through_the_substrate() {
-        let host = crate::native_a11y::win32::Uia2Win32Host::desktop();
-        let relay = Uia2DeadlineRelay::new(&host);
-        let acquired = match acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &relay) {
+        let win32 = crate::native_a11y::win32::Uia2Win32Host::desktop();
+        let host = CapturedEnumeration::new(&win32);
+        let acquired = match acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &host) {
             Ok(acquired) => acquired,
             Err(error) => {
                 // Say WHY, from what the substrate itself enumerated, instead of
                 // leaving the conductor to guess between "not running", "hidden",
-                // "named something else" and "the association is missing". The
-                // acquisition has already issued its enumerate, so the relay is
-                // holding the plan's deadline by the time we get here.
-                if let Some(deadline) = relay.issued_deadline() {
-                    match relay.enumerate_windows(deadline) {
-                        Ok(windows) => {
-                            let interesting = windows.iter().filter(|window| {
-                                let name = window.process_name.to_ascii_lowercase();
-                                name.contains("whatsapp") || name.contains("webview2")
-                            });
-                            for window in interesting {
-                                eprintln!(
-                                    "  candidate hwnd={} pid={} image={:?} class={:?} \
-                                     visible={} area={} parent={:?} associated_app={:?}",
-                                    window.hwnd,
-                                    window.process_id,
-                                    window.process_name,
-                                    window.class_name,
-                                    window.visible,
-                                    window.area,
-                                    window.parent_hwnd,
-                                    window.associated_app_hwnd,
-                                );
-                            }
-                        }
-                        Err(timeout) => eprintln!("  enumeration timed out: {timeout:?}"),
-                    }
+                // "named something else" and "the association is missing". This
+                // is the dump that produced A-02c's `associated_app=None`
+                // finding, so it is kept verbatim -- it reports the exact list
+                // the failed acquisition saw, not a second enumeration.
+                for window in host.captured().iter().filter(|window| {
+                    let name = window.process_name.to_ascii_lowercase();
+                    name.contains("whatsapp") || name.contains("webview2")
+                }) {
+                    eprintln!(
+                        "  candidate hwnd={} pid={} image={:?} class={:?} \
+                         visible={} area={} parent={:?} associated_app={:?}",
+                        window.hwnd,
+                        window.process_id,
+                        window.process_name,
+                        window.class_name,
+                        window.visible,
+                        window.area,
+                        window.parent_hwnd,
+                        window.associated_app_hwnd,
+                    );
                 }
                 panic!("whatsapp: acquire failed: {error:?}");
             }
@@ -2210,7 +2227,7 @@ mod tests {
             acquired.window.bound_hwnd == acquired.window.app_outer_hwnd,
         );
 
-        let editables = whatsapp_editables(&relay, acquired.window)
+        let editables = whatsapp_editables(&host, acquired)
             .unwrap_or_else(|status| panic!("whatsapp: editable scan refused: {status:?}"));
         eprintln!(
             "whatsapp: editable={} writable={}",

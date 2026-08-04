@@ -857,6 +857,29 @@ pub fn acquire_uia2_window(
     })
 }
 
+/// List the editable elements of a window this producer has already acquired.
+///
+/// The second step of every consumer, and the one deadline-carrying syscall
+/// that had no public door: `acquire_uia2_window` covers enumerate/wake/count
+/// and `place_uia2_carrier`/`clear_uia2_composer` cover set/read, so before
+/// this existed no module outside `native_a11y` could reach a composer
+/// candidate at all (D-155).
+///
+/// The budget is derived here, from the acquisition's own `call_timeout_ms`,
+/// exactly as its siblings derive theirs. There is deliberately **no variant
+/// that takes a caller-supplied deadline**: [`Uia2Deadline`]'s private
+/// constructor is what makes an unbounded cross-process call unrepresentable,
+/// and a public function that accepted one would be that hole with a different
+/// name.
+pub fn acquire_uia2_editables(
+    host: &dyn Uia2Syscalls,
+    acquired: Uia2Acquired,
+) -> Result<Vec<Uia2Editable>, Uia2CallTimeout> {
+    let window = acquired.window;
+    let deadline = Uia2Deadline(window.call_timeout_ms);
+    host.editable_elements(window.bound_hwnd, window.tree_route, deadline)
+}
+
 /// How a provider's composer is told apart from every other editable element,
 /// including the search box that A-00 wrote into by accident and D-139 found
 /// still admissible.
@@ -2187,6 +2210,138 @@ pub(crate) mod tests {
             "binding the WinUI shell is the dead end that would have written WhatsApp off"
         );
         assert_eq!(acquired.window.bound_process_id, 7500);
+    }
+
+    #[test]
+    fn the_editables_door_issues_one_call_under_the_plans_own_budget() {
+        let plan = Uia2WindowPlan::direct_outer_window(
+            "Telegram",
+            "Telegram",
+            TELEGRAM_OUTER_WINDOW_CLASS,
+            CALL_TIMEOUT_MS,
+        );
+        let host =
+            RecordedHost::new(telegram_graph(), 743).with_editables(vec![composer("Message")]);
+        let acquired = acquire_uia2_window(plan, &host).expect("Telegram acquires");
+        host.deadlines.borrow_mut().clear();
+
+        let editables =
+            acquire_uia2_editables(&host, acquired).expect("the editable scan must answer");
+        assert_eq!(editables.len(), 1);
+        assert_eq!(
+            *host.deadlines.borrow(),
+            vec![CALL_TIMEOUT_MS],
+            "the door must issue exactly one cross-process call, under the deadline the \
+             acquisition derived from the plan -- not a wider one it chose for itself"
+        );
+    }
+
+    #[test]
+    fn the_editables_door_abandons_a_provider_that_stops_answering() {
+        // Mutant [1] in shape: an unbounded editable scan is the one call that
+        // could freeze OSL against another application's UI thread. Starve it
+        // and the budget it spent has to be the plan's, to the millisecond.
+        let plan = Uia2WindowPlan::direct_outer_window(
+            "Telegram",
+            "Telegram",
+            TELEGRAM_OUTER_WINDOW_CLASS,
+            CALL_TIMEOUT_MS,
+        );
+        let host =
+            RecordedHost::new(telegram_graph(), 743).with_editables(vec![composer("Message")]);
+        let acquired = acquire_uia2_window(plan, &host).expect("Telegram acquires");
+
+        let mut starved =
+            RecordedHost::new(telegram_graph(), 743).with_editables(vec![composer("Message")]);
+        starved.never_answers = true;
+        assert_eq!(
+            acquire_uia2_editables(&starved, acquired),
+            Err(Uia2CallTimeout {
+                timeout_ms: CALL_TIMEOUT_MS
+            }),
+            "a scan that never answers must cost the plan's budget and no more"
+        );
+    }
+
+    /// D-155 mutant [2]. The whole timeout guarantee rests on `Uia2Deadline`
+    /// being unconstructable outside this module, and **nothing else in the
+    /// tree fails if that privacy is relaxed**: Rust has no runtime handle on
+    /// visibility, so a consumer that gained the ability to invent its own
+    /// budget would simply compile, silently. Measured, not assumed -- making
+    /// both the field and `from_plan` public left all 321 tests across the
+    /// `native_a11y`, `native_telegram_adapter` and `native_discord_adapter`
+    /// filters green.
+    ///
+    /// So it is pinned at the only place it is observable: the source.
+    #[test]
+    fn the_deadline_token_has_no_public_constructor() {
+        // Production code only. This module's own test source quotes the
+        // declaration it is checking, so scanning the whole file would make
+        // every assertion below satisfy itself.
+        let production = include_str!("native_a11y.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_default();
+        assert!(
+            production.contains("pub fn place_uia2_carrier"),
+            "the scanned region lost its production code, so the scan is vacuous"
+        );
+        assert!(
+            !production.contains("fn the_deadline_token_has_no_public_constructor"),
+            "the test half leaked into the scan, so the scan can satisfy itself"
+        );
+
+        // The scanner must be able to fire, or this guard is decoration.
+        assert!(hands_back_a_deadline(
+            "    pub fn new(millis: u64) -> Self {"
+        ));
+        assert!(hands_back_a_deadline(
+            "    pub const fn of(ms: u64) -> Uia2Deadline {"
+        ));
+        assert!(!hands_back_a_deadline("    pub fn millis(self) -> u64 {"));
+        assert!(!hands_back_a_deadline(
+            "    fn from_plan(plan: Uia2WindowPlan) -> Self {"
+        ));
+
+        assert!(
+            production.contains("pub struct Uia2Deadline(u64);"),
+            "the deadline's field must stay private -- a `pub` field IS a public \
+             constructor, and the token would stop meaning anything"
+        );
+
+        let inherent = production
+            .split_once("\nimpl Uia2Deadline {\n")
+            .expect("the deadline's inherent impl must exist for this scan to mean anything")
+            .1
+            .split_once("\n}\n")
+            .expect("the deadline's inherent impl must be terminated")
+            .0;
+        assert!(
+            inherent.contains("fn from_plan"),
+            "the scanned impl lost its body, so the scan is vacuous"
+        );
+        for line in inherent.lines() {
+            assert!(
+                !hands_back_a_deadline(line),
+                "a public associated function handing back a deadline is a public \
+                 constructor by another name, which is the one thing this token exists \
+                 to prevent: {line:?}"
+            );
+        }
+
+        // A trait impl is as public as its trait, so `From<u64> for Uia2Deadline`
+        // would be the same hole through a different door.
+        assert!(
+            !production.contains("for Uia2Deadline {"),
+            "no trait impl may build a deadline out of a caller's own number"
+        );
+    }
+
+    /// True for a source line that publicly hands back a [`Uia2Deadline`].
+    fn hands_back_a_deadline(line: &str) -> bool {
+        let trimmed = line.trim();
+        (trimmed.starts_with("pub fn ") || trimmed.starts_with("pub const fn "))
+            && (trimmed.contains("-> Self") || trimmed.contains("-> Uia2Deadline"))
     }
 
     #[test]

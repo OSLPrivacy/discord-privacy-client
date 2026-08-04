@@ -20,10 +20,9 @@
 
 use crate::adapters::{Bounds, PaintConfidence, PaintTarget};
 use crate::native_a11y::{
-    acquire_uia2_window, clear_uia2_composer, place_uia2_carrier, resolve_uia2_composer,
-    Uia2AcquireError, Uia2Acquired, Uia2CallTimeout, Uia2ComposerError, Uia2ComposerMatcher,
-    Uia2Deadline, Uia2Editable, Uia2OwnedWindow, Uia2PlacementRefusal, Uia2Syscalls, Uia2TreeRoute,
-    Uia2WindowPlan, Uia2WindowResolveError,
+    acquire_uia2_editables, acquire_uia2_window, clear_uia2_composer, place_uia2_carrier,
+    resolve_uia2_composer, Uia2AcquireError, Uia2Acquired, Uia2ComposerError, Uia2ComposerMatcher,
+    Uia2Editable, Uia2PlacementRefusal, Uia2Syscalls, Uia2WindowPlan, Uia2WindowResolveError,
 };
 
 pub use crate::native_a11y::TELEGRAM_OUTER_WINDOW_CLASS;
@@ -190,117 +189,6 @@ impl TelegramLivePlacementReceipt {
     }
 }
 
-/// Borrow the deadline the substrate issued, so the one syscall the substrate
-/// does not wrap in a public entry point can still be reached.
-///
-/// [`Uia2Deadline`]'s constructor is private to `native_a11y` on purpose: a
-/// caller must not be able to invent its own budget. The substrate wraps five
-/// of its six deadline-carrying syscalls in public functions
-/// (`acquire_uia2_window` covers enumerate/wake/count, `place_uia2_carrier` and
-/// `clear_uia2_composer` cover set/read). `editable_elements` is the sixth and
-/// has no public wrapper, so no module outside `native_a11y` can list a
-/// composer candidate -- which is every consumer's second step.
-///
-/// This relay does not weaken that encapsulation: it never constructs a
-/// deadline, it records the one `acquire_uia2_window` derived from
-/// `TELEGRAM_UIA2_WINDOW_PLAN.call_timeout_ms` and hands that same value back.
-/// It forwards every method, including `submit_shaped_calls` -- a relay that
-/// answered that one itself would blind the placement guard, so it is pinned by
-/// a test.
-///
-/// It should be deleted the moment `native_a11y` grows the wrapper. Logged for
-/// that lane, not worked around silently.
-struct Uia2DeadlineRelay<'a> {
-    inner: &'a dyn Uia2Syscalls,
-    issued: std::cell::Cell<Option<Uia2Deadline>>,
-}
-
-impl<'a> Uia2DeadlineRelay<'a> {
-    fn new(inner: &'a dyn Uia2Syscalls) -> Self {
-        Self {
-            inner,
-            issued: std::cell::Cell::new(None),
-        }
-    }
-
-    fn record(&self, deadline: Uia2Deadline) -> Uia2Deadline {
-        self.issued.set(Some(deadline));
-        deadline
-    }
-
-    fn issued_deadline(&self) -> Option<Uia2Deadline> {
-        self.issued.get()
-    }
-}
-
-impl Uia2Syscalls for Uia2DeadlineRelay<'_> {
-    fn enumerate_windows(
-        &self,
-        deadline: Uia2Deadline,
-    ) -> Result<Vec<Uia2OwnedWindow>, Uia2CallTimeout> {
-        self.inner.enumerate_windows(self.record(deadline))
-    }
-
-    fn wake_chromium(
-        &self,
-        hwnd: isize,
-        deadline: Uia2Deadline,
-    ) -> Result<bool, Uia2CallTimeout> {
-        self.inner.wake_chromium(hwnd, self.record(deadline))
-    }
-
-    fn element_count(
-        &self,
-        hwnd: isize,
-        route: Uia2TreeRoute,
-        deadline: Uia2Deadline,
-    ) -> Result<usize, Uia2CallTimeout> {
-        self.inner
-            .element_count(hwnd, route, self.record(deadline))
-    }
-
-    fn editable_elements(
-        &self,
-        hwnd: isize,
-        route: Uia2TreeRoute,
-        deadline: Uia2Deadline,
-    ) -> Result<Vec<Uia2Editable>, Uia2CallTimeout> {
-        self.inner
-            .editable_elements(hwnd, route, self.record(deadline))
-    }
-
-    fn set_value(
-        &self,
-        hwnd: isize,
-        route: Uia2TreeRoute,
-        element: &Uia2Editable,
-        value: &str,
-        deadline: Uia2Deadline,
-    ) -> Result<bool, Uia2CallTimeout> {
-        self.inner
-            .set_value(hwnd, route, element, value, self.record(deadline))
-    }
-
-    fn value_of(
-        &self,
-        hwnd: isize,
-        route: Uia2TreeRoute,
-        element: &Uia2Editable,
-        deadline: Uia2Deadline,
-    ) -> Result<Option<String>, Uia2CallTimeout> {
-        self.inner
-            .value_of(hwnd, route, element, self.record(deadline))
-    }
-
-    fn submit_shaped_calls(&self) -> usize {
-        self.inner.submit_shaped_calls()
-    }
-
-    fn settle(&self, millis: u64) {
-        self.inner.settle(millis)
-    }
-}
-
 fn acquire_status(error: Uia2AcquireError) -> TelegramPlacementStatus {
     match error {
         Uia2AcquireError::Resolve(Uia2WindowResolveError::MissingAppOuter)
@@ -356,9 +244,9 @@ type TelegramResolved = (
 );
 
 fn resolve_through_substrate(
-    relay: &Uia2DeadlineRelay<'_>,
+    host: &dyn Uia2Syscalls,
 ) -> Result<TelegramResolved, TelegramLivePlacementReceipt> {
-    let acquired = match acquire_uia2_window(TELEGRAM_UIA2_WINDOW_PLAN, relay) {
+    let acquired = match acquire_uia2_window(TELEGRAM_UIA2_WINDOW_PLAN, host) {
         Ok(acquired) => acquired,
         Err(error) => {
             let mut receipt = TelegramLivePlacementReceipt::refused(acquire_status(error));
@@ -372,16 +260,9 @@ fn resolve_through_substrate(
     receipt.woke = acquired.woke;
     receipt.settled_ms = acquired.settled_ms;
 
-    // The one rung the substrate does not expose publicly; see Uia2DeadlineRelay.
-    let Some(deadline) = relay.issued_deadline() else {
-        receipt.status = TelegramPlacementStatus::AccessibilityUnavailable;
-        return Err(receipt);
-    };
-    let editables = match relay.editable_elements(
-        acquired.window.bound_hwnd,
-        acquired.window.tree_route,
-        deadline,
-    ) {
+    // The substrate derives this call's deadline from the plan's own
+    // `call_timeout_ms`, the same budget the acquisition above spent.
+    let editables = match acquire_uia2_editables(host, acquired) {
         Ok(editables) => editables,
         Err(_) => {
             receipt.status = TelegramPlacementStatus::CallTimedOut;
@@ -403,7 +284,7 @@ fn resolve_through_substrate(
 }
 
 fn place_through_substrate(
-    relay: &Uia2DeadlineRelay<'_>,
+    host: &dyn Uia2Syscalls,
     request: TelegramLivePlacementRequest<'_>,
 ) -> (
     TelegramLivePlacementReceipt,
@@ -416,13 +297,13 @@ fn place_through_substrate(
         );
     }
 
-    let (mut receipt, acquired, composer) = match resolve_through_substrate(relay) {
+    let (mut receipt, acquired, composer) = match resolve_through_substrate(host) {
         Ok(resolved) => resolved,
         Err(receipt) => return (receipt, None),
     };
 
     match place_uia2_carrier(
-        relay,
+        host,
         acquired,
         &composer,
         request.carrier,
@@ -469,8 +350,7 @@ pub fn drive_telegram_composer_placement(
     host: &dyn Uia2Syscalls,
     request: TelegramLivePlacementRequest<'_>,
 ) -> TelegramLivePlacementReceipt {
-    let relay = Uia2DeadlineRelay::new(host);
-    place_through_substrate(&relay, request).0
+    place_through_substrate(host, request).0
 }
 
 /// Probe Telegram's composer and then clear it.
@@ -484,15 +364,14 @@ pub fn probe_telegram_composer_write_then_clear(
     host: &dyn Uia2Syscalls,
     request: TelegramLivePlacementRequest<'_>,
 ) -> TelegramLivePlacementReceipt {
-    let relay = Uia2DeadlineRelay::new(host);
-    let (mut receipt, placed) = place_through_substrate(&relay, request);
+    let (mut receipt, placed) = place_through_substrate(host, request);
     if let Some(placed) = placed {
-        let before_clear = relay.submit_shaped_calls();
-        if clear_uia2_composer(&relay, placed.acquired, &placed.composer).is_err() {
+        let before_clear = host.submit_shaped_calls();
+        if clear_uia2_composer(host, placed.acquired, &placed.composer).is_err() {
             receipt.placed = false;
             receipt.status = TelegramPlacementStatus::ProbeClearFailed;
         }
-        if relay.submit_shaped_calls() > before_clear {
+        if host.submit_shaped_calls() > before_clear {
             return TelegramLivePlacementReceipt::refused_after_submit_shaped_call();
         }
     }
@@ -506,8 +385,7 @@ pub fn probe_telegram_composer_write_then_clear(
 /// elements it exposed, and that exactly one editable element is the composer,
 /// without touching the owner's chat.
 pub fn probe_telegram_composer_reachable(host: &dyn Uia2Syscalls) -> TelegramLivePlacementReceipt {
-    let relay = Uia2DeadlineRelay::new(host);
-    match resolve_through_substrate(&relay) {
+    match resolve_through_substrate(host) {
         Ok((mut receipt, _, _)) => {
             receipt.status = TelegramPlacementStatus::ComposerResolved;
             receipt
@@ -799,6 +677,11 @@ fn valid_candidate_text(value: &str, max_text_bytes: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Only the recorded-host fakes below still name the syscall seam's own
+    // types; the production half reaches `editable_elements` through
+    // `acquire_uia2_editables` and never handles a deadline itself.
+    use crate::native_a11y::{Uia2CallTimeout, Uia2Deadline, Uia2OwnedWindow, Uia2TreeRoute};
     use crate::native_a11y::tests::{composer, telegram_graph, RecordedHost};
     use crate::native_a11y::{
         uia2_name_is_composer, Uia2WakePolicy, Uia2WindowShape, ELECTRON_OUTER_WINDOW_CLASS,
@@ -1155,16 +1038,23 @@ mod tests {
         );
     }
 
+    /// Was `the_deadline_relay_cannot_blind_the_submit_shaped_guard_or_invent_a_budget`.
+    /// D-155 gave the substrate a public `acquire_uia2_editables`, so the relay
+    /// that stood between this adapter and the backend is gone; the two things
+    /// it was pinned for still have to hold of the direct path.
     #[test]
-    fn the_deadline_relay_cannot_blind_the_submit_shaped_guard_or_invent_a_budget() {
+    fn nothing_stands_between_the_placement_guard_and_the_backends_own_counter() {
+        // The submit-shaped counter is read straight off the backend. Anything
+        // in the way that answered it itself would blind every placement guard.
         let host = signed_in();
         host.submit_shaped.set(3);
-        let relay = Uia2DeadlineRelay::new(&host);
+        let receipt = drive_telegram_composer_placement(&host, request(CARRIER));
         assert_eq!(
-            relay.submit_shaped_calls(),
-            3,
-            "a relay that answered this itself would blind every placement guard"
+            receipt.status,
+            TelegramPlacementStatus::SubmitShapedCallObserved,
+            "a backend already admitting a submit-shaped call must refuse the path"
         );
+        assert!(!receipt.placed);
 
         let host = signed_in();
         let receipt = drive_telegram_composer_placement(&host, request(CARRIER));
@@ -1175,8 +1065,30 @@ mod tests {
             deadlines
                 .iter()
                 .all(|deadline| *deadline == TELEGRAM_UIA2_DEFAULT_CALL_TIMEOUT_MS),
-            "every call, including the relayed editable_elements, must carry the \
-             plan's own deadline, saw {deadlines:?}"
+            "every call, including the editable scan, must carry the plan's own \
+             deadline, saw {deadlines:?}"
+        );
+    }
+
+    /// The adapter must not have grown its own budget along the way. It reaches
+    /// `editable_elements` only through the substrate's door, which derives the
+    /// deadline from the plan; a `Uia2Deadline` built in this module would be
+    /// the invented budget the token exists to prevent.
+    #[test]
+    fn the_adapter_never_builds_a_deadline_of_its_own() {
+        let production = production_code(include_str!("native_telegram_adapter.rs"));
+        assert!(
+            production.contains("fn drive_telegram_composer_placement"),
+            "the scanned region lost its production code, so the scan is vacuous"
+        );
+        assert!(
+            production.contains("acquire_uia2_editables"),
+            "the editable scan must go through the substrate's public door"
+        );
+        assert!(
+            !production.contains("uia2deadline"),
+            "this module must not name the deadline token at all: the substrate \
+             derives every budget from the plan"
         );
     }
 
