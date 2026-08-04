@@ -10059,10 +10059,16 @@ mod native_discord_carrier_command_tests {
     #[test]
     fn native_carrier_command_reproves_product_context_immediately_before_placement_order() {
         let source = include_str!("main.rs");
+        // The terminator is the next item's `struct` line and nothing above it.
+        // It used to be `"#[derive(Serialize)]\nstruct NativeDiscordOverlayStateDto"`,
+        // and a later change inserted `#[serde(rename_all = "camelCase")]`
+        // between those two lines, so the bound stopped matching and this test
+        // panicked with "function must be bounded" rather than asserting
+        // anything. Nobody saw it, because the bin's tests did not compile.
         let command = function_body(
             source,
             "#[tauri::command]\nfn send_native_discord_overlay_carrier(",
-            "#[derive(Serialize)]\nstruct NativeDiscordOverlayStateDto",
+            "struct NativeDiscordOverlayStateDto {",
         );
         let latch = command
             .find("let carrier_placement = overlay_state.begin_carrier_placement()?;")
@@ -10081,8 +10087,13 @@ mod native_discord_carrier_command_tests {
             .find("require_same_overlay_context(&app, epoch, &host)?;")
             .map(|offset| context_check + offset)
             .expect("overlay context must be re-proven");
+        // Matched without the `let placement_context =` prefix: rustfmt wraps
+        // that statement across two lines (main.rs:3400-3401), so the one-line
+        // form this used to look for has not existed for some time. The
+        // constructor call and its arguments are what the assertion is about,
+        // and they are on one line and unique.
         let authority = command
-            .find("let placement_context = NativeDiscordPlacementContext::new(&placement_scope_binding, mode);")
+            .find("NativeDiscordPlacementContext::new(&placement_scope_binding, mode);")
             .expect("placement authority must be minted from the fresh scope");
         let call = command
             .find("let receipt = composer.place_carrier(")
