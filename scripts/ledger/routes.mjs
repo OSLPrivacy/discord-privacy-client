@@ -47,12 +47,24 @@ function collectUnion(source, starts, typeName) {
   return values;
 }
 
+/**
+ * Names of module-level consts initialised from a Vite compile-time define,
+ * e.g. `const signalQaShellEnabled = import.meta.env.VITE_OSL_SIGNAL_QA_SHELL === "1"`.
+ * Vite substitutes the define before Rollup, so a branch guarded by one of
+ * these is a constant in every build and is dead-code-eliminated.
+ */
+function buildDefineFlags(src) {
+  return new Set([...src.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*import\.meta\.env\b/g)].map((m) => m[1]));
+}
+
 function collectAssigned(root, variable, attrNames) {
   const assigned = new Map();
+  const gated = new Map();
   const unresolved = [];
   for (const rel of uiSources(root)) {
     const src = blankComments(read(root, rel));
     const starts = lineIndex(src);
+    const flags = buildDefineFlags(src);
     const assign = new RegExp(`(?<![\\w$.-])${variable}\\s*=\\s*(?![=>])([^;\\n]+)`, "g");
     for (const m of src.matchAll(assign)) {
       const lineStart = src.lastIndexOf("\n", m.index) + 1;
@@ -60,15 +72,17 @@ function collectAssigned(root, variable, attrNames) {
       if (/\b(?:const|let|var)\s+$/.test(prefix)) continue;
       const lit = /^"([^"]+)"|'([^']+)'|`([^`$]+)`/.exec(m[1].trim());
       const site = `${rel}:${lineOf(starts, m.index)}`;
-      if (lit) add(assigned, lit[1] ?? lit[2] ?? lit[3], site);
-      else unresolved.push({ site, expr: m[1].trim().slice(0, 80) });
+      const guard = /\bif\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\{[^{}]*$/.exec(src.slice(Math.max(0, m.index - 400), m.index));
+      const buildGated = guard !== null && flags.has(guard[1]);
+      if (lit) add(buildGated ? gated : assigned, lit[1] ?? lit[2] ?? lit[3], site);
+      else if (!buildGated) unresolved.push({ site, expr: m[1].trim().slice(0, 80) });
     }
     for (const attr of attrNames) {
       const data = new RegExp(`\\b${attr}=["']([^"'$<{]+)["']`, "g");
       for (const m of src.matchAll(data)) add(assigned, m[1], `${rel}:${lineOf(starts, m.index)}`);
     }
   }
-  return { assigned, unresolved };
+  return { assigned, gated, unresolved };
 }
 
 function collectDispatches(rel, src, variable) {
@@ -106,9 +120,23 @@ function collectDispatches(rel, src, variable) {
   return { dispatched, unresolved };
 }
 
-function analyse(prefix, declared, assigned, dispatched) {
+function analyse(prefix, declared, assigned, gated, dispatched) {
   const violations = [];
   const live = new Set([...assigned.keys(), ...declared.keys()]);
+  // A route only ever assigned behind a compile-time define is not live in this
+  // entry's bundle, so it must NOT have a dispatcher branch here: one would
+  // render nothing (D-105). Assert that, rather than demanding a dead branch.
+  for (const route of gated.keys()) {
+    if (assigned.has(route)) continue;
+    live.delete(route);
+    if (!dispatched.has(route)) continue;
+    violations.push({
+      id: `${prefix}:${route}`,
+      kind: "build-gated-route-has-dispatcher",
+      detail: "route is only assigned behind a Vite compile-time define, so this entry's dispatcher branch for it can never render",
+      sites: dispatched.get(route),
+    });
+  }
   for (const route of [...live].sort()) {
     if (dispatched.has(route)) continue;
     violations.push({
@@ -119,7 +147,7 @@ function analyse(prefix, declared, assigned, dispatched) {
     });
   }
   for (const route of [...dispatched.keys()].sort()) {
-    if (live.has(route)) continue;
+    if (live.has(route) || gated.has(route)) continue;
     violations.push({
       id: `${prefix}:${route}`,
       kind: "dispatched-route-never-assigned",
@@ -144,8 +172,8 @@ export function main(argv = process.argv) {
   const routeDispatches = collectDispatches(mainRel, mainSrc, "route");
   const onboardingDispatches = collectDispatches(mainRel, mainSrc, "onboardingRoute");
   const violations = [
-    ...analyse("route", collectUnion(mainSrc, starts, "Route"), topAssigned.assigned, routeDispatches.dispatched),
-    ...analyse("onboarding", collectUnion(mainSrc, starts, "OnboardingRoute"), onboardingAssigned.assigned, onboardingDispatches.dispatched),
+    ...analyse("route", collectUnion(mainSrc, starts, "Route"), topAssigned.assigned, topAssigned.gated, routeDispatches.dispatched),
+    ...analyse("onboarding", collectUnion(mainSrc, starts, "OnboardingRoute"), onboardingAssigned.assigned, onboardingAssigned.gated, onboardingDispatches.dispatched),
   ];
   for (const u of [...routeDispatches.unresolved, ...onboardingDispatches.unresolved]) {
     violations.push({
@@ -165,6 +193,7 @@ export function main(argv = process.argv) {
       "onboarding routes assigned": onboardingAssigned.assigned.size,
       "onboarding routes dispatched": onboardingDispatches.dispatched.size,
       "non-literal route assignments": topAssigned.unresolved.length + onboardingAssigned.unresolved.length,
+      "build-define-gated route assignments": topAssigned.gated.size + onboardingAssigned.gated.size,
     },
   }));
 }
