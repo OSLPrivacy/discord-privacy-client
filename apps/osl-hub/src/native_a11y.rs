@@ -2457,6 +2457,113 @@ pub(crate) mod tests {
         );
     }
 
+    /// Drive a REAL composer through this substrate on a Windows host.
+    ///
+    /// This is the only thing here that touches a live provider, and it cannot
+    /// run in this lane: `win32` is `cfg(target_os = "windows")` and this
+    /// machine is Linux. It is `#[ignore]`d so it never runs unattended, and it
+    /// reads its provider from the environment so it can be pointed at each of
+    /// the four in turn.
+    ///
+    /// ```text
+    /// # from WSL, build the Windows test binary:
+    /// flock /tmp/osl-cargo.lock cargo test --manifest-path apps/osl-hub/Cargo.toml \
+    ///   --lib --target x86_64-pc-windows-gnu -j 4 --no-run
+    /// # then, on the Windows host, with the provider open and signed in:
+    /// set OSL_UIA2_PROBE=telegram
+    /// osl_hub-<hash>.exe --ignored --test-threads=1 --nocapture drive_a_real_composer
+    /// ```
+    ///
+    /// Placement only. Setting `OSL_UIA2_PROBE_CARRIER` is what opts into a
+    /// write; the composer is cleared immediately afterwards, and nothing here
+    /// can commit -- there is no verb in `Uia2Syscalls` that could.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "drives a live provider on a Windows host; run explicitly"]
+    fn drive_a_real_composer_through_the_substrate() {
+        let provider = std::env::var("OSL_UIA2_PROBE").unwrap_or_else(|_| "telegram".to_owned());
+        const PROBE_CALL_TIMEOUT_MS: u64 = 5_000;
+        let plan = match provider.as_str() {
+            "discord" => Uia2WindowPlan::chromium_outer_msaa_root(
+                "Discord",
+                "Discord",
+                ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
+                90_000,
+                PROBE_CALL_TIMEOUT_MS,
+            ),
+            "telegram" => Uia2WindowPlan::direct_outer_window(
+                "Telegram",
+                "Telegram",
+                TELEGRAM_OUTER_WINDOW_CLASS,
+                PROBE_CALL_TIMEOUT_MS,
+            ),
+            "signal" => Uia2WindowPlan::chromium_renderer_child(
+                "Signal",
+                "Signal",
+                90_000,
+                PROBE_CALL_TIMEOUT_MS,
+            ),
+            "whatsapp" => Uia2WindowPlan::sibling_chromium_renderer(
+                "WhatsApp",
+                "WhatsApp",
+                WHATSAPP_OUTER_WINDOW_CLASS,
+                WEBVIEW2_PROCESS_NAME,
+                90_000,
+                PROBE_CALL_TIMEOUT_MS,
+            ),
+            other => panic!("OSL_UIA2_PROBE={other} is not one of discord|telegram|signal|whatsapp"),
+        };
+
+        let host = win32::Uia2Win32Host::desktop();
+        let acquired = acquire_uia2_window(plan, &host)
+            .unwrap_or_else(|error| panic!("{provider}: acquire failed: {error:?}"));
+        eprintln!(
+            "{provider}: bound_hwnd=<redacted> pid={} elements={} woke={} settled_ms={}",
+            acquired.window.bound_process_id, acquired.elements, acquired.woke, acquired.settled_ms
+        );
+
+        let editables = host
+            .editable_elements(
+                acquired.window.bound_hwnd,
+                acquired.window.tree_route,
+                Uia2Deadline(acquired.window.call_timeout_ms),
+            )
+            .expect("the editable scan must answer inside its deadline");
+        eprintln!(
+            "{provider}: editable={} writable={}",
+            editables.len(),
+            editables.iter().filter(|element| element.writable()).count()
+        );
+        for element in &editables {
+            eprintln!(
+                "  edit name={:?} value_pattern={} enabled={} kbd={} read_only={}",
+                element.name,
+                element.value_pattern,
+                element.enabled,
+                element.keyboard_focusable,
+                element.read_only
+            );
+        }
+
+        let composer = resolve_uia2_composer(MATCHER, &editables)
+            .unwrap_or_else(|error| panic!("{provider}: no composer resolved: {error:?}"));
+        eprintln!("{provider}: composer name={:?}", composer.name);
+
+        let Ok(carrier) = std::env::var("OSL_UIA2_PROBE_CARRIER") else {
+            eprintln!("{provider}: read-only probe, nothing written");
+            return;
+        };
+        let receipt = place_uia2_carrier(&host, acquired, &composer, &carrier, false)
+            .unwrap_or_else(|error| panic!("{provider}: placement refused: {error:?}"));
+        eprintln!(
+            "{provider}: placed={} readback_holds_carrier={} submit_shaped={}",
+            receipt.placed, receipt.readback_holds_carrier, receipt.submit_shaped_observed
+        );
+        clear_uia2_composer(&host, acquired, &composer)
+            .unwrap_or_else(|error| panic!("{provider}: the composer did not clear: {error:?}"));
+        eprintln!("{provider}: composer cleared -- nothing was sent");
+    }
+
     #[test]
     fn discords_plan_is_not_the_outer_window_mutant() {
         let discord = discord_plan();
