@@ -31,11 +31,13 @@ use zeroize::Zeroize;
 fn attachment_store_client(
     config_root: &Path,
 ) -> Result<ipc::cipher_store_client::CipherStoreClient, String> {
-    ipc::cipher_store_client::CipherStoreClient::new(
-        ipc::cipher_store_client::resolve_cipher_store_base_url(config_root),
-    )
-    .map_err(|error| match error {
-        ipc::cipher_store_client::CipherStoreError::RouteUnavailable(message) => message,
+    let base_url = ipc::cipher_store_client::resolve_cipher_store_base_url(config_root)
+        .map_err(|error| error.to_string())?;
+    ipc::cipher_store_client::CipherStoreClient::new(base_url).map_err(|error| match &error {
+        ipc::cipher_store_client::CipherStoreError::RouteUnavailable(message) => message.clone(),
+        ipc::cipher_store_client::CipherStoreError::ConfigOverrideRefused { .. } => {
+            error.to_string()
+        }
         _ => "OSL attachment transport is unavailable".to_owned(),
     })
 }

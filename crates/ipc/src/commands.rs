@@ -12249,18 +12249,24 @@ pub struct TierGateStatusDto {
 /// The only remote keyserver origin trusted by a release client.
 pub const DEFAULT_KEYSERVER_BASE_URL: &str = "https://keyserver.oslprivacy.com";
 
-/// Best-effort read of `<config_dir>/keyserver.json` → `base_url`.
+/// Best-effort read of a string field from `<config_dir>/keyserver.json`.
 /// Mirrors the inline helper in `cmd_osl_get_identity_info`; returns
-/// `None` on any failure (file missing, malformed JSON, no
-/// `base_url` field).
-fn read_keyserver_base_url(dir: &std::path::Path) -> Option<String> {
+/// `None` on any failure (file missing, malformed JSON, no requested field).
+pub(crate) fn read_keyserver_json_string_field(
+    dir: &std::path::Path,
+    field: &str,
+) -> Option<String> {
     let path = dir.join("keyserver.json");
     let raw = std::fs::read_to_string(&path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    v.get("base_url")?.as_str().map(|s| s.to_string())
+    v.get(field)?.as_str().map(|s| s.to_string())
 }
 
-fn is_loopback_keyserver_override(value: &str) -> bool {
+fn read_keyserver_base_url(dir: &std::path::Path) -> Option<String> {
+    read_keyserver_json_string_field(dir, "base_url")
+}
+
+pub(crate) fn is_loopback_config_origin_override(value: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(value) else {
         return false;
     };
@@ -12289,7 +12295,7 @@ fn resolve_keyserver_base_url_with_policy(
     if allow_debug_override {
         if let Some(value) = read_keyserver_base_url(dir) {
             let canonical = value.trim_end_matches('/');
-            if is_loopback_keyserver_override(canonical) {
+            if is_loopback_config_origin_override(canonical) {
                 return canonical.to_string();
             }
         }

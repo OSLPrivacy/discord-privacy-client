@@ -24,10 +24,10 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-/// Built-in production cipher-store. Overridable per install via
-/// `<config_dir>/keyserver.json` field `cipher_store_url` (same file
-/// the keyserver base URL override lives in — one config surface for
-/// both backends).
+/// Built-in production cipher-store. Release clients are pinned to this
+/// origin; debug/test builds may override it via `<config_dir>/keyserver.json`
+/// field `cipher_store_url` only when the override is a numeric loopback
+/// HTTP(S) origin.
 pub const DEFAULT_CIPHER_STORE_BASE_URL: &str = "https://ciphers.oslprivacy.com";
 
 /// Allowed TTL values mirror the server-side validation in
@@ -336,20 +336,41 @@ where
     StorageGrant::from_authorization(&minted.authorization)
 }
 
-/// Resolve the cipher-store base URL from the config dir's
-/// `keyserver.json`, falling back to the built-in production default.
-pub fn resolve_cipher_store_base_url(dir: &Path) -> String {
-    let path = dir.join("keyserver.json");
-    if let Ok(raw) = std::fs::read_to_string(&path) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
-            if let Some(s) = v.get("cipher_store_url").and_then(|x| x.as_str()) {
-                if !s.is_empty() {
-                    return s.trim_end_matches('/').to_string();
-                }
-            }
+fn read_cipher_store_url(dir: &Path) -> Option<String> {
+    crate::commands::read_keyserver_json_string_field(dir, "cipher_store_url")
+}
+
+fn resolve_cipher_store_base_url_with_policy(
+    dir: &Path,
+    allow_debug_override: bool,
+) -> Result<String, CipherStoreError> {
+    if let Some(value) = read_cipher_store_url(dir) {
+        let canonical = value.trim_end_matches('/');
+        if canonical.is_empty() || canonical == DEFAULT_CIPHER_STORE_BASE_URL {
+            return Ok(DEFAULT_CIPHER_STORE_BASE_URL.to_string());
         }
+        if allow_debug_override && crate::commands::is_loopback_config_origin_override(canonical) {
+            return Ok(canonical.to_string());
+        }
+        return Err(CipherStoreError::ConfigOverrideRefused {
+            configured: canonical.to_string(),
+            default: DEFAULT_CIPHER_STORE_BASE_URL,
+            build: if allow_debug_override {
+                "debug"
+            } else {
+                "release"
+            },
+        });
     }
-    DEFAULT_CIPHER_STORE_BASE_URL.to_string()
+    Ok(DEFAULT_CIPHER_STORE_BASE_URL.to_string())
+}
+
+/// Resolve the cipher-store base URL. Release builds are pinned to the
+/// production HTTPS origin and loudly refuse a non-default
+/// `cipher_store_url`. Debug/test builds keep the same override channel, but
+/// only for HTTP(S) numeric loopback URLs, matching the keyserver policy.
+pub fn resolve_cipher_store_base_url(dir: &Path) -> Result<String, CipherStoreError> {
+    resolve_cipher_store_base_url_with_policy(dir, cfg!(debug_assertions))
 }
 
 /// Successful upload response.
@@ -401,6 +422,19 @@ pub enum CipherStoreError {
     /// credential itself.
     #[error("grant malformed: {0}")]
     GrantMalformed(String),
+    /// A user-controlled `keyserver.json` tried to repoint the blob store
+    /// outside the same release/debug origin policy used for the keyserver.
+    /// This is deliberately loud: otherwise the send path could either
+    /// silently honor a tampered host or silently fall back while the user
+    /// believes their config took effect.
+    #[error(
+        "cipher_store_url override {configured:?} refused for {build} build; allowed origins are pinned {default} in release builds and numeric loopback HTTP(S) in debug/test builds"
+    )]
+    ConfigOverrideRefused {
+        configured: String,
+        default: &'static str,
+        build: &'static str,
+    },
 }
 
 const MAX_BLOB_BYTES: usize = 64 * 1024;
@@ -1108,6 +1142,67 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
     use std::thread;
+
+    fn write_cipher_store_override(dir: &Path, url: &str) {
+        std::fs::write(
+            dir.join("keyserver.json"),
+            format!(r#"{{"cipher_store_url":"{url}"}}"#),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn mutant_remove_release_guard_would_accept_arbitrary_cipher_store_host() {
+        let dir = tempfile::tempdir().unwrap();
+        write_cipher_store_override(dir.path(), "https://evil.example");
+
+        let result = resolve_cipher_store_base_url_with_policy(dir.path(), false);
+
+        match result {
+            Err(CipherStoreError::ConfigOverrideRefused {
+                configured,
+                default,
+                build,
+            }) => {
+                assert_eq!(configured, "https://evil.example");
+                assert_eq!(default, DEFAULT_CIPHER_STORE_BASE_URL);
+                assert_eq!(build, "release");
+            }
+            other => panic!("release policy must not accept arbitrary cipher_store_url: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mutant_foreign_host_simulated_release_refusal_is_loud() {
+        let dir = tempfile::tempdir().unwrap();
+        write_cipher_store_override(dir.path(), "https://attacker.invalid/blob");
+
+        let error = resolve_cipher_store_base_url_with_policy(dir.path(), false)
+            .expect_err("release policy must refuse a foreign cipher-store override");
+        let rendered = error.to_string();
+
+        assert!(rendered.contains("cipher_store_url"), "{rendered}");
+        assert!(rendered.contains("release build"), "{rendered}");
+        assert!(
+            rendered.contains("https://attacker.invalid/blob"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(DEFAULT_CIPHER_STORE_BASE_URL),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn mutant_debug_policy_accepts_legitimate_loopback_cipher_store_override() {
+        let dir = tempfile::tempdir().unwrap();
+        write_cipher_store_override(dir.path(), "http://127.0.0.1:8787/");
+
+        assert_eq!(
+            resolve_cipher_store_base_url_with_policy(dir.path(), true).unwrap(),
+            "http://127.0.0.1:8787"
+        );
+    }
 
     #[test]
     fn t6_t19_client_uses_header_capabilities_and_non_destructive_fetch() {

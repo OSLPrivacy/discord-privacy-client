@@ -63,10 +63,19 @@ impl AuthorizedStoreRoute {
 
     #[cfg(feature = "core")]
     pub fn cipher_store_client(&self, config_dir: &Path) -> Result<CipherStoreClient, String> {
-        let base_url = ipc::cipher_store_client::resolve_cipher_store_base_url(config_dir);
+        let base_url = ipc::cipher_store_client::resolve_cipher_store_base_url(config_dir)
+            .map_err(|error| error.to_string())?;
         match self {
             Self::Direct => CipherStoreClient::new(base_url)
-                .map_err(|_| "OSL store transport is unavailable".to_owned()),
+                .map_err(|error| match &error {
+                    ipc::cipher_store_client::CipherStoreError::RouteUnavailable(message) => {
+                        message.clone()
+                    }
+                    ipc::cipher_store_client::CipherStoreError::ConfigOverrideRefused {
+                        ..
+                    } => error.to_string(),
+                    _ => "OSL store transport is unavailable".to_owned(),
+                }),
             Self::Tor { http } => Ok(CipherStoreClient::with_http_client(base_url, http.clone())),
         }
     }
