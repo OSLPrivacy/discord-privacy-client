@@ -1,6 +1,6 @@
 {
-  "note": "Ledger 4 command triage. Every entry is an ADMISSION: DEAD means the issuing module does not ship in the default production bundle; LIVE BREAK means bundled frontend code invokes an unregistered command; LEDGER DEFECT means the scanner reports a dynamic or type-only form it does not currently resolve.",
-  "highWaterMark": 46,
+  "note": "Ledger 4 command triage. Every entry is an ADMISSION: DEAD means the issuing module does not ship in the default production bundle; LIVE BREAK means bundled frontend code invokes an unregistered command; LEDGER DEFECT means the scanner reports a dynamic or type-only form it does not currently resolve.  A LIVE BREAK IS NOT AN EXCEPTION. Eight were listed here and removed by the conductor on 2026-08-03: an exception suppresses the violation entirely (lib/report.mjs:74), so accepting a live break turns this ledger GREEN over eight bundled modules invoking commands that do not exist. They stay RED until registered, deleted, or ruled out of scope. See DEFECTS.md D-137.",
+  "highWaterMark": 38,
   "entries": [
     {
       "id": "append_osl_asset_chunk",
@@ -52,13 +52,6 @@
       "citation": "scripts/ledger/exceptions/bundle.json:134"
     },
     {
-      "id": "execute_discord_guided_deletion",
-      "class": "accepted",
-      "status": "live-break",
-      "reason": "LIVE BREAK: apps/osl-hub-ui/src/adapters.ts is bundled and invokes this unregistered command; this lane may not add a Rust stub or touch adapters.ts.",
-      "citation": "apps/osl-hub-ui/src/adapters.ts:1433"
-    },
-    {
       "id": "finish_osl_asset_upload",
       "class": "accepted",
       "status": "dead-client",
@@ -73,25 +66,11 @@
       "citation": "scripts/ledger/exceptions/bundle.json:318"
     },
     {
-      "id": "host_osl_lan_room",
-      "class": "accepted",
-      "status": "live-break",
-      "reason": "LIVE BREAK: apps/osl-hub-ui/src/osl-collab.ts is bundled and invokes this unregistered command; no owned Rust or capability file can be changed here.",
-      "citation": "apps/osl-hub-ui/src/osl-collab.ts:69"
-    },
-    {
       "id": "inspect_osl_plugin_asset",
       "class": "accepted",
       "status": "dead-client",
       "reason": "DEAD: apps/osl-hub-ui/src/osl-plugin-runtime.ts is outside every default production bundle per ledger 7; this module does not ship.",
       "citation": "scripts/ledger/exceptions/bundle.json:214"
-    },
-    {
-      "id": "join_osl_lan_room",
-      "class": "accepted",
-      "status": "live-break",
-      "reason": "LIVE BREAK: apps/osl-hub-ui/src/osl-collab.ts is bundled and invokes this unregistered command; no owned Rust or capability file can be changed here.",
-      "citation": "apps/osl-hub-ui/src/osl-collab.ts:70"
     },
     {
       "id": "link_osl_asset_project",
@@ -136,25 +115,11 @@
       "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
     },
     {
-      "id": "osl_mail_list_threads",
-      "class": "accepted",
-      "status": "live-break",
-      "reason": "LIVE BREAK: apps/osl-hub-ui/src/osl-mail-adapter.ts is bundled and invokes this unregistered OSL Mail command; Rust registers only the other OSL Mail handlers.",
-      "citation": "apps/osl-hub-ui/src/osl-mail-adapter.ts:226"
-    },
-    {
       "id": "permanently_delete_osl_note",
       "class": "accepted",
       "status": "dead-client",
       "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
       "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
-    },
-    {
-      "id": "preview_discord_guided_deletion",
-      "class": "accepted",
-      "status": "live-break",
-      "reason": "LIVE BREAK: apps/osl-hub-ui/src/adapters.ts is bundled and invokes this unregistered command; the Rust surface test explicitly forbids registering it.",
-      "citation": "apps/osl-hub-ui/src/adapters.ts:1415"
     },
     {
       "id": "read_osl_asset_chunk",
@@ -213,13 +178,6 @@
       "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
     },
     {
-      "id": "scan_discord_own_messages_for_deletion",
-      "class": "accepted",
-      "status": "live-break",
-      "reason": "LIVE BREAK: apps/osl-hub-ui/src/adapters.ts is bundled and invokes this unregistered command; this lane may not add a Rust stub or touch adapters.ts.",
-      "citation": "apps/osl-hub-ui/src/adapters.ts:1402"
-    },
-    {
       "id": "scrub_imap_delete",
       "class": "accepted",
       "status": "dead-client",
@@ -232,20 +190,6 @@
       "status": "dead-client",
       "reason": "DEAD: apps/osl-hub-ui/src/scrub-imap-ipc.ts is outside every default production bundle per ledger 7; this module does not ship.",
       "citation": "scripts/ledger/exceptions/bundle.json:310"
-    },
-    {
-      "id": "stop_osl_lan_room",
-      "class": "accepted",
-      "status": "live-break",
-      "reason": "LIVE BREAK: apps/osl-hub-ui/src/osl-collab.ts is bundled and invokes this unregistered command; no owned Rust or capability file can be changed here.",
-      "citation": "apps/osl-hub-ui/src/osl-collab.ts:72"
-    },
-    {
-      "id": "surface_adapter_paint_targets",
-      "class": "accepted",
-      "status": "live-break",
-      "reason": "LIVE BREAK: apps/osl-hub-ui/src/native-overlay-adapter.ts is bundled and invokes this unregistered command; native-overlay-adapter.ts is explicitly outside this lane.",
-      "citation": "apps/osl-hub-ui/src/native-overlay-adapter.ts:124"
     },
     {
       "id": "unresolved-invoke:apps/osl-hub-ui/src/core.ts:170",
