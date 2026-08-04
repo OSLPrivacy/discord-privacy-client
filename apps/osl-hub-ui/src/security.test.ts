@@ -282,8 +282,6 @@ describe("bundled preview security boundary", () => {
       "allow-get-scrub-index-scan",
       "allow-append-scrub-index-chunk",
       "allow-get-scrub-index-status",
-      "allow-pause-scrub-index",
-      "allow-resume-scrub-index",
       "allow-cancel-scrub-index",
       "allow-get-autoscrub-run-fl",
       "allow-start-autoscrub-reviewed-run",
@@ -1395,9 +1393,25 @@ describe("bundled preview security boundary", () => {
 
     // Positive implementation controls: all three prototype functions must
     // remain, so removing the subsystem cannot satisfy zero integration.
+    // All three must still EXIST, so deleting the subsystem cannot satisfy
+    // "zero integration" by removing it.
     for (const symbol of sequenceSymbols) {
       expect(security).toContain(`pub fn ${symbol}(`);
-      expect(productionSequenceReferenceCount(productionRust, symbol)).toBe(1);
+    }
+
+    // B0-16 wired the SENDING half: `next_peer_send_seq` now has a real caller
+    // on the OSL Chat send path, so pinning it at exactly one reference is
+    // measuring the wrong thing. What "implemented-unwired" actually means here
+    // is that ENFORCEMENT is not reachable -- and that is `admit_peer_content_seq`,
+    // which must still have no caller. Both B0-16 Adversaries reached the same
+    // conclusion independently: the `EnforcementUnavailable` outcome below stays
+    // correct precisely because this symbol is unwired.
+    expect(productionSequenceReferenceCount(productionRust, "admit_peer_content_seq")).toBe(1);
+    // The producing half may be called; it must not be DELETED.
+    for (const symbol of ["next_peer_send_seq", "peer_scope_commitment"] as const) {
+      expect(
+        productionSequenceReferenceCount(productionRust, symbol),
+      ).toBeGreaterThanOrEqual(1);
     }
     expect(security).toContain("counters\n        .next_send_seq(&commitment)");
     expect(security).toContain(
@@ -1449,12 +1463,19 @@ describe("bundled preview security boundary", () => {
         "let admit = security::admit_peer_content_seq;",
       ],
     ] as const) {
+      // Test-of-the-test: appending one synthetic reference must move the
+      // counter by exactly one. Asserting the absolute value 2 assumed every
+      // symbol had exactly one real reference, which stopped being true when
+      // B0-16 wired the sending half -- so this is now relative to the real
+      // baseline, which keeps the property (the counter notices a new
+      // reference) without re-encoding a wiring count that is free to change.
+      const baseline = productionSequenceReferenceCount(productionRust, symbol);
       expect(
         productionSequenceReferenceCount(
           `${productionRust}\n${syntheticReference}`,
           symbol,
         ),
-      ).toBe(2);
+      ).toBe(baseline + 1);
     }
     expect(security).not.toContain(
       "which the broker puts on\n/// the wire next to `send_seq`",
