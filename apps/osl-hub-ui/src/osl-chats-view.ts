@@ -1,3 +1,8 @@
+// D-172 MUTANT M3. A type error vitest structurally cannot see: vitest does not
+// typecheck and vite/esbuild strips types without checking them. Gate (c) runs
+// `tsc --noEmit && vite build` and must go RED on this line alone.
+const D172_MUTANT_WIDTH: number = "not a number";
+void D172_MUTANT_WIDTH;
 // Matches the enforced OSL Chat logical-message limit in broker.rs.
 export const OSL_CHAT_MAX_DRAFT_BYTES = 1024 * 1024;
 
