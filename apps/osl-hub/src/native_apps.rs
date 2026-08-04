@@ -437,6 +437,41 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         display_name: "Discord",
         adapter_service: AdapterService::Discord,
         adapter_surface: AdapterSurface::InstalledNativeClient,
+        // D-203, ESCALATED TO THE OWNER 2026-08-04 — VALUE UNCHANGED ON PURPOSE.
+        //
+        // This value is WRONG and there is no right one to move it to. It is an
+        // overclaim: `native_app_support_status` (below) maps `Experimental` to
+        // `NativeAppSupportStatus::Beta`, and `osl-public-claim-allowlist.md:271-272`
+        // reserves `Beta` for `runtime-proven` / `test-proven-only` rows. Discord is
+        // neither. Master §9 (`osl-master-decision-2026-07-26.md:793`) records Discord
+        // protected send as "`verified-live` on dated QA builds; current tree recheck
+        // required", with the C4 harness `blocked`/inadmissible — which allowlist rule 5
+        // (`:24-26`) makes `unknown-recheck-required`, and §E (`:277`) maps to
+        // **no badge, no claim**. Independently, `support-matrix.json` carries D6 as
+        // `open-security-finding`, and §E (`:282-283`) says that outranks everything
+        // else on the row however well built the feature is.
+        //
+        // `support-matrix.json` (`unavailable` / `not-qualified`) is therefore RIGHT,
+        // not stale, and must not be aligned upward to this value: `beta` is in
+        // `check-app-claims.mjs:340-347` `FORBIDDEN_PROMOTION_STATUSES`, so writing it
+        // into the matrix is a claim-gate floor failure, measured.
+        //
+        // But the other two values are false, not merely conservative:
+        //   `ComingSoon`    -> master §8.2 `Planned`. Discord is not planned; it is the
+        //                      only carrier `main.ts:735` enables today, and this same
+        //                      manifest gives it `NativeAppProtectedMode::AssistOnly`.
+        //   `ExternallyBlocked` -> "depends on an unavailable third-party surface"
+        //                      (master §0.3). Nothing external blocks Discord; D-205
+        //                      resolved its live composer at 558 elements.
+        //
+        // So the enum cannot express Discord's actual state, and even the claim the
+        // allowlist DOES permit for the send path (`:218`, `runtime-proven` -> `Beta`)
+        // is inexpressible here, because allowlist rule 3 (`:20-21`) requires the
+        // limitation to ship with the claim and this is a bare three-valued enum with
+        // nowhere to carry "Verified on QA builds, not yet on the release build."
+        //
+        // Same product gap as Telegram's, from the opposite direction. Owner decision.
+        // Do not resolve this by editing this line or the matrix row.
         adapter_support: SupportLevel::Experimental,
         package_id: "Discord.Discord",
         package_source: "winget",
