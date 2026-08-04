@@ -8333,11 +8333,26 @@ pub fn cmd_osl_control_inbox_drain(
         );
         match res {
             Ok(sentinel) => {
+                // D-191: `sentinel` is whatever `cmd_osl_decrypt_message_v2`
+                // returned, and that function's `Ok` arm is the DECRYPTED
+                // MESSAGE on the ordinary path. Here it is normally a control
+                // token — but the SKDM re-request case carries a whole
+                // `DPC0::` sender-key bundle, and an item that reached the
+                // control inbox without being a control bundle would put user
+                // prose in this field. Neither may be written to a file, so
+                // log the classification and never the value.
+                let sentinel_kind = if sentinel == OSL_RESULT_SESSION_RESET_APPLIED {
+                    "session_reset_applied"
+                } else if sentinel.starts_with(OSL_RESULT_SKDM_REREQUEST_PREFIX) {
+                    "skdm_rerequest"
+                } else {
+                    "other"
+                };
                 tracing::info!(
                     inbox_id = %item.id,
                     sender = %crate::log_id::log_id(&item.sender_id),
                     scope = %crate::log_id::log_id(&item.scope_id),
-                    sentinel = %sentinel,
+                    sentinel = sentinel_kind,
                     "[OSL] control_inbox item applied"
                 );
                 // Uses the cloned identity + client (no AppState locks

@@ -44,7 +44,6 @@ const CANARY_ACCOUNT_NAME: &str = "d191-canary-user";
 
 struct Profile {
     _temp: tempfile::TempDir,
-    base: PathBuf,
     account: PathBuf,
     /// The recovery phrase the product minted. A real secret, used here as the
     /// canary for "no secret reaches the file".
@@ -76,7 +75,6 @@ fn onboarded_profile() -> Profile {
 
     Profile {
         _temp: temp,
-        base,
         account,
         phrase,
     }
