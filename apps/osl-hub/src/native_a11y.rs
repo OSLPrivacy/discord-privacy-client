@@ -432,14 +432,22 @@ pub fn resolve_uia2_window(
 
             // Two WebView2 hosts run side by side on the owner's machine and the
             // one that is NOT WhatsApp's has the larger window, so the shape of
-            // this loop matters: every host of the right image and class is
-            // classified first, and only the ones this app owns are allowed into
-            // the size comparison. `largest_visible` over the unfiltered set is
-            // mutant [1], and it picks the Windows Search box.
+            // this loop matters: every visible host of the right image and class
+            // is classified first, and nothing is chosen by size at all.
+            //
+            // The `visible` filter is part of the decision, not an optimisation.
+            // Without it a single invisible zero-area sibling with an unreadable
+            // command line -- a crashpad watcher, an IME window, a `Chrome_-
+            // WidgetWin_0` shim, all of which the live enumeration returns --
+            // classifies `Uncorroborated` and refuses a perfectly healthy
+            // WhatsApp. A window OSL could never bind must not be able to veto
+            // one it can.
             let mut owned_hosts = Vec::new();
             for host in windows.iter().copied().filter(|window| {
                 same_process_name(window.process_name, sibling_process)
                     && window.class_name == sibling_outer_class
+                    && window.visible
+                    && window.hwnd != 0
             }) {
                 match classify_sibling_host(app_outer, host) {
                     SiblingHostAssociation::OwnedByApp => owned_hosts.push(host),
@@ -447,7 +455,9 @@ pub fn resolve_uia2_window(
                     // names a different application is a state nobody has
                     // measured. It must not silently resolve to a guess, and it
                     // must not be skipped over in favour of some other window
-                    // either -- the whole graph is suspect at that point.
+                    // either -- the whole graph is suspect at that point. This
+                    // branch is consequential precisely when a legitimate host
+                    // is ALSO present, which is the case its test must carry.
                     SiblingHostAssociation::Contradicted
                     | SiblingHostAssociation::Uncorroborated => {
                         return Err(Uia2WindowResolveError::MissingSiblingContentOuter)
@@ -455,8 +465,25 @@ pub fn resolve_uia2_window(
                     SiblingHostAssociation::Foreign => {}
                 }
             }
-            let content_outer = largest_visible(owned_hosts.into_iter())
-                .ok_or(Uia2WindowResolveError::MissingSiblingContentOuter)?;
+
+            // AMBIGUITY FAILS CLOSED. The association is an anchor, not a unique
+            // key: nothing stops two hosts satisfying both signals at once, and
+            // the first version of this arm handed that case to
+            // `largest_visible` -- mutant [1]'s rule, merely restricted to the
+            // owned set, and it bound the wrong window against unmutated code.
+            //
+            // There is no second line of defence downstream: the placement path
+            // checks only that the bound window is not the app shell, so a wrong
+            // bind here places the payload's carrier into a window the user
+            // never chose. Size is not evidence of which host holds the
+            // conversation. If a legitimate second window ever appears -- a
+            // popped-out chat, a media viewer -- the answer is a POSITIVE
+            // discriminator, the composer matcher deciding which host actually
+            // holds the conversation UI. It is never a size heuristic.
+            let content_outer = match owned_hosts.as_slice() {
+                [single] => *single,
+                _ => return Err(Uia2WindowResolveError::MissingSiblingContentOuter),
+            };
             let renderer = largest_visible(windows.iter().copied().filter(|window| {
                 window.class_name == renderer_class
                     && is_descendant_of(window.hwnd, content_outer.hwnd, windows)
@@ -530,8 +557,24 @@ pub enum SiblingHostAssociation {
 /// conductor re-measured (24196 -> 23884). But a pid can be reused after a
 /// process exits, and "a child process of the app" is a broader claim than "the
 /// app's content window". `--webview-exe-name` is the host's own statement of
-/// which application it is hosting, so requiring both means a wrong answer needs
-/// a reused pid *and* a matching declaration.
+/// which application it is hosting, so requiring both means an *accidental*
+/// wrong answer needs a reused pid **and** a matching declaration.
+///
+/// # What this is NOT: it is not a defence against a spoofing adversary
+///
+/// State this plainly, because the conjunction above reads like a security
+/// control and is not one. A process can choose its apparent parent --
+/// `CreateProcess` with `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS` sets
+/// `InheritedFromUniqueProcessId` to whatever pid the caller names -- and a
+/// command line is chosen by whoever launches the process. **Both signals are
+/// attacker-controlled, so requiring both costs an adversary nothing.**
+///
+/// What this is, and what it is worth: an **accident** control. It is what
+/// separates Windows Search's WebView2 from WhatsApp's on a machine running
+/// both, which is the failure that was actually measured and would actually
+/// have happened. Anything stronger -- code identity, package identity, a
+/// signature check on the hosting image -- is a different mechanism and is not
+/// claimed here.
 ///
 /// Window ancestry is accepted on its own because it is not an inference: a
 /// window whose root ancestor is the shell's handle is inside the shell's
@@ -3405,19 +3448,98 @@ pub(crate) mod tests {
         );
     }
 
+    /// The measured graph plus one more visible `Chrome_WidgetWin_1` in a third
+    /// process, described by the caller.
+    ///
+    /// Every refusal below needs this shape rather than a mutated WhatsApp host.
+    /// D-181: mutating the only parented host empties `owned_hosts` either way,
+    /// so the resolver reaches the same refusal whether or not its
+    /// `Contradicted | Uncorroborated` branch exists at all -- the test pins the
+    /// classifier's enum and nothing about what the resolver does with it.
+    /// Keeping WhatsApp's real host intact is what makes the branch
+    /// consequential: with it, `Err`; without it, a bind.
+    fn measured_graph_plus_extra_host(
+        outer_hwnd: isize,
+        renderer_hwnd: isize,
+        process_id: u32,
+        parent_process_id: u32,
+        host_exe_name: Option<&'static str>,
+        visible: bool,
+        area: u32,
+    ) -> Vec<Uia2WindowCandidate<'static>> {
+        let mut windows = two_webview2_hosts_decoy_larger();
+        let mut outer = hosted_window(
+            outer_hwnd,
+            None,
+            process_id,
+            parent_process_id,
+            host_exe_name,
+            "msedgewebview2.exe",
+            ELECTRON_OUTER_WINDOW_CLASS,
+            area,
+        );
+        let mut renderer = hosted_window(
+            renderer_hwnd,
+            Some(outer_hwnd),
+            process_id,
+            parent_process_id,
+            host_exe_name,
+            "msedgewebview2.exe",
+            ELECTRON_RENDERER_WINDOW_CLASS,
+            area,
+        );
+        outer.visible = visible;
+        renderer.visible = visible;
+        windows.push(outer);
+        windows.push(renderer);
+        windows
+    }
+
+    /// The graph still contains WhatsApp's own host, so the resolver has
+    /// something legitimate it COULD bind. Anything else and the refusal is
+    /// indistinguishable from "there was nothing to bind".
+    fn the_legitimate_host_is_still_present(windows: &[Uia2WindowCandidate<'_>]) {
+        let shell = windows
+            .iter()
+            .copied()
+            .find(|window| window.hwnd == MEASURED_SHELL_HWND)
+            .expect("the shell is in the graph");
+        let ours = windows
+            .iter()
+            .copied()
+            .find(|window| window.hwnd == MEASURED_WEBVIEW_OUTER_HWND)
+            .expect("WhatsApp's own host is in the graph");
+        assert_eq!(
+            classify_sibling_host(shell, ours),
+            SiblingHostAssociation::OwnedByApp,
+            "the refusal under test must be a refusal to choose, not a refusal \
+             for want of anything to choose"
+        );
+    }
+
     /// Mutant [3]: drop the `--webview-exe-name` corroboration.
     ///
     /// A process parented to WhatsApp that declares it is hosting Windows Search
-    /// is a state nobody has observed. Without the corroboration it resolves --
-    /// parentage says yes -- and OSL binds it. With it, the resolver refuses.
+    /// is a state nobody has observed. WhatsApp's real host is left in the graph
+    /// and resolvable, so the resolver has a legitimate answer available and
+    /// declines to give it: the contradiction poisons the whole graph rather
+    /// than being skipped over.
     #[test]
-    fn parentage_that_the_switch_contradicts_is_refused_not_resolved() {
-        let mut windows = two_webview2_hosts_decoy_larger();
-        for window in &mut windows {
-            if window.process_id == MEASURED_WEBVIEW_PID {
-                window.host_exe_name = Some("SearchApp.exe");
-            }
-        }
+    fn a_contradicted_host_refuses_even_though_a_legitimate_one_is_present() {
+        const IMPOSTOR_OUTER: isize = 700_001;
+        const IMPOSTOR_RENDERER: isize = 700_002;
+        const IMPOSTOR_PID: u32 = 77_777;
+
+        let windows = measured_graph_plus_extra_host(
+            IMPOSTOR_OUTER,
+            IMPOSTOR_RENDERER,
+            IMPOSTOR_PID,
+            MEASURED_SHELL_PID,
+            Some("SearchApp.exe"),
+            true,
+            DECOY_AREA,
+        );
+        the_legitimate_host_is_still_present(&windows);
 
         let shell = windows
             .iter()
@@ -3427,37 +3549,42 @@ pub(crate) mod tests {
         let contradicted = windows
             .iter()
             .copied()
-            .find(|window| window.hwnd == MEASURED_WEBVIEW_OUTER_HWND)
-            .expect("the host is in the graph");
-
-        // Parentage alone still says yes. That is precisely the danger, so the
-        // resolver's own answer is asserted first: without the corroboration
-        // this returns `Ok` and binds a window that says it is hosting another
-        // application.
+            .find(|window| window.hwnd == IMPOSTOR_OUTER)
+            .expect("the impostor is in the graph");
         assert_eq!(contradicted.parent_process_id, shell.process_id);
-        assert_eq!(
-            resolve_uia2_window(measured_whatsapp_plan(), &windows),
-            Err(Uia2WindowResolveError::MissingSiblingContentOuter),
-            "when the two signals disagree the resolver must refuse rather than \
-             pick the one that says yes"
-        );
         assert_eq!(
             classify_sibling_host(shell, contradicted),
             SiblingHostAssociation::Contradicted
         );
+
+        assert_eq!(
+            resolve_uia2_window(measured_whatsapp_plan(), &windows),
+            Err(Uia2WindowResolveError::MissingSiblingContentOuter),
+            "a host parented here while naming another application must refuse \
+             the whole resolution, not be quietly skipped in favour of the one \
+             that agrees"
+        );
     }
 
-    /// Corroboration is required, not merely checked when convenient: a host
-    /// parented to WhatsApp whose command line could not be read is refused.
-    /// An unreadable command line is exactly what a failed PEB read produces.
+    /// Corroboration is required, not merely checked when convenient. Same
+    /// shape: WhatsApp's own host stays resolvable, and the uncorroborated
+    /// sibling still refuses the resolution rather than being stepped over.
     #[test]
-    fn parentage_without_any_corroboration_is_refused() {
-        let mut windows = two_webview2_hosts_decoy_larger();
-        for window in &mut windows {
-            if window.process_id == MEASURED_WEBVIEW_PID {
-                window.host_exe_name = None;
-            }
-        }
+    fn an_uncorroborated_host_refuses_even_though_a_legitimate_one_is_present() {
+        const UNREADABLE_OUTER: isize = 710_001;
+        const UNREADABLE_RENDERER: isize = 710_002;
+        const UNREADABLE_PID: u32 = 78_888;
+
+        let windows = measured_graph_plus_extra_host(
+            UNREADABLE_OUTER,
+            UNREADABLE_RENDERER,
+            UNREADABLE_PID,
+            MEASURED_SHELL_PID,
+            None,
+            true,
+            MEASURED_WEBVIEW_AREA / 2,
+        );
+        the_legitimate_host_is_still_present(&windows);
 
         let shell = windows
             .iter()
@@ -3467,16 +3594,164 @@ pub(crate) mod tests {
         let uncorroborated = windows
             .iter()
             .copied()
-            .find(|window| window.hwnd == MEASURED_WEBVIEW_OUTER_HWND)
-            .expect("the host is in the graph");
+            .find(|window| window.hwnd == UNREADABLE_OUTER)
+            .expect("the unreadable host is in the graph");
         assert_eq!(
             classify_sibling_host(shell, uncorroborated),
             SiblingHostAssociation::Uncorroborated
         );
+
         assert_eq!(
             resolve_uia2_window(measured_whatsapp_plan(), &windows),
-            Err(Uia2WindowResolveError::MissingSiblingContentOuter)
+            Err(Uia2WindowResolveError::MissingSiblingContentOuter),
+            "an unreadable command line on a parented sibling must refuse, not \
+             fall through to the host that happens to be readable"
         );
+    }
+
+    /// D-180: the anchor is correct but it is not a UNIQUE key. Two hosts can
+    /// satisfy both signals at once, and this is what happens then.
+    ///
+    /// The second host is full-screen, so a size tie-break binds it: against
+    /// unmutated production code the adversary measured `bound_hwnd=700002
+    /// bound_pid=77777` where the real WhatsApp is `132018 / 24196`. There is no
+    /// second line of defence downstream -- the placement path checks only that
+    /// the bound window is not the app shell -- so a wrong bind here puts the
+    /// payload's carrier in a window the user never chose.
+    #[test]
+    fn two_qualifying_hosts_refuse_rather_than_picking_the_larger() {
+        const SECOND_OUTER: isize = 700_001;
+        const SECOND_RENDERER: isize = 700_002;
+        const SECOND_PID: u32 = 77_777;
+
+        // Both signals satisfied, exactly like WhatsApp's own host.
+        let windows = measured_graph_plus_extra_host(
+            SECOND_OUTER,
+            SECOND_RENDERER,
+            SECOND_PID,
+            MEASURED_SHELL_PID,
+            Some("WhatsApp.Root.exe"),
+            true,
+            DECOY_AREA,
+        );
+        the_legitimate_host_is_still_present(&windows);
+
+        let shell = windows
+            .iter()
+            .copied()
+            .find(|window| window.hwnd == MEASURED_SHELL_HWND)
+            .expect("the shell is in the graph");
+        let owned: Vec<_> = windows
+            .iter()
+            .copied()
+            .filter(|window| {
+                window.class_name == ELECTRON_OUTER_WINDOW_CLASS
+                    && window.visible
+                    && classify_sibling_host(shell, *window) == SiblingHostAssociation::OwnedByApp
+            })
+            .collect();
+        assert_eq!(
+            owned.len(),
+            2,
+            "the fixture must actually be ambiguous, or it is not this case"
+        );
+
+        // What a size tie-break would have done, stated as a number so the
+        // danger is not left implicit.
+        let by_size = owned
+            .iter()
+            .copied()
+            .max_by_key(|window| window.area)
+            .expect("two owned hosts");
+        assert_eq!(
+            by_size.hwnd, SECOND_OUTER,
+            "the larger of the two owned hosts is NOT WhatsApp's, which is why \
+             size cannot be the tie-break"
+        );
+
+        assert_eq!(
+            resolve_uia2_window(measured_whatsapp_plan(), &windows),
+            Err(Uia2WindowResolveError::MissingSiblingContentOuter),
+            "ambiguity must fail closed: with two hosts satisfying both signals \
+             the resolver has no evidence which holds the conversation, and \
+             `largest_visible` was already rejected as mutant [1]"
+        );
+
+        // And it is ambiguity that refuses, not the mere presence of a second
+        // window: drop the impostor and the same plan binds WhatsApp's host.
+        assert_eq!(
+            resolve_uia2_window(
+                measured_whatsapp_plan(),
+                &two_webview2_hosts_decoy_larger()
+            )
+            .expect("one owned host resolves")
+            .bound_hwnd,
+            MEASURED_RENDERER_HWND
+        );
+    }
+
+    /// D-181, the denial-of-function half: a window OSL could never bind must
+    /// not be able to veto one it can.
+    ///
+    /// The live enumeration returns several invisible zero-area `msedgewebview2`
+    /// windows in WhatsApp's own process tree -- `crashpad_SessionEndWatcher`,
+    /// `IME`, `Chrome_WidgetWin_0` -- and a `Chrome_WidgetWin_1` can be among
+    /// them while the app is closed to the tray. Without a visibility filter one
+    /// of those, with an unreadable command line, refuses a healthy WhatsApp.
+    #[test]
+    fn an_invisible_sibling_cannot_veto_a_healthy_whatsapp() {
+        let windows = measured_graph_plus_extra_host(
+            720_001,
+            720_002,
+            79_999,
+            MEASURED_SHELL_PID,
+            None,
+            false,
+            0,
+        );
+        the_legitimate_host_is_still_present(&windows);
+
+        let shell = windows
+            .iter()
+            .copied()
+            .find(|window| window.hwnd == MEASURED_SHELL_HWND)
+            .expect("the shell is in the graph");
+        let invisible = windows
+            .iter()
+            .copied()
+            .find(|window| window.hwnd == 720_001)
+            .expect("the invisible sibling is in the graph");
+        assert!(!invisible.visible);
+        assert_eq!(
+            classify_sibling_host(shell, invisible),
+            SiblingHostAssociation::Uncorroborated,
+            "the classifier still says what it sees; it is the resolver that \
+             must never have asked about a window it cannot bind"
+        );
+
+        let resolved = resolve_uia2_window(measured_whatsapp_plan(), &windows)
+            .expect("an invisible sibling must not refuse a resolvable WhatsApp");
+        assert_eq!(resolved.bound_hwnd, MEASURED_RENDERER_HWND);
+        assert_eq!(resolved.bound_process_id, MEASURED_WEBVIEW_PID);
+    }
+
+    /// An invisible SECOND qualifying host must not create ambiguity either --
+    /// the same filter, checked from the other direction, so a future edit
+    /// cannot satisfy one of these two tests by breaking the other.
+    #[test]
+    fn an_invisible_second_qualifying_host_does_not_make_the_graph_ambiguous() {
+        let windows = measured_graph_plus_extra_host(
+            730_001,
+            730_002,
+            80_001,
+            MEASURED_SHELL_PID,
+            Some("WhatsApp.Root.exe"),
+            false,
+            DECOY_AREA,
+        );
+        let resolved = resolve_uia2_window(measured_whatsapp_plan(), &windows)
+            .expect("only one BINDABLE host qualifies, so there is no ambiguity");
+        assert_eq!(resolved.bound_hwnd, MEASURED_RENDERER_HWND);
     }
 
     /// Mutant [4]: no parented host present. The refusal must still fire.
