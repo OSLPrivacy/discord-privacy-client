@@ -451,9 +451,26 @@ impl FrameJudge {
         TRIGRAM_WEIGHTS[0] * conditional + TRIGRAM_WEIGHTS[1] * bigram + TRIGRAM_WEIGHTS[2] * unigram
     }
 
-    /// Mean log-probability per transition over the frame alphabet, or `None`
-    /// when the text is too short to say anything about.
-    fn score(&self, text: &str, order: Order) -> Option<f64> {
+    /// **REJECTED SCORER — kept as evidence, never asserted on.**
+    ///
+    /// Mean log-probability per transition over the frame alphabet. This was the
+    /// first attempt at the D-215 fix and **it failed Control 2 at 1.000**, on
+    /// both outside provenances, exactly as hard as the legacy scorer.
+    ///
+    /// The reason is worth keeping in the file rather than in a commit message.
+    /// Closing the alphabet removes vocabulary *identity* as a channel but not
+    /// vocabulary *density*: `<OPEN> <OPEN>` is by far the commonest transition,
+    /// so this score is dominated by how many function words a text contains.
+    /// Measured on the same run: closed-class rate is **46.5%** in the judge's own
+    /// corpus, **54.0%** in the hand-written outside corpus and **61.1%** in
+    /// scraped SMS. That is a register difference between two human corpora, and
+    /// this scorer reads it as generation. It also scores uniform random words
+    /// drawn from its own vocabulary as **more** human than real text (rate 0.045)
+    /// because such text is 91% `<OPEN>`.
+    ///
+    /// Closing the alphabet was necessary and not sufficient. `pmi` below is the
+    /// sufficient part.
+    fn density_score(&self, text: &str, order: Order) -> Option<f64> {
         let symbols = self.symbols(text);
         let mut total = 0.0;
         let mut counted = 0usize;
@@ -467,6 +484,50 @@ impl FrameJudge {
             Order::Trigram => {
                 for triple in symbols.windows(3) {
                     total += self.trigram_prob(triple[0], triple[1], triple[2]).ln();
+                    counted += 1;
+                }
+            }
+        }
+        (counted >= MIN_TRANSITIONS).then(|| total / counted as f64)
+    }
+
+    /// **THE SCORER.** Mean pointwise mutual information per transition:
+    ///
+    /// ```text
+    ///   (1/N) · Σ [ ln P(next | context) − ln P(next) ]
+    /// ```
+    ///
+    /// Not a likelihood — a **likelihood ratio against the model's own marginal**.
+    /// It asks one question: *does knowing the previous frame symbol help predict
+    /// the next one?* Order carries information; composition does not.
+    ///
+    /// This is what makes the judge provenance-invariant rather than merely
+    /// vocabulary-invariant. Every term is a difference between a conditional and
+    /// its own marginal, so a text made of the same symbols in a random order
+    /// scores ≈ 0 **whatever those symbols are**. A corpus with 61% function words
+    /// and a corpus with 46% function words are therefore on the same scale, which
+    /// `density_score` above is not. Word salad is near zero by construction, not
+    /// by threshold.
+    ///
+    /// It is a strictly weaker instrument than a likelihood, and deliberately so:
+    /// everything it can see is a property of **word order within a short window**.
+    /// Nothing about topic, register, or where a sentence stops survives into it.
+    /// See `what_this_judge_cannot_see`.
+    fn pmi(&self, text: &str, order: Order) -> Option<f64> {
+        let symbols = self.symbols(text);
+        let mut total = 0.0;
+        let mut counted = 0usize;
+        match order {
+            Order::Bigram => {
+                for pair in symbols.windows(2) {
+                    total += self.bigram_prob(pair[0], pair[1]).ln() - self.unigram_prob(pair[1]).ln();
+                    counted += 1;
+                }
+            }
+            Order::Trigram => {
+                for triple in symbols.windows(3) {
+                    total += self.trigram_prob(triple[0], triple[1], triple[2]).ln()
+                        - self.unigram_prob(triple[2]).ln();
                     counted += 1;
                 }
             }
@@ -568,7 +629,8 @@ trait Judge {
 
 struct LegacyDefault<'a>(&'a LegacyReader);
 struct LegacyKnownOnly<'a>(&'a LegacyReader);
-struct Frame<'a>(&'a FrameJudge, Order);
+struct FrameDensity<'a>(&'a FrameJudge, Order);
+struct FramePmi<'a>(&'a FrameJudge, Order);
 
 impl Judge for LegacyDefault<'_> {
     fn name(&self) -> String {
@@ -589,12 +651,21 @@ impl Judge for LegacyKnownOnly<'_> {
     }
 }
 
-impl Judge for Frame<'_> {
+impl Judge for FrameDensity<'_> {
     fn name(&self) -> String {
-        format!("{:<18}", self.1.label())
+        format!("{:<18}", format!("{} density*", self.1.label()))
     }
     fn score(&self, text: &str) -> Option<f64> {
-        self.0.score(text, self.1)
+        self.0.density_score(text, self.1)
+    }
+}
+
+impl Judge for FramePmi<'_> {
+    fn name(&self) -> String {
+        format!("{:<18}", format!("{} PMI", self.1.label()))
+    }
+    fn score(&self, text: &str) -> Option<f64> {
+        self.0.pmi(text, self.1)
     }
 }
 
@@ -671,8 +742,10 @@ fn report(label: &str, legacy: &LegacyReader, frames: &FrameJudge, suspects: &[S
     let judges: Vec<Box<dyn Judge>> = vec![
         Box::new(LegacyDefault(legacy)),
         Box::new(LegacyKnownOnly(legacy)),
-        Box::new(Frame(frames, Order::Bigram)),
-        Box::new(Frame(frames, Order::Trigram)),
+        Box::new(FrameDensity(frames, Order::Bigram)),
+        Box::new(FrameDensity(frames, Order::Trigram)),
+        Box::new(FramePmi(frames, Order::Bigram)),
+        Box::new(FramePmi(frames, Order::Trigram)),
     ];
     let mut rows = Vec::new();
     for judge in &judges {
@@ -691,29 +764,81 @@ fn report(label: &str, legacy: &LegacyReader, frames: &FrameJudge, suspects: &[S
 
 /// Index into `report`'s output. Kept as named constants so an assertion reads
 /// as the judge it is about.
+///
+/// `*` in the printed name marks a scorer that is **reported but never asserted
+/// on**, because it failed a control of this file. Both legacy scorers and both
+/// density scorers are in that category; only the two PMI rows are gated.
 const LEGACY_DEFAULT: usize = 0;
+#[allow(dead_code)]
 const LEGACY_KNOWN_ONLY: usize = 1;
-const FRAME_BIGRAM: usize = 2;
-const FRAME_TRIGRAM: usize = 3;
+#[allow(dead_code)]
+const FRAME_DENSITY_BIGRAM: usize = 2;
+#[allow(dead_code)]
+const FRAME_DENSITY_TRIGRAM: usize = 3;
+const FRAME_PMI_BIGRAM: usize = 4;
+const FRAME_PMI_TRIGRAM: usize = 5;
 
-fn split_corpus() -> (Vec<&'static str>, Vec<&'static str>) {
-    let lines = lines_of(REAL_CHAT);
-    assert!(
-        lines.len() > READER_TRAINING_LINES + 50,
-        "the judge's corpus is too small to hold anything out"
-    );
-    let (training, held_out) = lines.split_at(READER_TRAINING_LINES);
-    (training.to_vec(), held_out.to_vec())
-}
+/// The scorers this file stands behind, and the only ones any control asserts on.
+const GATED: [(usize, &str); 2] = [
+    (FRAME_PMI_BIGRAM, "frame-bigram PMI"),
+    (FRAME_PMI_TRIGRAM, "frame-trigram PMI"),
+];
 
-fn build() -> (LegacyReader, FrameJudge, Vec<&'static str>) {
-    let (training, held_out) = split_corpus();
+/// Two same-distribution halves of one corpus, taken by **interleaving** rather
+/// than by cutting it in half.
+///
+/// This is not cosmetic. `chat-en-expanded-v1.txt` is ordered, so its first and
+/// second halves differ in topic; splitting it in two and calling the result "two
+/// samples of the same thing" put a 0.780 bias into Control 1 on the legacy
+/// scorer that has nothing to do with the scorer. Interleaving removes it.
+fn interleaved(lines: &[&'static str]) -> (Vec<&'static str>, Vec<&'static str>) {
     (
-        LegacyReader::train(&training),
-        FrameJudge::train(&training),
-        held_out,
+        lines.iter().step_by(2).copied().collect(),
+        lines.iter().skip(1).step_by(2).copied().collect(),
     )
 }
+
+
+// ==========================================================================
+// The bench: what is trained on what, and what is deliberately never trained on
+// ==========================================================================
+//
+// The first cut of this file trained the frame judge on the same 400 lines of
+// `chat-en-expanded-v1.txt` the broken judge uses, and it FAILED Control 2 at
+// 1.000 on both outside provenances -- as hard as the scorer it was replacing.
+// The measurement that explains it is printed on every row below: **frame
+// bigrams attested**. A judge trained on 400 lines of one register had seen
+// 95.4% of the frame bigrams in held-out text from that register and only
+// **55.2%** of the frame bigrams in scraped SMS. Half of a second human
+// corpus's syntax is, to that judge, unseen -- so "unseen" means "not mine",
+// and the corpus-membership channel survives the closed alphabet intact.
+//
+// Closing the alphabet removes vocabulary as a channel. It does not remove
+// corpus as a channel, and nothing about the score can: a model fitted to one
+// corpus ranks that corpus above every other one. **That is a property of
+// corpus-trained judges, not of a scoring rule**, and it is why B0-06's
+// vocabulary-blind variant did not rescue the old reader either.
+//
+// So the training set is built the way the control demands rather than the way
+// the corpus happens to be laid out:
+//
+// * **Two provenances are pooled for training** -- the project's hand-written
+//   chat corpus and 4x as much external scraped chat (NPS Chat + UCI SMS ham).
+//   A judge fitted to two registers cannot express "not my register" as cheaply
+//   as one fitted to a single register.
+// * **A third provenance is never trained on at all** -- `bigram_corpus.txt`.
+//   It is the control, and it is the only text in this file the judge has no
+//   claim on.
+// * Every split is **interleaved, never cut in half**. `chat-en-expanded-v1.txt`
+//   is ordered by topic and the external corpus is sorted alphabetically;
+//   splitting either one in half produces two samples that are not of the same
+//   distribution, which by itself put a 0.780 bias into Control 1.
+//
+// The control corpus is also, deliberately, the corpus the **shipping word-table
+// codec is trained on**. So the codec's covers and the control text share a
+// vocabulary and a register, and neither is in the judge's training set. If the
+// judge passes the control and still flags the covers, the thing it is reacting
+// to cannot be provenance -- there is no provenance difference left.
 
 /// Deterministic shuffle. Used to build word salad out of real human sentences,
 /// which is the mutant that isolates word ORDER from word CHOICE.
@@ -737,41 +862,125 @@ fn suspects_from(source: &[&str], count: usize, words: usize) -> Vec<String> {
         .collect()
 }
 
-/// Words per suspect item in every control. Chosen to sit inside the 40–61 word
+/// One line in five is held out. Interleaved rather than contiguous.
+const HELD_OUT_EVERY: usize = 5;
+
+fn split_interleaved(lines: &[&'static str]) -> (Vec<&'static str>, Vec<&'static str>) {
+    let mut training = Vec::new();
+    let mut held_out = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if index % HELD_OUT_EVERY == 0 {
+            held_out.push(*line);
+        } else {
+            training.push(*line);
+        }
+    }
+    (training, held_out)
+}
+
+/// Alternate two sources so a reference stream is never a run of one of them.
+fn alternate(left: &[&'static str], right: &[&'static str]) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    for index in 0..left.len().max(right.len()) {
+        if let Some(line) = left.get(index) {
+            out.push(*line);
+        }
+        if let Some(line) = right.get(index) {
+            out.push(*line);
+        }
+    }
+    out
+}
+
+struct Bench {
+    /// The D-161 / B0-06 reader, trained on exactly the 400 lines it was trained
+    /// on there, so its published numbers reproduce here byte for byte.
+    legacy: LegacyReader,
+    /// The judge. Trained on two pooled human provenances.
+    frames: FrameJudge,
+    /// Held-out human text of the **training** provenances. The reference side.
+    reference: Vec<&'static str>,
+    /// Second disjoint held-out stream, same provenances. Control 1 needs two.
+    reference_b: Vec<&'static str>,
+    /// The third provenance. **Never trained on.** The control suspect.
+    control: Vec<&'static str>,
+    training_lines: usize,
+}
+
+fn bench() -> Bench {
+    let project_chat = lines_of(REAL_CHAT);
+    let external_chat = lines_of(EXTERNAL_HUMAN_CHAT);
+    let control = lines_of(OTHER_HUMAN_CHAT);
+    assert!(!control.is_empty(), "the control corpus is empty");
+    // If `fix/d116-cover-corpus` ever lands, `bigram_corpus.txt` becomes the very
+    // text the external fixture holds, the control corpus lands in the training
+    // pool, and this file silently becomes circular. Fail rather than measure a
+    // judge against its own training data.
+    assert_ne!(
+        control.len(),
+        external_chat.len(),
+        "the control corpus and the external training corpus look identical -- \
+         the control would be inside the training pool and every number below it is void"
+    );
+
+    let (project_train, project_held) = split_interleaved(&project_chat);
+    let (external_train, external_held) = split_interleaved(&external_chat);
+    let mut training = project_train.clone();
+    training.extend_from_slice(&external_train);
+
+    // The legacy reader keeps its ORIGINAL training split -- the first 400 lines
+    // of the project corpus, contiguous -- because reproducing D-161's published
+    // numbers is the point of keeping it.
+    let legacy_training: Vec<&'static str> =
+        project_chat.iter().take(READER_TRAINING_LINES).copied().collect();
+
+    let reference = alternate(&project_held, &external_held);
+    let (reference, reference_b) = interleaved(&reference);
+
+    Bench {
+        legacy: LegacyReader::train(&legacy_training),
+        frames: FrameJudge::train(&training),
+        reference,
+        reference_b,
+        control,
+        training_lines: training.len(),
+    }
+}
+
+impl Bench {
+    fn report(&self, label: &str, suspects: &[String], reference: &[&str]) -> Vec<Row> {
+        report(label, &self.legacy, &self.frames, suspects, reference)
+    }
+}
+
+/// Words per suspect item in every control. Chosen to sit inside the 40-61 word
 /// band the two real cover paths occupy, so the controls and the measured rows
 /// are the same size of text.
 const CONTROL_WORDS: usize = 40;
 
 // ==========================================================================
-// CONTROL 1 — the bias gate the old harness had. Kept, and kept honest.
+// CONTROL 1 - the bias gate the old harness had. Kept, and kept honest.
 // ==========================================================================
 
-/// Held-out human text against other held-out human text, **from the same
-/// corpus**. Both judges should be at 0.50.
+/// Held-out human text against other held-out human text, **from the judge's own
+/// training provenances**. Every judge should be at 0.500.
 ///
-/// This is the D-161 gate `the_reader_cannot_tell_real_from_real`, restated. It
-/// is retained because it is a real requirement — a judge biased between two
-/// samples of one distribution is unreadable — but it is labelled for what it is:
-/// a **bias** gate. It cannot detect corpus-membership detection, because both of
-/// its sides are members. Reading it as a validity gate is D-215.
+/// This is the D-161 gate `the_reader_cannot_tell_real_from_real`, restated. It is
+/// retained because it is a real requirement -- a judge biased between two samples
+/// of one distribution is unreadable -- but it is labelled for what it is: a
+/// **bias** gate. It cannot detect corpus-membership detection, because both of its
+/// sides are members. Reading it as a validity gate is D-215.
 #[test]
 fn control_1_the_judge_is_unbiased_within_its_own_corpus() {
-    let (legacy, frames, held_out) = build();
-    println!("\n================ CONTROL 1: bias within the judge's own corpus ================");
-    println!("  both sides are held-out lines of chat-en-expanded-v1.txt. 0.500 is unbiased.");
+    let bench = bench();
+    println!("\n================ CONTROL 1: bias within the judge's own corpora ================");
+    println!("  both sides are held-out lines of the two TRAINING provenances. 0.500 is unbiased.");
     println!("  THIS IS A BIAS GATE, NOT A VALIDITY GATE. See D-215.");
 
-    let half = held_out.len() / 2;
-    let (left, right) = held_out.split_at(half);
-    let suspects = suspects_from(left, trials(), CONTROL_WORDS);
-    let rows = report("held-out A vs held-out A", &legacy, &frames, &suspects, right);
+    let suspects = suspects_from(&bench.reference, trials(), CONTROL_WORDS);
+    let rows = bench.report("held-out training-provenance vs held-out training-provenance", &suspects, &bench.reference_b);
 
-    for (index, label) in [
-        (LEGACY_DEFAULT, "legacy default"),
-        (LEGACY_KNOWN_ONLY, "legacy known-only"),
-        (FRAME_BIGRAM, "frame bigram"),
-        (FRAME_TRIGRAM, "frame trigram"),
-    ] {
+    for (index, label) in GATED {
         assert!(
             (rows[index].rate - 0.5).abs() < 0.12,
             "{label} is biased within its own corpus ({:.3}); every number below it is an artifact",
@@ -781,141 +990,181 @@ fn control_1_the_judge_is_unbiased_within_its_own_corpus() {
 }
 
 // ==========================================================================
-// CONTROL 2 — THE ONE THAT MATTERS. Different provenance, still human.
+// CONTROL 2 - THE ONE THAT MATTERS. Different provenance, still human.
 // ==========================================================================
 
 /// **The control D-215 requires, and the reason this file exists.**
 ///
 /// Every suspect here is a sentence a person wrote. Nothing generated a single
-/// word of it. Two independent outside provenances are used:
+/// word of it. It is `stego/src/bigram_corpus.txt`: hand-written texting-register
+/// English, a **third provenance that appears nowhere in the judge's training
+/// pool**. The reference side is held-out human text of the provenances the judge
+/// *was* trained on, so the comparison is exactly the one that exposes a
+/// corpus-membership detector: mine versus not-mine, both human.
 ///
-/// 1. `stego/src/bigram_corpus.txt` — hand-written texting-register English.
-/// 2. `fixtures/external-human-chat-v1.txt` — real scraped chat (NPS Chat + UCI
-///    SMS ham). Nobody on this project wrote it, so it closes the one loophole
-///    corpus 1 leaves open: that both hand-written corpora share an author.
-///
-/// A judge that detects **generation** must sit near 0.500 on both. A judge that
-/// detects **membership of `chat-en-expanded-v1.txt`** sits near 1.000, and every
-/// number it has ever produced means "this text came from somewhere else".
+/// A judge that detects **generation** must sit near 0.500. A judge that detects
+/// **membership of its own training corpus** sits near 1.000, and every number it
+/// has ever produced means "this text came from somewhere else".
 ///
 /// **This test fails loudly if the judge regresses to corpus-membership
-/// detection.** That is its entire job, and it is asserted on the new judge only:
-/// the legacy scorers are run beside it and are *expected* to fail, so their
-/// numbers are printed and not asserted. Deleting or loosening this assertion
-/// re-opens D-215.
+/// detection.** That is its entire job. The legacy scorers are run beside it and
+/// are *expected* to fail, so their numbers are printed and not asserted --
+/// reproducing D-215 on demand rather than asking anyone to take it on trust.
+/// Deleting or loosening the assertion re-opens D-215.
 #[test]
 fn control_2_the_judge_does_not_flag_human_text_of_another_provenance() {
-    let (legacy, frames, held_out) = build();
-    let hand_written = lines_of(OTHER_HUMAN_CHAT);
-    let external = lines_of(EXTERNAL_HUMAN_CHAT);
-
-    assert!(!hand_written.is_empty() && !external.is_empty(), "a control corpus is empty");
-    // If `fix/d116-cover-corpus` ever lands, `bigram_corpus.txt` becomes the very
-    // text this fixture holds and the two controls silently collapse into one.
-    // Fail rather than quietly halve the evidence.
-    assert_ne!(
-        hand_written.len(),
-        external.len(),
-        "the two control corpora look identical -- they must be independent provenances"
-    );
+    let bench = bench();
 
     println!("\n========= CONTROL 2: HUMAN text the judge did not train on =========");
     println!("  every suspect below was written by a person. NOTHING here was generated.");
     println!("  0.500 = the judge detects generation.  1.000 = it detects corpus membership.");
-    println!("  length-matched to {CONTROL_WORDS} words, {} trials per row.", trials());
-
-    let corpus_1 = suspects_from(&hand_written, trials(), CONTROL_WORDS);
-    let rows_1 = report(
-        "SUSPECT: hand-written texting chat (stego/src/bigram_corpus.txt)",
-        &legacy,
-        &frames,
-        &corpus_1,
-        &held_out,
+    println!(
+        "  judge trained on {} lines pooled from TWO provenances; the suspect corpus is a THIRD.",
+        bench.training_lines
     );
+    println!("  length-matched to {CONTROL_WORDS} words, {} trials.", trials());
 
-    let corpus_2 = suspects_from(&external, trials(), CONTROL_WORDS);
-    let rows_2 = report(
-        "SUSPECT: external scraped chat (NPS Chat + UCI SMS ham)",
-        &legacy,
-        &frames,
-        &corpus_2,
-        &held_out,
+    let suspects = suspects_from(&bench.control, trials(), CONTROL_WORDS);
+    let rows = bench.report(
+        "SUSPECT: hand-written texting chat, third provenance (stego/src/bigram_corpus.txt)",
+        &suspects,
+        &bench.reference,
     );
 
+    println!("\n  LEGACY VERDICT (not asserted, reproduced so D-215 can be re-observed on demand):");
     println!(
-        "\n  LEGACY VERDICT (not asserted, reproduced so D-215 can be re-observed on demand):"
+        "    the legacy default scorer calls this human chat 'generated' at {:.3}.",
+        rows[LEGACY_DEFAULT].rate
     );
-    println!(
-        "    the legacy default scorer calls hand-written human chat 'generated' at {:.3}",
-        rows_1[LEGACY_DEFAULT].rate
-    );
-    println!(
-        "    and external scraped human chat at {:.3}. Both sides are human.",
-        rows_2[LEGACY_DEFAULT].rate
-    );
+    println!("    Both sides are human. That number is the defect, not a result.");
 
     // The gate. 0.70 was chosen before any measurement as "meaningfully better
     // than the 1.000 that withdrew the instrument", and is NOT tightened to
     // whatever today's number happens to be -- pinning a threshold to a measured
     // value turns a control into decoration.
     const HUMAN_CEILING: f64 = 0.70;
-    for (rows, corpus) in [(&rows_1, "hand-written outside chat"), (&rows_2, "external scraped chat")] {
-        for (index, label) in [(FRAME_BIGRAM, "frame bigram"), (FRAME_TRIGRAM, "frame trigram")] {
-            assert!(
-                rows[index].rate <= HUMAN_CEILING,
-                "D-215 REGRESSION: {label} calls {corpus} 'generated' at {:.3} (ceiling {HUMAN_CEILING:.2}). \
-                 The judge is detecting provenance, not generation, and no number it produces may be quoted.",
+    for (index, label) in GATED {
+        // A rate far BELOW 0.5 is not a pass in any meaningful sense either: it
+        // means the judge systematically prefers the outside corpus, which is the
+        // same provenance sensitivity with the opposite sign. Reported, not
+        // asserted -- the D-215 requirement is the ceiling, and inventing a floor
+        // after seeing the numbers is the tuning this file exists to refuse.
+        if rows[index].rate < 0.30 {
+            println!(
+                "  NOTE: {label} calls the outside corpus human MORE often than the reference \
+                 ({:.3}); provenance sensitivity, opposite sign.",
                 rows[index].rate
             );
         }
+        assert!(
+            rows[index].rate <= HUMAN_CEILING,
+            "D-215 REGRESSION: {label} calls human text of another provenance 'generated' at \
+             {:.3} (ceiling {HUMAN_CEILING:.2}). The judge is detecting provenance, not \
+             generation, and no number it produces may be quoted.",
+            rows[index].rate
+        );
     }
 }
 
+/// **Why the training pool has two provenances in it, measured rather than
+/// asserted.**
+///
+/// Control 2 is passable only by a judge that has seen enough English to have an
+/// opinion about a sentence it has never met. This walks the training-set size up
+/// and prints, at each size, how much of the control corpus's syntax the judge has
+/// actually seen and what it then says about it. The two columns move together,
+/// and that is the whole argument for why the first cut of this file failed.
+///
+/// Reported, never asserted: it is a diagnostic that explains a design choice, and
+/// pinning today's curve with a threshold would freeze the explanation into a
+/// requirement.
+#[test]
+fn the_control_is_passable_only_above_a_training_scale() {
+    let project_chat = lines_of(REAL_CHAT);
+    let external_chat = lines_of(EXTERNAL_HUMAN_CHAT);
+    let control = lines_of(OTHER_HUMAN_CHAT);
+    let (project_train, project_held) = split_interleaved(&project_chat);
+    let (external_train, external_held) = split_interleaved(&external_chat);
+    let reference = alternate(&project_held, &external_held);
+
+    println!("\n======= WHY THE POOL: control rate against training scale =======");
+    println!("  suspect = the third-provenance control corpus. reference = held-out training text.");
+    println!("  'seen' = share of the control corpus's frame bigrams the judge has ever read.");
+    println!("  {:>28}  {:>6}  {:>9}  {:>9}", "training set", "lines", "seen", "rate(PMI2)");
+
+    let mut pooled = project_train.clone();
+    pooled.extend_from_slice(&external_train);
+    let suspects = suspects_from(&control, trials(), CONTROL_WORDS);
+
+    for (label, lines) in [
+        ("project corpus only (D-161)", project_train.iter().take(400).copied().collect::<Vec<_>>()),
+        ("project corpus, all", project_train.clone()),
+        ("pooled, 1/4", pooled.iter().step_by(4).copied().collect::<Vec<_>>()),
+        ("pooled, 1/2", pooled.iter().step_by(2).copied().collect::<Vec<_>>()),
+        ("pooled, all (the judge)", pooled.clone()),
+    ] {
+        let judge = FrameJudge::train(&lines);
+        let seen: f64 = suspects
+            .iter()
+            .map(|text| judge.attested_frame_rate(text))
+            .sum::<f64>()
+            / suspects.len() as f64;
+        let row = forced_choice(&FramePmi(&judge, Order::Bigram), &suspects, &reference);
+        println!(
+            "  {label:>28}  {:>6}  {:>8.1}%  {:>9.3}",
+            lines.len(),
+            seen * 100.0,
+            row.rate
+        );
+    }
+    println!("  The first cut of this file was the top row. The control caught it.");
+}
+
 // ==========================================================================
-// CONTROL 3 — the judge must be able to FAIL something.
+// CONTROL 3 - the judge must be able to FAIL something.
 // ==========================================================================
 
 /// **A judge that cannot flag word salad is as broken as one that flags real
 /// writing.** Control 2 alone is passed perfectly by a judge that says "human" to
-/// everything, so it is worthless without this.
+/// everything, so it is worthless without this one.
 ///
-/// Two salads, both deliberately constructed to defeat a vocabulary detector:
+/// Two salads, both constructed to defeat a vocabulary detector:
 ///
-/// * **shuffled human** — a held-out human sentence with its words permuted. Same
+/// * **shuffled human** - a held-out human sentence with its words permuted. Same
 ///   words, same unigram distribution, same corpus. **Only the order changed.**
 ///   This is the cleanest possible isolation of syntax.
-/// * **vocabulary-matched random** — uniform draws from the judge's *own*
-///   training vocabulary. Every word is one the judge has read.
+/// * **vocabulary-matched random** - uniform draws from the judge's *own* training
+///   vocabulary. Every word is one the judge has read.
+///
+/// The second one is not redundant. It is what killed this file's first scorer:
+/// a plain frame likelihood called uniform random words **more human than real
+/// text** (rate 0.045), because random draws from a chat vocabulary are 91%
+/// open-class and `<OPEN> <OPEN>` is the commonest transition there is.
 #[test]
 fn control_3_the_judge_flags_word_salad() {
-    let (legacy, frames, held_out) = build();
+    let bench = bench();
     println!("\n============= CONTROL 3: the judge must be able to fail =============");
     println!("  1.000 = spotted every time. A judge that cannot reach it here measures nothing.");
 
-    let half = held_out.len() / 2;
-    let (source, reference) = held_out.split_at(half);
-
     let mut seed = 0xd215_c047_9013_5eedu64;
-    let salad: Vec<String> = suspects_from(source, trials(), CONTROL_WORDS)
+    let salad: Vec<String> = suspects_from(&bench.reference, trials(), CONTROL_WORDS)
         .iter()
         .map(|text| shuffled(text, &mut seed))
         .collect();
-    let rows_shuffled = report(
+    let rows_shuffled = bench.report(
         "SUSPECT: held-out HUMAN text with its words shuffled (order destroyed, words identical)",
-        &legacy,
-        &frames,
         &salad,
-        reference,
+        &bench.reference_b,
     );
 
-    let (training, _) = split_corpus();
-    let mut vocabulary: Vec<String> = training
+    let project_chat = lines_of(REAL_CHAT);
+    let (project_train, _) = split_interleaved(&project_chat);
+    let vocabulary: Vec<String> = project_train
         .iter()
         .flat_map(|line| normalise(line))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    vocabulary.sort();
     let mut seed = 0xd215_5a1a_d000_0002u64;
     let random: Vec<String> = (0..trials())
         .map(|_| {
@@ -930,12 +1179,10 @@ fn control_3_the_judge_flags_word_salad() {
                 .join(" ")
         })
         .collect();
-    let rows_random = report(
+    let rows_random = bench.report(
         "SUSPECT: uniform draws from the judge's OWN training vocabulary",
-        &legacy,
-        &frames,
         &random,
-        reference,
+        &bench.reference_b,
     );
 
     const SALAD_FLOOR: f64 = 0.85;
@@ -943,7 +1190,7 @@ fn control_3_the_judge_flags_word_salad() {
         (&rows_shuffled, "shuffled human text"),
         (&rows_random, "vocabulary-matched random words"),
     ] {
-        for (index, label) in [(FRAME_BIGRAM, "frame bigram"), (FRAME_TRIGRAM, "frame trigram")] {
+        for (index, label) in GATED {
             assert!(
                 rows[index].rate >= SALAD_FLOOR,
                 "{label} flags {what} at only {:.3} (floor {SALAD_FLOOR:.2}). \
@@ -955,32 +1202,53 @@ fn control_3_the_judge_flags_word_salad() {
 }
 
 // ==========================================================================
-// THE THREE ROWS
+// THE ROWS
 // ==========================================================================
 
-/// **The re-measurement.** Same held-out split, same seed, same length-matched
-/// protocol, same trial count as `tasklogs/B0-06.md` — only the judge changed.
+/// **The re-measurement.** Same held-out protocol, same payload seed, same trial
+/// count and the same length matching as `tasklogs/B0-06.md` -- only the judge and
+/// the reference corpus changed, and both changes are what Control 2 demanded.
 ///
 /// Row 1 is the shipping word-table codec, generated in process from
-/// `stego::bigram` so it is what actually renders covers today. Row 2 is B0-06's
-/// arithmetic-coded model covers, read from the file that lane dumped
-/// (`OSL_COVER_DUMP`); it prints NOT MEASURED without it rather than inventing a
-/// number.
+/// `stego::bigram` so it is what actually renders covers on this branch today.
+/// Row 2 is B0-06's arithmetic-coded model covers, read from the file that lane
+/// dumped (`OSL_COVER_DUMP`); without it the row prints NOT MEASURED rather than
+/// inventing a number.
+///
+/// **Row 1's provenance is controlled and this is the tightest thing in the file.**
+/// The word-table codec is a bigram sampler over `stego/src/bigram_corpus.txt` --
+/// which is Control 2's corpus. So the covers and the control text share a
+/// vocabulary, a register and a source, and *neither* is in the judge's training
+/// pool. Control 2 having passed means that shared provenance costs a text
+/// nothing. Anything the judge says about Row 1 is therefore about how the words
+/// are ordered, which is the only thing left that differs.
 #[test]
 fn the_three_rows_remeasured() {
-    let (legacy, frames, held_out) = build();
+    let bench = bench();
     println!("\n==================== THE ROWS, RE-MEASURED ====================");
-    println!("  corpus: chat-en-expanded-v1.txt, lines 401.. held out ({} lines)", held_out.len());
+    println!(
+        "  judge: closed-class frame PMI, {} training lines, two pooled provenances",
+        bench.training_lines
+    );
+    println!(
+        "  reference: {} held-out human lines of those provenances",
+        bench.reference.len()
+    );
     println!("  length-matched, {} trials per row, payload seed 0x0517d161c0defa11", trials());
 
     let mut payloads = Payloads(0x0517_d161_c0de_fa11);
     let word_table: Vec<String> = (0..trials()).map(|_| payloads.next_cover()).collect();
-    report(
+    bench.report(
         "ROW 1 -- SHIPPING word-table codec (stego::bigram, what every friend sends today)",
-        &legacy,
-        &frames,
         &word_table,
-        &held_out,
+        &bench.reference,
+    );
+    println!("\n    ROW 1b -- the same covers against their OWN provenance (Control 2's corpus).");
+    println!("    Reference and suspect now share vocabulary, register and source.");
+    bench.report(
+        "ROW 1b -- word-table covers vs the human corpus the codec is trained on",
+        &word_table,
+        &bench.control,
     );
     println!("\n    first three word-table covers:");
     for (index, cover) in word_table.iter().take(3).enumerate() {
@@ -1000,12 +1268,10 @@ fn the_three_rows_remeasured() {
                 .collect();
             covers.truncate(trials());
             println!("\n    ({} model-written covers read from OSL_COVER_DUMP)", covers.len());
-            report(
+            bench.report(
                 "ROW 2 -- B0-06 arithmetic-coded MODEL covers (feat/b006-arithmetic-cover)",
-                &legacy,
-                &frames,
                 &covers,
-                &held_out,
+                &bench.reference,
             );
             println!("\n    first three model covers:");
             for (index, cover) in covers.iter().take(3).enumerate() {
@@ -1018,36 +1284,78 @@ fn the_three_rows_remeasured() {
     }
 }
 
+/// **The D-161 row, reproduced exactly, so the two protocols can be compared.**
+///
+/// Legacy reader, its original contiguous 400-line training split, its original
+/// held-out reference, its original seed and length matching. This must print
+/// `rate 1.000, margin +0.8306` for the word table -- the number in
+/// `tasklogs/B0-06.md` and in D-161. If it does not, this file's re-measurement is
+/// not measuring the same thing the old one measured and nothing below it can be
+/// compared to anything above it.
+#[test]
+fn the_old_protocol_still_reproduces_its_published_numbers() {
+    let lines = lines_of(REAL_CHAT);
+    let (training, held_out) = lines.split_at(READER_TRAINING_LINES);
+    let legacy = LegacyReader::train(training);
+    let frames = FrameJudge::train(training);
+
+    println!("\n=========== D-161 / B0-06 PROTOCOL, REPRODUCED ===========");
+    println!("  legacy reader, 400 contiguous training lines, held-out reference, same seed.");
+    let mut payloads = Payloads(0x0517_d161_c0de_fa11);
+    let covers: Vec<String> = (0..trials()).map(|_| payloads.next_cover()).collect();
+    let rows = report(
+        "declined path (word table), length-matched -- D-161 published 1.000 / +0.8306",
+        &legacy,
+        &frames,
+        &covers,
+        held_out,
+    );
+    if trials() == 200 {
+        assert!(
+            (rows[LEGACY_DEFAULT].rate - 1.000).abs() < 1e-9
+                && (rows[LEGACY_DEFAULT].margin - 0.8306).abs() < 5e-4,
+            "the old protocol no longer reproduces its published number \
+             (rate {:.3}, margin {:+.4}); the re-measurement is not comparable",
+            rows[LEGACY_DEFAULT].rate,
+            rows[LEGACY_DEFAULT].margin
+        );
+        println!("  reproduced: rate 1.000, margin +0.8306 -- byte-for-byte the published row.");
+    }
+}
+
 // ==========================================================================
 // WHAT THE JUDGE CANNOT SEE
 // ==========================================================================
 
 /// **Stated as a measurement, not as a caveat.**
 ///
-/// A human flagged 20/20 on D-165's covers. Two of the three things a human
-/// notices about B0-06's model covers are invisible to any n-gram statistic, and
-/// rather than assert that in prose this test demonstrates it on human text where
-/// the ground truth is not in doubt.
+/// A human flagged D-165's covers 20/20 and forced-choice 20/20, and B0-06 named
+/// what a person reacts to in the model-written covers: they end **mid-clause**,
+/// and the **register is a chatbot's**, not a friend's. Neither is a word-order
+/// property inside a two- or three-word window, so neither is visible to anything
+/// in this file.
 ///
-/// * **Mid-clause truncation.** Held-out HUMAN sentences, cut before their last
-///   clause. A person spots this instantly. If the judge does not, then B0-06's
-///   "it ends mid-clause" defect is outside its resolving power.
-/// * **Register.** Not measurable here without a labelled sample, and it is named
-///   in the tasklog rather than faked with a number.
+/// Rather than assert that in prose, this measures the first one on text where the
+/// ground truth is not in doubt: held-out HUMAN sentences, cut before their last
+/// clause, against uncut human sentences. A person spots that instantly. Whatever
+/// the judge scores here is its entire sensitivity to truncation, with fluency,
+/// vocabulary and provenance held human on both sides.
+///
+/// Register is **not** measured here and is not faked with a number: there is no
+/// labelled sample of chatbot-voiced versus friend-voiced chat on this branch. It
+/// is named in the tasklog as unmeasured.
 ///
 /// Reported, never asserted. Pinning a blind spot with an assertion would make it
 /// a requirement, and the point is that it is a limit to be reported alongside
 /// every number this file produces.
 #[test]
 fn what_this_judge_cannot_see() {
-    let (legacy, frames, held_out) = build();
+    let bench = bench();
     println!("\n=============== WHAT THIS JUDGE CANNOT SEE ===============");
-    println!("  both sides HUMAN. the suspect side is truncated mid-clause, which is what");
-    println!("  a person notices about B0-06's covers. 0.500 = the judge is blind to it.");
+    println!("  both sides HUMAN. the suspect side is truncated mid-clause, which is one of the");
+    println!("  two things a person notices about B0-06's covers. 0.500 = the judge is blind.");
 
-    let half = held_out.len() / 2;
-    let (source, reference) = held_out.split_at(half);
-    let truncated: Vec<String> = suspects_from(source, trials(), CONTROL_WORDS)
+    let truncated: Vec<String> = suspects_from(&bench.reference, trials(), CONTROL_WORDS)
         .iter()
         .map(|text| {
             let words = normalise(text);
@@ -1055,15 +1363,14 @@ fn what_this_judge_cannot_see() {
             words[..keep.min(words.len())].join(" ")
         })
         .collect();
-    report(
+    bench.report(
         "SUSPECT: human text truncated mid-clause",
-        &legacy,
-        &frames,
         &truncated,
-        reference,
+        &bench.reference_b,
     );
-    println!(
-        "\n  Whatever the rate above, it is measured on text a person WROTE. Read it as the"
-    );
-    println!("  judge's sensitivity to truncation alone, with fluency and register held human.");
+    println!("\n  Read that rate as the judge's sensitivity to truncation ALONE. The second");
+    println!("  thing a human notices -- chatbot register -- is not measured anywhere in this");
+    println!("  file, because no labelled sample of it exists on this branch. An n-gram over a");
+    println!("  closed function-word alphabet cannot see topic, register, or where a sentence");
+    println!("  stops. D-165's 20/20 was a HUMAN result and nothing here substitutes for it.");
 }
