@@ -18,7 +18,7 @@ use std::path::Path;
 #[cfg(windows)]
 use std::process::Command;
 use std::time::Duration;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 use zeroize::Zeroize;
 
@@ -436,17 +436,56 @@ pub(crate) fn retry_pending_deletions(
 ///   roughly one tick plus one retry pass.
 pub(crate) const DELETION_DRAIN_INTERVAL: Duration = Duration::from_secs(900);
 
-/// Renderer-visible advisory that OSL still owes a remote deletion.
-///
-/// Carries a fixed non-secret sentence only: never a filename, object id,
-/// capability token or path. Targeted at the trusted main webview by label, so
-/// it is never delivered into a service child view hosting remote content.
-const DELETION_DRAIN_NOTICE_EVENT: &str = "osl://attachment-deletion-drain";
-const DELETION_DRAIN_NOTICE_TARGET: &str = "main";
-
-/// Last advisory emitted, so a store that stays down does not emit the same
-/// sentence every tick. Cleared by a clean pass, so a later failure is reported.
-static LAST_DELETION_DRAIN_NOTICE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+// THE DETACHED DRAIN HAS NO RENDERER CHANNEL, AND NO LONGER PRETENDS TO.
+//
+// A `"osl://attachment-deletion-drain"` advisory used to be emitted from
+// `report_deletion_drain` here, documented as a "renderer-visible advisory that
+// OSL still owes a remote deletion". Both halves of that sentence were false,
+// which is why it is gone rather than wired up:
+//
+// * It was never renderer-visible. It went out as `emit_to("main", …)`, and no
+//   webview in this repo has ever subscribed to the name -- not `main.ts`, not
+//   `overlay.ts`, and not in any preserved patch that carries the emit (each
+//   mentions the string exactly twice: this constant and the emit). Ledger 5
+//   reported it as emitted-but-never-listened. It was born dead, so this is not
+//   a listener lost in a merge.
+// * It did not report a still-owed deletion. The case it names -- the cipher
+//   store is down, so records stay in the outbox -- returns
+//   `DeletionAttempt::Retry`, which `drain_attachment_deletions` counts into
+//   `DeletionDrainReport::retained` and returns as `Ok`. See
+//   `retry_pending_deletions` above, whose `.map(|_report| ())` drops that count
+//   on the floor. The advisory therefore fired only when the outbox subsystem
+//   itself was broken (outbox malformed / not encrypted / unwritable / over its
+//   storage limit, or no route at all) and stayed silent in exactly the
+//   situation it claimed to announce.
+//
+// A third fact found while establishing the above and recorded rather than
+// quietly fixed: `spawn_deletion_outbox_drain` below has NO CALLER, on this
+// branch or at `integrate/first-usable`, despite its own doc saying "Started
+// from `setup`". `rustc` reports it as dead code. So the 15-minute tick that
+// [`DELETION_DRAIN_INTERVAL`] spends thirty lines justifying never runs, and
+// the only drain that happens is `drain_pending_deletions_detached` at the
+// password gate (apps/osl-hub/src/main.rs:1350, apps/osl-hub/src/main.rs:9150)
+// plus the two synchronous retries on send/open. Wiring it belongs to whoever
+// owns `main.rs`; it is a behaviour change, not a ledger cleanup.
+//
+// Those broken-subsystem strings are already delivered to the operator
+// synchronously, in the same words, by the `retry_pending_deletions(&client)?`
+// at the head of the attachment send and open paths (see the `?` uses of it in
+// this file) -- so nothing a user could see is lost by deleting the emit.
+//
+// WHAT IS STILL MISSING, RECORDED RATHER THAN QUIETLY FIXED: "View once ·
+// Removed after it is opened and kept out of OSL history"
+// (apps/osl-hub-ui/src/osl-chats-view.ts:279) is a promise about a remote copy,
+// and there is currently NO signal of any kind -- event, badge or toast -- when
+// that copy is still on the relay because the drain could not reach it. The
+// durable outbox and the 15-minute tick keep trying, which is why this is a
+// missing report and not a missing deletion. Closing it means surfacing
+// `DeletionDrainReport::retained`, which needs a UI owner; re-adding an event
+// with no listener is not that, and a listener in `overlay.ts` would be worse
+// still -- the overlay runs under `native_discord_overlay::OVERLAY_LABEL`, so
+// an `emit_to("main", …)` can never reach it, and the pair would read green
+// while firing never.
 
 fn deletion_drain_client(
     app: &tauri::AppHandle,
@@ -456,25 +495,6 @@ fn deletion_drain_client(
         .app_config_dir()
         .map_err(|_| "OSL attachment transport is unavailable".to_owned())?;
     attachment_store_client(&config_root)
-}
-
-/// Surface a drain outcome without letting it reach the caller's result.
-fn report_deletion_drain(app: &tauri::AppHandle, outcome: Result<(), String>) {
-    let notice = outcome.err();
-    let Ok(mut last) = LAST_DELETION_DRAIN_NOTICE.lock() else {
-        return;
-    };
-    if *last == notice {
-        return;
-    }
-    *last = notice.clone();
-    if let Some(message) = notice {
-        let _ = app.emit_to(
-            DELETION_DRAIN_NOTICE_TARGET,
-            DELETION_DRAIN_NOTICE_EVENT,
-            message,
-        );
-    }
 }
 
 /// Run one drain pass off the caller's thread, and never in the caller's result.
@@ -489,13 +509,14 @@ fn report_deletion_drain(app: &tauri::AppHandle, outcome: Result<(), String>) {
 pub(crate) fn drain_pending_deletions_detached(app: &tauri::AppHandle) {
     let worker = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let outcome = deletion_drain_client(&worker).and_then(|client| {
+        // Dropped on purpose, not forgotten: see the block above `deletion_drain_client`
+        // for why this pass has no renderer channel and what is still owed here.
+        let _ = deletion_drain_client(&worker).and_then(|client| {
             // The outbox is sealed with the file storage key, so this is only
             // ever meaningful after the gate has opened. Before that
             // `drain_attachment_deletions` reports an empty pass by design.
             retry_pending_deletions(&client)
         });
-        report_deletion_drain(&worker, outcome);
     });
 }
 
@@ -514,9 +535,9 @@ pub(crate) fn spawn_deletion_outbox_drain(app: tauri::AppHandle) {
         .name("osl-attachment-deletion-drain".to_owned())
         .spawn(move || loop {
             std::thread::sleep(DELETION_DRAIN_INTERVAL);
-            let outcome =
-                deletion_drain_client(&app).and_then(|client| retry_pending_deletions(&client));
-            report_deletion_drain(&app, outcome);
+            // Dropped on purpose, not forgotten: see the block above
+            // `deletion_drain_client`.
+            let _ = deletion_drain_client(&app).and_then(|client| retry_pending_deletions(&client));
         });
 }
 
