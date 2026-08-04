@@ -301,11 +301,35 @@ impl Uia2WindowPlan {
 pub struct Uia2WindowCandidate<'a> {
     pub hwnd: isize,
     pub parent_hwnd: Option<isize>,
-    /// For out-of-process content roots such as WhatsApp WebView2, this ties
-    /// the sibling Chromium window back to the app shell that OSL claimed.
+    /// For out-of-process content roots this ties the sibling Chromium window
+    /// back to the app shell that OSL claimed **through the window tree**.
+    ///
+    /// D-156 measured this as `None` on the owner's host for WhatsApp: the
+    /// WebView2 content window is genuinely top-level, and `GetParent`,
+    /// `GA_ROOT`, `GA_ROOTOWNER` and `GWLP_HWNDPARENT` are all zero or itself in
+    /// both directions. It is kept because it is a *sound* link when it exists
+    /// -- a window whose root ancestor is the shell's own handle belongs to that
+    /// shell by the window manager's own arithmetic -- but it is not the link
+    /// WhatsApp has, and no ancestry-derived field can be.
     pub associated_app_hwnd: Option<isize>,
     pub process_id: u32,
     pub process_name: &'a str,
+    /// The process that created this window's process, read from the **process
+    /// table**, not the window tree. This is the relationship WhatsApp actually
+    /// has: `msedgewebview2` pid 24196 has `ParentProcessId` 23884, the
+    /// `WhatsApp.Root` shell.
+    ///
+    /// `0` means unknown, and never matches: a candidate whose parentage could
+    /// not be read is not thereby associated with anything.
+    pub parent_process_id: u32,
+    /// The image name a WebView2 host declares it is hosting, taken from its own
+    /// `--webview-exe-name=` command-line switch.
+    ///
+    /// This is the corroboration, not the link. Parentage says *who launched
+    /// this process*; this says *which application it is hosting a WebView for*.
+    /// Requiring both is what stops a pid-reuse or an unrelated child process
+    /// from being read as WhatsApp's content window.
+    pub host_exe_name: Option<&'a str>,
     pub class_name: &'a str,
     pub visible: bool,
     pub area: u32,
@@ -405,12 +429,34 @@ pub fn resolve_uia2_window(
             let renderer_class = plan
                 .renderer_child_class
                 .ok_or(Uia2WindowResolveError::MissingRendererChild)?;
-            let content_outer = largest_visible(windows.iter().copied().filter(|window| {
+
+            // Two WebView2 hosts run side by side on the owner's machine and the
+            // one that is NOT WhatsApp's has the larger window, so the shape of
+            // this loop matters: every host of the right image and class is
+            // classified first, and only the ones this app owns are allowed into
+            // the size comparison. `largest_visible` over the unfiltered set is
+            // mutant [1], and it picks the Windows Search box.
+            let mut owned_hosts = Vec::new();
+            for host in windows.iter().copied().filter(|window| {
                 same_process_name(window.process_name, sibling_process)
                     && window.class_name == sibling_outer_class
-                    && window.associated_app_hwnd == Some(app_outer.hwnd)
-            }))
-            .ok_or(Uia2WindowResolveError::MissingSiblingContentOuter)?;
+            }) {
+                match classify_sibling_host(app_outer, host) {
+                    SiblingHostAssociation::OwnedByApp => owned_hosts.push(host),
+                    // A host tied to this shell by one signal while the other
+                    // names a different application is a state nobody has
+                    // measured. It must not silently resolve to a guess, and it
+                    // must not be skipped over in favour of some other window
+                    // either -- the whole graph is suspect at that point.
+                    SiblingHostAssociation::Contradicted
+                    | SiblingHostAssociation::Uncorroborated => {
+                        return Err(Uia2WindowResolveError::MissingSiblingContentOuter)
+                    }
+                    SiblingHostAssociation::Foreign => {}
+                }
+            }
+            let content_outer = largest_visible(owned_hosts.into_iter())
+                .ok_or(Uia2WindowResolveError::MissingSiblingContentOuter)?;
             let renderer = largest_visible(windows.iter().copied().filter(|window| {
                 window.class_name == renderer_class
                     && is_descendant_of(window.hwnd, content_outer.hwnd, windows)
@@ -418,6 +464,96 @@ pub fn resolve_uia2_window(
             .ok_or(Uia2WindowResolveError::MissingRendererChild)?;
             Ok(resolved(plan, app_outer.hwnd, renderer))
         }
+    }
+}
+
+/// The command-line switch a WebView2 host carries naming the application whose
+/// content it is hosting.
+///
+/// Measured on the owner's host: WhatsApp's `msedgewebview2` carries
+/// `--webview-exe-name=WhatsApp.Root.exe`, and Windows Search's carries
+/// `--webview-exe-name=SearchApp.exe`. The two processes are otherwise
+/// indistinguishable by image name, which is why matching on the name alone
+/// cannot tell them apart.
+pub const WEBVIEW2_HOST_EXE_SWITCH: &str = "--webview-exe-name=";
+
+/// The value of [`WEBVIEW2_HOST_EXE_SWITCH`] in a WebView2 host's command line.
+///
+/// Portable on purpose. Reading another process' command line is `cfg(windows)`
+/// and therefore neither compiled nor tested by a Linux build; deciding what the
+/// switch says is a decision over a string, so it is one, and the measured
+/// command lines from the owner's host are unit tests below.
+pub fn webview2_host_exe_name(command_line: &str) -> Option<&str> {
+    let value = command_line.split(WEBVIEW2_HOST_EXE_SWITCH).nth(1)?;
+    let value = if let Some(quoted) = value.strip_prefix('"') {
+        quoted.split('"').next().unwrap_or_default()
+    } else {
+        value
+            .split(|character: char| character.is_whitespace())
+            .next()
+            .unwrap_or_default()
+    };
+    (!value.is_empty()).then_some(value)
+}
+
+/// How a candidate WebView2 host window relates to the app shell OSL resolved.
+///
+/// The distinction that earns its keep is [`Self::Foreign`] versus the two
+/// refusing variants. A foreign host is another application's and is simply not
+/// this app's content window -- Windows Search's, on the owner's machine, and it
+/// is the bigger of the two. The refusing variants are a host that IS tied to
+/// this app by one signal and not confirmed by the other, which has never been
+/// observed and is not something to resolve by guessing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SiblingHostAssociation {
+    /// This app's content host. Either the window is rooted at the shell's own
+    /// handle, or the host process is the shell's child **and** declares it is
+    /// hosting the shell's image.
+    OwnedByApp,
+    /// The host process is the shell's child, or its window is rooted at the
+    /// shell, but its `--webview-exe-name` names a different application.
+    Contradicted,
+    /// The host process is the shell's child but nothing corroborates it: no
+    /// `--webview-exe-name` could be read. Parentage alone is not enough to
+    /// place a carrier on, so this refuses too.
+    Uncorroborated,
+    /// Another application's WebView2 host. Not an error -- just not ours.
+    Foreign,
+}
+
+/// Decide whether one WebView2 host window belongs to the app shell OSL claimed.
+///
+/// # Why parentage and the switch are corroborating, not alternative
+///
+/// `ParentProcessId` is the link: it is the only relationship WhatsApp's shell
+/// and its WebView2 actually have on the owner's host, and it is the one the
+/// conductor re-measured (24196 -> 23884). But a pid can be reused after a
+/// process exits, and "a child process of the app" is a broader claim than "the
+/// app's content window". `--webview-exe-name` is the host's own statement of
+/// which application it is hosting, so requiring both means a wrong answer needs
+/// a reused pid *and* a matching declaration.
+///
+/// Window ancestry is accepted on its own because it is not an inference: a
+/// window whose root ancestor is the shell's handle is inside the shell's
+/// window, decided by the window manager rather than read out of a process
+/// table. It is kept for providers that do embed their content that way; it is
+/// **not** the link WhatsApp has, which is the whole of D-156.
+pub fn classify_sibling_host(
+    app_outer: Uia2WindowCandidate<'_>,
+    host: Uia2WindowCandidate<'_>,
+) -> SiblingHostAssociation {
+    let declares = host
+        .host_exe_name
+        .map(|name| same_image_name(name, app_outer.process_name));
+    let parented = host.parent_process_id != 0 && host.parent_process_id == app_outer.process_id;
+    let rooted = host.associated_app_hwnd == Some(app_outer.hwnd);
+
+    match (parented, rooted, declares) {
+        (_, _, Some(false)) if parented || rooted => SiblingHostAssociation::Contradicted,
+        (true, _, Some(true)) => SiblingHostAssociation::OwnedByApp,
+        (true, _, None) => SiblingHostAssociation::Uncorroborated,
+        (false, true, _) => SiblingHostAssociation::OwnedByApp,
+        _ => SiblingHostAssociation::Foreign,
     }
 }
 
@@ -470,6 +606,27 @@ fn is_descendant_of(
 fn same_process_name(actual: &str, expected: &str) -> bool {
     let actual = actual.strip_suffix(".exe").unwrap_or(actual);
     actual.eq_ignore_ascii_case(expected)
+}
+
+/// Compare two image names when **neither** side is a plan constant.
+///
+/// [`same_process_name`] strips `.exe` from the observed name only, because the
+/// other side is always a plan's `app_process_name`, which never carries the
+/// extension. The corroboration in [`classify_sibling_host`] compares two
+/// *observed* strings -- `--webview-exe-name=WhatsApp.Root.exe` against the
+/// shell window's own image, also `WhatsApp.Root.exe` -- so it has to strip
+/// both. Getting this wrong classified WhatsApp's own WebView2 as
+/// `Contradicted`, which is a refusal, not a mis-bind; it is written down here
+/// because the failure mode was invisible in the name.
+fn same_image_name(left: &str, right: &str) -> bool {
+    let strip = |name: &str| {
+        let lowered = name.to_ascii_lowercase();
+        lowered
+            .strip_suffix(".exe")
+            .map(str::to_owned)
+            .unwrap_or(lowered)
+    };
+    strip(left) == strip(right)
 }
 
 /// Execute Chromium's two-part accessibility activation handshake.
@@ -633,6 +790,10 @@ pub struct Uia2OwnedWindow {
     pub associated_app_hwnd: Option<isize>,
     pub process_id: u32,
     pub process_name: String,
+    /// See [`Uia2WindowCandidate::parent_process_id`]. `0` is "not read".
+    pub parent_process_id: u32,
+    /// See [`Uia2WindowCandidate::host_exe_name`].
+    pub host_exe_name: Option<String>,
     pub class_name: String,
     pub visible: bool,
     pub area: u32,
@@ -646,10 +807,24 @@ impl Uia2OwnedWindow {
             associated_app_hwnd: self.associated_app_hwnd,
             process_id: self.process_id,
             process_name: &self.process_name,
+            parent_process_id: self.parent_process_id,
+            host_exe_name: self.host_exe_name.as_deref(),
             class_name: &self.class_name,
             visible: self.visible,
             area: self.area,
         }
+    }
+
+    /// Record the process-table facts this window's association depends on.
+    ///
+    /// Kept as a builder so every existing construction site -- including the
+    /// three adapters' recorded graphs, which this task must leave byte-for-byte
+    /// unchanged in behaviour -- keeps compiling with the fields absent, which
+    /// is exactly what "the parentage was never read" should mean.
+    pub fn hosted_by(mut self, parent_process_id: u32, host_exe_name: Option<&str>) -> Self {
+        self.parent_process_id = parent_process_id;
+        self.host_exe_name = host_exe_name.map(str::to_owned);
+        self
     }
 }
 
@@ -1083,8 +1258,8 @@ pub fn clear_uia2_composer(
 #[cfg(target_os = "windows")]
 pub(crate) mod win32 {
     use super::{
-        call_with_timeout, Uia2CallTimeout, Uia2Deadline, Uia2Editable, Uia2OwnedWindow,
-        Uia2Syscalls, Uia2TreeRoute,
+        call_with_timeout, same_process_name, webview2_host_exe_name, Uia2CallTimeout, Uia2Deadline,
+        Uia2Editable, Uia2OwnedWindow, Uia2Syscalls, Uia2TreeRoute, WEBVIEW2_PROCESS_NAME,
     };
 
     use ::windows::core::Interface;
@@ -1195,6 +1370,187 @@ pub(crate) mod win32 {
             .to_owned()
     }
 
+    // `NtQueryInformationProcess` and `ReadProcessMemory` are declared here
+    // rather than pulled from `windows-sys` because reaching them there means
+    // adding `Win32_System_Diagnostics_Debug` to the crate's feature list, and a
+    // build-config edit in this repository has broken every build three separate
+    // times. `mullvad_window_host.rs:402` already declares its kernel32 imports
+    // the same way.
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtQueryInformationProcess(
+            process: *mut c_void,
+            information_class: u32,
+            information: *mut c_void,
+            information_length: u32,
+            return_length: *mut u32,
+        ) -> i32;
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn ReadProcessMemory(
+            process: *mut c_void,
+            address: *const c_void,
+            buffer: *mut c_void,
+            size: usize,
+            read: *mut usize,
+        ) -> i32;
+    }
+
+    /// `PROCESS_BASIC_INFORMATION`, x64 layout. Only two fields are read:
+    /// `peb_base_address`, which is the door to the command line, and
+    /// `inherited_from_unique_process_id`, which is the parentage D-156 needs.
+    #[repr(C)]
+    #[derive(Default)]
+    struct ProcessBasicInformation {
+        exit_status: i32,
+        _padding: i32,
+        peb_base_address: usize,
+        affinity_mask: usize,
+        base_priority: i32,
+        _padding2: i32,
+        unique_process_id: usize,
+        inherited_from_unique_process_id: usize,
+    }
+
+    const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;
+    /// x64 `PEB::ProcessParameters`.
+    const PEB_PROCESS_PARAMETERS_OFFSET: usize = 0x20;
+    /// x64 `RTL_USER_PROCESS_PARAMETERS::CommandLine`.
+    const PROCESS_PARAMETERS_COMMAND_LINE_OFFSET: usize = 0x70;
+    /// A command line longer than this is not one this decision can use.
+    const MAX_COMMAND_LINE_BYTES: usize = 64 * 1024;
+
+    fn open_for_query(process_id: u32, extra_access: u32) -> Option<*mut c_void> {
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        if process_id == 0 {
+            return None;
+        }
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | extra_access,
+                0,
+                process_id,
+            )
+        };
+        (!handle.is_null()).then_some(handle)
+    }
+
+    fn basic_information(handle: *mut c_void) -> Option<ProcessBasicInformation> {
+        let mut information = ProcessBasicInformation::default();
+        let status = unsafe {
+            NtQueryInformationProcess(
+                handle,
+                PROCESS_BASIC_INFORMATION_CLASS,
+                &mut information as *mut ProcessBasicInformation as *mut c_void,
+                std::mem::size_of::<ProcessBasicInformation>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        (status >= 0).then_some(information)
+    }
+
+    fn read_exact_at<T>(handle: *mut c_void, address: usize, out: &mut T) -> bool {
+        if address == 0 {
+            return false;
+        }
+        let size = std::mem::size_of::<T>();
+        let mut read = 0usize;
+        let ok = unsafe {
+            ReadProcessMemory(
+                handle,
+                address as *const c_void,
+                out as *mut T as *mut c_void,
+                size,
+                &mut read,
+            )
+        };
+        ok != 0 && read == size
+    }
+
+    /// The parent process id, read from the process itself.
+    ///
+    /// This is the WhatsApp link: the WebView2 host is a child of the shell
+    /// process. It is deliberately not corroboration on its own -- see
+    /// [`super::classify_sibling_host`].
+    fn parent_process_id_of(process_id: u32) -> u32 {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        let Some(handle) = open_for_query(process_id, 0) else {
+            return 0;
+        };
+        let information = basic_information(handle);
+        unsafe { CloseHandle(handle) };
+        information
+            .map(|information| information.inherited_from_unique_process_id as u32)
+            .unwrap_or(0)
+    }
+
+    /// This process' full command line, read out of its PEB.
+    ///
+    /// Returns `None` on any refusal at all. That is the safe direction: an
+    /// unreadable command line means the corroboration is absent, and an absent
+    /// corroboration refuses rather than resolves.
+    fn command_line_of(process_id: u32) -> Option<String> {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::PROCESS_VM_READ;
+
+        let handle = open_for_query(process_id, PROCESS_VM_READ)?;
+        let command_line = (|| {
+            let information = basic_information(handle)?;
+            let mut parameters = 0usize;
+            if !read_exact_at(
+                handle,
+                information
+                    .peb_base_address
+                    .checked_add(PEB_PROCESS_PARAMETERS_OFFSET)?,
+                &mut parameters,
+            ) {
+                return None;
+            }
+            // UNICODE_STRING, x64: Length: u16, MaximumLength: u16, 4 bytes of
+            // padding, Buffer: *mut u16.
+            let mut length = 0u16;
+            if !read_exact_at(
+                handle,
+                parameters.checked_add(PROCESS_PARAMETERS_COMMAND_LINE_OFFSET)?,
+                &mut length,
+            ) {
+                return None;
+            }
+            let mut buffer_address = 0usize;
+            if !read_exact_at(
+                handle,
+                parameters
+                    .checked_add(PROCESS_PARAMETERS_COMMAND_LINE_OFFSET)?
+                    .checked_add(8)?,
+                &mut buffer_address,
+            ) {
+                return None;
+            }
+            let bytes = usize::from(length);
+            if bytes == 0 || bytes > MAX_COMMAND_LINE_BYTES || bytes % 2 != 0 {
+                return None;
+            }
+            let mut wide = vec![0u16; bytes / 2];
+            let mut read = 0usize;
+            let ok = unsafe {
+                ReadProcessMemory(
+                    handle,
+                    buffer_address as *const c_void,
+                    wide.as_mut_ptr() as *mut c_void,
+                    bytes,
+                    &mut read,
+                )
+            };
+            (ok != 0 && read == bytes).then(|| String::from_utf16_lossy(&wide))
+        })();
+        unsafe { CloseHandle(handle) };
+        command_line
+    }
+
     fn visible_and_area(window: isize) -> (bool, u32) {
         use windows_sys::Win32::Foundation::RECT;
         use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindowVisible};
@@ -1269,12 +1625,45 @@ pub(crate) mod win32 {
         handles
     }
 
+    /// What one process contributes to every window it owns. Read once per
+    /// process id, because a desktop walk sees hundreds of windows across a few
+    /// dozen processes and each of these facts costs an `OpenProcess`.
+    #[derive(Clone)]
+    struct ProcessFacts {
+        name: String,
+        parent_process_id: u32,
+        host_exe_name: Option<String>,
+    }
+
+    fn process_facts(process_id: u32) -> ProcessFacts {
+        let name = process_name_of(process_id);
+        // The command line is read only for WebView2 hosts. It is the one image
+        // that carries `--webview-exe-name`, and a PEB read is not something to
+        // do against every process on the desktop for a field nothing would
+        // consult.
+        let host_exe_name = same_process_name(&name, WEBVIEW2_PROCESS_NAME)
+            .then(|| command_line_of(process_id))
+            .flatten()
+            .and_then(|command_line| {
+                webview2_host_exe_name(&command_line).map(str::to_owned)
+            });
+        ProcessFacts {
+            name,
+            parent_process_id: parent_process_id_of(process_id),
+            host_exe_name,
+        }
+    }
+
     /// Turn raw handles into the graph the resolver consumes.
     ///
-    /// `associated_app_hwnd` is the WhatsApp case: a WebView2 content window
-    /// lives in another process but is rooted at the app shell's window, so the
-    /// root ancestor is what ties it back to the shell OSL claimed.
+    /// Two independent associations are recorded, and D-156 is the difference
+    /// between them. `associated_app_hwnd` is the window-tree one: a content
+    /// window that lives in another process but is rooted at the app shell's
+    /// window. WhatsApp does not have it -- its WebView2 window is genuinely
+    /// top-level -- so `parent_process_id` and `host_exe_name` carry the
+    /// process-table one, which it does have.
     fn enumerate(scope: Uia2EnumerationScope) -> Vec<Uia2OwnedWindow> {
+        let mut facts_by_process = std::collections::HashMap::<u32, ProcessFacts>::new();
         raw_window_handles(scope)
             .into_iter()
             .filter_map(|hwnd| {
@@ -1290,12 +1679,18 @@ pub(crate) mod win32 {
                 let parent_hwnd = parent_of(hwnd);
                 let associated_app_hwnd =
                     root_ancestor_of(hwnd).filter(|root| process_id_of(*root) != process_id);
+                let facts = facts_by_process
+                    .entry(process_id)
+                    .or_insert_with(|| process_facts(process_id))
+                    .clone();
                 Some(Uia2OwnedWindow {
                     hwnd,
                     parent_hwnd,
                     associated_app_hwnd,
                     process_id,
-                    process_name: process_name_of(process_id),
+                    process_name: facts.name,
+                    parent_process_id: facts.parent_process_id,
+                    host_exe_name: facts.host_exe_name,
                     class_name,
                     visible,
                     area,
@@ -1604,6 +1999,34 @@ pub(crate) mod tests {
             associated_app_hwnd,
             process_id,
             process_name,
+            parent_process_id: 0,
+            host_exe_name: None,
+            class_name,
+            visible: true,
+            area,
+        }
+    }
+
+    /// A window whose process-table facts were read: the parent process id and,
+    /// for a WebView2 host, the application it declares it is hosting.
+    fn hosted_window(
+        hwnd: isize,
+        parent_hwnd: Option<isize>,
+        process_id: u32,
+        parent_process_id: u32,
+        host_exe_name: Option<&'static str>,
+        process_name: &'static str,
+        class_name: &'static str,
+        area: u32,
+    ) -> Uia2WindowCandidate<'static> {
+        Uia2WindowCandidate {
+            hwnd,
+            parent_hwnd,
+            associated_app_hwnd: None,
+            process_id,
+            process_name,
+            parent_process_id,
+            host_exe_name,
             class_name,
             visible: true,
             area,
@@ -1828,6 +2251,12 @@ pub(crate) mod tests {
             associated_app_hwnd,
             process_id,
             process_name: process_name.to_owned(),
+            // Absent, not zeroed-for-convenience: these graphs were recorded
+            // before D-156 read the process table, and a fixture must not claim
+            // a fact its measurement never took. `Uia2OwnedWindow::hosted_by`
+            // is how a graph that DID read them says so.
+            parent_process_id: 0,
+            host_exe_name: None,
             class_name: class_name.to_owned(),
             visible: true,
             area,
@@ -2739,6 +3168,485 @@ pub(crate) mod tests {
              at a window A-00 measured as blind"
         );
         assert_ne!(discord, mutant);
+    }
+
+    // -----------------------------------------------------------------
+    // D-156: associating a sibling WebView2 by PROCESS parentage.
+    //
+    // Every number below was measured on the owner's Windows host, not
+    // invented. The window graph:
+    //
+    //   198342 pid=23884 WhatsApp.Root   WinUIDesktopWin32WindowClass  parent=0
+    //   197328 pid=23884 WhatsApp.Root   ...DesktopChildSiteBridge     parent=198342
+    //    67446 pid=24196 msedgewebview2  Chrome_WidgetWin_1            parent=0
+    //   132018 pid=24196 msedgewebview2  Chrome_RenderWidgetHostHWND   parent=67446
+    //
+    // and the process table, which is where the only real link lives:
+    //
+    //   ProcessId  ParentProcessId  parentName      --webview-exe-name
+    //       24196            23884  WhatsApp.Root   WhatsApp.Root.exe
+    //       22824            21944  SearchApp       SearchApp.exe
+    //       11744            22824  msedgewebview2  SearchApp.exe
+    //
+    // The decoy is not a hypothetical. Windows Search hosts its own WebView2 on
+    // this machine, at full screen, and it is the LARGER window of the two.
+    // -----------------------------------------------------------------
+
+    const MEASURED_SHELL_HWND: isize = 198_342;
+    const MEASURED_WEBVIEW_OUTER_HWND: isize = 67_446;
+    const MEASURED_RENDERER_HWND: isize = 132_018;
+    const DECOY_OUTER_HWND: isize = 900_001;
+    const DECOY_RENDERER_HWND: isize = 900_002;
+    const MEASURED_SHELL_PID: u32 = 23_884;
+    const MEASURED_WEBVIEW_PID: u32 = 24_196;
+    const DECOY_SEARCHAPP_PID: u32 = 22_824;
+    const DECOY_WEBVIEW_PID: u32 = 11_744;
+    const MEASURED_SHELL_IMAGE: &str = "WhatsApp.Root.exe";
+    const MEASURED_SHELL_PROCESS: &str = "WhatsApp.Root";
+    const MEASURED_SHELL_AREA: u32 = 1_092_960;
+    const MEASURED_WEBVIEW_AREA: u32 = 1_068_000;
+    /// Full screen. Deliberately bigger than WhatsApp's.
+    const DECOY_AREA: u32 = 1_920 * 1_080;
+
+    fn measured_whatsapp_plan() -> Uia2WindowPlan {
+        Uia2WindowPlan::sibling_chromium_renderer(
+            "WhatsApp",
+            MEASURED_SHELL_PROCESS,
+            WHATSAPP_OUTER_WINDOW_CLASS,
+            WEBVIEW2_PROCESS_NAME,
+            WAIT_MS,
+            CALL_TIMEOUT_MS,
+        )
+    }
+
+    /// The owner's host as measured: WhatsApp's shell and its WebView2, plus
+    /// Windows Search's WebView2 with the larger window. No window in this graph
+    /// carries `associated_app_hwnd` -- that is the finding.
+    fn two_webview2_hosts_decoy_larger() -> Vec<Uia2WindowCandidate<'static>> {
+        vec![
+            hosted_window(
+                MEASURED_SHELL_HWND,
+                None,
+                MEASURED_SHELL_PID,
+                9_644,
+                None,
+                MEASURED_SHELL_IMAGE,
+                WHATSAPP_OUTER_WINDOW_CLASS,
+                MEASURED_SHELL_AREA,
+            ),
+            hosted_window(
+                197_328,
+                Some(MEASURED_SHELL_HWND),
+                MEASURED_SHELL_PID,
+                9_644,
+                None,
+                MEASURED_SHELL_IMAGE,
+                "Microsoft.UI.Content.DesktopChildSiteBridge",
+                MEASURED_WEBVIEW_AREA,
+            ),
+            hosted_window(
+                MEASURED_WEBVIEW_OUTER_HWND,
+                None,
+                MEASURED_WEBVIEW_PID,
+                MEASURED_SHELL_PID,
+                Some("WhatsApp.Root.exe"),
+                "msedgewebview2.exe",
+                ELECTRON_OUTER_WINDOW_CLASS,
+                MEASURED_WEBVIEW_AREA,
+            ),
+            hosted_window(
+                MEASURED_RENDERER_HWND,
+                Some(MEASURED_WEBVIEW_OUTER_HWND),
+                MEASURED_WEBVIEW_PID,
+                MEASURED_SHELL_PID,
+                Some("WhatsApp.Root.exe"),
+                "msedgewebview2.exe",
+                ELECTRON_RENDERER_WINDOW_CLASS,
+                MEASURED_WEBVIEW_AREA,
+            ),
+            hosted_window(
+                DECOY_OUTER_HWND,
+                None,
+                DECOY_WEBVIEW_PID,
+                DECOY_SEARCHAPP_PID,
+                Some("SearchApp.exe"),
+                "msedgewebview2.exe",
+                ELECTRON_OUTER_WINDOW_CLASS,
+                DECOY_AREA,
+            ),
+            hosted_window(
+                DECOY_RENDERER_HWND,
+                Some(DECOY_OUTER_HWND),
+                DECOY_WEBVIEW_PID,
+                DECOY_SEARCHAPP_PID,
+                Some("SearchApp.exe"),
+                "msedgewebview2.exe",
+                ELECTRON_RENDERER_WINDOW_CLASS,
+                DECOY_AREA,
+            ),
+        ]
+    }
+
+    #[test]
+    fn the_measured_whatsapp_graph_resolves_by_process_parentage() {
+        let windows = two_webview2_hosts_decoy_larger();
+
+        // The premise first, or this test proves nothing: on the real machine
+        // there is NO window-tree link at all. If a future fixture quietly
+        // reintroduces one, the resolution below stops being evidence for
+        // parentage.
+        assert!(
+            windows
+                .iter()
+                .all(|window| window.associated_app_hwnd.is_none()),
+            "the measured graph has no window-tree association; a fixture that \
+             adds one is testing the old contract, not the machine"
+        );
+
+        let resolved = resolve_uia2_window(measured_whatsapp_plan(), &windows)
+            .expect("WhatsApp's WebView2 must resolve through process parentage");
+
+        assert_eq!(resolved.app_outer_hwnd, MEASURED_SHELL_HWND);
+        assert_eq!(resolved.bound_hwnd, MEASURED_RENDERER_HWND);
+        assert_eq!(resolved.bound_process_id, MEASURED_WEBVIEW_PID);
+        assert_ne!(
+            resolved.bound_process_id, DECOY_WEBVIEW_PID,
+            "binding Windows Search's WebView2 would place an OSL carrier into \
+             the Search box"
+        );
+    }
+
+    /// Mutant [1]: select by largest visible window. The decoy is chosen.
+    ///
+    /// The mutant is computed here rather than left in production, so the
+    /// artifact is a number this test can print: the "obvious" rule picks
+    /// Windows Search, at a larger area, in a different process.
+    #[test]
+    fn largest_visible_webview2_is_the_decoy_not_whatsapp() {
+        let windows = two_webview2_hosts_decoy_larger();
+        let plan = measured_whatsapp_plan();
+
+        let largest_by_area = windows
+            .iter()
+            .copied()
+            .filter(|window| {
+                window.process_name.starts_with(WEBVIEW2_PROCESS_NAME)
+                    && window.class_name == ELECTRON_OUTER_WINDOW_CLASS
+                    && window.visible
+            })
+            .max_by_key(|window| window.area)
+            .expect("both WebView2 hosts are in the graph");
+
+        assert_eq!(
+            largest_by_area.hwnd, DECOY_OUTER_HWND,
+            "mutant [1] must actually be wrong here, or the fixture is not the \
+             danger it claims to be"
+        );
+        assert_eq!(largest_by_area.process_id, DECOY_WEBVIEW_PID);
+        assert!(largest_by_area.area > MEASURED_WEBVIEW_AREA);
+
+        let resolved =
+            resolve_uia2_window(plan, &windows).expect("the resolver must still find WhatsApp's");
+        assert_ne!(resolved.bound_process_id, largest_by_area.process_id);
+        assert_eq!(resolved.bound_process_id, MEASURED_WEBVIEW_PID);
+    }
+
+    /// Mutant [2]: match on process NAME only, ignoring parentage.
+    ///
+    /// Both hosts are `msedgewebview2.exe`. The name cannot separate them, and a
+    /// resolver that tried would be choosing between two equally valid answers.
+    #[test]
+    fn the_process_name_alone_cannot_tell_the_two_webview2_hosts_apart() {
+        let windows = two_webview2_hosts_decoy_larger();
+
+        let by_name_only = windows
+            .iter()
+            .filter(|window| {
+                window.class_name == ELECTRON_OUTER_WINDOW_CLASS
+                    && window.process_name.starts_with(WEBVIEW2_PROCESS_NAME)
+            })
+            .count();
+        assert_eq!(
+            by_name_only, 2,
+            "the image name matches both hosts, which is why it is not the link"
+        );
+
+        let shell = windows
+            .iter()
+            .copied()
+            .find(|window| window.hwnd == MEASURED_SHELL_HWND)
+            .expect("the shell is in the graph");
+        let ours = windows
+            .iter()
+            .copied()
+            .find(|window| window.hwnd == MEASURED_WEBVIEW_OUTER_HWND)
+            .expect("WhatsApp's host is in the graph");
+        let theirs = windows
+            .iter()
+            .copied()
+            .find(|window| window.hwnd == DECOY_OUTER_HWND)
+            .expect("the decoy is in the graph");
+
+        assert_eq!(ours.process_name, theirs.process_name);
+        assert_eq!(
+            classify_sibling_host(shell, ours),
+            SiblingHostAssociation::OwnedByApp
+        );
+        assert_eq!(
+            classify_sibling_host(shell, theirs),
+            SiblingHostAssociation::Foreign,
+            "the decoy is another application's WebView2, not an error state"
+        );
+    }
+
+    /// Mutant [3]: drop the `--webview-exe-name` corroboration.
+    ///
+    /// A process parented to WhatsApp that declares it is hosting Windows Search
+    /// is a state nobody has observed. Without the corroboration it resolves --
+    /// parentage says yes -- and OSL binds it. With it, the resolver refuses.
+    #[test]
+    fn parentage_that_the_switch_contradicts_is_refused_not_resolved() {
+        let mut windows = two_webview2_hosts_decoy_larger();
+        for window in &mut windows {
+            if window.process_id == MEASURED_WEBVIEW_PID {
+                window.host_exe_name = Some("SearchApp.exe");
+            }
+        }
+
+        let shell = windows
+            .iter()
+            .copied()
+            .find(|window| window.hwnd == MEASURED_SHELL_HWND)
+            .expect("the shell is in the graph");
+        let contradicted = windows
+            .iter()
+            .copied()
+            .find(|window| window.hwnd == MEASURED_WEBVIEW_OUTER_HWND)
+            .expect("the host is in the graph");
+
+        // Parentage alone still says yes. That is precisely the danger.
+        assert_eq!(contradicted.parent_process_id, shell.process_id);
+        assert_eq!(
+            classify_sibling_host(shell, contradicted),
+            SiblingHostAssociation::Contradicted
+        );
+        assert_eq!(
+            resolve_uia2_window(measured_whatsapp_plan(), &windows),
+            Err(Uia2WindowResolveError::MissingSiblingContentOuter),
+            "when the two signals disagree the resolver must refuse rather than \
+             pick the one that says yes"
+        );
+    }
+
+    /// Corroboration is required, not merely checked when convenient: a host
+    /// parented to WhatsApp whose command line could not be read is refused.
+    /// An unreadable command line is exactly what a failed PEB read produces.
+    #[test]
+    fn parentage_without_any_corroboration_is_refused() {
+        let mut windows = two_webview2_hosts_decoy_larger();
+        for window in &mut windows {
+            if window.process_id == MEASURED_WEBVIEW_PID {
+                window.host_exe_name = None;
+            }
+        }
+
+        let shell = windows
+            .iter()
+            .copied()
+            .find(|window| window.hwnd == MEASURED_SHELL_HWND)
+            .expect("the shell is in the graph");
+        let uncorroborated = windows
+            .iter()
+            .copied()
+            .find(|window| window.hwnd == MEASURED_WEBVIEW_OUTER_HWND)
+            .expect("the host is in the graph");
+        assert_eq!(
+            classify_sibling_host(shell, uncorroborated),
+            SiblingHostAssociation::Uncorroborated
+        );
+        assert_eq!(
+            resolve_uia2_window(measured_whatsapp_plan(), &windows),
+            Err(Uia2WindowResolveError::MissingSiblingContentOuter)
+        );
+    }
+
+    /// Mutant [4]: no parented host present. The refusal must still fire.
+    ///
+    /// This is the one-variable control for the whole change: the graph is the
+    /// measured one with WhatsApp's WebView2 removed entirely, so the only
+    /// WebView2 left is the decoy -- larger, visible, and the exact thing a
+    /// fallback would grab.
+    #[test]
+    fn a_shell_with_no_parented_webview2_still_refuses() {
+        let windows: Vec<_> = two_webview2_hosts_decoy_larger()
+            .into_iter()
+            .filter(|window| window.process_id != MEASURED_WEBVIEW_PID)
+            .collect();
+
+        assert!(
+            windows
+                .iter()
+                .any(|window| window.process_id == DECOY_WEBVIEW_PID && window.visible),
+            "the decoy must still be present, or the refusal is untested"
+        );
+        assert_eq!(
+            resolve_uia2_window(measured_whatsapp_plan(), &windows),
+            Err(Uia2WindowResolveError::MissingSiblingContentOuter),
+            "a resolver that can no longer refuse is worse than one that cannot \
+             resolve"
+        );
+
+        // And the refusal is one variable away from resolving: put WhatsApp's
+        // own host back and the same plan, the same graph and the same decoy
+        // produce a bind.
+        let restored = two_webview2_hosts_decoy_larger();
+        assert_eq!(
+            resolve_uia2_window(measured_whatsapp_plan(), &restored)
+                .expect("the full measured graph resolves")
+                .bound_hwnd,
+            MEASURED_RENDERER_HWND
+        );
+    }
+
+    /// A pid of 0 is "the parentage was never read", and it must never match --
+    /// including against a shell whose own process id somehow read as 0.
+    #[test]
+    fn an_unread_parentage_associates_with_nothing() {
+        let shell = hosted_window(
+            MEASURED_SHELL_HWND,
+            None,
+            0,
+            0,
+            None,
+            MEASURED_SHELL_IMAGE,
+            WHATSAPP_OUTER_WINDOW_CLASS,
+            MEASURED_SHELL_AREA,
+        );
+        let host = hosted_window(
+            MEASURED_WEBVIEW_OUTER_HWND,
+            None,
+            MEASURED_WEBVIEW_PID,
+            0,
+            Some("WhatsApp.Root.exe"),
+            "msedgewebview2.exe",
+            ELECTRON_OUTER_WINDOW_CLASS,
+            MEASURED_WEBVIEW_AREA,
+        );
+        assert_eq!(
+            classify_sibling_host(shell, host),
+            SiblingHostAssociation::Foreign
+        );
+    }
+
+    #[test]
+    fn the_webview_exe_switch_is_read_off_the_measured_command_lines() {
+        // Both forms as they appear on the owner's host.
+        assert_eq!(
+            webview2_host_exe_name(
+                "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\msedgewebview2.exe\" \
+                 --embedded-browser-webview=1 --webview-exe-name=WhatsApp.Root.exe \
+                 --webview-exe-version=2.2629.100.0 --user-data-dir=C:\\Users\\o\\WebView2"
+            ),
+            Some("WhatsApp.Root.exe")
+        );
+        assert_eq!(
+            webview2_host_exe_name("msedgewebview2.exe --webview-exe-name=SearchApp.exe --type=gpu"),
+            Some("SearchApp.exe")
+        );
+        // Last argument, no trailing whitespace.
+        assert_eq!(
+            webview2_host_exe_name("msedgewebview2.exe --webview-exe-name=SearchApp.exe"),
+            Some("SearchApp.exe")
+        );
+        // Quoted, because a hosting application's file name may contain spaces.
+        assert_eq!(
+            webview2_host_exe_name("msedgewebview2.exe --webview-exe-name=\"My App.exe\" --type=gpu"),
+            Some("My App.exe")
+        );
+        // Absent and empty are both "no corroboration", never a match.
+        assert_eq!(
+            webview2_host_exe_name("msedgewebview2.exe --embedded-browser-webview=1"),
+            None
+        );
+        assert_eq!(
+            webview2_host_exe_name("msedgewebview2.exe --webview-exe-name= --type=gpu"),
+            None
+        );
+    }
+
+    /// The name trap, pinned. A-00b's fixture called the process `WhatsApp.exe`,
+    /// so a `"WhatsApp"` match found nothing and the adapter reported "not
+    /// running" on a machine where it was running.
+    #[test]
+    fn the_running_image_is_whatsapp_root_not_whatsapp() {
+        assert_eq!(
+            crate::native_whatsapp_adapter::WHATSAPP_DESKTOP_PROCESS_NAME,
+            MEASURED_SHELL_PROCESS
+        );
+        assert!(same_process_name(MEASURED_SHELL_IMAGE, MEASURED_SHELL_PROCESS));
+        assert!(
+            !same_process_name(MEASURED_SHELL_IMAGE, "WhatsApp"),
+            "`WhatsApp` matching `WhatsApp.Root.exe` is the trap, not the fix"
+        );
+
+        // The corroboration compares two OBSERVED names, both of which carry
+        // `.exe`. `same_process_name` strips only one side, so using it here
+        // classified WhatsApp's own WebView2 as `Contradicted` and refused.
+        assert!(!same_process_name(MEASURED_SHELL_IMAGE, MEASURED_SHELL_IMAGE));
+        assert!(same_image_name(MEASURED_SHELL_IMAGE, MEASURED_SHELL_IMAGE));
+        assert!(same_image_name("WhatsApp.Root.EXE", "whatsapp.root.exe"));
+        assert!(same_image_name("WhatsApp.Root", MEASURED_SHELL_IMAGE));
+        assert!(!same_image_name("SearchApp.exe", MEASURED_SHELL_IMAGE));
+    }
+
+    /// The plan that ships is the plan this fixture resolves. Without this the
+    /// tests above could be proving a plan nothing uses.
+    #[test]
+    fn the_shipping_whatsapp_plan_resolves_the_measured_graph() {
+        let shipping = crate::native_whatsapp_adapter::WHATSAPP_UIA2_WINDOW_PLAN;
+        assert_eq!(shipping.shape, Uia2WindowShape::SiblingChromiumRenderer);
+        assert_eq!(shipping.app_process_name, MEASURED_SHELL_PROCESS);
+        assert_eq!(shipping.sibling_process_name, Some(WEBVIEW2_PROCESS_NAME));
+
+        let windows = two_webview2_hosts_decoy_larger();
+        let resolved = resolve_uia2_window(shipping, &windows)
+            .expect("the shipping plan must resolve the measured graph");
+        assert_eq!(resolved.bound_hwnd, MEASURED_RENDERER_HWND);
+        assert_eq!(resolved.bound_process_id, MEASURED_WEBVIEW_PID);
+    }
+
+    /// Telegram and Discord must not have moved. Neither goes near sibling
+    /// association, and the new fields default to "never read", so the two
+    /// shapes that do not consult them cannot have changed.
+    #[test]
+    fn parentage_does_not_reach_telegram_or_discord() {
+        let telegram = Uia2WindowPlan::direct_outer_window(
+            "Telegram",
+            "Telegram",
+            TELEGRAM_OUTER_WINDOW_CLASS,
+            CALL_TIMEOUT_MS,
+        );
+        let host = RecordedHost::new(telegram_graph(), 743);
+        let acquired = acquire_uia2_window(telegram, &host).expect("Telegram still acquires");
+        assert_eq!(acquired.window.bound_hwnd, 0x2001);
+        assert!(!acquired.woke);
+        assert_eq!(telegram.tree_route, Uia2TreeRoute::UiaNative);
+
+        assert!(
+            telegram_graph()
+                .iter()
+                .chain(discord_graph().iter())
+                .all(|window| window.parent_process_id == 0 && window.host_exe_name.is_none()),
+            "neither provider's recorded graph reads the process table, so \
+             neither can have been affected by a decision that consults it"
+        );
+
+        let discord = discord_plan();
+        let discord_host = RecordedHost::new(discord_graph(), 696).chromium(2);
+        let acquired =
+            acquire_uia2_window(discord, &discord_host).expect("Discord still acquires");
+        assert_eq!(acquired.window.bound_hwnd, 0x1001);
+        assert_eq!(acquired.window.tree_route, Uia2TreeRoute::MsaaBridge);
     }
 
     #[test]
