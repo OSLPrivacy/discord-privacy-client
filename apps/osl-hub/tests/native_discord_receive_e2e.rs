@@ -1317,6 +1317,19 @@ fn first_party_osl_chat_reopen_sorts_shuffled_waiting_rows_by_sender_order() {
 
     let mut rows = relay.take_inbox_for(&bob.identity_id);
     assert_eq!(rows.len(), 3, "the shuffled fixture has three waiting rows");
+    // Three candidate orders, all different, so the assertion below can only be
+    // satisfied by the sender's own sequence:
+    //   * arrival order (the order the relay hands rows back) -> two, one, three
+    //   * server-assigned transport id order                  -> three, two, one
+    //   * the authenticated sender order                      -> one, two, three
+    // The relay assigns row ids at post time, so in the unshuffled fixture id
+    // order and send order agree by accident and a receiver that sorted on the
+    // transport id would look correct. Reversing the ids removes that accident:
+    // ids are the server's, not the sender's, and nothing about the protocol
+    // promises they arrive or sort in the order the sender wrote.
+    for (index, row) in rows.iter_mut().enumerate() {
+        row.id = format!("{:032x}", 0xf000_0000_u64 + (2 - index as u64));
+    }
     rows.swap(0, 1);
     relay.put_inbox_rows(rows);
 
