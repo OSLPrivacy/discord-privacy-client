@@ -15,8 +15,6 @@ import {
   getScrubIndexScan,
   initializeScrubIndex,
   parseScrubIndexStatus,
-  pauseScrubIndex,
-  resumeScrubIndex,
 } from "./scrub-index";
 
 const importId = "0123456789abcdef0123456789abcdef";
@@ -75,15 +73,11 @@ describe("Scrub index IPC", () => {
     expect(() => parseScrubIndexStatus({ ...status, bytesStored: 50 * 1024 * 1024 + 1 })).toThrow();
   });
 
-  it("supports status, pause, resume, and exact cancellation", async () => {
+  it("supports status and exact emergency cancellation only", async () => {
     mocks.invoke
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ ...status, phase: "paused" })
-      .mockResolvedValueOnce(status)
       .mockResolvedValueOnce(undefined);
     await expect(getScrubIndexStatus()).resolves.toBeNull();
-    await expect(pauseScrubIndex(importId)).resolves.toMatchObject({ phase: "paused" });
-    await expect(resumeScrubIndex(importId)).resolves.toMatchObject({ phase: "running" });
     await expect(cancelScrubIndex(importId)).resolves.toBeUndefined();
     expect(mocks.invoke).toHaveBeenLastCalledWith("cancel_scrub_index", { importId });
   });

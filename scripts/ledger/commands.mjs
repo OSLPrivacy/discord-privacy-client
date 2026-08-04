@@ -9,11 +9,12 @@
 // unregistered command a TypeScript compile error. This lane owns only
 // scripts/ledger/, so the executable ratchet lives here.
 //
-//   node scripts/ledger/commands.mjs [--root=<dir>]
+//   node scripts/ledger/commands.mjs [--root=<dir>] [--no-cache]
 
 import { resolve } from "node:path";
 import { repoRoot, read, uiSources, blankComments, lineIndex, lineOf, inputProblems, stringConstants, resolveArg } from "./lib/io.mjs";
 import { report, finish } from "./lib/report.mjs";
+import { bundleSnapshot } from "./bundle.mjs";
 
 const REQUIRED = [
   "apps/osl-hub-ui/src/main.ts",
@@ -24,6 +25,17 @@ const REQUIRED = [
 function add(map, id, site) {
   if (!map.has(id)) map.set(id, []);
   map.get(id).push(site);
+}
+
+function relFromSite(site) {
+  return site.replace(/:\d+$/, "");
+}
+
+function bundleEvidence(sites, bundled) {
+  const modules = [...new Set(sites.map(relFromSite))].sort();
+  const outside = modules.filter((rel) => !bundled.has(rel));
+  const inside = modules.filter((rel) => bundled.has(rel));
+  return { modules, outside, inside };
 }
 
 export function frontendInvokes(root) {
@@ -96,12 +108,36 @@ export function rustRegistry(root) {
   return { registry, problems };
 }
 
-export function main(argv = process.argv) {
+export async function main(argv = process.argv) {
   const root = repoRoot(argv);
   const input = inputProblems(root, REQUIRED).map((p) => ({ ...p, kind: "ledger-input-missing" }));
   if (input.length) {
     return finish(report({ id: "commands", title: "frontend invokes vs Rust command registry, ledger 4 of 7", violations: input }));
   }
+  const noCache = argv.includes("--no-cache");
+  const refresh = argv.includes("--refresh-cache");
+  let snapshot;
+  try {
+    snapshot = await bundleSnapshot(root, { cache: !noCache, refresh, writeCache: !noCache });
+  } catch (error) {
+    const violation = error.ledgerViolation
+      ? { ...error.ledgerViolation, kind: "ledger-input-missing", sites: ["scripts/ledger/.cache/bundle-modules.json:1"] }
+      : {
+          id: "rollup-build-failed",
+          kind: "ledger-input-missing",
+          detail: `Rollup/Vite module collection failed, so this ledger refuses to infer command reachability: ${error.message}`,
+          sites: ["apps/osl-hub-ui/vite.config.ts:1"],
+        };
+    return finish(report({
+      id: "commands",
+      title: "frontend invokes vs Rust command registry, ledger 4 of 7",
+      violations: [violation],
+      stats: {
+        "bundle cache mode": noCache ? "bypass" : refresh ? "refresh" : "read",
+      },
+    }));
+  }
+  const bundled = new Set(snapshot.modules);
   const { invokes, unresolved } = frontendInvokes(root);
   const { registry, problems } = rustRegistry(root);
   const violations = [
@@ -110,18 +146,24 @@ export function main(argv = process.argv) {
   ];
   for (const [command, sites] of [...invokes.entries()].sort()) {
     if (registry.has(command)) continue;
+    const evidence = bundleEvidence(sites, bundled);
+    const reachability = evidence.inside.length
+      ? `bundled issuer(s): ${evidence.inside.join(", ")}`
+      : `outside every bundle: ${evidence.outside.join(", ")}`;
     violations.push({
       id: command,
       kind: "frontend-invoke-not-registered",
-      detail: "frontend invokes this Tauri command but no Rust invoke_handler registry contains it",
+      detail: `frontend invokes this Tauri command but no Rust invoke_handler registry contains it; ${reachability}`,
       sites,
     });
   }
   for (const u of unresolved) {
+    const rel = relFromSite(u.site);
+    const reachability = bundled.has(rel) ? `bundled issuer: ${rel}` : `outside every bundle: ${rel}`;
     violations.push({
       id: `unresolved-invoke:${u.site}`,
       kind: "unresolved-command-name",
-      detail: `invoke() command is not a literal or known string constant: ${u.expr}`,
+      detail: `invoke() command is not a literal or known string constant: ${u.expr}; ${reachability}`,
       sites: [u.site],
     });
   }
@@ -134,8 +176,10 @@ export function main(argv = process.argv) {
       "distinct frontend commands invoked": invokes.size,
       "registered Rust commands": registry.size,
       "invoke() calls with a non-literal command (not analysable)": unresolved.length,
+      "modules rollup loaded (in-tree)": bundled.size,
+      "bundle cache mode": noCache ? "bypass" : refresh ? "refresh" : "read",
     },
   }));
 }
 
-if (resolve(process.argv[1] ?? "") === resolve(new URL(import.meta.url).pathname)) main();
+if (resolve(process.argv[1] ?? "") === resolve(new URL(import.meta.url).pathname)) await main();

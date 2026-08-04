@@ -1638,206 +1638,17 @@
     // same REST shape as oslSendControlMessage but without the
     // DPC0:: prefix gate, since Mode 1 covers start with DPC1::.
     async function oslSendCoverMessage(channelId, coverString) {
-        if (!editOverlayAuthToken) {
-            console.log("[OSL] oslSendCoverMessage FAIL reason=no_auth_token");
-            return false;
-        }
-        if (typeof coverString !== "string" || coverString.length === 0) {
-            console.log("[OSL] oslSendCoverMessage FAIL reason=empty_cover");
-            return false;
-        }
-        const url = "/api/v9/channels/" + channelId + "/messages";
-        try {
-            // 9-B3: retry-on-stale-token wraps the bare fetch so a
-            // mid-rotation 401 doesn't tank a Mode 1 multi-chunk
-            // send. Any non-401 failure (403, 5xx, network) returns
-            // immediately — handled below as before.
-            const resp = await oslFetchWithTokenRetry(url, {
-                method: "POST",
-                headers: {
-                    Authorization: editOverlayAuthToken,
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({ content: coverString }),
-            });
-            if (resp && resp.ok) return true;
-            console.log(
-                "[OSL] oslSendCoverMessage FAIL channel=" + channelId +
-                    " status=" + (resp ? resp.status : "no_response")
-            );
-            return false;
-        } catch (err) {
-            console.log(
-                "[OSL] oslSendCoverMessage FAIL channel=" + channelId +
-                    " err=" + (err && err.message ? err.message : err)
-            );
-            return false;
-        }
+        console.log("[OSL] oslSendCoverMessage FAIL reason=legacy_rest_send_disabled");
+        return false;
     }
 
     /**
-     * Phase 7b: ship a pre-encrypted wire string to `channelId`
-     * via Discord's REST API. The send-side `interceptBody` has a
-     * DPC0:: passthrough guard so this fetch doesn't get
-     * re-encrypted on the way out. Authenticated via the same
-     * token capture used by the Phase 6a edit overlay (we re-read
-     * `editOverlayAuthToken` from the IIFE scope).
-     *
-     * Fire-and-forget: returns the fetch Response on success or
-     * null on failure (logged).
+     * Legacy Discord REST control delivery is disabled because it would require
+     * reading the host account credential. Use keyserver OOB control delivery.
      */
     async function oslSendControlMessage(channelId, wireString, scopeInput) {
-        if (!editOverlayAuthToken) {
-            console.log(
-                "[OSL] oslSendControlMessage FAIL reason=no_auth_token"
-            );
-            return null;
-        }
-        if (
-            typeof wireString !== "string" ||
-            wireString.indexOf("DPC0::") !== 0
-        ) {
-            console.log(
-                "[OSL] oslSendControlMessage FAIL reason=not_dpc0_wire"
-            );
-            return null;
-        }
-        // Phase 2 extension (Mode-1 SKDM/burn-marker leak fix):
-        // control wires (SKDMs, burn markers, recovery SKDMs) used
-        // to POST raw DPC0:: text, leaving giant ciphertext visible
-        // to anyone reading the channel — including server-side
-        // observers and non-OSL clients in the GC. Wrap them in the
-        // same prose-token cover content messages use. Scope is
-        // required so the receiver can HMAC-verify the cover and
-        // route to the v=4/v=5 decrypt path.
-        if (!scopeInput) {
-            try {
-                const ctx =
-                    typeof oslCurrentChannelContext === "function"
-                        ? oslCurrentChannelContext()
-                        : null;
-                if (
-                    ctx &&
-                    typeof oslScopeForCurrentContext === "function"
-                ) {
-                    scopeInput = oslScopeForCurrentContext(ctx);
-                }
-            } catch (_) {
-                scopeInput = null;
-            }
-        }
-        if (!scopeInput) {
-            console.error(
-                "[OSL] oslSendControlMessage ABORT reason=no_scope " +
-                    "channel=" +
-                    channelId +
-                    " (refusing raw DPC0:: leak)"
-            );
-            return null;
-        }
-        let bodyContent;
-        try {
-            // Phase 3: per-scope TTL (default 72h if no setting).
-            const _ttl = await oslGetScopeTtl(scopeInput);
-            const proseResp = await oslInvoke("osl_prose_token_send", {
-                scopeInput: scopeInput,
-                dpc0Wire: wireString,
-                ttlSeconds: _ttl,
-            });
-            if (
-                proseResp &&
-                proseResp.ok &&
-                proseResp.value &&
-                typeof proseResp.value.cover_text === "string" &&
-                proseResp.value.cover_text.length > 0
-            ) {
-                bodyContent = proseResp.value.cover_text;
-            } else {
-                console.error(
-                    "[OSL] oslSendControlMessage ABORT reason=prose_token_send_failed " +
-                        "channel=" +
-                        channelId +
-                        " err=" +
-                        (proseResp && proseResp.error) +
-                        " (refusing raw DPC0:: leak)"
-                );
-                return null;
-            }
-        } catch (e) {
-            console.error(
-                "[OSL] oslSendControlMessage ABORT reason=prose_token_send_threw " +
-                    "channel=" +
-                    channelId +
-                    " (refusing raw DPC0:: leak)",
-                e
-            );
-            return null;
-        }
-        const url = "/api/v9/channels/" + channelId + "/messages";
-        try {
-            // 9-B3: retry-on-stale-token wrapper. SKDM dispatch and
-            // burn-marker sends rely on this path; a stale-token
-            // 401 mid-burn or mid-SKDM would silently drop the
-            // control message.
-            const resp = await oslFetchWithTokenRetry(url, {
-                method: "POST",
-                headers: {
-                    Authorization: editOverlayAuthToken,
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({ content: bodyContent }),
-            });
-            if (resp && resp.ok) {
-                // Phase 6.2 fix: control messages (SKDM bundles +
-                // burn markers) are protocol noise that shouldn't be
-                // visible to the SENDER's own UI. The previous
-                // approach relied on the receive pipeline observing
-                // the message, decoding the prose cover, running
-                // Rust decrypt, getting the SKDM_APPLIED sentinel,
-                // and only then hiding -- a multi-second async chain
-                // during which the sender sees the prose cover sit
-                // in chat for every send. Now: parse the POST
-                // response (Discord returns { id, ... }) and stash
-                // the message_id in oslSkdmHiddenMsgIds immediately,
-                // so the next periodic sweep (~1s tick) hides it
-                // even before our own recv processes the SKDM. Best-
-                // effort: a parse failure leaves the legacy async
-                // hide path in charge.
-                try {
-                    const _respClone = resp.clone();
-                    _respClone
-                        .json()
-                        .then(function (j) {
-                            if (j && typeof j.id === "string" && j.id) {
-                                oslSkdmHiddenMsgIds.add(j.id);
-                            }
-                        })
-                        .catch(function () {});
-                } catch (_) {}
-                console.log(
-                    "[OSL] oslSendControlMessage OK channel=" +
-                        channelId +
-                        " wire_len=" +
-                        wireString.length +
-                        " cover_len=" +
-                        bodyContent.length
-                );
-            } else {
-                console.log(
-                    "[OSL] oslSendControlMessage FAIL channel=" +
-                        channelId +
-                        " status=" +
-                        (resp ? resp.status : "?")
-                );
-            }
-            return resp;
-        } catch (err) {
-            console.error(
-                "[OSL] oslSendControlMessage threw channel=" + channelId,
-                err
-            );
-            return null;
-        }
+        console.log("[OSL] oslSendControlMessage FAIL reason=legacy_rest_send_disabled");
+        return null;
     }
 
     /**
@@ -10451,11 +10262,9 @@
             oslSidebarLockCache.clear();
         } catch (_) {}
 
-        // These hold the prior Discord session's credential-derived and
-        // navigation state. The reload below will reacquire only the new
-        // account's values from Discord itself.
-        editOverlayAuthToken = null;
-        _lastTokenLogged = null;
+        // These hold the prior Discord session's navigation state. The reload
+        // below will reacquire only the new account's values from Discord
+        // itself.
         lastLoadedChannelId = null;
         oslSelfDiscordIdCache = null;
         oslSelfDiscordIdLastError = null;
@@ -12679,9 +12488,6 @@
     const haveXhr = typeof XMLHttpRequest !== "undefined";
     const origOpen = haveXhr ? XMLHttpRequest.prototype.open : null;
     const origSend = haveXhr ? XMLHttpRequest.prototype.send : null;
-    const origSetRequestHeader = haveXhr
-        ? XMLHttpRequest.prototype.setRequestHeader
-        : null;
     const origFnToString = Function.prototype.toString;
 
     // Symbol-keyed metadata stash (Symbol over string property to
@@ -12725,44 +12531,6 @@
             apply: function (target, thisArg, args) {
                 const input = args[0];
                 const init = args[1];
-
-                // Phase 6a edit-overlay: passively capture Authorization
-                // header from any outgoing Discord API request so we can
-                // authenticate our own PATCHes from the edit overlay.
-                try {
-                    const sniffInit = args[1];
-                    if (sniffInit && sniffInit.headers) {
-                        const h = sniffInit.headers;
-                        let auth = null;
-                        if (typeof h.get === "function") {
-                            auth =
-                                h.get("Authorization") ||
-                                h.get("authorization");
-                        } else if (typeof h === "object") {
-                            auth = h.Authorization || h.authorization;
-                        }
-                        if (typeof auth === "string" && auth.length > 0) {
-                            oslMaybeLogTokenChange(auth);
-                            editOverlayAuthToken = auth;
-                        }
-                    }
-                    // Also try Request input
-                    if (
-                        typeof Request !== "undefined" &&
-                        args[0] instanceof Request &&
-                        args[0].headers
-                    ) {
-                        const auth =
-                            args[0].headers.get("Authorization") ||
-                            args[0].headers.get("authorization");
-                        if (typeof auth === "string" && auth.length > 0) {
-                            oslMaybeLogTokenChange(auth);
-                            editOverlayAuthToken = auth;
-                        }
-                    }
-                } catch (e) {
-                    // Token sniff is best-effort; never fail the request.
-                }
 
                 const resolved = resolveFetchRequest(input, init);
                 if (resolved === null) {
@@ -13027,39 +12795,6 @@
                     // addEventListener failure on a non-standard XHR
                     // shim — skip silently, the fetch path covers most
                     // history loads as a backstop.
-                }
-                return Reflect.apply(target, thisArg, args);
-            },
-        };
-    }
-
-    /**
-     * Phase 6a edit-overlay: passively capture the Authorization
-     * header off every outgoing XHR. Discord's API client mostly
-     * uses XHR (not fetch) for /messages traffic, so without this
-     * hook the overlay would have no token to authenticate its
-     * own PATCH with on a long-lived session.
-     */
-    function makeSetRequestHeaderHandler() {
-        return {
-            get: makeToStringGetTrap(
-                "function setRequestHeader() { [native code] }"
-            ),
-
-            apply: function (target, thisArg, args) {
-                try {
-                    if (
-                        typeof args[0] === "string" &&
-                        args[0].toLowerCase() === "authorization" &&
-                        typeof args[1] === "string" &&
-                        args[1].length > 0
-                    ) {
-                        oslMaybeLogTokenChange(args[1]);
-                        editOverlayAuthToken = args[1];
-                    }
-                } catch (e) {
-                    // Token sniff is best-effort; never fail the
-                    // request.
                 }
                 return Reflect.apply(target, thisArg, args);
             },
@@ -13550,18 +13285,12 @@
     let xhrInstalled = false;
     let openProxy = null;
     let sendProxy = null;
-    let setRequestHeaderProxy = null;
     if (!window.__OSL_XHR_HOOK_INSTALLED__ && haveXhr) {
         window.__OSL_XHR_HOOK_INSTALLED__ = true;
         openProxy = new Proxy(origOpen, makeOpenHandler());
         sendProxy = new Proxy(origSend, makeSendHandler());
-        setRequestHeaderProxy = new Proxy(
-            origSetRequestHeader,
-            makeSetRequestHeaderHandler()
-        );
         XMLHttpRequest.prototype.open = openProxy;
         XMLHttpRequest.prototype.send = sendProxy;
-        XMLHttpRequest.prototype.setRequestHeader = setRequestHeaderProxy;
         xhrInstalled = true;
     }
 
@@ -13594,10 +13323,6 @@
         if (xhrInstalled) {
             SPOOFED.set(openProxy, "function open() { [native code] }");
             SPOOFED.set(sendProxy, "function send() { [native code] }");
-            SPOOFED.set(
-                setRequestHeaderProxy,
-                "function setRequestHeader() { [native code] }"
-            );
         }
 
         Function.prototype.toString = new Proxy(origFnToString, {
@@ -13923,108 +13648,8 @@
     // editOverlayTemplate: cached deep-clone of `.channelTextArea__5126c`
     //   from the main composer, with Slate/React attributes stripped.
     //   Lazily initialized on first overlay mount.
-    // editOverlayAuthToken: most recent Authorization header observed
-    //   on any outgoing Discord API request. Used to authenticate our
-    //   PATCH calls. Refreshed on every observed request so it tracks
-    //   token rotation.
     const editOverlayActive = new Map();
     let editOverlayTemplate = null;
-    let editOverlayAuthToken = null;
-    // 9-B3: throttled visibility log for token rotations so we can
-    // observe Discord's refresh cadence in real use without flooding
-    // the console (Discord re-sends the Authorization header on
-    // every heartbeat / presence / typing call, which is constant).
-    let _lastTokenLogAt = 0;
-    let _lastTokenLogged = null;
-    function oslMaybeLogTokenChange(newToken) {
-        if (typeof newToken !== "string" || newToken.length === 0) return;
-        if (newToken === _lastTokenLogged) return;
-        _lastTokenLogged = newToken;
-        const now = Date.now();
-        if (now - _lastTokenLogAt < 60_000) return;
-        _lastTokenLogAt = now;
-        // Log only the first 8 chars; the full token is a session
-        // credential and should never reach a log line in full.
-        console.log(
-            "[OSL] token refreshed: prefix=" + newToken.slice(0, 8)
-        );
-    }
-    // ============================================================
-    // Phase 9-B3: retry-on-stale-token wrapper around fetch().
-    //
-    // The fetch + XHR proxies (~lines 7497-7539 and 7807-7830) sniff
-    // every outgoing Authorization header from Discord's own client
-    // and keep `editOverlayAuthToken` current — but there's a race:
-    // when Discord rotates the token, an OSL-issued fetch already in
-    // flight (or composed against the prior value) returns 401. The
-    // B1 Mode 1 multi-message pipeline makes this race materially
-    // more likely because one rotation during a 12-16-chunk send
-    // aborts the entire pipeline.
-    //
-    // This wrapper handles exactly the 401-stale-token case: one
-    // retry after a 500ms wait (long enough for Discord's next
-    // heartbeat to refresh our sniffed cache), rebuilding the
-    // Authorization header from whatever editOverlayAuthToken now
-    // holds. Any other failure (403, 404, 5xx, network) returns
-    // immediately — those aren't stale-token problems.
-    //
-    // Token-staleness is the only failure mode we retry. We do NOT
-    // retry on network errors, transient 5xx, or Discord rate
-    // limits — those each have their own characteristics and need
-    // separate handling if they ever become a problem.
-    // ============================================================
-    async function oslFetchWithTokenRetry(url, init) {
-        const firstResp = await fetch(url, init);
-        if (!firstResp || firstResp.status !== 401) {
-            return firstResp;
-        }
-        console.log(
-            "[OSL] token retry: url=" + url +
-                " status=401, awaiting refresh"
-        );
-        // 500ms is one Discord heartbeat cycle in the typical case.
-        // The fetch + XHR proxies will sniff the next outbound
-        // Authorization header from Discord's own client and update
-        // editOverlayAuthToken inside this window.
-        await new Promise(function (resolve) { setTimeout(resolve, 500); });
-
-        // Rebuild headers with the (hopefully) refreshed token.
-        // init.headers may be a plain object or a Headers instance.
-        const retryInit = Object.assign({}, init || {});
-        const freshHeaders = {};
-        const src = init && init.headers ? init.headers : {};
-        if (typeof src.forEach === "function") {
-            // Headers instance.
-            src.forEach(function (value, key) { freshHeaders[key] = value; });
-        } else {
-            for (const k in src) {
-                if (Object.prototype.hasOwnProperty.call(src, k)) {
-                    freshHeaders[k] = src[k];
-                }
-            }
-        }
-        // Overwrite Authorization specifically — leave Content-Type
-        // and any other caller-supplied headers untouched.
-        if (editOverlayAuthToken) {
-            freshHeaders["Authorization"] = editOverlayAuthToken;
-        }
-        retryInit.headers = freshHeaders;
-
-        const secondResp = await fetch(url, retryInit);
-        if (secondResp && secondResp.status === 401) {
-            console.log(
-                "[OSL] token retry failed: url=" + url +
-                    " still 401 after refresh"
-            );
-        } else {
-            console.log(
-                "[OSL] token retry: url=" + url +
-                    " recovered status=" +
-                    (secondResp ? secondResp.status : "?")
-            );
-        }
-        return secondResp;
-    }
 
     // editOverlayLocallyApplied: message_ids whose plaintext was just
     // written to the DOM directly by editOverlaySave on PATCH 200.
@@ -15115,229 +14740,19 @@
     }
 
     /**
-     * Phase 6a edit-overlay: PATCH new plaintext to Discord. Goes
-     * through the existing fetch interceptor (interceptEditBody),
-     * which sees `content: <plaintext>`, encrypts, ships, and on 200
-     * fires runPersistEdit. We just initiate the request.
+     * The legacy edit overlay cannot save without reading Discord's host
+     * credential. Refuse visibly instead of reviving credential capture.
      */
     function editOverlaySave(messageId, channelId, editable) {
-        if (!editOverlayAuthToken) {
-            editOverlayShowError(
-                messageId,
-                "Auth token not yet captured — try again in a few seconds"
-            );
-            console.log(
-                "[OSL] editOverlay save FAIL msg=" +
-                    messageId +
-                    " reason=no_auth_token"
-            );
-            return;
-        }
-        const newPlaintext = editable.textContent || "";
-        editOverlayClearError(messageId);
-
-        const url =
-            "/api/v9/channels/" + channelId + "/messages/" + messageId;
-        const body = JSON.stringify({ content: newPlaintext });
-
-        // 9-B3: retry-on-stale-token wrapper. The "no token at all"
-        // guard above (editOverlayAuthToken === null) stays — that's
-        // a different failure shape than a stale 401.
-        oslFetchWithTokenRetry(url, {
-            method: "PATCH",
-            headers: {
-                "Authorization": editOverlayAuthToken,
-                "Content-Type": "application/json",
-            },
-            body: body,
-        })
-            .then(function (resp) {
-                if (resp && resp.ok) {
-                    // Invalidate the receive-side decrypt caches
-                    // for this message_id so the next observer
-                    // pass re-decrypts the bounced-back NEW
-                    // ciphertext rather than re-applying the
-                    // OLD plaintext from cache. recvCovers /
-                    // recvDone are cleaned up by the existing
-                    // recvHandleDiv stale-cover detector once it
-                    // sees the new cover; clearing recvPlaintext
-                    // + loadedHistory removes the only paths
-                    // that would short-circuit before that
-                    // detector runs.
-                    let invalidated = false;
-                    if (
-                        recvPlaintext &&
-                        typeof recvPlaintext.delete === "function"
-                    ) {
-                        recvPlaintext.delete(messageId);
-                        invalidated = true;
-                    }
-                    if (
-                        loadedHistory &&
-                        typeof loadedHistory.delete === "function"
-                    ) {
-                        loadedHistory.delete(messageId);
-                        invalidated = true;
-                    }
-                    // Probe-2 Boot Bug 1: this path used to leave the
-                    // PRE-edit plaintext in selfSentPlaintext, so the
-                    // self-view short-circuit at recvDispatchDecrypt
-                    // rendered the OLD text over the NEW ciphertext on
-                    // any DOM re-mount after the 5s editOverlayLocallyApplied
-                    // window. Updating the map (instead of just clearing
-                    // it) preserves the short-circuit's purpose — the
-                    // sender never needs to v=4-decrypt their own wire.
-                    try {
-                        selfSentPlaintext.set(messageId, newPlaintext);
-                        oslFifoEvict(
-                            selfSentPlaintext,
-                            OSL_SELF_SENT_PLAINTEXT_MAX
-                        );
-                    } catch (_) {}
-                    if (invalidated) {
-                        console.log(
-                            "[OSL] editOverlay invalidated decrypt cache msg=" +
-                                messageId
-                        );
-                    }
-                    console.log(
-                        "[OSL] editOverlay save OK msg=" +
-                            messageId +
-                            " plaintext_len=" +
-                            newPlaintext.length
-                    );
-
-                    // Apply the new plaintext directly to the DOM.
-                    // Discord's MESSAGE_UPDATE will re-render with
-                    // its cached display content and never expose
-                    // the new ciphertext to our recv observer, so
-                    // we can't rely on the normal decrypt-and-
-                    // apply path for *local* edits — we write the
-                    // plaintext ourselves. The Set entry below
-                    // tells recvHandleDiv to skip this id during
-                    // the 5s window where a racing MESSAGE_UPDATE-
-                    // triggered observer pass might otherwise
-                    // overwrite our local apply.
-                    const contentEl = document.getElementById(
-                        "message-content-" + messageId
-                    );
-                    if (contentEl) {
-                        // Discord wraps the message body text in
-                        // nested spans alongside an "(edited)"
-                        // marker span and (sometimes) a timestamp
-                        // span. A naive `textContent =` overwrite
-                        // nukes those siblings, so on the second
-                        // local edit the (edited) badge would
-                        // disappear.
-                        //
-                        // Strategy: walk childNodes; replace the
-                        // first non-marker text-bearing node and
-                        // leave everything else alone. Fallback:
-                        // if no clean target is found but a marker
-                        // exists, drop everything *before* the
-                        // marker and prepend a fresh text node.
-                        // Last-resort fallback: the original
-                        // textContent overwrite.
-                        let strategy = "fallback_textcontent";
-                        let replaced = false;
-                        const children = Array.from(contentEl.childNodes);
-                        for (const node of children) {
-                            if (node.nodeType === Node.TEXT_NODE) {
-                                if (
-                                    node.data &&
-                                    node.data.trim().length > 0
-                                ) {
-                                    node.data = newPlaintext;
-                                    replaced = true;
-                                    strategy = "preserved_marker";
-                                    break;
-                                }
-                            } else if (node.nodeType === Node.ELEMENT_NODE) {
-                                const cls = node.className || "";
-                                const isItselfMarker =
-                                    /edited|timestamp/i.test(cls);
-                                const hasEditedMarker =
-                                    typeof node.querySelector ===
-                                        "function" &&
-                                    (node.querySelector(
-                                        '[class*="edited"]'
-                                    ) ||
-                                        node.querySelector(
-                                            '[class*="timestamp"]'
-                                        ));
-                                if (!isItselfMarker && !hasEditedMarker) {
-                                    node.textContent = newPlaintext;
-                                    replaced = true;
-                                    strategy = "preserved_marker";
-                                    break;
-                                }
-                            }
-                        }
-                        if (!replaced) {
-                            const editedMarker = contentEl.querySelector(
-                                '[class*="edited"]'
-                            );
-                            if (editedMarker) {
-                                while (
-                                    contentEl.firstChild &&
-                                    contentEl.firstChild !== editedMarker
-                                ) {
-                                    contentEl.removeChild(
-                                        contentEl.firstChild
-                                    );
-                                }
-                                contentEl.insertBefore(
-                                    document.createTextNode(newPlaintext),
-                                    editedMarker
-                                );
-                                replaced = true;
-                                strategy = "preserved_marker";
-                            } else {
-                                contentEl.textContent = newPlaintext;
-                                replaced = true;
-                                strategy = "fallback_textcontent";
-                            }
-                        }
-                        console.log(
-                            "[OSL] editOverlay applied plaintext directly to DOM msg=" +
-                                messageId +
-                                " len=" +
-                                newPlaintext.length +
-                                " strategy=" +
-                                strategy
-                        );
-                    }
-                    editOverlayLocallyApplied.add(messageId);
-                    setTimeout(function () {
-                        editOverlayLocallyApplied.delete(messageId);
-                    }, 5000);
-
-                    editOverlayUnmount(messageId);
-                } else {
-                    const status = resp ? resp.status : "?";
-                    editOverlayShowError(
-                        messageId,
-                        "Save failed (HTTP " + status + ")"
-                    );
-                    console.log(
-                        "[OSL] editOverlay save FAIL msg=" +
-                            messageId +
-                            " status=" +
-                            status
-                    );
-                }
-            })
-            .catch(function (err) {
-                editOverlayShowError(
-                    messageId,
-                    "Save failed (network): " +
-                        (err && err.message ? err.message : String(err))
-                );
-                console.error(
-                    "[OSL] editOverlay save threw msg=" + messageId,
-                    err
-                );
-            });
+        editOverlayShowError(
+            messageId,
+            "Protected edits are unavailable in this legacy shell."
+        );
+        console.log(
+            "[OSL] editOverlay save FAIL msg=" +
+                messageId +
+                " reason=legacy_rest_send_disabled"
+        );
     }
 
     /**

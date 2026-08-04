@@ -7,10 +7,16 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 
 function registeredCommands(): Set<string> {
-  const source = readFileSync(join(here, "main.rs"), "utf8");
+  const source = readFileSync(join(here, "hub_command_surface.rs"), "utf8");
   const start = source.indexOf("macro_rules! hub_tauri_commands");
   expect(start).toBeGreaterThanOrEqual(0);
-  const end = source.indexOf("macro_rules! hub_tauri_generate_handler", start);
+  const end = [
+    "macro_rules! hub_tauri_generate_handler",
+    "macro_rules! hub_tauri_command_names",
+  ]
+    .map((terminator) => source.indexOf(terminator, start + 1))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)[0] ?? -1;
   expect(end).toBeGreaterThan(start);
 
   return new Set(
@@ -43,7 +49,7 @@ function capabilityPermissions(): Set<string> {
 }
 
 describe("src/scrub-index-registration.test.ts", () => {
-  it("registers and ACL-grants all 9 scrub_index Tauri commands in the merged manifest", () => {
+  it("registers and ACL-grants scrub_index commands without ordinary pause/resume controls", () => {
     const commands = [
       "initialize_scrub_index",
       "set_scrub_index_manifest",
@@ -51,8 +57,6 @@ describe("src/scrub-index-registration.test.ts", () => {
       "get_scrub_index_scan",
       "append_scrub_index_chunk",
       "get_scrub_index_status",
-      "pause_scrub_index",
-      "resume_scrub_index",
       "cancel_scrub_index",
     ];
     const registered = registeredCommands();
@@ -66,6 +70,11 @@ describe("src/scrub-index-registration.test.ts", () => {
         capabilities.has(`allow-${command.replaceAll("_", "-")}`),
         `${command} capability permission`,
       ).toBe(true);
+    }
+
+    for (const command of ["pause_scrub_index", "resume_scrub_index"] as const) {
+      expect(registered.has(command), `${command} handler registration`).toBe(false);
+      expect(granted.has(command), `${command} permission grant`).toBe(false);
     }
   });
 });

@@ -1,0 +1,272 @@
+{
+  "note": "Ledger 4 command triage. Every entry is an ADMISSION: DEAD means the issuing module does not ship in the default production bundle; LIVE BREAK means bundled frontend code invokes an unregistered command; LEDGER DEFECT means the scanner reports a dynamic or type-only form it does not currently resolve.  A LIVE BREAK IS NOT AN EXCEPTION. Eight were listed here and removed by the conductor on 2026-08-03: an exception suppresses the violation entirely (lib/report.mjs:74), so accepting a live break turns this ledger GREEN over eight bundled modules invoking commands that do not exist. They stay RED until registered, deleted, or ruled out of scope. See DEFECTS.md D-137.",
+  "highWaterMark": 38,
+  "entries": [
+    {
+      "id": "append_osl_asset_chunk",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/osl-assets.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:134"
+    },
+    {
+      "id": "begin_osl_asset_upload",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/osl-assets.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:134"
+    },
+    {
+      "id": "cancel_osl_asset_upload",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/osl-assets.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:134"
+    },
+    {
+      "id": "configure_scrub_imap_account",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/scrub-imap.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:318"
+    },
+    {
+      "id": "decode_osl_office_asset",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/osl-formats.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:166"
+    },
+    {
+      "id": "delete_osl_saved_search",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
+      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+    },
+    {
+      "id": "discard_unreferenced_osl_asset",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/osl-assets.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:134"
+    },
+    {
+      "id": "finish_osl_asset_upload",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/osl-assets.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:134"
+    },
+    {
+      "id": "get_scrub_imap_capability",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/scrub-imap.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:318"
+    },
+    {
+      "id": "inspect_osl_plugin_asset",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/osl-plugin-runtime.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:214"
+    },
+    {
+      "id": "link_osl_asset_project",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/osl-assets.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:134"
+    },
+    {
+      "id": "list_osl_assets",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/osl-assets.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:134"
+    },
+    {
+      "id": "list_osl_assets_for_project",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/osl-assets.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:134"
+    },
+    {
+      "id": "list_osl_note_revisions",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
+      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+    },
+    {
+      "id": "list_osl_notes",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
+      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+    },
+    {
+      "id": "list_osl_saved_searches",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
+      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+    },
+    {
+      "id": "permanently_delete_osl_note",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
+      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+    },
+    {
+      "id": "read_osl_asset_chunk",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/osl-assets.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:134"
+    },
+    {
+      "id": "reauth_scrub_imap_account",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/scrub-imap.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:318"
+    },
+    {
+      "id": "release_osl_asset_project",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/osl-assets.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:134"
+    },
+    {
+      "id": "release_osl_assets_for_project",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/osl-assets.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:134"
+    },
+    {
+      "id": "restore_osl_note_revision",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
+      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+    },
+    {
+      "id": "run_osl_plugin_command",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/osl-plugin-runtime.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:214"
+    },
+    {
+      "id": "save_osl_note",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
+      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+    },
+    {
+      "id": "save_osl_saved_search",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
+      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+    },
+    {
+      "id": "scrub_imap_delete",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/scrub-imap-ipc.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:310"
+    },
+    {
+      "id": "scrub_imap_prepare_delete",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/scrub-imap-ipc.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:310"
+    },
+    {
+      "id": "unresolved-invoke:apps/osl-hub-ui/src/core.ts:170",
+      "class": "accepted",
+      "status": "ledger-defect",
+      "reason": "LEDGER DEFECT: bundled core.ts passes a command through an injected nativeInvoke wrapper, so this row is a scanner blind spot rather than a named missing command.",
+      "citation": "apps/osl-hub-ui/src/core.ts:170"
+    },
+    {
+      "id": "unresolved-invoke:apps/osl-hub-ui/src/core.ts:224",
+      "class": "accepted",
+      "status": "ledger-defect",
+      "reason": "LEDGER DEFECT: bundled core.ts derives the command from a bounded role ternary, which this scanner records as unresolved instead of expanding both names.",
+      "citation": "apps/osl-hub-ui/src/core.ts:224"
+    },
+    {
+      "id": "unresolved-invoke:apps/osl-hub-ui/src/core.ts:230",
+      "class": "accepted",
+      "status": "ledger-defect",
+      "reason": "LEDGER DEFECT: bundled core.ts derives the command from a bounded role ternary, which this scanner records as unresolved instead of expanding both names.",
+      "citation": "apps/osl-hub-ui/src/core.ts:230"
+    },
+    {
+      "id": "unresolved-invoke:apps/osl-hub-ui/src/native-overlay-adapter.ts:78",
+      "class": "accepted",
+      "status": "ledger-defect",
+      "reason": "LEDGER DEFECT: bundled native-overlay-adapter.ts passes commands through a local helper, so this unresolved row is scanner debt, not a single command name.",
+      "citation": "apps/osl-hub-ui/src/native-overlay-adapter.ts:78"
+    },
+    {
+      "id": "unresolved-invoke:apps/osl-hub-ui/src/osl-collab.ts:71",
+      "class": "accepted",
+      "status": "ledger-defect",
+      "reason": "LEDGER DEFECT: bundled osl-collab.ts derives the LAN sync command from session.role; the scanner has not expanded that bounded ternary.",
+      "citation": "apps/osl-hub-ui/src/osl-collab.ts:71"
+    },
+    {
+      "id": "unresolved-invoke:apps/osl-hub-ui/src/osl-mail-adapter.ts:214",
+      "class": "accepted",
+      "status": "ledger-defect",
+      "reason": "LEDGER DEFECT: bundled osl-mail-adapter.ts passes OSL Mail commands through a local call helper, so this unresolved row is scanner debt.",
+      "citation": "apps/osl-hub-ui/src/osl-mail-adapter.ts:214"
+    },
+    {
+      "id": "unresolved-invoke:apps/osl-hub-ui/src/osl-notes.ts:56",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
+      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+    },
+    {
+      "id": "unresolved-invoke:apps/osl-hub-ui/src/scrub-imap-ipc.ts:55",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/scrub-imap-ipc.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:310"
+    },
+    {
+      "id": "unresolved-invoke:apps/osl-hub-ui/src/scrub-imap-ipc.ts:65",
+      "class": "accepted",
+      "status": "dead-client",
+      "reason": "DEAD: apps/osl-hub-ui/src/scrub-imap-ipc.ts is outside every default production bundle per ledger 7; this module does not ship.",
+      "citation": "scripts/ledger/exceptions/bundle.json:310"
+    },
+    {
+      "id": "unresolved-invoke:apps/osl-hub-ui/src/ui-behavior.ts:303",
+      "class": "accepted",
+      "status": "ledger-defect",
+      "reason": "LEDGER DEFECT: bundled ui-behavior.ts declares a TypeScript interface method named invoke; the scanner reports that type signature as a call.",
+      "citation": "apps/osl-hub-ui/src/ui-behavior.ts:303"
+    },
+    {
+      "id": "unresolved-invoke:apps/osl-hub-ui/src/whatsapp-qa-shell.ts:49",
+      "class": "accepted",
+      "status": "ledger-defect",
+      "reason": "LEDGER DEFECT: bundled whatsapp-qa-shell.ts passes literal commands through invokeReceipt, which this scanner does not expand in the 46-row triage.",
+      "citation": "apps/osl-hub-ui/src/whatsapp-qa-shell.ts:49"
+    }
+  ]
+}

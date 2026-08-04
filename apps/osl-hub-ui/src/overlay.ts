@@ -92,10 +92,19 @@ const discordQaShell = import.meta.env.VITE_OSL_DISCORD_QA_SHELL === "1";
 const PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT = "osl://protected-display-visibility-changed";
 const NATIVE_SURFACE_CHANGED_EVENT = "osl://native-surface-changed";
 const OVERLAY_REFOCUS_EVENT = "osl://native-discord-overlay-refocus";
-// The Rust realtime transport emits this only after it accepted a wakeup whose
-// blob id matches a locally-held carrier pointer.  It is an edge, not a clock:
-// no renderer timer is allowed to manufacture a receive attempt.
-const REALTIME_WAKEUP_EVENT = "osl://realtime-wakeup";
+// THERE IS NO PUSH WAKEUP, AND THIS RENDERER NO LONGER PRETENDS THERE IS.
+// A listener for "osl://realtime-wakeup" used to sit below, carrying a comment
+// claiming "the Rust realtime transport emits this only after it accepted a
+// wakeup whose blob id matches a locally-held carrier pointer". No such emitter
+// has ever existed in this repo -- ledger 5 (events) reported the name as
+// listened-but-never-emitted, and a search of the whole tree finds the string
+// nowhere but at that listener. The claim was the defect: it made a
+// never-fires path read as a shipped one, which is this project's defining
+// failure shape. The product line is unchanged and stays honest -- you see
+// messages when you open OSL -- and every real receive edge still runs through
+// requestRealtimeDrain() (display-visibility on, reveal, save, session start).
+// Do not re-add a listener here to "reserve" the name: a subscription with no
+// emitter is not a hook, it is a silent dead branch.
 // Discord's transcript band moved, resized or came to rest, so every row
 // rectangle this renderer holds is now pointing at the wrong pixels. No payload:
 // it is a bare "re-read", raised by the native guard loop on the tick something
@@ -2317,7 +2326,6 @@ void listen<void>(NATIVE_SURFACE_CHANGED_EVENT, () => {
 void listen<void>(OVERLAY_REFOCUS_EVENT, () => {
   draft.focus({ preventScroll: true });
 });
-void listen<void>(REALTIME_WAKEUP_EVENT, requestRealtimeDrain);
 // NATIVE SCROLL/GEOMETRY EDGE. The completion of the wheel listener above: the
 // guard loop watching Discord's window raises this on the tick the transcript
 // band actually changed shape or came to rest, which is the only way this
