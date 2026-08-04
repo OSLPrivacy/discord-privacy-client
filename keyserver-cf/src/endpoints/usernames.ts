@@ -6,6 +6,7 @@ import { isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/v
 import { verifySignedRequest } from "../lib/signed-request.js";
 import {
   USERNAME_FRESHNESS_MS,
+  normalizeUsername,
   usernameClaimMessage,
   validNormalizedUsername,
   validateFriendCode,
@@ -85,9 +86,10 @@ export async function handleUsernameLookup(request: Request, env: Env): Promise<
   if (!validNormalizedUsername(body.username)) {
     return badRequest("username must already be normalized");
   }
+  const identity = normalizeUsername(body.username);
   const row = await env.DB.prepare(
     "SELECT username, friend_code FROM username_directory WHERE username = ?",
-  ).bind(body.username).first<{ username: string; friend_code: string }>();
+  ).bind(identity).first<{ username: string; friend_code: string }>();
   return paddedLookupResponse(row);
 }
 export async function handleUsernameClaim(request: Request, env: Env): Promise<Response> {
