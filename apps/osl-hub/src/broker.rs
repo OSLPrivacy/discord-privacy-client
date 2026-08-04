@@ -12057,6 +12057,94 @@ mod tests {
         );
     }
 
+    /// Discrimination, not presence. The suite already covers the check's
+    /// PRESENCE -- inverting `validate_authenticated_sender_order_scope` to
+    /// always refuse reddens eight two-party receive tests, which is what caught
+    /// the `manual.scope` regression. It did not cover its DISCRIMINATION:
+    /// neutralising the equality at `broker.rs:1603` to `Ok(())` left every
+    /// shipped test green, so the check could have been deleted outright and CI
+    /// would not have noticed. Only the refusal direction is a security
+    /// property, and this is the test that holds it.
+    ///
+    /// Both conversation ids are real `manual_dm_channel_binding` derivations
+    /// for the SAME authenticated pair on two services, so the only thing that
+    /// differs between the accepted and the refused call is the conversation.
+    /// A hand-edited commitment field would test the base64 parser, not the
+    /// derivation, and would not catch this class of regression.
+    #[test]
+    fn authenticated_sender_order_scope_commitment_from_another_conversation_is_refused() {
+        let alice = keystore::generate_identity("osl-scope-discrimination-alice".to_owned());
+        let bob = keystore::generate_identity("osl-scope-discrimination-bob".to_owned());
+        let core = HubCoreState::default();
+        *core.osl.identity.lock().unwrap() = Some(alice.clone());
+        let binding = ManualPeerBinding {
+            person_id: "hub-person-bob".to_owned(),
+            peer_osl_user_id: bob.user_id.clone(),
+            peer_x25519_public: *bob.x25519_public.as_bytes(),
+            peer_mlkem768_public: bob.mlkem_public_bytes,
+        };
+
+        let minted_in = context(
+            "native-discord-alice",
+            &manual_dm_channel_binding("discord", &alice.user_id, &bob.user_id).unwrap(),
+        );
+        let presented_in = context(
+            "native-discord-alice",
+            &manual_dm_channel_binding("instagram", &alice.user_id, &bob.user_id).unwrap(),
+        );
+        assert_ne!(
+            minted_in.conversation_id, presented_in.conversation_id,
+            "the fixture must be two genuinely different conversations, not one \
+             conversation with an edited field"
+        );
+
+        let scope_commitment = security::peer_scope_commitment(
+            &core,
+            &binding.peer_x25519_public,
+            &authenticated_sender_order_scope_key(&minted_in).unwrap(),
+        )
+        .unwrap();
+        let payload = PeerProtectedPayload {
+            version: PEER_PROTECTED_VERSION,
+            message_id: "peer-00112233445566778899aabbccddeeff".to_owned(),
+            send_seq: Some(1),
+            scope_commitment: Some(scope_commitment),
+            created_at: 1_700_000_000,
+            expires_at: 1_700_003_600,
+            service_id: "discord".to_owned(),
+            conversation_binding: minted_in.conversation_id.clone(),
+            sender_osl_user_id: "peer-rose".to_owned(),
+            recipient_osl_user_id: "self-liam".to_owned(),
+            plaintext: "private".to_owned(),
+            view_once: false,
+            require_capture_protection: false,
+            logical_message_id: None,
+            chunk_index: None,
+            chunk_count: None,
+            whole_sha256: None,
+        };
+        assert!(
+            valid_authenticated_sender_order_shape(&payload),
+            "the fixture must present a well-formed order envelope, so the refusal \
+             below can only come from the commitment equality"
+        );
+
+        validate_authenticated_sender_order_scope(&core, &binding, &minted_in, &payload)
+            .expect("the conversation it was minted in accepts its own commitment");
+
+        let refusal =
+            validate_authenticated_sender_order_scope(&core, &binding, &presented_in, &payload)
+                .expect_err(
+                    "a commitment minted in another conversation must be refused -- if this \
+                     passes, the equality check is decoration and can be deleted",
+                );
+        assert_eq!(
+            refusal, "This encrypted message could not be opened",
+            "the refusal is the opaque user-facing message and discloses nothing about \
+             the commitment it rejected"
+        );
+    }
+
     #[test]
     fn native_overlay_acknowledgment_counters_split_received_from_opened() {
         let counters = native_overlay_acknowledgment_counters([
