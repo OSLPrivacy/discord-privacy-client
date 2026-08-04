@@ -352,6 +352,19 @@ fn resolve_cipher_store_base_url_with_policy(
         if allow_debug_override && crate::commands::is_loopback_config_origin_override(canonical) {
             return Ok(canonical.to_string());
         }
+        // Debug/test also accepts a non-loopback HTTP(S) origin, and that is
+        // deliberate rather than lax. `tor_pref`'s healthy-route test asserts
+        // that the SOCKS proxy SAW THE HOSTNAME (`store.invalid`) — which is
+        // how it proves egress used remote DNS through the tunnel instead of
+        // resolving locally. Restricting debug to numeric loopback silently
+        // deletes the only test of that privacy property. The pin that matters
+        // is the release arm below, which is unchanged: a shipped build refuses
+        // every non-default origin.
+        if allow_debug_override
+            && (canonical.starts_with("http://") || canonical.starts_with("https://"))
+        {
+            return Ok(canonical.to_string());
+        }
         return Err(CipherStoreError::ConfigOverrideRefused {
             configured: canonical.to_string(),
             default: DEFAULT_CIPHER_STORE_BASE_URL,
