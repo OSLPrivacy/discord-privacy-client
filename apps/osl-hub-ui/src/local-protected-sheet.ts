@@ -91,9 +91,8 @@ function ttlLabel(seconds: LocalTtlSeconds): string {
   return "7 days";
 }
 
-export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendMode: SendMode = "clipboard"): string {
+export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendMode: SendMode = "manual"): string {
   if (!model.open) return "";
-  void sendMode;
   const maxCopyPayloadBytes = 1_000;
   const utf8Length = (value: string): number => new TextEncoder().encode(value).length;
   const boundedCopyPayload = (value: string): { value: string; bytes: number; clipped: boolean } => {
@@ -126,8 +125,16 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
   const draftLimitNotice = !boundedDraft.clipped
     ? `${boundedDraft.bytes.toLocaleString("en-US")} / ${maxCopyPayloadBytes.toLocaleString("en-US")} bytes`
     : `Draft shortened to ${maxCopyPayloadBytes.toLocaleString("en-US")} bytes for copy.`;
-  const primaryLabel = "Encrypt & copy";
-  const sendTruth = "OSL copies encrypted text only. You choose where to paste it and press Send yourself.";
+  const manualMode = sendMode === "manual";
+  const experimentalMode = sendMode === "double" || sendMode === "single";
+  const primaryLabel = manualMode ? "Encrypt & prepare" : experimentalMode ? "Encrypt & copy fallback" : "Encrypt & copy";
+  const sendTruth = manualMode
+    ? "OSL prepares encrypted text below. You place it yourself; OSL does not copy or send."
+    : experimentalMode
+      ? `${sendMode === "double" ? "Double Enter" : "Single Enter"} is unavailable in this local sheet. After consent, OSL copies encrypted text and sends nothing.`
+      : "OSL copies encrypted text only. You choose where to paste it and press Send yourself.";
+  const resultCopyLabel = manualMode ? "Copy to clipboard" : "Copy again";
+  const resultHint = manualMode ? "Select and place this encrypted text yourself, or copy only by pressing the button." : "Review the destination before you send.";
   const write = `<form id="local-protect-form" class="local-protected-form">
       <label for="local-protected-draft">Message</label>
       <textarea id="local-protected-draft" maxlength="1000" data-max-bytes="${maxCopyPayloadBytes}" rows="5" autocomplete="off" spellcheck="true" aria-describedby="local-protected-draft-bytes" placeholder="Write privately">${escapeHtml(boundedDraft.value)}</textarea>
@@ -137,7 +144,7 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Encrypting…" : primaryLabel}</button>
       <small class="local-send-truth">${escapeHtml(sendTruth)}</small>
     </form>
-    ${model.capsule ? `<section class="local-capsule-result"><label for="local-capsule-output">Encrypted text</label><textarea id="local-capsule-output" rows="4" readonly>${escapeHtml(model.capsule)}</textarea><button class="local-copy" id="local-capsule-copy" type="button">Copy again</button><small>Review the destination before you send.</small></section>` : ""}`;
+    ${model.capsule ? `<section class="local-capsule-result"><label for="local-capsule-output">Encrypted text</label><textarea id="local-capsule-output" rows="4" readonly>${escapeHtml(model.capsule)}</textarea><button class="local-copy" id="local-capsule-copy" type="button">${escapeHtml(resultCopyLabel)}</button><small>${escapeHtml(resultHint)}</small></section>` : ""}`;
 
   const open = `<form id="local-open-form" class="local-protected-form">
       <label for="local-capsule-input">Encrypted text</label>
@@ -152,6 +159,6 @@ export function localProtectedSheetMarkup(model: LocalProtectedSheetModel, sendM
     <nav class="local-protected-tabs" aria-label="Local protection"><button type="button" data-local-pane="write" class="${model.pane === "write" ? "active" : ""}">Write</button><button type="button" data-local-pane="open" class="${model.pane === "open" ? "active" : ""}">Open</button></nav>
     <div class="local-protected-body">${model.pane === "write" ? write : open}</div>
     <output class="local-protected-status" aria-live="polite">${escapeHtml(model.status)}</output>
-    <footer>Manual copy & paste · no page access · not person-to-person E2EE</footer>
+    <footer>${manualMode ? "Manual placement" : "Clipboard handoff"} · no page access · not person-to-person E2EE</footer>
   </aside>`;
 }

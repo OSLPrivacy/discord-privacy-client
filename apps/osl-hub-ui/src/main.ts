@@ -6472,19 +6472,34 @@ async function startLocalProtectedContextForLabel(label: string): Promise<void> 
 
 async function prepareLocalProtectedDraft(event: SubmitEvent): Promise<void> {
   event.preventDefault();
-  const contextToken = localProtectedSheet.context?.contextToken;
   const draft = document.querySelector<HTMLTextAreaElement>("#local-protected-draft");
   const ttl = document.querySelector<HTMLSelectElement>("#local-protected-ttl");
   const viewOnce = document.querySelector<HTMLInputElement>("#local-protected-view-once");
   const plaintext = draft?.value ?? "";
   const ttlSeconds = Number(ttl?.value ?? 3_600);
+  await prepareLocalProtectedDraftFromValues(plaintext, ttlSeconds, viewOnce?.checked === true);
+}
+
+async function prepareLocalProtectedDraftFromValues(
+  plaintext: string,
+  ttlSeconds: number,
+  viewOnce: boolean,
+): Promise<void> {
+  const contextToken = localProtectedSheet.context?.contextToken;
   if (!contextToken || !plaintext.trim() || !isLocalTtlSeconds(ttlSeconds)) {
     localProtectedSheet.status = "Write a message first.";
     render();
     return;
   }
   const sendContext = localProtectedSheet.context;
-  if ((setup.sendMode === "double" || setup.sendMode === "single")
+  if (needsRiskAcceptance(setup.sendMode)
+    && (!setup.acceptedRisk || setup.acceptedRiskForMode !== setup.sendMode)) {
+    localProtectedSheet.draft = plaintext;
+    localProtectedSheet.status = `${formatSendMode(setup.sendMode)} requires experimental send risk acknowledgement before OSL prepares a fallback. Nothing was sent.`;
+    render();
+    return;
+  }
+  if (needsRiskAcceptance(setup.sendMode)
     && sendContext
     && !hasExperimentalSendConsent(setup.sendMode, sendContext.serviceId, sendContext.accountId)) {
     const accepted = window.confirm(`${formatSendMode(setup.sendMode)} is experimental for this account. OSL will send nothing unless it can verify the exact account, chat, and composer immediately before every action. Continue with safe Copy fallback?`);
@@ -6498,7 +6513,7 @@ async function prepareLocalProtectedDraft(event: SubmitEvent): Promise<void> {
   }
   localProtectedSheet.busy = true;
   localProtectedSheet.draft = plaintext;
-  localProtectedSheet.viewOnce = viewOnce?.checked === true;
+  localProtectedSheet.viewOnce = viewOnce;
   localProtectedSheet.status = "";
   render();
   const policy = await saveActiveContextSecurity(contextToken, ttlSeconds, localProtectedSheet.decryptDisplayEnabled);
@@ -6517,12 +6532,15 @@ async function prepareLocalProtectedDraft(event: SubmitEvent): Promise<void> {
     return;
   }
   localProtectedSheet.capsule = prepared.capsule;
+  if (setup.sendMode === "manual") {
+    localProtectedSheet.status = "Encrypted and ready for manual placement. Clipboard was not changed.";
+    render();
+    return;
+  }
   try {
     await navigator.clipboard.writeText(prepared.capsule);
-    localProtectedSheet.status = setup.sendMode === "double" || setup.sendMode === "single"
+    localProtectedSheet.status = needsRiskAcceptance(setup.sendMode)
       ? "Exact composer verification is unavailable here. Copied safely; nothing was sent."
-      : setup.sendMode === "manual"
-        ? "Encrypted and ready for manual handoff. OSL did not press Send."
       : "Encrypted and copied. OSL did not press Send.";
   } catch {
     localProtectedSheet.status = "Encrypted. Automatic copy failed; select the encrypted text below. Nothing was sent.";
@@ -9447,6 +9465,16 @@ export const __oslHubUiTest = {
   },
   startLocalProtection(label: string): Promise<void> {
     return startLocalProtectedContextForLabel(label);
+  },
+  prepareLocalProtectedDraft(
+    plaintext: string,
+    options: { ttlSeconds?: number; viewOnce?: boolean } = {},
+  ): Promise<void> {
+    return prepareLocalProtectedDraftFromValues(
+      plaintext,
+      options.ttlSeconds ?? localProtectedSheet.ttlSeconds,
+      options.viewOnce ?? localProtectedSheet.viewOnce,
+    );
   },
   renderProtectedSheets(): string {
     return workspaceProtectedSheetMarkup();
