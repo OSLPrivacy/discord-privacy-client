@@ -120,11 +120,19 @@ jobs:
       # parse step in ~50ms per file.
       - name: boot.js parses
         run: node --check src-tauri/src/injection/boot.js
-      # 9-TD1.2: every #[tauri::command] needs all 5 artifacts. A
-      # missing TOML or capability grant makes the command silently
-      # unreachable from JS — we lost debug days to that pre-9-C1.
-      - name: Capability audit
-        run: python3 scripts/audit_capabilities.py
+      # D-159: the "Capability audit" step that stood here ran
+      # scripts/audit_capabilities.py, which audited src-tauri/** -- the
+      # legacy shell excluded from the workspace and built by no release
+      # job -- and printed "OK: 126 commands audited, all 5 artifacts
+      # present" while apps/osl-hub, the app that actually ships, held
+      # three commands registered on its IPC surface with no grant
+      # anywhere (D-158) and a permission whose command had been deleted
+      # (D-146, which broke the build twice in one day). A green line
+      # about code that does not ship is worse than no line. The
+      # five-artifact discipline now lives in scripts/ledger/acl-diff.mjs
+      # and scripts/ledger/commands.mjs, aimed at apps/osl-hub; see
+      # scripts/CAPABILITY_AUDIT.md for the artifact-to-enforcer map and
+      # for the open item that the ledgers are not yet a CI job.
       # This file has held the rust-cache write policy since it was written and
       # nothing has ever executed it. It now also holds D-152's contract that
       # some job runs the shipping binary's test target, which is only worth

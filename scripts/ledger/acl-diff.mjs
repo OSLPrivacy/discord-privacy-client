@@ -167,8 +167,10 @@ export function registeredCommands(root) {
     for (const [name, site] of attributedCommands(root, rel)) if (!attributed.has(name)) attributed.set(name, site);
   }
   const commands = new Map();
+  const unregistered = [];
   for (const [name, site] of attributed) {
     if (registry.has(name)) commands.set(name, { definedAt: site, registeredAt: registry.get(name) });
+    else unregistered.push({ name, site });
   }
   // Both halves of the intersection can starve independently, and either one
   // going to zero would make "registered but granted nowhere" silently pass.
@@ -201,7 +203,7 @@ export function registeredCommands(root) {
       sites: [stray.site],
     });
   }
-  return { commands, registry, problems };
+  return { commands, registry, problems, unregistered };
 }
 
 /** `plugin:window|is_maximized` -> `core:window:allow-is-maximized`; `foo_bar` -> `allow-foo-bar`. */
@@ -647,7 +649,7 @@ export async function main(argv = process.argv) {
   // intersection: existence is what tauri-build checks, and the raw list is a
   // superset, so a grant is only reported dangling when nothing in either
   // handler list mentions the name at all.
-  const { commands: registered, registry: registeredRegistry, problems: registryProblems } = registeredCommands(root);
+  const { commands: registered, registry: registeredRegistry, problems: registryProblems, unregistered } = registeredCommands(root);
   const violations = [];
 
   for (const problem of registryProblems) {
@@ -714,6 +716,18 @@ export async function main(argv = process.argv) {
         ? `registered on the IPC surface, and permission ${identifiers.map((i) => `"${i}"`).join(" / ")} exists, but no capability file grants it to any webview; the ACL rejects this command before its handler runs`
         : `registered on the IPC surface with no [[permission]] block and no capability grant anywhere; the ACL rejects this command before its handler runs`,
       sites: [where.definedAt, ...where.registeredAt, ...candidates.map((b) => b.site)],
+    });
+  }
+
+  // The fifth artifact scripts/audit_capabilities.py used to check, on the tree
+  // that actually ships: a fn carrying #[tauri::command] that no handler list
+  // registers is unreachable from every webview no matter what the ACL says.
+  for (const u of unregistered) {
+    violations.push({
+      id: `defined-command-not-registered:${u.name}`,
+      kind: "defined-command-not-registered",
+      detail: `${u.name} carries #[tauri::command] but no invoke_handler list registers it, so no webview can reach it and no grant can help`,
+      sites: [u.site],
     });
   }
 

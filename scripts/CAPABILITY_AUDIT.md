@@ -1,74 +1,72 @@
-# Capability audit (`scripts/audit_capabilities.py`)
+# Capability audit — SUPERSEDED by ledger 3 (D-159, 2026-08-04)
 
-Tauri 2 will silently refuse to invoke any `#[tauri::command]` that
-is missing its `allow-*` permission grant. Pre-9-C1 we lost several
-debug days to that failure mode: the command exists, the JS calls
-it, the build is green, but every `oslInvoke` returns
-`{ok: false, error: "Command not found"}`. The five-artifact
-discipline (the rule the audit enforces) avoids that whole class
-of bug.
+`scripts/audit_capabilities.py` was deleted and its CI step in
+`.github/workflows/rust-test.yml` removed. **The rule it enforced is not
+retracted** — it moved to the tree that ships. This file is kept as the record
+of the discipline and of where each artifact is checked now.
 
-## What the audit checks
+## Why it was deleted rather than repointed
 
-For each `#[tauri::command]` declared in `src-tauri/src/main.rs`:
+The script audited `src-tauri/**`. That is the **legacy shell**: excluded from the
+cargo workspace (`Cargo.toml` `exclude`), built by no release or promote workflow,
+and not the app the user installs. The shipping app is `apps/osl-hub`, with its
+own `tauri.conf.json`, `permissions/hub.toml` and `capabilities/*.json`.
 
-1. The function definition exists (the `#[tauri::command]` annotation
-   precedes a `fn` or `async fn`).
-2. The function name is listed inside `tauri::generate_handler![ ... ]`.
-3. A permission TOML file exists at
-   `src-tauri/permissions/<kebab>.toml` (so `osl_tour_get_state` →
-   `osl-tour-get-state.toml`) and its `commands.allow` array names
-   the function.
-4. The permission id (`allow-<kebab>`) is listed in **at least one**
-   capability JSON under `src-tauri/capabilities/`.
-5. Cross-check: every name inside `generate_handler![ ... ]` resolves
-   to a real `#[tauri::command]` fn. Catches typo'd entries that
-   would `panic!` at build time.
+On every push CI printed:
 
-Internal-only commands (Rust-side helpers never wired to a webview)
-go in `ALLOWLIST_NO_PERMISSION` inside the script with a one-line
-justification. The audit warns on them but treats them as passing.
-
-## How to run
-
-```bash
-python3 scripts/audit_capabilities.py
+```
+OK: 126 commands audited, all 5 artifacts present, cross-window grants consistent.
 ```
 
-Exit code `0` = clean, `1` = at least one missing artifact, `2` = the
-script couldn't find any `#[tauri::command]` at all (probably wrong
-path / corrupted repo).
+while `apps/osl-hub` held three commands registered on its IPC surface with **no
+grant anywhere** (D-158) and a permission block allowing a **deleted** command
+(the D-146 class, which took the shipping app from compiling to not compiling
+twice in one day). A capability auditor aimed at code that does not ship does not
+merely fail to help; its green line is read as covering the app, and in D-158 it
+was.
 
-CI runs this on every push. See `.github/workflows/ci.yml`.
+Repointing it at `apps/osl-hub` was the other option and was rejected: the two
+trees do not share a shape (one TOML per command with a `windows` list, versus a
+single 168-block `hub.toml` with `webviews`), so "repoint" means rewriting the
+script into a **second** parser of the same ACL. D-137 was caused by exactly that
+— two checkers disagreeing about the same set of commands. The ledger already
+holds the parser, and now holds the checks.
 
-## Opting into a local pre-commit hook
+## The five artifacts, and what enforces each one today
 
-Pre-commit is opt-in because some workflows prefer fast unchecked
-commits + heavier checks in CI. To enable, drop this into
-`.git/hooks/pre-commit` (or wire it via your `husky` / `pre-commit`
-framework of choice):
+For every `#[tauri::command]` in `apps/osl-hub`:
 
-```bash
-#!/usr/bin/env bash
-set -e
-python3 scripts/audit_capabilities.py
-```
+| # | Artifact | Enforced by |
+|---|----------|-------------|
+| 1 | The `#[tauri::command]` fn exists | `scripts/ledger/acl-diff.mjs` — `registeredCommands()` intersects the handler registry with the names carrying the attribute; if either side extracts nothing, the ledger fails rather than passing vacuously |
+| 2 | The name is listed in a `tauri::generate_handler![...]` / `hub_tauri_commands!` list | `acl-diff.mjs` — `defined-command-not-registered` |
+| 3 | A `[[permission]]` block allows the command | `acl-diff.mjs` — `registered-but-granted-to-no-webview` (a command with no block and no grant is reported), and `granted-command-does-not-exist` in the other direction |
+| 4 | Some capability JSON grants that permission | `acl-diff.mjs` — `registered-but-granted-to-no-webview`, evaluated against **every** capability file, not just the one covering `main` |
+| 5 | Every name in the handler list resolves to a real command | `acl-diff.mjs` — `granted-command-does-not-exist`; and from the frontend side, `scripts/ledger/commands.mjs` — `frontend-invoke-not-registered` |
 
-Make it executable: `chmod +x .git/hooks/pre-commit`.
+The old script's `ALLOWLIST_NO_PERMISSION` has no successor **by design**: the
+ledger's ratchet (`scripts/ledger/exceptions/acl.json`) requires a reason and a
+`file:line` citation per entry and its high-water mark may only move down, so a
+name cannot be added quietly to make a check pass.
 
-## When the audit fails on a new command
+## The per-window cross-check, honestly stated
 
-Either:
+The script's TD2.1 cross-window validation relied on a hand-written
+file → window map for `src-tauri`. `apps/osl-hub` has five webview labels and
+decides at runtime which page loads under which; ledger 3 scopes its
+issued-vs-granted direction to `main` and **declares the other four a blind
+spot** in its header and in `exceptions/acl.json`. That blind spot predates this
+change and is not widened by it: the direction added in D-159 is deliberately
+webview-agnostic ("granted to no webview at all"), because scoring overlay
+commands against `main` produces false positives for every command the overlay
+legitimately holds and `main` must never have — measured: 14 on this tree.
 
-1. The command genuinely needs the 5 artifacts. Standard pattern,
-   modelled on any recent `osl_*` command in `commands.rs` +
-   `main.rs` + `src-tauri/permissions/*.toml` +
-   `src-tauri/capabilities/{main,settings-window}.json`. The audit's
-   "missing artifacts" list tells you which artifact is absent.
+## Open item for the conductor
 
-2. The command is internal and shouldn't be reachable from JS. Add
-   it to `ALLOWLIST_NO_PERMISSION` with a one-line justification.
-   If a future developer wires it to a webview, the JS-string-literal
-   check (run manually before adding) prevents accidental skipped
-   audits, and removing the allowlist entry triggers the standard
-   pattern requirement.
+**The ledgers are not wired into CI.** They are run by the plan's ODC harness
+(`node scripts/ledger/all.mjs`, or one ledger at a time). Deleting the Python
+step therefore does not reduce CI's coverage of the shipping app — that coverage
+was zero either way — but it does mean no CI job checks the ACL of the app that
+ships. Wiring the ledgers into CI is a larger decision than this lane owns
+(they need the frontend bundle for reachability), and it is recorded here rather
+than left implied.
