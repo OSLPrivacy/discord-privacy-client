@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -46,6 +46,7 @@ fn persist_osl_chat_inbound(
     message_id: String,
     sender_osl_user_id: String,
     plaintext: String,
+    created_at: i64,
 ) -> Result<(), String> {
     if channel_id.is_empty()
         || channel_id.len() > 160
@@ -54,6 +55,7 @@ fn persist_osl_chat_inbound(
         || sender_osl_user_id.is_empty()
         || sender_osl_user_id.len() > 160
         || plaintext.is_empty()
+        || created_at <= 0
     {
         return Err("OSL: invalid first-party chat history row".to_owned());
     }
@@ -65,10 +67,6 @@ fn persist_osl_chat_inbound(
     let Some(store) = guard.as_ref() else {
         return Err("OSL Chat history is unavailable".to_owned());
     };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0);
     store
         .put(&store::StoredMessage {
             discord_message_id: message_id,
@@ -76,7 +74,7 @@ fn persist_osl_chat_inbound(
             sender_discord_id: sender_osl_user_id.clone(),
             sender_osl_user_id,
             plaintext,
-            decrypted_at: now,
+            decrypted_at: created_at,
             burned: false,
         })
         .map_err(|error| format!("OSL: first-party chat history: {error}"))
@@ -1263,6 +1261,7 @@ pub struct OpenedNativeOverlayText {
     pub context_verified: bool,
     pub person_to_person_e2ee: bool,
     pub view_once_consumed: bool,
+    pub created_at: i64,
     pub expires_at: i64,
 }
 
@@ -4974,6 +4973,7 @@ fn drain_peer_inbox_text(
                 payload.message_id.clone(),
                 manual.peer_osl_user_id.clone(),
                 payload.plaintext.clone(),
+                payload.created_at,
             )
             .is_err()
         {
@@ -5015,6 +5015,7 @@ fn drain_peer_inbox_text(
             context_verified: true,
             person_to_person_e2ee: true,
             view_once_consumed: payload.view_once,
+            created_at: payload.created_at,
             expires_at: payload.expires_at,
         });
     }
@@ -5156,6 +5157,7 @@ fn drain_peer_inbox_text(
                 logical.message_id.clone(),
                 manual.peer_osl_user_id.clone(),
                 logical.plaintext.clone(),
+                logical.created_at,
             )
             .is_err()
         {
@@ -5190,6 +5192,7 @@ fn drain_peer_inbox_text(
                 context_verified: true,
                 person_to_person_e2ee: true,
                 view_once_consumed: logical.view_once,
+                created_at: logical.created_at,
                 expires_at: logical.expires_at,
             });
         }
@@ -11930,6 +11933,7 @@ mod tests {
             context_verified: true,
             person_to_person_e2ee: true,
             view_once_consumed: true,
+            created_at: 1_786_996_400,
             expires_at: 1_787_000_000,
         };
         let value = serde_json::to_value(OpenedNativeOverlayTextBatch {
@@ -11947,6 +11951,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(value["fetched"], 2);
+        assert_eq!(value["messages"][0]["createdAt"], 1_786_996_400i64);
         assert_eq!(value["messages"][0]["expiresAt"], 1_787_000_000i64);
         assert_eq!(value["messages"][0]["plaintext"], "first\n\nthird");
         // The correlation handle every received message now carries, so the
@@ -11982,6 +11987,7 @@ mod tests {
             context_verified: true,
             person_to_person_e2ee: true,
             view_once_consumed: false,
+            created_at: 1_786_996_400,
             expires_at: 1_787_000_000,
         })
         .unwrap();
@@ -12002,6 +12008,7 @@ mod tests {
                 context_verified: true,
                 person_to_person_e2ee: true,
                 view_once_consumed: false,
+                created_at: 1_786_996_400,
                 expires_at: 1_787_000_000,
             }
         }
@@ -13006,6 +13013,7 @@ mod tests {
             "peer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
             "osl-peer".to_owned(),
             "private".to_owned(),
+            1_700_000_000,
         )
         .expect_err("missing MessageStore is a loud receive failure");
 

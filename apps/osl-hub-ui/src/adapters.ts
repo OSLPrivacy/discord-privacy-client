@@ -97,6 +97,7 @@ export interface OslChatHistoryRow {
   messageId: string;
   senderOslUserId: string;
   plaintext: string;
+  createdAt: number;
   decryptedAt: number;
 }
 export interface PreparedHubAttachment {
@@ -530,6 +531,7 @@ export async function listOslChatHistory(): Promise<OslChatHistoryRow[] | null> 
         messageId: entry.discord_message_id as string,
         senderOslUserId: entry.sender_osl_user_id as string,
         plaintext: entry.plaintext as string,
+        createdAt: entry.decrypted_at as number,
         decryptedAt: entry.decrypted_at as number,
       };
     });

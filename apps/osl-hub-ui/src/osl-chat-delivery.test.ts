@@ -60,6 +60,7 @@ function batchWith(bodies: string[]): NativeDiscordOverlayOpenedBatch {
       contextVerified: true,
       personToPersonE2ee: true,
       viewOnceConsumed: false,
+      createdAt: 1_700_000_000 + index,
       expiresAt: 4_000_000_000,
     })),
     pendingViewOnce: [],
@@ -161,9 +162,9 @@ describe("OSL Chat delivery is not gated on the Home screen", () => {
     __oslHubUiTest.reset({ route: "settings", coreReady: true, hubPeople: verifiedFriends(1) });
     mocks.openOslChatText.mockResolvedValue(batchWith(["first", "second", "third"]));
     mocks.listOslChatHistory.mockResolvedValue([
-      { messageId: "peer-0003", senderOslUserId: "OSLUSER-p1", plaintext: "third", decryptedAt: 1_700_000_003 },
-      { messageId: "peer-0002", senderOslUserId: "OSLUSER-p1", plaintext: "second", decryptedAt: 1_700_000_002 },
-      { messageId: "peer-0001", senderOslUserId: "OSLUSER-p1", plaintext: "first", decryptedAt: 1_700_000_001 },
+      { messageId: "peer-0003", senderOslUserId: "OSLUSER-p1", plaintext: "third", createdAt: 1_700_000_003, decryptedAt: 1_700_000_003 },
+      { messageId: "peer-0002", senderOslUserId: "OSLUSER-p1", plaintext: "second", createdAt: 1_700_000_002, decryptedAt: 1_700_000_002 },
+      { messageId: "peer-0001", senderOslUserId: "OSLUSER-p1", plaintext: "first", createdAt: 1_700_000_001, decryptedAt: 1_700_000_001 },
     ]);
 
     await __oslHubUiTest.deliverOslChats();

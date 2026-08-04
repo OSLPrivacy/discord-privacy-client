@@ -229,6 +229,13 @@ export function oslChatDraftBytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
+export function applyOslChatDraftToElement(
+  draftElement: Pick<HTMLTextAreaElement, "value"> | null,
+  draft: string,
+): void {
+  if (draftElement && draftElement.value !== draft) draftElement.value = draft;
+}
+
 function deliveryLabel(state: OslChatDeliveryState): string {
   switch (state) {
     case "queued": return "Queued — not sent";
