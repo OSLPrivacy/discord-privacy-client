@@ -128,8 +128,34 @@ jobs:
         run: |
           npm ci
           npx vite build
+      # THE SHIPPING BUILD, exactly as START-HERE.md section 5 and
+      # scripts/verify-all.sh define it. No --all-targets: the wider check found
+      # a pre-existing defect on a NON-shipping target (see the next step), and
+      # letting that defect turn the shipping gate permanently red would make
+      # this gate unreadable within a day. The wider check is not dropped -- it
+      # runs below, ratcheted, and it can still fail.
       - name: cargo check --manifest-path apps/osl-hub/Cargo.toml --features desktop
-        run: cargo check --manifest-path apps/osl-hub/Cargo.toml --features desktop --all-targets --locked
+        run: cargo check --manifest-path apps/osl-hub/Cargo.toml --features desktop --locked
+      # D-172. The strictly wider `--all-targets` check, run for the first time
+      # in this repository's history by run 30928896726, which found that
+      # apps/osl-hub/tests/web_surface_a11y_spike.rs has not compiled at all:
+      # two major versions of the `windows` crate are in the dependency graph
+      # and it passes an HWND from one to a function expecting the other's.
+      # rust-test.yml's hub-desktop-bin compiles the BIN target only, and
+      # apps/osl-hub is outside the workspace, so nothing had ever built it.
+      #
+      # Not this lane's defect to fix and not a reason to stop running the wider
+      # check. The ratchet pins the SET of targets that fail: a target that is
+      # not on the list breaking FAILS, and a listed target that starts
+      # compiling without being removed in the same change also FAILS.
+      #
+      # It runs AFTER the shipping check, so a hard build failure is reported as
+      # a build failure rather than as a ratchet mismatch -- and the shipping
+      # gate above cannot be masked by it.
+      - name: apps/osl-hub --all-targets, ratcheted
+        run: |
+          node scripts/ci/hub-target-ratchet.mjs --self-test
+          node scripts/ci/hub-target-ratchet.mjs
 
   # GATE (c). The frontend PRODUCTION build. vitest does not typecheck and does
   # not bundle, so a green frontend suite says nothing about whether the

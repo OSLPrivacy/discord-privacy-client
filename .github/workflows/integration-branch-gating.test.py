@@ -142,6 +142,36 @@ class IntegrationBranchGatingTest(unittest.TestCase):
         for job in build_gates:
             self.assertIn(job, jobs)
 
+    def test_gate_b_keeps_both_the_shipping_check_and_the_wider_one(self) -> None:
+        # The shipping check is the hard gate. The `--all-targets` check is
+        # strictly wider and found a defect nothing else in the repo could see;
+        # it is ratcheted rather than dropped. Losing either is a real loss, and
+        # dropping the wider one is the easy mistake, so name both.
+        jobs = load("integration-gate.yml").get("jobs") or {}
+        steps = (jobs.get("hub-desktop-build") or {}).get("steps") or []
+        runs = " ".join(str(step.get("run", "")) for step in steps)
+        self.assertIn(
+            "cargo check --manifest-path apps/osl-hub/Cargo.toml --features desktop --locked",
+            runs,
+            "gate (b) must still run the shipping build",
+        )
+        self.assertIn(
+            "node scripts/ci/hub-target-ratchet.mjs --self-test",
+            runs,
+            "the wider --all-targets check must still run, ratcheted, and must "
+            "prove it can fail before it grades anything",
+        )
+        self.assertNotIn(
+            "continue-on-error",
+            str(jobs.get("hub-desktop-build")),
+            "gate (b) must never be allowed to fail softly",
+        )
+
+    def test_no_gate_job_fails_softly(self) -> None:
+        # `continue-on-error` anywhere in this workflow would turn a gate into a
+        # notification. There is no legitimate use for it here.
+        self.assertNotIn("continue-on-error", (WORKFLOWS / "integration-gate.yml").read_text(encoding="utf-8"))
+
     def test_the_quarantine_ratchet_is_wired_in(self) -> None:
         jobs = load("integration-gate.yml").get("jobs") or {}
         steps = (jobs.get("quarantine-ratchet") or {}).get("steps") or []
