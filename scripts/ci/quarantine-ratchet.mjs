@@ -90,7 +90,12 @@ function runEntry(entry) {
     // repository three times.
     shell: false,
   });
-  const out = `${proc.stdout ?? ''}${proc.stderr ?? ''}`;
+  // Strip ANSI. vitest colours its summary line on a real runner and not on a
+  // pipe, so an extractor tested only against local piped output reads null in
+  // CI -- which is exactly what happened on run 30928896726, and exactly what
+  // assertMeasurable() is there to refuse rather than call zero findings.
+  const raw = `${proc.stdout ?? ''}${proc.stderr ?? ''}`;
+  const out = raw.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
   return { out, status: proc.status, error: proc.error, seconds: ((Date.now() - started) / 1000).toFixed(1) };
 }
 
@@ -216,6 +221,15 @@ function selfTest() {
     'tsc-errors': ['src/a.ts(1,1): error TS2304: nope\nsrc/b.ts(2,2): error TS2551: nope', 2],
     'vitest-failed': ['      Tests  219 passed (219)\n      Tests  4 failed | 130 passed (134)', 4],
   };
+  // The colourised shape a real runner produces, after stripAnsi.
+  const coloured = '\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[31m13 failed\u001b[39m\u001b[22m | 527 passed (542)';
+  const stripped = coloured.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
+  if (EXTRACTORS['vitest-failed'](stripped) !== 13) {
+    console.error('  self-test FAILED: vitest-failed cannot read a colourised CI summary line');
+    bad = 1;
+  } else {
+    process.stdout.write('  self-test ok: vitest-failed reads a colourised CI summary line\n');
+  }
   for (const [id, [sample, want]] of Object.entries(samples)) {
     const got = EXTRACTORS[id](sample);
     if (got !== want) {

@@ -228,6 +228,29 @@ jobs:
       - name: Install cipher-store worker deps
         working-directory: cipher-store-cf
         run: npm ci
+      # scripts/check-a11y.mjs drives a real browser over CDP and looks for a
+      # playwright cache that does not exist on a runner. Point it at the
+      # runner's own Chrome. If there is no browser at all this step FAILS: the
+      # ratchet must never be handed an input it cannot measure, because
+      # "the check did not run" and "the check found nothing" are the same
+      # output and only one of them is good news. (Found by run 30928896726 --
+      # the ratchet refused the null rather than reading it as zero.)
+      - name: Locate a browser for the accessibility check
+        run: |
+          for candidate in \
+            /usr/bin/google-chrome \
+            /usr/bin/google-chrome-stable \
+            /usr/bin/chromium-browser \
+            /usr/bin/chromium
+          do
+            if [ -x "$candidate" ]; then
+              echo "OSL_CHROME=$candidate" >> "$GITHUB_ENV"
+              echo "using $candidate"
+              exit 0
+            fi
+          done
+          echo "no Chrome/Chromium on this runner; the a11y entry of the quarantine cannot be measured"
+          exit 1
       - name: Grade every quarantined check against its baseline
         run: node scripts/ci/quarantine-ratchet.mjs
 
