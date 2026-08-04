@@ -40,46 +40,92 @@ surface does not clear the gate.
 Until that artifact exists, product, website and in-app copy must continue to treat Telegram
 Desktop as `externally blocked` rather than available support.
 
-## 2026-08-04 — the artifact now exists
+## 2026-08-04 — the row measurement was taken; the block is NOT lifted
 
-The measurement above was owed and has been taken. It was run against the **owner's own signed,
-logged-in Telegram Desktop, on an actual conversation**, with the same `TelegramA11yRowProbe` — the
-same control types, the same geometry thresholds, the same `hasStableRows` predicate and the same
-verdict ladder. Only the host binding changed, because the original is hard-wired to the Azure QA
-VM's `osltest` session, which is precisely why its recorded run measured a login wall.
+**Read this section as evidence, not as a claim. OSL does not claim Telegram Desktop support. The
+verdict above stands unchanged and the versioned public row still reads `externally_blocked`.**
+
+An earlier revision of this section was wrong in three ways and was corrected under D-206. What it
+got wrong is recorded here rather than deleted, because the corrections are the useful part.
+
+### The measurement
+
+`TelegramA11yRowProbe` was re-bound to the owner's own signed, logged-in Telegram Desktop on an
+actual conversation. The original in
+`~/osl-telegram-qa/infra/azure/telegram-qa/inspect-telegram-login-ui.ps1:51` is hard-wired to the
+Azure QA VM's `osltest` session, which is why its recorded run reached only a login wall. The control
+types, geometry thresholds, `hasStableRows` predicate and verdict ladder are byte-verbatim.
 
 Probe: `plan-test/probes/A03d-telegram-row-probe.ps1`.
 Result: `plan-test/runlogs/tg-ungate-rowprobe.json`.
 
 ```
-TelegramVersion   7.0.8.0            (rule requires >= 6.8.3)
-SignatureStatus   Valid              CN=Telegram FZ-LLC
-Phase             unrecognized       (not a login surface)
-ConversationSurface true             (a composer is present)
-Verdict           supported
-Exposure          stable-accessible-rows
-CandidateRowCount   554              (rule requires >= 2)
-TextExposedRowCount 553              (rule requires >= 2)
+TelegramVersion      7.0.8.0          (rule requires >= 6.8.3)
+SignatureStatus      Valid            CN=Telegram FZ-LLC
+Phase                unrecognized     (not a login surface)
+ConversationSurface  true             (a composer is present)
+PaneElementCount     365              of 873 visible; 508 sit outside the conversation pane
+Verdict field        supported
+Exposure             stable-accessible-rows
+CandidateRowCount    109              (rule requires >= 2)
+TextExposedRowCount  109              (rule requires >= 2)
 ```
 
-The probe is not insensitive: run with `-SelfTest`, which starves it of row-typed elements and
-changes nothing else, the same code returns `CandidateRowCount 0`, `no-accessible-rows`,
-`externally blocked` (`plan-test/runlogs/tg-ungate-rowprobe-selftest.json`).
+### Correction 1 — the first run counted the chat list, and 554 was never a verdict
 
-**What this settles.** The necessary condition named in the promotion rule is met, and the factual
-premise behind the `externally blocked` label is now false: Telegram Desktop *does* expose stable,
-text-exposed message rows through UI Automation. The label was always the honest reading of an
-absent measurement — the verdict says so itself — and the measurement is no longer absent.
+The first revision reported **554 candidate rows / 553 text-exposed**. That scan took *every*
+row-typed descendant of the window. Most of them are the **chat list** down the left-hand side — one
+row per conversation — and the promotion rule names **message** rows. Counting the chat list and
+reporting a verdict was measuring the wrong thing with the right code.
 
-**What this does not settle, and why the public row has not been moved here.** `externally blocked`
-and `supported` are not the only two answers. `supported` would claim protected Telegram
-*messaging*, and OSL's Telegram adapter deliberately has no verb that can commit a message: the
-carry is proven from cover text into the live composer and back out again, and stops there. Moving
-the versioned public row is therefore an owner-facing decision about which non-blocked label
-applies, not a mechanical consequence of this run, and it is left to the conductor with the
-artifacts above.
+The probe now binds every candidate to the **conversation pane**, derived from the composer exactly
+as the shipping adapter derives it (`native_telegram_adapter::telegram_transcript_candidate`): a row
+must sit above the composer and share at least two thirds of its column. That is what produces the
+109 above. The unbounded figure is still emitted, under
+`UnboundedProbe_NotAVerdict` / `OutsidePaneProbe_NotAVerdict`, so the correction stays legible and
+the old number can never again be quoted as a result.
 
-**What did move**: the in-app native-app support status, `SupportLevel::ComingSoon` →
-`SupportLevel::Experimental` (public `beta`), which the claim allowlist already permits for Telegram
-without adapter evidence and which is now additionally backed by it. `protectedMode` stays
-`unavailable`.
+The probe still starves: `-SelfTest` removes row-typed elements from the pane and nothing else, and
+the same code returns `CandidateRowCount 0`, `no-accessible-rows`, `externally blocked`
+(`plan-test/runlogs/tg-ungate-rowprobe-selftest.json`).
+
+**Residual, stated rather than hidden:** the pane binding is geometric. It proves these rows are in
+the transcript column above the composer; it does not read their text, deliberately, because that is
+a real person's conversation.
+
+### Correction 2 — "the premise is now false" was too strong
+
+The earlier revision said the premise behind `externally blocked` "is now false". That overstated a
+single run on a single client. What the run establishes is narrower and is all that is claimed here:
+**on this client, at this version, the conversation pane exposes accessible rows, so the promotion
+rule's necessary condition is satisfied.** It is one measurement, on one machine, by one prober. The
+rule's own words are "may move to `supported` **only after**" — a necessary condition, not a
+sufficient one — and nothing here makes Telegram Desktop supportable, because OSL's Telegram adapter
+has no verb that can commit a message. The carry runs cover text into the live composer and back out
+again, and stops there.
+
+### Correction 3 — the label did NOT move, and the earlier claim that `beta` was permitted was false
+
+The earlier revision said the in-app status had moved to `SupportLevel::Experimental` and that "the
+claim allowlist already permits" it. **That was false.** `native_app_support_status` maps **both**
+`Supported` and `Experimental` to `NativeAppSupportStatus::Beta` (`native_apps.rs`), so what would
+have shipped is `beta` — a label `docs/design/osl-public-claim-allowlist.md:191` **forbids** for
+Telegram, which must carry `Coming soon`, `Experimental` or `Externally blocked`, and which
+lines 271-272 reserve for `runtime-proven` / `test-proven-only` rows.
+
+**Nothing was ungated. `adapter_support` stays `SupportLevel::ComingSoon` and the TypeScript catalog
+stays `comingSoon`.** `protectedMode` stays `unavailable`. The versioned public row stays
+`externally_blocked`.
+
+The real finding underneath is a product gap, not a labelling choice: **OSL cannot currently express
+`Experimental`, the one non-blocked label the allowlist permits for Telegram.** `ExternallyBlocked`
+exists and would agree with the matrix, but it is a *stronger* negative claim than this measurement
+supports, so moving there would trade one wrong label for another. The label is held until a status
+that renders as `Experimental` exists, and that decision is the owner's.
+
+This is now enforced mechanically rather than by intention:
+`native_apps::tests::rust_never_claims_more_than_the_public_support_matrix` fails if Rust sits in the
+claim tier while `support-matrix.json` does not, and
+`native_apps::tests::no_native_app_is_published_above_coming_soon_without_an_earned_live_receipt`
+fails if any provider leaves `ComingSoon` without a live carry receipt bound by content hash to the
+adapter that earned it.

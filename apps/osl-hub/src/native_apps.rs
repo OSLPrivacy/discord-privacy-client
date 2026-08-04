@@ -449,13 +449,21 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         display_name: "Telegram",
         adapter_service: AdapterService::Telegram,
         adapter_surface: AdapterSurface::InstalledNativeClient,
-        // Experimental, not Supported. Placement is proven live -- carrier in,
-        // read back byte-exact, payload decoded out of Telegram's own answer
-        // (D-154, and the carry proof in native_telegram_adapter) -- and the
-        // signed-client row probe now returns `supported` on a real
-        // conversation. Committing a message is still deliberately absent, so
-        // Beta is the honest ceiling.
-        adapter_support: SupportLevel::Experimental,
+        // HELD at ComingSoon, D-206. The evidence for Telegram is real -- placement
+        // driven live, cover text carried byte-exact and decoded back out, and the
+        // signed-client row probe returning `supported` on the conversation pane --
+        // but `native_app_support_status` maps BOTH `Supported` and `Experimental`
+        // to `NativeAppSupportStatus::Beta`, and `beta` is a label
+        // `osl-public-claim-allowlist.md:191` forbids for Telegram (it must carry
+        // `Coming soon`, `Experimental` or `Externally blocked`) and :271-272
+        // reserves for `runtime-proven` / `test-proven-only` rows.
+        //
+        // So the product cannot currently express the label the evidence supports.
+        // `ExternallyBlocked` would agree with `support-matrix.json`, but it is a
+        // STRONGER negative claim than the measurement now supports -- the rows are
+        // demonstrably exposed -- so moving there would trade one wrong label for
+        // another. Held until a status that renders as `Experimental` exists.
+        adapter_support: SupportLevel::ComingSoon,
         package_id: "Telegram.TelegramDesktop",
         package_source: "winget",
         candidates: TELEGRAM_CANDIDATES,
@@ -2428,7 +2436,7 @@ fn spawn_firefox_migration_wizard(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::cell::Cell;
     use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2561,7 +2569,7 @@ mod tests {
             telegram.adapter_surface,
             AdapterSurface::InstalledNativeClient
         );
-        assert_eq!(telegram.adapter_support, SupportLevel::Experimental);
+        assert_eq!(telegram.adapter_support, SupportLevel::ComingSoon);
         assert_eq!(telegram.package_id, "Telegram.TelegramDesktop");
         assert_eq!(telegram.package_source, "winget");
         assert_eq!(telegram.publisher, Some(ExecutablePublisher::Telegram));
@@ -2580,7 +2588,7 @@ mod tests {
         );
         assert_eq!(
             native_app_support_status(NativeAppId::Telegram),
-            NativeAppSupportStatus::Beta
+            NativeAppSupportStatus::ComingSoon
         );
         assert_eq!(
             native_app_protected_mode(NativeAppId::Telegram),
@@ -2795,14 +2803,10 @@ mod tests {
                     assert_eq!(status.support_status, NativeAppSupportStatus::Beta);
                     assert_eq!(status.protected_mode, NativeAppProtectedMode::AssistOnly);
                 }
-                // Telegram carries -- placement is driven and proven -- but
-                // protected mode stays Unavailable: the carry stops at the
-                // composer, and nothing in the adapter can commit a message.
-                NativeAppId::Telegram => {
-                    assert_eq!(status.support_status, NativeAppSupportStatus::Beta);
-                    assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
-                }
-                NativeAppId::Signal | NativeAppId::Whatsapp | NativeAppId::Outlook => {
+                NativeAppId::Telegram
+                | NativeAppId::Signal
+                | NativeAppId::Whatsapp
+                | NativeAppId::Outlook => {
                     assert_eq!(status.support_status, NativeAppSupportStatus::ComingSoon);
                     assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
                 }
@@ -2810,148 +2814,650 @@ mod tests {
         }
     }
 
-    /// Every native adapter module, paired with its own source text.
-    ///
-    /// The pairing is what makes the gate below un-dodgeable: which providers
-    /// it applies to is *derived from the source*, not declared in a list
-    /// somebody can forget to update.
-    const NATIVE_ADAPTER_SOURCES: &[(NativeAppId, &str, &str)] = &[
-        (
-            NativeAppId::Discord,
-            "native_discord_adapter.rs",
-            include_str!("native_discord_adapter.rs"),
-        ),
-        (
-            NativeAppId::Telegram,
-            "native_telegram_adapter.rs",
-            include_str!("native_telegram_adapter.rs"),
-        ),
-        (
-            NativeAppId::Signal,
-            "native_signal_adapter.rs",
-            include_str!("native_signal_adapter.rs"),
-        ),
-        (
-            NativeAppId::Whatsapp,
-            "native_whatsapp_adapter.rs",
-            include_str!("native_whatsapp_adapter.rs"),
-        ),
-        (NativeAppId::Outlook, "<no native adapter module>", ""),
-    ];
+    // ---------------------------------------------------------------------
+    // The publication gate. Rewritten after D-206 refuted its first version.
+    //
+    // The first version registered a proof: a fn pointer that drove `RecordedHost`,
+    // an in-repo fake whose `value_of` returns exactly what `set_value` stored. The
+    // Adversary published WhatsApp in 27 lines by wrapping assertions that already
+    // passed, and both gate tests went green. That is this project's founding
+    // failure -- a test that supplies its own composer -- reproduced inside the
+    // guard built to prevent it.
+    //
+    // So there is now NO HOST AT GATE TIME, fake or otherwise, and nothing to
+    // register. Leaving `ComingSoon` requires a receipt that only a live run
+    // against the real client can produce, and the receipt is bound by content
+    // hash to the adapter and substrate sources that produced it, so it goes stale
+    // the moment either changes.
+    //
+    // What this still cannot do, stated rather than papered over: it cannot prove a
+    // human did not hand-write the file. What it can do is make that a fabricated
+    // artifact committed to the repository -- visible in review and in history,
+    // and needing re-fabrication on every adapter edit -- instead of a test wrapper
+    // that reuses green assertions.
+    // ---------------------------------------------------------------------
 
-    /// A provider carries through the shared UIA2 substrate if its adapter
-    /// takes the syscall seam. Discord and Signal do not: Discord drives
-    /// `NativeWindowHostState` and Signal its own placement backend, so neither
-    /// is in scope here and neither is *excluded by name*.
-    fn consumes_the_uia2_carry_seam(source: &str) -> bool {
-        source.contains("host: &dyn Uia2Syscalls")
+    /// How a native app's carrier actually reaches the provider.
+    ///
+    /// D-206 found the previous scope derivation was **spelling**:
+    /// `source.contains("host: &dyn Uia2Syscalls")`, which
+    /// `native_discord_adapter.rs:99` already escapes by writing the path-qualified
+    /// `&dyn crate::native_a11y::Uia2Syscalls`. A zero-behaviour import cleanup
+    /// would have flipped the scan and panicked the gate.
+    ///
+    /// This map is instead **exhaustive over `NativeAppId`**, so a new native app
+    /// cannot compile without a seam decision, and each `Uia2Substrate` claim is
+    /// bound by [`seam_bindings`] to a real function of the right signature, so a
+    /// declaration that corresponds to no code does not compile either. Formatting,
+    /// import style, `&impl`, generic bounds and parameter names are all now
+    /// irrelevant to it.
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+    pub(crate) enum CarrySeam {
+        /// `native_a11y`'s `Uia2Syscalls`: resolve a window, list editables, write
+        /// one value, read it back.
+        Uia2Substrate,
+        /// Discord's `NativeWindowHostState` accessibility target.
+        NativeWindowHost,
+        /// A placement backend the provider's own adapter defines.
+        ProviderOwnedBackend,
+        /// No carrier path is wired at all.
+        NoCarryPath,
     }
 
-    /// The driven carry proofs. `None` means no provider-owned proof exists yet
-    /// -- which is only allowed while that provider is still `ComingSoon`.
-    ///
-    /// Each proof is two functions, and the second is why the first counts: one
-    /// drives the shipping placement entry point against the recorded client
-    /// and must place, the other drives the same entry point against a client
-    /// with no composer and must refuse. A stub that answered `true` to
-    /// everything fails the second.
-    type CarryProof = (fn() -> bool, fn() -> bool);
-    fn carry_proof(id: NativeAppId) -> Option<CarryProof> {
+    const fn carry_seam(id: NativeAppId) -> CarrySeam {
         match id {
-            NativeAppId::Telegram => Some((
-                crate::native_telegram_adapter::tests::carry_proof::places_against_the_recorded_client,
-                crate::native_telegram_adapter::tests::carry_proof::refuses_when_the_composer_is_absent,
-            )),
-            _ => None,
+            NativeAppId::Discord => CarrySeam::NativeWindowHost,
+            NativeAppId::Telegram => CarrySeam::Uia2Substrate,
+            NativeAppId::Signal => CarrySeam::ProviderOwnedBackend,
+            NativeAppId::Whatsapp => CarrySeam::Uia2Substrate,
+            NativeAppId::Outlook => CarrySeam::NoCarryPath,
         }
     }
 
-    /// **The gate that stops an ungate from being a marketing change.**
-    ///
-    /// A provider whose carry seam is the UIA2 substrate may not be shown to a
-    /// user as anything other than `Coming soon` unless its own adapter,
-    /// driven here, actually places a carrier and reads it back -- and refuses
-    /// when the composer is gone.
-    ///
-    /// This is deliberately an implication, not a table of expected values: it
-    /// says nothing about which providers *should* be available, so it cannot
-    /// be satisfied by editing it to agree with the manifest. Flip a manifest
-    /// row off `ComingSoon` and the proof has to exist and pass, or this fails.
-    #[test]
-    fn no_uia2_provider_leaves_coming_soon_without_a_driven_carry_proof() {
-        let mut checked = 0usize;
-        for manifest in NATIVE_APPS {
-            let (_, module, source) = NATIVE_ADAPTER_SOURCES
-                .iter()
-                .find(|(id, _, _)| *id == manifest.id)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{:?} has no entry in NATIVE_ADAPTER_SOURCES; a new native app cannot \
-                         reach users without passing through this gate",
-                        manifest.id
-                    )
-                });
+    /// Compile-time evidence for every seam declared above. These are `const`
+    /// coercions, not calls: if the named entry point does not exist with that
+    /// exact shape, this module does not build, and the seam map cannot claim
+    /// something the code does not have.
+    mod seam_bindings {
+        use crate::native_a11y::Uia2Syscalls;
 
-            if !consumes_the_uia2_carry_seam(source) {
+        /// `NativeAppId::Telegram => Uia2Substrate`
+        const _TELEGRAM_TAKES_THE_SUBSTRATE: for<'a, 'b> fn(
+            &'a dyn Uia2Syscalls,
+            crate::native_telegram_adapter::TelegramLivePlacementRequest<'b>,
+        )
+            -> crate::native_telegram_adapter::TelegramLivePlacementReceipt =
+            crate::native_telegram_adapter::drive_telegram_composer_placement;
+
+        /// `NativeAppId::Whatsapp => Uia2Substrate`
+        const _WHATSAPP_TAKES_THE_SUBSTRATE: for<'a, 'b> fn(
+            &'a dyn Uia2Syscalls,
+            &'b str,
+            bool,
+        )
+            -> crate::native_whatsapp_adapter::WhatsAppLivePlacementReceipt =
+            crate::native_whatsapp_adapter::drive_whatsapp_composer_placement;
+    }
+
+    /// Native apps published above `ComingSoon` with **no live carry receipt**.
+    ///
+    /// This is a recorded debt, not an exemption, and it is size-locked: the gate
+    /// fails if it grows, and fails if a member quietly earns a receipt without
+    /// being removed from it. Discord is here because `support-matrix.json` carries
+    /// it as `not-qualified` / `unavailable` while `native_apps.rs` ships it as
+    /// `Experimental`, which is **D-203** — and Discord is the one carrier a friend
+    /// uses today, so the contradiction is not academic.
+    const PUBLISHED_WITHOUT_A_LIVE_RECEIPT: &[(NativeAppId, &str)] =
+        &[(NativeAppId::Discord, "D-203")];
+
+    /// **The publication gate.**
+    ///
+    /// A native app may not be published above `ComingSoon` without a live carry
+    /// receipt earned against the real client. Stated as an implication over the
+    /// manifest, so it says nothing about which providers *should* be published and
+    /// cannot be satisfied by editing it to agree with them.
+    #[test]
+    fn no_native_app_is_published_above_coming_soon_without_an_earned_live_receipt() {
+        use carry_receipt::{receipt_path, verify_receipt, ReceiptVerdict};
+
+        let mut debts_seen = Vec::new();
+        for manifest in NATIVE_APPS {
+            let seam = carry_seam(manifest.id);
+            let debt = PUBLISHED_WITHOUT_A_LIVE_RECEIPT
+                .iter()
+                .find(|(id, _)| *id == manifest.id);
+            let verdict = verify_receipt(manifest.id, seam);
+
+            if manifest.adapter_support == SupportLevel::ComingSoon {
+                // Not published: a receipt is optional, but a receipt that is
+                // present must still be valid, or a stale one would sit here
+                // rotting until the day it is relied on.
+                if let ReceiptVerdict::Invalid(why) = verdict {
+                    panic!(
+                        "{:?} is still ComingSoon, but the receipt at {} was never sound: {why}. \
+                         Delete it or re-earn it -- do not leave a broken proof in the tree.",
+                        manifest.id,
+                        receipt_path(manifest.id).display()
+                    );
+                }
+                continue;
+            }
+
+            if let Some((_, defect)) = debt {
+                debts_seen.push(manifest.id);
                 assert!(
-                    carry_proof(manifest.id).is_none(),
-                    "{module} does not take `&dyn Uia2Syscalls`, so a UIA2 carry proof for \
-                     {:?} would be proving something the product does not do",
+                    matches!(verdict, ReceiptVerdict::Absent),
+                    "{:?} is recorded in PUBLISHED_WITHOUT_A_LIVE_RECEIPT against {defect}, but a \
+                     receipt now exists. Remove it from that list -- a recorded debt that has been \
+                     paid must not stay recorded, or the list stops meaning anything.",
                     manifest.id
                 );
                 continue;
             }
 
-            checked += 1;
-            if manifest.adapter_support == SupportLevel::ComingSoon {
-                continue;
-            }
-
-            let Some((places, refuses)) = carry_proof(manifest.id) else {
-                panic!(
-                    "{:?} is published as {:?}, not ComingSoon, but {module} has registered no \
-                     driven carry proof. A provider may not be shown to a user as supported \
-                     until its adapter has been driven and shown to place.",
+            match verdict {
+                ReceiptVerdict::Earned => {}
+                ReceiptVerdict::Absent => panic!(
+                    "{:?} is published as {:?}, not ComingSoon, and there is no live carry receipt \
+                     at {}. A provider may not be shown to a user as supported until its adapter \
+                     has been driven against the real client. Earn one:\n  \
+                     cargo test --manifest-path apps/osl-hub/Cargo.toml --lib \
+                     --target x86_64-pc-windows-gnu --no-run\n  \
+                     <exe> --ignored --test-threads=1 --nocapture \
+                     native_telegram_adapter::tests::carry_real_cover_text_through_live_telegram",
+                    manifest.id,
+                    manifest.adapter_support,
+                    receipt_path(manifest.id).display()
+                ),
+                ReceiptVerdict::Stale(why) => panic!(
+                    "{:?} is published as {:?} but its live carry receipt is stale: {why}",
                     manifest.id, manifest.adapter_support
-                );
-            };
-            assert!(
-                places(),
-                "{:?} is published as {:?} but its adapter did not place a carrier against its \
-                 own recorded client",
-                manifest.id,
-                manifest.adapter_support
-            );
-            assert!(
-                refuses(),
-                "{:?}'s carry proof did not refuse a client with no composer, so its positive \
-                 half proves nothing",
-                manifest.id
-            );
+                ),
+                ReceiptVerdict::Invalid(why) => panic!(
+                    "{:?} is published as {:?} but its live carry receipt is not usable: {why}",
+                    manifest.id, manifest.adapter_support
+                ),
+            }
         }
-        assert!(
-            checked >= 2,
-            "the source scan found {checked} UIA2-seam providers; the pattern has stopped \
-             matching and this gate is measuring nothing"
+
+        let recorded: Vec<NativeAppId> = PUBLISHED_WITHOUT_A_LIVE_RECEIPT
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(
+            debts_seen, recorded,
+            "PUBLISHED_WITHOUT_A_LIVE_RECEIPT must name exactly the published apps that have no \
+             receipt. An entry that no longer applies is a stale exemption; one that has been \
+             added is a provider published on nothing."
         );
     }
 
-    /// The scan above is the whole gate's reachability model, so prove it
-    /// discriminates rather than answering `true` to everything.
+    /// The gate above is only as good as its ability to reject. Drive every
+    /// rejection path against a receipt built to fail it.
     #[test]
-    fn the_uia2_carry_seam_scan_tells_the_adapters_apart() {
-        let seam: Vec<NativeAppId> = NATIVE_ADAPTER_SOURCES
-            .iter()
-            .filter(|(_, _, source)| consumes_the_uia2_carry_seam(source))
-            .map(|(id, _, _)| *id)
-            .collect();
-        assert_eq!(
-            seam,
-            vec![NativeAppId::Telegram, NativeAppId::Whatsapp],
-            "Telegram and WhatsApp take the syscall seam; Discord drives \
-             NativeWindowHostState and Signal its own placement backend"
+    fn the_receipt_verifier_rejects_every_way_a_receipt_can_be_wrong() {
+        use carry_receipt::{verify_receipt_bytes, ReceiptVerdict};
+
+        let sound = carry_receipt::sample_sound_receipt();
+        assert!(
+            matches!(
+                verify_receipt_bytes(NativeAppId::Telegram, &sound.to_json()),
+                ReceiptVerdict::Earned
+            ),
+            "the sample receipt must be accepted, or every rejection below is vacuous"
         );
-        assert!(!consumes_the_uia2_carry_seam(""));
+
+        for (mutate, expect) in carry_receipt::rejection_cases() {
+            let mut broken = carry_receipt::sample_sound_receipt();
+            mutate(&mut broken);
+            match verify_receipt_bytes(NativeAppId::Telegram, &broken.to_json()) {
+                ReceiptVerdict::Invalid(why) | ReceiptVerdict::Stale(why) => assert!(
+                    why.contains(expect),
+                    "expected a rejection mentioning {expect:?}, got {why:?}"
+                ),
+                other => panic!("a receipt mutated to break {expect:?} was accepted: {other:?}"),
+            }
+        }
+    }
+
+    /// The seam map is exhaustive by construction; assert it is also *populated*,
+    /// so a future refactor that collapses every arm to one value is visible.
+    #[test]
+    fn the_carry_seam_map_distinguishes_the_providers() {
+        assert_eq!(carry_seam(NativeAppId::Telegram), CarrySeam::Uia2Substrate);
+        assert_eq!(carry_seam(NativeAppId::Whatsapp), CarrySeam::Uia2Substrate);
+        assert_eq!(carry_seam(NativeAppId::Discord), CarrySeam::NativeWindowHost);
+        assert_eq!(
+            carry_seam(NativeAppId::Signal),
+            CarrySeam::ProviderOwnedBackend
+        );
+        assert_eq!(carry_seam(NativeAppId::Outlook), CarrySeam::NoCarryPath);
+    }
+
+    /// **D-203's unguarded axis.** The lane's first guard bound TS to Rust, which
+    /// was never in dispute; the change travelled Rust -> `support-matrix.json`,
+    /// which nothing watched.
+    ///
+    /// The relation is deliberately one-directional: Rust may not sit in the
+    /// *claim* tier while the matrix sits in the *no-claim* tier. Equality would be
+    /// the wrong assertion — the two files answer different questions and the
+    /// matrix is the more conservative one.
+    #[test]
+    fn rust_never_claims_more_than_the_public_support_matrix() {
+        let matrix: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(repo_path("docs/status/support-matrix.json"))
+                .expect("support-matrix.json is readable"),
+        )
+        .expect("support-matrix.json parses");
+
+        // Every public status the matrix states for a native app, from all three
+        // places it states them, so a change to one section cannot hide behind
+        // another.
+        let mut stated: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        collect_matrix_statuses(&matrix, &mut stated);
+        assert!(
+            stated.len() >= 3,
+            "read {} services out of the matrix; the shape has changed and this guard is \
+             measuring nothing",
+            stated.len()
+        );
+
+        let claim_tier = |status: &str| matches!(status, "available" | "beta" | "verified_live");
+
+        let mut contradictions = Vec::new();
+        for manifest in NATIVE_APPS {
+            let rust_public = match native_app_support_status(manifest.id) {
+                NativeAppSupportStatus::Beta => "beta",
+                NativeAppSupportStatus::ComingSoon => "coming_soon",
+                NativeAppSupportStatus::ExternallyBlocked => "externally_blocked",
+            };
+            let Some(matrix_states) = stated.get(manifest.display_name) else {
+                continue;
+            };
+            if claim_tier(rust_public) && !matrix_states.iter().any(|s| claim_tier(s)) {
+                contradictions.push(format!(
+                    "{} is {rust_public} in native_apps.rs but {:?} in support-matrix.json",
+                    manifest.display_name, matrix_states
+                ));
+            }
+        }
+
+        let expected: Vec<String> = PUBLISHED_WITHOUT_A_LIVE_RECEIPT
+            .iter()
+            .filter_map(|(id, _)| {
+                let m = manifest(*id);
+                stated.get(m.display_name).map(|states| {
+                    let rust_public = match native_app_support_status(*id) {
+                        NativeAppSupportStatus::Beta => "beta",
+                        NativeAppSupportStatus::ComingSoon => "coming_soon",
+                        NativeAppSupportStatus::ExternallyBlocked => "externally_blocked",
+                    };
+                    format!(
+                        "{} is {rust_public} in native_apps.rs but {:?} in support-matrix.json",
+                        m.display_name, states
+                    )
+                })
+            })
+            .filter(|line| !line.contains("coming_soon in native_apps.rs"))
+            .collect();
+
+        assert_eq!(
+            contradictions, expected,
+            "Rust and the public support matrix disagree in a way that is not the one already \
+             recorded as D-203. The matrix feeds the claim gate; a provider that claims more in \
+             code than the matrix allows is a public overclaim."
+        );
+    }
+
+    fn collect_matrix_statuses(
+        matrix: &serde_json::Value,
+        out: &mut std::collections::BTreeMap<String, Vec<String>>,
+    ) {
+        let versioned = &matrix["versioned_public_support_matrix"];
+        for section in ["entries", "rows"] {
+            for row in versioned[section].as_array().into_iter().flatten() {
+                if let (Some(service), Some(status)) =
+                    (row["service"].as_str(), row["public_status"].as_str())
+                {
+                    out.entry(service.to_owned())
+                        .or_default()
+                        .push(status.to_owned());
+                }
+            }
+        }
+        for app in matrix["chat_app_qualification_evidence"]["apps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            if let (Some(name), Some(status)) =
+                (app["display_name"].as_str(), app["public_status"].as_str())
+            {
+                out.entry(name.to_owned())
+                    .or_default()
+                    .push(status.to_owned());
+            }
+        }
+    }
+
+    fn repo_path(relative: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(relative)
+    }
+
+    /// Live carry receipts: the only thing that may lift a provider above
+    /// `ComingSoon`.
+    ///
+    /// A receipt is written **by a live run against the real client** and read
+    /// **by the gate**, with no host in between. It is bound by content hash to
+    /// the adapter and substrate sources that produced it, so editing either one
+    /// invalidates every receipt earned before the edit -- which is the property
+    /// that stops a proof from being a thing you register once.
+    pub(crate) mod carry_receipt {
+        use super::{CarrySeam, NativeAppId};
+        use sha2::{Digest, Sha256};
+        use std::path::{Path, PathBuf};
+
+        pub(crate) const RECEIPT_SCHEMA: &str = "osl-live-carry-receipt-v1";
+
+        pub(crate) fn provider_slug(id: NativeAppId) -> &'static str {
+            match id {
+                NativeAppId::Discord => "discord",
+                NativeAppId::Telegram => "telegram",
+                NativeAppId::Signal => "signal",
+                NativeAppId::Whatsapp => "whatsapp",
+                NativeAppId::Outlook => "outlook",
+            }
+        }
+
+        /// The adapter module whose source a provider's receipt is bound to.
+        /// `None` means the provider has no adapter module of its own, so no
+        /// receipt can be bound and none may be written.
+        pub(crate) fn adapter_source(id: NativeAppId) -> Option<&'static str> {
+            match id {
+                NativeAppId::Discord => Some("src/native_discord_adapter.rs"),
+                NativeAppId::Telegram => Some("src/native_telegram_adapter.rs"),
+                NativeAppId::Signal => Some("src/native_signal_adapter.rs"),
+                NativeAppId::Whatsapp => Some("src/native_whatsapp_adapter.rs"),
+                NativeAppId::Outlook => None,
+            }
+        }
+
+        pub(crate) const SUBSTRATE_SOURCE: &str = "src/native_a11y.rs";
+
+        fn crate_path(relative: &str) -> PathBuf {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+        }
+
+        pub(crate) fn receipt_path(id: NativeAppId) -> PathBuf {
+            crate_path("carry-receipts").join(format!("{}.json", provider_slug(id)))
+        }
+
+        pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+            let mut hasher = Sha256::new();
+            hasher.update(bytes);
+            hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        }
+
+        pub(crate) fn source_sha256(relative: &str) -> String {
+            sha256_hex(
+                &std::fs::read(crate_path(relative))
+                    .unwrap_or_else(|error| panic!("{relative} is readable: {error}")),
+            )
+        }
+
+        /// Everything a receipt states. Every field is something only a live run
+        /// can observe, or a binding that makes a stale receipt detectable.
+        #[derive(Clone, Debug)]
+        pub(crate) struct LiveCarryReceipt {
+            pub schema: String,
+            pub provider: String,
+            pub seam: String,
+            pub adapter_source: String,
+            pub adapter_source_sha256: String,
+            pub substrate_source_sha256: String,
+            pub client_process: String,
+            pub element_count: usize,
+            pub carrier_bytes: usize,
+            pub readback_bytes: usize,
+            pub byte_exact: bool,
+            pub payload_sha256: String,
+            pub readback_sha256: String,
+            pub recovered_sha256: String,
+            pub enter_sent: bool,
+            pub composer_empty_after_clear: bool,
+            pub recorded_utc: String,
+        }
+
+        impl LiveCarryReceipt {
+            pub(crate) fn to_json(&self) -> String {
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "schema": self.schema,
+                    "provider": self.provider,
+                    "seam": self.seam,
+                    "adapter_source": self.adapter_source,
+                    "adapter_source_sha256": self.adapter_source_sha256,
+                    "substrate_source_sha256": self.substrate_source_sha256,
+                    "client_process": self.client_process,
+                    "element_count": self.element_count,
+                    "carrier_bytes": self.carrier_bytes,
+                    "readback_bytes": self.readback_bytes,
+                    "byte_exact": self.byte_exact,
+                    "payload_sha256": self.payload_sha256,
+                    "readback_sha256": self.readback_sha256,
+                    "recovered_sha256": self.recovered_sha256,
+                    "enter_sent": self.enter_sent,
+                    "composer_empty_after_clear": self.composer_empty_after_clear,
+                    "recorded_utc": self.recorded_utc,
+                }))
+                .expect("receipt serialises")
+                    + "\n"
+            }
+
+            pub(crate) fn write(&self, id: NativeAppId) {
+                let path = receipt_path(id);
+                std::fs::create_dir_all(path.parent().expect("receipt has a parent"))
+                    .expect("receipt directory is creatable");
+                std::fs::write(&path, self.to_json()).expect("receipt is writable");
+            }
+        }
+
+        #[derive(Debug)]
+        pub(crate) enum ReceiptVerdict {
+            Earned,
+            Absent,
+            /// Sound when it was written, but the adapter or substrate has changed
+            /// since. Fatal for a published provider -- it must be re-earned before
+            /// the label moves -- and tolerated for one still at `ComingSoon`, so a
+            /// neighbouring lane editing the substrate does not turn every branch
+            /// red over a proof nobody is relying on yet.
+            Stale(String),
+            /// Never sound. Fatal wherever it is found.
+            Invalid(String),
+        }
+
+        pub(crate) fn verify_receipt(id: NativeAppId, seam: CarrySeam) -> ReceiptVerdict {
+            let Ok(bytes) = std::fs::read(receipt_path(id)) else {
+                return ReceiptVerdict::Absent;
+            };
+            match verify_receipt_bytes(id, &String::from_utf8_lossy(&bytes)) {
+                ReceiptVerdict::Earned => {
+                    // The seam the receipt claims must be the seam the map declares,
+                    // so a receipt earned through one mechanism cannot be presented
+                    // as evidence for another.
+                    let claimed = seam_slug(seam);
+                    let value: serde_json::Value =
+                        serde_json::from_slice(&bytes).expect("already parsed once");
+                    if value["seam"].as_str() == Some(claimed) {
+                        ReceiptVerdict::Earned
+                    } else {
+                        ReceiptVerdict::Invalid(format!(
+                            "seam mismatch: receipt says {:?}, the seam map says {claimed:?}",
+                            value["seam"].as_str().unwrap_or("<missing>")
+                        ))
+                    }
+                }
+                other => other,
+            }
+        }
+
+        pub(crate) const fn seam_slug(seam: CarrySeam) -> &'static str {
+            match seam {
+                CarrySeam::Uia2Substrate => "uia2_substrate",
+                CarrySeam::NativeWindowHost => "native_window_host",
+                CarrySeam::ProviderOwnedBackend => "provider_owned_backend",
+                CarrySeam::NoCarryPath => "no_carry_path",
+            }
+        }
+
+        /// Read a receipt and decide whether it was earned. Split from
+        /// [`verify_receipt`] so every rejection path can be driven from a string
+        /// rather than from the filesystem.
+        pub(crate) fn verify_receipt_bytes(id: NativeAppId, json: &str) -> ReceiptVerdict {
+            macro_rules! bad {
+                ($($arg:tt)*) => {
+                    return ReceiptVerdict::Invalid(format!($($arg)*))
+                };
+            }
+
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+                bad!("receipt is not valid JSON")
+            };
+            let string = |key: &str| value[key].as_str().unwrap_or_default().to_owned();
+
+            if string("schema") != RECEIPT_SCHEMA {
+                bad!("schema is {:?}, expected {RECEIPT_SCHEMA:?}", string("schema"))
+            }
+            if string("provider") != provider_slug(id) {
+                bad!(
+                    "provider is {:?}, expected {:?}",
+                    string("provider"),
+                    provider_slug(id)
+                )
+            }
+
+            let Some(adapter) = adapter_source(id) else {
+                bad!("{:?} has no adapter module, so no receipt can bind to one", id)
+            };
+            if string("adapter_source") != adapter {
+                bad!(
+                    "adapter_source is {:?}, expected {adapter:?}",
+                    string("adapter_source")
+                )
+            }
+            // THE STALENESS BINDING. Edit the adapter or the substrate and every
+            // receipt earned before the edit stops counting. Deliberately checked
+            // AFTER the never-sound cases above, so a malformed receipt is reported
+            // as malformed rather than as merely out of date.
+            if string("adapter_source_sha256") != source_sha256(adapter) {
+                return ReceiptVerdict::Stale(format!(
+                    "adapter source hash does not match {adapter}; the adapter changed since this \
+                     receipt was earned, so re-run the live carry"
+                ));
+            }
+            if string("substrate_source_sha256") != source_sha256(SUBSTRATE_SOURCE) {
+                return ReceiptVerdict::Stale(format!(
+                    "substrate source hash does not match {SUBSTRATE_SOURCE}; the shared substrate \
+                     changed since this receipt was earned, so re-run the live carry"
+                ));
+            }
+
+            // THE CARRY ITSELF. The payload the receiving decoder recovered must be
+            // the payload that was sent.
+            if string("recovered_sha256").is_empty()
+                || string("recovered_sha256") != string("payload_sha256")
+            {
+                bad!(
+                    "recovered payload does not match the payload sent: {:?} vs {:?}",
+                    string("recovered_sha256"),
+                    string("payload_sha256")
+                )
+            }
+            if string("readback_sha256").is_empty() {
+                bad!("readback hash is missing, so nothing binds the provider's own answer")
+            }
+            if value["byte_exact"].as_bool() != Some(true) {
+                bad!("byte_exact is not true: the provider did not hand back what was placed")
+            }
+            if value["enter_sent"].as_bool() != Some(false) {
+                bad!("enter_sent is not false")
+            }
+            if value["composer_empty_after_clear"].as_bool() != Some(true) {
+                bad!("composer_empty_after_clear is not true: the run left text in a real chat")
+            }
+            let carrier = value["carrier_bytes"].as_u64().unwrap_or_default();
+            let readback = value["readback_bytes"].as_u64().unwrap_or_default();
+            if carrier == 0 || readback == 0 {
+                bad!("carrier_bytes and readback_bytes must both be non-zero")
+            }
+            if value["element_count"].as_u64().unwrap_or_default() == 0 {
+                bad!("element_count is zero, so no tree was read")
+            }
+            if string("client_process").is_empty() {
+                bad!("client_process is missing, so nothing names the client that was driven")
+            }
+            if string("recorded_utc").is_empty() {
+                bad!("recorded_utc is missing")
+            }
+
+            ReceiptVerdict::Earned
+        }
+
+        /// A receipt that is sound *for the tree as it stands right now*, so the
+        /// rejection cases below each break exactly one thing.
+        pub(crate) fn sample_sound_receipt() -> LiveCarryReceipt {
+            let payload = sha256_hex(b"sample payload");
+            LiveCarryReceipt {
+                schema: RECEIPT_SCHEMA.to_owned(),
+                provider: "telegram".to_owned(),
+                seam: "uia2_substrate".to_owned(),
+                adapter_source: "src/native_telegram_adapter.rs".to_owned(),
+                adapter_source_sha256: source_sha256("src/native_telegram_adapter.rs"),
+                substrate_source_sha256: source_sha256(SUBSTRATE_SOURCE),
+                client_process: "Telegram".to_owned(),
+                element_count: 877,
+                carrier_bytes: 276,
+                readback_bytes: 276,
+                byte_exact: true,
+                payload_sha256: payload.clone(),
+                readback_sha256: sha256_hex(b"sample readback"),
+                recovered_sha256: payload,
+                enter_sent: false,
+                composer_empty_after_clear: true,
+                recorded_utc: "2026-08-04T00:00:00Z".to_owned(),
+            }
+        }
+
+        type Mutation = (fn(&mut LiveCarryReceipt), &'static str);
+
+        /// Every way a receipt can be wrong, and the phrase the rejection must
+        /// carry. Driven in
+        /// `the_receipt_verifier_rejects_every_way_a_receipt_can_be_wrong`.
+        pub(crate) fn rejection_cases() -> Vec<Mutation> {
+            vec![
+                (|r| r.schema = "other".into(), "schema"),
+                (|r| r.provider = "whatsapp".into(), "provider"),
+                (|r| r.adapter_source = "src/native_signal_adapter.rs".into(), "adapter_source"),
+                (|r| r.adapter_source_sha256 = "0".repeat(64), "adapter source hash"),
+                (|r| r.substrate_source_sha256 = "0".repeat(64), "substrate source hash"),
+                (|r| r.recovered_sha256 = "0".repeat(64), "recovered payload"),
+                (|r| r.recovered_sha256 = String::new(), "recovered payload"),
+                (|r| r.readback_sha256 = String::new(), "readback hash"),
+                (|r| r.byte_exact = false, "byte_exact"),
+                (|r| r.enter_sent = true, "enter_sent"),
+                (|r| r.composer_empty_after_clear = false, "composer_empty_after_clear"),
+                (|r| r.carrier_bytes = 0, "carrier_bytes"),
+                (|r| r.readback_bytes = 0, "readback_bytes"),
+                (|r| r.element_count = 0, "element_count"),
+                (|r| r.client_process = String::new(), "client_process"),
+                (|r| r.recorded_utc = String::new(), "recorded_utc"),
+            ]
+        }
     }
 
     #[test]

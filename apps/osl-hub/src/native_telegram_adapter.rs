@@ -724,48 +724,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Telegram's half of the promotion gate in
-    /// `native_apps::tests::no_uia2_provider_leaves_coming_soon_without_a_driven_carry_proof`.
-    ///
-    /// It lives here, beside the recorded client it drives, because the gate
-    /// must not be able to satisfy itself: `native_apps` may read a verdict, it
-    /// may not manufacture one. Both halves are required, and the second is the
-    /// reason the first means anything -- a proof function that returned `true`
-    /// unconditionally would still be caught by
-    /// [`refuses_when_the_composer_is_absent`].
-    pub(crate) mod carry_proof {
-        use super::*;
-
-        const PROOF_CARRIER: &str = "carry-proof-4412-osl";
-
-        /// Drive the shipping placement entry point against the recorded Qt
-        /// client. `true` means the carrier was written AND read back.
-        pub(crate) fn places_against_the_recorded_client() -> bool {
-            let host = signed_in();
-            let receipt = drive_telegram_composer_placement(&host, request(PROOF_CARRIER));
-            receipt.status == TelegramPlacementStatus::Placed
-                && receipt.placed
-                && receipt.readback_contains_carrier
-                && !receipt.enter_sent
-                && receipt.writable_composer_count == 1
-        }
-
-        /// The same entry point against the same client with its composer taken
-        /// away. `true` means it refused and wrote nothing.
-        pub(crate) fn refuses_when_the_composer_is_absent() -> bool {
-            let host = recorded_telegram(vec![writable("Search"), read_only("Chat list")]);
-            let receipt = drive_telegram_composer_placement(&host, request(PROOF_CARRIER));
-            receipt.status == TelegramPlacementStatus::ComposerUnavailable
-                && !receipt.placed
-                && host.set_values.borrow().is_empty()
-        }
-    }
-
-    #[test]
-    fn the_telegram_carry_proof_can_report_both_answers() {
-        assert!(carry_proof::places_against_the_recorded_client());
-        assert!(carry_proof::refuses_when_the_composer_is_absent());
-    }
 
     /// A composer that accepts a write and then reports something else, like a
     /// field whose provider rewrites what was placed. Decorates the shared
@@ -1290,16 +1248,32 @@ pub(crate) mod tests {
         let composer = resolve_uia2_composer(TELEGRAM_COMPOSER_MATCHER, &editables)
             .expect("exactly one writable composer; open Telegram on a conversation");
 
+        let elements = acquired.elements;
         let placement = place_uia2_carrier(&host, acquired, &composer, &cover, false);
         // Read before clearing, and clear before asserting: the owner's chat is
         // restored whatever the outcome.
         let readback = read_uia2_composer_value(&host, acquired, &composer);
         let cleared = clear_uia2_composer(&host, acquired, &composer);
-        let submit_shaped = host.submit_shaped_calls();
+        // A post-condition that CAN fail, unlike the submit-shaped counter below:
+        // ask the live client what the composer holds *after* the clear. D-206
+        // caught `assert_eq!(submit_shaped, 0)` reading a counter the win32 host
+        // never increments -- `native_a11y.rs:1995` says so in as many words, so it
+        // is structurally zero and could not bite. It is kept only because a future
+        // backend that grew a submit-shaped verb would raise it; the assertion that
+        // actually guards this run is the one below it.
+        let after_clear = read_uia2_composer_value(&host, acquired, &composer);
 
         placement.expect("cover text places into the live composer");
         cleared.expect("the composer is always cleared");
-        assert_eq!(submit_shaped, 0, "nothing may be committed, ever");
+        assert_eq!(host.submit_shaped_calls(), 0, "nothing may be committed, ever");
+
+        let composer_empty_after_clear = after_clear
+            .expect("Telegram answers the read after the clear")
+            .is_none_or(|value| value.trim().is_empty());
+        assert!(
+            composer_empty_after_clear,
+            "the live composer still held text after the clear -- a real chat was left dirty"
+        );
 
         let returned = readback
             .expect("Telegram answers the read")
@@ -1325,13 +1299,52 @@ pub(crate) mod tests {
             "removing a word from the read-back must not still recover the payload"
         );
 
+        // D-206: `byte_exact` was the strongest claim in this lane and existed only
+        // as prose. It is now asserted here and recorded in the artifact the
+        // publication gate reads, which refuses a receipt whose `byte_exact` is
+        // false.
+        let byte_exact = returned == cover;
+        assert!(
+            byte_exact,
+            "the provider did not hand back exactly what was placed"
+        );
+
+        use crate::native_apps::tests::carry_receipt as receipt_io;
+        let receipt = receipt_io::LiveCarryReceipt {
+            schema: receipt_io::RECEIPT_SCHEMA.to_owned(),
+            provider: "telegram".to_owned(),
+            seam: "uia2_substrate".to_owned(),
+            adapter_source: "src/native_telegram_adapter.rs".to_owned(),
+            adapter_source_sha256: receipt_io::source_sha256("src/native_telegram_adapter.rs"),
+            substrate_source_sha256: receipt_io::source_sha256(receipt_io::SUBSTRATE_SOURCE),
+            client_process: TELEGRAM_DESKTOP_PROCESS_NAME.to_owned(),
+            element_count: elements,
+            carrier_bytes: cover.len(),
+            readback_bytes: returned.len(),
+            byte_exact,
+            payload_sha256: receipt_io::sha256_hex(secret),
+            readback_sha256: receipt_io::sha256_hex(returned.as_bytes()),
+            recovered_sha256: receipt_io::sha256_hex(&recovered),
+            enter_sent: false,
+            composer_empty_after_clear,
+            recorded_utc: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| format!("unix:{}", since.as_secs()))
+                .unwrap_or_else(|_| "unix:0".to_owned()),
+        };
+        receipt.write(crate::native_apps::NativeAppId::Telegram);
+
         eprintln!(
-            "telegram-carry: cover_bytes={} readback_bytes={} recovered_bytes={} \
-             byte_exact={} enter_sent=false",
+            "telegram-carry: elements={elements} cover_bytes={} readback_bytes={} \
+             recovered_bytes={} byte_exact={byte_exact} \
+             composer_empty_after_clear={composer_empty_after_clear} enter_sent=false",
             cover.len(),
             returned.len(),
             recovered.len(),
-            returned == cover
+        );
+        eprintln!(
+            "telegram-carry: receipt written to {}",
+            receipt_io::receipt_path(crate::native_apps::NativeAppId::Telegram).display()
         );
     }
 
