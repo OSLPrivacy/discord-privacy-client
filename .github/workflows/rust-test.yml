@@ -52,6 +52,58 @@ jobs:
       - name: Test OSL Privacy Windows identity lifecycle
         run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --test windows_identity_lifecycle
 
+  # D-152. The two steps above are `--features core --lib` plus one integration
+  # test, and `apps/osl-hub`'s `[[bin]]` is `required-features = ["desktop"]`
+  # (Cargo.toml:139-142). So neither of them compiles a single line of
+  # `src/main.rs`, `native_discord_overlay.rs`, `native_attachment_transport.rs`,
+  # `native_image_viewer.rs`, `native_whatsapp_overlay.rs` or `window_border.rs`
+  # -- and `apps/osl-hub` is outside the root workspace, so
+  # `cargo clippy --workspace -D warnings` never sees them either. The binary is
+  # where the app starts and it was the least gated code in the repository: its
+  # 116 tests did not compile on a pristine tree and had not for a long time.
+  # This job owns them.
+  #
+  # It is also the only job that builds the app as it ships. `tauri_build::build()`
+  # runs only under `desktop` (build.rs:27-29), and it is what validates
+  # `capabilities/*.json` against the command registry. D-146 was an integration
+  # branch that could not build the shipping app at all while the workspace suite
+  # (1997/0), the hub suite (1212/1) and the frontend suite (1604/0) were green,
+  # for exactly that reason.
+  #
+  # Windows, not Linux, because Windows is what ships: it compiles the
+  # `cfg(windows)` halves of the binary as well, which no other job does.
+  #
+  # If you are deleting this job, `quality-checks` below will fail and tell you
+  # what you are giving up. That is deliberate.
+  hub-desktop-bin:
+    name: OSL Privacy desktop binary
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/osl-hub-ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: '1.97.1'
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          workspaces: apps/osl-hub -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # `tauri.conf.json` sets frontendDist to `../osl-hub-ui/dist`, and
+      # `tauri_build::build()` reads it, so the renderer has to exist before
+      # cargo is invoked at all.
+      - name: Build the embedded frontend
+        working-directory: apps/osl-hub-ui
+        run: |
+          npm ci
+          npm run build
+      # --test-threads=1: `set_file_storage_key` is process-global.
+      - name: Test the OSL Privacy desktop binary
+        run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features desktop --bin osl-privacy-hub -- --test-threads=1
+
   quality-checks:
     runs-on: ubuntu-latest
     steps:
@@ -73,3 +125,12 @@ jobs:
       # unreachable from JS — we lost debug days to that pre-9-C1.
       - name: Capability audit
         run: python3 scripts/audit_capabilities.py
+      # This file has held the rust-cache write policy since it was written and
+      # nothing has ever executed it. It now also holds D-152's contract that
+      # some job runs the shipping binary's test target, which is only worth
+      # anything if it runs from a DIFFERENT job than the one it guards -- delete
+      # `hub-desktop-bin` above and this step is what fails.
+      - name: Rust workflow contract
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 .github/workflows/rust-test.workflow-test.py
