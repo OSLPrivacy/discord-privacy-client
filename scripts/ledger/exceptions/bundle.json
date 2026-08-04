@@ -1,6 +1,6 @@
 {
   "note": "Ledger 7. Every entry is an ADMISSION that a file does not ship. `status: known-defect` means the entry is not an approval -- it is a record. The list may only shrink: highWaterMark must equal entries.length, and an entry that stops matching a live violation fails the ledger until it is deleted.",
-  "highWaterMark": 55,
+  "highWaterMark": 54,
   "entries": [
     {
       "id": "apps/osl-hub-ui/src/accessibility-preference.ts",
@@ -353,14 +353,6 @@
       "category": "A",
       "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
       "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
-    },
-    {
-      "id": "apps/osl-hub-ui/src/secure-local-store.ts",
-      "class": "accepted",
-      "status": "known-defect",
-      "category": "G",
-      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
-      "citation": "apps/osl-hub-ui/src/main.ts:877"
     },
     {
       "id": "apps/osl-hub-ui/src/send-guard.ts",
