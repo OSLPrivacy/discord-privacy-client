@@ -2800,6 +2800,150 @@ mod tests {
         }
     }
 
+    /// Every native adapter module, paired with its own source text.
+    ///
+    /// The pairing is what makes the gate below un-dodgeable: which providers
+    /// it applies to is *derived from the source*, not declared in a list
+    /// somebody can forget to update.
+    const NATIVE_ADAPTER_SOURCES: &[(NativeAppId, &str, &str)] = &[
+        (
+            NativeAppId::Discord,
+            "native_discord_adapter.rs",
+            include_str!("native_discord_adapter.rs"),
+        ),
+        (
+            NativeAppId::Telegram,
+            "native_telegram_adapter.rs",
+            include_str!("native_telegram_adapter.rs"),
+        ),
+        (
+            NativeAppId::Signal,
+            "native_signal_adapter.rs",
+            include_str!("native_signal_adapter.rs"),
+        ),
+        (
+            NativeAppId::Whatsapp,
+            "native_whatsapp_adapter.rs",
+            include_str!("native_whatsapp_adapter.rs"),
+        ),
+        (NativeAppId::Outlook, "<no native adapter module>", ""),
+    ];
+
+    /// A provider carries through the shared UIA2 substrate if its adapter
+    /// takes the syscall seam. Discord and Signal do not: Discord drives
+    /// `NativeWindowHostState` and Signal its own placement backend, so neither
+    /// is in scope here and neither is *excluded by name*.
+    fn consumes_the_uia2_carry_seam(source: &str) -> bool {
+        source.contains("host: &dyn Uia2Syscalls")
+    }
+
+    /// The driven carry proofs. `None` means no provider-owned proof exists yet
+    /// -- which is only allowed while that provider is still `ComingSoon`.
+    ///
+    /// Each proof is two functions, and the second is why the first counts: one
+    /// drives the shipping placement entry point against the recorded client
+    /// and must place, the other drives the same entry point against a client
+    /// with no composer and must refuse. A stub that answered `true` to
+    /// everything fails the second.
+    type CarryProof = (fn() -> bool, fn() -> bool);
+    fn carry_proof(id: NativeAppId) -> Option<CarryProof> {
+        match id {
+            NativeAppId::Telegram => Some((
+                crate::native_telegram_adapter::tests::carry_proof::places_against_the_recorded_client,
+                crate::native_telegram_adapter::tests::carry_proof::refuses_when_the_composer_is_absent,
+            )),
+            _ => None,
+        }
+    }
+
+    /// **The gate that stops an ungate from being a marketing change.**
+    ///
+    /// A provider whose carry seam is the UIA2 substrate may not be shown to a
+    /// user as anything other than `Coming soon` unless its own adapter,
+    /// driven here, actually places a carrier and reads it back -- and refuses
+    /// when the composer is gone.
+    ///
+    /// This is deliberately an implication, not a table of expected values: it
+    /// says nothing about which providers *should* be available, so it cannot
+    /// be satisfied by editing it to agree with the manifest. Flip a manifest
+    /// row off `ComingSoon` and the proof has to exist and pass, or this fails.
+    #[test]
+    fn no_uia2_provider_leaves_coming_soon_without_a_driven_carry_proof() {
+        let mut checked = 0usize;
+        for manifest in NATIVE_APPS {
+            let (_, module, source) = NATIVE_ADAPTER_SOURCES
+                .iter()
+                .find(|(id, _, _)| *id == manifest.id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{:?} has no entry in NATIVE_ADAPTER_SOURCES; a new native app cannot \
+                         reach users without passing through this gate",
+                        manifest.id
+                    )
+                });
+
+            if !consumes_the_uia2_carry_seam(source) {
+                assert!(
+                    carry_proof(manifest.id).is_none(),
+                    "{module} does not take `&dyn Uia2Syscalls`, so a UIA2 carry proof for \
+                     {:?} would be proving something the product does not do",
+                    manifest.id
+                );
+                continue;
+            }
+
+            checked += 1;
+            if manifest.adapter_support == SupportLevel::ComingSoon {
+                continue;
+            }
+
+            let Some((places, refuses)) = carry_proof(manifest.id) else {
+                panic!(
+                    "{:?} is published as {:?}, not ComingSoon, but {module} has registered no \
+                     driven carry proof. A provider may not be shown to a user as supported \
+                     until its adapter has been driven and shown to place.",
+                    manifest.id, manifest.adapter_support
+                );
+            };
+            assert!(
+                places(),
+                "{:?} is published as {:?} but its adapter did not place a carrier against its \
+                 own recorded client",
+                manifest.id,
+                manifest.adapter_support
+            );
+            assert!(
+                refuses(),
+                "{:?}'s carry proof did not refuse a client with no composer, so its positive \
+                 half proves nothing",
+                manifest.id
+            );
+        }
+        assert!(
+            checked >= 2,
+            "the source scan found {checked} UIA2-seam providers; the pattern has stopped \
+             matching and this gate is measuring nothing"
+        );
+    }
+
+    /// The scan above is the whole gate's reachability model, so prove it
+    /// discriminates rather than answering `true` to everything.
+    #[test]
+    fn the_uia2_carry_seam_scan_tells_the_adapters_apart() {
+        let seam: Vec<NativeAppId> = NATIVE_ADAPTER_SOURCES
+            .iter()
+            .filter(|(_, _, source)| consumes_the_uia2_carry_seam(source))
+            .map(|(id, _, _)| *id)
+            .collect();
+        assert_eq!(
+            seam,
+            vec![NativeAppId::Telegram, NativeAppId::Whatsapp],
+            "Telegram and WhatsApp take the syscall seam; Discord drives \
+             NativeWindowHostState and Signal its own placement backend"
+        );
+        assert!(!consumes_the_uia2_carry_seam(""));
+    }
+
     #[test]
     fn ids_and_results_have_stable_camel_case_json() {
         assert_eq!(

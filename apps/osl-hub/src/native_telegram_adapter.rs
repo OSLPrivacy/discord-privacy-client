@@ -675,7 +675,7 @@ fn valid_candidate_text(value: &str, max_text_bytes: usize) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // Only the recorded-host fakes below still name the syscall seam's own
@@ -722,6 +722,49 @@ mod tests {
             carrier,
             allow_replace_existing: false,
         }
+    }
+
+    /// Telegram's half of the promotion gate in
+    /// `native_apps::tests::no_uia2_provider_leaves_coming_soon_without_a_driven_carry_proof`.
+    ///
+    /// It lives here, beside the recorded client it drives, because the gate
+    /// must not be able to satisfy itself: `native_apps` may read a verdict, it
+    /// may not manufacture one. Both halves are required, and the second is the
+    /// reason the first means anything -- a proof function that returned `true`
+    /// unconditionally would still be caught by
+    /// [`refuses_when_the_composer_is_absent`].
+    pub(crate) mod carry_proof {
+        use super::*;
+
+        const PROOF_CARRIER: &str = "carry-proof-4412-osl";
+
+        /// Drive the shipping placement entry point against the recorded Qt
+        /// client. `true` means the carrier was written AND read back.
+        pub(crate) fn places_against_the_recorded_client() -> bool {
+            let host = signed_in();
+            let receipt = drive_telegram_composer_placement(&host, request(PROOF_CARRIER));
+            receipt.status == TelegramPlacementStatus::Placed
+                && receipt.placed
+                && receipt.readback_contains_carrier
+                && !receipt.enter_sent
+                && receipt.writable_composer_count == 1
+        }
+
+        /// The same entry point against the same client with its composer taken
+        /// away. `true` means it refused and wrote nothing.
+        pub(crate) fn refuses_when_the_composer_is_absent() -> bool {
+            let host = recorded_telegram(vec![writable("Search"), read_only("Chat list")]);
+            let receipt = drive_telegram_composer_placement(&host, request(PROOF_CARRIER));
+            receipt.status == TelegramPlacementStatus::ComposerUnavailable
+                && !receipt.placed
+                && host.set_values.borrow().is_empty()
+        }
+    }
+
+    #[test]
+    fn the_telegram_carry_proof_can_report_both_answers() {
+        assert!(carry_proof::places_against_the_recorded_client());
+        assert!(carry_proof::refuses_when_the_composer_is_absent());
     }
 
     /// A composer that accepts a write and then reports something else, like a
