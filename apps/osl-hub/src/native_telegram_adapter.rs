@@ -22,8 +22,7 @@ use crate::adapters::{Bounds, PaintConfidence, PaintTarget};
 use crate::native_a11y::{
     acquire_uia2_editables, acquire_uia2_window, clear_uia2_composer, place_uia2_carrier,
     resolve_uia2_composer, Uia2AcquireError, Uia2Acquired, Uia2ComposerError, Uia2ComposerMatcher,
-    Uia2Editable, Uia2PlacementRefusal, Uia2Syscalls, Uia2TreeRoute, Uia2WindowPlan,
-    Uia2WindowResolveError,
+    Uia2Editable, Uia2PlacementRefusal, Uia2Syscalls, Uia2WindowPlan, Uia2WindowResolveError,
 };
 
 pub use crate::native_a11y::TELEGRAM_OUTER_WINDOW_CLASS;
@@ -682,7 +681,7 @@ mod tests {
     // Only the recorded-host fakes below still name the syscall seam's own
     // types; the production half reaches `editable_elements` through
     // `acquire_uia2_editables` and never handles a deadline itself.
-    use crate::native_a11y::{Uia2CallTimeout, Uia2Deadline, Uia2OwnedWindow};
+    use crate::native_a11y::{Uia2CallTimeout, Uia2Deadline, Uia2OwnedWindow, Uia2TreeRoute};
     use crate::native_a11y::tests::{composer, telegram_graph, RecordedHost};
     use crate::native_a11y::{
         uia2_name_is_composer, Uia2WakePolicy, Uia2WindowShape, ELECTRON_OUTER_WINDOW_CLASS,
