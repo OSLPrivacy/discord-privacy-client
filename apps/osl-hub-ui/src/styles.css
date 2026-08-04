@@ -5486,7 +5486,10 @@ code {
   display: block;
   margin-top: 2px;
   color: var(--subtle);
-  font-size: 10px;
+  /* 11px, matching .onboarding-app strong and .setup-status-row small. Was 10px,
+     which trips the typography guard against text below 11px -- a real
+     accessibility floor, not a style preference. */
+  font-size: 11px;
 }
 
 .password-input-row { position: relative; display: block; }
