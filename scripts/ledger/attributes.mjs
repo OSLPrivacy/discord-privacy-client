@@ -21,11 +21,13 @@
 //   consuming it.
 //
 //   RULE S (state, not control). A `data-*` on an interactive element whose tag
-//   also carries a literal `id="..."` that shipped JS selects (`#id` inside a
-//   querySelector/closest/matches literal) is a state or parameter attribute,
-//   not this control's binding hook: the element is already reachable, and a
-//   missing handler on it would surface as an unreachable *id*, never as an
-//   unreachable attribute. That is the whole difference between
+//   also carries a literal `id="..."` that an *event path* selects (`#id` inside
+//   a querySelector/closest/matches literal that is itself near an
+//   addEventListener or inside a `(event: SomeEvent)` handler) is a state or
+//   parameter attribute, not this control's binding hook: the element already
+//   has a handler reached through its id. Selecting the id outside an event path
+//   is not enough -- delete the handler and the attribute is accused again.
+//   That is the whole difference between
 //   `data-lock-state` (main.ts:3789, on `#discord-qa-toggle-composer`, bound at
 //   main.ts:7073, value read by CSS and by the QA prober) and
 //   `data-account-recovery-phrase` (account-recovery.ts:106, on a `<form>` with
@@ -96,14 +98,25 @@ function eventHandlerRanges(src) {
   return ranges;
 }
 
-/** RULE S: ids that shipped JS actually selects, so the element is reachable. */
+/** RULE S: ids an event path selects, so the element is reachable AND handled. */
 function scanSelectedIds(root, files) {
   const ids = new Set();
   for (const rel of files) {
     const src = blankComments(read(root, rel));
-    for (const m of src.matchAll(new RegExp(`${SELECTOR_CALL}(["'\`])#([A-Za-z][\\w-]*)\\1`, "g"))) ids.add(m[2]);
+    const inEvent = eventPathPredicate(src);
+    for (const m of src.matchAll(new RegExp(`${SELECTOR_CALL}(["'\`])#([A-Za-z][\\w-]*)\\1`, "g"))) {
+      if (inEvent(m.index)) ids.add(m[2]);
+    }
   }
   return ids;
+}
+
+/** An index sits on an event path: near an addEventListener, or inside a handler. */
+function eventPathPredicate(src) {
+  const handlers = eventHandlerRanges(src);
+  return (index) => /\baddEventListener\s*\(/
+    .test(src.slice(Math.max(0, index - 600), Math.min(src.length, index + 900)))
+    || handlers.some(([open, close]) => index > open && index < close);
 }
 
 function scanEmitted(root, files, selectedIds) {
@@ -142,10 +155,7 @@ function scanBound(root, files) {
     const src = blankComments(read(root, rel));
     const starts = lineIndex(src);
     // An event path is required for every form: a read outside one proves nothing.
-    const handlers = eventHandlerRanges(src);
-    const inEventPath = (index) => /\baddEventListener\s*\(/
-      .test(src.slice(Math.max(0, index - 600), Math.min(src.length, index + 900)))
-      || handlers.some(([open, close]) => index > open && index < close);
+    const inEventPath = eventPathPredicate(src);
     for (const m of src.matchAll(new RegExp(`${SELECTOR_CALL}(["'\`])([^"'\`$]*data-[^"'\`]*)\\1`, "g"))) {
       if (!inEventPath(m.index)) continue;
       for (const attr of attrsIn(m[2])) add(bound, attr, `${rel}:${lineOf(starts, m.index)}`);
