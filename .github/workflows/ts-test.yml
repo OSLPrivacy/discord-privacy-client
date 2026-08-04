@@ -13,6 +13,10 @@ on:
     # added to catch D-162 and could not run at all until this line existed.
     branches: [main, 'integrate/**']
   pull_request:
+  # D-195: the only trigger a commit message cannot suppress. `[skip ci]` in a
+  # commit subject cancels `push` and `pull_request` outright; see the ruling in
+  # integration-gate.yml. This makes a skipped run re-gradable by hand.
+  workflow_dispatch:
 
 jobs:
   # D-172. These two gates used to be the first two steps of EVERY lane of the
@@ -46,7 +50,14 @@ jobs:
         run: |
           node scripts/check-app-claims.mjs --self-test
           node scripts/check-app-claims.mjs
+      # D-194: `Claim-gate-in-app-copy-and-README` is RED on integrate/** (6
+      # violations, quarantined by identity in scripts/ci/quarantine.json), so
+      # without this condition the plan-governance gate beside it is reported
+      # `skipped` on every push -- the same masking pattern that hoisting these
+      # two into their own job was supposed to end. `!cancelled()` makes a red
+      # step above stop being able to skip this one. The job still goes red.
       - name: Plan-governance-acceptance-gates
+        if: ${{ !cancelled() }}
         run: python3 scripts/validate-plan-governance.py
 
   ts-test:
@@ -87,20 +98,31 @@ jobs:
       # ahead of every lane. They now live in the `claim-gates` job above. See
       # the comment there -- while the claim gate was red, this entire matrix
       # was dead.
+      #
+      # D-194: every step below the per-lane `npm ci` carries `!cancelled()` as
+      # well as its lane condition. Within a lane the same masking applies as
+      # between jobs: `Typecheck keyserver worker` exits 2 on 13 pre-existing
+      # errors, so `Test keyserver worker` beneath it was reported `skipped` on
+      # every push to integrate/**, and `Typecheck cipher-store worker` (red at
+      # 7) did the same to the cipher-store suite. Ordering alone cannot fix
+      # that -- there is no order in which a red step is not in front of
+      # something. The integration-gate.yml `worker-bundles` job already uses
+      # this pattern, for the same reason. Nothing is softened: a red step still
+      # fails its lane, and the lane still fails `success'`.
       - name: Install webview deps
         if: ${{ matrix.lane == 'webview' }}
         working-directory: webview
         run: npm ci
       - name: Typecheck webview
-        if: ${{ matrix.lane == 'webview' }}
+        if: ${{ !cancelled() && matrix.lane == 'webview' }}
         working-directory: webview
         run: npm run typecheck
       - name: Lint webview
-        if: ${{ matrix.lane == 'webview' }}
+        if: ${{ !cancelled() && matrix.lane == 'webview' }}
         working-directory: webview
         run: npm run lint
       - name: Test webview
-        if: ${{ matrix.lane == 'webview' }}
+        if: ${{ !cancelled() && matrix.lane == 'webview' }}
         working-directory: webview
         run: npm test
       # The app frontend is outside webview/ and has its own lockfile, tests,
@@ -119,11 +141,11 @@ jobs:
       # it. (integration-gate.yml owns the same check as its own job, which is
       # why the branch still had a build gate while this one was skipped.)
       - name: Build OSL Privacy UI
-        if: ${{ matrix.lane == 'osl-hub-ui' }}
+        if: ${{ !cancelled() && matrix.lane == 'osl-hub-ui' }}
         working-directory: apps/osl-hub-ui
         run: npm run build
       - name: Test OSL Privacy UI
-        if: ${{ matrix.lane == 'osl-hub-ui' }}
+        if: ${{ !cancelled() && matrix.lane == 'osl-hub-ui' }}
         working-directory: apps/osl-hub-ui
         run: npm test
       - name: Install keyserver worker deps
@@ -149,15 +171,15 @@ jobs:
       # this lane's own typecheck is red and a reader would reasonably stop
       # reading. Neither one is allowed to be the only one.
       - name: Build keyserver worker bundle (dry run)
-        if: ${{ matrix.lane == 'keyserver-worker' }}
+        if: ${{ !cancelled() && matrix.lane == 'keyserver-worker' }}
         working-directory: keyserver-cf
         run: npm run verify:worker-build
       - name: Typecheck keyserver worker
-        if: ${{ matrix.lane == 'keyserver-worker' }}
+        if: ${{ !cancelled() && matrix.lane == 'keyserver-worker' }}
         working-directory: keyserver-cf
         run: npm run typecheck
       - name: Test keyserver worker
-        if: ${{ matrix.lane == 'keyserver-worker' }}
+        if: ${{ !cancelled() && matrix.lane == 'keyserver-worker' }}
         working-directory: keyserver-cf
         run: npm test
       - name: Install cipher-store worker deps
@@ -169,15 +191,15 @@ jobs:
       # cipher-store-cf/src, so nothing else can see an import with no matching
       # export. Verified locally: Total Upload 114.60 KiB, exit 0.
       - name: Build cipher-store worker bundle (dry run)
-        if: ${{ matrix.lane == 'cipher-store-worker' }}
+        if: ${{ !cancelled() && matrix.lane == 'cipher-store-worker' }}
         working-directory: cipher-store-cf
         run: npm run verify:worker-build
       - name: Typecheck cipher-store worker
-        if: ${{ matrix.lane == 'cipher-store-worker' }}
+        if: ${{ !cancelled() && matrix.lane == 'cipher-store-worker' }}
         working-directory: cipher-store-cf
         run: npm run typecheck
       - name: Test cipher-store worker
-        if: ${{ matrix.lane == 'cipher-store-worker' }}
+        if: ${{ !cancelled() && matrix.lane == 'cipher-store-worker' }}
         working-directory: cipher-store-cf
         run: npm test
       - name: Install legacy keyserver deps
@@ -185,7 +207,7 @@ jobs:
         working-directory: keyserver
         run: npm ci
       - name: Test legacy keyserver
-        if: ${{ matrix.lane == 'legacy-keyserver' }}
+        if: ${{ !cancelled() && matrix.lane == 'legacy-keyserver' }}
         working-directory: keyserver
         run: npm test
   selector-check:

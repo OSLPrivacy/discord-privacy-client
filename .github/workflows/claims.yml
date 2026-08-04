@@ -9,6 +9,10 @@ on:
     # fail. Switched on.
     branches: [main, 'integrate/**']
   pull_request:
+  # D-195: the only trigger a commit message cannot suppress. `[skip ci]` in a
+  # commit subject cancels `push` and `pull_request` outright; see the ruling in
+  # integration-gate.yml. This makes a skipped run re-gradable by hand.
+  workflow_dispatch:
 
 permissions:
   contents: read

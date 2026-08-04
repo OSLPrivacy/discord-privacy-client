@@ -14,6 +14,10 @@ on:
     # that broke it, and could not, because it never ran on that branch.
     branches: [main, 'integrate/**']
   pull_request:
+  # D-195: the only trigger a commit message cannot suppress. `[skip ci]` in a
+  # commit subject cancels `push` and `pull_request` outright; see the ruling in
+  # integration-gate.yml. This makes a skipped run re-gradable by hand.
+  workflow_dispatch:
 
 jobs:
   # D-172. Its own job, and that is the entire point -- see the comment where it
@@ -81,22 +85,49 @@ jobs:
       # at its first failing step, so a formatting nit was hiding the entire Rust
       # test suite. It is now the `fmt` job below: still required, still red,
       # and no longer standing in front of anything.
+      #
+      # D-194: MOVING THE MASKER WAS NOT ENOUGH, AND THIS IS THE INTERESTING PART.
+      # Hoisting fmt and clippy out promoted `cargo test --workspace` -- which is
+      # ITSELF red on this branch -- into first position, and on run 30932294581
+      # steps 6 to 9 were reported `skipped` all over again: nextest,
+      # `Test OSL Privacy core` and `Test OSL Privacy Windows identity lifecycle`.
+      # The last two run in exactly one other place, osl-hub-release.yml, which
+      # fires on `hub-v*` tags only, so on integrate/** they ran NOWHERE -- and
+      # they are in no quarantine entry either, so they were neither executed nor
+      # accounted for. That was the eighth instance of this one pattern found in
+      # a day, and the third time it was "fixed" by moving the red step.
+      #
+      # So the fix here is structural rather than another reordering: every step
+      # below carries `if: ${{ !cancelled() }}`, which makes a failed step above
+      # it stop being able to skip it. The job still goes red -- nothing is
+      # softened, there is no `continue-on-error` -- but the steps beneath a red
+      # one now produce a result instead of a blank.
+      #
+      # `!cancelled()` rather than `always()`: a cancelled run should stop, and a
+      # cancelled step is not a result anybody has (see the ts-test fail-fast
+      # comment). .github/workflows/integration-branch-gating.test.py asserts
+      # this, so removing it fails a different workflow.
       - run: cargo test --workspace
       # nextest runs each test in its own process for fast isolated feedback.
       # Keep cargo test above: its shared test-process shape can expose
       # process-global-state races that nextest structurally cannot.
       - name: Install cargo-nextest
+        if: ${{ !cancelled() }}
         uses: taiki-e/install-action@c93ccc03e00cd0e08e494f5fd058a6c55a6a1907 # v2.82.8
         with:
           tool: cargo-nextest
       - name: Run workspace tests with nextest
+        if: ${{ !cancelled() }}
         run: cargo nextest run --workspace --profile ci
       # The app is intentionally an isolated Cargo workspace, so root
       # --workspace checks do not cover it. Keep its core and Windows-only
       # restart lifecycle on the ordinary PR path as well as release CI.
+      # D-194: these are the two that ran nowhere on integrate/**.
       - name: Test OSL Privacy core
+        if: ${{ !cancelled() }}
         run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --lib
       - name: Test OSL Privacy Windows identity lifecycle
+        if: ${{ !cancelled() }}
         run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --test windows_identity_lifecycle
 
   # D-152. The two steps above are `--features core --lib` plus one integration
@@ -232,7 +263,13 @@ jobs:
       # some job runs the shipping binary's test target, which is only worth
       # anything if it runs from a DIFFERENT job than the one it guards -- delete
       # `hub-desktop-bin` above and this step is what fails.
+      # D-194: `!cancelled()` on both contract steps. They are green today and
+      # `boot.js parses` is green today, but "green today" is what the whole
+      # masking pattern feeds on: a syntax error in boot.js would have skipped
+      # both policy gates below, and one of them is the only thing asserting
+      # that the integration branch is still gated at all.
       - name: Rust workflow contract
+        if: ${{ !cancelled() }}
         run: |
           python3 -m pip install --quiet pyyaml
           python3 .github/workflows/rust-test.workflow-test.py
@@ -245,4 +282,5 @@ jobs:
       # above does: a contract enforced only by the thing it constrains is not
       # enforced.
       - name: Integration-branch gating contract
+        if: ${{ !cancelled() }}
         run: python3 .github/workflows/integration-branch-gating.test.py

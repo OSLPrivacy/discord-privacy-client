@@ -10,9 +10,14 @@ on:
     #     horizontal-overflow findings on /docs/compare, /docs/download and
     #     /docs/faq at 320px and 390px @200% zoom (measured 2026-08-04).
     # Reason (2) alone would NOT be grounds to leave it off, so it is not left
-    # unwatched: the exact count is pinned in scripts/ci/quarantine.json and
-    # graded on every push to integrate/** by the quarantine-ratchet job in
-    # integration-gate.yml. It can go down. It cannot go up.
+    # unwatched. D-193 correction: when this comment was written the a11y check
+    # was in quarantine.json's `notRatcheted` list, which meant it was excluded
+    # from the ratchet AND executed by nothing -- so "graded on every push"
+    # was not true of it. It is now a real entry: `node scripts/check-a11y.mjs`
+    # is RUN by the quarantine-ratchet job of integration-gate.yml on every push
+    # to integrate/**, and graded against the SET of page/width/zoom identities,
+    # recorded per environment because the pixel measurement depends on the
+    # installed font stack. A finding can go away. One cannot arrive.
     branches: [main]
   pull_request:
 
