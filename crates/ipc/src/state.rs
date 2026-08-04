@@ -643,6 +643,59 @@ impl AppState {
     }
 }
 
+/// The machine-global keyring purge, bound only in a non-test build.
+///
+/// D-142: `KeyringSealer::purge_keyring_entry()` deletes ONE machine-wide
+/// credential — `discord-privacy-client / identity-data-key.v1` — and that
+/// credential is the key every `identity.json` on the machine is sealed with
+/// (`crates/keystore/src/sealer.rs:236`). Deleting it is correct under duress:
+/// it is what makes the wipe unrecoverable. It is catastrophic anywhere else,
+/// because the next `select_best_sealer()` finds no entry, silently mints a
+/// fresh key, still reports `method_label() == "keyring"`, and every stored
+/// identity fails to open with a bare "AEAD operation failed".
+///
+/// Three `#[cfg(test)]` tests trip duress through this engine —
+/// `main_password::…::record_wrong_password_attempt_triggers_duress_at_threshold`,
+/// `…::tenth_wrong_password_attempt_triggers_duress` and
+/// `commands::…` at `commands.rs:14615`. Each gives itself a `tempdir`, so each
+/// looks isolated; none of them is, because this one handler reaches outside
+/// the temp dir into a machine-global credential store. Running the ipc unit
+/// tests therefore destroyed the developer's real identity, both e2e profiles
+/// and any other install on the box — which is exactly how D-142 presented: a
+/// profile that worked minutes earlier refusing to unlock, four times, because
+/// a parallel lane ran `cargo test` in between.
+///
+/// So under `cfg(test)` the engine binds a purge scoped to a namespace unique
+/// to this test process. The wipe step is still genuinely exercised (the
+/// namespaced entry is created and deleted for real, same code path); it just
+/// cannot reach the production credential. `AppState::new_with_production_duress_engine`
+/// stays a one-liner for tests, and no test has to remember to opt out — the
+/// pattern `state.rs`'s own `app_state_constructs_production_duress_engine`
+/// already applies by hand is now the default for every caller.
+///
+/// The shipping binary links the non-test build of this crate, so production
+/// duress still purges the real machine credential.
+fn production_keyring_purge() -> keystore::WipeFn {
+    #[cfg(not(test))]
+    {
+        Box::new(|| {
+            keystore::KeyringSealer::purge_keyring_entry()
+                .map_err(|error| keystore::DuressError::Sealer(error.to_string()))
+        })
+    }
+    #[cfg(test)]
+    {
+        let namespace = format!("ipc-test-duress-{}", std::process::id());
+        // Create it first so the purge below deletes something real rather
+        // than reporting a vacuous success.
+        let _ = keystore::KeyringSealer::new_namespaced(&namespace);
+        Box::new(move || {
+            keystore::KeyringSealer::purge_keyring_entry_namespaced(&namespace)
+                .map_err(|error| keystore::DuressError::Sealer(error.to_string()))
+        })
+    }
+}
+
 fn build_production_duress_engine_for_state(
     state: Arc<AppState>,
     config_dir: PathBuf,
@@ -650,10 +703,7 @@ fn build_production_duress_engine_for_state(
     build_production_duress_engine_for_state_with_keyring_purge(
         state,
         config_dir,
-        Box::new(|| {
-            keystore::KeyringSealer::purge_keyring_entry()
-                .map_err(|error| keystore::DuressError::Sealer(error.to_string()))
-        }),
+        production_keyring_purge(),
     )
 }
 
@@ -809,6 +859,61 @@ mod tests {
         assert!(state.rn_wire_in_enabled());
         state.set_rn_wire_in_enabled(false);
         assert!(!state.rn_wire_in_enabled());
+    }
+
+    /// D-142, the test-of-the-test for [`production_keyring_purge`].
+    ///
+    /// `AppState::new_with_production_duress_engine` is the one-liner three
+    /// unit tests in this crate use to trip a duress wipe, each inside its own
+    /// `tempdir`. The keyring purge step reaches OUTSIDE that tempdir into the
+    /// single machine-global credential every `identity.json` on the box is
+    /// sealed with, so tripping it here used to brick the developer's real
+    /// profile and both e2e profiles. That is how D-142 presented: an identity
+    /// that had completed a full two-party exchange refused to unlock minutes
+    /// later, because a parallel lane ran `cargo test` in between, and the only
+    /// symptom was `AEAD operation failed` — a fresh key had been silently
+    /// minted in place of the deleted one.
+    ///
+    /// The canary is sealed with the production sealer BEFORE the wipe and must
+    /// still open AFTER it. Delete the `#[cfg(test)]` arm of
+    /// `production_keyring_purge` and this fails with
+    /// `Sealer(Crypto(AeadFailure))`, which is the reproduction.
+    #[test]
+    fn tripping_duress_from_a_unit_test_leaves_the_machine_credential_alone() {
+        let _serial = crate::test_process_globals::serialize();
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = use_temp_config_dir(dir.path());
+
+        let canary = dir.path().join("canary-identity.json");
+        let identity = keystore::generate_identity("d142-duress-canary".to_owned());
+        keystore::save_identity(&canary, &identity, keystore::select_best_sealer().as_ref())
+            .expect("seal a canary under the production sealer");
+
+        std::fs::write(dir.path().join("identity.json"), b"identity").unwrap();
+        std::fs::write(dir.path().join("password_marker.json"), b"password").unwrap();
+        std::fs::write(dir.path().join("prekeys.json"), b"prekeys").unwrap();
+
+        let state = AppState::new_with_production_duress_engine(dir.path().to_path_buf());
+        let report = state
+            .execute_production_duress()
+            .expect("configured production duress engine runs to a report");
+
+        // Without this the assertion below could pass because the wipe never
+        // reached the keyring at all.
+        assert!(
+            report
+                .steps
+                .iter()
+                .any(|(step, outcome)| *step == keystore::WipeStep::KeyringPurge
+                    && *outcome == keystore::StepOutcome::Wiped),
+            "the keyring purge step must actually have run; got {:?}",
+            report.steps
+        );
+
+        keystore::load_identity(&canary, keystore::select_best_sealer().as_ref()).expect(
+            "a unit-test duress wipe purged the MACHINE-GLOBAL keyring credential, so every \
+             identity.json on this machine is now unopenable — see D-142",
+        );
     }
 
     #[test]
