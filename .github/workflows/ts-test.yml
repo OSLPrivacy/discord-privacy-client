@@ -79,6 +79,16 @@ jobs:
         if: ${{ matrix.lane == 'workers' }}
         working-directory: keyserver-cf
         run: npm run typecheck
+      # D-162. `tsc --noEmit` and vitest both missed nothing here on their own
+      # merits -- they were simply never run for the integration branch, and
+      # keyserver typecheck carries pre-existing errors. This step runs the
+      # REAL esbuild bundle that `wrangler deploy` runs, so an import with no
+      # matching export cannot reach a deploy again. --dry-run writes a local
+      # outdir and contacts no Cloudflare account state.
+      - name: Build keyserver worker bundle (dry run)
+        if: ${{ matrix.lane == 'workers' }}
+        working-directory: keyserver-cf
+        run: npm run verify:worker-build
       - name: Test keyserver worker
         if: ${{ matrix.lane == 'workers' }}
         working-directory: keyserver-cf

@@ -10,6 +10,16 @@
 #                         `cargo test --workspace` never touches the product app.
 #   * node --test        - 3 screenshot tests use node:test and were run by
 #                         nothing at all while vitest called the file a failure.
+#   * keyserver bundle   - D-162. db4172f7b imported a normalizeUsername() that
+#                         was never written, so the keyserver Worker could not
+#                         be bundled AT ALL from 2026-08-02. Nothing here built
+#                         it, no workflow runs on integrate/first-usable, and
+#                         `npm run typecheck` was already red for unrelated
+#                         reasons, so a hard deploy blocker sat unnoticed under
+#                         every pending deploy for two days. `wrangler deploy
+#                         --dry-run` is the ONLY check that runs the real
+#                         esbuild bundle the deploy uses. It is a dry run: it
+#                         writes a local outdir and touches no remote state.
 set -u
 cd /home/liamw/osl-integrate || exit 1
 fail=0
@@ -41,6 +51,19 @@ grep -E '^test result' /tmp/verify-hub.txt | tail -1 | sed 's/^/  /'
 grep -qE '^test result: ok' /tmp/verify-hub.txt || fail=1
 sed -n '/^failures:$/,/^test result/p' /tmp/verify-hub.txt |
     grep -E '^    [a-z]' | sort -u | sed 's/^/    /'
+
+step "keyserver Worker bundles (the exact esbuild the deploy runs -- DRY RUN)"
+if [ -d keyserver-cf/node_modules ]; then
+    ( cd keyserver-cf && npm run --silent verify:worker-build ) \
+        > /tmp/verify-ks-build.txt 2>&1 \
+        || { grep -E 'ERROR|error' /tmp/verify-ks-build.txt | head -5; echo "FAIL"; fail=1; }
+    grep -E '^Total Upload' /tmp/verify-ks-build.txt | sed 's/^/  /'
+else
+    # An absent node_modules must not read as a pass; this gate is the reason
+    # D-162 went unnoticed and a silent skip would recreate it exactly.
+    echo "  keyserver-cf/node_modules missing -- run 'npm ci' in keyserver-cf"
+    echo "FAIL"; fail=1
+fi
 
 step "frontend production build (tsc + vite -- vitest does NOT typecheck)"
 cd apps/osl-hub-ui || exit 1
