@@ -34,6 +34,10 @@ function functionSource(name: string, nextName: string): string {
   return source.slice(start, end);
 }
 
+function countOccurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
 describe("B0-07b main.ts prohibitions", () => {
   it("P-13 preserves Manual mode and exposes it to send-mode consumers", () => {
     const onboarding = functionSource("bindOnboarding", "completeOnboarding");
@@ -71,6 +75,12 @@ describe("B0-07b main.ts prohibitions", () => {
     const detected = functionSource("detectedAppsContent", "installMissingAppsContent");
     const guide = functionSource("serviceGuideContent", "settingsContent");
     const binding = functionSource("bindSavedAccountControls", "bindBrowserImportControls");
+    const topStrip = functionSource("appLauncherStrip", "simpleDeviceStatusMarkup");
+    const home = functionSource("workspaceContent", "parsedEnclaveAudiences");
+    const inbox = functionSource("inboxDestinationContent", "activityPrimaryActionPlan");
+    const connections = functionSource("connectionsDestinationContent", "privacyPrimaryAction");
+    const appSettings = functionSource("serviceAccountsSettingsContent", "scanPrivacyExport");
+    const launcher = functionSource("openHomeAppFromLauncher", "startBackgroundInstall");
     const apps = homeAppsFromServices(parseLinkedServices(linkedServiceFixture())!);
     const launchApps = apps.filter((app) => app.visibility === "launch");
 
@@ -87,6 +97,27 @@ describe("B0-07b main.ts prohibitions", () => {
     expect(detected).not.toContain('nativeSessionModeSettingChoices("outlook", "Outlook")');
     expect(guide).toContain("supportedNativeAppIds.has(activeHomeAppId as NativeAppId)");
     expect(binding).not.toContain('finishNativeAccountChoice("telegram")');
+    expect(countOccurrences(source, "data-home-app=")).toBe(5);
+
+    expect(topStrip).toContain("configuredTopStripApps(homeAppsFromServices(services), homeTileOrder)");
+    expect(home).toContain('app.launchState === "available" && rememberedHomeApps.has(app.id)');
+    expect(home).toContain('available ? `data-home-app="${app.id}"` : ""');
+    expect(inbox).toContain('app.visibility === "launch" && app.launchState === "available" && app.linked');
+    expect(connections).toContain('const action = app.launchState === "available"');
+    expect(appSettings).toContain('const action = app.launchState === "available"');
+
+    const guard = launcher.indexOf('if (!app || !service || app.launchState !== "available")');
+    expect(guard).toBeGreaterThanOrEqual(0);
+    for (const call of [
+      "openNativeHostedApp(app, service, nativeIntent)",
+      "openBrowserCompanionApp(app, service)",
+      "openServiceRoute(service, app.provider, app.id, true)",
+      "openEmbeddedApp(app, service)",
+      "setupEmbeddedApp()",
+    ]) {
+      expect(guard, `${call} must stay behind the launchState guard`)
+        .toBeLessThan(launcher.indexOf(call));
+    }
   });
 
   it("P-34 states independent warning defaults", () => {

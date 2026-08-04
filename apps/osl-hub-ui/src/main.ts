@@ -4180,7 +4180,8 @@ export function publicPostGuardCarrierPreviewMarkup(platform = "Public platforms
 export function inboxDestinationContent(): string {
   const verifiedPeople = hubPeople.filter(peerIsVerified);
   const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
-  const connectedApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch" && app.linked);
+  const connectedApps = homeAppsFromServices(services)
+    .filter((app) => app.visibility === "launch" && app.launchState === "available" && app.linked);
   const connectedRows = connectedApps.length
     ? connectedApps.map((app) => {
         const scope = app.provider
@@ -7114,7 +7115,7 @@ async function openHomeAppFromLauncher(appId: HomeAppId, intent: number): Promis
     if (refreshed) services = refreshed;
     const app = homeAppsFromServices(services).find((candidate) => candidate.id === appId);
     const service = app?.serviceId ? services.find((candidate) => candidate.id === app.serviceId) : null;
-    if (!app || !service) {
+    if (!app || !service || app.launchState !== "available") {
       showToast("This app is unavailable right now");
       return;
     }
