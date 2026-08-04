@@ -128,7 +128,7 @@ import { peerIntegrityMarkup } from "./peer-integrity";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
 import oslVectorLogoUrl from "./assets/logo-mark.svg";
 import { importLocalMessageExport, LOCAL_MESSAGE_IMPORT_MAX_BYTES } from "./local-message-import";
-import { persistLocalScrubExport } from "./scrub-local";
+import { clearPersistedLocalScrubExport, persistLocalScrubExport } from "./scrub-local";
 import {
   defaultScrubConsentGateState,
   evaluateScrubConsentGate,
@@ -590,6 +590,7 @@ let oslChatAttachments: NativeOverlayPendingAttachment[] = [];
 const attachmentProgressByContext = new Map<string, AttachmentProgressEvent>();
 let privacyScanResult: LocalPrivacyScanResult | PersistedLocalPrivacyScanResult | null = null;
 let privacyScanFileName: string | null = null;
+let persistedLocalScrubImportId: string | null = null;
 let privacyScanBusy = false;
 let enabledScrubSignals = new Set<ScrubSignalGroup>(defaultScrubSignalGroups);
 let selectedScrubFindings = new Set<number>();
@@ -5474,6 +5475,7 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
       : candidate);
     const persisted = await persistLocalScrubExport(indexedCandidates);
     privacyScanResult = persisted.scan;
+    persistedLocalScrubImportId = persisted.status.importId;
     selectedScrubFindings.clear();
     scrubResultsPage = 0;
     scrubReviewOpen = false;
@@ -5482,6 +5484,7 @@ async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
   } catch (failure) {
     privacyScanResult = null;
     privacyScanFileName = null;
+    persistedLocalScrubImportId = null;
     showToast(localActionError(failure, "The export could not be scanned locally"));
   } finally {
     privacyScanBusy = false;
@@ -5668,11 +5671,27 @@ function autoScrubAssistantMarkup(proActive: boolean): string {
 function clearPrivacyScanState(): void {
   privacyScanResult = null;
   privacyScanFileName = null;
+  persistedLocalScrubImportId = null;
   selectedScrubFindings.clear();
   scrubResultsPage = 0;
   scrubReviewOpen = false;
   scrubReviewPage = 0;
   scrubScopeFingerprint = null;
+}
+
+async function clearPrivacyScanResults(): Promise<void> {
+  const importId = persistedLocalScrubImportId;
+  try {
+    const cleared = await clearPersistedLocalScrubExport(importId);
+    if (!cleared.confirmedCleared) {
+      showToast(cleared.detail);
+      return;
+    }
+    clearPrivacyScanState();
+    render();
+  } catch (failure) {
+    showToast(localActionError(failure, "Local Scrub index cleanup was not confirmed"));
+  }
 }
 
 function privacyScanResultsMarkup(): string {
@@ -7259,7 +7278,7 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-action]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = button.dataset.onboardingAction as OnboardingRoute; route = "onboarding"; render(); }));
   document.querySelector<HTMLInputElement>("#decrypt-display")?.addEventListener("change", (event) => void changeDecryptDisplay(event.currentTarget as HTMLInputElement));
   document.querySelector<HTMLInputElement>("#privacy-export-input")?.addEventListener("change", (event) => void scanPrivacyExport(event.currentTarget as HTMLInputElement));
-  document.querySelector<HTMLButtonElement>("#clear-privacy-scan")?.addEventListener("click", () => { clearPrivacyScanState(); render(); });
+  document.querySelector<HTMLButtonElement>("#clear-privacy-scan")?.addEventListener("click", () => void clearPrivacyScanResults());
   bindScrubControls();
   document.querySelector<HTMLFormElement>("#activation-form")?.addEventListener("submit", (event) => void activatePro(event));
   document.querySelectorAll<HTMLFormElement>("[data-password-role]").forEach((form) => form.addEventListener("submit", (event) => void submitPasswordRole(event)));

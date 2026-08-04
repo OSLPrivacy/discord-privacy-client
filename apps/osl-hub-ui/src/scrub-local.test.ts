@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LocalMessageCandidate, PersistedLocalPrivacyScanResult } from "./adapters";
-import { localImportCoverageReceipt, persistLocalScrubExport, type LocalScrubIndexAdapters } from "./scrub-local";
+import {
+  clearPersistedLocalScrubExport,
+  localImportCoverageReceipt,
+  persistLocalScrubExport,
+  type LocalScrubIndexAdapters,
+} from "./scrub-local";
 import type { ScrubIndexStatus } from "./scrub-index";
 
 const importId = "0123456789abcdef0123456789abcdef";
@@ -148,5 +153,50 @@ describe("local Scrub persisted pipeline", () => {
     await expect(persistLocalScrubExport([message(0)], adapters)).rejects.toThrow("different Scrub import");
     expect(adapters.cancel).not.toHaveBeenCalled();
     expect(adapters.initialize).not.toHaveBeenCalled();
+  });
+
+  it("clears the exact persisted local import only after status readback confirms absence", async () => {
+    const previous = status({ phase: "complete", messagesIndexed: 1, completedChunks: 1, nextSequence: 1 });
+    const adapters: LocalScrubIndexAdapters = {
+      getStatus: vi.fn().mockResolvedValueOnce(previous).mockResolvedValueOnce(null),
+      initialize: vi.fn(), cancel: vi.fn().mockResolvedValue(undefined), append: vi.fn(), readScan: vi.fn(),
+    };
+
+    await expect(clearPersistedLocalScrubExport(importId, adapters)).resolves.toEqual({
+      attempted: true,
+      confirmedCleared: true,
+      detail: "Local encrypted Scrub import cleared",
+    });
+    expect(adapters.cancel).toHaveBeenCalledWith(importId);
+  });
+
+  it("does not report confirmed local cleanup when cancel lacks absent readback", async () => {
+    const previous = status({ phase: "complete", messagesIndexed: 1, completedChunks: 1, nextSequence: 1 });
+    const adapters: LocalScrubIndexAdapters = {
+      getStatus: vi.fn().mockResolvedValueOnce(previous).mockResolvedValueOnce(previous),
+      initialize: vi.fn(), cancel: vi.fn().mockResolvedValue(undefined), append: vi.fn(), readScan: vi.fn(),
+    };
+
+    await expect(clearPersistedLocalScrubExport(importId, adapters)).resolves.toEqual({
+      attempted: true,
+      confirmedCleared: false,
+      detail: "Local encrypted Scrub import clear was requested but not confirmed",
+    });
+    expect(adapters.cancel).toHaveBeenCalledWith(importId);
+  });
+
+  it("leaves a different active Scrub import unchanged", async () => {
+    const otherImport = status({ importId: "fedcba9876543210fedcba9876543210" });
+    const adapters: LocalScrubIndexAdapters = {
+      getStatus: vi.fn().mockResolvedValue(otherImport),
+      initialize: vi.fn(), cancel: vi.fn(), append: vi.fn(), readScan: vi.fn(),
+    };
+
+    await expect(clearPersistedLocalScrubExport(importId, adapters)).resolves.toEqual({
+      attempted: false,
+      confirmedCleared: false,
+      detail: "A different Scrub import is active; left it unchanged",
+    });
+    expect(adapters.cancel).not.toHaveBeenCalled();
   });
 });
