@@ -445,8 +445,14 @@ pub fn load_persisted_prekey_state_with_sealer(
             .identity_slot()
             .clone()
             .ok_or_else(|| "identity is not loaded".to_string())?;
+        // D-142: keep the underlying keystore error. This used to be
+        // `map_err(|_| …)`, so a version mismatch, a sealer-method mismatch and
+        // an AEAD failure all arrived at the gate as the same six words — and
+        // the gate collapses them again into one user-facing sentence. The
+        // cause has to survive at least as far as the log line that names the
+        // loader, or the fail-closed refusal is undiagnosable.
         let prekeys = keystore::load_prekey_state(&path, sealer)
-            .map_err(|_| "local prekey state is unreadable".to_string())?;
+            .map_err(|e| format!("local prekey state is unreadable: {e}"))?;
         validate_prekey_state_for_identity(&identity, &prekeys)?;
         Ok(prekeys)
     })();

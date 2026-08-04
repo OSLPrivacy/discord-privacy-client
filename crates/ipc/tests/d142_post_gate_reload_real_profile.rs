@@ -144,3 +144,55 @@ fn post_gate_reload_against_a_real_profile() {
     keystore::set_active_account_dir(None);
     keystore::set_base_dir_override(None);
 }
+
+/// Is the production sealer stable **across processes** on this machine?
+///
+/// `unlock_session` reopens `identity.json` with `keystore::select_best_sealer()`
+/// (`crates/ipc/src/session_lock.rs:433`). On Linux that is `KeyringSealer`
+/// (kernel keyutils, `crates/keystore/Cargo.toml:88` → `linux-native`), whose
+/// key lives in a keyring, not in the profile. If a later process cannot reach
+/// the keyring entry the first one used, `KeyringSealer::new_namespaced`
+/// silently **mints a fresh key** (`crates/keystore/src/sealer.rs:315-325`) and
+/// still reports `method_label() == "keyring"`, so the version/method checks in
+/// `load_identity` pass and the failure only shows up as an AEAD error.
+///
+/// Run this twice, in two separate processes, against the same path:
+///
+/// ```bash
+/// OSL_D142_SEALER_PROBE=/tmp/d142-sealer-probe.json \
+///   cargo test -p ipc --test d142_post_gate_reload_real_profile \
+///   -- --ignored sealer_survives_a_process_restart --nocapture --test-threads=1
+/// ```
+///
+/// First run seals and reports `SEALED`. Second run unseals: `REOPENED` means
+/// the sealer is process-stable here, `AEAD` means it is not — and if it is
+/// not, no profile on this machine can ever be reopened by a fresh process,
+/// which is the whole of D-142.
+#[test]
+#[ignore = "needs OSL_D142_SEALER_PROBE; run twice to compare processes"]
+fn sealer_survives_a_process_restart() {
+    let path = PathBuf::from(
+        std::env::var("OSL_D142_SEALER_PROBE").expect("set OSL_D142_SEALER_PROBE to a file path"),
+    );
+    let sealer = keystore::select_best_sealer();
+    println!("[D-142] sealer method = {}", sealer.method_label());
+
+    if !path.exists() {
+        let identity = keystore::generate_identity("d142-sealer-probe".to_owned());
+        keystore::save_identity(&path, &identity, sealer.as_ref()).expect("seal");
+        println!(
+            "[D-142] SEALED a fresh identity at {} — run this test again in a NEW process",
+            path.display()
+        );
+        return;
+    }
+
+    match keystore::load_identity(&path, sealer.as_ref()) {
+        Ok(id) => println!("[D-142] REOPENED across processes: user_id={}", id.user_id),
+        Err(e) => panic!(
+            "[D-142] AEAD/method failure reopening a blob this machine sealed itself: {e}\n\
+             The production sealer is NOT stable across processes here, so every \
+             identity.json on this machine is single-process-lived."
+        ),
+    }
+}

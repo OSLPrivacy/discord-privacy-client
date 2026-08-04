@@ -35,8 +35,6 @@
     "allow-get-scrub-index-scan",
     "allow-append-scrub-index-chunk",
     "allow-get-scrub-index-status",
-    "allow-pause-scrub-index",
-    "allow-resume-scrub-index",
     "allow-cancel-scrub-index",
     "allow-get-autoscrub-run-fl",
     "allow-start-autoscrub-reviewed-run",

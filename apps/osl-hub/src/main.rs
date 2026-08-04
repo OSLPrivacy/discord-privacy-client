@@ -137,13 +137,14 @@ use zeroize::{Zeroize, Zeroizing};
 ///   encrypted profile directory, so a diagnostic write can never touch
 ///   at-rest state.
 ///
-/// **Default level is `error`.** Nothing below `ERROR` is recorded unless the
-/// operator opts in with `OSL_LOG` (preferred) or `RUST_LOG`, e.g.
-/// `OSL_LOG=ipc=debug`. That keeps the release default at "record the refusals
-/// that would otherwise be invisible" rather than "log the user's session":
-/// `INFO`/`DEBUG` events in this workspace carry peer counts, scope ids and
-/// store activity, and this is a privacy product, so verbose logging stays an
-/// explicit choice made per launch.
+/// **Default level is `warn`.** That is the whole diagnostic surface and no
+/// more: `WARN`/`ERROR` in this workspace are refusals and self-heals — the
+/// sealed identity would not reopen, a state file was quarantined, the message
+/// store did not come back — and they name files and hashed `log_id`s, never
+/// message content. `INFO`/`DEBUG` do carry peer counts, scope ids and per-send
+/// activity, so they stay off unless the operator asks for them by hand with
+/// `OSL_LOG` (preferred) or `RUST_LOG`, e.g. `OSL_LOG=ipc=debug`. This is a
+/// privacy product; verbose logging is an explicit per-launch choice.
 #[cfg(feature = "core")]
 fn init_diagnostic_subscriber() {
     use std::io::Write as _;
@@ -183,7 +184,7 @@ fn init_diagnostic_subscriber() {
 
     let filter = tracing_subscriber::EnvFilter::try_from_env("OSL_LOG")
         .or_else(|_| tracing_subscriber::EnvFilter::try_from_default_env())
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
 
     let file_layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
