@@ -8797,14 +8797,23 @@ function updateDialogMarkup(): string {
 
 function updateSettingsContent(): string {
   const deviceReady = isCoreProtectionReady(core.readiness);
-  const status = updateStatus.state === "checking" ? "Checking…"
+  const status = updateStatus.state === "checking" ? "Checking..."
     : updateStatus.state === "upToDate" ? `Up to date · ${escapeHtml(updateStatus.current)}`
     : updateStatus.state === "available" ? `Update available · ${escapeHtml(updateStatus.next)}`
-    : updateStatus.state === "installing" ? "Downloading and verifying…"
-    : updateStatus.state === "error" ? "Update check failed"
+    : updateStatus.state === "installing" ? "Downloading and verifying..."
+    : updateStatus.state === "couldNotCheck" ? "Could not check for updates"
+    : updateStatus.state === "error" ? "Update check result unreadable"
     : "Updater backend unavailable";
+  const detail = updateStatus.state === "checking" ? "Contacting OSL's signed update channel."
+    : updateStatus.state === "upToDate" ? "Last check reached OSL's updater. This install is current."
+    : updateStatus.state === "available" ? "OSL can receive this signed update after you approve installation."
+    : updateStatus.state === "installing" ? "Downloading and verifying the signed update package."
+    : updateStatus.state === "couldNotCheck" || updateStatus.state === "error"
+      ? "OSL cannot currently receive updates. Report problems manually instead of waiting for a fix."
+      : "The desktop updater is not available in this build. Report problems manually instead of waiting for a fix.";
+  const stateName = updateStatus.state.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
   const actions = updateStatus.state === "available" ? `<button class="button" data-update-read>Read more on GitHub</button><button class="button primary" data-update-modal>Install</button>` : "";
-  return `<h2>About</h2><div class="update-status-card"><span class="dot"></span><div><strong>${status}</strong><small>Updates verified against OSL's own key · no UI telemetry</small></div></div><div class="settings-actions"><button class="button ${updateStatus.state === "available" ? "" : "primary"}" data-update-check ${updateStatus.state === "checking" || updateStatus.state === "installing" ? "disabled" : ""}>Check for updates</button>${actions}<button class="button" id="replay-onboarding-tour" type="button">Replay protected messaging tour</button></div><details class="settings-disclosure update-details"><summary>Update privacy</summary><p>Checks and installs use the trusted local updater. Every update package is verified against OSL's own signing key before it installs. Release notes are plain text; remote HTML is never rendered.</p><p>OSL is not code-signed by a publisher Windows recognises, so Windows may warn you about the installer. That is separate from the update check above, which does not rely on Windows.</p></details>${developerSettingsContent()}<details class="device-diagnostics settings-disclosure"><summary><span><strong>Device status</strong><small>${deviceReady ? "Ready" : "Needs attention"}</small></span></summary><p>${escapeHtml(coreReadinessLabel(core.readiness))}</p></details>`;
+  return `<h2>About</h2><div class="update-status-card" data-update-state="${stateName}"><span class="dot"></span><div><strong>${status}</strong><small>${detail}</small></div></div><div class="settings-actions"><button class="button ${updateStatus.state === "available" ? "" : "primary"}" data-update-check ${updateStatus.state === "checking" || updateStatus.state === "installing" ? "disabled" : ""}>Check for updates</button>${actions}<button class="button" id="replay-onboarding-tour" type="button">Replay protected messaging tour</button></div><details class="settings-disclosure update-details"><summary>Update privacy</summary><p>Checks and installs use the trusted local updater. Every update package is verified against OSL's own signing key before it installs. Release notes are plain text; remote HTML is never rendered.</p><p>OSL is not code-signed by a publisher Windows recognises, so Windows may warn you about the installer. That is separate from the update check above, which does not rely on Windows.</p></details>${developerSettingsContent()}<details class="device-diagnostics settings-disclosure"><summary><span><strong>Device status</strong><small>${deviceReady ? "Ready" : "Needs attention"}</small></span></summary><p>${escapeHtml(coreReadinessLabel(core.readiness))}</p></details>`;
 }
 
 function bindUpdateControls(): void {
