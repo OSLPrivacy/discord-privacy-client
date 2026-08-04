@@ -10170,7 +10170,7 @@ mod native_discord_carrier_command_tests {
 mod tauri_command_acl_tests {
     use super::{
         checked_hosted_session_scan_flow, review_ui_identity_binding_verifier_accepts_selection,
-        ActiveServiceHost, CheckedHost,
+        valid_osl_username, ActiveServiceHost, CheckedHost,
     };
     use osl_privacy_hub::identity_binding_verifier::{
         AccountRef, BindingEvidence, BindingScope, IdentityBindingError, IdentityBindingVerifier,
@@ -10180,18 +10180,41 @@ mod tauri_command_acl_tests {
         DeletionScan, WalkCompleteness,
     };
     use osl_privacy_hub::scrub_index::ScrubAccountSelection;
+    use osl_privacy_hub::service_host::ServiceHostState;
     use std::cell::RefCell;
     use std::collections::BTreeSet;
+
+    /// Mint an `ActiveServiceHost` the way production does.
+    ///
+    /// `ActiveServiceHost::owner_namespace` is `pub(crate)` to the library
+    /// (`service_host.rs:680`), and this binary is a different crate, so the
+    /// struct literal these helpers used cannot be named from here. That is not a
+    /// detail worth working around with a wider field: `begin_open` is the only
+    /// way the shipping app ever produces one of these, so the tests are strictly
+    /// closer to production for going through it. Generations are what
+    /// `begin_open` hands out, so reaching a given one means opening that many
+    /// times.
+    fn active_host_at_generation(generation: u64) -> ActiveServiceHost {
+        let state = ServiceHostState::default();
+        let mut active = state
+            .begin_open("owner-ns", "discord", "acct-1", "discord.com")
+            .expect("the first open mints a host");
+        while active.generation < generation {
+            active = state
+                .begin_open("owner-ns", "discord", "acct-1", "discord.com")
+                .expect("a re-open mints the next generation");
+        }
+        assert_eq!(
+            active.generation, generation,
+            "generations must still be issued one at a time"
+        );
+        active
+    }
 
     fn acl_test_checked_host() -> CheckedHost {
         CheckedHost {
             context_epoch: 42,
-            active: ActiveServiceHost {
-                service_id: "discord".to_owned(),
-                account_id: "acct-1".to_owned(),
-                generation: 9,
-                owner_namespace: "owner-ns".to_owned(),
-            },
+            active: active_host_at_generation(9),
             owner_osl_user_id: "owner-1".to_owned(),
             scope_binding: "scope-binding".to_owned(),
         }
@@ -10298,12 +10321,7 @@ mod tauri_command_acl_tests {
     fn test_checked_host() -> CheckedHost {
         CheckedHost {
             context_epoch: 42,
-            active: ActiveServiceHost {
-                service_id: "discord".to_owned(),
-                account_id: "acct-1".to_owned(),
-                generation: 9,
-                owner_namespace: "owner-ns".to_owned(),
-            },
+            active: active_host_at_generation(9),
             owner_osl_user_id: "owner-1".to_owned(),
             scope_binding: "scope-binding".to_owned(),
         }
