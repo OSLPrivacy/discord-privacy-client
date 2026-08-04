@@ -1814,7 +1814,7 @@ enum HubUpdateCheck {
         next: String,
         notes: String,
     },
-    Error,
+    CouldNotCheck,
 }
 
 #[derive(Debug, Serialize)]
@@ -1892,12 +1892,12 @@ async fn check_hub_for_updates(
     let _transition = state.transition.lock().await;
     let current = app.package_info().version.to_string();
     let Ok(updater) = app.updater() else {
-        return Ok(HubUpdateCheck::Error);
+        return Ok(HubUpdateCheck::CouldNotCheck);
     };
     match updater.check().await {
         Ok(Some(update)) => {
             let Some(next) = bounded_version(&update.version) else {
-                return Ok(HubUpdateCheck::Error);
+                return Ok(HubUpdateCheck::CouldNotCheck);
             };
             Ok(HubUpdateCheck::UpdateAvailable {
                 current,
@@ -1906,7 +1906,7 @@ async fn check_hub_for_updates(
             })
         }
         Ok(None) => Ok(HubUpdateCheck::UpToDate { current }),
-        Err(_) => Ok(HubUpdateCheck::Error),
+        Err(_) => Ok(HubUpdateCheck::CouldNotCheck),
     }
 }
 

@@ -3746,6 +3746,19 @@ code {
   justify-content: flex-start;
 }
 
+.update-status-card[data-update-state="checking"] .dot,
+.update-status-card[data-update-state="up-to-date"] .dot,
+.update-status-card[data-update-state="available"] .dot,
+.update-status-card[data-update-state="installing"] .dot {
+  background: var(--brand);
+}
+
+.update-status-card[data-update-state="could-not-check"] .dot,
+.update-status-card[data-update-state="error"] .dot,
+.update-status-card[data-update-state="unavailable"] .dot {
+  background: var(--warn);
+}
+
 .update-notes {
   max-height: 220px;
   overflow: auto;
