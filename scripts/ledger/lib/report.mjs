@@ -78,6 +78,7 @@ export function report({ id, title, violations, stats = {}, exceptionsDir }) {
   }
   const usedIds = new Set(suppressed.map((v) => v.id));
   const stale = ex.entries.filter((e) => !usedIds.has(e.id));
+  const analysisBlocked = violations.some((v) => v.kind === "bundle-cache-not-trusted" || v.kind?.startsWith("ledger-input"));
 
   const out = [];
   out.push(`LEDGER ${id} -- ${title}`);
@@ -92,7 +93,7 @@ export function report({ id, title, violations, stats = {}, exceptionsDir }) {
     for (const p of ex.problems) out.push(`    - ${p}`);
   }
 
-  if (stale.length) {
+  if (!analysisBlocked && stale.length) {
     failed = true;
     out.push(`  STALE EXCEPTIONS (${stale.length}) -- these no longer match any violation; delete them and lower highWaterMark:`);
     for (const s of stale) out.push(`    - ${s.id}  (${s.citation})`);

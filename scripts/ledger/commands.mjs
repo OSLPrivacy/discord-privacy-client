@@ -12,7 +12,7 @@
 //   node scripts/ledger/commands.mjs [--root=<dir>]
 
 import { resolve } from "node:path";
-import { repoRoot, read, uiSources, blankComments, lineIndex, lineOf, inputProblems } from "./lib/io.mjs";
+import { repoRoot, read, uiSources, blankComments, lineIndex, lineOf, inputProblems, stringConstants, resolveArg } from "./lib/io.mjs";
 import { report, finish } from "./lib/report.mjs";
 
 const REQUIRED = [
@@ -29,14 +29,16 @@ function add(map, id, site) {
 export function frontendInvokes(root) {
   const invokes = new Map();
   const unresolved = [];
-  for (const rel of uiSources(root)) {
+  const files = uiSources(root);
+  const constants = stringConstants(files, (rel) => read(root, rel));
+  for (const rel of files) {
     const src = blankComments(read(root, rel));
     const starts = lineIndex(src);
     for (const m of src.matchAll(/\binvoke\s*(?:<[^>(]*>)?\s*\(\s*([^,)]+)/g)) {
       const arg = m[1].trim();
-      const lit = /^"([^"]+)"$|^'([^']+)'$|^`([^`$]+)`$/.exec(arg);
       const site = `${rel}:${lineOf(starts, m.index)}`;
-      if (lit) add(invokes, lit[1] ?? lit[2] ?? lit[3], site);
+      const command = resolveArg(arg, constants);
+      if (command.value) add(invokes, command.value, site);
       else unresolved.push({ site, expr: arg.slice(0, 80) });
     }
   }
@@ -113,6 +115,14 @@ export function main(argv = process.argv) {
       kind: "frontend-invoke-not-registered",
       detail: "frontend invokes this Tauri command but no Rust invoke_handler registry contains it",
       sites,
+    });
+  }
+  for (const u of unresolved) {
+    violations.push({
+      id: `unresolved-invoke:${u.site}`,
+      kind: "unresolved-command-name",
+      detail: `invoke() command is not a literal or known string constant: ${u.expr}`,
+      sites: [u.site],
     });
   }
   return finish(report({

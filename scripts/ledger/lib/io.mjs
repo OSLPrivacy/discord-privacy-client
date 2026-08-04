@@ -31,8 +31,11 @@ export function inputProblems(root, rels) {
       problems.push({ id: `missing-input:${rel}`, detail: `required ledger input is missing: ${rel}`, sites: [`${rel}:1`] });
       continue;
     }
-    if (statSync(path).isFile() && readFileSync(path, "utf8").length === 0) {
+    const stat = statSync(path);
+    if (stat.isFile() && readFileSync(path, "utf8").length === 0) {
       problems.push({ id: `empty-input:${rel}`, detail: `required ledger input is empty: ${rel}`, sites: [`${rel}:1`] });
+    } else if (stat.isDirectory() && readdirSync(path).length === 0) {
+      problems.push({ id: `empty-input:${rel}`, detail: `required ledger input directory is empty: ${rel}`, sites: [`${rel}:1`] });
     }
   }
   return problems;
@@ -148,6 +151,18 @@ export function stringConstants(files, readFile) {
         map.set(name, { value, file: rel, ambiguous: false });
       }
     }
+    for (const obj of src.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*\{([\s\S]*?)\}\s*(?:as\s+const)?\s*;/g)) {
+      const [, objectName, body] = obj;
+      for (const prop of body.matchAll(/\b([A-Za-z_$][\w$]*)\s*:\s*"((?:[^"\\]|\\.)*)"|\b([A-Za-z_$][\w$]*)\s*:\s*'((?:[^'\\]|\\.)*)'/g)) {
+        const name = `${objectName}.${prop[1] ?? prop[3]}`;
+        const value = prop[2] ?? prop[4];
+        if (map.has(name) && map.get(name).value !== value) {
+          map.get(name).ambiguous = true;
+          continue;
+        }
+        map.set(name, { value, file: rel, ambiguous: false });
+      }
+    }
   }
   return map;
 }
@@ -157,7 +172,7 @@ export function resolveArg(raw, constants) {
   const text = raw.trim();
   const lit = /^"((?:[^"\\]|\\.)*)"$|^'((?:[^'\\]|\\.)*)'$|^`([^`$\\]*)`$/.exec(text);
   if (lit) return { value: lit[1] ?? lit[2] ?? lit[3], kind: "literal" };
-  if (/^[A-Za-z_$][\w$]*$/.test(text)) {
+  if (/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?$/.test(text)) {
     const c = constants.get(text);
     if (c && !c.ambiguous) return { value: c.value, kind: "constant", from: `${c.file}` };
     return { value: null, kind: "unresolved-identifier", text };

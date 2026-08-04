@@ -55,6 +55,9 @@ function collectAssigned(root, variable, attrNames) {
     const starts = lineIndex(src);
     const assign = new RegExp(`(?<![\\w$.-])${variable}\\s*=\\s*(?![=>])([^;\\n]+)`, "g");
     for (const m of src.matchAll(assign)) {
+      const lineStart = src.lastIndexOf("\n", m.index) + 1;
+      const prefix = src.slice(lineStart, m.index);
+      if (/\b(?:const|let|var)\s+$/.test(prefix)) continue;
       const lit = /^"([^"]+)"|'([^']+)'|`([^`$]+)`/.exec(m[1].trim());
       const site = `${rel}:${lineOf(starts, m.index)}`;
       if (lit) add(assigned, lit[1] ?? lit[2] ?? lit[3], site);
@@ -68,16 +71,39 @@ function collectAssigned(root, variable, attrNames) {
   return { assigned, unresolved };
 }
 
-function collectDispatches(main, starts, variable, functionNames, extras = []) {
+function collectDispatches(rel, src, variable) {
   const dispatched = new Map();
-  for (const value of extras) add(dispatched, value, "apps/osl-hub-ui/src/main.ts:1");
-  for (const name of functionNames) {
-    const fn = functionBody(main, name);
-    if (!fn) continue;
-    const re = new RegExp(`\\b${variable}\\s*===\\s*"([^"]+)"`, "g");
-    for (const m of fn.body.matchAll(re)) add(dispatched, m[1], `apps/osl-hub-ui/src/main.ts:${lineOf(starts, fn.offset + m.index)}`);
+  const unresolved = [];
+  const starts = lineIndex(src);
+  const shadowed = [];
+  for (const m of src.matchAll(/\bfunction\s+[A-Za-z_$][\w$]*\s*\(([^)]*)\)\s*(?::\s*[^{]+)?\{/g)) {
+    if (!new RegExp(`\\b${variable}\\b`).test(m[1])) continue;
+    const open = src.indexOf("{", m.index);
+    const close = matchingBrace(src, open);
+    if (close > open) shadowed.push([open, close]);
   }
-  return dispatched;
+  const isShadowed = (index) => shadowed.some(([start, end]) => index >= start && index <= end);
+  const returnBranch = /(?:\bif\s*\(([\s\S]{0,700}?)\)\s*)?return\b/g;
+  for (const m of src.matchAll(returnBranch)) {
+    if (isShadowed(m.index)) continue;
+    const condition = m[1] ?? "";
+    const value = new RegExp(`\\b${variable}\\s*===\\s*"([^"]+)"`, "g");
+    for (const c of condition.matchAll(value)) add(dispatched, c[1], `${rel}:${lineOf(starts, m.index + c.index)}`);
+  }
+
+  const switchBlock = new RegExp(`\\bswitch\\s*\\(\\s*${variable}\\s*\\)\\s*\\{`, "g");
+  for (const m of src.matchAll(switchBlock)) {
+    if (isShadowed(m.index)) continue;
+    const open = src.indexOf("{", m.index);
+    const close = matchingBrace(src, open);
+    if (close < 0) {
+      unresolved.push({ site: `${rel}:${lineOf(starts, m.index)}`, expr: `switch (${variable}) without a matching closing brace` });
+      continue;
+    }
+    const body = src.slice(open + 1, close);
+    for (const c of body.matchAll(/\bcase\s*"([^"]+)"\s*:/g)) add(dispatched, c[1], `${rel}:${lineOf(starts, open + 1 + c.index)}`);
+  }
+  return { dispatched, unresolved };
 }
 
 function analyse(prefix, declared, assigned, dispatched) {
@@ -115,21 +141,29 @@ export function main(argv = process.argv) {
   const starts = lineIndex(mainSrc);
   const topAssigned = collectAssigned(root, "route", ["data-route"]);
   const onboardingAssigned = collectAssigned(root, "onboardingRoute", ["data-onboarding", "data-onboarding-action", "data-password-role-next"]);
-  const routeDispatches = collectDispatches(mainSrc, starts, "route", ["commitRender", "workspaceContent"], ["home"]);
-  const onboardingDispatches = collectDispatches(mainSrc, starts, "onboardingRoute", ["onboardingContent"], ["sending"]);
+  const routeDispatches = collectDispatches(mainRel, mainSrc, "route");
+  const onboardingDispatches = collectDispatches(mainRel, mainSrc, "onboardingRoute");
   const violations = [
-    ...analyse("route", collectUnion(mainSrc, starts, "Route"), topAssigned.assigned, routeDispatches),
-    ...analyse("onboarding", collectUnion(mainSrc, starts, "OnboardingRoute"), onboardingAssigned.assigned, onboardingDispatches),
+    ...analyse("route", collectUnion(mainSrc, starts, "Route"), topAssigned.assigned, routeDispatches.dispatched),
+    ...analyse("onboarding", collectUnion(mainSrc, starts, "OnboardingRoute"), onboardingAssigned.assigned, onboardingDispatches.dispatched),
   ];
+  for (const u of [...routeDispatches.unresolved, ...onboardingDispatches.unresolved]) {
+    violations.push({
+      id: `unresolved-route-dispatch:${u.site}`,
+      kind: "unresolved-route-dispatch",
+      detail: u.expr,
+      sites: [u.site],
+    });
+  }
   return finish(report({
     id: "routes",
     title: "routes assigned vs dispatched, ledger 6 of 7",
     violations,
     stats: {
       "top-level routes assigned": topAssigned.assigned.size,
-      "top-level routes dispatched": routeDispatches.size,
+      "top-level routes dispatched": routeDispatches.dispatched.size,
       "onboarding routes assigned": onboardingAssigned.assigned.size,
-      "onboarding routes dispatched": onboardingDispatches.size,
+      "onboarding routes dispatched": onboardingDispatches.dispatched.size,
       "non-literal route assignments": topAssigned.unresolved.length + onboardingAssigned.unresolved.length,
     },
   }));

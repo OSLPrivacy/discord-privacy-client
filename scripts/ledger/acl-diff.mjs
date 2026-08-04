@@ -30,7 +30,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { repoRoot, read, walk, blankComments, lineIndex, lineOf, LEDGER_DIR, inputProblems } from "./lib/io.mjs";
+import { repoRoot, read, walk, blankComments, lineIndex, lineOf, LEDGER_DIR, inputProblems, stringConstants, resolveArg } from "./lib/io.mjs";
 import { report, finish } from "./lib/report.mjs";
 import { bundleSnapshot, reachableFrom } from "./bundle.mjs";
 
@@ -121,6 +121,11 @@ const FACTORY_RECEIVER = {
   getCurrentWebviewWindow: ["webviewWindow.js", "window.js", "webview.js"],
 };
 
+const REQUIRED_API_METHODS = {
+  "window.js": ["close", "isFocused", "isFullscreen", "isMaximized", "minimize", "setFocus", "setFullscreen", "toggleMaximize"],
+  "event.js": ["emitTo", "listen"],
+};
+
 /* ------------------------------------------------------------------ issuers */
 
 export function scanIssuers(root, modules, apiMethods) {
@@ -130,6 +135,7 @@ export function scanIssuers(root, modules, apiMethods) {
     issued.get(command).push({ site, via });
   };
   const unresolved = [];
+  const constants = stringConstants(modules, (rel) => read(root, rel));
   const commandsFor = (receiverFiles, method) => {
     const out = new Set();
     for (const file of receiverFiles) {
@@ -146,10 +152,10 @@ export function scanIssuers(root, modules, apiMethods) {
     // 1. direct invoke("name") / invoke<T>("name") / __TAURI_INTERNALS__.invoke("name")
     for (const m of src.matchAll(/\binvoke\s*(?:<[^>(]*>)?\s*\(\s*([^,)]+)/g)) {
       const arg = m[1].trim();
-      const lit = /^"([^"]+)"$|^'([^']+)'$|^`([^`$]+)`$/.exec(arg);
       const site = `${rel}:${lineOf(starts, m.index)}`;
-      if (lit) add(lit[1] ?? lit[2] ?? lit[3], site, "direct");
-      else unresolved.push({ site, expr: arg.slice(0, 60) });
+      const command = resolveArg(arg, constants);
+      if (command.value) add(command.value, site, "direct");
+      else unresolved.push({ site, expr: arg.slice(0, 60), via: "direct invoke()" });
     }
 
     // 2. @tauri-apps/api handle methods. Only counted on a handle: either a
@@ -191,6 +197,19 @@ export function scanIssuers(root, modules, apiMethods) {
     }
   }
   return { issued, unresolved };
+}
+
+function tauriApiExtractionProblems(api) {
+  const problems = [];
+  if (api.missing || api.extracted === 0) return problems;
+  for (const [file, methods] of Object.entries(REQUIRED_API_METHODS)) {
+    const map = api.byFile.get(file);
+    for (const method of methods) {
+      if (map?.has(method)) continue;
+      problems.push(`${file} no longer exposes an extracted command binding for ${method}(); this UI calls that API, so the ACL ledger refuses partial extraction`);
+    }
+  }
+  return problems;
 }
 
 /** Framework-injected scripts, gated on the trigger actually being present. */
@@ -242,7 +261,25 @@ export async function main(argv = process.argv) {
   if (input.length) {
     return finish(report({ id: "acl", title: "commands issued vs ACL-granted, including framework-internal, ledger 3 of 7", violations: input }));
   }
-  const snapshot = await bundleSnapshot(root, { cache: !argv.includes("--no-cache") });
+  let snapshot;
+  const noCache = argv.includes("--no-cache");
+  try {
+    snapshot = await bundleSnapshot(root, { cache: !noCache, writeCache: !noCache });
+  } catch (error) {
+    if (error.ledgerViolation) {
+      return finish(report({ id: "acl", title: "commands issued vs ACL-granted, including framework-internal, ledger 3 of 7", violations: [error.ledgerViolation] }));
+    }
+    return finish(report({
+      id: "acl",
+      title: "commands issued vs ACL-granted, including framework-internal, ledger 3 of 7",
+      violations: [{
+        id: "bundle-reachability-unavailable",
+        kind: "ledger-input-missing",
+        detail: `bundle reachability could not be collected, so main-webview issuer scope is not trustworthy: ${error.message}`,
+        sites: ["apps/osl-hub-ui/vite.config.ts:1"],
+      }],
+    }));
+  }
   const mainModules = [
     ...new Set([
       ...MAIN_ENTRIES.flatMap((entry) => [...reachableFrom(snapshot, entry)]),
@@ -274,6 +311,9 @@ export async function main(argv = process.argv) {
   for (const problem of internals.inputProblems) {
     violations.push({ id: `framework-internals-input:${problem}`, kind: "ledger-input-stale", detail: problem, sites: ["scripts/ledger/framework-internals.json:1"] });
   }
+  for (const problem of tauriApiExtractionProblems(api)) {
+    violations.push({ id: `tauri-api-partial:${problem}`, kind: "ledger-input-stale", detail: problem, sites: ["apps/osl-hub-ui/node_modules/@tauri-apps/api/package.json:1"] });
+  }
 
   for (const [command, sites] of [...issued.entries()].sort()) {
     const perm = permissionFor(command);
@@ -284,6 +324,14 @@ export async function main(argv = process.argv) {
       kind: viaInternal ? "ungranted-framework-internal" : "ungranted",
       detail: `needs "${perm}" in a capability covering the main webview; issued via ${[...new Set(sites.map((s) => s.via))].join(", ")}`,
       sites: sites.map((s) => s.site),
+    });
+  }
+  for (const u of unresolved) {
+    violations.push({
+      id: `unresolved-command:${u.site}`,
+      kind: "unresolved-command-name",
+      detail: `${u.via} command is not a literal or known string constant: ${u.expr}`,
+      sites: [u.site],
     });
   }
 

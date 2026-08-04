@@ -68,7 +68,8 @@ const MAIN_ENTRIES = ["apps/osl-hub-ui/index.html", "apps/osl-hub-ui/whatsapp-qa
 const EXTRA_MAIN_MODULES = ["apps/osl-hub-ui/src/signal-qa-main.ts"];
 
 export async function collect(root, argv = process.argv) {
-  const snapshot = await bundleSnapshot(root, { cache: !argv.includes("--no-cache") });
+  const noCache = argv.includes("--no-cache");
+  const snapshot = await bundleSnapshot(root, { cache: !noCache, writeCache: !noCache });
   const reachable = new Set([
     ...MAIN_ENTRIES.flatMap((entry) => [...reachableFrom(snapshot, entry)]),
     ...EXTRA_MAIN_MODULES,
@@ -84,7 +85,24 @@ export async function main(argv = process.argv) {
   if (input.length) {
     return finish(report({ id: "attributes", title: "interactive data-* emitted vs event-bound selectors, ledger 1 of 7", violations: input }));
   }
-  const collected = await collect(root, argv);
+  let collected;
+  try {
+    collected = await collect(root, argv);
+  } catch (error) {
+    if (error.ledgerViolation) {
+      return finish(report({ id: "attributes", title: "interactive data-* emitted vs event-bound selectors, ledger 1 of 7", violations: [error.ledgerViolation] }));
+    }
+    return finish(report({
+      id: "attributes",
+      title: "interactive data-* emitted vs event-bound selectors, ledger 1 of 7",
+      violations: [{
+        id: "bundle-reachability-unavailable",
+        kind: "ledger-input-missing",
+        detail: `bundle reachability could not be collected, so interactive attribute scope is not trustworthy: ${error.message}`,
+        sites: ["apps/osl-hub-ui/vite.config.ts:1"],
+      }],
+    }));
+  }
   const violations = [];
   for (const [attr, sites] of [...collected.emitted.interactive.entries()].sort()) {
     if (collected.bound.has(attr)) continue;
