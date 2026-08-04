@@ -440,6 +440,20 @@ describe("bundled preview security boundary", () => {
       // Read-only: whether the burn notices already queued for one scope have
       // been acknowledged. Without it a queued revocation renders as a success.
       "allow-get-hub-revocation-status",
+      // D-108, 2026-08-03. The construction site for the UI's SecureLocalStore:
+      // the store was implemented and unit-tested and production never built
+      // one, because there was no key to build it with, so OSL Chat's muted
+      // people / unread counts / preview visibility / notifications went to
+      // localStorage or nowhere. This grant does NOT widen the boundary this
+      // test protects: osl_chat_local_state_key.rs derives an HKDF-SHA256
+      // subkey (info "osl/ui/osl-chat-local-state/v1") from the SAME on-device
+      // storage-key authority peer_map_write_key already uses, hands only the
+      // subkey to the local main webview -- never the file storage key, so a
+      // renderer compromise cannot open peer_map.json or messages.sqlite --
+      // touches no socket, and is classified local-only in tor_pref's
+      // HUB_COMMANDS. It returns Err while a main-password gate is locked, and
+      // the UI then persists nothing rather than falling back to plaintext.
+      "allow-get-osl-chat-local-state-key",
       // Encrypted local recovery_kit_status.json only (account_recovery.rs).
       // No network, no keyserver, no shell. Split read from write: one
       // permission per command is this codebase's rule, and a reader should

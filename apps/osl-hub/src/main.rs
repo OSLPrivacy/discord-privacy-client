@@ -6021,6 +6021,25 @@ async fn get_osl_profile(
     osl_profile::get_active_profile(&owner)
 }
 
+/// Hand the renderer the HKDF subkey for OSL Chat's local (webview) state.
+///
+/// This is the construction site D-108 was missing: the UI's `SecureLocalStore`
+/// is implemented and unit-tested, and had no key, so nothing ever built it and
+/// the four OSL Chat correspondent-shaped keys were never persisted through it.
+///
+/// It returns a *derived* key, never the file storage key itself
+/// (`osl_chat_local_state_key::HKDF_INFO_OSL_CHAT_LOCAL_STATE`), and it returns
+/// `Err` while a main-password gate is locked — the UI then leaves its store
+/// unconfigured and writes nothing, rather than falling back to plaintext.
+#[tauri::command]
+fn get_osl_chat_local_state_key() -> Result<String, String> {
+    let directory = keystore::osl_config_dir().map_err(|error| {
+        format!("OSL Chat local-state directory is unavailable: {error}")
+    })?;
+    let key = osl_privacy_hub::osl_chat_local_state_key::osl_chat_local_state_key(&directory)?;
+    Ok(URL_SAFE_NO_PAD.encode(&*key))
+}
+
 #[tauri::command]
 async fn verify_hub_friend_safety_number(
     core: State<'_, HubCoreState>,
