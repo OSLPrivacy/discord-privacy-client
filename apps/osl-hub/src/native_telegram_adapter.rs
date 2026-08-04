@@ -123,6 +123,9 @@ pub enum TelegramPlacementStatus {
     /// from `AccessibilityUnavailable`.
     WindowUnavailable,
     AccessibilityUnavailable,
+    /// The composer was resolved and deliberately not written to. Only
+    /// `probe_telegram_composer_reachable` returns this.
+    ComposerResolved,
     ComposerUnavailable,
     ComposerAmbiguous,
     ComposerNotWritable,
@@ -341,6 +344,64 @@ struct TelegramPlacedComposer {
     composer: Uia2Editable,
 }
 
+/// Everything up to, and not including, the write: acquire the Qt window, list
+/// its editable elements, and pick the one that is the composer.
+///
+/// Split out because "can OSL reach Telegram's composer?" is a question worth
+/// answering without writing into a real person's chat to find out.
+type TelegramResolved = (
+    TelegramLivePlacementReceipt,
+    Uia2Acquired,
+    Uia2Editable,
+);
+
+fn resolve_through_substrate(
+    relay: &Uia2DeadlineRelay<'_>,
+) -> Result<TelegramResolved, TelegramLivePlacementReceipt> {
+    let acquired = match acquire_uia2_window(TELEGRAM_UIA2_WINDOW_PLAN, relay) {
+        Ok(acquired) => acquired,
+        Err(error) => {
+            let mut receipt = TelegramLivePlacementReceipt::refused(acquire_status(error));
+            receipt.acquire_error = Some(error);
+            return Err(receipt);
+        }
+    };
+
+    let mut receipt = TelegramLivePlacementReceipt::refused(TelegramPlacementStatus::Placed);
+    receipt.element_count = acquired.elements;
+    receipt.woke = acquired.woke;
+    receipt.settled_ms = acquired.settled_ms;
+
+    // The one rung the substrate does not expose publicly; see Uia2DeadlineRelay.
+    let Some(deadline) = relay.issued_deadline() else {
+        receipt.status = TelegramPlacementStatus::AccessibilityUnavailable;
+        return Err(receipt);
+    };
+    let editables = match relay.editable_elements(
+        acquired.window.bound_hwnd,
+        acquired.window.tree_route,
+        deadline,
+    ) {
+        Ok(editables) => editables,
+        Err(_) => {
+            receipt.status = TelegramPlacementStatus::CallTimedOut;
+            return Err(receipt);
+        }
+    };
+
+    let composer = match resolve_uia2_composer(TELEGRAM_COMPOSER_MATCHER, &editables) {
+        Ok(composer) => composer,
+        Err(error) => {
+            let (status, count) = composer_status(error);
+            receipt.status = status;
+            receipt.writable_composer_count = count;
+            return Err(receipt);
+        }
+    };
+    receipt.writable_composer_count = 1;
+    Ok((receipt, acquired, composer))
+}
+
 fn place_through_substrate(
     relay: &Uia2DeadlineRelay<'_>,
     request: TelegramLivePlacementRequest<'_>,
@@ -355,47 +416,10 @@ fn place_through_substrate(
         );
     }
 
-    let acquired = match acquire_uia2_window(TELEGRAM_UIA2_WINDOW_PLAN, relay) {
-        Ok(acquired) => acquired,
-        Err(error) => {
-            let mut receipt = TelegramLivePlacementReceipt::refused(acquire_status(error));
-            receipt.acquire_error = Some(error);
-            return (receipt, None);
-        }
+    let (mut receipt, acquired, composer) = match resolve_through_substrate(relay) {
+        Ok(resolved) => resolved,
+        Err(receipt) => return (receipt, None),
     };
-
-    let mut receipt = TelegramLivePlacementReceipt::refused(TelegramPlacementStatus::Placed);
-    receipt.element_count = acquired.elements;
-    receipt.woke = acquired.woke;
-    receipt.settled_ms = acquired.settled_ms;
-
-    // The one rung the substrate does not expose publicly; see Uia2DeadlineRelay.
-    let Some(deadline) = relay.issued_deadline() else {
-        receipt.status = TelegramPlacementStatus::AccessibilityUnavailable;
-        return (receipt, None);
-    };
-    let editables = match relay.editable_elements(
-        acquired.window.bound_hwnd,
-        acquired.window.tree_route,
-        deadline,
-    ) {
-        Ok(editables) => editables,
-        Err(_) => {
-            receipt.status = TelegramPlacementStatus::CallTimedOut;
-            return (receipt, None);
-        }
-    };
-
-    let composer = match resolve_uia2_composer(TELEGRAM_COMPOSER_MATCHER, &editables) {
-        Ok(composer) => composer,
-        Err(error) => {
-            let (status, count) = composer_status(error);
-            receipt.status = status;
-            receipt.writable_composer_count = count;
-            return (receipt, None);
-        }
-    };
-    receipt.writable_composer_count = 1;
 
     match place_uia2_carrier(
         relay,
@@ -475,6 +499,23 @@ pub fn probe_telegram_composer_write_then_clear(
     receipt
 }
 
+/// Report whether OSL can reach Telegram's composer, writing nothing at all.
+///
+/// This is the read-only half of the capability question, and it is the run the
+/// conductor should do first: it proves the Qt window resolved, how many
+/// elements it exposed, and that exactly one editable element is the composer,
+/// without touching the owner's chat.
+pub fn probe_telegram_composer_reachable(host: &dyn Uia2Syscalls) -> TelegramLivePlacementReceipt {
+    let relay = Uia2DeadlineRelay::new(host);
+    match resolve_through_substrate(&relay) {
+        Ok((mut receipt, _, _)) => {
+            receipt.status = TelegramPlacementStatus::ComposerResolved;
+            receipt
+        }
+        Err(receipt) => receipt,
+    }
+}
+
 /// Drive the live Windows host. Defined under both cfgs deliberately: A-01
 /// shipped a placement function that existed only under `cfg(not(windows))`,
 /// so the platform that matters had no entry point at all and a Linux build
@@ -507,6 +548,16 @@ pub fn probe_telegram_desktop_composer(
 pub fn probe_telegram_desktop_composer(
     _request: TelegramLivePlacementRequest<'_>,
 ) -> TelegramLivePlacementReceipt {
+    TelegramLivePlacementReceipt::refused(TelegramPlacementStatus::PlatformUnsupported)
+}
+
+#[cfg(target_os = "windows")]
+pub fn telegram_desktop_composer_reachable() -> TelegramLivePlacementReceipt {
+    probe_telegram_composer_reachable(&crate::native_a11y::win32::Uia2Win32Host::desktop())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn telegram_desktop_composer_reachable() -> TelegramLivePlacementReceipt {
     TelegramLivePlacementReceipt::refused(TelegramPlacementStatus::PlatformUnsupported)
 }
 
@@ -953,6 +1004,28 @@ mod tests {
     }
 
     #[test]
+    fn asking_whether_telegram_is_reachable_writes_nothing() {
+        let host = signed_in();
+        let receipt = probe_telegram_composer_reachable(&host);
+
+        assert_eq!(receipt.status, TelegramPlacementStatus::ComposerResolved);
+        assert!(!receipt.placed);
+        assert_eq!(receipt.element_count, TELEGRAM_UIA2_MEASURED_ELEMENTS);
+        assert_eq!(receipt.writable_composer_count, 1);
+        assert!(
+            host.set_values.borrow().is_empty(),
+            "a capability question must not answer itself by writing"
+        );
+        assert_eq!(*host.value.borrow(), None);
+
+        let signed_out = recorded_telegram(vec![writable("Phone number")]);
+        assert_eq!(
+            probe_telegram_composer_reachable(&signed_out).status,
+            TelegramPlacementStatus::ComposerUnavailable
+        );
+    }
+
+    #[test]
     fn telegram_refuses_cleanly_when_no_composer_exists_and_writes_into_nothing_else() {
         // The signed-out client: a writable phone-number field and a writable
         // search box, and no composer. Both are writable ValuePattern elements
@@ -1145,6 +1218,72 @@ mod tests {
             "Telegram is identified by its Qt class, not by its process alone"
         );
         assert!(host.set_values.borrow().is_empty());
+    }
+
+    /// Drive the REAL Telegram composer on the owner's Windows host.
+    ///
+    /// `native_a11y`'s own live probe resolves the composer with that module's
+    /// generic test matcher. This one runs the code that ships:
+    /// [`TELEGRAM_UIA2_WINDOW_PLAN`], [`TELEGRAM_COMPOSER_MATCHER`] and the
+    /// probe entry point, so what the conductor observes is what OSL will do.
+    ///
+    /// Telegram is the one provider signed in on that host, so this is the only
+    /// one of the four whose *real* composer can be reached today.
+    ///
+    /// ```text
+    /// # from WSL, build the Windows test binary:
+    /// flock /tmp/osl-cargo.lock cargo test --manifest-path apps/osl-hub/Cargo.toml \
+    ///   --lib --target x86_64-pc-windows-gnu -j 4 --no-run
+    /// # then, on the Windows host, with Telegram open on a conversation:
+    /// set OSL_TELEGRAM_PROBE_CARRIER=a03c-telegram-7731-osl
+    /// osl_privacy_hub-<hash>.exe --ignored --test-threads=1 --nocapture \
+    ///   native_telegram_adapter::tests::drive_the_real_telegram_composer
+    /// ```
+    ///
+    /// Without `OSL_TELEGRAM_PROBE_CARRIER` this is a read-only probe: it
+    /// resolves and reports, and writes nothing. With it, it places, reads back
+    /// by containment and clears immediately. Nothing here can commit.
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "drives the owner's live Telegram client; run explicitly"]
+    fn drive_the_real_telegram_composer() {
+        let carrier = std::env::var("OSL_TELEGRAM_PROBE_CARRIER").ok();
+        let receipt = match carrier.as_deref() {
+            Some(carrier) => probe_telegram_desktop_composer(TelegramLivePlacementRequest {
+                carrier,
+                allow_replace_existing: false,
+            }),
+            None => telegram_desktop_composer_reachable(),
+        };
+        eprintln!(
+            "telegram: status={:?} placed={} readback_contains_carrier={} \
+             elements={} woke={} settled_ms={} writable_composers={} enter_sent={} \
+             acquire_error={:?}",
+            receipt.status,
+            receipt.placed,
+            receipt.readback_contains_carrier,
+            receipt.element_count,
+            receipt.woke,
+            receipt.settled_ms,
+            receipt.writable_composer_count,
+            receipt.enter_sent,
+            receipt.acquire_error
+        );
+        assert!(!receipt.enter_sent, "nothing may be committed, ever");
+        assert!(!receipt.woke, "Qt must never be sent Chromium's handshake");
+        assert_eq!(receipt.settled_ms, 0, "Qt needs no settle");
+        if carrier.is_some() {
+            assert_eq!(receipt.status, TelegramPlacementStatus::Placed);
+            assert!(receipt.readback_contains_carrier);
+            assert!(
+                receipt.element_count >= TELEGRAM_UIA2_MEASURED_ELEMENTS / 2,
+                "A-00 measured {TELEGRAM_UIA2_MEASURED_ELEMENTS}; reading a \
+                 fraction of that is a regression, not a new baseline"
+            );
+        } else {
+            assert_eq!(receipt.status, TelegramPlacementStatus::ComposerResolved);
+            assert!(!receipt.placed, "a read-only probe writes nothing");
+        }
     }
 
     /// Every mechanism that could commit a Telegram message without going
