@@ -26,6 +26,29 @@
 // creation, and guessing there is how this project produced 34 "P0"s that were
 // one real defect.
 //
+// The set difference is read in every direction, because the other two each
+// caused an incident on 2026-08-04 while this ledger was GREEN:
+//
+//   issued -> granted                     the original: a main-webview issuer
+//                                         with no grant. Scoped to `main`.
+//   granted -> registered                 D-146: a [[permission]] allowing a
+//                                         command that no longer exists.
+//                                         tauri-build validates capabilities
+//                                         against the registry, so this is the
+//                                         direction that stops the app
+//                                         compiling at all.
+//   registered -> granted anywhere        D-158: a command on the IPC surface
+//                                         that NO capability grants to ANY
+//                                         webview, so the ACL rejects it before
+//                                         its handler runs.
+//   defined -> registered                 a #[tauri::command] in no handler
+//                                         list: unreachable, and no grant helps.
+//
+// The last three are webview-agnostic on purpose. "Registered but not granted to
+// main" is the naive reading and it is wrong: the overlay capabilities hold 14
+// commands `main` must never have, so ungranted-to-main is the correct state for
+// them. Only "granted to no webview at all" is a defect.
+//
 //   node scripts/ledger/acl-diff.mjs [--root=<dir>]
 
 import { readFileSync, existsSync } from "node:fs";
