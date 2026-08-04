@@ -1,9 +1,30 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { homeAppsFromServices, parseLinkedServices } from "./services";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const localProtectedSheetSource = readFileSync(new URL("./local-protected-sheet.ts", import.meta.url), "utf8");
-const servicesSource = readFileSync(new URL("./services.ts", import.meta.url), "utf8");
+
+const originalAppRoster = [
+  "discord", "telegram", "instagram", "snapchat", "x", "messenger", "signal", "whatsapp",
+  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+] as const;
+const unsupportedOriginalApps = originalAppRoster.filter((id) => id !== "discord");
+
+function linkedServiceFixture(): unknown[] {
+  const ids = ["discord", "telegram", "instagram", "snapchat", "email", "x", "messenger", "signal", "whatsapp", "slack", "linkedin", "teams"];
+  return ids.map((id, sidebarOrder) => ({
+    id,
+    displayName: id,
+    sidebarGlyph: id.slice(0, 2).toUpperCase(),
+    sidebarOrder,
+    category: id === "slack" || id === "linkedin" || id === "teams" ? "enterprise" : "consumer",
+    launchState: "available",
+    supportsNativePreview: true,
+    supportsProtectedPreview: true,
+    accounts: [],
+  }));
+}
 
 function functionSource(name: string, nextName: string): string {
   const start = source.indexOf(`function ${name}`);
@@ -45,13 +66,19 @@ describe("B0-07b main.ts prohibitions", () => {
     expect(startup).not.toContain("screenshotProtectionEnabled = windowCaptureEnabled ? applied : false");
   });
 
-  it("P-28 and P-48 offer only supported native app tiles", () => {
+  it("P-28 and P-48 offer only supported app tiles as available", () => {
     const selectedNative = functionSource("selectedNativeApps", "hasSelectedNativeAppChoice");
     const detected = functionSource("detectedAppsContent", "installMissingAppsContent");
     const guide = functionSource("serviceGuideContent", "settingsContent");
     const binding = functionSource("bindSavedAccountControls", "bindBrowserImportControls");
+    const apps = homeAppsFromServices(parseLinkedServices(linkedServiceFixture())!);
+    const launchApps = apps.filter((app) => app.visibility === "launch");
 
     expect(source).toContain('const supportedNativeAppIds = new Set<NativeAppId>(["discord"])');
+    expect(launchApps.map((app) => app.id)).toEqual([...originalAppRoster]);
+    expect(launchApps.filter((app) => app.launchState === "available").map((app) => app.id)).toEqual(["discord"]);
+    expect(launchApps.filter((app) => app.launchState === "comingSoon").map((app) => app.id)).toEqual([...unsupportedOriginalApps]);
+    expect(launchApps.filter((app) => app.setupEligible).map((app) => app.id)).toEqual(["discord"]);
     expect(selectedNative).toContain("supportedNativeAppIds.has(app.id)");
     expect(detected).toContain('nativeSessionModeSettingChoices("discord", "Discord")');
     expect(detected).not.toContain('nativeSessionModeSettingChoices("telegram", "Telegram")');
@@ -60,10 +87,6 @@ describe("B0-07b main.ts prohibitions", () => {
     expect(detected).not.toContain('nativeSessionModeSettingChoices("outlook", "Outlook")');
     expect(guide).toContain("supportedNativeAppIds.has(activeHomeAppId as NativeAppId)");
     expect(binding).not.toContain('finishNativeAccountChoice("telegram")');
-    expect(servicesSource).toContain('homeApp("telegram", "Telegram", "telegram", null, "later", "comingSoon")');
-    expect(servicesSource).toContain('homeApp("signal", "Signal", "signal", null, "later", "comingSoon")');
-    expect(servicesSource).toContain('homeApp("whatsapp", "WhatsApp", "whatsapp", null, "later", "comingSoon")');
-    expect(servicesSource).toContain('homeApp("outlook", "Outlook", "email", "outlook", "later", "comingSoon")');
   });
 
   it("P-34 states independent warning defaults", () => {

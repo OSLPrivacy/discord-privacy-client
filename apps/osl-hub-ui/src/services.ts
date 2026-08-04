@@ -313,26 +313,24 @@ interface HomeAppDefinition {
 
 const homeAppDefinitions: readonly HomeAppDefinition[] = [
   homeApp("discord", "Discord", "discord"),
-  homeApp("instagram", "Instagram", "instagram"),
-  homeApp("snapchat", "Snapchat", "snapchat"),
-  homeApp("x", "X", "x"),
-  homeApp("messenger", "Messenger", "messenger"),
-  homeApp("gmail", "Gmail", "email", "gmail"),
-  homeApp("proton", "Proton Mail", "email", "proton"),
-  homeApp("yahoo", "Yahoo Mail", "email", "yahoo"),
-  homeApp("aol", "AOL Mail", "email", "aol"),
-  homeApp("gmx", "GMX", "email", "gmx"),
-  homeApp("maildotcom", "Mail.com", "email", "maildotcom"),
-  homeApp("icloud", "iCloud Mail", "email", "icloud"),
-  // P-28/P-48 applies to every unsupported launch tile, not just native-account
-  // setup. Keep QA/native plumbing addressable by service/provider id, but do
-  // not invite users into unsupported Telegram, Signal, WhatsApp, or Outlook
-  // app launch surfaces. OSL Mail is a separate first-party surface, not an
-  // Outlook support claim.
-  homeApp("telegram", "Telegram", "telegram", null, "later", "comingSoon"),
-  homeApp("signal", "Signal", "signal", null, "later", "comingSoon"),
-  homeApp("whatsapp", "WhatsApp", "whatsapp", null, "later", "comingSoon"),
-  homeApp("outlook", "Outlook", "email", "outlook", "later", "comingSoon"),
+  // P-28/P-48 applies to every unsupported tile in the original app roster,
+  // not just the native-account setup branch. Keep the specs visible for
+  // roadmap signaling, but only Discord can present as a working integration.
+  homeApp("telegram", "Telegram", "telegram", null, "launch", "comingSoon"),
+  homeApp("instagram", "Instagram", "instagram", null, "launch", "comingSoon"),
+  homeApp("snapchat", "Snapchat", "snapchat", null, "launch", "comingSoon"),
+  homeApp("x", "X", "x", null, "launch", "comingSoon"),
+  homeApp("messenger", "Messenger", "messenger", null, "launch", "comingSoon"),
+  homeApp("signal", "Signal", "signal", null, "launch", "comingSoon"),
+  homeApp("whatsapp", "WhatsApp", "whatsapp", null, "launch", "comingSoon"),
+  homeApp("gmail", "Gmail", "email", "gmail", "launch", "comingSoon"),
+  homeApp("outlook", "Outlook", "email", "outlook", "launch", "comingSoon"),
+  homeApp("proton", "Proton Mail", "email", "proton", "launch", "comingSoon"),
+  homeApp("yahoo", "Yahoo Mail", "email", "yahoo", "launch", "comingSoon"),
+  homeApp("aol", "AOL Mail", "email", "aol", "launch", "comingSoon"),
+  homeApp("gmx", "GMX", "email", "gmx", "launch", "comingSoon"),
+  homeApp("maildotcom", "Mail.com", "email", "maildotcom", "launch", "comingSoon"),
+  homeApp("icloud", "iCloud Mail", "email", "icloud", "launch", "comingSoon"),
   homeApp("slack", "Slack", "slack", null, "later", "comingSoon"),
   homeApp("linkedin", "LinkedIn messaging", "linkedin", null, "later", "comingSoon"),
 ];
@@ -1094,7 +1092,11 @@ export function homeAppsFromServices(services: readonly LinkedService[]): HomeAp
     const service = definition.serviceId ? byId.get(definition.serviceId) : undefined;
     const accounts = service?.accounts.filter((account) => definition.provider === null || account.provider === definition.provider) ?? [];
     const accountCount = accounts.length;
+    const launchState = definition.defaultLaunchState === "available"
+      ? service?.launchState ?? definition.defaultLaunchState
+      : definition.defaultLaunchState;
     const setupEligible = definition.visibility === "launch"
+      && definition.defaultLaunchState === "available"
       && service?.launchState === "available"
       && service.accounts.length < maxAccountsPerService;
     return {
@@ -1104,7 +1106,7 @@ export function homeAppsFromServices(services: readonly LinkedService[]): HomeAp
       provider: definition.provider,
       visibility: definition.visibility,
       section: definition.section,
-      launchState: service?.launchState ?? definition.defaultLaunchState,
+      launchState,
       linked: accountCount > 0,
       accountCount,
       setupEligible,
@@ -1120,7 +1122,7 @@ export function configuredTopStripApps(
   catalog: readonly HomeAppCatalogEntry[],
   preferredOrder: readonly string[] = [],
 ): HomeAppCatalogEntry[] {
-  const configured = catalog.filter((app) => app.visibility === "launch" && app.accountCount > 0);
+  const configured = catalog.filter((app) => app.visibility === "launch" && app.launchState === "available" && app.accountCount > 0);
   const byId = new Map(configured.map((app) => [app.id, app]));
   const ordered: HomeAppCatalogEntry[] = [];
   for (const id of preferredOrder) {

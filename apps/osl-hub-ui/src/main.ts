@@ -1777,7 +1777,7 @@ function tutorialContent(): string {
 
 function chooseAppsOnboardingContent(): string {
   const apps = homeAppsFromServices(services)
-    .filter((app) => app.visibility === "launch" && app.launchState === "available");
+    .filter((app) => app.visibility === "launch");
   const { connected, browserHistory, other } = groupOnboardingApps({
     apps,
     nativeApps,
@@ -1785,7 +1785,12 @@ function chooseAppsOnboardingContent(): string {
     importedBrowserAppIds: importedFirefoxHomeAppIds,
   });
   const choices = (items: HomeAppCatalogEntry[], label: string) => items.length
-    ? `<div class="onboarding-app-grid onboarding-app-choices" role="group" aria-label="${label}">${items.map((app) => `<button type="button" class="onboarding-app ${selectedOnboardingApps.has(app.id) ? "selected" : ""}" data-onboarding-app-choice="${app.id}" aria-pressed="${selectedOnboardingApps.has(app.id)}"><span class="app-logo-plate">${homeAppLogo(app)}</span><strong>${escapeHtml(app.displayName)}</strong></button>`).join("")}</div>`
+    ? `<div class="onboarding-app-grid onboarding-app-choices" role="group" aria-label="${label}">${items.map((app) => {
+      const available = app.launchState === "available";
+      const selected = available && selectedOnboardingApps.has(app.id);
+      const action = available ? `data-onboarding-app-choice="${app.id}" aria-pressed="${selected}"` : `disabled aria-disabled="true"`;
+      return `<button type="button" class="onboarding-app ${selected ? "selected" : ""} ${available ? "" : "unavailable"}" ${action}><span class="app-logo-plate">${homeAppLogo(app)}</span><span><strong>${escapeHtml(app.displayName)}</strong>${available ? "" : "<small>Coming soon</small>"}</span></button>`;
+    }).join("")}</div>`
     : `<p class="saved-account-truth">None</p>`;
   const defaultContinueLabel = nativeCatalogBusy ? "Checking Windows…" : "Continue";
   const continueLabel = nativeCatalogBusy
@@ -1803,6 +1808,12 @@ async function enterCombinedAppChoice(): Promise<void> {
 
 function persistCombinedHomeChoices(): void {
   hasExplicitOnboardingAppSelection = true;
+  const available = new Set(homeAppsFromServices(services)
+    .filter((app) => app.visibility === "launch" && app.launchState === "available")
+    .map((app) => app.id));
+  for (const appId of [...selectedOnboardingApps]) {
+    if (!available.has(appId)) selectedOnboardingApps.delete(appId);
+  }
   localStorage.setItem(selectedOnboardingAppsStorageKey, JSON.stringify([...selectedOnboardingApps]));
 }
 
@@ -2675,6 +2686,9 @@ function bindOnboarding(): void {
   });
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-app-choice]").forEach((button) => button.addEventListener("click", () => {
     const appId = button.dataset.onboardingAppChoice as HomeAppId;
+    const available = homeAppsFromServices(services)
+      .some((app) => app.id === appId && app.visibility === "launch" && app.launchState === "available");
+    if (!available) return;
     if (selectedOnboardingApps.has(appId)) selectedOnboardingApps.delete(appId);
     else selectedOnboardingApps.add(appId);
     hasExplicitOnboardingAppSelection = true;
@@ -3941,7 +3955,9 @@ function homeDestinationContent(): string {
   const protection = identityProtectionStatus(core.readiness.storageMethod);
   const deviceProtected = coreReady && protection.state === "protected";
   const launchableApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
-  const connectedApps = launchableApps.filter((app) => app.linked || savedNativeApps.has(app.id as NativeAppId));
+  const connectableApps = launchableApps.filter((app) => app.launchState === "available");
+  const roadmapApps = launchableApps.filter((app) => app.launchState !== "available");
+  const connectedApps = connectableApps.filter((app) => app.linked || savedNativeApps.has(app.id as NativeAppId));
   const connectedAppsState = homeProtectionState(linkedServicesChecked, connectedApps.length > 0, {
     enabled: "Ready",
     unavailable: "Unavailable",
@@ -3964,7 +3980,8 @@ function homeDestinationContent(): string {
   const activityAction = recentActivity || !notificationsEnabled
     ? `<button class="button compact" data-notification-settings type="button">${recentActivity ? "Review" : "Turn on"}</button>`
     : `${statusTag("Quiet")}`;
-  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommendedAction}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedApps.length.toLocaleString("en-US")} of ${launchableApps.length.toLocaleString("en-US")} ready</small></span>${statusTag(connectedAppsState.label, connectedAppsState.statusTone === "ok" ? "ok" : "")}</div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
+  const connectedAppsDetail = `${connectedApps.length.toLocaleString("en-US")} of ${connectableApps.length.toLocaleString("en-US")} ready${roadmapApps.length ? ` · ${roadmapApps.length.toLocaleString("en-US")} coming soon` : ""}`;
+  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommendedAction}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedAppsDetail}</small></span>${statusTag(connectedAppsState.label, connectedAppsState.statusTone === "ok" ? "ok" : "")}</div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
 }
 
 function workspaceContent(): string {
@@ -3980,15 +3997,17 @@ function workspaceContent(): string {
   if (route === "settings") return settingsContent();
   if (route === "service" && activeService) return serviceContent();
   const launchableHomeApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
+  const roadmapHomeApps = launchableHomeApps.filter((app) => app.launchState !== "available");
   const rememberedHomeApps = new Set<HomeAppId>(hasExplicitOnboardingAppSelection
     ? selectedOnboardingApps
     : [
         ...selectedOnboardingApps,
         ...launchableHomeApps.filter((app) => app.linked || savedNativeApps.has(app.id as NativeAppId)).map((app) => app.id),
       ]);
-  const homeApps = hasExplicitOnboardingAppSelection || rememberedHomeApps.size
-    ? launchableHomeApps.filter((app) => rememberedHomeApps.has(app.id))
-    : launchableHomeApps;
+  const selectedHomeApps = hasExplicitOnboardingAppSelection || rememberedHomeApps.size
+    ? launchableHomeApps.filter((app) => app.launchState === "available" && rememberedHomeApps.has(app.id))
+    : launchableHomeApps.filter((app) => app.launchState === "available");
+  const homeApps = [...selectedHomeApps, ...roadmapHomeApps.filter((app) => !selectedHomeApps.some((selected) => selected.id === app.id))];
   const modules = [
     { id: "osl-chats", name: "OSL Chat", available: true },
     { id: "osl-mail", name: "OSL Mail", available: true },
@@ -4009,7 +4028,9 @@ function workspaceContent(): string {
     if (!app) return "";
     const state = app.linked ? "OSL profile ready" : app.launchState === "available" ? "Set up" : "Coming later";
     const pending = appLaunchPendingId === app.id;
-    return `<article class="app-tile ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}"><button id="home-app-${app.id}" type="button" data-home-app="${app.id}" aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}" ${appLaunchPendingId ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : ""}</span></button>${controls}</article>`;
+    const available = app.launchState === "available";
+    const disabled = !available || Boolean(appLaunchPendingId);
+    return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}" ${disabled ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : "<small>Coming soon</small>"}</span></button>${controls}</article>`;
   };
   const socialIds = new Set(homeApps.filter((app) => app.provider === null).map((app) => app.id));
   const emailIds = new Set(homeApps.filter((app) => app.provider !== null).map((app) => app.id));

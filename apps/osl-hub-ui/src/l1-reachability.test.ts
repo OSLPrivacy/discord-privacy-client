@@ -37,14 +37,12 @@ describe("L1 Protect reachability", () => {
     vi.stubGlobal("cancelAnimationFrame", () => undefined);
     vi.resetModules();
     const { __oslHubUiTest } = await import("./main");
-    const apps = homeAppsFromServices(launchServices).filter((app) => app.visibility === "launch");
+    const apps = homeAppsFromServices(launchServices)
+      .filter((app) => app.visibility === "launch" && app.launchState === "available");
 
-    // Unsupported Telegram, Signal, WhatsApp, Outlook, Slack, and LinkedIn are
-    // not launch tiles. L1's shipping surface is the remaining supported apps.
-    expect(apps.map((app) => app.id)).toEqual([
-      "discord", "instagram", "snapchat", "x", "messenger",
-      "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
-    ]);
+    // Unsupported app specs may stay visible as roadmap tiles, but L1 Protect
+    // reachability only applies to the app catalog entries that can open.
+    expect(apps.map((app) => app.id)).toEqual(["discord"]);
 
     for (const app of apps) {
       const service = launchServices.find((candidate) => candidate.id === app.serviceId);
