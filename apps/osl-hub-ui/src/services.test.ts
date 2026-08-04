@@ -21,9 +21,11 @@ describe("linked-service contract", () => {
     expect(parseLinkedServices(validRegistry())).toHaveLength(12);
   });
 
-  it("offers WhatsApp as an available consumer service in browser preview", async () => {
+  it("keeps WhatsApp in the service registry without making it a launch tile", async () => {
     const whatsapp = (await loadLinkedServices()).find((service) => service.id === "whatsapp");
     expect(whatsapp).toMatchObject({ displayName: "WhatsApp", category: "consumer", launchState: "available" });
+    expect(homeAppsFromServices(await loadLinkedServices()).find((app) => app.id === "whatsapp"))
+      .toMatchObject({ visibility: "later", launchState: "available", setupEligible: false });
   });
 
   it("fails closed on unknown service fields or duplicate services", () => {
@@ -106,23 +108,26 @@ describe("linked-service contract", () => {
     }
   });
 
-  it("keeps every promised launch app visible before any profile is linked", () => {
+  it("keeps only supported launch apps visible before any profile is linked", () => {
     const services = parseLinkedServices(validRegistry())!;
     for (const service of services) service.accounts = [];
     const apps = homeAppsFromServices(services);
     const launch = apps.filter((app) => app.visibility === "launch");
     expect(launch.map((app) => app.id)).toEqual([
-      "discord", "instagram", "snapchat", "x", "telegram", "signal", "whatsapp", "messenger",
-      "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+      "discord", "instagram", "snapchat", "x", "messenger",
+      "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
     ]);
     expect(launch.every((app) => !app.linked && app.accountCount === 0)).toBe(true);
     expect(launch.find((app) => app.id === "discord")?.setupEligible).toBe(true);
-    expect(launch.find((app) => app.id === "signal")).toMatchObject({ launchState: "comingSoon", setupEligible: false });
+    for (const unsupported of ["telegram", "signal", "whatsapp", "outlook"] as const) {
+      expect(launch.find((app) => app.id === unsupported)).toBeUndefined();
+      expect(apps.find((app) => app.id === unsupported)).toMatchObject({ visibility: "later", setupEligible: false });
+    }
     expect(launch.filter((app) => app.section === "social").map((app) => app.id)).toEqual([
-      "discord", "instagram", "snapchat", "x", "telegram", "signal", "whatsapp", "messenger",
+      "discord", "instagram", "snapchat", "x", "messenger",
     ]);
     expect(launch.filter((app) => app.section === "email").map((app) => app.id)).toEqual([
-      "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+      "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
     ]);
 
     const fallbackLaunch = homeAppsFromServices([]).filter((app) => app.visibility === "launch");
@@ -142,10 +147,10 @@ describe("linked-service contract", () => {
       { id: "outlook-one", label: "Work", displayHandle: "Sign in", state: "notLinked", provider: "outlook" },
     ];
     const catalog = homeAppsFromServices(services);
-    expect(configuredTopStripApps(catalog).map((app) => app.id)).toEqual(["discord", "gmail", "outlook"]);
+    expect(configuredTopStripApps(catalog).map((app) => app.id)).toEqual(["discord", "gmail"]);
     expect(configuredTopStripApps(catalog, ["outlook", "unknown", "outlook"]).map((app) => app.id))
-      .toEqual(["outlook", "discord", "gmail"]);
-    expect(notificationIntegrationEligibility(catalog)).toEqual({ configuredAppCount: 3, eligible: true });
+      .toEqual(["discord", "gmail"]);
+    expect(notificationIntegrationEligibility(catalog)).toEqual({ configuredAppCount: 2, eligible: true });
     expect(notificationIntegrationEligibility(catalog.filter((app) => app.id !== "gmail" && app.id !== "outlook")))
       .toEqual({ configuredAppCount: 1, eligible: false });
   });
@@ -184,7 +189,7 @@ describe("linked-service contract", () => {
     const apps = homeAppsFromServices(services);
     expect(apps.find((app) => app.id === "gmail")).toMatchObject({ linked: true, accountCount: 2, setupEligible: true });
     expect(apps.find((app) => app.id === "proton")).toMatchObject({ linked: true, accountCount: 1, setupEligible: true });
-    expect(apps.find((app) => app.id === "outlook")).toMatchObject({ linked: false, accountCount: 0, setupEligible: true });
+    expect(apps.find((app) => app.id === "outlook")).toMatchObject({ linked: false, accountCount: 0, setupEligible: false, visibility: "later" });
 
     while (email.accounts.length < 10) {
       const index = email.accounts.length;
@@ -207,9 +212,13 @@ describe("linked-service contract", () => {
     expect(serviceAccountsForProvider(email, null)).toHaveLength(3);
   });
 
-  it("keeps Slack and LinkedIn out of launch apps as coming-soon work", () => {
+  it("keeps unsupported app tiles out of launch apps as coming-soon work", () => {
     const apps = homeAppsFromServices(parseLinkedServices(validRegistry())!);
     expect(apps.filter((app) => app.visibility === "later")).toEqual([
+      expect.objectContaining({ id: "telegram", setupEligible: false }),
+      expect.objectContaining({ id: "signal", setupEligible: false }),
+      expect.objectContaining({ id: "whatsapp", setupEligible: false }),
+      expect.objectContaining({ id: "outlook", setupEligible: false }),
       expect.objectContaining({ id: "slack", launchState: "comingSoon", setupEligible: false }),
       expect.objectContaining({ id: "linkedin", launchState: "comingSoon", setupEligible: false }),
     ]);

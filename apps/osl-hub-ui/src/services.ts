@@ -316,18 +316,23 @@ const homeAppDefinitions: readonly HomeAppDefinition[] = [
   homeApp("instagram", "Instagram", "instagram"),
   homeApp("snapchat", "Snapchat", "snapchat"),
   homeApp("x", "X", "x"),
-  homeApp("telegram", "Telegram", "telegram"),
-  homeApp("signal", "Signal", "signal"),
-  homeApp("whatsapp", "WhatsApp", "whatsapp"),
   homeApp("messenger", "Messenger", "messenger"),
   homeApp("gmail", "Gmail", "email", "gmail"),
-  homeApp("outlook", "Outlook", "email", "outlook"),
   homeApp("proton", "Proton Mail", "email", "proton"),
   homeApp("yahoo", "Yahoo Mail", "email", "yahoo"),
   homeApp("aol", "AOL Mail", "email", "aol"),
   homeApp("gmx", "GMX", "email", "gmx"),
   homeApp("maildotcom", "Mail.com", "email", "maildotcom"),
   homeApp("icloud", "iCloud Mail", "email", "icloud"),
+  // P-28/P-48 applies to every unsupported launch tile, not just native-account
+  // setup. Keep QA/native plumbing addressable by service/provider id, but do
+  // not invite users into unsupported Telegram, Signal, WhatsApp, or Outlook
+  // app launch surfaces. OSL Mail is a separate first-party surface, not an
+  // Outlook support claim.
+  homeApp("telegram", "Telegram", "telegram", null, "later", "comingSoon"),
+  homeApp("signal", "Signal", "signal", null, "later", "comingSoon"),
+  homeApp("whatsapp", "WhatsApp", "whatsapp", null, "later", "comingSoon"),
+  homeApp("outlook", "Outlook", "email", "outlook", "later", "comingSoon"),
   homeApp("slack", "Slack", "slack", null, "later", "comingSoon"),
   homeApp("linkedin", "LinkedIn messaging", "linkedin", null, "later", "comingSoon"),
 ];

@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+const localProtectedSheetSource = readFileSync(new URL("./local-protected-sheet.ts", import.meta.url), "utf8");
+const servicesSource = readFileSync(new URL("./services.ts", import.meta.url), "utf8");
 
 function functionSource(name: string, nextName: string): string {
   const start = source.indexOf(`function ${name}`);
@@ -25,6 +27,10 @@ describe("B0-07b main.ts prohibitions", () => {
     expect(settings).toContain('["manual", "Manual", "Prepare only; you place and send"]');
     expect(settings).not.toContain('setup.sendMode === "manual" ? "clipboard" : setup.sendMode');
     expect(protectedDraft).toContain('setup.sendMode === "manual"');
+    expect(protectedDraft.indexOf('setup.sendMode === "manual"'))
+      .toBeLessThan(protectedDraft.indexOf("navigator.clipboard.writeText(prepared.capsule)"));
+    expect(localProtectedSheetSource).not.toContain("void sendMode");
+    expect(localProtectedSheetSource).toContain('manualMode ? "Encrypt & prepare"');
     expect(source).toContain("localProtectedSheetMarkup(localProtectedSheet, setup.sendMode)");
   });
 
@@ -54,6 +60,10 @@ describe("B0-07b main.ts prohibitions", () => {
     expect(detected).not.toContain('nativeSessionModeSettingChoices("outlook", "Outlook")');
     expect(guide).toContain("supportedNativeAppIds.has(activeHomeAppId as NativeAppId)");
     expect(binding).not.toContain('finishNativeAccountChoice("telegram")');
+    expect(servicesSource).toContain('homeApp("telegram", "Telegram", "telegram", null, "later", "comingSoon")');
+    expect(servicesSource).toContain('homeApp("signal", "Signal", "signal", null, "later", "comingSoon")');
+    expect(servicesSource).toContain('homeApp("whatsapp", "WhatsApp", "whatsapp", null, "later", "comingSoon")');
+    expect(servicesSource).toContain('homeApp("outlook", "Outlook", "email", "outlook", "later", "comingSoon")');
   });
 
   it("P-34 states independent warning defaults", () => {
