@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeAppsFromServices, loadLinkedServices, notificationIntegrationEligibility, parseEmbeddedServiceHost, parseFirefoxStatus, parseLinkedAccount, parseLinkedServices, parseMullvadStatus, parseNativeAppAction, parseNativeApps, serviceAccountsForProvider } from "./services";
+import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeAppsFromServices, loadLinkedServices, loadNativeApps, notificationIntegrationEligibility, parseEmbeddedServiceHost, parseFirefoxStatus, parseLinkedAccount, parseLinkedServices, parseMullvadStatus, parseNativeAppAction, parseNativeApps, serviceAccountsForProvider } from "./services";
 
 const originalAppRoster = [
   "discord", "telegram", "instagram", "snapchat", "x", "messenger", "signal", "whatsapp",
@@ -243,5 +244,61 @@ describe("linked-service contract", () => {
       expect.objectContaining({ id: "slack", launchState: "comingSoon", setupEligible: false }),
       expect.objectContaining({ id: "linkedin", launchState: "comingSoon", setupEligible: false }),
     ]);
+  });
+});
+
+/**
+ * The TS catalog is a FALLBACK, not a second opinion.
+ *
+ * `loadNativeApps` returns `nativePreviewApps` verbatim whenever the app is not
+ * running under Tauri, so this list is what a user sees before the backend has
+ * answered. Rust owns the support decision (`native_apps.rs` `NATIVE_APPS`);
+ * this list is only allowed to agree with it. Two catalogs that can disagree is
+ * how a provider gets ungated on one side and not the other.
+ *
+ * The expected values are READ OUT OF THE RUST SOURCE rather than written here,
+ * so this test cannot be satisfied by editing it to match a drifted catalog.
+ */
+describe("native app catalog agrees with the Rust support decision", () => {
+  const nativeAppsRs = readFileSync(
+    new URL("../../osl-hub/src/native_apps.rs", import.meta.url),
+    "utf8",
+  );
+
+  /** `SupportLevel` -> the `NativeAppSupportStatus` `native_app_support_status` maps it to. */
+  const publicStatusOf: Record<string, string> = {
+    Supported: "beta",
+    Experimental: "beta",
+    ComingSoon: "comingSoon",
+    ExternallyBlocked: "externallyBlocked",
+  };
+
+  function rustSupportLevel(rustId: string): string {
+    const manifest = nativeAppsRs.split("NativeAppManifest {")
+      .find((block) => block.includes(`id: NativeAppId::${rustId},`));
+    expect(manifest, `native_apps.rs has no manifest for ${rustId}`).toBeTruthy();
+    const level = /adapter_support: SupportLevel::(\w+),/.exec(manifest as string);
+    expect(level, `no adapter_support for ${rustId}`).toBeTruthy();
+    return (level as RegExpExecArray)[1];
+  }
+
+  it("reads a support level per app, and they are not all the same", () => {
+    const levels = ["Discord", "Telegram", "Signal", "Whatsapp", "Outlook"].map(rustSupportLevel);
+    expect(levels).toHaveLength(5);
+    expect(new Set(levels).size).toBeGreaterThan(1);
+  });
+
+  it("never claims more than Rust does", async () => {
+    const rustIdFor: Record<string, string> = {
+      discord: "Discord", telegram: "Telegram", signal: "Signal",
+      whatsapp: "Whatsapp", outlook: "Outlook",
+    };
+    const catalog = await loadNativeApps();
+    expect(catalog.length).toBe(Object.keys(rustIdFor).length);
+    for (const app of catalog) {
+      const expected = publicStatusOf[rustSupportLevel(rustIdFor[app.id])];
+      expect(expected, `unmapped SupportLevel for ${app.id}`).toBeTruthy();
+      expect(app.supportStatus, `${app.id} disagrees with native_apps.rs`).toBe(expected);
+    }
   });
 });
