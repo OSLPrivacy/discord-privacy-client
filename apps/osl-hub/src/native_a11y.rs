@@ -1166,6 +1166,29 @@ pub fn acquire_uia2_editables(
     host.editable_elements(window.bound_hwnd, window.tree_route, deadline)
 }
 
+/// Read a composer's current text, under the acquisition's own budget.
+///
+/// `place_uia2_carrier` already reads a composer, but it keeps the string to
+/// itself and answers only `readback_holds_carrier`. That is the right answer
+/// for a placement receipt -- a receipt must never carry a real person's draft
+/// -- but it makes one question unanswerable from outside this module: *what
+/// did the provider actually hand back?* A carrier that survives a composer
+/// byte-for-byte and a carrier that survives it well enough to `contains` are
+/// different claims, and only the first is a carry.
+///
+/// Same rule as its siblings: the budget is derived here from
+/// `call_timeout_ms`, and there is deliberately no variant that accepts a
+/// caller-supplied [`Uia2Deadline`].
+pub fn read_uia2_composer_value(
+    host: &dyn Uia2Syscalls,
+    acquired: Uia2Acquired,
+    composer: &Uia2Editable,
+) -> Result<Option<String>, Uia2CallTimeout> {
+    let window = acquired.window;
+    let deadline = Uia2Deadline(window.call_timeout_ms);
+    host.value_of(window.bound_hwnd, window.tree_route, composer, deadline)
+}
+
 /// How a provider's composer is told apart from every other editable element,
 /// including the search box that A-00 wrote into by accident and D-139 found
 /// still admissible.

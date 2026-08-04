@@ -295,6 +295,11 @@ const firefoxServiceIds: readonly HomeAppId[] = [
 ];
 const nativePreviewApps: readonly NativeApp[] = [
   { id: "discord", displayName: "Discord", availability: "installable", supportStatus: "beta", protectedMode: "assistOnly", isolatedProfileAvailable: true, supportsOverlay: false },
+  // Telegram's placement and carry are proven live, but the label is HELD at
+  // "comingSoon" (D-206): the only status Rust can render for a carrying provider
+  // is `beta`, which osl-public-claim-allowlist.md forbids for Telegram. This line
+  // is checked against native_apps.rs by services.test.ts -- do not move it here
+  // first.
   { id: "telegram", displayName: "Telegram", availability: "installable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
   { id: "signal", displayName: "Signal", availability: "installable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
   { id: "whatsapp", displayName: "WhatsApp", availability: "installable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
