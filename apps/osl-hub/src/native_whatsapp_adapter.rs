@@ -642,7 +642,7 @@ pub const WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS: u64 = 2_000;
 /// never been measured on this provider, on a window that is not the one
 /// Chromium hands its client object for.
 ///
-/// # What this plan does NOT yet reach, measured live
+/// # How this plan reaches the content window, measured live
 ///
 /// Run from Rust on the owner's Windows host, WhatsApp shown, through this very
 /// plan and the substrate's own enumerator:
@@ -654,24 +654,61 @@ pub const WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS: u64 = 2_000;
 ///           visible=true area=1068000 parent=None      associated_app=None
 /// candidate hwnd=132018 pid=24196 image="msedgewebview2.exe" class="Chrome_RenderWidgetHostHWND"
 ///           visible=true area=1068000 parent=Some(67446) associated_app=None
-/// whatsapp: acquire failed: Resolve(MissingSiblingContentOuter)
 /// ```
 ///
 /// The shell resolves. The content window exists, is visible, and carries the
-/// renderer child. What is missing is the link: `associated_app_hwnd` is `None`,
-/// and [`crate::native_a11y::resolve_uia2_window`] requires it to equal the
-/// shell's handle. The WebView2 window is genuinely top-level -- parent,
-/// `GA_ROOT`, `GA_ROOTOWNER` and `GWLP_HWNDPARENT` are all zero or itself, in
-/// both directions -- so no ancestry-derived field can ever produce that link.
+/// renderer child. What was missing was the link: `associated_app_hwnd` is
+/// `None`, and the resolver used to require it to equal the shell's handle. The
+/// WebView2 window is genuinely top-level -- parent, `GA_ROOT`, `GA_ROOTOWNER`
+/// and `GWLP_HWNDPARENT` are all zero or itself, in both directions -- so no
+/// ancestry-derived field can ever produce that link, and this plan resolved to
+/// `Resolve(MissingSiblingContentOuter)`.
 ///
 /// The relationship that does exist is **process parentage**: msedgewebview2
 /// pid 24196 has `ParentProcessId` 23884, the shell, and its command line
-/// carries `--webview-exe-name=WhatsApp.Root.exe`. Teaching the substrate that
-/// association is the remaining work, and it belongs to `native_a11y`, which
-/// this lane does not own. Until then this adapter refuses -- see
-/// `the_measured_host_has_no_window_link_from_the_shell_to_its_webview2`.
-/// It must not fall back to "the biggest visible msedgewebview2 window":
-/// this machine runs a second one for Windows Search, and it is larger.
+/// carries `--webview-exe-name=WhatsApp.Root.exe`. D-156 taught the substrate
+/// that association, in [`crate::native_a11y::classify_sibling_host`]:
+/// parentage is the link and the switch is the corroboration, both are
+/// required, and a host that is parented here while naming another application
+/// is refused rather than guessed at.
+///
+/// **The anchor is not a unique key, and ambiguity fails closed (D-180).** If
+/// more than one host satisfies both signals the substrate refuses; it does not
+/// pick the larger, because size is not evidence of which host holds the
+/// conversation and "biggest visible `msedgewebview2`" was already rejected as
+/// this task's mutant [1]. Nothing downstream would catch a wrong choice --
+/// `whatsapp_placement` guards only `bound_is_app_shell` -- and the text this
+/// adapter places IS the carrier for the payload, so binding the wrong window
+/// sends it somewhere the user did not choose. If a legitimate second window
+/// ever appears (a popped-out chat, a media viewer), the resolution is a
+/// positive discriminator built on [`WHATSAPP_COMPOSER_MATCHER`], never a
+/// heuristic.
+///
+/// **And the corroboration is an accident control, not an anti-spoofing
+/// defence.** A process can choose its apparent parent with
+/// `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, and a command line is chosen by
+/// whoever launches the process, so both signals are attacker-controlled and
+/// requiring both costs an adversary nothing. What it does buy is telling
+/// Windows Search's WebView2 apart from WhatsApp's, which is the failure that
+/// was actually measured on this machine.
+///
+/// It still must not fall back to "the biggest visible msedgewebview2 window":
+/// this machine runs a second one for Windows Search, it is larger, and
+/// `native_a11y`'s `largest_visible_webview2_is_the_decoy_not_whatsapp` pins
+/// that it would be chosen. The refusal also stays reachable -- a shell with no
+/// parented WebView2 still produces
+/// [`WhatsAppPlacementStatus::WebView2ContentUnavailable`], which is what
+/// `the_measured_host_has_no_window_link_from_the_shell_to_its_webview2` and
+/// `native_a11y`'s `a_shell_with_no_parented_webview2_still_refuses` hold down.
+///
+/// **Note for whoever owns this file next.** This module's own recorded graphs
+/// were captured before the process table was read, so `contract_whatsapp_graph`
+/// still carries the window-tree link and `measured_whatsapp_graph` carries no
+/// link at all. Both are still correct as recorded and both still pass, but
+/// neither exercises parentage: adding `.hosted_by(23884, Some("WhatsApp.Root.exe"))`
+/// to the two msedgewebview2 entries of `measured_whatsapp_graph` is what would
+/// flip it from refusing to placing, and that edit belongs to this lane, not to
+/// D-156's.
 pub const WHATSAPP_UIA2_WINDOW_PLAN: Uia2WindowPlan = Uia2WindowPlan::sibling_chromium_renderer(
     "WhatsApp",
     WHATSAPP_DESKTOP_PROCESS_NAME,
