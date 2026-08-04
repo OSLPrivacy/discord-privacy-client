@@ -1,3 +1,5 @@
+// D-172 MUTANT M4. Gate (a) cargo check --workspace --all-targets must go RED.
+pub fn d172_mutant() -> u32 { this_symbol_does_not_exist() }
 //! Discord Privacy Client cryptographic primitives.
 //!
 //! Library origins (per design doc; deviations recorded in
