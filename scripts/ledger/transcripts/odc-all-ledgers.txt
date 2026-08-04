@@ -1,6 +1,4 @@
-TASK B0-08 ODC transcript
-
-COMMAND: node scripts/ledger/all.mjs
+$ node scripts/ledger/all.mjs --no-cache
 LEDGER attributes -- interactive data-* emitted vs event-bound selectors, ledger 1 of 7
   frontend files scanned: 95
   data-* attributes emitted anywhere in markup: 199
@@ -75,14 +73,14 @@ LEDGER acl -- commands issued vs ACL-granted, including framework-internal, ledg
   capability files covering webview main: 6
   distinct permissions granted: 160
   modules reachable from main-window entries: 104
-  distinct commands issued: 157
+  distinct commands issued: 158
   framework-injected issuers that fire here: 2
   tauri version (Cargo.lock / vendored): 2.11.1 / 2.11.1
   @tauri-apps/api version: 2.11.1
-  invoke() calls with a non-literal command (not analysable): 9
+  invoke() calls with a non-literal command (not analysable): 8
   accepted exceptions: 0/0 (high-water mark 0)
-  VIOLATIONS (25):
-    ungranted (24):
+  VIOLATIONS (34):
+    ungranted (25):
       - burn_native_discord_overlay_chat -- needs "allow-burn-native-discord-overlay-chat" in a capability covering the main webview; issued via direct
           apps/osl-hub-ui/src/native-overlay-adapter.ts:557
       - claim_hub_username -- needs "allow-claim-hub-username" in a capability covering the main webview; issued via direct
@@ -131,18 +129,37 @@ LEDGER acl -- commands issued vs ACL-granted, including framework-internal, ledg
           apps/osl-hub-ui/src/native-overlay-adapter.ts:576
       - stop_osl_lan_room -- needs "allow-stop-osl-lan-room" in a capability covering the main webview; issued via direct
           apps/osl-hub-ui/src/osl-collab.ts:72
+      - surface_adapter_paint_targets -- needs "allow-surface-adapter-paint-targets" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:124
     ungranted-framework-internal (1):
       - plugin:window|internal_toggle_maximize -- needs "core:window:allow-internal-toggle-maximize" in a capability covering the main webview; issued via framework-injected
           tauri/src/window/scripts/drag.js:103
+    unresolved-command-name (8):
+      - unresolved-command:apps/osl-hub-ui/src/core.ts:170 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:170
+      - unresolved-command:apps/osl-hub-ui/src/core.ts:224 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:224
+      - unresolved-command:apps/osl-hub-ui/src/core.ts:230 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:230
+      - unresolved-command:apps/osl-hub-ui/src/native-overlay-adapter.ts:78 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:78
+      - unresolved-command:apps/osl-hub-ui/src/osl-collab.ts:71 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-collab.ts:71
+      - unresolved-command:apps/osl-hub-ui/src/osl-mail-adapter.ts:214 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-mail-adapter.ts:214
+      - unresolved-command:apps/osl-hub-ui/src/ui-behavior.ts:303 -- direct invoke() command is not a literal or known string constant: command: "remove_hub_friend"
+          apps/osl-hub-ui/src/ui-behavior.ts:303
+      - unresolved-command:apps/osl-hub-ui/src/whatsapp-qa-shell.ts:49 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/whatsapp-qa-shell.ts:49
   RESULT: RED
 LEDGER commands -- frontend invokes vs Rust command registry, ledger 4 of 7
   frontend source files scanned: 154
-  distinct frontend commands invoked: 178
+  distinct frontend commands invoked: 179
   registered Rust commands: 208
-  invoke() calls with a non-literal command (not analysable): 12
+  invoke() calls with a non-literal command (not analysable): 11
   accepted exceptions: 0/0 (high-water mark 0)
-  VIOLATIONS (34):
-    frontend-invoke-not-registered (34):
+  VIOLATIONS (46):
+    frontend-invoke-not-registered (35):
       - append_osl_asset_chunk -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
           apps/osl-hub-ui/src/osl-assets.ts:34
       - begin_osl_asset_upload -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
@@ -211,6 +228,31 @@ LEDGER commands -- frontend invokes vs Rust command registry, ledger 4 of 7
           apps/osl-hub-ui/src/scrub-imap-ipc.ts:89
       - stop_osl_lan_room -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
           apps/osl-hub-ui/src/osl-collab.ts:72
+      - surface_adapter_paint_targets -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:124
+    unresolved-command-name (11):
+      - unresolved-invoke:apps/osl-hub-ui/src/core.ts:170 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:170
+      - unresolved-invoke:apps/osl-hub-ui/src/core.ts:224 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:224
+      - unresolved-invoke:apps/osl-hub-ui/src/core.ts:230 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:230
+      - unresolved-invoke:apps/osl-hub-ui/src/native-overlay-adapter.ts:78 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:78
+      - unresolved-invoke:apps/osl-hub-ui/src/osl-collab.ts:71 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-collab.ts:71
+      - unresolved-invoke:apps/osl-hub-ui/src/osl-mail-adapter.ts:214 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-mail-adapter.ts:214
+      - unresolved-invoke:apps/osl-hub-ui/src/osl-notes.ts:56 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-notes.ts:56
+      - unresolved-invoke:apps/osl-hub-ui/src/scrub-imap-ipc.ts:55 -- invoke() command is not a literal or known string constant: command: string
+          apps/osl-hub-ui/src/scrub-imap-ipc.ts:55
+      - unresolved-invoke:apps/osl-hub-ui/src/scrub-imap-ipc.ts:65 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/scrub-imap-ipc.ts:65
+      - unresolved-invoke:apps/osl-hub-ui/src/ui-behavior.ts:303 -- invoke() command is not a literal or known string constant: command: "remove_hub_friend"
+          apps/osl-hub-ui/src/ui-behavior.ts:303
+      - unresolved-invoke:apps/osl-hub-ui/src/whatsapp-qa-shell.ts:49 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/whatsapp-qa-shell.ts:49
   RESULT: RED
 LEDGER events -- Tauri events emitted vs listened, ledger 5 of 7
   frontend source files scanned: 154
@@ -232,7 +274,7 @@ LEDGER routes -- routes assigned vs dispatched, ledger 6 of 7
   top-level routes dispatched: 13
   onboarding routes assigned: 19
   onboarding routes dispatched: 22
-  non-literal route assignments: 28
+  non-literal route assignments: 27
   accepted exceptions: 0/0 (high-water mark 0)
   VIOLATIONS (1):
     assigned-route-not-dispatched (1):
@@ -243,5 +285,8 @@ LEDGER bundle -- real bundle membership (rollup getModuleIds), ledger 7 of 7
   production sources: 167
   modules rollup loaded (in-tree): 119
   outside the bundle: 55
+  bundle cache mode: bypass
+  bundle source files fingerprinted: 172
   accepted exceptions: 55/55 (high-water mark 55)
   RESULT: GREEN
+exit=1
