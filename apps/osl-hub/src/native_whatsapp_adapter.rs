@@ -631,9 +631,19 @@ pub const WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS: u64 = 2_000;
 /// # Why `tree_route` is `UiaNative` and not Discord's `MsaaBridge`
 ///
 /// The two axes are independent and Discord's answer is not transferable.
-/// Discord's shipping route reads Chromium's custom MSAA client object on the
+/// Discord's shipping route reads Chromium's MSAA client object on the
 /// **outer** window because OSL has already borrowed and reparented that exact
-/// window, and `wake_electron_accessibility` hands back an `IAccessible` there.
+/// window.
+///
+/// **Corrected by D-176.** That sentence used to end "and
+/// `wake_electron_accessibility` hands back an `IAccessible` there", which was
+/// not true when it was written: the handshake asked for Chromium's honeypot
+/// object id, which every provider answers with nothing, so it handed back
+/// `None` at Discord's outer window as much as anywhere else. It is true now,
+/// because the handshake takes the object at `OBJID_CLIENT` -- see
+/// [`crate::native_a11y::wake_electron_accessibility_with`] for the measurement
+/// and for what a returned object does and does not prove.
+///
 /// WhatsApp is not a borrowed window: nothing in OSL adopts it, the content
 /// root is in a process OSL never claimed, and the handle this plan binds is
 /// the renderer child -- which is precisely the window A-00 measured with UI
