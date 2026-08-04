@@ -594,8 +594,11 @@ fn carrier_sha256_label(carrier: &str) -> String {
 /// `native_a11y`'s recorded fixture calls this process `WhatsApp.exe`, and the
 /// substrate compares image names exactly once `.exe` is stripped. `WhatsApp`
 /// therefore matches nothing on the real machine, and the adapter would have
-/// reported `AppNotRunning` on a host where WhatsApp was running. The fixture
-/// string was never checked against a live process from Rust; this one was.
+/// found no window on a host where WhatsApp was running. The fixture string was
+/// never checked against a live process from Rust; this one was, and the live
+/// run below reports `image="WhatsApp.Root.exe"` -- which also refutes A-00b's
+/// residual risk 4, since `OpenProcess` is clearly not refused for this Appx
+/// package.
 pub const WHATSAPP_DESKTOP_PROCESS_NAME: &str = "WhatsApp.Root";
 
 /// Chromium builds its accessibility tree lazily and A-00 measured ~90 s to a
@@ -635,6 +638,37 @@ pub const WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS: u64 = 2_000;
 /// login screen). Taking `MsaaBridge` here would claim a bridged read that has
 /// never been measured on this provider, on a window that is not the one
 /// Chromium hands its client object for.
+///
+/// # What this plan does NOT yet reach, measured live
+///
+/// Run from Rust on the owner's Windows host, WhatsApp shown, through this very
+/// plan and the substrate's own enumerator:
+///
+/// ```text
+/// candidate hwnd=198342 pid=23884 image="WhatsApp.Root.exe" class="WinUIDesktopWin32WindowClass"
+///           visible=true area=1092960 parent=None      associated_app=None
+/// candidate hwnd=67446  pid=24196 image="msedgewebview2.exe" class="Chrome_WidgetWin_1"
+///           visible=true area=1068000 parent=None      associated_app=None
+/// candidate hwnd=132018 pid=24196 image="msedgewebview2.exe" class="Chrome_RenderWidgetHostHWND"
+///           visible=true area=1068000 parent=Some(67446) associated_app=None
+/// whatsapp: acquire failed: Resolve(MissingSiblingContentOuter)
+/// ```
+///
+/// The shell resolves. The content window exists, is visible, and carries the
+/// renderer child. What is missing is the link: `associated_app_hwnd` is `None`,
+/// and [`crate::native_a11y::resolve_uia2_window`] requires it to equal the
+/// shell's handle. The WebView2 window is genuinely top-level -- parent,
+/// `GA_ROOT`, `GA_ROOTOWNER` and `GWLP_HWNDPARENT` are all zero or itself, in
+/// both directions -- so no ancestry-derived field can ever produce that link.
+///
+/// The relationship that does exist is **process parentage**: msedgewebview2
+/// pid 24196 has `ParentProcessId` 23884, the shell, and its command line
+/// carries `--webview-exe-name=WhatsApp.Root.exe`. Teaching the substrate that
+/// association is the remaining work, and it belongs to `native_a11y`, which
+/// this lane does not own. Until then this adapter refuses -- see
+/// `the_measured_host_has_no_window_link_from_the_shell_to_its_webview2`.
+/// It must not fall back to "the biggest visible msedgewebview2 window":
+/// this machine runs a second one for Windows Search, and it is larger.
 pub const WHATSAPP_UIA2_WINDOW_PLAN: Uia2WindowPlan = Uia2WindowPlan::sibling_chromium_renderer(
     "WhatsApp",
     WHATSAPP_DESKTOP_PROCESS_NAME,
@@ -693,8 +727,12 @@ pub enum WhatsAppPlacementStatus {
     /// The carrier could never be placed: empty, oversized, or carrying a
     /// character a composer treats as a commit.
     InvalidCarrier,
-    /// No WhatsApp shell window at all.
-    AppNotRunning,
+    /// No usable WhatsApp shell window. Measured on the owner's host: this is
+    /// what a *running* WhatsApp closed to the tray produces, because every one
+    /// of its windows reports `IsWindowVisible` false and the substrate binds
+    /// only visible windows. "Not running" and "hidden" are indistinguishable
+    /// from here, so the status does not claim to tell them apart.
+    AppWindowUnavailable,
     /// The shell is running but no sibling WebView2 content window was found.
     /// This is the state a single-window probe misreports as "WhatsApp cannot
     /// be driven", so it is a distinct status rather than "no composer".
@@ -886,7 +924,7 @@ fn whatsapp_editables(
 fn whatsapp_acquire_failure(error: Uia2AcquireError) -> WhatsAppPlacementStatus {
     match error {
         Uia2AcquireError::Resolve(Uia2WindowResolveError::MissingAppOuter) => {
-            WhatsAppPlacementStatus::AppNotRunning
+            WhatsAppPlacementStatus::AppWindowUnavailable
         }
         Uia2AcquireError::Resolve(Uia2WindowResolveError::MissingSiblingContentOuter)
         | Uia2AcquireError::Resolve(Uia2WindowResolveError::MissingRendererChild) => {
@@ -1925,7 +1963,7 @@ mod tests {
         let absent = RecordedHost::new(Vec::new(), 0).chromium(2);
         assert_eq!(
             drive_whatsapp_composer_placement(&absent, PAYLOAD, false).status,
-            WhatsAppPlacementStatus::AppNotRunning
+            WhatsAppPlacementStatus::AppWindowUnavailable
         );
     }
 
@@ -2127,8 +2165,42 @@ mod tests {
     fn drive_the_real_whatsapp_composer_through_the_substrate() {
         let host = crate::native_a11y::win32::Uia2Win32Host::desktop();
         let relay = Uia2DeadlineRelay::new(&host);
-        let acquired = acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &relay)
-            .unwrap_or_else(|error| panic!("whatsapp: acquire failed: {error:?}"));
+        let acquired = match acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &relay) {
+            Ok(acquired) => acquired,
+            Err(error) => {
+                // Say WHY, from what the substrate itself enumerated, instead of
+                // leaving the conductor to guess between "not running", "hidden",
+                // "named something else" and "the association is missing". The
+                // acquisition has already issued its enumerate, so the relay is
+                // holding the plan's deadline by the time we get here.
+                if let Some(deadline) = relay.issued_deadline() {
+                    match relay.enumerate_windows(deadline) {
+                        Ok(windows) => {
+                            let interesting = windows.iter().filter(|window| {
+                                let name = window.process_name.to_ascii_lowercase();
+                                name.contains("whatsapp") || name.contains("webview2")
+                            });
+                            for window in interesting {
+                                eprintln!(
+                                    "  candidate hwnd={} pid={} image={:?} class={:?} \
+                                     visible={} area={} parent={:?} associated_app={:?}",
+                                    window.hwnd,
+                                    window.process_id,
+                                    window.process_name,
+                                    window.class_name,
+                                    window.visible,
+                                    window.area,
+                                    window.parent_hwnd,
+                                    window.associated_app_hwnd,
+                                );
+                            }
+                        }
+                        Err(timeout) => eprintln!("  enumeration timed out: {timeout:?}"),
+                    }
+                }
+                panic!("whatsapp: acquire failed: {error:?}");
+            }
+        };
         eprintln!(
             "whatsapp: pid={} elements={} woke={} settled_ms={} bound_is_app_shell={}",
             acquired.window.bound_process_id,
