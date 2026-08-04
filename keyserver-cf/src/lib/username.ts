@@ -1,3 +1,9 @@
+// D-172 MUTANT M5. A 14th TypeScript error where the quarantine baseline says
+// there are 13. The quarantine-ratchet job must go RED with "REGRESSION".
+// Types are erased by esbuild, so gate (d) must stay GREEN -- proving the
+// ratchet catches what the bundle gate structurally cannot.
+const D172_MUTANT: number = "not a number";
+void D172_MUTANT;
 import { verifyEd25519 } from "./crypto.js";
 import { decodeBase64 } from "./validation.js";
 
