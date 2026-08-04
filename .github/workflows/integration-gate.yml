@@ -95,10 +95,21 @@ on:
 #   * Every gating workflow now carries `workflow_dispatch`, so a run skipped by
 #     a commit message can be graded by hand on the same ref without a new push.
 #   * RESIDUAL RISK, unfixed: a DIRECT push to integrate/first-usable whose
-#     commit subject contains `[skip ci]` runs no gate and leaves no red mark.
+#     commit message contains `[skip ci]` runs no gate and leaves no red mark.
 #     Nothing in this repository can detect that from inside a workflow that did
 #     not run. If that matters more than the convenience, the fix is branch
 #     protection on integrate/** requiring a PR, which is an owner setting.
+#
+# CONFIRMED BY ACCIDENT, 2026-08-04, which is why the wording above is precise.
+# The commit that first wrote this ruling QUOTED the token in its own commit
+# message, and the push of that commit to `integrate/d192-fix` produced ZERO
+# workflow runs -- while the identical tree pushed to `integrate/d192-mutants`
+# under a different message ran all five. Two facts fell out of it:
+#   * GitHub matches the token anywhere in the HEAD COMMIT MESSAGE, body
+#     included, not just the subject line. Do not quote it in a commit message.
+#   * The mitigation works: `gh workflow run` on the same ref graded it.
+# That is a considerably better demonstration than the paragraph above, and it
+# cost nothing but a confusing five minutes.
 
 permissions:
   contents: read
