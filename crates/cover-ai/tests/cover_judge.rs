@@ -878,16 +878,23 @@ fn split_interleaved(lines: &[&'static str]) -> (Vec<&'static str>, Vec<&'static
     (training, held_out)
 }
 
-/// Alternate two sources so a reference stream is never a run of one of them.
-fn alternate(left: &[&'static str], right: &[&'static str]) -> Vec<&'static str> {
-    let mut out = Vec::new();
-    for index in 0..left.len().max(right.len()) {
-        if let Some(line) = left.get(index) {
-            out.push(*line);
-        }
-        if let Some(line) = right.get(index) {
-            out.push(*line);
-        }
+/// Deterministically permute a line list.
+///
+/// The reference stream is read sequentially with wraparound and each trial
+/// concatenates consecutive lines up to a word count, so **the order of the
+/// reference matters**. Two held-out sets of very different sizes (136 project
+/// lines, 325 external) cannot be zipped 1:1 without leaving a long uniform tail;
+/// permuting the pool spreads both provenances evenly through it. Control 1
+/// caught the first attempt at this, which left one reference stream entirely
+/// project-corpus and the other entirely external and so turned the *bias* gate
+/// into an accidental cross-provenance comparison.
+fn permuted(lines: &[&'static str], mut seed: u64) -> Vec<&'static str> {
+    let mut out = lines.to_vec();
+    for index in (1..out.len()).rev() {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        out.swap(index, (seed % (index as u64 + 1)) as usize);
     }
     out
 }
@@ -934,8 +941,13 @@ fn bench() -> Bench {
     let legacy_training: Vec<&'static str> =
         project_chat.iter().take(READER_TRAINING_LINES).copied().collect();
 
-    let reference = alternate(&project_held, &external_held);
-    let (reference, reference_b) = interleaved(&reference);
+    // Pool both held-out provenances, permute so neither reference stream is a
+    // run of one of them, then split by parity. Both halves carry the same
+    // provenance mix, which is what makes Control 1 a bias gate and not a
+    // cross-provenance comparison in disguise.
+    let mut pool = project_held.clone();
+    pool.extend_from_slice(&external_held);
+    let (reference, reference_b) = interleaved(&permuted(&pool, 0xd215_5911_7c0d_e001));
 
     Bench {
         legacy: LegacyReader::train(&legacy_training),
@@ -989,81 +1001,194 @@ fn control_1_the_judge_is_unbiased_within_its_own_corpus() {
     }
 }
 
+
 // ==========================================================================
 // CONTROL 2 - THE ONE THAT MATTERS. Different provenance, still human.
 // ==========================================================================
 
-/// **The control D-215 requires, and the reason this file exists.**
+/// **The judges this file certifies as safe to quote a number from.**
 ///
-/// Every suspect here is a sentence a person wrote. Nothing generated a single
-/// word of it. It is `stego/src/bigram_corpus.txt`: hand-written texting-register
-/// English, a **third provenance that appears nowhere in the judge's training
-/// pool**. The reference side is held-out human text of the provenances the judge
-/// *was* trained on, so the comparison is exactly the one that exposes a
-/// corpus-membership detector: mine versus not-mine, both human.
+/// **It is empty, and that is D-215's answer.** Measured 2026-08-04: no scorer in
+/// this file passes `control_2_the_judge_does_not_flag_human_text_of_another_provenance`
+/// in its two-sided, leave-one-provenance-out form. Not the legacy reader, not its
+/// vocabulary-blind variant, not the closed-alphabet frame likelihood, not the
+/// closed-alphabet PMI that fixes everything else.
 ///
-/// A judge that detects **generation** must sit near 0.500. A judge that detects
-/// **membership of its own training corpus** sits near 1.000, and every number it
-/// has ever produced means "this text came from somewhere else".
+/// Control 2 asserts that this list and the measurement **agree**. So:
 ///
-/// **This test fails loudly if the judge regresses to corpus-membership
-/// detection.** That is its entire job. The legacy scorers are run beside it and
-/// are *expected* to fail, so their numbers are printed and not asserted --
-/// reproducing D-215 on demand rather than asking anyone to take it on trust.
-/// Deleting or loosening the assertion re-opens D-215.
+/// * adding a scorer here without the control passing fails the test;
+/// * improving a scorer until the control passes and *not* recording it here also
+///   fails the test, with a message saying to record it;
+/// * a scorer that was certified and regresses fails the test.
+///
+/// It is deliberately not possible to make this file green by tuning a scorer,
+/// because Control 3 has to keep passing at the same time and it demands the
+/// opposite behaviour.
+const QUOTABLE: &[usize] = &[];
+
+/// Printed names, indexed like `report`'s output.
+const JUDGE_NAMES: [&str; 6] = [
+    "legacy default",
+    "legacy known-only",
+    "frame-bigram density",
+    "frame-trigram density",
+    "frame-bigram PMI",
+    "frame-trigram PMI",
+];
+
+/// How far from 0.500 a judge may sit on a human-versus-human comparison before
+/// what it is measuring is provenance.
+///
+/// Fixed before measuring. 0.20 is wide on purpose -- it admits a rate anywhere in
+/// `[0.30, 0.70]`, which is far more slack than any real instrument should need,
+/// so that a failure cannot be argued away as a tight threshold. The measured
+/// numbers are nowhere near it in either direction.
+const PROVENANCE_TOLERANCE: f64 = 0.20;
+
+/// **The control D-215 requires, in the only form that actually catches the
+/// defect.**
+///
+/// Every suspect and every reference below is a sentence a person wrote. Nothing
+/// generated a single word of any of it.
+///
+/// # Why it is leave-one-out and two-sided
+///
+/// The first form of this control gated one corpus in one direction against a
+/// ceiling of 0.70, and **that gate is passable by accident**. Swapping the sides
+/// of a forced choice turns a rate `r` into `1 − r`, so a judge that scores the
+/// outside corpus *above* the reference passes a one-sided ceiling while being
+/// exactly as provenance-sensitive as one that fails it. Measured: the frame-PMI
+/// trigram scorer sat at **0.000** against `bigram_corpus.txt` -- it never once
+/// called that human corpus generated -- and at **0.980** with the same two
+/// corpora and the sides swapped. One number, dressed as a pass.
+///
+/// So: three human corpora, each in turn **excluded from training entirely** and
+/// used as the control, judge trained on the other two, and the score is
+/// `|rate − 0.500|` **regardless of sign**. A row at 0.000 is exactly as broken as
+/// a row at 1.000. Both mean provenance.
+///
+/// The legacy scorers are re-trained on each pooled training set too, rather than
+/// being left on their original 400 lines, so they are not failing for want of
+/// data that the new judge was given.
+///
+/// # What this measured
+///
+/// All three rows, both new scorers, all six scorers: **nothing lands near 0.500.**
+/// Two configurations flag out-of-provenance human writing at ~0.82; the third
+/// scores it above the reference at 0.19/0.04. That is the finding, and it is why
+/// `QUOTABLE` is empty.
 #[test]
 fn control_2_the_judge_does_not_flag_human_text_of_another_provenance() {
-    let bench = bench();
+    let project = lines_of(REAL_CHAT);
+    let external = lines_of(EXTERNAL_HUMAN_CHAT);
+    let word_bank = lines_of(OTHER_HUMAN_CHAT);
+    assert!(
+        !project.is_empty() && !external.is_empty() && !word_bank.is_empty(),
+        "a control corpus is empty"
+    );
+    // If `fix/d116-cover-corpus` ever lands, `bigram_corpus.txt` becomes the very
+    // text the external fixture holds, two of the three "provenances" collapse
+    // into one, and this control silently measures a judge against its own
+    // training data. Fail rather than quietly halve the evidence.
+    assert_ne!(
+        word_bank.len(),
+        external.len(),
+        "two control corpora look identical -- they must be independent provenances"
+    );
+
+    let corpora: [(&str, &Vec<&'static str>); 3] = [
+        ("project hand-written", &project),
+        ("external scraped", &external),
+        ("word-bank hand-written", &word_bank),
+    ];
 
     println!("\n========= CONTROL 2: HUMAN text the judge did not train on =========");
-    println!("  every suspect below was written by a person. NOTHING here was generated.");
-    println!("  0.500 = the judge detects generation.  1.000 = it detects corpus membership.");
-    println!(
-        "  judge trained on {} lines pooled from TWO provenances; the suspect corpus is a THIRD.",
-        bench.training_lines
-    );
-    println!("  length-matched to {CONTROL_WORDS} words, {} trials.", trials());
+    println!("  EVERY suspect and EVERY reference below was written by a person.");
+    println!("  NOTHING here was generated. 0.500 is the only correct answer.");
+    println!("  Each corpus in turn is EXCLUDED from training and used as the control;");
+    println!("  the judge is trained on the other two. |rate-0.500| is the defect,");
+    println!("  whichever way it points -- 0.000 is as broken as 1.000.");
+    println!("  length-matched to {CONTROL_WORDS} words, {} trials per row.", trials());
 
-    let suspects = suspects_from(&bench.control, trials(), CONTROL_WORDS);
-    let rows = bench.report(
-        "SUSPECT: hand-written texting chat, third provenance (stego/src/bigram_corpus.txt)",
-        &suspects,
-        &bench.reference,
-    );
-
-    println!("\n  LEGACY VERDICT (not asserted, reproduced so D-215 can be re-observed on demand):");
-    println!(
-        "    the legacy default scorer calls this human chat 'generated' at {:.3}.",
-        rows[LEGACY_DEFAULT].rate
-    );
-    println!("    Both sides are human. That number is the defect, not a result.");
-
-    // The gate. 0.70 was chosen before any measurement as "meaningfully better
-    // than the 1.000 that withdrew the instrument", and is NOT tightened to
-    // whatever today's number happens to be -- pinning a threshold to a measured
-    // value turns a control into decoration.
-    const HUMAN_CEILING: f64 = 0.70;
-    for (index, label) in GATED {
-        // A rate far BELOW 0.5 is not a pass in any meaningful sense either: it
-        // means the judge systematically prefers the outside corpus, which is the
-        // same provenance sensitivity with the opposite sign. Reported, not
-        // asserted -- the D-215 requirement is the ceiling, and inventing a floor
-        // after seeing the numbers is the tuning this file exists to refuse.
-        if rows[index].rate < 0.30 {
-            println!(
-                "  NOTE: {label} calls the outside corpus human MORE often than the reference \
-                 ({:.3}); provenance sensitivity, opposite sign.",
-                rows[index].rate
-            );
+    // Worst |rate - 0.5| each scorer reaches across the three configurations.
+    let mut worst = [0.0f64; 6];
+    for (excluded_index, (excluded_name, excluded_lines)) in corpora.iter().enumerate() {
+        let mut training = Vec::new();
+        let mut reference = Vec::new();
+        for (index, (_, lines)) in corpora.iter().enumerate() {
+            if index == excluded_index {
+                continue;
+            }
+            let (train, held) = split_interleaved(lines);
+            training.extend_from_slice(&train);
+            reference.extend_from_slice(&held);
         }
-        assert!(
-            rows[index].rate <= HUMAN_CEILING,
-            "D-215 REGRESSION: {label} calls human text of another provenance 'generated' at \
-             {:.3} (ceiling {HUMAN_CEILING:.2}). The judge is detecting provenance, not \
-             generation, and no number it produces may be quoted.",
-            rows[index].rate
+        let reference = permuted(&reference, 0xd215_1000_c047_9011);
+        let legacy = LegacyReader::train(&training);
+        let frames = FrameJudge::train(&training);
+        let suspects = suspects_from(excluded_lines, trials(), CONTROL_WORDS);
+        let seen: f64 = suspects
+            .iter()
+            .map(|text| frames.attested_frame_rate(text))
+            .sum::<f64>()
+            / suspects.len() as f64;
+        println!(
+            "\n  EXCLUDED (= the control corpus): {excluded_name} -- {} lines, \
+             trained on {} lines of the other two, {:.1}% of its frame bigrams ever seen",
+            excluded_lines.len(),
+            training.len(),
+            seen * 100.0
         );
+        let rows = report(
+            "SUSPECT: the excluded human corpus. REFERENCE: held-out human text of the other two",
+            &legacy,
+            &frames,
+            &suspects,
+            &reference,
+        );
+        for (index, row) in rows.iter().enumerate() {
+            worst[index] = worst[index].max((row.rate - 0.5).abs());
+        }
     }
+
+    println!("\n  WORST |rate - 0.500| over the three configurations. Both sides always human:");
+    let mut passing = Vec::new();
+    for (index, name) in JUDGE_NAMES.iter().enumerate() {
+        let verdict = if worst[index] <= PROVENANCE_TOLERANCE {
+            passing.push(index);
+            "within tolerance"
+        } else {
+            "PROVENANCE DETECTOR"
+        };
+        println!("    {name:<24} {:.3}   {verdict}", worst[index]);
+    }
+    println!("\n  tolerance {PROVENANCE_TOLERANCE:.2} (a rate anywhere in [0.30, 0.70] passes).");
+    println!("  Any scorer listed as PROVENANCE DETECTOR may not have a number quoted from it,");
+    println!("  and that includes every scorer this project has ever quoted a number from.");
+
+    // The gate: the file's recorded verdict and the live measurement must agree.
+    // This is what makes the empty `QUOTABLE` list a claim rather than an absence.
+    let certified: Vec<usize> = QUOTABLE.to_vec();
+    assert_eq!(
+        passing, certified,
+        "D-215: the certified-quotable list and the measurement disagree.\n  \
+         measured as passing: {:?}\n  recorded as quotable: {:?}\n  \
+         If a scorer now passes, record it in QUOTABLE deliberately -- and check \
+         Control 3 still passes for it, because a scorer tuned to pass this one \
+         stops being able to flag word salad. If a scorer regressed, that is the bug.",
+        passing
+            .iter()
+            .map(|index| JUDGE_NAMES[*index])
+            .collect::<Vec<_>>(),
+        certified
+            .iter()
+            .map(|index| JUDGE_NAMES[*index])
+            .collect::<Vec<_>>(),
+    );
+    println!(
+        "\n  CERTIFIED QUOTABLE: {:?} -- D-215 stands.",
+        certified.iter().map(|index| JUDGE_NAMES[*index]).collect::<Vec<_>>()
+    );
 }
 
 /// **Why the training pool has two provenances in it, measured rather than
@@ -1085,7 +1210,9 @@ fn the_control_is_passable_only_above_a_training_scale() {
     let control = lines_of(OTHER_HUMAN_CHAT);
     let (project_train, project_held) = split_interleaved(&project_chat);
     let (external_train, external_held) = split_interleaved(&external_chat);
-    let reference = alternate(&project_held, &external_held);
+    let mut pool = project_held.clone();
+    pool.extend_from_slice(&external_held);
+    let reference = permuted(&pool, 0xd215_5911_7c0d_e001);
 
     println!("\n======= WHY THE POOL: control rate against training scale =======");
     println!("  suspect = the third-provenance control corpus. reference = held-out training text.");
@@ -1272,6 +1399,13 @@ fn the_three_rows_remeasured() {
                 "ROW 2 -- B0-06 arithmetic-coded MODEL covers (feat/b006-arithmetic-cover)",
                 &covers,
                 &bench.reference,
+            );
+            println!("\n    ROW 2b -- the same model covers against the third-provenance corpus,");
+            println!("    so Row 2 can be read against Row 1b on the same reference.");
+            bench.report(
+                "ROW 2b -- model covers vs stego/src/bigram_corpus.txt",
+                &covers,
+                &bench.control,
             );
             println!("\n    first three model covers:");
             for (index, cover) in covers.iter().take(3).enumerate() {
