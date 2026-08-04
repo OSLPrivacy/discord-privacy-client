@@ -8766,6 +8766,17 @@ mod tests {
         assert!(gate.contains("apply_protected_frame_contract(&window, surface)"));
         // Exactly two slots, because the single-instance build gate guarantees
         // exactly two protected windows.
+        //
+        // `PROTECTED_FRAME_HOOKS` is `#[cfg(target_os = "windows")]` (:2853), so
+        // the runtime read of it only exists in a Windows build. The claim is not
+        // dropped on other hosts: it is re-stated against the declaration itself,
+        // in the same source-reading style as the rest of this test, so a third
+        // slot appearing is caught wherever the bin's tests run.
+        assert!(
+            source.contains("static PROTECTED_FRAME_HOOKS: [ProtectedFrameHook; 2] ="),
+            "exactly two hook slots must be declared"
+        );
+        #[cfg(target_os = "windows")]
         assert_eq!(PROTECTED_FRAME_HOOKS.len(), 2);
     }
 
@@ -8990,6 +9001,22 @@ mod tests {
     /// `OSL_NATIVE_DRAG_COST=1 cargo test --target x86_64-pc-windows-gnu \
     ///   --features desktop,discord-qa-shell --bin osl-privacy-hub \
     ///   -- --ignored --nocapture native_drag_frame_cost`
+    ///
+    /// **Windows-only, and this is the one thing in the bin's test target that
+    /// genuinely cannot compile anywhere else.** Its body is not a test of
+    /// portable logic: it registers a window class, creates two `WS_POPUP`
+    /// windows, pumps their message loop and times `BeginDeferWindowPos` /
+    /// `SetWindowRgn` / `GetWindowLongPtrW` against them. `windows-sys` is a
+    /// `[target.'cfg(windows)'.dependencies]` entry (`Cargo.toml:88-89`), so on
+    /// Linux the crate is not linked at all and those 22 names do not exist.
+    /// There is nothing to emulate: the measurement *is* the Win32 write.
+    ///
+    /// It does not disappear quietly elsewhere. See
+    /// `native_drag_frame_cost_is_a_windows_only_probe_and_is_not_compiled_on_this_host`
+    /// below, which runs on every non-Windows host, names this probe in the
+    /// suite output, and fails if the probe is deleted or loses either of the
+    /// two gates that keep it out of an ordinary run.
+    #[cfg(target_os = "windows")]
     #[test]
     #[ignore = "native probe: set OSL_NATIVE_DRAG_COST=1 to run"]
     fn native_drag_frame_cost() {
@@ -9170,6 +9197,57 @@ mod tests {
         BUSY.store(false, Ordering::Release);
         unsafe { PostThreadMessageW(ui_thread, WM_QUIT, 0, 0) };
         ui.join().expect("the probe UI thread");
+    }
+
+    /// The loud half of the one Windows-only skip in this bin's test target.
+    ///
+    /// D-152's rule is that a test which cannot run somewhere must say so where
+    /// anyone can see it, because silence is the failure mode this project keeps
+    /// re-inventing. So on every non-Windows host this test runs, prints the
+    /// probe's name and the command that runs it for real, and holds the probe to
+    /// the two properties that can still be checked from source: it must still
+    /// exist, and it must still be unable to run inside an ordinary suite.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn native_drag_frame_cost_is_a_windows_only_probe_and_is_not_compiled_on_this_host() {
+        println!(
+            "SKIPPED ON THIS HOST: native_drag_frame_cost is Win32-only (it creates real \
+             windows and times SetWindowRgn/BeginDeferWindowPos against them). Run it on \
+             Windows with: OSL_NATIVE_DRAG_COST=1 cargo test --features \
+             desktop,discord-qa-shell --bin osl-privacy-hub -- --ignored --nocapture \
+             native_drag_frame_cost"
+        );
+        // `overlay_source()` deliberately truncates at the test module, and the
+        // probe lives inside it, so this one assertion needs the whole file.
+        let raw = include_str!("native_discord_overlay.rs");
+        let probe = &raw[raw
+            .find("/// What a drag frame actually costs")
+            .expect("the probe's documentation")
+            ..raw
+                .find("/// The loud half of the one Windows-only skip")
+                .expect("this test's own documentation bounds the probe")];
+        // Still there. A cfg-gated test is exactly the kind of thing that gets
+        // deleted by someone cleaning up "dead" code on a Linux checkout, and the
+        // deletion would compile clean here.
+        assert!(
+            probe.contains("fn native_drag_frame_cost() {")
+                && probe.contains("BeginDeferWindowPos(2)"),
+            "the Windows drag-cost probe must still exist"
+        );
+        // And still doubly unable to run by accident: `#[ignore]` keeps it out of
+        // a default run, and the env check keeps it out of an `--ignored` sweep.
+        assert!(
+            probe.contains("#[cfg(target_os = \"windows\")]"),
+            "the probe must stay behind the Windows gate that this test documents"
+        );
+        assert!(
+            probe.contains("#[ignore = \"native probe: set OSL_NATIVE_DRAG_COST=1 to run\"]"),
+            "the probe must stay ignored by default"
+        );
+        assert!(
+            probe.contains("if std::env::var_os(\"OSL_NATIVE_DRAG_COST\").is_none() {"),
+            "the probe must stay env-gated even under --ignored"
+        );
     }
 
     /// A drag frame's write is still an ownership-proved write of both windows in

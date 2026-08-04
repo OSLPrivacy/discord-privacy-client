@@ -10059,10 +10059,16 @@ mod native_discord_carrier_command_tests {
     #[test]
     fn native_carrier_command_reproves_product_context_immediately_before_placement_order() {
         let source = include_str!("main.rs");
+        // The terminator is the next item's `struct` line and nothing above it.
+        // It used to be `"#[derive(Serialize)]\nstruct NativeDiscordOverlayStateDto"`,
+        // and a later change inserted `#[serde(rename_all = "camelCase")]`
+        // between those two lines, so the bound stopped matching and this test
+        // panicked with "function must be bounded" rather than asserting
+        // anything. Nobody saw it, because the bin's tests did not compile.
         let command = function_body(
             source,
             "#[tauri::command]\nfn send_native_discord_overlay_carrier(",
-            "#[derive(Serialize)]\nstruct NativeDiscordOverlayStateDto",
+            "struct NativeDiscordOverlayStateDto {",
         );
         let latch = command
             .find("let carrier_placement = overlay_state.begin_carrier_placement()?;")
@@ -10081,8 +10087,13 @@ mod native_discord_carrier_command_tests {
             .find("require_same_overlay_context(&app, epoch, &host)?;")
             .map(|offset| context_check + offset)
             .expect("overlay context must be re-proven");
+        // Matched without the `let placement_context =` prefix: rustfmt wraps
+        // that statement across two lines (main.rs:3400-3401), so the one-line
+        // form this used to look for has not existed for some time. The
+        // constructor call and its arguments are what the assertion is about,
+        // and they are on one line and unique.
         let authority = command
-            .find("let placement_context = NativeDiscordPlacementContext::new(&placement_scope_binding, mode);")
+            .find("NativeDiscordPlacementContext::new(&placement_scope_binding, mode);")
             .expect("placement authority must be minted from the fresh scope");
         let call = command
             .find("let receipt = composer.place_carrier(")
@@ -10170,7 +10181,7 @@ mod native_discord_carrier_command_tests {
 mod tauri_command_acl_tests {
     use super::{
         checked_hosted_session_scan_flow, review_ui_identity_binding_verifier_accepts_selection,
-        ActiveServiceHost, CheckedHost,
+        valid_osl_username, ActiveServiceHost, CheckedHost,
     };
     use osl_privacy_hub::identity_binding_verifier::{
         AccountRef, BindingEvidence, BindingScope, IdentityBindingError, IdentityBindingVerifier,
@@ -10180,18 +10191,41 @@ mod tauri_command_acl_tests {
         DeletionScan, WalkCompleteness,
     };
     use osl_privacy_hub::scrub_index::ScrubAccountSelection;
+    use osl_privacy_hub::service_host::ServiceHostState;
     use std::cell::RefCell;
     use std::collections::BTreeSet;
+
+    /// Mint an `ActiveServiceHost` the way production does.
+    ///
+    /// `ActiveServiceHost::owner_namespace` is `pub(crate)` to the library
+    /// (`service_host.rs:680`), and this binary is a different crate, so the
+    /// struct literal these helpers used cannot be named from here. That is not a
+    /// detail worth working around with a wider field: `begin_open` is the only
+    /// way the shipping app ever produces one of these, so the tests are strictly
+    /// closer to production for going through it. Generations are what
+    /// `begin_open` hands out, so reaching a given one means opening that many
+    /// times.
+    fn active_host_at_generation(generation: u64) -> ActiveServiceHost {
+        let state = ServiceHostState::default();
+        let mut active = state
+            .begin_open("owner-ns", "discord", "acct-1", "discord.com")
+            .expect("the first open mints a host");
+        while active.generation < generation {
+            active = state
+                .begin_open("owner-ns", "discord", "acct-1", "discord.com")
+                .expect("a re-open mints the next generation");
+        }
+        assert_eq!(
+            active.generation, generation,
+            "generations must still be issued one at a time"
+        );
+        active
+    }
 
     fn acl_test_checked_host() -> CheckedHost {
         CheckedHost {
             context_epoch: 42,
-            active: ActiveServiceHost {
-                service_id: "discord".to_owned(),
-                account_id: "acct-1".to_owned(),
-                generation: 9,
-                owner_namespace: "owner-ns".to_owned(),
-            },
+            active: active_host_at_generation(9),
             owner_osl_user_id: "owner-1".to_owned(),
             scope_binding: "scope-binding".to_owned(),
         }
@@ -10298,12 +10332,7 @@ mod tauri_command_acl_tests {
     fn test_checked_host() -> CheckedHost {
         CheckedHost {
             context_epoch: 42,
-            active: ActiveServiceHost {
-                service_id: "discord".to_owned(),
-                account_id: "acct-1".to_owned(),
-                generation: 9,
-                owner_namespace: "owner-ns".to_owned(),
-            },
+            active: active_host_at_generation(9),
             owner_osl_user_id: "owner-1".to_owned(),
             scope_binding: "scope-binding".to_owned(),
         }
@@ -10486,5 +10515,200 @@ mod tauri_command_acl_tests {
         assert!(valid_osl_username("alice_01"));
         assert!(!valid_osl_username("Alice"));
         assert!(!valid_osl_username("alice-name"));
+    }
+}
+
+/// D-152's acceptance gate, and D-134's mutant.
+///
+/// `spawn_lifecycle_tick` is the only scheduler the shipping app has, and the
+/// attachment deletion outbox is one of its legs. D-134 was filed because
+/// removing that leg is invisible: the call lives in the `[[bin]]`, CI runs only
+/// `--features core --lib`, and `apps/osl-hub` is outside the cargo workspace so
+/// `clippy -D warnings` never sees it either. Nothing in the repository could
+/// tell you it had gone.
+///
+/// So these tests read the shipping source. That is not the strongest kind of
+/// test, and it is the strongest kind available: the tick's body needs a live
+/// `tauri::AppHandle`, a managed `HubCoreState` and a real window, and the
+/// property being defended is *"the call site exists and is scheduled"*, which
+/// is a property of the source. The alternative on offer -- moving the gate into
+/// the library, as `hub_command_surface.rs:1-14` already did for other gates --
+/// relocates the hole rather than closing it: bin-only code stays ungated.
+///
+/// D-134 is also why the anchors below are the tick's *structure* and not any
+/// function's name. That defect was raised on a `git grep` for
+/// `spawn_deletion_outbox_drain`, a caller that had been renamed eight days
+/// earlier; the search could not have found the live schedule if it tried.
+#[cfg(test)]
+mod lifecycle_scheduler_tests {
+    use super::DELETION_DRAIN_EVERY_N_PASSES;
+
+    /// `main.rs` with its own `#[cfg(test)]` modules removed.
+    ///
+    /// Required for the call-site count below: this file's test text names the
+    /// very symbols being counted, so counting over the raw file would score the
+    /// assertions as if they were call sites -- which is exactly how a test that
+    /// reads source quietly stops meaning anything. The markers are written as
+    /// escapes, so they do not match themselves.
+    fn production_source() -> String {
+        let mut out = String::new();
+        let mut rest: &str = include_str!("main.rs");
+        loop {
+            let cut = ["\n#[cfg(test)]\nmod ", "\n#[cfg(all(test"]
+                .iter()
+                .filter_map(|marker| rest.find(marker))
+                .min();
+            let Some(at) = cut else {
+                out.push_str(rest);
+                return out;
+            };
+            out.push_str(&rest[..at]);
+            let tail = &rest[at + 1..];
+            let end = tail
+                .find("\n}\n")
+                .map(|offset| offset + 3)
+                .unwrap_or(tail.len());
+            rest = &tail[end..];
+        }
+    }
+
+    fn function_body(source: &str, signature: &str) -> String {
+        let start = source
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} is missing from the shipping source"));
+        let body = &source[start..];
+        let end = body
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{signature} is unterminated"));
+        body[..end].to_owned()
+    }
+
+    /// Before anything is concluded from the stripped source, prove the stripper
+    /// kept the production halves and dropped the test halves. A stripper that
+    /// silently ate `fn main()` would make every count below agree with a lie.
+    #[test]
+    fn the_stripped_source_is_the_shipping_half_of_this_file() {
+        let production = production_source();
+        for kept in [
+            "fn spawn_lifecycle_tick(",
+            "async fn unlock_hub_password_gate(",
+            "#[cfg(not(feature = \"signal-qa-shell\"))]\nfn main()",
+            "const DELETION_DRAIN_EVERY_N_PASSES: u64 = {",
+        ] {
+            assert!(production.contains(kept), "the stripper ate {kept}");
+        }
+        for dropped in [
+            "mod lifecycle_scheduler_tests {",
+            "mod tauri_command_acl_tests {",
+            "mod native_discord_carrier_command_tests {",
+            "mod local_protected_context_tests {",
+            "mod b6_startup_gate_tests {",
+            "mod overlay_open_timing_tests {",
+        ] {
+            assert!(
+                !production.contains(dropped),
+                "the stripper left {dropped} in the shipping half"
+            );
+        }
+    }
+
+    /// **Mutant [1].** Delete
+    /// `native_attachment_transport::drain_pending_deletions_detached(&app);`
+    /// from `spawn_lifecycle_tick` and this fails.
+    #[test]
+    fn the_one_scheduler_still_retries_the_attachment_deletion_outbox() {
+        let tick = function_body(&production_source(), "fn spawn_lifecycle_tick(");
+        let gate = tick
+            .find("if passes % DELETION_DRAIN_EVERY_N_PASSES == 0 {")
+            .expect("the outbox leg must stay on its own slower cadence");
+        let drain = tick
+            .find("native_attachment_transport::drain_pending_deletions_detached(&app);")
+            .expect(
+                "the lifecycle tick must still call the attachment deletion drain -- \
+                 without this call the 900-second retry ships and never fires, and \
+                 view-once ciphertext OSL promised to delete stays on the relay",
+            );
+        let advance = tick
+            .find("passes = passes.wrapping_add(1);")
+            .expect("the pass counter must still advance, or the cadence never moves");
+        let wait = tick
+            .find("wait_for_next_pass(")
+            .expect("the loop must still block until the next pass");
+        assert!(
+            gate < drain && drain < advance && advance < wait,
+            "the drain must be inside the cadence gate, before the counter advances \
+             and before the loop sleeps"
+        );
+        // The ledger leg is the tick's other half and shares the same mutant.
+        assert!(
+            tick.contains("osl_privacy_hub::message_expiry::run_pass("),
+            "the tick must still run the expiry sweep"
+        );
+    }
+
+    /// The call site is only a schedule if something starts it, so the second
+    /// half of the same mutant is deleting the spawn from `setup`.
+    #[test]
+    fn the_shipping_setup_still_starts_the_one_scheduler() {
+        let production = production_source();
+        let shipping_main = function_body(
+            &production,
+            "#[cfg(not(feature = \"signal-qa-shell\"))]\nfn main()",
+        );
+        let setup = shipping_main
+            .find("let builder = builder.setup(|app| {")
+            .expect("the shipping main must still have a setup hook");
+        let managed = shipping_main
+            .find("app.manage(LifecycleTickState::default());")
+            .expect("the tick's nudge state must be managed, or unlock cannot wake it");
+        let spawned = shipping_main
+            .find("spawn_lifecycle_tick(app.handle().clone(), local_data_dir.clone());")
+            .expect("the shipping setup must still start the lifecycle tick");
+        assert!(
+            setup < managed && managed < spawned,
+            "the tick is started from setup, after its state is managed"
+        );
+    }
+
+    /// D-149's hazard in test form: `drain_attachment_deletions_at_path` has no
+    /// mutual exclusion, so a *second* periodic caller would be a second
+    /// unsynchronised writer of the same file. Exactly two callers ship -- the
+    /// unlock path, which is the first moment the sealed outbox is readable at
+    /// all, and the tick. A third is as much a defect as none.
+    #[test]
+    fn exactly_two_call_sites_drain_the_deletion_outbox() {
+        let production = production_source();
+        assert_eq!(
+            production
+                .matches("native_attachment_transport::drain_pending_deletions_detached(&app);")
+                .count(),
+            2,
+            "the unlock path and the lifecycle tick, and nothing else"
+        );
+        assert!(
+            function_body(&production, "async fn unlock_hub_password_gate(")
+                .contains("native_attachment_transport::drain_pending_deletions_detached(&app);"),
+            "the unlock path is one of the two"
+        );
+    }
+
+    /// The cadence is real arithmetic over two real constants, and this is the
+    /// half of the schedule that runs rather than being read.
+    #[test]
+    fn the_drain_cadence_is_derived_from_both_intervals_and_is_still_fifteen_minutes() {
+        let drain = super::native_attachment_transport::DELETION_DRAIN_INTERVAL.as_secs();
+        let tick = osl_privacy_hub::message_expiry::LIFECYCLE_TICK_INTERVAL.as_secs();
+        assert_eq!(drain, 900, "the deletion outbox retries every 15 minutes");
+        assert_eq!(tick, 30, "the lifecycle sweep runs every 30 seconds");
+        assert_eq!(
+            DELETION_DRAIN_EVERY_N_PASSES, 30,
+            "900 / 30 -- merging the two schedulers must not make OSL twenty \
+             times chattier, and must not slow the outbox down either"
+        );
+        assert_eq!(
+            DELETION_DRAIN_EVERY_N_PASSES,
+            drain / tick,
+            "the ratio must stay derived from both constants, so they cannot drift apart"
+        );
     }
 }
