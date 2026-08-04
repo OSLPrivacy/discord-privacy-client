@@ -8,6 +8,13 @@ use crate::core_bridge::HubCoreState;
 use std::{future::Future, time::Duration};
 use tauri::Manager;
 
+// D-172 MUTANT M2. `entitlement_refresh` is declared `#[cfg(feature =
+// "desktop")]` in lib.rs:66, so this line does not exist in a `--features core`
+// build. Gate (b) must go RED; gate (a) must stay GREEN (apps/osl-hub is
+// excluded from the workspace, Cargo.toml:22-31), and so must rust-test.yml's
+// `--features core --lib` steps.
+const D172_MUTANT: Duration = crate::this_function_does_not_exist();
+
 const REFRESH_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Start the entitlement refresh task for the lifetime of this app process.
