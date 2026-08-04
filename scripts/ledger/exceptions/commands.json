@@ -192,25 +192,25 @@
       "citation": "scripts/ledger/exceptions/bundle.json:310"
     },
     {
-      "id": "unresolved-invoke:apps/osl-hub-ui/src/core.ts:170",
+      "id": "unresolved-invoke:apps/osl-hub-ui/src/core.ts:174",
       "class": "accepted",
       "status": "ledger-defect",
       "reason": "LEDGER DEFECT: bundled core.ts passes a command through an injected nativeInvoke wrapper, so this row is a scanner blind spot rather than a named missing command.",
-      "citation": "apps/osl-hub-ui/src/core.ts:170"
+      "citation": "apps/osl-hub-ui/src/core.ts:174"
     },
     {
-      "id": "unresolved-invoke:apps/osl-hub-ui/src/core.ts:224",
+      "id": "unresolved-invoke:apps/osl-hub-ui/src/core.ts:228",
       "class": "accepted",
       "status": "ledger-defect",
       "reason": "LEDGER DEFECT: bundled core.ts derives the command from a bounded role ternary, which this scanner records as unresolved instead of expanding both names.",
-      "citation": "apps/osl-hub-ui/src/core.ts:224"
+      "citation": "apps/osl-hub-ui/src/core.ts:228"
     },
     {
-      "id": "unresolved-invoke:apps/osl-hub-ui/src/core.ts:230",
+      "id": "unresolved-invoke:apps/osl-hub-ui/src/core.ts:234",
       "class": "accepted",
       "status": "ledger-defect",
       "reason": "LEDGER DEFECT: bundled core.ts derives the command from a bounded role ternary, which this scanner records as unresolved instead of expanding both names.",
-      "citation": "apps/osl-hub-ui/src/core.ts:230"
+      "citation": "apps/osl-hub-ui/src/core.ts:234"
     },
     {
       "id": "unresolved-invoke:apps/osl-hub-ui/src/native-overlay-adapter.ts:78",

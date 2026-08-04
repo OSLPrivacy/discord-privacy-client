@@ -156,7 +156,7 @@ function isBehaviourContext(context, functionName = "") {
   const decision = /\bif\s*\(|\bswitch\s*\(|\bmatch\s+|\bwhile\s*\(|\?[^:]+:/u;
   const renderOnly = isRenderOnlyContext(context);
   if (actionBoundary.test(context) && (!renderOnly || decision.test(context))) return true;
-  if (/Consent|Authorization|Policy|Preference|Protection|Capture|Send|Queue|Transport|Decrypt|Encrypt|Whitelist|Burn|Scrub|Tor|Mullvad|Onboarding|Route|Import|Browser|Conversation|Guide|Revoke/u.test(functionName) && decision.test(context) && !renderOnly) {
+  if (/consent|authorization|policy|preference|protection|capture|send|queue|transport|decrypt|encrypt|whitelist|burn|scrub|tor|mullvad|onboarding|route|import|browser|conversation|guide|revoke/iu.test(functionName) && decision.test(context) && !renderOnly) {
     return true;
   }
   return false;
@@ -172,6 +172,30 @@ function classifyUse(source, index) {
   const functionName = surroundingFunctionName(source, index);
   if (isBehaviourContext(context, functionName)) return "behavioural";
   return "render-only";
+}
+
+function assignedIdentifierForCall(source, index) {
+  const lineStart = source.lastIndexOf("\n", index) + 1;
+  const prefix = source.slice(lineStart, index);
+  return /(?:^|[^\w$])(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=[^;\n]*$/u.exec(prefix)?.[1]
+    ?? /(?:^|[^\w$])([A-Za-z_$][\w$]*)\s*=[^;\n]*$/u.exec(prefix)?.[1]
+    ?? null;
+}
+
+function isAssignmentTarget(source, index, name) {
+  const lineEnd = source.indexOf("\n", index);
+  const after = source.slice(index + name.length, lineEnd === -1 ? source.length : lineEnd);
+  return /^\s*=/u.test(after);
+}
+
+function identifierHasBehaviouralUse(source, name, index) {
+  const useRe = new RegExp(`\\b${name}\\b`, "g");
+  useRe.lastIndex = index;
+  for (const use of source.matchAll(useRe)) {
+    if (use.index === undefined || use.index === index || isAssignmentTarget(source, use.index, name)) continue;
+    if (classifyUse(source, use.index) === "behavioural") return true;
+  }
+  return false;
 }
 
 function jsSourceFiles(root) {
@@ -225,7 +249,12 @@ function collectFrontendStorage(root, files, constants) {
       const key = resolveKeyAt(src, m[2], m.index, constants);
       const site = `${rel}:${lineOf(starts, m.index)}`;
       const id = `frontend-localStorage:${key.label}`;
-      const classification = KNOWN_RENDER_ONLY_STORAGE_KEYS.has(key.value) ? "render-only" : classifyUse(src, m.index);
+      const knownRenderOnly = KNOWN_RENDER_ONLY_STORAGE_KEYS.has(key.value);
+      let classification = knownRenderOnly ? "render-only" : classifyUse(src, m.index);
+      if (!knownRenderOnly && classification !== "behavioural") {
+        const assigned = assignedIdentifierForCall(src, m.index);
+        if (assigned && identifierHasBehaviouralUse(src, assigned, m.index)) classification = "behavioural";
+      }
       addSite(state, id, site, {
         read: true,
         [classification === "behavioural" ? "behavioural" : "renderOnly"]: true,
@@ -343,6 +372,48 @@ function collectRustPreferences(root, files) {
       }
     }
   }
+  return state;
+}
+
+const FRONTEND_ONBOARDING_RUST_PREFERENCE_FIELDS = new Map([
+  ["send_mode", /\bsetup\.sendMode\b/g],
+  ["acknowledge_experimental_send_risk", /\bsetup\.acceptedRisk\b/g],
+]);
+
+function collectFrontendOnboardingRustPreferenceReads(root, files) {
+  const state = new Map();
+  const mainRel = files.find((rel) => rel === "apps/osl-hub-ui/src/main.ts");
+  if (!mainRel) return state;
+
+  const src = blankComments(read(root, mainRel));
+  if (!src.includes("loadOnboardingPreferences()")) return state;
+  const starts = lineIndex(src);
+
+  for (const m of src.matchAll(/\bpreferences\.onboardingComplete\b/g)) {
+    const context = contextWindow(src, m.index, 120, 180);
+    if (!/\broute\s*=|\bonboardingRoute\s*=|\?/u.test(context)) continue;
+    addSite(state, "rust-preferences:onboarding_complete", `${mainRel}:${lineOf(starts, m.index)}`, {
+      read: true,
+      behavioural: true,
+      store: "rust-preferences",
+      key: "onboarding_complete",
+      label: "onboarding_complete",
+    });
+  }
+
+  for (const [field, re] of FRONTEND_ONBOARDING_RUST_PREFERENCE_FIELDS) {
+    for (const m of src.matchAll(re)) {
+      if (classifyUse(src, m.index) !== "behavioural") continue;
+      addSite(state, `rust-preferences:${field}`, `${mainRel}:${lineOf(starts, m.index)}`, {
+        read: true,
+        behavioural: true,
+        store: "rust-preferences",
+        key: field,
+        label: field,
+      });
+    }
+  }
+
   return state;
 }
 
@@ -546,9 +617,10 @@ export function collect(root) {
   const constants = stringConstants([...jsFiles, ...rustFiles], (rel) => read(root, rel));
   const frontend = collectFrontendStorage(root, jsFiles, constants);
   const rustPreferences = collectRustPreferences(root, rustFiles);
+  const frontendRustPreferenceReads = collectFrontendOnboardingRustPreferenceReads(root, jsFiles);
   const rustSecure = collectRustSecureLocalStore(root, rustFiles, constants);
   const sql = collectSqlState(root, rustFiles);
-  const entries = mergeMaps(frontend.state, rustPreferences, rustSecure, sql);
+  const entries = mergeMaps(frontend.state, rustPreferences, frontendRustPreferenceReads, rustSecure, sql);
   return {
     entries,
     unresolved: frontend.unresolved,

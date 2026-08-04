@@ -3,16 +3,16 @@
   "highWaterMark": 18,
   "entries": [
     {
-      "id": "dead-issuer:claim_hub_username:apps/osl-hub-ui/src/adapters.ts:934",
+      "id": "dead-issuer:claim_hub_username:apps/osl-hub-ui/src/adapters.ts:936",
       "class": "accepted",
       "reason": "claim_hub_username is in an exported adapter function that no production entry imports; this issuer does not ship.",
-      "citation": "apps/osl-hub-ui/src/adapters.ts:934"
+      "citation": "apps/osl-hub-ui/src/adapters.ts:936"
     },
     {
-      "id": "dead-issuer:execute_discord_guided_deletion:apps/osl-hub-ui/src/adapters.ts:1433",
+      "id": "dead-issuer:execute_discord_guided_deletion:apps/osl-hub-ui/src/adapters.ts:1435",
       "class": "accepted",
       "reason": "execute_discord_guided_deletion is in an exported guided-deletion function that no production entry imports; this issuer does not ship.",
-      "citation": "apps/osl-hub-ui/src/adapters.ts:1433"
+      "citation": "apps/osl-hub-ui/src/adapters.ts:1435"
     },
     {
       "id": "dead-issuer:host_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:69",
@@ -27,16 +27,16 @@
       "citation": "apps/osl-hub-ui/src/osl-collab.ts:70"
     },
     {
-      "id": "dead-issuer:preview_discord_guided_deletion:apps/osl-hub-ui/src/adapters.ts:1415",
+      "id": "dead-issuer:preview_discord_guided_deletion:apps/osl-hub-ui/src/adapters.ts:1417",
       "class": "accepted",
       "reason": "preview_discord_guided_deletion is in an exported guided-deletion function that no production entry imports; this issuer does not ship.",
-      "citation": "apps/osl-hub-ui/src/adapters.ts:1415"
+      "citation": "apps/osl-hub-ui/src/adapters.ts:1417"
     },
     {
-      "id": "dead-issuer:scan_discord_own_messages_for_deletion:apps/osl-hub-ui/src/adapters.ts:1402",
+      "id": "dead-issuer:scan_discord_own_messages_for_deletion:apps/osl-hub-ui/src/adapters.ts:1404",
       "class": "accepted",
       "reason": "scan_discord_own_messages_for_deletion is in an exported guided-deletion function that no production entry imports; this issuer does not ship.",
-      "citation": "apps/osl-hub-ui/src/adapters.ts:1402"
+      "citation": "apps/osl-hub-ui/src/adapters.ts:1404"
     },
     {
       "id": "dead-issuer:stop_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:72",
@@ -96,7 +96,7 @@
       "id": "registered-but-granted-to-no-webview:claim_hub_username",
       "class": "accepted",
       "reason": "DEAD, not a live break. Registered on the IPC surface, granted nowhere, and its only caller is claimHubUsername in adapters.ts -- an exported function with ZERO importers outside its own module, already recorded in this file's dead-issuer set. R-002 RETRACTED 'claim_hub_username is a live break on the onboarding path' to LATENT, and this is that latent state measured from the other side. The ACL rejecting it is CORRECT while nothing reachable calls it; granting it would widen the main webview's authority for a feature that does not exist yet.",
-      "citation": "apps/osl-hub-ui/src/adapters.ts:934"
+      "citation": "apps/osl-hub-ui/src/adapters.ts:936"
     },
     {
       "id": "registered-but-granted-to-no-webview:get_osl_profile",
