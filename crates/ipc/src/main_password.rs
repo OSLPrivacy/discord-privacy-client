@@ -929,7 +929,11 @@ pub fn remove_main_password(dir: &Path, current: &str) -> Result<(), String> {
         }
     };
     rotate_state_files(dir, &old_file_key, &fallback)?;
-    set_file_storage_key(Some(*fallback));
+    // Device-bound, not password-derived: the marker was just deleted, so this
+    // install no longer HAS a password authority. Re-installing it through the
+    // default `set_file_storage_key` would relabel it `MainPassword` and make
+    // the authority record lie about the one key it exists to describe.
+    set_file_storage_key_with_authority(Some(*fallback), FileStorageKeyAuthority::DeviceBound);
     let _ = reset_password_lockout(dir);
     let _ = reset_phrase_lockout(dir);
     Ok(())
