@@ -174,7 +174,7 @@ export {
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
-import { firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, type OslChatMessage } from "./osl-chats-view";
+import { firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
@@ -4621,6 +4621,7 @@ function oslChatContent(): string {
     busy: oslChatBusy,
     viewOnce: oslChatViewOnce,
     homeLogoUrl: oslVectorLogoUrl,
+    deletionUnconfirmed: oslChatDeletionUnconfirmed,
   })}${offlineStatus}${receipt}${attachments}${settings}</main>`;
 }
 
@@ -4666,15 +4667,56 @@ function bindAttachmentProgressEvents(): void {
   });
 }
 
-/** The sender sees only a receipt the peer app actually reported. */
+/**
+ * D-135. How many remote attachment copies OSL asked the relay to delete and
+ * could not confirm gone -- `DeletionDrainReport::retained`, reported by
+ * `native_attachment_transport::report_deletion_drain`.
+ *
+ * This is the listener that must exist for that emit to be worth having: the
+ * previous `osl://attachment-deletion-drain` advisory was deleted precisely
+ * because it went to `emit_to("main", ...)` and no webview in the repo ever
+ * subscribed. This page IS the `"main"` webview, so the pair is complete.
+ *
+ * 0 means "nothing OSL knows to be owed". It never means "confirmed gone" --
+ * nothing reads back the relay -- which is why the composer copy states what
+ * OSL asks for rather than what it achieved.
+ */
+let oslChatDeletionUnconfirmed = 0;
+
+/** Reject malformed native events rather than rendering data from another boundary. */
+export function parseAttachmentDeletionUnconfirmedEvent(value: unknown): number | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const keys = Object.keys(value as Record<string, unknown>);
+  if (keys.length !== 1 || keys[0] !== "retained") return null;
+  const retained = (value as { retained: unknown }).retained;
+  if (typeof retained !== "number" || !Number.isSafeInteger(retained) || retained < 0 || retained > 100_000) return null;
+  return retained;
+}
+
+function bindAttachmentDeletionEvents(): void {
+  void listen<unknown>("osl://attachment-deletion-unconfirmed", (event) => {
+    const retained = parseAttachmentDeletionUnconfirmedEvent(event.payload);
+    // A malformed payload leaves the last known count standing. Silently
+    // resetting it to 0 would turn a decode fault into "nothing is owed",
+    // which is the exact claim this surface exists to stop OSL from making.
+    if (retained === null) return;
+    oslChatDeletionUnconfirmed = retained;
+    if (route === "osl-chat") renderWhenIdle();
+  });
+}
+
+/**
+ * The sender sees only a receipt the peer app actually reported.
+ *
+ * D-136: which states can be reported at all, and why the two that cannot are
+ * no longer branched on, is derived and cited in `senderReceiptStateFor`
+ * (osl-chats-view.ts). `null` from it means "no receipt", which
+ * `senderReceiptStatus` deliberately renders in the same words as every
+ * pre-receipt state so that receipt opt-out stays indistinguishable from
+ * not-yet-arrived.
+ */
 export function oslChatSenderReceiptMarkup(messages: readonly OslChatMessage[]): string {
-  const latestOutgoing = [...messages].reverse().find((message) => message.direction === "outgoing");
-  const receipt = senderReceiptStatus(
-    latestOutgoing?.state === "delivered" ? "Delivered"
-      : latestOutgoing?.state === "opened" ? "Opened"
-        : latestOutgoing?.state === "expired" ? "Destroyed"
-          : "Prepared",
-  );
+  const receipt = senderReceiptStatus(senderReceiptStateFor(messages));
   return `<p class="setting-line osl-chat-receipt-status" data-osl-chat-receipt-confirmed="${receipt.confirmed}"><span><strong>Delivery receipt</strong><small>${receipt.label}</small></span></p>`;
 }
 
@@ -6354,6 +6396,7 @@ async function toggleDiscordQaTranscriptVisibility(): Promise<void> {
 
 if (!runningUnderVitest) {
   bindAttachmentProgressEvents();
+  bindAttachmentDeletionEvents();
   void listen<void>(MAIN_WINDOW_CAPTURE_REFUSED_EVENT, () => {
     recoveryCaptureGate.invalidate();
     screenshotProtectionEnabled = false;
