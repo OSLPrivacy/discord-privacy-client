@@ -2,12 +2,12 @@ $ node scripts/ledger/state.mjs
 LEDGER state -- persisted state writes vs behavioural reads, ledger 8 of 8
   frontend production files scanned: 154
   rust production files scanned: 213
-  persisted state entries found: 122
+  persisted state entries found: 121
   unresolved persisted write keys: 0
   production SecureLocalStore instantiations: 0
   accepted exceptions: 0/0 (high-water mark 0)
-  VIOLATIONS (24):
-    persisted-state-never-read (12):
+  VIOLATIONS (23):
+    persisted-state-never-read (11):
       - frontend-localStorage:firstRunPreset -- firstRunPreset is persisted in frontend-localStorage, but no scanned production read consumes it
           apps/osl-hub-ui/src/preferences.ts:112
       - frontend-localStorage:firstRunSendBehavior -- firstRunSendBehavior is persisted in frontend-localStorage, but no scanned production read consumes it
@@ -38,11 +38,6 @@ LEDGER state -- persisted state writes vs behavioural reads, ledger 8 of 8
           apps/osl-hub/src/models.rs:96
           apps/osl-hub/src/models.rs:368
           ... 3 more
-      - rust-sql:attachments.chan_bi -- attachments.chan_bi is persisted in rust-sql, but no scanned production read consumes it
-          crates/store/src/lib.rs:1176
-          crates/store/src/lib.rs:1193
-          crates/store/src/lib.rs:1584
-          crates/store/src/lib.rs:1599
       - rust-sql:message_device_acks.ack_kind -- message_device_acks.ack_kind is persisted in rust-sql, but no scanned production read consumes it
           crates/store/src/schema.rs:1662
       - rust-sql:message_device_acks.acknowledged_at -- message_device_acks.acknowledged_at is persisted in rust-sql, but no scanned production read consumes it
@@ -116,16 +111,16 @@ LEDGER state -- persisted state writes vs behavioural reads, ledger 8 of 8
 exit=1
 
 $ tmp=$(mktemp -d /tmp/osl-ledger-state.XXXXXX); copy source roots; append render-only persisted-state mutant to apps/osl-hub-ui/src/main.ts
-$ node scripts/ledger/state.mjs --root=/tmp/osl-ledger-state.FcWyST
+$ node scripts/ledger/state.mjs --root=/tmp/osl-ledger-state.dh1M7k
 LEDGER state -- persisted state writes vs behavioural reads, ledger 8 of 8
   frontend production files scanned: 154
   rust production files scanned: 213
-  persisted state entries found: 123
+  persisted state entries found: 122
   unresolved persisted write keys: 0
   production SecureLocalStore instantiations: 0
   accepted exceptions: 0/0 (high-water mark 0)
-  VIOLATIONS (25):
-    persisted-state-never-read (12):
+  VIOLATIONS (24):
+    persisted-state-never-read (11):
       - frontend-localStorage:firstRunPreset -- firstRunPreset is persisted in frontend-localStorage, but no scanned production read consumes it
           apps/osl-hub-ui/src/preferences.ts:112
       - frontend-localStorage:firstRunSendBehavior -- firstRunSendBehavior is persisted in frontend-localStorage, but no scanned production read consumes it
@@ -156,11 +151,6 @@ LEDGER state -- persisted state writes vs behavioural reads, ledger 8 of 8
           apps/osl-hub/src/models.rs:96
           apps/osl-hub/src/models.rs:368
           ... 3 more
-      - rust-sql:attachments.chan_bi -- attachments.chan_bi is persisted in rust-sql, but no scanned production read consumes it
-          crates/store/src/lib.rs:1176
-          crates/store/src/lib.rs:1193
-          crates/store/src/lib.rs:1584
-          crates/store/src/lib.rs:1599
       - rust-sql:message_device_acks.ack_kind -- message_device_acks.ack_kind is persisted in rust-sql, but no scanned production read consumes it
           crates/store/src/schema.rs:1662
       - rust-sql:message_device_acks.acknowledged_at -- message_device_acks.acknowledged_at is persisted in rust-sql, but no scanned production read consumes it

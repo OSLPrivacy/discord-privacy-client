@@ -448,7 +448,8 @@ function collectSqlState(root, files) {
     }
     for (const m of src.matchAll(/UPDATE\s+([a-zA-Z0-9_]+)\s+SET\s+([^;"']+)/g)) {
       const table = m[1];
-      const cols = [...m[2].matchAll(/\b([a-z_][a-z0-9_]*)\s*=/g)].map((c) => c[1]);
+      const setClause = m[2].split(/\bWHERE\b/iu)[0];
+      const cols = [...setClause.matchAll(/\b([a-z_][a-z0-9_]*)\s*=/g)].map((c) => c[1]);
       for (const col of cols) {
         addSite(state, `rust-sql:${table}.${col}`, `${rel}:${lineOf(starts, m.index)}`, {
           write: true,
