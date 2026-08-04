@@ -750,6 +750,10 @@ impl WhatsAppLivePlacementReceipt {
 
 /// A borrowed `Uia2Syscalls` that keeps the deadline the substrate handed it.
 ///
+/// A-03c reached the same wall on Telegram and built the same thing; the names
+/// are kept identical on purpose so the real fix -- one `acquire_uia2_editables`
+/// in the substrate -- deletes both relays in one commit.
+///
 /// [`Uia2Deadline`]'s only constructor is private to `native_a11y`, on purpose:
 /// a syscall cannot be reached except with a deadline the acquisition derived
 /// from the plan. The consequence for a *consumer* is that the editable scan --
@@ -762,13 +766,13 @@ impl WhatsAppLivePlacementReceipt {
 /// through it, and [`whatsapp_editables`] refuses unless that remembered
 /// deadline is still the plan's. `submit_shaped_calls` is forwarded, not
 /// answered -- a wrapper that answered `0` would blind the placement guard.
-pub struct WhatsAppUia2Session<'host> {
+struct Uia2DeadlineRelay<'host> {
     host: &'host dyn Uia2Syscalls,
     deadline: std::cell::Cell<Option<Uia2Deadline>>,
 }
 
-impl<'host> WhatsAppUia2Session<'host> {
-    pub fn new(host: &'host dyn Uia2Syscalls) -> Self {
+impl<'host> Uia2DeadlineRelay<'host> {
+    fn new(host: &'host dyn Uia2Syscalls) -> Self {
         Self {
             host,
             deadline: std::cell::Cell::new(None),
@@ -776,8 +780,8 @@ impl<'host> WhatsAppUia2Session<'host> {
     }
 
     /// The deadline the substrate derived from the plan, or `None` if the
-    /// substrate has not issued a single bounded call through this session yet.
-    pub fn recorded_deadline(&self) -> Option<Uia2Deadline> {
+    /// substrate has not issued a single bounded call through this relay yet.
+    fn issued_deadline(&self) -> Option<Uia2Deadline> {
         self.deadline.get()
     }
 
@@ -787,7 +791,7 @@ impl<'host> WhatsAppUia2Session<'host> {
     }
 }
 
-impl Uia2Syscalls for WhatsAppUia2Session<'_> {
+impl Uia2Syscalls for Uia2DeadlineRelay<'_> {
     fn enumerate_windows(
         &self,
         deadline: Uia2Deadline,
@@ -851,17 +855,17 @@ impl Uia2Syscalls for WhatsAppUia2Session<'_> {
 }
 
 /// Scan the bound window's editable elements under the plan's own deadline.
-pub fn whatsapp_editables(
-    session: &WhatsAppUia2Session<'_>,
+fn whatsapp_editables(
+    relay: &Uia2DeadlineRelay<'_>,
     window: Uia2ResolvedWindow,
 ) -> Result<Vec<Uia2Editable>, WhatsAppPlacementStatus> {
-    let deadline = session
-        .recorded_deadline()
+    let deadline = relay
+        .issued_deadline()
         .ok_or(WhatsAppPlacementStatus::DeadlineUnavailable)?;
     if deadline.millis() != window.call_timeout_ms {
         return Err(WhatsAppPlacementStatus::DeadlineUnavailable);
     }
-    session
+    relay
         .editable_elements(window.bound_hwnd, window.tree_route, deadline)
         .map_err(|_| WhatsAppPlacementStatus::CallTimedOut)
 }
@@ -936,8 +940,8 @@ fn whatsapp_placement(
         _ => return WhatsAppLivePlacementReceipt::unbound(WhatsAppPlacementStatus::InvalidCarrier),
     };
 
-    let session = WhatsAppUia2Session::new(host);
-    let acquired = match acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &session) {
+    let relay = Uia2DeadlineRelay::new(host);
+    let acquired = match acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &relay) {
         Ok(acquired) => acquired,
         Err(error) => {
             return WhatsAppLivePlacementReceipt::unbound(whatsapp_acquire_failure(error))
@@ -963,7 +967,7 @@ fn whatsapp_placement(
         return bound(WhatsAppPlacementStatus::BoundTheAppShell);
     }
 
-    let editables = match whatsapp_editables(&session, window) {
+    let editables = match whatsapp_editables(&relay, window) {
         Ok(editables) => editables,
         Err(status) => return bound(status),
     };
@@ -973,7 +977,7 @@ fn whatsapp_placement(
     };
 
     let receipt = match place_uia2_carrier(
-        &session,
+        &relay,
         acquired,
         &composer,
         &carrier,
@@ -1009,7 +1013,7 @@ fn whatsapp_placement(
     placed.enter_sent = receipt.submit_shaped_observed;
 
     if clear_after {
-        match clear_uia2_composer(&session, acquired, &composer) {
+        match clear_uia2_composer(&relay, acquired, &composer) {
             Ok(()) => placed.cleared = true,
             Err(_) => placed.status = WhatsAppPlacementStatus::ProbeClearFailed,
         }
@@ -1776,7 +1780,7 @@ mod tests {
 
     #[test]
     fn whatsapp_placement_refuses_a_backend_that_reports_a_submit_shaped_call() {
-        // The session wrapper forwards `submit_shaped_calls` instead of
+        // The relay forwards `submit_shaped_calls` instead of
         // answering it. A wrapper that answered zero would blind the guard, and
         // `enter_sent` would become a field that cannot be true -- D-139's
         // finding 2, one layer further out.
@@ -1852,12 +1856,12 @@ mod tests {
 
     #[test]
     fn whatsapp_editable_scan_refuses_without_a_deadline_the_acquisition_derived() {
-        // The session never mints a deadline; it only keeps the one the
+        // The relay never mints a deadline; it only keeps the one the
         // substrate handed it. Before the substrate has made any call there is
         // nothing to keep, and the scan refuses rather than inventing a bound.
         let host = whatsapp_host(vec![composer("Type a message")]);
-        let session = WhatsAppUia2Session::new(&host);
-        assert!(session.recorded_deadline().is_none());
+        let relay = Uia2DeadlineRelay::new(&host);
+        assert!(relay.issued_deadline().is_none());
 
         let window = Uia2ResolvedWindow {
             app_outer_hwnd: 0x4001,
@@ -1870,19 +1874,42 @@ mod tests {
             call_timeout_ms: WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS,
         };
         assert_eq!(
-            whatsapp_editables(&session, window),
+            whatsapp_editables(&relay, window),
             Err(WhatsAppPlacementStatus::DeadlineUnavailable)
         );
 
-        let acquired = acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &session)
+        let acquired = acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &relay)
             .expect("WhatsApp acquires through the substrate");
         assert_eq!(
-            session.recorded_deadline().map(Uia2Deadline::millis),
+            relay.issued_deadline().map(Uia2Deadline::millis),
             Some(WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS)
         );
         assert_eq!(
-            whatsapp_editables(&session, acquired.window).map(|editables| editables.len()),
+            whatsapp_editables(&relay, acquired.window).map(|editables| editables.len()),
             Ok(1)
+        );
+    }
+
+    #[test]
+    fn the_deadline_relay_cannot_blind_the_submit_shaped_guard_or_invent_a_budget() {
+        let mut host = whatsapp_host(vec![composer("Type a message")]);
+        host.submit_shaped_on_set = true;
+        host.submit_shaped.set(3);
+        let relay = Uia2DeadlineRelay::new(&host);
+
+        assert_eq!(
+            relay.submit_shaped_calls(),
+            3,
+            "a relay that answered this itself would blind every placement guard"
+        );
+
+        // And it never mints a budget of its own: the only deadline it can hand
+        // back is the one the acquisition derived from the plan.
+        assert!(relay.issued_deadline().is_none());
+        let _ = acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &relay);
+        assert_eq!(
+            relay.issued_deadline().map(Uia2Deadline::millis),
+            Some(WHATSAPP_UIA2_WINDOW_PLAN.call_timeout_ms)
         );
     }
 
@@ -1894,6 +1921,86 @@ mod tests {
             drive_whatsapp_composer_placement(&host, PAYLOAD, false).status,
             WhatsAppPlacementStatus::CallTimedOut
         );
+    }
+
+    /// Drive the REAL WhatsApp composer through the shared substrate.
+    ///
+    /// This is the only thing in this lane that touches a live provider, and it
+    /// cannot run here: `win32` is `cfg(target_os = "windows")` and this machine
+    /// is Linux. It is `#[ignore]`d so it never runs unattended, and it is
+    /// read-only unless `OSL_WA_PROBE_CARRIER` is set -- setting that variable
+    /// is what opts into a write, and the composer is cleared immediately after.
+    ///
+    /// The host is `desktop()`, not `rooted_at`: OSL reparents *Discord's*
+    /// window into its own hierarchy, which is why Discord's consumption had to
+    /// be rooted. Nothing in OSL borrows WhatsApp, and WhatsApp's content window
+    /// belongs to a process OSL never claimed, so the enumeration has to be
+    /// desktop-wide or the sibling would be unreachable.
+    ///
+    /// ```text
+    /// # from WSL, build the Windows test binary:
+    /// flock /tmp/osl-cargo.lock cargo test --manifest-path apps/osl-hub/Cargo.toml \
+    ///   --lib --target x86_64-pc-windows-gnu -j 4 --no-run
+    /// # then, on the Windows host, WhatsApp signed in with a conversation open:
+    /// set OSL_WA_PROBE_CARRIER=alpha7731osl
+    /// osl_privacy_hub-<hash>.exe --ignored --nocapture --test-threads=1 \
+    ///   drive_the_real_whatsapp_composer_through_the_substrate
+    /// ```
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "drives live WhatsApp Desktop on a Windows host; run explicitly"]
+    fn drive_the_real_whatsapp_composer_through_the_substrate() {
+        let host = crate::native_a11y::win32::Uia2Win32Host::desktop();
+        let relay = Uia2DeadlineRelay::new(&host);
+        let acquired = acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &relay)
+            .unwrap_or_else(|error| panic!("whatsapp: acquire failed: {error:?}"));
+        eprintln!(
+            "whatsapp: pid={} elements={} woke={} settled_ms={} bound_is_app_shell={}",
+            acquired.window.bound_process_id,
+            acquired.elements,
+            acquired.woke,
+            acquired.settled_ms,
+            acquired.window.bound_hwnd == acquired.window.app_outer_hwnd,
+        );
+
+        let editables = whatsapp_editables(&relay, acquired.window)
+            .unwrap_or_else(|status| panic!("whatsapp: editable scan refused: {status:?}"));
+        eprintln!(
+            "whatsapp: editable={} writable={}",
+            editables.len(),
+            editables
+                .iter()
+                .filter(|element| element.writable())
+                .count()
+        );
+        for element in &editables {
+            eprintln!(
+                "  edit name={:?} value_pattern={} enabled={} kbd={} read_only={}",
+                element.name,
+                element.value_pattern,
+                element.enabled,
+                element.keyboard_focusable,
+                element.read_only
+            );
+        }
+
+        let composer = resolve_uia2_composer(WHATSAPP_COMPOSER_MATCHER, &editables)
+            .unwrap_or_else(|error| panic!("whatsapp: no composer resolved: {error:?}"));
+        eprintln!("whatsapp: composer name={:?}", composer.name);
+
+        let Ok(payload) = std::env::var("OSL_WA_PROBE_CARRIER") else {
+            eprintln!("whatsapp: read-only probe, nothing written");
+            return;
+        };
+        let receipt = probe_whatsapp_composer_write_then_clear(&host, &payload, false);
+        eprintln!("whatsapp: {receipt:?}");
+        assert_eq!(receipt.status, WhatsAppPlacementStatus::Placed);
+        assert!(receipt.readback_contains_carrier);
+        assert!(
+            receipt.cleared,
+            "the composer must never be left holding a carrier"
+        );
+        assert!(!receipt.enter_sent, "nothing here may commit a message");
     }
 
     /// Every mechanism that could commit a WhatsApp message without going
