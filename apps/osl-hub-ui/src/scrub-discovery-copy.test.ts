@@ -67,6 +67,6 @@ describe("Scrub discovery surfaces state what the build does", () => {
   it("clears the digest with the scan it describes", () => {
     const clear = functionSource("clearPrivacyScanState", "privacyScanResultsMarkup");
     expect(clear).toContain("scrubScopeFingerprint = null");
-    expect(source).toContain('document.querySelector<HTMLButtonElement>("#clear-privacy-scan")?.addEventListener("click", () => { clearPrivacyScanState(); render(); });');
+    expect(source).toContain('document.querySelector<HTMLButtonElement>("#clear-privacy-scan")?.addEventListener("click", () => void clearPrivacyScanResults());');
   });
 });

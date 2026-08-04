@@ -17,6 +17,12 @@ export interface PersistedLocalScrubScan {
   receipt: ScrubCoverageReceipt;
 }
 
+export interface ClearPersistedLocalScrubExportResult {
+  attempted: boolean;
+  confirmedCleared: boolean;
+  detail: string;
+}
+
 export interface LocalScrubIndexAdapters {
   getStatus: typeof getScrubIndexStatus;
   initialize: typeof initializeScrubIndex;
@@ -107,4 +113,26 @@ export async function persistLocalScrubExport(
     status: persistedStatus,
     receipt: localImportCoverageReceipt(messages, scan),
   };
+}
+
+export async function clearPersistedLocalScrubExport(
+  importId: string | null,
+  adapters: LocalScrubIndexAdapters = defaultAdapters,
+): Promise<ClearPersistedLocalScrubExportResult> {
+  if (!importId) {
+    return { attempted: false, confirmedCleared: false, detail: "No persisted Scrub import is bound to this review" };
+  }
+  const before = await adapters.getStatus();
+  if (!before) {
+    return { attempted: false, confirmedCleared: true, detail: "No persisted Scrub import remained" };
+  }
+  if (before.importId !== importId) {
+    return { attempted: false, confirmedCleared: false, detail: "A different Scrub import is active; left it unchanged" };
+  }
+  await adapters.cancel(importId);
+  const after = await adapters.getStatus();
+  if (after === null) {
+    return { attempted: true, confirmedCleared: true, detail: "Local encrypted Scrub import cleared" };
+  }
+  return { attempted: true, confirmedCleared: false, detail: "Local encrypted Scrub import clear was requested but not confirmed" };
 }
