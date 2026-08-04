@@ -1,0 +1,40 @@
+$ tmp=$(mktemp -d /tmp/osl-ledger-bundle.XXXXXX); rsync temp root; add import "./accessibility-preference" to main.ts
+$ node scripts/ledger/bundle.mjs --root=$tmp --no-cache
+LEDGER bundle -- real bundle membership (rollup getModuleIds), ledger 7 of 7
+  production sources: 167
+  modules rollup loaded (in-tree): 120
+  outside the bundle: 54
+  bundle cache mode: bypass
+  bundle source files fingerprinted: 172
+  accepted exceptions: 54/55 (high-water mark 55)
+  STALE EXCEPTIONS (1) -- these no longer match any violation; delete them and lower highWaterMark:
+    - apps/osl-hub-ui/src/accessibility-preference.ts  (apps/osl-hub-ui/src/main.ts:877)
+  RESULT: RED
+exit=1
+$ restore temp root and rerun
+$ node scripts/ledger/bundle.mjs --root=$tmp --no-cache
+LEDGER bundle -- real bundle membership (rollup getModuleIds), ledger 7 of 7
+  production sources: 167
+  modules rollup loaded (in-tree): 119
+  outside the bundle: 55
+  bundle cache mode: bypass
+  bundle source files fingerprinted: 172
+  accepted exceptions: 55/55 (high-water mark 55)
+  RESULT: GREEN
+exit=0
+
+## Missing-input probe
+$ rm -rf /tmp/osl-ledger-missing-root-b0-08
+$ node scripts/ledger/bundle.mjs --root=/tmp/osl-ledger-missing-root-b0-08
+LEDGER bundle -- real bundle membership (rollup getModuleIds), ledger 7 of 7
+  accepted exceptions: 0/55 (high-water mark 55)
+  VIOLATIONS (3):
+    ledger-input-missing (3):
+      - missing-input:apps/osl-hub-ui/package.json -- required ledger input is missing: apps/osl-hub-ui/package.json
+          apps/osl-hub-ui/package.json:1
+      - missing-input:apps/osl-hub-ui/src -- required ledger input is missing: apps/osl-hub-ui/src
+          apps/osl-hub-ui/src:1
+      - missing-input:apps/osl-hub-ui/vite.config.ts -- required ledger input is missing: apps/osl-hub-ui/vite.config.ts
+          apps/osl-hub-ui/vite.config.ts:1
+  RESULT: RED
+exit=1

@@ -1,0 +1,44 @@
+$ tmp=$(mktemp -d /tmp/osl-ledger-routes.XXXXXX); rsync temp root; mutate data-route="home" -> data-route="mutant-route"
+$ node scripts/ledger/routes.mjs --root=$tmp
+LEDGER routes -- routes assigned vs dispatched, ledger 6 of 7
+  top-level routes assigned: 13
+  top-level routes dispatched: 13
+  onboarding routes assigned: 19
+  onboarding routes dispatched: 22
+  non-literal route assignments: 27
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (2):
+    assigned-route-not-dispatched (2):
+      - route:mutant-route -- route value can be assigned or declared but has no content dispatcher branch
+          apps/osl-hub-ui/src/main.ts:3551
+      - route:signal-qa -- route value can be assigned or declared but has no content dispatcher branch
+          apps/osl-hub-ui/src/main.ts:9096
+  RESULT: RED
+exit=1
+$ restore temp root and rerun
+$ node scripts/ledger/routes.mjs --root=$tmp
+LEDGER routes -- routes assigned vs dispatched, ledger 6 of 7
+  top-level routes assigned: 12
+  top-level routes dispatched: 13
+  onboarding routes assigned: 19
+  onboarding routes dispatched: 22
+  non-literal route assignments: 27
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (1):
+    assigned-route-not-dispatched (1):
+      - route:signal-qa -- route value can be assigned or declared but has no content dispatcher branch
+          apps/osl-hub-ui/src/main.ts:9096
+  RESULT: RED
+exit=1
+
+## Missing-input probe
+$ rm -rf /tmp/osl-ledger-missing-root-b0-08
+$ node scripts/ledger/routes.mjs --root=/tmp/osl-ledger-missing-root-b0-08
+LEDGER routes -- routes assigned vs dispatched, ledger 6 of 7
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (1):
+    ledger-input-missing (1):
+      - missing-input:apps/osl-hub-ui/src/main.ts -- required ledger input is missing: apps/osl-hub-ui/src/main.ts
+          apps/osl-hub-ui/src/main.ts:1
+  RESULT: RED
+exit=1
