@@ -1,0 +1,115 @@
+{
+  "ledger": "integration-branch quarantine",
+  "note": "D-172. THIS IS A RATCHET, NOT AN EXCUSE. Every entry below is a check that is RED on integrate/first-usable today. None of them is fixed here and none of them is suppressed: each one still runs in full on every push to the integration branch and its findings are printed verbatim. What this file adds is the only thing a permanently-red step cannot give you -- a number that can FAIL. scripts/ci/quarantine-ratchet.mjs fails if a count goes UP (a regression slipped in) and also if a count goes DOWN without this file being lowered in the same change (a ratchet checked in one direction rots into a floor nobody ever lowers). Identical policy to scripts/ledger/state-baseline.json. To lower a number you must land the fix and the new number together.",
+  "measured": "scripts/ci/quarantine-ratchet.mjs on fix/d172-gate-integration-branch, 2026-08-04; the four vitest numbers measured by running each config directly, because `npm test` cannot reach the second one while the first is red",
+  "provenance": "ts-test.yml, rust-test.yml and public-release-audit.yml last ran on main at 30658453352 / 30658453451 / 30658453416 on 2026-07-31, ALL GREEN. claims.yml, site-tests.yml and state-authority.yml do not exist on the default branch at all and have therefore never run anywhere. Every count below is therefore red that arrived on integrate/first-usable AFTER 2026-07-31 and was never seen, because no workflow has ever run on that branch. That is D-172 itself, measured.",
+  "entries": [
+    {
+      "id": "app-claims",
+      "count": 6,
+      "cwd": ".",
+      "cmd": [
+        "node",
+        "scripts/check-app-claims.mjs"
+      ],
+      "extract": "violations-found",
+      "runsIn": ".github/workflows/ts-test.yml job claim-gates",
+      "why": "6 in-app copy claims outside docs/design/osl-public-claim-allowlist.md. This step is the FIRST step of every ts-test lane, so while it is red every other lane of that workflow aborts before it starts -- which is exactly how the D-162 build gate was rendered inert. Hoisted into its own job by this change so it can be red without masking anything.",
+      "owner": "unassigned - surfaced by D-172, needs a claims lane"
+    },
+    {
+      "id": "public-release-audit",
+      "count": 18,
+      "cwd": ".",
+      "cmd": [
+        "python3",
+        "scripts/audit_public_release.py"
+      ],
+      "extract": "dash-findings",
+      "runsIn": ".github/workflows/public-release-audit.yml (NOT enabled on integrate/**; see the D-172 tasklog)",
+      "why": "18 tracked files carry a personal WSL path. scripts/verify-all.sh is one of them and stays one: this change removes its hardcoded fallback CHECKOUT (D-172 part 2) but leaves the comment that records what the fallback used to be, because that comment is the lesson. Note this file itself is graded by that audit -- an early draft of this entry quoted the offending path and pushed the count to 19, which the ratchet caught on its first real run. Do not quote absolute home paths here.",
+      "owner": "unassigned - surfaced by D-172"
+    },
+    {
+      "id": "keyserver-typecheck",
+      "count": 13,
+      "cwd": "keyserver-cf",
+      "cmd": [
+        "npx",
+        "tsc",
+        "--noEmit"
+      ],
+      "extract": "tsc-errors",
+      "runsIn": ".github/workflows/ts-test.yml lane keyserver-worker",
+      "why": "13 pre-existing TypeScript errors. This is the step the D-162 lane's build gate was originally placed BEHIND, so the gate could never execute. The bundle gate now lives in its own job (worker-bundles) and no longer depends on this being green.",
+      "owner": "unassigned - keyserver lane"
+    },
+    {
+      "id": "cipher-store-typecheck",
+      "count": 7,
+      "cwd": "cipher-store-cf",
+      "cmd": [
+        "npx",
+        "tsc",
+        "--noEmit"
+      ],
+      "extract": "tsc-errors",
+      "runsIn": ".github/workflows/ts-test.yml lane cipher-store-worker",
+      "why": "7 pre-existing TypeScript errors. NOT previously recorded anywhere: the cipher-store steps sat after the keyserver typecheck in the same ts-test lane, so they had never run in CI at all. Split into their own lane by this change.",
+      "owner": "unassigned - surfaced by D-172"
+    },
+    {
+      "id": "keyserver-tests-worker",
+      "count": 13,
+      "cwd": "keyserver-cf",
+      "cmd": [
+        "npx",
+        "vitest",
+        "run"
+      ],
+      "extract": "vitest-failed",
+      "runsIn": ".github/workflows/ts-test.yml lane keyserver-worker",
+      "why": "13 failing cases, 527 passing: 10 in test/integration/mail.test.ts, plus pool-separation, telegram-route and stripe-checkout. Run as its OWN entry rather than through `npm test`, which is `vitest run && vitest run --config vitest.node.config.ts` -- the && means the node pass never runs while this one is red. That is the same masking pattern as the D-162 CI step, one layer further down, inside an npm script.",
+      "owner": "unassigned - keyserver lane"
+    },
+    {
+      "id": "cipher-store-tests-node",
+      "count": 4,
+      "cwd": "cipher-store-cf",
+      "cmd": [
+        "npx",
+        "vitest",
+        "run",
+        "--config",
+        "vitest.node.config.ts"
+      ],
+      "extract": "vitest-failed",
+      "runsIn": ".github/workflows/ts-test.yml lane cipher-store-worker",
+      "why": "4 failing cases in test-node/: d2-0010-release-contract, two in deletion-durability-probe, and policy-portability. Same short-circuit story as the keyserver pair -- reached only because the cipher-store worker pass happens to be green.",
+      "owner": "unassigned - surfaced by D-172"
+    }
+  ],
+  "notRatcheted": [
+    {
+      "id": "a11y-overflow",
+      "check": "node scripts/check-a11y.mjs",
+      "runsIn": ".github/workflows/site-tests.yml, which does not exist on the default branch and has therefore never run anywhere",
+      "why": "NOT ratcheted, and that is a finding rather than an omission. The check drives a real browser and measures horizontal overflow in pixels, so its finding count depends on the renderer: 6 blocking findings on WSL/Chromium (/docs/compare, /docs/download and /docs/faq at 320px and 390px @200%, overflow 8-81px) but 2 on ubuntu-latest/google-chrome (/docs/compare 320px by 18px, /docs/download 320px by 2px) -- measured on runs 30928896726 and 30929905893. Pinning either number produces a false red on the other machine. A ratchet whose value depends on which font stack is installed is not a ratchet. Recorded here so the finding is not lost and so nobody re-adds it to the ratchet without first making the measurement reproducible.",
+      "owner": "unassigned - website lane; surfaced by D-172"
+    },
+    {
+      "id": "cipher-store-tests-worker",
+      "check": "npx vitest run   (in cipher-store-cf)",
+      "runsIn": ".github/workflows/ts-test.yml lane cipher-store-worker",
+      "why": "NOT ratcheted because it is FLAKY, which is the finding. 219/219 green locally and on run 30929905893; on run 30930446967, with byte-identical cipher-store code, `test/attachment-sweep.test.ts > attachment quota and expiry sweep > retains marked legacy metadata when multipart abort fails` failed. A count that changes without the code changing cannot be a ratchet in either direction. It also demonstrated the short-circuit: when this pass failed, the 134 tests of the node config did not run at all, and the naive total dropped from 4 to 1, which the ratchet correctly refused as a stale baseline rather than banking.",
+      "owner": "unassigned - cipher-store lane; surfaced by D-172"
+    },
+    {
+      "id": "keyserver-tests-node",
+      "check": "npx vitest run --config vitest.node.config.ts --passWithNoTests   (in keyserver-cf)",
+      "runsIn": "nothing, until D-172 split it out; `npm test` is `vitest run && vitest run --config vitest.node.config.ts`, and the worker pass has been red the whole time, so this config had NEVER run in CI or in any hand-run of the four-command verification",
+      "why": "NOT ratcheted because the count is not stable: 11 locally, 12 on run 30931210322, 11 again on run 30931563092, all on unchanged keyserver code. The consistently-failing set is scripts/sender-filter-deployment-admission.test.ts (4), scripts/sender-filter-rollout-contract.test.ts (2) and scripts/trusted-release-selection.test.ts (5); the twelfth, when it appears, is scripts/deployment-evidence-receipt.test.ts > 'admits nonempty exact Artifact B and Artifact A observation fixtures'. Eleven-to-twelve failing tests nobody had ever seen is the finding; a number that moves on its own cannot also be the ratchet. It DOES now run in CI for the first time, as its own step in the ts-test keyserver-worker lane.",
+      "owner": "unassigned - keyserver lane; surfaced by D-172"
+    }
+  ]
+}

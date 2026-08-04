@@ -1,0 +1,317 @@
+# D-172. The gate on the branch we actually integrate into and cut builds from.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# Until this landed, `gh run list --branch integrate/first-usable` returned
+# NOTHING. Every workflow in this directory triggered on `push: branches: [main]`
+# plus `pull_request`, and the integration branch is pushed to neither. So every
+# workflow in the repository was a statement about `main` -- not about the branch
+# the shipping artifacts are cut from. Two defects came straight out of that:
+#
+#   * D-162: db4172f7b imported a `normalizeUsername` nobody wrote. The keyserver
+#            Worker could not be bundled AT ALL, and it sat there for two days
+#            because nothing in CI builds the Worker and nothing in CI runs on
+#            this branch.
+#   * D-146: the integration head could not build the shipping app at all -- a
+#            capability granted a command a merge had deleted -- while the
+#            workspace suite (1997/0), the hub suite (1212/1) and the frontend
+#            suite (1604/0) were all green.
+#
+# Both are the same shape: THE SHIPPING ARTIFACT HAD NO BUILD GATE. This file is
+# that gate, and it is four separate jobs on purpose.
+#
+# ONE JOB PER GATE, DELIBERATELY
+# ------------------------------
+# The D-162 lane added a Workers build step to ts-test.yml and it could never
+# have run: it sat behind `npm run typecheck`, which exits 2 on 13 pre-existing
+# errors, and Actions aborts a job at its first failing step. A gate placed
+# downstream of a known-red step is not a gate. So each artifact here gets its
+# own job with nothing else in it, and no gate below can be masked by an
+# unrelated failure -- not by a lint, not by a typecheck, not by another gate.
+#
+# WHAT THIS DOES *NOT* DO
+# -----------------------
+# It runs no tests. rust-test.yml and ts-test.yml own the suites and are now
+# wired to this branch too; they take 15+ minutes. This workflow answers one
+# question fast: DOES WHAT WE SHIP STILL BUILD. That question had no answer at
+# all for the first four days of August.
+#
+# It also deploys nothing. `wrangler deploy --dry-run` writes a local outdir and
+# contacts no Cloudflare account state; there is no token in this workflow and
+# `permissions: contents: read` is the whole grant.
+
+name: Integration Gate
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  # `integrate/**`, not just `integrate/first-usable`. The defect was not that
+  # one branch name was missing from a list -- it was that "the branch we
+  # integrate into" was not a thing CI had an opinion about. Any future
+  # integration branch inherits the gate the day it is created, which is the
+  # only version of this fix that does not have to be re-applied by hand.
+  push:
+    branches:
+      - 'integrate/**'
+  pull_request:
+    branches:
+      - 'integrate/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # GATE (a). The shared crates. apps/osl-hub, src-tauri and
+  # services/crypto-watcher are `exclude`d from the workspace (Cargo.toml:22-31),
+  # so this deliberately does NOT cover the app -- gate (b) does.
+  # ubuntu, not windows: no workspace member depends on tauri, so there is no
+  # webkit/WebView2 requirement here and the cheap runner is the honest one.
+  workspace-build:
+    name: (a) cargo workspace builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: '1.97.1'
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          workspaces: . -> target
+          # Only the integration branch itself writes the cache; mutant and
+          # topic branches under integrate/** read it. Mirrors rust-test.yml.
+          save-if: ${{ github.ref == 'refs/heads/integrate/first-usable' }}
+      # --all-targets, so test and bench targets have to compile too. `cargo
+      # check` without it skips them, and "the tests do not compile" has been a
+      # real state of this repository (rust-test.yml:76-84 on apps/osl-hub).
+      - name: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets --locked
+
+  # GATE (b). THE ONE THAT WAS MISSING. apps/osl-hub is excluded from the
+  # workspace, so `-p osl-hub` does not resolve and `cargo test --workspace`
+  # never touches it: it needs --manifest-path. And `--features desktop` is not
+  # optional -- `tauri_build::build()` runs only under `desktop` (build.rs:27-29)
+  # and it is what validates capabilities/*.json against the command registry.
+  # That validation is precisely what D-146 broke while three suites were green.
+  #
+  # windows-latest because Windows is what ships: it compiles the cfg(windows)
+  # halves of the binary, which no ubuntu job can.
+  hub-desktop-build:
+    name: (b) osl-hub builds with --features desktop
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/osl-hub-ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: '1.97.1'
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          workspaces: apps/osl-hub -> target
+          save-if: ${{ github.ref == 'refs/heads/integrate/first-usable' }}
+      # `tauri.conf.json` points frontendDist at ../osl-hub-ui/dist and
+      # `tauri_build::build()` reads it, so the renderer must exist before cargo
+      # is invoked at all. `npx vite build`, NOT `npm run build`: `npm run build`
+      # is `tsc --noEmit && vite build`, and routing this gate through the
+      # typecheck would put gate (b) behind gate (c) -- the exact masking this
+      # workflow is shaped to prevent. Gate (c) owns tsc.
+      - name: Build the embedded frontend (vite only -- tsc is gate (c))
+        working-directory: apps/osl-hub-ui
+        run: |
+          npm ci
+          npx vite build
+      # THE SHIPPING BUILD, exactly as START-HERE.md section 5 and
+      # scripts/verify-all.sh define it. No --all-targets: the wider check found
+      # a pre-existing defect on a NON-shipping target (see the next step), and
+      # letting that defect turn the shipping gate permanently red would make
+      # this gate unreadable within a day. The wider check is not dropped -- it
+      # runs below, ratcheted, and it can still fail.
+      - name: cargo check --manifest-path apps/osl-hub/Cargo.toml --features desktop
+        run: cargo check --manifest-path apps/osl-hub/Cargo.toml --features desktop --locked
+      # D-172. The strictly wider `--all-targets` check, run for the first time
+      # in this repository's history by run 30928896726, which found that
+      # apps/osl-hub/tests/web_surface_a11y_spike.rs has not compiled at all:
+      # two major versions of the `windows` crate are in the dependency graph
+      # and it passes an HWND from one to a function expecting the other's.
+      # rust-test.yml's hub-desktop-bin compiles the BIN target only, and
+      # apps/osl-hub is outside the workspace, so nothing had ever built it.
+      #
+      # Not this lane's defect to fix and not a reason to stop running the wider
+      # check. The ratchet pins the SET of targets that fail: a target that is
+      # not on the list breaking FAILS, and a listed target that starts
+      # compiling without being removed in the same change also FAILS.
+      #
+      # It runs AFTER the shipping check, so a hard build failure is reported as
+      # a build failure rather than as a ratchet mismatch -- and the shipping
+      # gate above cannot be masked by it.
+      - name: apps/osl-hub --all-targets, ratcheted
+        run: |
+          node scripts/ci/hub-target-ratchet.mjs --self-test
+          node scripts/ci/hub-target-ratchet.mjs
+
+  # GATE (c). The frontend PRODUCTION build. vitest does not typecheck and does
+  # not bundle, so a green frontend suite says nothing about whether the
+  # renderer that ships can be produced. `npm run build` is
+  # `tsc --noEmit && vite build`; both halves are wanted and both are here.
+  frontend-build:
+    name: (c) frontend production build (tsc + vite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/osl-hub-ui/package-lock.json
+      - name: Install the renderer's dependencies
+        working-directory: apps/osl-hub-ui
+        run: npm ci
+      - name: npm run build (tsc --noEmit && vite build)
+        working-directory: apps/osl-hub-ui
+        run: npm run build
+
+  # GATE (d). THE D-162 GATE. `wrangler deploy --dry-run` runs the real esbuild
+  # bundle that a deploy runs, and it is the ONLY thing in this repository that
+  # does. `tsc --noEmit` does not: it was red for 13 unrelated reasons the whole
+  # time db4172f7b's missing import was sitting there, and it would not have
+  # blocked the deploy even if it had been green.
+  #
+  # Its own job, not a step in the ts-test workers lane, because that lane's
+  # typecheck is red today and Actions aborts a job at the first failing step.
+  # The two workers are separate steps in one job and each does its own npm ci,
+  # so neither can be starved by the other's install.
+  worker-bundles:
+    name: (d) both Cloudflare Workers bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            keyserver-cf/package-lock.json
+            cipher-store-cf/package-lock.json
+      - name: Install keyserver worker deps
+        working-directory: keyserver-cf
+        run: npm ci
+      - name: Bundle the keyserver Worker (dry run -- no remote state)
+        working-directory: keyserver-cf
+        run: npm run verify:worker-build
+      - name: Install cipher-store worker deps
+        # `if: always()` would let a starved install read as a pass further down;
+        # this step must run even when the keyserver BUNDLE failed, but not when
+        # the runner itself is broken. success() || failure() excludes cancelled.
+        if: ${{ success() || failure() }}
+        working-directory: cipher-store-cf
+        run: npm ci
+      - name: Bundle the cipher-store Worker (dry run -- no remote state)
+        if: ${{ success() || failure() }}
+        working-directory: cipher-store-cf
+        run: npm run verify:worker-build
+
+  # D-172 part 3. Seven checks were already red on this branch when CI was
+  # switched on. They are not fixed here and they are not suppressed: this job
+  # runs every one of them in full, prints every finding, and pins the counts in
+  # scripts/ci/quarantine.json so a regression under cover of existing red FAILS.
+  # A step that has been red for a week carries no information; a number that can
+  # move does. Read the header of scripts/ci/quarantine-ratchet.mjs.
+  quarantine-ratchet:
+    name: pre-existing red, ratcheted
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            keyserver-cf/package-lock.json
+            cipher-store-cf/package-lock.json
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      # The ratchet's own failure modes, proved before it is trusted to grade
+      # anything: a count that goes up is rejected, a count that goes down is
+      # rejected, and an unparseable or starved check is refused rather than
+      # read as zero findings.
+      - name: Prove the ratchet fails in both directions
+        run: node scripts/ci/quarantine-ratchet.mjs --self-test
+      - name: Install keyserver worker deps
+        working-directory: keyserver-cf
+        run: npm ci
+      - name: Install cipher-store worker deps
+        working-directory: cipher-store-cf
+        run: npm ci
+      - name: Grade every quarantined check against its baseline
+        run: node scripts/ci/quarantine-ratchet.mjs
+
+  # The aggregate check. Written in the shape rust-test.yml and ts-test.yml
+  # already use: it self-tests its own refusal before it grades anything, so it
+  # cannot become a step that reports success unconditionally. `if: always()` is
+  # required -- without it a failed dependency SKIPS this job and a skipped
+  # required check is not a red one.
+  integration-gate:
+    name: integration gate
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs:
+      - workspace-build
+      - hub-desktop-build
+      - frontend-build
+      - worker-bundles
+      - quarantine-ratchet
+    steps:
+      - name: Every gate green
+        env:
+          WORKSPACE: ${{ needs.workspace-build.result }}
+          HUB_DESKTOP: ${{ needs.hub-desktop-build.result }}
+          FRONTEND: ${{ needs.frontend-build.result }}
+          WORKERS: ${{ needs.worker-bundles.result }}
+          QUARANTINE: ${{ needs.quarantine-ratchet.result }}
+        run: |
+          require_green() {
+            failed=0
+            for check in "$@"; do
+              label="${check%%=*}"
+              result="${check#*=}"
+              if [ "$result" != 'success' ]; then
+                echo "$label failed with result: $result"
+                failed=1
+              fi
+            done
+            return "$failed"
+          }
+
+          # Prove the aggregator refuses each non-green result before it is
+          # allowed to pass judgement. 'skipped' and 'cancelled' are in this
+          # list on purpose: a gate that did not run is not a gate that passed.
+          for bad in 'gate=failure' 'gate=cancelled' 'gate=skipped' 'gate=' ; do
+            if require_green "$bad" 'other=success' > /dev/null; then
+              echo "aggregator self-test accepted a non-green result: $bad"
+              exit 1
+            fi
+          done
+          if ! require_green 'a=success' 'b=success' > /dev/null; then
+            echo "aggregator self-test rejected an all-green input"
+            exit 1
+          fi
+          echo "aggregator self-test: ok"
+
+          require_green \
+            "(a) cargo workspace builds=$WORKSPACE" \
+            "(b) osl-hub --features desktop builds=$HUB_DESKTOP" \
+            "(c) frontend production build=$FRONTEND" \
+            "(d) both Cloudflare Workers bundle=$WORKERS" \
+            "pre-existing red ratchet=$QUARANTINE"

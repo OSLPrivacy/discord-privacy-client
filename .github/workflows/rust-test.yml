@@ -6,10 +6,51 @@ concurrency:
 
 on:
   push:
-    branches: [main]
+    # D-172. This workflow owns the two most expensive truths in the repo -- the
+    # workspace suite and `hub-desktop-bin`, the only job that builds the app as
+    # it ships -- and until this line existed it asserted them about `main` only.
+    # D-146 was an integration head that could not build the shipping app at all
+    # while three suites were green; this job would have caught it on the push
+    # that broke it, and could not, because it never ran on that branch.
+    branches: [main, 'integrate/**']
   pull_request:
 
 jobs:
+  # D-172. Its own job, and that is the entire point -- see the comment where it
+  # used to live, in `test` below. A formatting check is the cheapest possible
+  # step and it was gating the most expensive truth in the repository.
+  # D-172, same reason as `fmt`. On run 30931561981, with fmt already moved out,
+  # `cargo clippy --workspace --all-targets -- -D warnings` was the next thing to
+  # fail as step 5 of `test` -- and `cargo test --workspace`, nextest and both
+  # apps/osl-hub `--features core` steps were reported `skipped` all over again.
+  # Two lints in a row had been standing in front of the entire Rust suite.
+  # Still required, still red, no longer in front of anything.
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: '1.97.1'
+          components: clippy
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          workspaces: . -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: '1.97.1'
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
   test:
     name: test
     runs-on: windows-latest
@@ -32,8 +73,14 @@ jobs:
             . -> target
             apps/osl-hub -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # D-172: `cargo fmt --all -- --check` used to stand HERE, as step 5 of this
+      # job, and it is RED on integrate/first-usable -- 53 files, 138 hunks. So
+      # on the first run this workflow ever had on that branch (30930446508),
+      # clippy, `cargo test --workspace`, nextest and BOTH apps/osl-hub
+      # `--features core` steps were all reported `skipped`. Actions aborts a job
+      # at its first failing step, so a formatting nit was hiding the entire Rust
+      # test suite. It is now the `fmt` job below: still required, still red,
+      # and no longer standing in front of anything.
       - run: cargo test --workspace
       # nextest runs each test in its own process for fast isolated feedback.
       # Keep cargo test above: its shared test-process shape can expose
@@ -189,3 +236,13 @@ jobs:
         run: |
           python3 -m pip install --quiet pyyaml
           python3 .github/workflows/rust-test.workflow-test.py
+      # D-172. A trigger is one line and one line is easy to lose in a merge.
+      # This asserts that the five workflows that gate `integrate/**` still do,
+      # that the five that deploy/publish/open-issues still do not, and that
+      # integration-gate.yml still contains all four shipping-artifact build
+      # gates as SEPARATE jobs. It runs from this job -- a different workflow
+      # from the one it mostly guards -- for the same reason the rust contract
+      # above does: a contract enforced only by the thing it constrains is not
+      # enforced.
+      - name: Integration-branch gating contract
+        run: python3 .github/workflows/integration-branch-gating.test.py

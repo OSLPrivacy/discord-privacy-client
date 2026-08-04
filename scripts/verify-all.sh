@@ -28,24 +28,33 @@ set -u
 # exact class of false green the keyserver gate below was added to close.
 # Verify the tree this script actually lives in; pass a path to override.
 root="${1:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null)}"
-cd "${root:-/home/liamw/osl-integrate}" || exit 1
+# D-172. The fallback used to be a hardcoded personal checkout. A fallback to
+# somebody else's tree is the same defect wearing a smaller hat: if root
+# resolution fails we must REFUSE, not silently grade a different repository.
+# (It was also one of the 18 `personal WSL path` findings in
+# scripts/audit_public_release.py.)
+if [ -z "$root" ]; then
+    echo "verify-all: cannot resolve a repository root from $0 -- refusing to grade an unknown tree" >&2
+    exit 2
+fi
+cd "$root" || exit 1
 printf 'verifying: %s\n' "$PWD"
 fail=0
 
 step() { printf '\n=== %s ===\n' "$1"; }
 
 step "workspace builds"
-flock /tmp/osl-cargo.lock cargo check --workspace --quiet 2>&1 | grep -E '^error' | head -3
-flock /tmp/osl-cargo.lock cargo check --workspace --quiet >/dev/null 2>&1 || { echo "FAIL"; fail=1; }
+flock -o /tmp/osl-cargo.lock cargo check --workspace --quiet 2>&1 | grep -E '^error' | head -3
+flock -o /tmp/osl-cargo.lock cargo check --workspace --quiet >/dev/null 2>&1 || { echo "FAIL"; fail=1; }
 
 step "product app builds (the build cargo tauri dev uses)"
-flock /tmp/osl-cargo.lock cargo check --manifest-path apps/osl-hub/Cargo.toml \
+flock -o /tmp/osl-cargo.lock cargo check --manifest-path apps/osl-hub/Cargo.toml \
     --features desktop --quiet 2>&1 | grep -E '^error' | head -3
-flock /tmp/osl-cargo.lock cargo check --manifest-path apps/osl-hub/Cargo.toml \
+flock -o /tmp/osl-cargo.lock cargo check --manifest-path apps/osl-hub/Cargo.toml \
     --features desktop --quiet >/dev/null 2>&1 || { echo "FAIL"; fail=1; }
 
 step "workspace tests"
-flock /tmp/osl-cargo.lock cargo test --workspace --no-fail-fast -- --test-threads=1 \
+flock -o /tmp/osl-cargo.lock cargo test --workspace --no-fail-fast -- --test-threads=1 \
     > /tmp/verify-ws.txt 2>&1
 grep -E '^test result' /tmp/verify-ws.txt |
     awk '{p+=$4;f+=$6}END{printf "  passed:%d failed:%d\n",p,f; if(f>0) exit 1}' || fail=1
@@ -53,7 +62,7 @@ sed -n '/^failures:$/,/^test result/p' /tmp/verify-ws.txt |
     grep -E '^    [a-z]' | sort -u | sed 's/^/    /'
 
 step "product app tests"
-flock /tmp/osl-cargo.lock cargo test --manifest-path apps/osl-hub/Cargo.toml \
+flock -o /tmp/osl-cargo.lock cargo test --manifest-path apps/osl-hub/Cargo.toml \
     -- --test-threads=1 > /tmp/verify-hub.txt 2>&1
 grep -E '^test result' /tmp/verify-hub.txt | tail -1 | sed 's/^/  /'
 grep -qE '^test result: ok' /tmp/verify-hub.txt || fail=1

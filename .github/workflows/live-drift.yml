@@ -1,5 +1,9 @@
 name: Live deployment drift check
 
+# D-172 deliberately did NOT wire this to `integrate/**`. It compares what
+# PRODUCTION is serving against `origin/main`; on an integration branch the
+# comparison is meaningless by construction and would report drift on every run.
+# It also holds `issues: write`.
 on:
   schedule:
     - cron: '17 5 * * *'

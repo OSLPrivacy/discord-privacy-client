@@ -6,10 +6,49 @@ concurrency:
 
 on:
   push:
-    branches: [main]
+    # D-172. `integrate/**` was added because `gh run list --branch
+    # integrate/first-usable` returned NOTHING: this workflow was a statement
+    # about `main` only, while `integrate/first-usable` is the branch we
+    # integrate into and cut builds from. The keyserver bundle step below was
+    # added to catch D-162 and could not run at all until this line existed.
+    branches: [main, 'integrate/**']
   pull_request:
 
 jobs:
+  # D-172. These two gates used to be the first two steps of EVERY lane of the
+  # matrix below. Two consequences, both bad:
+  #   1. They ran four times per push, identically.
+  #   2. `check-app-claims.mjs` is red on integrate/first-usable (6 violations,
+  #      quarantined in scripts/ci/quarantine.json), and Actions aborts a job at
+  #      its first failing step -- so while it is red NOTHING ELSE IN THIS
+  #      WORKFLOW RUNS. Every lane, including the Worker bundle gate the D-162
+  #      lane added specifically so a broken deploy could not recur, was dead
+  #      behind it.
+  # Hoisting them into their own job weakens nothing: both still run, both still
+  # fail the workflow through the `success'` aggregate, and the aggregate now
+  # names them. It only stops one red gate from silencing four unrelated ones.
+  claim-gates:
+    name: Claim and plan-governance gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      # Zero-dependency: nothing to install and nothing that can fail for
+      # unrelated reasons. Ban list is parsed out of
+      # docs/design/osl-public-claim-allowlist.md section D, so adding a banned
+      # phrase there automatically tightens this.
+      - name: Claim-gate-in-app-copy-and-README
+        run: |
+          node scripts/check-app-claims.mjs --self-test
+          node scripts/check-app-claims.mjs
+      - name: Plan-governance-acceptance-gates
+        run: python3 scripts/validate-plan-governance.py
+
   ts-test:
     # t8-a5 moved this off windows-latest; t8-a6 added the 4-way shard but was
     # written before that landed. Both are wanted: shard ON ubuntu, since the
@@ -17,8 +56,21 @@ jobs:
     runs-on: ubuntu-latest
     name: TypeScript (${{ matrix.lane }})
     strategy:
+      # D-172. Actions defaults matrix fail-fast to TRUE, so on the first run
+      # this workflow ever had on integrate/first-usable (30930446663) the
+      # cipher-store lane failed and the keyserver and osl-hub-ui lanes were
+      # CANCELLED. A cancelled lane is not a red one and it is not a green one
+      # either -- it is a lane whose result nobody has. Splitting the workers
+      # lane in two is pointless if one half can still cancel the other.
+      fail-fast: false
       matrix:
-        lane: [webview, osl-hub-ui, workers, legacy-keyserver]
+        # D-172: `workers` was ONE lane running keyserver-cf then
+        # cipher-store-cf. keyserver-cf's typecheck exits 2 on 13 pre-existing
+        # errors, so every cipher-store step after it had never executed in CI
+        # -- which is why cipher-store-cf's own 7 TypeScript errors and 4 test
+        # failures were unrecorded until D-172 measured them by hand. One lane
+        # each; neither worker can mask the other.
+        lane: [webview, osl-hub-ui, keyserver-worker, cipher-store-worker, legacy-keyserver]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -31,16 +83,10 @@ jobs:
             keyserver-cf/package-lock.json
             cipher-store-cf/package-lock.json
             keyserver/package-lock.json
-      # Claim gate for in-app copy and README. Zero-dependency, so it runs before
-      # any npm ci: nothing to install and nothing that can fail for unrelated
-      # reasons. Ban list is parsed out of docs/design/osl-public-claim-allowlist.md
-      # section D, so adding a banned phrase there automatically tightens this.
-      - name: Claim-gate-in-app-copy-and-README
-        run: |
-          node scripts/check-app-claims.mjs --self-test
-          node scripts/check-app-claims.mjs
-      - name: Plan-governance-acceptance-gates
-        run: python3 scripts/validate-plan-governance.py
+      # D-172: the claim gate and the plan-governance gate used to stand here,
+      # ahead of every lane. They now live in the `claim-gates` job above. See
+      # the comment there -- while the claim gate was red, this entire matrix
+      # was dead.
       - name: Install webview deps
         if: ${{ matrix.lane == 'webview' }}
         working-directory: webview
@@ -63,16 +109,25 @@ jobs:
         if: ${{ matrix.lane == 'osl-hub-ui' }}
         working-directory: apps/osl-hub-ui
         run: npm ci
-      - name: Test OSL Privacy UI
-        if: ${{ matrix.lane == 'osl-hub-ui' }}
-        working-directory: apps/osl-hub-ui
-        run: npm test
+      # D-172: BUILD FIRST. `npm test` is `vitest run && node --test
+      # screenshots/*.test.mjs` and it is red on integrate/first-usable, so on
+      # run 30931564095 `Build OSL Privacy UI` -- which is
+      # `tsc --noEmit && vite build`, the production build of the renderer that
+      # SHIPS -- was reported `skipped`. The suite that says whether the code is
+      # correct was standing in front of the check that says whether the code
+      # can be built at all. If you ever move this step down, you have disabled
+      # it. (integration-gate.yml owns the same check as its own job, which is
+      # why the branch still had a build gate while this one was skipped.)
       - name: Build OSL Privacy UI
         if: ${{ matrix.lane == 'osl-hub-ui' }}
         working-directory: apps/osl-hub-ui
         run: npm run build
+      - name: Test OSL Privacy UI
+        if: ${{ matrix.lane == 'osl-hub-ui' }}
+        working-directory: apps/osl-hub-ui
+        run: npm test
       - name: Install keyserver worker deps
-        if: ${{ matrix.lane == 'workers' }}
+        if: ${{ matrix.lane == 'keyserver-worker' }}
         working-directory: keyserver-cf
         run: npm ci
       # D-162. This runs the REAL esbuild bundle that `wrangler deploy` runs, so
@@ -87,20 +142,26 @@ jobs:
       # failure rather than as 27 mystery test failures.
       #
       # If you ever move this step down, you have disabled it.
+      #
+      # D-172: this gate also exists as its own job in integration-gate.yml, and
+      # that is not redundant. This copy covers `main` and pull requests, where
+      # integration-gate.yml does not run; that copy covers integrate/**, where
+      # this lane's own typecheck is red and a reader would reasonably stop
+      # reading. Neither one is allowed to be the only one.
       - name: Build keyserver worker bundle (dry run)
-        if: ${{ matrix.lane == 'workers' }}
+        if: ${{ matrix.lane == 'keyserver-worker' }}
         working-directory: keyserver-cf
         run: npm run verify:worker-build
       - name: Typecheck keyserver worker
-        if: ${{ matrix.lane == 'workers' }}
+        if: ${{ matrix.lane == 'keyserver-worker' }}
         working-directory: keyserver-cf
         run: npm run typecheck
       - name: Test keyserver worker
-        if: ${{ matrix.lane == 'workers' }}
+        if: ${{ matrix.lane == 'keyserver-worker' }}
         working-directory: keyserver-cf
         run: npm test
       - name: Install cipher-store worker deps
-        if: ${{ matrix.lane == 'workers' }}
+        if: ${{ matrix.lane == 'cipher-store-worker' }}
         working-directory: cipher-store-cf
         run: npm ci
       # D-162, same reasoning as the keyserver bundle above, and FIRST for the
@@ -108,15 +169,15 @@ jobs:
       # cipher-store-cf/src, so nothing else can see an import with no matching
       # export. Verified locally: Total Upload 114.60 KiB, exit 0.
       - name: Build cipher-store worker bundle (dry run)
-        if: ${{ matrix.lane == 'workers' }}
+        if: ${{ matrix.lane == 'cipher-store-worker' }}
         working-directory: cipher-store-cf
         run: npm run verify:worker-build
       - name: Typecheck cipher-store worker
-        if: ${{ matrix.lane == 'workers' }}
+        if: ${{ matrix.lane == 'cipher-store-worker' }}
         working-directory: cipher-store-cf
         run: npm run typecheck
       - name: Test cipher-store worker
-        if: ${{ matrix.lane == 'workers' }}
+        if: ${{ matrix.lane == 'cipher-store-worker' }}
         working-directory: cipher-store-cf
         run: npm test
       - name: Install legacy keyserver deps
@@ -175,6 +236,11 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ always() }}
     needs:
+      # D-172: claim-gates was hoisted out of the ts-test matrix so one red gate
+      # could stop silencing four unrelated lanes. It is named here so hoisting
+      # it did not also remove it from the required set -- moving a gate must
+      # never quietly demote it.
+      - claim-gates
       - ts-test
       - selector-check
       - telegram-reporting-bot
@@ -182,6 +248,7 @@ jobs:
     steps:
       - name: "success'"
         env:
+          CLAIM_GATES_RESULT: ${{ needs.claim-gates.result }}
           TEST_RESULT: ${{ needs.ts-test.result }}
           SELECTOR_CHECK_RESULT: ${{ needs.selector-check.result }}
           TELEGRAM_REPORTING_BOT_RESULT: ${{ needs.telegram-reporting-bot.result }}
@@ -201,12 +268,15 @@ jobs:
           }
 
           require_required_checks_green \
+            'Claim and plan-governance gates=success' \
             'TypeScript workflow=success' \
             'Selector check=success' \
             'Telegram reporting bot script check=success' \
             'Public audit=success'
 
           for failed_check in \
+            'Claim and plan-governance gates=failure' \
+            'Claim and plan-governance gates=skipped' \
             'TypeScript workflow=failure' \
             'Selector check=cancelled' \
             'Telegram reporting bot script check=skipped' \
@@ -229,6 +299,7 @@ jobs:
           done
 
           require_required_checks_green \
+            "Claim and plan-governance gates=$CLAIM_GATES_RESULT" \
             "TypeScript workflow=$TEST_RESULT" \
             "Selector check=$SELECTOR_CHECK_RESULT" \
             "Telegram reporting bot script check=$TELEGRAM_REPORTING_BOT_RESULT" \

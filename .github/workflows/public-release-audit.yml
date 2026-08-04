@@ -6,6 +6,16 @@ concurrency:
 
 on:
   push:
+    # D-172 decided NOT to add `integrate/**` here. It audits what a PUBLIC
+    # RELEASE may claim, and releases are cut from tags off `main`; running it
+    # per-push on an integration branch asks a release question of something
+    # that is not a release yet.
+    # It is also red today: `python3 scripts/audit_public_release.py` reports 18
+    # tracked files carrying a personal WSL path (measured 2026-08-04, green on
+    # main at run 30658453416 on 2026-07-31 -- so all 18 arrived on
+    # integrate/first-usable in the four days nothing was watching it).
+    # Not left unwatched: the count is pinned in scripts/ci/quarantine.json and
+    # graded on every push to integrate/** by integration-gate.yml.
     branches: [main]
   pull_request:
 

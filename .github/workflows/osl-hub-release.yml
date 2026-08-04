@@ -1,5 +1,11 @@
 name: Build signed OSL Privacy candidate
 
+# D-172 deliberately did NOT wire this to `integrate/**`. It BUILDS AND
+# PUBLISHES a signed candidate and holds `contents: write`, `id-token: write`
+# and `attestations: write`. A release workflow must never fire on a branch
+# people push work-in-progress to. Same ruling for osl-hub-promote.yml
+# (promotes a tested candidate) and reproducible-build.yml (reproduces a
+# PUBLISHED hub-v* release, so it has nothing to reproduce on a branch).
 on:
   push:
     tags:
