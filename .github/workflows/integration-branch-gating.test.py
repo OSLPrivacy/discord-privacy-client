@@ -172,6 +172,32 @@ class IntegrationBranchGatingTest(unittest.TestCase):
         # notification. There is no legitimate use for it here.
         self.assertNotIn("continue-on-error", (WORKFLOWS / "integration-gate.yml").read_text(encoding="utf-8"))
 
+    def test_no_cheap_check_stands_in_front_of_an_expensive_one(self) -> None:
+        # D-172 found four instances of one pattern: a gate placed downstream of
+        # a step that is already red never executes, because Actions aborts a job
+        # at its first failing step. The two structural rules that came out of it
+        # are asserted here so they cannot be undone by a merge.
+        rust = load("rust-test.yml").get("jobs") or {}
+        self.assertIn("fmt", rust, "cargo fmt must be its own job; as step 5 of `test` it "
+                                   "skipped clippy, cargo test --workspace, nextest and both "
+                                   "apps/osl-hub steps on run 30930446508")
+        test_runs = " ".join(str(step.get("run", "")) for step in (rust.get("test") or {}).get("steps") or [])
+        self.assertNotIn("cargo fmt", test_runs,
+                         "cargo fmt is back in front of the Rust suite")
+
+        ts = load("ts-test.yml").get("jobs") or {}
+        self.assertIs(
+            False,
+            ((ts.get("ts-test") or {}).get("strategy") or {}).get("fail-fast"),
+            "the ts-test matrix must set fail-fast: false; on run 30930446663 one "
+            "failing lane CANCELLED two others, and a cancelled lane is a result "
+            "nobody has",
+        )
+        claim_steps = " ".join(str(step.get("run", "")) for step in (ts.get("ts-test") or {}).get("steps") or [])
+        self.assertNotIn("check-app-claims", claim_steps,
+                         "the claim gate is back in front of every ts-test lane")
+        self.assertIn("claim-gates", ts, "the claim gate must still exist as its own job")
+
     def test_the_quarantine_ratchet_is_wired_in(self) -> None:
         jobs = load("integration-gate.yml").get("jobs") or {}
         steps = (jobs.get("quarantine-ratchet") or {}).get("steps") or []

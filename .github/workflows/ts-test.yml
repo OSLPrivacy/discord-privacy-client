@@ -56,6 +56,13 @@ jobs:
     runs-on: ubuntu-latest
     name: TypeScript (${{ matrix.lane }})
     strategy:
+      # D-172. Actions defaults matrix fail-fast to TRUE, so on the first run
+      # this workflow ever had on integrate/first-usable (30930446663) the
+      # cipher-store lane failed and the keyserver and osl-hub-ui lanes were
+      # CANCELLED. A cancelled lane is not a red one and it is not a green one
+      # either -- it is a lane whose result nobody has. Splitting the workers
+      # lane in two is pointless if one half can still cancel the other.
+      fail-fast: false
       matrix:
         # D-172: `workers` was ONE lane running keyserver-cf then
         # cipher-store-cf. keyserver-cf's typecheck exits 2 on 13 pre-existing
