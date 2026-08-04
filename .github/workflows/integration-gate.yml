@@ -42,6 +42,21 @@
 
 name: Integration Gate
 
+# D-195. `shell: bash` for EVERY run step in this workflow, and the windows jobs
+# are the reason. GitHub's default shell on windows-latest is `pwsh`, whose
+# wrapper surfaces only the LAST command's `$LASTEXITCODE`: a native non-zero
+# exit part-way through a multi-command `run:` does not abort the step. The
+# hub-target-ratchet self-test at `apps/osl-hub --all-targets, ratcheted` was
+# exactly that shape, so "prove it can fail before it grades anything" was
+# unenforced on the one job where it mattered. The repository already knew this
+# hazard -- osl-hub-release.yml sets `shell: bash` for it -- and this workflow
+# did not. bash on the Actions runners is `bash --noprofile --norc -eo pipefail`,
+# so a non-zero exit aborts the step and a broken pipe is not swallowed.
+# .github/workflows/integration-branch-gating.test.py asserts this stays.
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -58,7 +73,43 @@ on:
   pull_request:
     branches:
       - 'integrate/**'
+  # D-195. `workflow_dispatch` is not decoration here; see the `[skip ci]` note
+  # below. It is the only trigger GitHub does not let a commit message suppress.
   workflow_dispatch:
+
+# `[skip ci]` -- DECIDED, NOT OVERLOOKED (D-195)
+# ---------------------------------------------
+# GitHub honours `[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`,
+# `[actions skip]` and a `skip-checks: true` trailer in the head commit message
+# by not creating `push` or `pull_request` events AT ALL. Every trigger on all
+# five workflows that gate `integrate/**` is one of those two. So one commit
+# subject disables every gate in this directory, and there is no repository
+# setting that turns that off.
+#
+# Ruled: ACCEPTED, with the hole stated rather than hidden.
+#   * It cannot be used to MERGE anything unreviewed: a skipped workflow reports
+#     no status, and a required check that never reports stays pending, so a PR
+#     into integrate/** cannot be merged on a skipped run. That depends on the
+#     branch-protection required-check list, which lives outside this repository
+#     -- it is an owner action, not something this file can assert.
+#   * Every gating workflow now carries `workflow_dispatch`, so a run skipped by
+#     a commit message can be graded by hand on the same ref without a new push.
+#   * RESIDUAL RISK, unfixed: a DIRECT push to integrate/first-usable whose
+#     commit message contains `[skip ci]` runs no gate and leaves no red mark.
+#     Nothing in this repository can detect that from inside a workflow that did
+#     not run. If that matters more than the convenience, the fix is branch
+#     protection on integrate/** requiring a PR, which is an owner setting.
+#
+# CONFIRMED BY ACCIDENT, 2026-08-04, which is why the wording above is precise.
+# The commit that first wrote this ruling QUOTED the token in its own commit
+# message, and the push of that commit to `integrate/d192-fix` produced ZERO
+# workflow runs -- while the identical tree pushed to `integrate/d192-mutants`
+# under a different message ran all five. Two facts fell out of it:
+#   * GitHub matches the token anywhere in the HEAD COMMIT MESSAGE, body
+#     included, not just the subject line. Do not quote it in a commit message.
+#   * The mitigation works: `gh workflow run` on the same ref graded it.
+# That is a considerably better demonstration than the paragraph above, and it
+# cost nothing but a confusing five minutes.
 
 permissions:
   contents: read
@@ -152,10 +203,19 @@ jobs:
       # It runs AFTER the shipping check, so a hard build failure is reported as
       # a build failure rather than as a ratchet mismatch -- and the shipping
       # gate above cannot be masked by it.
+      #
+      # D-195: two steps, not one `run:` with two commands. The `defaults` block
+      # at the top of this file already forces `shell: bash` so a mid-step
+      # failure aborts, but a self-test that proves a grader can fail should not
+      # depend on a shell setting to be honoured at all -- as its own step, its
+      # exit code is the step's result and nothing can discard it. The grade
+      # below carries `!cancelled()` so that splitting them did not hand the
+      # self-test the power to skip the thing it exists to make trustworthy.
+      - name: Prove the hub target ratchet can fail
+        run: node scripts/ci/hub-target-ratchet.mjs --self-test
       - name: apps/osl-hub --all-targets, ratcheted
-        run: |
-          node scripts/ci/hub-target-ratchet.mjs --self-test
-          node scripts/ci/hub-target-ratchet.mjs
+        if: ${{ !cancelled() }}
+        run: node scripts/ci/hub-target-ratchet.mjs
 
   # GATE (c). The frontend PRODUCTION build. vitest does not typecheck and does
   # not bundle, so a green frontend suite says nothing about whether the
@@ -226,10 +286,28 @@ jobs:
   # scripts/ci/quarantine.json so a regression under cover of existing red FAILS.
   # A step that has been red for a week carries no information; a number that can
   # move does. Read the header of scripts/ci/quarantine-ratchet.mjs.
+  #
+  # D-192 corrected what this job GRADES: it pinned a count and claimed, in its
+  # own config, parity with scripts/ledger/state-baseline.json, which pins a set.
+  # The adversary landed a real authorization bypass and one plausible tidy-up in
+  # the same tree, the count returned to 13, and this job printed
+  # "still exactly 13, still quarantined" and "QUARANTINE RATCHET: HELD".
+  # It now pins the SET of finding identities, plus the shape of each vitest
+  # suite, so a swap at an unchanged count fails and a passing test cannot
+  # vanish unobserved.
+  #
+  # D-193 corrected what this job RUNS. Three checks used to be documented as
+  # unratchetable and were then executed by nothing at all -- 219 cipher-store
+  # tests among them -- and one of the three claimed in writing to run as a step
+  # of the ts-test keyserver-worker lane that does not exist. All three now run
+  # here. Excluded from the ratchet and executed by nothing is an allowlist by
+  # another name.
   quarantine-ratchet:
     name: pre-existing red, ratcheted
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 45, not 30: this job now runs nine checks including two vitest configs that
+    # were previously executed nowhere and a real headless browser pass.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -252,9 +330,18 @@ jobs:
         working-directory: keyserver-cf
         run: npm ci
       - name: Install cipher-store worker deps
+        if: ${{ !cancelled() }}
         working-directory: cipher-store-cf
         run: npm ci
+      # OSL_CHROME points scripts/lib/cdp-harness.mjs at the browser the runner
+      # image already ships; without it locateChrome only searches a Playwright
+      # cache that GitHub's image does not have, and the a11y entry would fail as
+      # unmeasurable rather than being graded. `locateChrome` checks the path
+      # exists before using it, so this is inert on a machine without it.
       - name: Grade every quarantined check against its baseline
+        if: ${{ !cancelled() }}
+        env:
+          OSL_CHROME: /usr/bin/google-chrome
         run: node scripts/ci/quarantine-ratchet.mjs
 
   # The aggregate check. Written in the shape rust-test.yml and ts-test.yml
