@@ -3,6 +3,15 @@ import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { oslPrimaryDestinations } from "./state";
 
+const BUILD_CONTRACT_ENV = "OSL_QA_BUILD_CONTRACTS";
+const runBuildContracts = process.env[BUILD_CONTRACT_ENV] === "1";
+
+if (!runBuildContracts) {
+  console.info(
+    `[qa-doc-contracts] frontend_dist_is_embedded_after_frontend_build skipped; set ${BUILD_CONTRACT_ENV}=1 after the frontend build to run the cargo-backed embedding contract.`,
+  );
+}
+
 function readDoc(relativePath: string): string {
   return readFileSync(new URL(`../../../${relativePath}`, import.meta.url), "utf8");
 }
@@ -365,7 +374,7 @@ describe("QA documentation contracts", () => {
     });
   });
 
-  it("frontend_dist_is_embedded_after_frontend_build", () => {
+  it.skipIf(!runBuildContracts)("frontend_dist_is_embedded_after_frontend_build", () => {
     const output = execFileSync("bash", [
       "scripts/qa/osl-instance-b-build-wsl.sh",
       "--self-test",
