@@ -1557,16 +1557,38 @@ fn sort_opened_native_overlay_text_by_sender_order(
         .collect()
 }
 
+/// The one conversation name both ends of a manual peer derive identically.
+///
+/// `manual.scope` must never be used for a value that crosses the wire.
+/// `security::manual_peer_scope_id` (`security.rs:1762`) hashes this install's
+/// own `account_id` and its own roster `person_id`, so the two ends of a single
+/// conversation are *guaranteed* to produce different storage keys --
+/// `manual_peer_scope_is_symmetric_across_different_local_account_ids` asserts
+/// exactly that with `assert_ne!(first_scope.id, second_scope.id)`. A
+/// commitment computed over that key cannot be reproduced by the peer, so
+/// requiring equality against a locally derived copy refuses every protected
+/// message rather than only the wrong ones.
+///
+/// The relay scope id is the name both ends already agree on: it is derived
+/// from the conversation binding the sender authenticates into the envelope and
+/// the receiver compares exactly in `validate_oriented_peer_protected_payload`,
+/// and it is already the id the sender posts under and the receiver drains.
+fn authenticated_sender_order_scope_key(
+    context: &HubConversationContext,
+) -> Result<String, String> {
+    native_overlay_relay_scope_id(&context.conversation_id)
+}
+
 fn validate_authenticated_sender_order_scope(
     core: &HubCoreState,
     verified: &ManualPeerBinding,
-    manual: &ManualPeerContext,
+    context: &HubConversationContext,
     payload: &PeerProtectedPayload,
 ) -> Result<(), String> {
     let Some(scope_commitment) = payload.scope_commitment.as_deref() else {
         return Ok(());
     };
-    let storage_key = scope_storage_key(&manual.scope)?;
+    let storage_key = authenticated_sender_order_scope_key(context)?;
     let expected =
         security::peer_scope_commitment(core, &verified.peer_x25519_public, &storage_key)?;
     if scope_commitment == expected {
@@ -3545,7 +3567,7 @@ fn authenticate_native_overlay_wrapped_payload(
         ipc::main_password::now_unix_secs_pub(),
     )
     .map_err(|_| PeerProsePointerFailure::Rejected)?;
-    validate_authenticated_sender_order_scope(core, verified, manual, &payload)
+    validate_authenticated_sender_order_scope(core, verified, context, &payload)
         .map_err(|_| PeerProsePointerFailure::Rejected)?;
     if native_overlay_wrapped_key_matches_payload(
         &wrapped, identity, notice, manual, context, &payload,
@@ -3687,7 +3709,7 @@ fn authenticate_oriented_prose_pointer(
         ),
     }
     .map_err(|_| PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected))?;
-    validate_authenticated_sender_order_scope(core, &verified, &manual, &payload)
+    validate_authenticated_sender_order_scope(core, &verified, &context, &payload)
         .map_err(|_| PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected))?;
     let ciphertext_sha256 = sha256_hex(recovered.wire.as_bytes());
     Ok(AuthenticatedProsePointer {
@@ -4025,7 +4047,11 @@ fn prepare_peer_inbox_text_with_route_clients(
     let allow_device_bound_qa_receipt_key = native_discord_qa_receipt_context(&context);
     #[cfg(not(feature = "discord-qa-shell"))]
     let allow_device_bound_qa_receipt_key = false;
-    let storage_key = scope_storage_key(&manual.scope)?;
+    // The name the RECEIVER can also derive. Committing to `manual.scope` here
+    // put a purely local namespace on the wire (see
+    // `authenticated_sender_order_scope_key`), which the peer's equality check
+    // could never satisfy.
+    let storage_key = authenticated_sender_order_scope_key(&context)?;
     let scope_commitment =
         security::peer_scope_commitment(core, &verified.peer_x25519_public, &storage_key)?;
     let send_seq = security::next_peer_send_seq(
@@ -11980,6 +12006,46 @@ mod tests {
         assert!(value.get("senderOrder").is_none());
         assert!(value.get("sendSeq").is_none());
         assert!(value.get("scopeCommitment").is_none());
+    }
+
+    /// The regression that took out six receive behaviours at once: the scope
+    /// name committed inside the envelope has to be one the PEER can recompute.
+    /// `manual.scope` is not -- `security::manual_peer_scope_id` hashes this
+    /// install's own account id and its own roster person id, so A and B are
+    /// guaranteed to differ for the same conversation. Committing to it made
+    /// the receiver's equality check refuse every protected message, which is
+    /// indistinguishable from an empty inbox.
+    #[test]
+    fn authenticated_sender_order_scope_key_is_derivable_by_both_ends() {
+        let alice_view = context("alice-local-profile", "shared-conversation");
+        let bob_view = context("bob-completely-different-profile", "shared-conversation");
+        assert_eq!(
+            authenticated_sender_order_scope_key(&alice_view).unwrap(),
+            authenticated_sender_order_scope_key(&bob_view).unwrap(),
+            "both ends commit to the same name, derived from the shared conversation binding"
+        );
+
+        // The namespace this used to commit to, for that same conversation.
+        let alice_local =
+            security::manual_peer_scope_id("osl-chat", "alice-local-profile", "hub-person-bob")
+                .unwrap();
+        let bob_local = security::manual_peer_scope_id(
+            "osl-chat",
+            "bob-completely-different-profile",
+            "hub-person-alice",
+        )
+        .unwrap();
+        assert_ne!(
+            alice_local, bob_local,
+            "a manual peer scope is local by construction, so a commitment over it is \
+             unverifiable by the peer -- it must never be the committed name"
+        );
+
+        assert_ne!(
+            authenticated_sender_order_scope_key(&context("account", "conversation-one")).unwrap(),
+            authenticated_sender_order_scope_key(&context("account", "conversation-two")).unwrap(),
+            "the check still separates conversations: two conversations commit to two names"
+        );
     }
 
     #[test]
