@@ -1261,6 +1261,12 @@ fn first_party_osl_chat_reopen_backfills_waiting_rows_in_order_without_push() {
     rows[1].bundle_b64 = base64_encode(&[0x7f; 96]);
     let corrupt_id = rows[1].id.clone();
     relay.put_inbox_rows(rows);
+    // The loop above left ALICE as the process-global active identity
+    // (`set_file_storage_key` is process-wide), so draining Bob here without
+    // switching back read Alice's on-disk people file and failed with
+    // "OSL friend is unknown". Every other drain in this fixture activates the
+    // peer that is draining; this one has to as well.
+    bob.activate();
     let partial = drain_osl_chat_text(&bob.core, &bob.security, &bob.broker, true)
         .expect("one corrupt row does not abort the reopen drain");
     assert_eq!(
