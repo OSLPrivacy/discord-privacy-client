@@ -581,9 +581,22 @@ fn carrier_sha256_label(carrier: &str) -> String {
 // Live placement, driven through the shared UIA2 substrate in `native_a11y`.
 // ---------------------------------------------------------------------------
 
-/// WhatsApp Desktop's shell process. The Appx package is
-/// `5319275A.WhatsAppDesktop`; the running image is `WhatsApp.exe`.
-pub const WHATSAPP_DESKTOP_PROCESS_NAME: &str = "WhatsApp";
+/// WhatsApp Desktop's shell process, **measured on the owner's host**, not
+/// assumed: `WhatsApp.Root.exe`.
+///
+/// ```text
+/// ProcessId ParentProcessId Name               cmd
+///     23884            9644 WhatsApp.Root.exe  "C:\Program Files\WindowsApps\
+///                                               5319275A.WhatsAppDesktop_2.2629.100.0_x64
+///                                               __cv1g1gvanyjgm\WhatsApp.Root.exe"
+/// ```
+///
+/// `native_a11y`'s recorded fixture calls this process `WhatsApp.exe`, and the
+/// substrate compares image names exactly once `.exe` is stripped. `WhatsApp`
+/// therefore matches nothing on the real machine, and the adapter would have
+/// reported `AppNotRunning` on a host where WhatsApp was running. The fixture
+/// string was never checked against a live process from Rust; this one was.
+pub const WHATSAPP_DESKTOP_PROCESS_NAME: &str = "WhatsApp.Root";
 
 /// Chromium builds its accessibility tree lazily and A-00 measured ~90 s to a
 /// fully populated Discord tree. WhatsApp's content is a Chromium tree in
@@ -1550,11 +1563,106 @@ mod tests {
     // A second fake here would be the fork the substrate exists to prevent.
     // -----------------------------------------------------------------
 
-    use crate::native_a11y::tests::{composer, whatsapp_graph, RecordedHost};
+    use crate::native_a11y::tests::{composer, owned, RecordedHost};
+
+    // The window graph MEASURED on the owner's Windows host on 2026-08-04, by
+    // enumerating every top-level window and its descendants and printing class,
+    // image name, parent, GA_ROOT, GA_ROOTOWNER, GW_OWNER and GWLP_HWNDPARENT:
+    //
+    //   198342 pid=23884 WhatsApp.Root  WinUIDesktopWin32WindowClass          parent=0
+    //   197328 pid=23884 WhatsApp.Root  Microsoft.UI.Content.DesktopChildSiteBridge parent=198342
+    //    67446 pid=24196 msedgewebview2 Chrome_WidgetWin_1                    parent=0
+    //   132018 pid=24196 msedgewebview2 Chrome_RenderWidgetHostHWND           parent=67446
+    //
+    // `native_a11y`'s recorded fixture has the WebView2 outer window parented to
+    // the shell. On the real machine it is a TOP-LEVEL window: parent, GA_ROOT,
+    // GA_ROOTOWNER and GWLP_HWNDPARENT are all zero or itself, in both
+    // directions. That difference is the whole finding below.
+    const SHELL_HWND: isize = 198342;
+    const BRIDGE_HWND: isize = 197328;
+    const WEBVIEW_OUTER_HWND: isize = 67446;
+    const RENDERER_HWND: isize = 132018;
+    const DECOY_WEBVIEW_HWND: isize = 900001;
+    const SHELL_IMAGE: &str = "WhatsApp.Root.exe";
+
+    /// The graph the substrate's `SiblingChromiumRenderer` contract requires:
+    /// the WebView2 content window carrying `associated_app_hwnd` back to the
+    /// shell OSL claimed. Everything else is as measured.
+    fn contract_whatsapp_graph() -> Vec<Uia2OwnedWindow> {
+        vec![
+            owned(
+                SHELL_HWND,
+                None,
+                None,
+                23884,
+                SHELL_IMAGE,
+                WHATSAPP_ROOT_WINDOW_CLASS,
+                1_092_960,
+            ),
+            owned(
+                BRIDGE_HWND,
+                Some(SHELL_HWND),
+                None,
+                23884,
+                SHELL_IMAGE,
+                "Microsoft.UI.Content.DesktopChildSiteBridge",
+                1_068_000,
+            ),
+            owned(
+                WEBVIEW_OUTER_HWND,
+                None,
+                Some(SHELL_HWND),
+                24196,
+                "msedgewebview2.exe",
+                crate::native_a11y::ELECTRON_OUTER_WINDOW_CLASS,
+                1_068_000,
+            ),
+            owned(
+                RENDERER_HWND,
+                Some(WEBVIEW_OUTER_HWND),
+                Some(SHELL_HWND),
+                24196,
+                "msedgewebview2.exe",
+                crate::native_a11y::ELECTRON_RENDERER_WINDOW_CLASS,
+                1_068_000,
+            ),
+            // Windows Search hosts its own WebView2 on this machine
+            // (`--webview-exe-name=SearchApp`, pid 22824). It is bigger, and it
+            // is not WhatsApp's. If the association is ever dropped, this is
+            // what OSL would place a carrier into.
+            owned(
+                DECOY_WEBVIEW_HWND,
+                None,
+                None,
+                22824,
+                "msedgewebview2.exe",
+                crate::native_a11y::ELECTRON_OUTER_WINDOW_CLASS,
+                1_920 * 1_080,
+            ),
+        ]
+    }
+
+    /// The same graph exactly as measured: the WebView2 window has no window
+    /// relationship to the shell at all, so `associated_app_hwnd` is `None`.
+    fn measured_whatsapp_graph() -> Vec<Uia2OwnedWindow> {
+        contract_whatsapp_graph()
+            .into_iter()
+            .map(|mut window| {
+                if window.process_name == "msedgewebview2.exe" {
+                    window.associated_app_hwnd = None;
+                }
+                window
+            })
+            .collect()
+    }
+
+    fn whatsapp_graph() -> Vec<Uia2OwnedWindow> {
+        contract_whatsapp_graph()
+    }
 
     const WHATSAPP_MEASURED_ELEMENTS: usize = 11;
-    const WEBVIEW2_PROCESS_ID: u32 = 7500;
-    const WHATSAPP_SHELL_PROCESS_ID: u32 = 7400;
+    const WEBVIEW2_PROCESS_ID: u32 = 24196;
+    const WHATSAPP_SHELL_PROCESS_ID: u32 = 23884;
     const PAYLOAD: &str = "alpha7731osl";
     const CARRIER: &str = "OSL1.WA.alpha7731osl";
 
@@ -1571,7 +1679,7 @@ mod tests {
     fn whatsapp_shell_only_host() -> RecordedHost {
         let shell_only = whatsapp_graph()
             .into_iter()
-            .filter(|window| window.process_name == "WhatsApp.exe")
+            .filter(|window| window.process_name == SHELL_IMAGE)
             .collect::<Vec<_>>();
         assert_eq!(
             shell_only.len(),
@@ -1734,6 +1842,73 @@ mod tests {
     }
 
     #[test]
+    fn whatsapp_binds_only_the_webview2_that_belongs_to_it() {
+        // This machine runs two independent WebView2 hosts: WhatsApp's
+        // (`--webview-exe-name=WhatsApp.Root.exe`, pid 24196) and Windows
+        // Search's (`--webview-exe-name=SearchApp`, pid 22824). The decoy is
+        // the LARGER window, so "biggest visible msedgewebview2" would pick it
+        // and OSL would place a carrier into the wrong application entirely.
+        let host = whatsapp_host(vec![composer("Type a message")]);
+        let receipt = drive_whatsapp_composer_placement(&host, PAYLOAD, false);
+
+        assert_eq!(receipt.status, WhatsAppPlacementStatus::Placed);
+        assert_eq!(
+            receipt.bound_process_id, WEBVIEW2_PROCESS_ID,
+            "the association is what keeps OSL out of another app's WebView2"
+        );
+        assert_ne!(receipt.bound_process_id, 22824);
+    }
+
+    #[test]
+    fn the_measured_host_has_no_window_link_from_the_shell_to_its_webview2() {
+        // MEASURED, not assumed. On the owner's host the WebView2 content
+        // window is top-level: parent, GA_ROOT, GA_ROOTOWNER and
+        // GWLP_HWNDPARENT are all zero or itself, so
+        // `win32::enumerate`'s `associated_app_hwnd`, which is
+        // `root_ancestor_of(hwnd).filter(|root| pid_of(root) != pid)`, is
+        // `None` -- and `resolve_uia2_window` requires it to equal the shell.
+        //
+        // A-00b listed this as residual risk 3, "inferred from A-00's prose,
+        // not measured from Rust". It is now measured and the inference is
+        // wrong: A-00's "sibling process" is not a window-tree relationship.
+        // The relationship that DOES exist is process parentage --
+        // msedgewebview2 pid 24196 has ParentProcessId 23884, the shell -- with
+        // the `--webview-exe-name=WhatsApp.Root.exe` switch corroborating it.
+        //
+        // That fix belongs to `native_a11y`, which this lane does not own. What
+        // this lane owes is that the adapter REFUSES rather than falling back to
+        // an unlinked WebView2: an unverified content window is exactly the
+        // decoy above, and writing there is a disclosure. So the assertion is
+        // the refusal, not the placement.
+        let host = RecordedHost::new(measured_whatsapp_graph(), WHATSAPP_MEASURED_ELEMENTS)
+            .chromium(2)
+            .with_editables(vec![composer("Type a message")]);
+
+        let receipt = drive_whatsapp_composer_placement(&host, PAYLOAD, false);
+
+        assert_eq!(
+            receipt.status,
+            WhatsAppPlacementStatus::WebView2ContentUnavailable,
+            "without a trustworthy link to the shell the content window must be refused"
+        );
+        assert!(!receipt.placed);
+        assert!(
+            host.set_values.borrow().is_empty(),
+            "nothing may be written into a WebView2 that has not been tied to WhatsApp"
+        );
+
+        // And the ONLY difference between refusing and placing is that one
+        // field, so this test is measuring the association and nothing else.
+        let linked = RecordedHost::new(contract_whatsapp_graph(), WHATSAPP_MEASURED_ELEMENTS)
+            .chromium(2)
+            .with_editables(vec![composer("Type a message")]);
+        assert_eq!(
+            drive_whatsapp_composer_placement(&linked, PAYLOAD, false).status,
+            WhatsAppPlacementStatus::Placed
+        );
+    }
+
+    #[test]
     fn whatsapp_shell_without_its_webview2_sibling_is_a_distinct_refusal() {
         // The trap, stated as a status: the app IS running and IS drivable in
         // principle; what is missing is the sibling content window. Reporting
@@ -1864,8 +2039,8 @@ mod tests {
         assert!(relay.issued_deadline().is_none());
 
         let window = Uia2ResolvedWindow {
-            app_outer_hwnd: 0x4001,
-            bound_hwnd: 0x5002,
+            app_outer_hwnd: SHELL_HWND,
+            bound_hwnd: RENDERER_HWND,
             bound_process_id: WEBVIEW2_PROCESS_ID,
             wake_policy: Uia2WakePolicy::WmGetObjectChromium,
             tree_route: Uia2TreeRoute::UiaNative,
