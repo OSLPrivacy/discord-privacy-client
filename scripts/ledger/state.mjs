@@ -235,6 +235,19 @@ function collectFrontendStorage(root, files, constants) {
       });
     }
 
+    for (const m of src.matchAll(/\bresumeOnboardingRoute\s*\(\s*localStorage\s*,\s*([^,\n)]+)/g)) {
+      const key = resolveKeyAt(src, m[1], m.index, constants);
+      if (!key.resolved) continue;
+      const site = `${rel}:${lineOf(starts, m.index)}`;
+      addSite(state, `frontend-localStorage:${key.label}`, site, {
+        read: true,
+        behavioural: true,
+        store: "frontend-localStorage",
+        key: key.value,
+        label: key.label,
+      });
+    }
+
     if (rel.endsWith("/main.ts")) {
       for (const m of src.matchAll(/\bpersistSensitiveOslChatJson\s*\(\s*([^,\n)]+)/g)) {
         const key = resolveKey(m[1], constants);
