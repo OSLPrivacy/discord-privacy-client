@@ -1995,11 +1995,11 @@ pub fn record_peer_prose_blob(
     blob_id: String,
 ) -> Result<(), String> {
     let file_key = require_unlocked()?;
-    // The 128-bit client-derived cipher-store id, in the canonical lowercase
-    // form the store indexes on. A recorded id in any other shape names an
-    // object no manage capability can reach, so it is refused at the ledger
-    // rather than kept and retried forever.
-    if blob_id.len() != 32
+    // The bridge Worker deployed today assigns 64-bit ids (16 hex chars).
+    // The destination capability Worker derives 128-bit ids (32 hex chars).
+    // Record either canonical shape so the hub can track current production
+    // sends without losing the Phase 2 invariant.
+    if !(blob_id.len() == 16 || blob_id.len() == 32)
         || !blob_id
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
