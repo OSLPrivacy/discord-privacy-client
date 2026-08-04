@@ -77,8 +77,63 @@ function identifierLabel(raw, fallback) {
 
 function resolveKey(raw, constants) {
   const arg = resolveArg(raw.trim(), constants);
-  if (arg.value) return { value: arg.value, label: identifierLabel(raw, arg.value), resolved: true };
+  if (arg.value) return { value: arg.value, label: arg.value.includes("*") ? arg.value : identifierLabel(raw, arg.value), resolved: true };
   return { value: raw.trim(), label: `unresolved:${raw.trim().slice(0, 60)}`, resolved: false };
+}
+
+function resolveDynamicStorageExpression(expr, constants) {
+  const text = expr.trim();
+  const direct = resolveKey(text, constants);
+  if (direct.resolved) return direct;
+
+  const template = /^`\$\{([A-Za-z_$][\w$]*)\}:(?:\$\{[^}]+\}|[^`]+)`$/u.exec(text);
+  if (template) {
+    const base = resolveArg(template[1], constants);
+    if (base.value) return { value: `${base.value}:*`, label: `${base.value}:*`, resolved: true };
+  }
+
+  const ownerScoped = /^activeOwnerStorageKey\s*\(\s*([A-Za-z_$][\w$]*)\s*\)$/u.exec(text);
+  if (ownerScoped) {
+    const base = resolveArg(ownerScoped[1], constants);
+    if (base.value) return { value: `${base.value}:*`, label: `${base.value}:*`, resolved: true };
+  }
+
+  const noArgOwnerScoped = new Map([
+    ["activeBrowserAccountsReadyStorageKey", "savedAccountsReadyStorageKey"],
+    ["activeBrowserImportPendingStorageKey", "browserImportPendingStorageKey"],
+  ]);
+  const noArgCall = /^([A-Za-z_$][\w$]*)\s*\(\s*\)$/u.exec(text);
+  if (noArgCall && noArgOwnerScoped.has(noArgCall[1])) {
+    const base = resolveArg(noArgOwnerScoped.get(noArgCall[1]), constants);
+    if (base.value) return { value: `${base.value}:*`, label: `${base.value}:*`, resolved: true };
+  }
+
+  const localConversation = /^localConversationStorageKey\s*\(/u.exec(text);
+  if (localConversation) {
+    const base = resolveArg("STORAGE_PREFIX", constants);
+    if (base.value) return { value: `${base.value}:*`, label: `${base.value}:*`, resolved: true };
+  }
+
+  return { value: text, label: `unresolved:${text.slice(0, 60)}`, resolved: false };
+}
+
+function currentFunctionStart(source, index) {
+  const before = source.slice(0, index);
+  const matches = [...before.matchAll(/\b(?:export\s+)?(?:async\s+)?function\s+[A-Za-z_$][\w$]*\s*\(|\b(?:const|let)\s+[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?\([^)]*\)\s*=>/g)];
+  return matches.at(-1)?.index ?? 0;
+}
+
+function resolveKeyAt(source, raw, index, constants) {
+  const direct = resolveKey(raw, constants);
+  if (direct.resolved || !/^[A-Za-z_$][\w$]*$/u.test(raw.trim())) return direct;
+
+  const name = raw.trim();
+  const scopeStart = currentFunctionStart(source, index);
+  const before = source.slice(scopeStart, index);
+  const assignments = [...before.matchAll(new RegExp(`\\bconst\\s+${name}\\s*=\\s*([^;\\n]+)`, "g"))];
+  const assignment = assignments.at(-1);
+  if (!assignment) return direct;
+  return resolveDynamicStorageExpression(assignment[1], constants);
 }
 
 function surroundingFunctionName(source, index) {
@@ -93,7 +148,7 @@ function contextWindow(source, index, before = 900, after = 1300) {
 }
 
 function isRenderOnlyContext(context) {
-  return /return\s*`|innerHTML|insertAdjacentHTML|textContent|className|classList|dataset\.|aria-|role=|<section\b|<div\b|<label\b|<button\b|<input\b|statusTag\(|Markup\(|Content\(/u.test(context);
+  return /innerHTML|insertAdjacentHTML|textContent|className|classList|dataset\.|aria-|role=|<section\b|<div\b|<label\b|<button\b|<input\b|statusTag\(|Markup\(|Content\(/u.test(context);
 }
 
 function isBehaviourContext(context, functionName = "") {
@@ -101,7 +156,7 @@ function isBehaviourContext(context, functionName = "") {
   const decision = /\bif\s*\(|\bswitch\s*\(|\bmatch\s+|\bwhile\s*\(|\?[^:]+:/u;
   const renderOnly = isRenderOnlyContext(context);
   if (actionBoundary.test(context) && (!renderOnly || decision.test(context))) return true;
-  if (/Consent|Authorization|Policy|Preference|Protection|Capture|Send|Queue|Transport|Decrypt|Encrypt|Whitelist|Burn|Scrub|Tor|Mullvad/u.test(functionName) && decision.test(context) && !renderOnly) {
+  if (/Consent|Authorization|Policy|Preference|Protection|Capture|Send|Queue|Transport|Decrypt|Encrypt|Whitelist|Burn|Scrub|Tor|Mullvad|Onboarding|Route|Import|Browser|Conversation|Guide|Revoke/u.test(functionName) && decision.test(context) && !renderOnly) {
     return true;
   }
   return false;
@@ -146,7 +201,7 @@ function collectFrontendStorage(root, files, constants) {
     }
 
     for (const m of src.matchAll(/\b(localStorage|sessionStorage|storage)\.setItem\s*\(\s*([^,\n)]+)/g)) {
-      const key = resolveKey(m[2], constants);
+      const key = resolveKeyAt(src, m[2], m.index, constants);
       const site = `${rel}:${lineOf(starts, m.index)}`;
       if (!key.resolved) {
         unresolved.push({ id: `unresolved-write:${site}`, site, expr: m[2].trim() });
@@ -162,7 +217,7 @@ function collectFrontendStorage(root, files, constants) {
     }
 
     for (const m of src.matchAll(/\b(localStorage|sessionStorage|storage)\.getItem\s*\(\s*([^,\n)]+)/g)) {
-      const key = resolveKey(m[2], constants);
+      const key = resolveKeyAt(src, m[2], m.index, constants);
       const site = `${rel}:${lineOf(starts, m.index)}`;
       const id = `frontend-localStorage:${key.label}`;
       const classification = classifyUse(src, m.index);
