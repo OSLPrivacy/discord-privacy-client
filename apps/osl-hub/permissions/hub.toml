@@ -669,11 +669,6 @@ description = "Open one bounded manually pasted peer ciphertext in the trusted l
 commands.allow = ["open_peer_prose_text"]
 
 [[permission]]
-identifier = "allow-place-prepared-capsule"
-description = "After an explicit trusted-UI action, focus the exact active service surface and place a prepared capsule without sending it."
-commands.allow = ["place_prepared_capsule"]
-
-[[permission]]
 identifier = "allow-prepare-encrypted-text"
 description = "Prepare original-OSL encrypted capsules for the exact active trusted context."
 commands.allow = ["prepare_encrypted_text"]
