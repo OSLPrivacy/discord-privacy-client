@@ -401,14 +401,18 @@ describe("POST /v1/stripe/webhook state machine", () => {
       });
       expect(completion.status).toBe(200);
 
+      // P-44: the subscription is keyed by the licence, not by the Stripe payment
+      // identifier. `licenseSubscriptionId` (stripe-checkout-claims.ts:252) returns
+      // `lic_<licenseHash>`; binding paymentIntentId here selects a row that no
+      // longer exists and the assertion reads `undefined`, not "not revoked".
       const entitlement = await env.DB.prepare(
         "SELECT status FROM subscriptions WHERE subscription_id = ?",
-      ).bind(paymentIntentId).first<{ status: string }>();
+      ).bind(`lic_${licenseHash}`).first<{ status: string }>();
       expect(entitlement?.status).toBe("REVOKED");
       const license = await env.DB.prepare(
         `SELECT revoked_at, revoked_reason FROM licenses
           WHERE license_hash = ? AND subscription_id = ?`,
-      ).bind(licenseHash, paymentIntentId).first<{
+      ).bind(licenseHash, `lic_${licenseHash}`).first<{
         revoked_at: number | null;
         revoked_reason: string | null;
       }>();
