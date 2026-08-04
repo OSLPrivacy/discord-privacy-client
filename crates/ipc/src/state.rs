@@ -1110,14 +1110,34 @@ pub(crate) fn default_rn_session_store() -> crate::wire_rn::RnSessionStore {
     })
 }
 
+/// The engine every `AppState::default()` carries, used as the fallback in
+/// [`crate::main_password::execute_gate_duress`] when no account-scoped
+/// production engine is installed.
+///
+/// D-142 second instance. `keystore::build_production_duress_engine` leaves
+/// `purge_keyring` **unwired** (`build_partial_duress_handlers`,
+/// `crates/keystore/src/duress.rs:445-449`), and an unwired handler does not
+/// mean "skip": `run_keyring_purge` (`duress.rs:686-698`) falls through to the
+/// machine-global `KeyringSealer::purge_keyring_entry()`. So every default
+/// `AppState` silently carried the power to delete the one credential every
+/// `identity.json` on the machine is sealed with, and any test that reached this
+/// engine bricked every OSL profile on the box — the same failure
+/// [`production_keyring_purge`] was introduced to stop one layer up.
+///
+/// Binding it explicitly changes nothing in production (the bound closure is the
+/// same call the fallback made) and routes the test build through the namespaced
+/// credential. The implicit fallback in `keystore` is left alone: narrowing it
+/// changes the duress guarantee for every other integration and is the owner's
+/// call, not this task's.
 fn default_production_duress_engine() -> keystore::DuressEngine {
     let config_dir = keystore::osl_config_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("osl-duress-unconfigured"));
     let password_dir = keystore::osl_base_dir().unwrap_or_else(|_| config_dir.clone());
-    keystore::build_production_duress_engine(keystore::ProductionDuressConfig::new(
-        config_dir,
-        password_dir,
-    ))
+    let config = keystore::ProductionDuressConfig::new(config_dir, password_dir);
+    let (paths, journal_path) = keystore::build_production_duress_paths(&config);
+    let mut handlers = keystore::build_production_duress_config_handlers(&config);
+    handlers.purge_keyring = Some(production_keyring_purge());
+    keystore::DuressEngine::new(journal_path, paths, handlers)
 }
 
 fn current_unix_seconds() -> u64 {
