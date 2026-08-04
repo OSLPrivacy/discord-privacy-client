@@ -138,7 +138,26 @@ describe("B0-07b main.ts prohibitions", () => {
   it("P-18 does not claim unsupported OSL Mail acknowledgement confirms deletion", () => {
     const binding = functionSource("bindWorkspace", "openHomeAppFromLauncher");
 
-    expect(binding).toContain("Retrieval acknowledged locally; server deletion was not requested or confirmed by this build");
+    // D-137 removed this path outright: `osl_mail_acknowledge_retrieval` has no
+    // Rust function and no registry entry, so the caller was deleted rather
+    // than left invoking a command that does not exist. The prohibition -- "a
+    // requested deletion is never displayed as a verified one" -- therefore
+    // holds because the surface is gone, not because its copy is careful.
+    //
+    // The earlier form of this test required a specific reassurance sentence to
+    // be PRESENT, which after D-137 could only be satisfied by re-adding dead
+    // code. Asserting the absence of the claim is what the prohibition actually
+    // says, and it still bites: re-introduce the invoke, or any sentence
+    // asserting the server deleted anything, and this goes red.
+    expect(binding).not.toContain("osl_mail_acknowledge_retrieval");
+    expect(binding).not.toMatch(/[Ss]erver deletion (?:was )?confirmed/u);
     expect(binding).not.toContain("Server deletion was not confirmed");
+
+    // If the path ever returns, the honest wording returns with it. Written as
+    // an implication rather than a bare presence check so it cannot be
+    // satisfied by dead code, and cannot silently pass once the path is back.
+    if (binding.includes("osl_mail_acknowledge_retrieval")) {
+      expect(binding).toContain("Retrieval acknowledged locally; server deletion was not requested or confirmed by this build");
+    }
   });
 });
