@@ -74,7 +74,7 @@
     },
     {
       "id": "keyserver-tests-node",
-      "count": 11,
+      "count": 12,
       "cwd": "keyserver-cf",
       "cmd": [
         "npx",
@@ -86,7 +86,7 @@
       ],
       "extract": "vitest-failed",
       "runsIn": "nothing, until this change",
-      "why": "11 failing cases, 119 passing, and NOBODY HAS EVER SEEN THEM. `npm test` short-circuits at the worker pass above, which has been red the whole time, so this config has never run in CI or in any hand-run of the four-command verification. Measured 2026-08-04 by running it directly.",
+      "why": "12 failing cases IN CI, 11 locally, and NOBODY HAS EVER SEEN EITHER NUMBER. `npm test` is `vitest run && vitest run --config vitest.node.config.ts`, and the worker pass above has been red the whole time, so this config has never run in CI or in any hand-run of the four-command verification. The baseline is the CI number, because CI is where this ratchet runs and is therefore the authority; the one test that passes locally and fails on a runner is scripts/deployment-evidence-receipt.test.ts > 'admits nonempty exact Artifact B and Artifact A observation fixtures' (measured on run 30931210322). Expect a STALE report if you run this ratchet on a workstation -- that is the ratchet telling the truth about a check whose result depends on where it runs, not a bug in the baseline.",
       "owner": "unassigned - surfaced by D-172"
     },
     {
