@@ -330,12 +330,11 @@ describe("fresh-account continuation", () => {
     expect(binding).toMatch(/#continue-app-choice[\s\S]*?await ensureNativeCatalogForAppChoice\(\)[\s\S]*?persistCombinedHomeChoices\(\)/);
   });
 
-  it("shows every installed native app while requiring isolation support only for separate profiles", () => {
+  it("offers only supported native app choices while keeping unsupported helpers unreachable", () => {
     const installedChoice = functionSource("hasSelectedInstalledNativeApps", "hasSelectedMissingNativeApps");
     const nativeSelection = functionSource("selectedNativeAppIntent", "detectedAppsContent");
     const detected = functionSource("detectedAppsContent", "installMissingAppsContent");
     const discordChoices = functionSource("discordSessionModeChoices", "detectedAppsContent");
-    const telegramChoices = functionSource("telegramSessionModeChoices", "detectedAppsContent");
     expect(installedChoice).toContain('app.availability === "installed" && app.isolatedProfileAvailable');
     expect(nativeSelection).toContain('if (!nativeSessionModeConfirmed(nativeId)) return undefined;');
     expect(nativeSelection).toContain('if (existingNativeSessionRequested(appId)) return nativeId;');
@@ -347,29 +346,20 @@ describe("fresh-account continuation", () => {
     expect(detected).toContain('selectedNativeApps().filter((app) => app.availability === "installed")');
     expect(discordChoices).toContain('data-discord-session-mode="dedicated"');
     expect(discordChoices).toContain('data-discord-session-mode="existingSession"');
-    expect(discordChoices).toContain(">Use existing account</button>");
+    expect(discordChoices).toContain('"Use existing account"');
     expect(discordChoices).toContain(">Use separate account</button>");
     expect(discordChoices).toContain('role="group"');
     expect(discordChoices).not.toContain('role="radio"');
     expect(detected).toContain('nativeSessionModeSettingChoices("discord", "Discord")');
-    expect(telegramChoices).toContain('data-telegram-session-mode="existingSession"');
-    expect(telegramChoices).toContain('data-telegram-session-mode="dedicated"');
-    expect(telegramChoices).toContain(">Use existing account</button>");
-    expect(telegramChoices).toContain(">Use separate account</button>");
-    expect(detected).toContain('nativeSessionModeSettingChoices("telegram", "Telegram")');
-    expect(detected).toContain('nativeSessionModeSettingChoices("signal", "Signal")');
-    expect(detected).toContain('nativeSessionModeSettingChoices("whatsapp", "WhatsApp")');
-    expect(detected).toContain('nativeSessionModeSettingChoices("outlook", "Outlook")');
-    expect(source).toContain('data-signal-session-mode="existingSession"');
-    expect(source).toContain('data-signal-session-mode="dedicated"');
-    expect(source).toContain('aria-label="Open Signal"');
-    expect(source).toContain('data-whatsapp-session-mode="existingSession"');
-    expect(source).toContain('data-whatsapp-session-mode="dedicated"');
+    expect(detected).not.toContain('nativeSessionModeSettingChoices("telegram", "Telegram")');
+    expect(detected).not.toContain('nativeSessionModeSettingChoices("signal", "Signal")');
+    expect(detected).not.toContain('nativeSessionModeSettingChoices("whatsapp", "WhatsApp")');
+    expect(detected).not.toContain('nativeSessionModeSettingChoices("outlook", "Outlook")');
+    expect(functionSource("selectedNativeApps", "hasSelectedNativeAppChoice")).toContain("supportedNativeAppIds.has(app.id)");
     expect(source).toContain('if (supportedNativeAppIds.has(app.id as NativeAppId))');
     expect(source).toContain("A separate ${app.displayName} app account is unavailable");
-    expect(detected).toContain('nativeSessionModeSettingChoices("whatsapp", "WhatsApp")');
-    expect(source).toContain('appId === "whatsapp"');
-    expect(source).toMatch(/serviceGuideContent[\s\S]*?activeHomeAppId === "telegram"[\s\S]*?telegramSessionModeChoices\(\)/);
+    expect(functionSource("serviceGuideContent", "settingsContent")).toContain("supportedNativeAppIds.has(activeHomeAppId as NativeAppId)");
+    expect(functionSource("serviceGuideContent", "settingsContent")).not.toMatch(/activeHomeAppId === "telegram"[\s\S]*?telegramSessionModeChoices\(\)/);
     expect(source).not.toMatch(/const sessionChoices = onboardingServiceSetup[\s\S]*?\? ""/);
     expect(source).not.toContain("Uses your signed-in ${name} window without copying its session.");
     expect(source).not.toContain("${name} stays outside OSL capture protection.");
@@ -677,7 +667,8 @@ describe("fresh-account continuation", () => {
     const normalizer = functionSource("balancedFirstRunSetup", "completeSixStepOnboarding");
     const completion = functionSource("completeSixStepOnboarding", "completeOnboarding");
     const wrapper = functionSource("completeOnboarding", "bindPasswordForm");
-    expect(normalizer).toContain('state.sendMode === "manual" ? "clipboard" : state.sendMode');
+    expect(normalizer).toContain("const sendMode = state.sendMode");
+    expect(normalizer).not.toContain('state.sendMode === "manual" ? "clipboard" : state.sendMode');
     expect(normalizer).toContain('placementMode: "atomic"');
     expect(normalizer).toContain("needsRiskAcceptance(sendMode) && state.acceptedRisk && state.acceptedRiskForMode === sendMode");
     expect(completion).toContain("if (!canCompleteSetup(completedSetup)) throw new Error");

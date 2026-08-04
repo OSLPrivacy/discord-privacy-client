@@ -183,7 +183,7 @@ import { peopleReverificationNoticeMarkup } from "./people-reverification-notice
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
 import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
-import { initialAccountRecoveryFlow, recoveryScreenMarkup } from "./account-recovery";
+import { addLegacyPhraseWrap, initialAccountRecoveryFlow, legacyMarkerRecoveryRefused, legacyRecoveryMigrationMarkup, recoveryScreenMarkup, submitRecoveredPassword, submitRecoveryPhrase, type AccountRecoveryDependencies, type AccountRecoveryFlow, type LegacyRecoveryMigration, type RecoveryMigrationDependencies } from "./account-recovery";
 import { RECOVERY_SHOW_ANYWAY_ACKNOWLEDGEMENT, recoveryKitReducer, recoveryKitSecretCardsMarkup, recoveryKitView, visibleRecoverySecrets, type RecoveryKitAction, type RecoveryKitState, type RecoveryKitView } from "./recovery-kit";
 import { resumeOnboardingRoute } from "./onboarding-resume";
 import { createRecoveryKitUnsavedFlag } from "./recovery-kit-flag";
@@ -282,6 +282,29 @@ type OwnedConfirmation =
   | { kind: "removeFriend"; personId: string }
   | { kind: "clearActivation" };
 
+type ProtectionPreset = "basic" | "balanced" | "maximum";
+type InboxFilter = "all" | "osl" | "connected" | "requests";
+const protectionPresetStorageKey = "osl-protection-preset-v1";
+const oslMailNotificationsStorageKey = "osl-mail-notifications-v1";
+const protectionPresetValues: readonly ProtectionPreset[] = ["basic", "balanced", "maximum"];
+const inboxFilterValues: readonly InboxFilter[] = ["all", "osl", "connected", "requests"];
+
+function parseProtectionPreset(raw: unknown): ProtectionPreset {
+  return protectionPresetValues.includes(raw as ProtectionPreset) ? raw as ProtectionPreset : "balanced";
+}
+
+function parseInboxFilter(raw: unknown): InboxFilter {
+  return inboxFilterValues.includes(raw as InboxFilter) ? raw as InboxFilter : "all";
+}
+
+function loadProtectionPreset(storage: Pick<Storage, "getItem"> = localStorage): ProtectionPreset {
+  return parseProtectionPreset(storage.getItem(protectionPresetStorageKey));
+}
+
+function persistProtectionPreset(storage: Pick<Storage, "setItem"> = localStorage): void {
+  storage.setItem(protectionPresetStorageKey, protectionPreset);
+}
+
 function requireRoot(): HTMLDivElement {
   const element = document.querySelector<HTMLDivElement>("#app");
   if (!element) throw new Error("OSL Privacy root is missing");
@@ -318,6 +341,31 @@ let autoScrubFleetStatus: AutoScrubFleetStatus | null = null;
 let autoScrubStatusLoading = false;
 let autoScrubStopPending = false;
 let passwordRoleStatus: HubPasswordRoleStatus | null = null;
+// "Forgot password?" (the `data-onboarding="account-recovery"` link on the
+// unlock card) rendered `recoveryScreenMarkup(initialAccountRecoveryFlow)` --
+// always the *initial* flow, with no submit handler on either form. Typing a
+// recovery phrase and pressing "Verify phrase" did nothing at all, silently.
+// The flow now lives here so the already-specified state machine in
+// account-recovery.ts actually runs and its refusals reach the screen.
+let accountRecoveryFlow: AccountRecoveryFlow = initialAccountRecoveryFlow;
+let legacyRecoveryMigration: LegacyRecoveryMigration | null = null;
+/**
+ * There is no native verifier behind this yet: no Tauri command exists that
+ * turns a password recovery phrase into a recovery token, and none that sets a
+ * password from one (see the task log for L-ATTR). The shipping dependency
+ * therefore fails closed with a message the user can act on, exactly like the
+ * "not available in this build" wording the alternate-password roles use, and
+ * introduces no IPC. Tests inject a real one through `__oslHubUiTest`.
+ */
+const passwordRecoveryUnavailable = "Password recovery is not available in this build. Your password was not changed.";
+let accountRecoveryDependencies: AccountRecoveryDependencies = {
+  verifyPhrase: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
+  setPassword: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
+};
+let recoveryMigrationDependencies: RecoveryMigrationDependencies = {
+  addPhraseWrap: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
+  freshStart: () => Promise.reject(new Error(passwordRecoveryUnavailable)),
+};
 let setup: SetupState = parseSetupState(null);
 let route: Route = "onboarding";
 let onboardingRoute: OnboardingRoute = "welcome";
@@ -354,7 +402,9 @@ let mullvadSetupNotice = "";
 let mullvadAutoStart = false;
 let mullvadAutoStartAttempted = false;
 let mullvadWindowHosted = false;
-let mullvadReturnRoute: "onboarding" | "home" = "home";
+let mullvadReturnRoute: "onboarding" | "home" | "connections" = "home";
+let protectionPreset: ProtectionPreset = loadProtectionPreset();
+let inboxFilter: InboxFilter = "all";
 let privacyProtectionReviewOpen = false;
 let activityAttentionReviewOpen = false;
 type PeoplePrimaryActionFocus = "add" | "verify";
@@ -444,7 +494,7 @@ let oslMailStatus: OslMailStatus | null = null;
 let oslMailThreads: OslMailThreadSummary[] = [];
 let oslMailActiveThread: OslMailRetrievedThread | null = null;
 let oslMailPane: OslMailPane = "inbox";
-let oslMailNotifications = true;
+let oslMailNotifications = localStorage.getItem(oslMailNotificationsStorageKey) !== "false";
 let oslMailDeleteReceipt: OslMailDeleteReceipt | null = null;
 let oslMailSendReceipt: OslMailSendReceipt | null = null;
 let oslMailBurnReceipt: OslMailBurnReceipt | null = null;
@@ -683,7 +733,7 @@ const autoScrubServiceLabels: Record<ServiceId, string> = {
   signal: "Signal",
   whatsapp: "WhatsApp",
 };
-const supportedNativeAppIds = new Set<NativeAppId>(["discord", "telegram", "signal", "whatsapp", "outlook"]);
+const supportedNativeAppIds = new Set<NativeAppId>(["discord"]);
 const importedFirefoxHomeAppIds = new Set<HomeAppId>([
   "instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
 ]);
@@ -1223,6 +1273,8 @@ export async function loadUiPreferences(): Promise<void> {
   notificationScopeSuggestions = localStorage.getItem(notificationScopeStorageKey) !== "false";
   notificationChatActivity = localStorage.getItem(notificationChatStorageKey) !== "false";
   notificationSecurityActivity = localStorage.getItem(notificationSecurityStorageKey) !== "false";
+  protectionPreset = loadProtectionPreset();
+  oslMailNotifications = localStorage.getItem(oslMailNotificationsStorageKey) !== "false";
   rnWirePolicyRequested = localStorage.getItem(rnWirePolicyStorageKey) === "true";
   await loadOslChatSensitiveStateFromSecureStore();
   const notices = await loadMigratedOslChatNotifications(oslChatSecureStore, localStorage);
@@ -1478,12 +1530,44 @@ function restoreWorkspaceFocus(snapshot: WorkspaceFocusSnapshot): void {
   if (snapshot.focusedId) document.getElementById(snapshot.focusedId)?.focus({ preventScroll: true });
 }
 
-function containBackgroundFailure(): void {
+function containBackgroundFailure(detail?: string): void {
   if (!root.querySelector(".app-frame")) {
     showRenderRecovery();
     return;
   }
-  showToast("That action failed. Nothing changed.");
+  showToast(detail
+    ? `That action failed. Nothing changed. (${detail})`
+    : "That action failed. Nothing changed.");
+}
+
+// A rejection from invoking a command the Rust side does not define is the one
+// runtime signal that a frontend client is calling into nothing. It was
+// suppressed for the life of the project by a preventDefault() on
+// unhandledrejection, which is why four such commands shipped unnoticed. Naming
+// the command in the toast is deliberate: a generic "that action failed" is
+// indistinguishable from a network blip, so it teaches the user -- and anyone
+// reading a bug report -- nothing about which action is missing.
+function describeRejection(reason: unknown): string | undefined {
+  const text = typeof reason === "string"
+    ? reason
+    : reason instanceof Error
+      ? reason.message
+      : typeof reason === "object" && reason !== null && "message" in reason
+        ? String((reason as { message: unknown }).message)
+        : undefined;
+  if (!text) return undefined;
+  const missing =
+    /(?:command|Command)\s+([a-z0-9_]+)\s+not\s+found/.exec(text) ??
+    /unknown\s+command:?\s+([a-z0-9_]+)/i.exec(text);
+  if (missing) return `unknown command: ${missing[1]}`;
+  return text.length > 80 ? `${text.slice(0, 77)}...` : text;
+}
+
+const unhandledRejectionEventType = "unhandledrejection";
+
+function handleUnhandledRejection(event: PromiseRejectionEvent): void {
+  console.error("Unhandled background rejection", event.reason);
+  containBackgroundFailure(describeRejection(event.reason));
 }
 
 function desktopTitlebar(): string {
@@ -1710,7 +1794,13 @@ function onboardingContent(): string {
 
   if (onboardingRoute === "create") return identityPasswordForm("Create a password", "Create account", "setup");
   if (onboardingRoute === "unlock") return identityPasswordForm("Unlock OSL", "Unlock", "unlock");
-  if (onboardingRoute === "account-recovery") return recoveryScreenMarkup(initialAccountRecoveryFlow);
+  if (onboardingRoute === "account-recovery") {
+    // A legacy marker refusal is not a generic reset failure: it keeps its own
+    // migration screen, which is the only place the two repair paths exist.
+    return legacyRecoveryMigration
+      ? legacyRecoveryMigrationMarkup(legacyRecoveryMigration)
+      : recoveryScreenMarkup(accountRecoveryFlow);
+  }
   if (onboardingRoute === "import") return importIdentityForm();
   if (onboardingRoute === "recovery") return recoveryContent();
   if (onboardingRoute === "tutorial") return tutorialContent();
@@ -1777,7 +1867,7 @@ function tutorialContent(): string {
 
 function chooseAppsOnboardingContent(): string {
   const apps = homeAppsFromServices(services)
-    .filter((app) => app.visibility === "launch" && app.launchState === "available");
+    .filter((app) => app.visibility === "launch");
   const { connected, browserHistory, other } = groupOnboardingApps({
     apps,
     nativeApps,
@@ -1785,7 +1875,12 @@ function chooseAppsOnboardingContent(): string {
     importedBrowserAppIds: importedFirefoxHomeAppIds,
   });
   const choices = (items: HomeAppCatalogEntry[], label: string) => items.length
-    ? `<div class="onboarding-app-grid onboarding-app-choices" role="group" aria-label="${label}">${items.map((app) => `<button type="button" class="onboarding-app ${selectedOnboardingApps.has(app.id) ? "selected" : ""}" data-onboarding-app-choice="${app.id}" aria-pressed="${selectedOnboardingApps.has(app.id)}"><span class="app-logo-plate">${homeAppLogo(app)}</span><strong>${escapeHtml(app.displayName)}</strong></button>`).join("")}</div>`
+    ? `<div class="onboarding-app-grid onboarding-app-choices" role="group" aria-label="${label}">${items.map((app) => {
+      const available = app.launchState === "available";
+      const selected = available && selectedOnboardingApps.has(app.id);
+      const action = available ? `data-onboarding-app-choice="${app.id}" aria-pressed="${selected}"` : `disabled aria-disabled="true"`;
+      return `<button type="button" class="onboarding-app ${selected ? "selected" : ""} ${available ? "" : "unavailable"}" ${action}><span class="app-logo-plate">${homeAppLogo(app)}</span><span><strong>${escapeHtml(app.displayName)}</strong>${available ? "" : "<small>Coming soon</small>"}</span></button>`;
+    }).join("")}</div>`
     : `<p class="saved-account-truth">None</p>`;
   const defaultContinueLabel = nativeCatalogBusy ? "Checking Windows…" : "Continue";
   const continueLabel = nativeCatalogBusy
@@ -1803,11 +1898,17 @@ async function enterCombinedAppChoice(): Promise<void> {
 
 function persistCombinedHomeChoices(): void {
   hasExplicitOnboardingAppSelection = true;
+  const available = new Set(homeAppsFromServices(services)
+    .filter((app) => app.visibility === "launch" && app.launchState === "available")
+    .map((app) => app.id));
+  for (const appId of [...selectedOnboardingApps]) {
+    if (!available.has(appId)) selectedOnboardingApps.delete(appId);
+  }
   localStorage.setItem(selectedOnboardingAppsStorageKey, JSON.stringify([...selectedOnboardingApps]));
 }
 
 function selectedNativeApps(): NativeApp[] {
-  return nativeApps.filter((app) => selectedOnboardingApps.has(app.id));
+  return nativeApps.filter((app) => supportedNativeAppIds.has(app.id) && selectedOnboardingApps.has(app.id));
 }
 
 function hasSelectedNativeAppChoice(): boolean {
@@ -1949,26 +2050,6 @@ function discordQaHostStatusMarkup(): string {
   return `<p id="discord-qa-host-state" class="form-status" role="status" aria-live="polite" data-host-state="${discordQaHostState}">${label}</p><p id="discord-qa-overlay-state" class="form-status" role="status" aria-live="polite" data-overlay-state="${discordQaOverlayState}">${overlayLabel}</p>`;
 }
 
-function telegramSessionModeChoices(): string {
-  const separate = separateNativeAccountAvailable("telegram");
-  return `<div class="saved-account-choices session-mode-choices" role="group" aria-label="Open Telegram"><button type="button" class="account-launch-choice" data-telegram-session-mode="existingSession">Use existing account</button><button type="button" class="account-launch-choice" data-telegram-session-mode="dedicated" ${separate ? "" : "disabled"}>Use separate account</button></div>`;
-}
-
-function signalSessionModeChoices(): string {
-  const separate = separateNativeAccountAvailable("signal");
-  return `<div class="saved-account-choices session-mode-choices" role="group" aria-label="Open Signal"><button type="button" class="account-launch-choice" data-signal-session-mode="existingSession">Use existing account</button><button type="button" class="account-launch-choice" data-signal-session-mode="dedicated" ${separate ? "" : "disabled"}>Use separate account</button></div>`;
-}
-
-function whatsappSessionModeChoices(): string {
-  const separate = separateNativeAccountAvailable("whatsapp");
-  return `<div class="saved-account-choices session-mode-choices" role="group" aria-label="Open WhatsApp"><button type="button" class="account-launch-choice" data-whatsapp-session-mode="existingSession">Use existing account</button><button type="button" class="account-launch-choice" data-whatsapp-session-mode="dedicated" ${separate ? "" : "disabled"}>Use separate account</button></div>`;
-}
-
-function outlookSessionModeChoices(): string {
-  const separate = separateNativeAccountAvailable("outlook");
-  return `<div class="saved-account-choices session-mode-choices" role="group" aria-label="Open Outlook"><button type="button" class="account-launch-choice" data-outlook-session-mode="existingSession">Use existing account</button><button type="button" class="account-launch-choice" data-outlook-session-mode="dedicated" ${separate ? "" : "disabled"}>Use separate account</button></div>`;
-}
-
 function defaultBrowserCompanionEligible(appId: HomeAppId | null): appId is HomeAppId {
   return appId !== null && ["instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud"].includes(appId);
 }
@@ -2042,13 +2123,7 @@ function detectedAppsContent(): string {
   const discordChoices = installed.some((app) => app.id === "discord")
     ? nativeSessionModeSettingChoices("discord", "Discord")
     : "";
-  const telegramChoices = installed.some((app) => app.id === "telegram")
-    ? nativeSessionModeSettingChoices("telegram", "Telegram")
-    : "";
-  const signalChoices = installed.some((app) => app.id === "signal") ? nativeSessionModeSettingChoices("signal", "Signal") : "";
-  const whatsappChoices = installed.some((app) => app.id === "whatsapp") ? nativeSessionModeSettingChoices("whatsapp", "WhatsApp") : "";
-  const outlookChoices = installed.some((app) => app.id === "outlook") ? nativeSessionModeSettingChoices("outlook", "Outlook") : "";
-  return `<h1 id="route-heading" tabindex="-1">Use installed apps</h1><p class="compact-lead onboarding-centered-copy">Choose detected desktop apps.</p>${discordChoices}${telegramChoices}${signalChoices}${whatsappChoices}${outlookChoices}${accountChoices}<div class="setup-list">${rows}</div><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-detected-apps" type="button">Continue</button></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Use installed apps</h1><p class="compact-lead onboarding-centered-copy">Choose detected desktop apps.</p>${discordChoices}${accountChoices}<div class="setup-list">${rows}</div><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-detected-apps" type="button">Continue</button></div>`;
 }
 
 function installMissingAppsContent(): string {
@@ -2151,22 +2226,6 @@ function bindSavedAccountControls(): void {
     setNativeSessionMode("discord", parseDiscordSessionMode(button.dataset.discordSessionMode));
     finishNativeAccountChoice("discord");
   }));
-  document.querySelectorAll<HTMLButtonElement>("[data-telegram-session-mode]").forEach((button) => button.addEventListener("click", () => {
-    setNativeSessionMode("telegram", parseNativeSessionMode(button.dataset.telegramSessionMode));
-    finishNativeAccountChoice("telegram");
-  }));
-  document.querySelectorAll<HTMLButtonElement>("[data-signal-session-mode]").forEach((button) => button.addEventListener("click", () => {
-    setNativeSessionMode("signal", parseNativeSessionMode(button.dataset.signalSessionMode));
-    finishNativeAccountChoice("signal");
-  }));
-  document.querySelectorAll<HTMLButtonElement>("[data-whatsapp-session-mode]").forEach((button) => button.addEventListener("click", () => {
-    setNativeSessionMode("whatsapp", parseNativeSessionMode(button.dataset.whatsappSessionMode));
-    finishNativeAccountChoice("whatsapp");
-  }));
-  document.querySelectorAll<HTMLButtonElement>("[data-outlook-session-mode]").forEach((button) => button.addEventListener("click", () => {
-    setNativeSessionMode("outlook", parseNativeSessionMode(button.dataset.outlookSessionMode));
-    finishNativeAccountChoice("outlook");
-  }));
   document.querySelectorAll<HTMLButtonElement>("[data-native-mode-app]").forEach((button) => button.addEventListener("click", () => {
     const appId = button.dataset.nativeModeApp as NativeAppId;
     if (!supportedNativeAppIds.has(appId)) return;
@@ -2183,14 +2242,12 @@ function bindSavedAccountControls(): void {
     persistDetectedAccountChoices();
     render();
   }));
-  document.querySelectorAll<HTMLButtonElement>("[data-saved-account-mode]").forEach((button) => button.addEventListener("click", () => {
-    savedAccountMode = parseSavedAccountMode(button.dataset.savedAccountMode ?? null);
-    if (savedAccountMode === "use" && savedNativeApps.size === 0) {
-      savedNativeApps = new Set(nativeApps.filter((app) => app.availability === "installed" && app.isolatedProfileAvailable).map((app) => app.id));
-    }
-    persistSavedAccountPreferences();
-    render();
-  }));
+  // A `[data-saved-account-mode]` click binding used to sit here. No markup in
+  // this build -- or anywhere else in the repo -- writes that attribute, so the
+  // listener could never run; `savedAccountMode` is now driven entirely by the
+  // per-app `[data-saved-native]` choices below and by the launch paths. Kept as
+  // a note rather than a binding, because a listener with no control is not a
+  // feature, and ledger 1 reported it as a live selector waiting on dead markup.
   document.querySelectorAll<HTMLInputElement>("[data-saved-native]").forEach((input) => input.addEventListener("change", () => {
     const appId = input.dataset.savedNative as NativeAppId;
     if (!supportedNativeAppIds.has(appId)) return;
@@ -2567,7 +2624,7 @@ function captureSetupMarkup(): string {
 
 export function reviewDefaultsOnboardingContent(): string {
   const row = (title: string, detail: string, state: string, active = false) => `<div class="setup-status-row"><span><strong>${title}</strong><small>${detail}</small></span>${statusTag(state, active ? "active" : "")}</div>`;
-  return `<h1 id="route-heading" tabindex="-1">Review defaults</h1><p class="compact-lead onboarding-centered-copy">Balanced starts with local warnings, visible attachment cleaning, and review-only cleanup. You can change these later in Privacy.</p><section class="setup-list defaults-review-list" aria-label="Default protection review">${row("Warn before sending", "Checks drafts on this device for selected risks before you send.", "On", true)}${row("Clean attachments", "Offers a visible cleaning step for files and media; nothing changes without your consent.", "Ask first")}${row("Keep protected drafts", "Keeps encrypted local drafts and private activity on this device for recovery.", "On", true)}${row("Delete or clean up history", "Timed deletion, bulk cleanup, and account cleanup do not run during onboarding.", "Off")}${row("Send behavior", "Manual handoff is the default: OSL prepares, then you place and send.", formatSendMode(defaultSetup.sendMode), true)}</section><p class="send-mode-truth">No destructive action starts from setup. Cleanup requires a separate review and confirmation.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-defaults-review" type="button">Continue</button></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Review defaults</h1><p class="compact-lead onboarding-centered-copy">Balanced starts with local warnings, visible attachment cleaning, and review-only cleanup. You can change these later in Privacy.</p><section class="setup-list defaults-review-list" aria-label="Default protection review">${row("Warn before unprotected sends", "Checks ordinary drafts on this device for selected risks before you send.", "On", true)}${row("Warn before protected sends", "Extra warning before already-protected handoff.", "Off")}${row("Clean attachments", "Offers a visible cleaning step for files and media; nothing changes without your consent.", "Ask first")}${row("Keep protected drafts", "Keeps encrypted local drafts and private activity on this device for recovery.", "On", true)}${row("Delete or clean up history", "Timed deletion, bulk cleanup, and account cleanup do not run during onboarding.", "Off")}${row("Send behavior", "Manual handoff is the default: OSL prepares, then you place and send.", formatSendMode(defaultSetup.sendMode), true)}</section><p class="send-mode-truth">No destructive action starts from setup. Cleanup requires a separate review and confirmation.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-defaults-review" type="button">Continue</button></div>`;
 }
 
 function coverDraftSetupContent(): string {
@@ -2610,11 +2667,11 @@ function protectionPresetOnboardingContent(): string {
     },
   ] as const;
   const presetChoices = presets.map((preset) => {
-    const selected = preset.id === "balanced";
+    const selected = preset.id === protectionPreset;
     const badge = "badge" in preset ? `<small class="send-mode-badge">${preset.badge}</small>` : "";
     return `<label class="send-mode-option ${selected ? "selected" : ""}" data-protection-preset="${preset.id}"><span><input class="sr-only" type="radio" name="protection-preset" value="${preset.id}" ${selected ? "checked" : ""}/><strong>${preset.title}</strong>${badge}</span><small>${preset.detail}</small></label>`;
   }).join("");
-  return `<h1 id="route-heading" tabindex="-1">Choose protection</h1><p class="compact-lead onboarding-centered-copy">Balanced starts on and is safe without more setup.</p><div class="send-mode-list protection-preset-list" role="group" aria-label="Protection preset">${presetChoices}</div><section class="setup-list" aria-labelledby="balanced-defaults-heading"><h2 id="balanced-defaults-heading" class="setup-section-heading">Balanced defaults</h2><div class="setup-status-row"><span><strong>Warn before risky sends</strong><small>OSL checks locally before protected handoff.</small></span>${statusTag("On", "active")}</div><div class="setup-status-row"><span><strong>Clean attachments by choice</strong><small>OSL can prepare a cleaned copy when you ask.</small></span>${statusTag("On", "active")}</div><div class="setup-status-row"><span><strong>Review cleanup monthly</strong><small>Deletion automation starts off. You review first.</small></span>${statusTag("Manual")}</div><div class="setup-status-row"><span><strong>Require clear authority</strong><small>No consent, account binding, or send/delete authority means Unavailable.</small></span>${statusTag("Fail closed", "active")}</div></section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-onboarding-privacy" type="button">Continue</button></div>`;
+  return `<h1 id="route-heading" tabindex="-1">Choose protection</h1><p class="compact-lead onboarding-centered-copy">Balanced starts on and is safe without more setup.</p><div class="send-mode-list protection-preset-list" role="group" aria-label="Protection preset">${presetChoices}</div><section class="setup-list" aria-labelledby="balanced-defaults-heading"><h2 id="balanced-defaults-heading" class="setup-section-heading">Balanced defaults</h2><div class="setup-status-row"><span><strong>Warn before unprotected sends</strong><small>OSL checks ordinary drafts locally before handoff.</small></span>${statusTag("On", "active")}</div><div class="setup-status-row"><span><strong>Warn before protected sends</strong><small>Extra warning before already-protected handoff.</small></span>${statusTag("Off")}</div><div class="setup-status-row"><span><strong>Clean attachments by choice</strong><small>OSL can prepare a cleaned copy when you ask.</small></span>${statusTag("On", "active")}</div><div class="setup-status-row"><span><strong>Review cleanup monthly</strong><small>Deletion automation starts off. You review first.</small></span>${statusTag("Manual")}</div><div class="setup-status-row"><span><strong>Require clear authority</strong><small>No consent, account binding, or send/delete authority means Unavailable.</small></span>${statusTag("Fail closed", "active")}</div></section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-onboarding-privacy" type="button">Continue</button></div>`;
 }
 
 function mullvadSetupContent(): string {
@@ -2639,7 +2696,14 @@ function previousSetupRoute(current: OnboardingRoute): OnboardingRoute {
 }
 
 function bindOnboarding(): void {
-  document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => { onboardingRoute = onboardingRouteForBuild(button.dataset.onboarding as OnboardingRoute); render(); }));
+  document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => {
+    onboardingRoute = onboardingRouteForBuild(button.dataset.onboarding as OnboardingRoute);
+    // Arriving at recovery always starts at the phrase step: a half-finished
+    // flow, or a token from a previous attempt, must never be inherited.
+    if (onboardingRoute === "account-recovery") resetAccountRecovery();
+    render();
+  }));
+  bindAccountRecovery();
   document.querySelector<HTMLButtonElement>("#skip-pro-setup")?.addEventListener("click", () => {
     onboardingRoute = onboardingRouteForBuild(continueFromProOnboarding("skipped").route);
     render();
@@ -2715,6 +2779,9 @@ function bindOnboarding(): void {
   });
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding-app-choice]").forEach((button) => button.addEventListener("click", () => {
     const appId = button.dataset.onboardingAppChoice as HomeAppId;
+    const available = homeAppsFromServices(services)
+      .some((app) => app.id === appId && app.visibility === "launch" && app.launchState === "available");
+    if (!available) return;
     if (selectedOnboardingApps.has(appId)) selectedOnboardingApps.delete(appId);
     else selectedOnboardingApps.add(appId);
     hasExplicitOnboardingAppSelection = true;
@@ -2818,7 +2885,7 @@ function bindOnboarding(): void {
   });
   document.querySelectorAll<HTMLButtonElement>("[data-send-mode]").forEach((button) => button.addEventListener("click", () => {
     const mode = button.dataset.sendMode as SendMode;
-    if (!["clipboard", "double", "single"].includes(mode)) return;
+    if (!["manual", "clipboard", "double"].includes(mode)) return;
     setup.sendMode = mode;
     setup.placementMode = "atomic";
     setup.acceptedRisk = false;
@@ -2833,7 +2900,6 @@ function bindOnboarding(): void {
   });
   document.querySelector("#finish-onboarding")?.addEventListener("click", () => {
     if (onboardingRoute !== "sending") return;
-    if (setup.sendMode === "manual") setup.sendMode = "clipboard";
     if (!canCompleteSetup(setup)) return;
     setup.placementMode = "atomic";
     onboardingRoute = "cover";
@@ -2871,6 +2937,13 @@ function bindOnboarding(): void {
       render();
     }).catch(() => undefined);
   });
+  document.querySelectorAll<HTMLInputElement>('input[name="protection-preset"]').forEach((input) => input.addEventListener("change", () => {
+    if (input.checked && protectionPresetValues.includes(input.value as ProtectionPreset)) {
+      protectionPreset = input.value as ProtectionPreset;
+      persistProtectionPreset();
+      render();
+    }
+  }));
   document.querySelector("#continue-cover-draft")?.addEventListener("click", () => { onboardingRoute = "passwords"; render(); });
   bindOnboardingPasswordRole();
   document.querySelectorAll<HTMLButtonElement>("button[data-password-role-next]").forEach((button) => button.addEventListener("click", () => {
@@ -2889,7 +2962,8 @@ function bindOnboarding(): void {
   document.querySelector("#continue-onboarding-privacy")?.addEventListener("click", () => { onboardingRoute = "defaults"; render(); });
   document.querySelector<HTMLInputElement>("#window-capture-enabled")?.addEventListener("change", async (event) => {
     windowCaptureEnabled = (event.currentTarget as HTMLInputElement).checked;
-    screenshotProtectionEnabled = await setScreenshotProtection(windowCaptureEnabled).catch(() => false);
+    await setScreenshotProtection(windowCaptureEnabled).catch(() => false);
+    screenshotProtectionEnabled = windowCaptureEnabled && captureProtectionEnforced();
     if (windowCaptureEnabled && !screenshotProtectionEnabled) showToast("Windows capture resistance is unavailable on this device");
     render();
   });
@@ -2898,6 +2972,83 @@ function bindOnboarding(): void {
   document.querySelector("#install-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("install"));
   document.querySelector("#open-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("open"));
   document.querySelector("#close-decoy")?.addEventListener("click", () => void getCurrentWindow().close().catch(() => undefined));
+}
+
+function resetAccountRecovery(): void {
+  accountRecoveryFlow = initialAccountRecoveryFlow;
+  legacyRecoveryMigration = null;
+}
+
+function formValue(form: HTMLFormElement, name: string): string {
+  const field = form.elements.namedItem(name) as { value?: unknown } | null;
+  return typeof field?.value === "string" ? field.value : "";
+}
+
+async function runAccountRecoveryPhrase(phrase: string): Promise<void> {
+  // submitRecoveryPhrase deliberately swallows the verifier's error into one
+  // safe message, so the legacy-marker refusal is captured on the way past
+  // rather than re-derived from the message it returns.
+  let refusal: unknown = null;
+  accountRecoveryFlow = await submitRecoveryPhrase(accountRecoveryFlow, phrase, {
+    setPassword: (newPassword, recoveryToken) => accountRecoveryDependencies.setPassword(newPassword, recoveryToken),
+    verifyPhrase: async (value) => {
+      try {
+        return await accountRecoveryDependencies.verifyPhrase(value);
+      } catch (failure) {
+        refusal = failure;
+        throw failure;
+      }
+    },
+  });
+  if (legacyMarkerRecoveryRefused(refusal)) legacyRecoveryMigration = { kind: "needs-current-password", phraseVerified: true };
+  render();
+}
+
+async function runAccountRecoveryPassword(newPassword: string, confirmPassword: string): Promise<void> {
+  accountRecoveryFlow = await submitRecoveredPassword(accountRecoveryFlow, newPassword, confirmPassword, accountRecoveryDependencies);
+  render();
+}
+
+async function runLegacyPhraseWrap(currentPassword: string): Promise<void> {
+  try {
+    const repaired = await addLegacyPhraseWrap(currentPassword, recoveryMigrationDependencies);
+    // Repaired means the phrase alone can drive recovery again, so the user is
+    // returned to the phrase step rather than left on the migration screen.
+    legacyRecoveryMigration = repaired.kind === "recoverable" ? null : repaired;
+    if (repaired.kind === "recoverable") accountRecoveryFlow = initialAccountRecoveryFlow;
+  } catch (failure) {
+    showToast(localActionError(failure, "The recovery wrap was not added. Nothing was changed."));
+  }
+  render();
+}
+
+async function runRecoveryFreshStart(): Promise<void> {
+  const accepted = window.confirm("Start over? This permanently removes this device's OSL account, including your burn list and all encrypted local state. It cannot be undone.");
+  if (!accepted) return;
+  try {
+    await recoveryMigrationDependencies.freshStart();
+    legacyRecoveryMigration = { kind: "fresh-start" };
+  } catch (failure) {
+    showToast(localActionError(failure, "OSL could not start over. Nothing was removed."));
+  }
+  render();
+}
+
+function bindAccountRecovery(): void {
+  document.querySelector<HTMLFormElement>("[data-account-recovery-phrase]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void runAccountRecoveryPhrase(formValue(event.currentTarget as HTMLFormElement, "recoveryPhrase"));
+  });
+  document.querySelector<HTMLFormElement>("[data-account-recovery-password]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    void runAccountRecoveryPassword(formValue(form, "newPassword"), formValue(form, "confirmPassword"));
+  });
+  document.querySelector<HTMLFormElement>("[data-recovery-add-phrase-wrap]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void runLegacyPhraseWrap(formValue(event.currentTarget as HTMLFormElement, "currentPassword"));
+  });
+  document.querySelector<HTMLButtonElement>("[data-recovery-fresh-start]")?.addEventListener("click", () => void runRecoveryFreshStart());
 }
 
 function bindOnboardingPasswordRole(): void {
@@ -2957,7 +3108,7 @@ function bindPasswordVisibility(): void {
 }
 
 function balancedFirstRunSetup(state: SetupState): SetupState {
-  const sendMode = state.sendMode === "manual" ? "clipboard" : state.sendMode;
+  const sendMode = state.sendMode;
   const acceptedRisk = needsRiskAcceptance(sendMode) && state.acceptedRisk && state.acceptedRiskForMode === sendMode;
   return {
     sendMode,
@@ -3038,7 +3189,7 @@ async function hostMullvadUntilReady(label: string, waitMs = 60_000): Promise<Aw
   return result;
 }
 
-async function runMullvadSetupAction(action: "install" | "open"): Promise<void> {
+async function runMullvadSetupAction(action: "install" | "open", returnRoute: "onboarding" | "connections" = "onboarding"): Promise<void> {
   if (mullvadBusy) return;
   mullvadBusy = true;
   mullvadSetupNotice = action === "install" ? "Installing Mullvad…" : "Opening Mullvad…";
@@ -3062,7 +3213,7 @@ async function runMullvadSetupAction(action: "install" | "open"): Promise<void> 
     }
     mullvadSetupNotice = "";
     mullvadWindowHosted = true;
-    mullvadReturnRoute = "onboarding";
+    mullvadReturnRoute = returnRoute;
     route = "mullvad";
   } catch (failure) {
     mullvadSetupNotice = localActionError(failure, `Mullvad could not ${action === "install" ? "install" : "open"}`);
@@ -3981,7 +4132,9 @@ function homeDestinationContent(): string {
   const protection = identityProtectionStatus(core.readiness.storageMethod);
   const deviceProtected = coreReady && protection.state === "protected";
   const launchableApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
-  const connectedApps = launchableApps.filter((app) => app.linked || savedNativeApps.has(app.id as NativeAppId));
+  const connectableApps = launchableApps.filter((app) => app.launchState === "available");
+  const roadmapApps = launchableApps.filter((app) => app.launchState !== "available");
+  const connectedApps = connectableApps.filter((app) => app.linked || savedNativeApps.has(app.id as NativeAppId));
   const connectedAppsState = homeProtectionState(linkedServicesChecked, connectedApps.length > 0, {
     enabled: "Ready",
     unavailable: "Unavailable",
@@ -4004,7 +4157,8 @@ function homeDestinationContent(): string {
   const activityAction = recentActivity || !notificationsEnabled
     ? `<button class="button compact" data-notification-settings type="button">${recentActivity ? "Review" : "Turn on"}</button>`
     : `${statusTag("Quiet")}`;
-  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommendedAction}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedApps.length.toLocaleString("en-US")} of ${launchableApps.length.toLocaleString("en-US")} ready</small></span>${statusTag(connectedAppsState.label, connectedAppsState.statusTone === "ok" ? "ok" : "")}</div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
+  const connectedAppsDetail = `${connectedApps.length.toLocaleString("en-US")} of ${connectableApps.length.toLocaleString("en-US")} ready${roadmapApps.length ? ` · ${roadmapApps.length.toLocaleString("en-US")} coming soon` : ""}`;
+  return `<section class="home-protection-summary" aria-labelledby="route-heading" data-home-destination="protection-status"><h1 id="route-heading" tabindex="-1">Home</h1><div class="setting-line home-overall-state" data-home-protection-state="${deviceProtected ? "protected" : "needs-attention"}"><span><strong>${deviceProtected ? "Protected" : "Needs attention"}</strong><small>${escapeHtml(coreReady ? protection.detail : coreReadinessLabel(core.readiness))}</small></span>${recommendedAction}</div>${attention}<div class="settings-list home-protection-facts" aria-label="Protection status"><div class="setting-line"><span><strong>Connected apps</strong><small>${connectedAppsDetail}</small></span>${statusTag(connectedAppsState.label, connectedAppsState.statusTone === "ok" ? "ok" : "")}</div><div class="setting-line"><span><strong>Trusted people</strong><small>${verifiedFriends.toLocaleString("en-US")} verified${pendingFriendReviews ? `, ${pendingFriendReviews.toLocaleString("en-US")} need review` : ""}</small></span><button class="button compact" data-open-friends type="button">${pendingFriendReviews ? "Review" : "Manage"}</button></div><div class="setting-line"><span><strong>Recent protection</strong><small>${escapeHtml(activityDetail)}</small></span>${activityAction}</div></div></section>`;
 }
 
 function workspaceContent(): string {
@@ -4020,15 +4174,17 @@ function workspaceContent(): string {
   if (route === "settings") return settingsContent();
   if (route === "service" && activeService) return serviceContent();
   const launchableHomeApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
+  const roadmapHomeApps = launchableHomeApps.filter((app) => app.launchState !== "available");
   const rememberedHomeApps = new Set<HomeAppId>(hasExplicitOnboardingAppSelection
     ? selectedOnboardingApps
     : [
         ...selectedOnboardingApps,
         ...launchableHomeApps.filter((app) => app.linked || savedNativeApps.has(app.id as NativeAppId)).map((app) => app.id),
       ]);
-  const homeApps = hasExplicitOnboardingAppSelection || rememberedHomeApps.size
-    ? launchableHomeApps.filter((app) => rememberedHomeApps.has(app.id))
-    : launchableHomeApps;
+  const selectedHomeApps = hasExplicitOnboardingAppSelection || rememberedHomeApps.size
+    ? launchableHomeApps.filter((app) => app.launchState === "available" && rememberedHomeApps.has(app.id))
+    : launchableHomeApps.filter((app) => app.launchState === "available");
+  const homeApps = [...selectedHomeApps, ...roadmapHomeApps.filter((app) => !selectedHomeApps.some((selected) => selected.id === app.id))];
   const modules = [
     { id: "osl-chats", name: "OSL Chat", available: true },
     { id: "osl-mail", name: "OSL Mail", available: true },
@@ -4049,7 +4205,9 @@ function workspaceContent(): string {
     if (!app) return "";
     const state = app.linked ? "OSL profile ready" : app.launchState === "available" ? "Set up" : "Coming later";
     const pending = appLaunchPendingId === app.id;
-    return `<article class="app-tile ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}"><button id="home-app-${app.id}" type="button" data-home-app="${app.id}" aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}" ${appLaunchPendingId ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : ""}</span></button>${controls}</article>`;
+    const available = app.launchState === "available";
+    const disabled = !available || Boolean(appLaunchPendingId);
+    return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}" ${disabled ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : "<small>Coming soon</small>"}</span></button>${controls}</article>`;
   };
   const socialIds = new Set(homeApps.filter((app) => app.provider === null).map((app) => app.id));
   const emailIds = new Set(homeApps.filter((app) => app.provider !== null).map((app) => app.id));
@@ -4199,7 +4357,8 @@ export function publicPostGuardCarrierPreviewMarkup(platform = "Public platforms
 export function inboxDestinationContent(): string {
   const verifiedPeople = hubPeople.filter(peerIsVerified);
   const requests = hubPeople.filter((person) => !person.safetyNumberVerified || person.pendingKeyChange);
-  const connectedApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch" && app.linked);
+  const connectedApps = homeAppsFromServices(services)
+    .filter((app) => app.visibility === "launch" && app.launchState === "available" && app.linked);
   const connectedRows = connectedApps.length
     ? connectedApps.map((app) => {
         const scope = app.provider
@@ -4230,13 +4389,30 @@ export function inboxDestinationContent(): string {
     }
     return `<article class="inbox-surface-card" data-inbox-osl-surface="${id}"><strong>${label}</strong><small>${protection}</small><p>${detail}</p></article>`;
   }).join("");
+  const filterTabs = ([
+    ["all", "All"],
+    ["osl", "OSL"],
+    ["connected", "Connected"],
+    ["requests", "Requests"],
+  ] as const).map(([filter, label]) => `<button type="button" data-inbox-filter="${filter}" aria-pressed="${inboxFilter === filter}">${label}</button>`).join("");
+  const visiblePanels = [
+    inboxFilter === "all" || inboxFilter === "osl"
+      ? `<section class="inbox-panel" aria-labelledby="inbox-osl-heading"><h2 id="inbox-osl-heading">OSL</h2><div class="inbox-surface-grid">${surfaceCards}</div>${chatRows}</section>`
+      : "",
+    inboxFilter === "all" || inboxFilter === "connected"
+      ? `<section class="inbox-panel" aria-labelledby="inbox-connected-heading"><h2 id="inbox-connected-heading">Connected</h2>${connectedRows}</section>`
+      : "",
+    inboxFilter === "all" || inboxFilter === "requests"
+      ? `<section class="inbox-panel" aria-labelledby="inbox-requests-heading"><h2 id="inbox-requests-heading">Requests</h2>${requestRows}</section>`
+      : "",
+  ].join("");
   // `id="route-heading"` sat on this <main>, not on its heading, so the landmark
   // had no accessible name and the post-navigation focus move (see the
   // `#route-heading` focus call in the render path) landed on an unnamed region:
   // a screen reader announced nothing at all on arriving at Inbox. Every other
   // destination puts the id on its own <h1> and names the landmark with
   // aria-labelledby; Inbox now matches.
-  return `<main class="content-viewport inbox-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Inbox</p><h1 id="route-heading" tabindex="-1">Conversations</h1><p>Optional views for OSL messages and connected accounts. OSL shows only supported conversations and refuses protected send when the conversation cannot be verified.</p></div><button class="button primary" data-inbox-start-private type="button">Start a private conversation</button></header><nav class="inbox-filter-tabs" aria-label="Inbox filters">${["All", "OSL", "Connected", "Requests"].map((label, index) => `<button type="button" data-inbox-filter="${label.toLowerCase()}" ${index === 0 ? 'aria-pressed="true"' : ""}>${label}</button>`).join("")}</nav><section class="inbox-grid"><section class="inbox-panel" aria-labelledby="inbox-osl-heading"><h2 id="inbox-osl-heading">OSL</h2><div class="inbox-surface-grid">${surfaceCards}</div>${chatRows}</section><section class="inbox-panel" aria-labelledby="inbox-connected-heading"><h2 id="inbox-connected-heading">Connected</h2>${connectedRows}</section><section class="inbox-panel" aria-labelledby="inbox-requests-heading"><h2 id="inbox-requests-heading">Requests</h2>${requestRows}</section></section>${publicPostGuardCarrierPreviewMarkup("Public platforms")}</main>`;
+  return `<main class="content-viewport inbox-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Inbox</p><h1 id="route-heading" tabindex="-1">Conversations</h1><p>Optional views for OSL messages and connected accounts. OSL shows only supported conversations and refuses protected send when the conversation cannot be verified.</p></div><button class="button primary" data-inbox-start-private type="button">Start a private conversation</button></header><nav class="inbox-filter-tabs" aria-label="Inbox filters">${filterTabs}</nav><section class="inbox-grid">${visiblePanels}</section>${publicPostGuardCarrierPreviewMarkup("Public platforms")}</main>`;
 }
 
 export interface ActivityPrimaryActionPlan {
@@ -4694,11 +4870,11 @@ function whitelistRosterPersonMarkup(person: HubPerson, activePersonId: string |
   const hiddenScopeCount = Math.max(0, person.whitelistCount - visibleScopes.length);
   const scopeRows = visibleScopes.map((scope) => {
     const label = friendScopeLabel(scope);
-    return `<div class="whitelist-roster-scope"><span class="friend-scope">${escapeHtml(label)}${scope.userSpecific ? ` <small>only this person</small>` : ""}</span><div class="discord-qa-whitelist" role="group" aria-label="Trust for ${escapeHtml(label)}"><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-add="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}" aria-label="Approve ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>+${inDomTooltipMarkup("Already approved")}</button><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}" aria-label="Revoke ${escapeHtml(label)} for ${escapeHtml(nickname)}" ${!isActive || busy ? "disabled" : ""}>−${inDomTooltipMarkup(isActive ? "Revoke this chat now" : "Open this person's protected chat to revoke")}</button></div></div>`;
+    return `<div class="whitelist-roster-scope"><span class="friend-scope">${escapeHtml(label)}${scope.userSpecific ? ` <small>only this person</small>` : ""}</span><div class="discord-qa-whitelist" role="group" aria-label="Trust for ${escapeHtml(label)}"><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}" aria-label="Approve ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>+${inDomTooltipMarkup("Already approved")}</button><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}" aria-label="Revoke ${escapeHtml(label)} for ${escapeHtml(nickname)}" ${!isActive || busy ? "disabled" : ""}>−${inDomTooltipMarkup(isActive ? "Revoke this chat now" : "Open this person's protected chat to revoke")}</button></div></div>`;
   }).join("");
   const narrowedRows = person.reachNarrowedScopes.slice(0, whitelistRosterScopeLimit).map((key) => {
     const label = narrowedScopeLabel(key);
-    return `<div class="whitelist-roster-scope narrowed"><span class="friend-scope narrowed">${escapeHtml(label)} <small>taken back</small></span><div class="discord-qa-whitelist" role="group" aria-label="Trust for ${escapeHtml(label)}"><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-add="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(key)}" aria-label="Approve ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>+${inDomTooltipMarkup("Approve this chat from inside it")}</button><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(key)}" aria-label="Revoke ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>−${inDomTooltipMarkup("Not approved")}</button></div></div>`;
+    return `<div class="whitelist-roster-scope narrowed"><span class="friend-scope narrowed">${escapeHtml(label)} <small>taken back</small></span><div class="discord-qa-whitelist" role="group" aria-label="Trust for ${escapeHtml(label)}"><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-key="${escapeHtml(key)}" aria-label="Approve ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>+${inDomTooltipMarkup("Approve this chat from inside it")}</button><button class="in-dom-tooltip-anchor" type="button" data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(key)}" aria-label="Revoke ${escapeHtml(label)} for ${escapeHtml(nickname)}" disabled>−${inDomTooltipMarkup("Not approved")}</button></div></div>`;
   }).join("");
   const scopes = scopeRows || `<span class="friend-none">No chats approved</span>`;
   const truncated = hiddenScopeCount > 0 || person.whitelistedScopesTruncated
@@ -4860,9 +5036,6 @@ function serviceContent(): string {
   if (activeDefaultBrowserCompanion) return `<main class="content-viewport host-viewport native-host-open" id="route-heading" tabindex="-1" aria-label="${name} is open in your default-browser companion"><span class="sr-only">${name} is open in an app-style normal-profile browser window. It is not capture-protected or shortcut-locked by OSL.</span></main>`;
   if (activeEmbeddedHost) return `<main class="content-viewport host-viewport host-open" id="route-heading" tabindex="-1" aria-label="${name} is open inside OSL"><div class="loading-host" aria-hidden="true"><span class="host-skeleton logo"></span><span class="host-skeleton title"></span></div></main>`;
   if (serviceAccountPickerOpen) return serviceAccountPickerContent();
-  if (activeService && activeHomeAppId && ["telegram", "signal", "whatsapp"].includes(activeHomeAppId) && activeNativeApp()?.availability === "installed") {
-    return serviceGuideContent(activeService, 0);
-  }
   return `<main class="content-viewport native-app-page" id="route-heading" tabindex="-1"><section class="native-app-card"><span class="service-icon large">${activeService ? serviceLogo(activeService.id) : ""}</span><h1>${name}</h1><p>Open a separate OSL profile. Your normal app stays open.</p>${mailScope}<button class="button primary native-app-action" id="embedded-service-setup" ${nativeActionBusy ? "disabled" : ""}>${nativeActionBusy ? "Opening…" : `Open ${name}`}</button><div class="native-app-secondary"><button class="text-back" id="native-app-back">← Apps</button><button class="text-button" id="burn-button" data-open-burn="app">Burn…</button></div></section></main>`;
 }
 
@@ -4889,20 +5062,14 @@ function serviceGuideContent(service: LinkedService, step: ServiceGuideStep): st
   const installedAction = nativeApp?.availability === "installable"
       ? `<button class="button" data-background-install="${nativeApp.id}" ${backgroundInstallIds.has(nativeApp.id) ? "disabled" : ""}>${backgroundInstallIds.has(nativeApp.id) ? "Installing…" : "Background install"}</button>`
       : "";
-  const directNativeAccountChoice = activeHomeAppId !== null && ["discord", "telegram", "signal", "whatsapp", "outlook"].includes(activeHomeAppId);
+  const directNativeAccountChoice = activeHomeAppId !== null && supportedNativeAppIds.has(activeHomeAppId as NativeAppId);
   const directBrowserAccountChoice = defaultBrowserCompanionEligible(activeHomeAppId) && selectedBrowserHasImportReceipt();
   const selectedApp = homeAppsFromServices(services).find((app) => app.id === activeHomeAppId);
-  const sessionChoices = activeHomeAppId === "discord"
+  const sessionChoices = directNativeAccountChoice && activeHomeAppId === "discord"
     ? discordSessionModeChoices()
-    : activeHomeAppId === "telegram"
-      ? telegramSessionModeChoices()
-      : activeHomeAppId === "signal"
-        ? signalSessionModeChoices()
-      : activeHomeAppId === "whatsapp"
-        ? whatsappSessionModeChoices()
-      : activeHomeAppId === "outlook"
-        ? outlookSessionModeChoices()
-      : browserSessionModeChoices();
+      : directBrowserAccountChoice
+        ? browserSessionModeChoices()
+      : "";
   const openAction = directNativeAccountChoice || directBrowserAccountChoice
     ? ""
     : selectedApp?.launchState === "available"
@@ -4976,7 +5143,22 @@ export function privacyDestinationContent(): string {
   const protectionReview = privacyProtectionReviewOpen
     ? `<section class="privacy-review-card" data-privacy-protection-review><div><span class="privacy-local-mark">PROTECTION REVIEW</span><h2>Review or change protection</h2><p>Check the Balanced policy, app exceptions, cleanup limits, and local warning choices before OSL changes anything.</p></div><button class="button compact" data-route="settings" data-settings="scrub" type="button">Open detailed review</button></section>`
     : "";
-  return `<main class="content-viewport privacy-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action data-route="${primary.route}" data-review-target="${primary.reviewTarget}" type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">Balanced</h2><p>Basic account health plus local before-send warnings, attachment cleaning, monthly cleanup review, and private OSL suggestions for verified contacts.</p></div><button class="button compact" type="button" disabled>Change preset</button></section><section class="privacy-policy-stack" id="privacy-protection-review" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from Balanced until you make an exception.</p></div>${statusTag("Deletion off")}</header><p class="privacy-policy-path">Balanced preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be scanned, shown, previewed, confirmed, executed, and checked.</small></span>${statusTag("No auto delete")}</div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span>${statusTag("Limit shown")}</div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span>${statusTag(screenshotProtectionEnabled ? "Active" : "Unavailable")}</div></section></main>`;
+  const presetCopy: Record<ProtectionPreset, { title: string; detail: string }> = {
+    basic: {
+      title: "Basic",
+      detail: "Account health, email tracker blocking, attachment metadata warnings, and exposure alerts.",
+    },
+    balanced: {
+      title: "Balanced",
+      detail: "Basic account health plus local before-send warnings, attachment cleaning, monthly cleanup review, and private OSL suggestions for verified contacts.",
+    },
+    maximum: {
+      title: "Maximum",
+      detail: "Balanced protection plus stricter public-post checks, optional VPN-required actions, and OSL protection required for chosen contacts.",
+    },
+  };
+  const activePreset = presetCopy[protectionPreset];
+  return `<main class="content-viewport privacy-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Privacy</p><h1 id="route-heading" tabindex="-1">Privacy</h1><p>Review what OSL will do before it changes anything.</p></div><button class="button primary" data-privacy-primary-action data-route="${primary.route}" data-review-target="${primary.reviewTarget}" type="button">Review or change protection</button></header>${protectionReview}<section class="privacy-preset-panel" aria-labelledby="privacy-preset-title"><div><span class="privacy-local-mark">ACTIVE PRESET</span><h2 id="privacy-preset-title">${activePreset.title}</h2><p>${activePreset.detail}</p></div><button class="button compact" data-change-protection-preset type="button">Change preset</button></section><section class="privacy-policy-stack" id="privacy-protection-review" aria-labelledby="privacy-policy-title"><header><div><h2 id="privacy-policy-title">Global policy</h2><p>Inherited from ${activePreset.title} until you make an exception.</p></div>${statusTag("Deletion off")}</header><p class="privacy-policy-path">${activePreset.title} preset / app / account / conversation exception</p><div class="privacy-policy-grid">${policyCards}</div></section>${publicPostGuardCarrierPreviewMarkup()}<section class="privacy-review-card manual-scrub-card"><div><span class="privacy-local-mark">FREE · THIS DEVICE ONLY</span><h2>Recommended action</h2><h3>Review an export</h3><p>Choose a TXT, CSV, or JSON message export. OSL suggests items; you decide what to review. Nothing is deleted by this build.</p></div>${scanActions}</section>${scrubCategoryChooserMarkup(true)}${privacyScanResultsMarkup()}<section class="settings-list privacy-tools" aria-labelledby="privacy-tools-title"><header><h2 id="privacy-tools-title">Solo privacy tools</h2><p>Useful even when nobody else uses OSL.</p></header>${toolRows}</section><section class="settings-list privacy-limits" aria-labelledby="privacy-limits-title"><header><h2 id="privacy-limits-title">Proof and limits</h2><p>OSL refuses actions it cannot verify.</p></header><div class="setting-line"><span><strong>Cleanup</strong><small>${cleanupState}; every batch must be scanned, shown, previewed, confirmed, executed, and checked.</small></span>${statusTag("No auto delete")}</div><div class="setting-line"><span><strong>Service messages</strong><small>Apps, people, exports, backups, and opened copies may retain content.</small></span>${statusTag("Limit shown")}</div><div class="setting-line"><span><strong>Window protection</strong><small>Applied to OSL's own window when available. Cameras, malware, and modified recipients can still capture content.</small></span>${statusTag(screenshotProtectionEnabled ? "Active" : "Unavailable")}</div></section></main>`;
 }
 
 function massCleanupActionLabel(action: string): string {
@@ -5262,8 +5444,9 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 function sendingSettingsContent(): string {
-  const selectedMode: SendMode = setup.sendMode === "manual" ? "clipboard" : setup.sendMode;
+  const selectedMode: SendMode = setup.sendMode;
   const modes: Array<[SendMode, string, string]> = [
+    ["manual", "Manual", "Prepare only; you place and send"],
     ["clipboard", "Copy", "Never presses Send"],
     ["double", "Double Enter", "Experimental · two exact checks"],
     ["single", "Single Enter", "Advanced · highest risk"],
@@ -5277,11 +5460,11 @@ function sendingSettingsContent(): string {
   const consentRows = needsRiskAcceptance(selectedMode) && accounts.length
     ? `<div class="send-account-consents"><strong>Account approvals</strong>${accounts.map((account) => `<div><span>${escapeHtml(account.service)} · ${escapeHtml(account.account)}</span><small>${hasExperimentalSendConsent(selectedMode, account.serviceId, account.accountId) ? "Approved on this device" : "Will ask before first use"}</small></div>`).join("")}</div>`
     : "";
-  return `<details class="settings-disclosure sending-settings"><summary><span><strong>Sending</strong><small>${escapeHtml(formatSendMode(selectedMode))}</small></span></summary><div class="sending-settings-body"><div class="send-mode-list compact">${modes.map(([mode, label, detail]) => `<button class="send-mode-option ${selectedMode === mode ? "selected" : ""}" type="button" data-settings-send-mode="${mode}" aria-pressed="${selectedMode === mode}"><span><strong>${label}</strong></span><small>${detail}</small></button>`).join("")}</div>${needsRiskAcceptance(selectedMode) ? `<div class="warning send-settings-warning"><strong>Experimental</strong><p>OSL must recheck the exact app, account, chat, and composer. If proof is unavailable or changes, it copies instead and sends nothing.</p></div>` : `<p class="send-settings-truth">OSL encrypts and copies. You choose where and when to send.</p>`}${consentRows}${rnWirePolicySettingsMarkup(rnWirePolicyState(rnWirePolicyRequested))}</div></details>`;
+  return `<details class="settings-disclosure sending-settings"><summary><span><strong>Sending</strong><small>${escapeHtml(formatSendMode(selectedMode))}</small></span></summary><div class="sending-settings-body"><div class="send-mode-list compact">${modes.map(([mode, label, detail]) => `<button class="send-mode-option ${selectedMode === mode ? "selected" : ""}" type="button" data-settings-send-mode="${mode}" aria-pressed="${selectedMode === mode}"><span><strong>${label}</strong></span><small>${detail}</small></button>`).join("")}</div>${needsRiskAcceptance(selectedMode) ? `<div class="warning send-settings-warning"><strong>Experimental</strong><p>OSL must recheck the exact app, account, chat, and composer. If proof is unavailable or changes, it copies instead and sends nothing.</p></div>` : selectedMode === "manual" ? `<p class="send-settings-truth">OSL prepares the protected message. You place it and decide when to send.</p>` : `<p class="send-settings-truth">OSL encrypts and copies. You choose where and when to send.</p>`}${consentRows}${rnWirePolicySettingsMarkup(rnWirePolicyState(rnWirePolicyRequested))}</div></details>`;
 }
 
 async function changeSendingMode(mode: SendMode): Promise<void> {
-  if (!["clipboard", "double", "single"].includes(mode)) return;
+  if (!["manual", "clipboard", "double", "single"].includes(mode)) return;
   if (needsRiskAcceptance(mode)) {
     const accepted = window.confirm(`${formatSendMode(mode)} is experimental. Apps can change without warning. OSL will stop unless it can verify the exact app, account, chat, and composer, and each account will ask again before first use.`);
     if (!accepted) return;
@@ -6520,19 +6703,34 @@ async function startLocalProtectedContextForLabel(label: string): Promise<void> 
 
 async function prepareLocalProtectedDraft(event: SubmitEvent): Promise<void> {
   event.preventDefault();
-  const contextToken = localProtectedSheet.context?.contextToken;
   const draft = document.querySelector<HTMLTextAreaElement>("#local-protected-draft");
   const ttl = document.querySelector<HTMLSelectElement>("#local-protected-ttl");
   const viewOnce = document.querySelector<HTMLInputElement>("#local-protected-view-once");
   const plaintext = draft?.value ?? "";
   const ttlSeconds = Number(ttl?.value ?? 3_600);
+  await prepareLocalProtectedDraftFromValues(plaintext, ttlSeconds, viewOnce?.checked === true);
+}
+
+async function prepareLocalProtectedDraftFromValues(
+  plaintext: string,
+  ttlSeconds: number,
+  viewOnce: boolean,
+): Promise<void> {
+  const contextToken = localProtectedSheet.context?.contextToken;
   if (!contextToken || !plaintext.trim() || !isLocalTtlSeconds(ttlSeconds)) {
     localProtectedSheet.status = "Write a message first.";
     render();
     return;
   }
   const sendContext = localProtectedSheet.context;
-  if ((setup.sendMode === "double" || setup.sendMode === "single")
+  if (needsRiskAcceptance(setup.sendMode)
+    && (!setup.acceptedRisk || setup.acceptedRiskForMode !== setup.sendMode)) {
+    localProtectedSheet.draft = plaintext;
+    localProtectedSheet.status = `${formatSendMode(setup.sendMode)} requires experimental send risk acknowledgement before OSL prepares a fallback. Nothing was sent.`;
+    render();
+    return;
+  }
+  if (needsRiskAcceptance(setup.sendMode)
     && sendContext
     && !hasExperimentalSendConsent(setup.sendMode, sendContext.serviceId, sendContext.accountId)) {
     const accepted = window.confirm(`${formatSendMode(setup.sendMode)} is experimental for this account. OSL will send nothing unless it can verify the exact account, chat, and composer immediately before every action. Continue with safe Copy fallback?`);
@@ -6546,7 +6744,7 @@ async function prepareLocalProtectedDraft(event: SubmitEvent): Promise<void> {
   }
   localProtectedSheet.busy = true;
   localProtectedSheet.draft = plaintext;
-  localProtectedSheet.viewOnce = viewOnce?.checked === true;
+  localProtectedSheet.viewOnce = viewOnce;
   localProtectedSheet.status = "";
   render();
   const policy = await saveActiveContextSecurity(contextToken, ttlSeconds, localProtectedSheet.decryptDisplayEnabled);
@@ -6565,9 +6763,14 @@ async function prepareLocalProtectedDraft(event: SubmitEvent): Promise<void> {
     return;
   }
   localProtectedSheet.capsule = prepared.capsule;
+  if (setup.sendMode === "manual") {
+    localProtectedSheet.status = "Encrypted and ready for manual placement. Clipboard was not changed.";
+    render();
+    return;
+  }
   try {
     await navigator.clipboard.writeText(prepared.capsule);
-    localProtectedSheet.status = setup.sendMode === "double" || setup.sendMode === "single"
+    localProtectedSheet.status = needsRiskAcceptance(setup.sendMode)
       ? "Exact composer verification is unavailable here. Copied safely; nothing was sent."
       : "Encrypted and copied. OSL did not press Send.";
   } catch {
@@ -6820,7 +7023,11 @@ function bindWorkspace(): void {
     serviceAccountPickerOpen = false;
     render();
   }));
-  document.querySelectorAll<HTMLButtonElement>("[data-service]").forEach((button) => button.addEventListener("click", () => { const service = services.find((item) => item.id === button.dataset.service); if (service) openServiceRoute(service, null); }));
+  // A `[data-service]` click binding used to sit here. Nothing in the repo emits
+  // a bare `data-service` attribute (`data-service-kind`, `data-service-account`
+  // and `data-service-current-session` are different attributes and have their
+  // own handlers), so the selector matched no element and `openServiceRoute` is
+  // reached through the `[data-home-app]` launch path instead.
   document.querySelectorAll<HTMLButtonElement>("[data-home-app]").forEach((button) => button.addEventListener("click", () => {
     if (appLaunchPendingId) return;
     const appId = button.dataset.homeApp as HomeAppId;
@@ -6843,12 +7050,21 @@ function bindWorkspace(): void {
     void changeSendingMode(button.dataset.settingsSendMode as SendMode);
   }));
   document.querySelector<HTMLButtonElement>("[data-inbox-start-private]")?.addEventListener("click", () => inboxPrimaryAction());
+  document.querySelectorAll<HTMLButtonElement>("[data-inbox-filter]").forEach((button) => button.addEventListener("click", () => {
+    inboxFilter = parseInboxFilter(button.dataset.inboxFilter);
+    render();
+  }));
   document.querySelector<HTMLButtonElement>("#osl-mail-retry")?.addEventListener("click", () => void refreshOslMail());
   document.querySelector<HTMLButtonElement>("#osl-mail-provision")?.addEventListener("click", () => void provisionOslMailFromProfile());
   document.querySelectorAll<HTMLButtonElement>("[data-mail-pane]").forEach((button) => button.addEventListener("click", () => {
     oslMailPane = button.dataset.mailPane as OslMailPane;
     render();
   }));
+  document.querySelector<HTMLInputElement>("#osl-mail-notifications")?.addEventListener("change", (event) => {
+    oslMailNotifications = (event.currentTarget as HTMLInputElement).checked;
+    localStorage.setItem(oslMailNotificationsStorageKey, String(oslMailNotifications));
+    render();
+  });
   document.querySelectorAll<HTMLButtonElement>("[data-mail-thread]").forEach((button) => button.addEventListener("click", async () => {
     const threadId = button.dataset.mailThread ?? "";
     oslMailActiveThread = await retrieveOslMailThread(threadId);
@@ -6858,7 +7074,7 @@ function bindWorkspace(): void {
   document.querySelector<HTMLButtonElement>("#osl-mail-ack")?.addEventListener("click", async () => {
     if (!oslMailActiveThread) return;
     oslMailDeleteReceipt = await acknowledgeOslMailRetrieval(oslMailActiveThread.retrievalId, oslMailActiveThread.messages.map((message) => message.messageId));
-    oslMailError = oslMailDeleteReceipt ? null : "Server deletion was not confirmed";
+    oslMailError = oslMailDeleteReceipt ? null : "Retrieval acknowledged locally; server deletion was not requested or confirmed by this build";
     render();
   });
   document.querySelector<HTMLFormElement>("#osl-mail-compose-form")?.addEventListener("submit", (event) => {
@@ -6875,12 +7091,18 @@ function bindWorkspace(): void {
     render();
   });
   document.querySelector<HTMLButtonElement>("[data-connections-primary-action]")?.addEventListener("click", () => connectionsPrimaryAction());
+  document.querySelector<HTMLButtonElement>("#install-mullvad-from-connections")?.addEventListener("click", () => void runMullvadSetupAction("install", "connections"));
   document.querySelector<HTMLButtonElement>("[data-activity-primary-action]")?.addEventListener("click", () => {
     route = "activity";
     render();
   });
   document.querySelector<HTMLButtonElement>("[data-privacy-primary-action]")?.addEventListener("click", () => {
     route = "privacy";
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("[data-change-protection-preset]")?.addEventListener("click", () => {
+    route = "onboarding";
+    onboardingRoute = "privacy";
     render();
   });
   document.querySelector<HTMLInputElement>("#rn-wire-policy-toggle")?.addEventListener("change", (event) => {
@@ -7121,7 +7343,7 @@ async function openHomeAppFromLauncher(appId: HomeAppId, intent: number): Promis
     if (refreshed) services = refreshed;
     const app = homeAppsFromServices(services).find((candidate) => candidate.id === appId);
     const service = app?.serviceId ? services.find((candidate) => candidate.id === app.serviceId) : null;
-    if (!app || !service) {
+    if (!app || !service || app.launchState !== "available") {
       showToast("This app is unavailable right now");
       return;
     }
@@ -8551,9 +8773,9 @@ function usableBootCore(value: CoreIntegration): boolean {
 }
 
 function startReadyWorkspaceLoads(): void {
-  void setScreenshotProtection(windowCaptureEnabled).then((applied) => {
-    screenshotProtectionEnabled = windowCaptureEnabled ? applied : false;
-    if (applied) return;
+  void setScreenshotProtection(windowCaptureEnabled).then(() => {
+    screenshotProtectionEnabled = windowCaptureEnabled && captureProtectionEnforced();
+    if (screenshotProtectionEnabled) return;
     if (!windowCaptureEnabled) return;
     if (route === "settings" && settingsSection === "scrub") render();
     showToast("Windows capture resistance is unavailable on this Windows session");
@@ -9339,6 +9561,9 @@ type OslHubUiTestStatePatch = {
   notificationPreviewContent?: boolean;
   appNotifications?: AppNotification[];
   mullvadAvailability?: MullvadStatus["availability"];
+  protectionPreset?: ProtectionPreset;
+  inboxFilter?: InboxFilter;
+  oslMailNotifications?: boolean;
   licenseAccess?: HubLicenseState["access"];
   autoScrubFleetStatus?: AutoScrubFleetStatus | null;
   hubIdentities?: HubIdentitySlot[];
@@ -9397,6 +9622,10 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   privacyProtectionReviewOpen = false;
   activityAttentionReviewOpen = false;
   peoplePrimaryActionFocus = null;
+  protectionPreset = patch.protectionPreset ?? loadProtectionPreset();
+  inboxFilter = patch.inboxFilter ?? "all";
+  resetAccountRecovery();
+  oslMailNotifications = patch.oslMailNotifications ?? (localStorage.getItem(oslMailNotificationsStorageKey) !== "false");
   services = patch.services ?? [];
   linkedServicesChecked = patch.servicesChecked ?? patch.services !== undefined;
   hubPeople = (patch.hubPeople ?? []).map(testHubPerson);
@@ -9439,6 +9668,12 @@ export const __oslHubUiTest = {
   renderRouteShell(destination: Route): string {
     route = destination;
     return destination === "onboarding" ? onboardingShellMarkup() : workspaceShellMarkup();
+  },
+  bindOnboarding(): void {
+    bindOnboarding();
+  },
+  bindWorkspace(): void {
+    bindWorkspace();
   },
   /** Render the real service header without needing a companion window. */
   /**
@@ -9494,6 +9729,16 @@ export const __oslHubUiTest = {
   startLocalProtection(label: string): Promise<void> {
     return startLocalProtectedContextForLabel(label);
   },
+  prepareLocalProtectedDraft(
+    plaintext: string,
+    options: { ttlSeconds?: number; viewOnce?: boolean } = {},
+  ): Promise<void> {
+    return prepareLocalProtectedDraftFromValues(
+      plaintext,
+      options.ttlSeconds ?? localProtectedSheet.ttlSeconds,
+      options.viewOnce ?? localProtectedSheet.viewOnce,
+    );
+  },
   renderProtectedSheets(): string {
     return workspaceProtectedSheetMarkup();
   },
@@ -9503,6 +9748,25 @@ export const __oslHubUiTest = {
     route = "onboarding";
     onboardingRoute = onboardingRouteForBuild(destination);
     return onboardingContent();
+  },
+  /**
+   * Supply the account-recovery back end. The shipping build has none (no Tauri
+   * command turns a password recovery phrase into a recovery token), so tests
+   * inject one to exercise the flow the two forms are now bound to.
+   */
+  setAccountRecoveryDependencies(
+    recovery: AccountRecoveryDependencies,
+    migration?: RecoveryMigrationDependencies,
+  ): void {
+    accountRecoveryDependencies = recovery;
+    if (migration) recoveryMigrationDependencies = migration;
+  },
+  accountRecoverySnapshot(): { step: AccountRecoveryFlow["step"]; error: string | null; migration: LegacyRecoveryMigration["kind"] | null } {
+    return {
+      step: accountRecoveryFlow.step,
+      error: accountRecoveryFlow.error,
+      migration: legacyRecoveryMigration?.kind ?? null,
+    };
   },
   /** Seed detected browser areas before rendering the consent route in UI tests. */
   setBrowserProfilesForTest(profiles: BrowserProfileDescriptor[]): void {
@@ -9521,6 +9785,9 @@ export const __oslHubUiTest = {
   },
   persistOslChatNotifications(): void {
     persistOslChatNotifications();
+  },
+  handleUnhandledRejection(event: PromiseRejectionEvent): void {
+    handleUnhandledRejection(event);
   },
   /** Run one OSL Chat delivery tick, exactly as the cadence would. */
   deliverOslChats(): Promise<void> {
@@ -9548,6 +9815,10 @@ export const __oslHubUiTest = {
     privacyProtectionReviewOpen: boolean;
     activityAttentionReviewOpen: boolean;
     peoplePrimaryActionFocus: PeoplePrimaryActionFocus | null;
+    protectionPreset: ProtectionPreset;
+    inboxFilter: InboxFilter;
+    oslMailNotifications: boolean;
+    mullvadSetupNotice: string;
     ownedConfirmationKind: OwnedConfirmation["kind"] | null;
     ownedConfirmationPersonId: string | null;
   } {
@@ -9559,6 +9830,10 @@ export const __oslHubUiTest = {
       privacyProtectionReviewOpen,
       activityAttentionReviewOpen,
       peoplePrimaryActionFocus,
+      protectionPreset,
+      inboxFilter,
+      oslMailNotifications,
+      mullvadSetupNotice,
       ownedConfirmationKind: ownedConfirmation?.kind ?? null,
       ownedConfirmationPersonId: ownedConfirmation?.kind === "verifyFriend" || ownedConfirmation?.kind === "removeFriend"
         ? ownedConfirmation.personId
@@ -9599,7 +9874,7 @@ if (!runningUnderVitest) {
     }
   });
   window.addEventListener("error", (event) => { event.preventDefault(); containBackgroundFailure(); });
-  window.addEventListener("unhandledrejection", (event) => { event.preventDefault(); containBackgroundFailure(); });
+  window.addEventListener(unhandledRejectionEventType, handleUnhandledRejection);
   void bootstrap();
   scheduleOslChatBackgroundSync(1_000);
 }

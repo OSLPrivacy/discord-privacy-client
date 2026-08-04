@@ -32,18 +32,14 @@
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use crypto::pointer::{
-    derive_capabilities, derive_fetch_authority, derive_manage_capability, Pointer,
-    CAPABILITY_BYTES, POINTER_BYTES,
-};
+use crypto::pointer::{derive_manage_capability, CAPABILITY_BYTES, POINTER_BYTES};
 use hkdf::Hkdf;
 use sha2::Sha256;
 
-use crate::cipher_store_client::{
-    BlobCapabilities, BlobObjectClass, CipherStoreClient, CipherStoreError,
-};
+// BRIDGE (B0-01): `BlobCapabilities` / `BlobObjectClass` left with
+// `upload_pointer` until Phase 2 calls it again.
+use crate::cipher_store_client::{CipherStoreClient, CipherStoreError, FETCH_TOKEN_BYTES};
 use crate::scope::ScopeInput;
-use crate::transport;
 use crate::transport_padding::{frame_padded_transport_object, unframe_padded_transport_object};
 
 const DPC0_PREFIX: &str = "DPC0::";
@@ -56,6 +52,109 @@ pub const DETECT_KEY_HKDF_INFO: &[u8] = b"osl/detect/v1";
 /// prose carrier to the 160-bit seed for exactly this reason, so a drift
 /// between the two constants must not compile.
 const _: () = assert!(stego::TOKEN_ID_BYTES == POINTER_BYTES);
+
+// ---------------------------------------------------------------------------
+// BRIDGE (B0-01) — a temporary carrier layout. NOT the destination protocol.
+// ---------------------------------------------------------------------------
+//
+// The Worker deployed at ciphers.oslprivacy.com still speaks the
+// pre-capability protocol: the *server* assigns the blob id, and a single
+// `x-osl-fetch-token` gates both GET and DELETE. The capability Worker in
+// `cipher-store-cf/` — client-derived id, three separate capability digests,
+// receipts — has never been deployed. Verified live on 2026-08-03:
+// `PUT /v1/blob` (the repo's upload route, `cipher-store-cf/src/index.ts:186`)
+// answers 404, and that route additionally gates on `verifyStorageGrant`
+// (`src/index.ts:189`), which returns 503 for as long as
+// `LINK_GRANT_PUBKEY_B64` is unset (`src/lib/storage-grant.ts:43-52`).
+//
+// So the send path speaks what production implements, using this layout:
+//
+//     carrier[20] = server_blob_id[8] ‖ seed[12]
+//     fetch_token = HKDF-SHA256(ikm = seed, info = BRIDGE_FETCH_INFO)[..16]
+//
+// The sender picks `seed` *before* uploading, because the token has to ride in
+// the upload request's own header, and learns `server_blob_id` only from the
+// 201 response. That ordering is the whole reason the id cannot be derived
+// from the pointer the way `derive_fetch_authority` derives it — under this
+// protocol the client does not choose the id.
+//
+// WHAT THE BRIDGE GIVES UP, AND WHAT PHASE 2 RESTORES:
+//
+//   * Capability separation. The deployed Worker's DELETE accepts the same
+//     `x-osl-fetch-token` as GET, so on this path a recipient who can read can
+//     also destroy. The destination splits `fetch_cap` (derived from the
+//     pointer, so the recipient has it) from `manage_cap` (derived from the
+//     sender's send key, so the recipient cannot have it) precisely to make
+//     recipient-side deletion impossible. That property is the point of the
+//     capability design and it MUST come back — see Phase 2 in
+//     `plan-test/tasklogs/B0-01.md`.
+//   * Receipts. `POST /v1/blob/:id/ack` does not exist in production (404).
+//   * Burn. `prose_token_burn_id` presents `x-osl-manage-cap`, which the
+//     deployed Worker rejects with 401. Burn is already broken against
+//     production today; the bridge neither regresses nor repairs it.
+//
+// Nothing in this section should outlive the capability Worker's deployment.
+
+/// Domain separator for the bridge's carrier-derived fetch token. Distinct
+/// from every pointer-capability separator so a bridge token can never be
+/// mistaken for, or collide with, a real capability.
+const BRIDGE_FETCH_INFO: &[u8] = b"osl/bridge/b0-01/fetch-token/v1";
+
+/// Width of the id the deployed Worker assigns: 8 bytes, rendered as the
+/// 16 hex chars `CipherStoreClient::upload` validates.
+const BRIDGE_ID_BYTES: usize = 8;
+
+/// Whatever the id leaves over in the carrier becomes secret seed material.
+/// 96 bits, freshly drawn per message, and it never crosses the network —
+/// only its HKDF output does.
+const BRIDGE_SEED_BYTES: usize = stego::TOKEN_ID_BYTES - BRIDGE_ID_BYTES;
+
+/// The bridge's read capability, derived from carrier material alone so the
+/// receiver needs no key material and no roundtrip — the same property the
+/// pointer path has, at 96 rather than 160 bits of input entropy.
+fn bridge_fetch_token(seed: &[u8; BRIDGE_SEED_BYTES]) -> [u8; FETCH_TOKEN_BYTES] {
+    let hk = Hkdf::<Sha256>::new(None, seed);
+    let mut out = [0u8; FETCH_TOKEN_BYTES];
+    hk.expand(BRIDGE_FETCH_INFO, &mut out)
+        .expect("HKDF expand to 16 bytes is infallible");
+    out
+}
+
+/// Pack the server's id and our seed into the fixed-width carrier payload.
+fn bridge_pack(
+    id: &[u8; BRIDGE_ID_BYTES],
+    seed: &[u8; BRIDGE_SEED_BYTES],
+) -> [u8; stego::TOKEN_ID_BYTES] {
+    let mut carrier = [0u8; stego::TOKEN_ID_BYTES];
+    carrier[..BRIDGE_ID_BYTES].copy_from_slice(id);
+    carrier[BRIDGE_ID_BYTES..].copy_from_slice(seed);
+    carrier
+}
+
+/// Inverse of [`bridge_pack`]. Total width is pinned by the carrier, so this
+/// cannot fail — a carrier that decoded at all is exactly this wide.
+fn bridge_unpack(
+    carrier: &[u8; stego::TOKEN_ID_BYTES],
+) -> ([u8; BRIDGE_ID_BYTES], [u8; BRIDGE_SEED_BYTES]) {
+    let mut id = [0u8; BRIDGE_ID_BYTES];
+    let mut seed = [0u8; BRIDGE_SEED_BYTES];
+    id.copy_from_slice(&carrier[..BRIDGE_ID_BYTES]);
+    seed.copy_from_slice(&carrier[BRIDGE_ID_BYTES..]);
+    (id, seed)
+}
+
+/// Parse the 16-hex id the deployed Worker returns.
+fn bridge_id_from_hex(id_hex: &str) -> Result<[u8; BRIDGE_ID_BYTES], ProseTokenError> {
+    if id_hex.len() != BRIDGE_ID_BYTES * 2 || !id_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ProseTokenError::BadIdHex(id_hex.to_string()));
+    }
+    let mut out = [0u8; BRIDGE_ID_BYTES];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&id_hex[i * 2..i * 2 + 2], 16)
+            .map_err(|_| ProseTokenError::BadIdHex(id_hex.to_string()))?;
+    }
+    Ok(out)
+}
 
 /// Key material the sending layer holds, threaded to the pointer derivation.
 ///
@@ -304,44 +403,38 @@ pub fn prose_token_send_with_client(
     let object =
         frame_padded_transport_object(&cipher_bytes).ok_or(ProseTokenError::ObjectTooLarge)?;
 
-    // A fresh 160-bit seed per message. Two messages in one conversation share
-    // no store-visible value except the delivery tag, so the store cannot link
-    // them by id, capability digest or object key.
-    let pointer = transport::fresh_pointer();
-    let capabilities = derive_capabilities(
-        &pointer,
-        keys.message_key,
-        keys.send_key,
-        keys.conversation_key,
-    )?;
-    let blob_id_hex = hex_lower(&capabilities.blob_id);
+    // BRIDGE (B0-01). The destination code this replaced minted a 160-bit
+    // pointer, derived the fetch/ack/manage/delivery tuple from it with
+    // `derive_capabilities`, and uploaded under a client-chosen id via
+    // `upload_pointer`. Production implements none of that: `PUT /v1/blob`
+    // 404s and the capability headers are unread. Restoring that call is
+    // Phase 2's job and is a deploy plus a grant-minting client, not an edit
+    // here. Read the BRIDGE section above before changing anything below.
+    //
+    // `keys` stays in the signature because Phase 2 needs all three roots
+    // back; the bridge protocol simply has nowhere to put them, since the
+    // deployed Worker persists one token and no digests.
+    let _ = keys;
 
-    let uploaded = client.upload_pointer(
-        &object,
-        ttl_seconds,
-        &capabilities.blob_id,
-        BlobCapabilities {
-            fetch_cap: capabilities.fetch_cap,
-            ack_cap: capabilities.ack_cap,
-            manage_cap: capabilities.manage_cap,
-            delivery_tag: capabilities.delivery_tag,
-        },
-        // One fan-out copy per recipient: a receipt destroys this copy.
-        BlobObjectClass::SingleAck,
-    )?;
-    // The id is ours, not the server's. If the store answers with a different
-    // one, the object it kept is not the object the carrier points at, and the
-    // burn ledger would record an id no manage capability matches.
-    if uploaded.id_hex != blob_id_hex {
-        return Err(ProseTokenError::BlobIdMismatch);
-    }
+    // Fresh per message, so two messages in one conversation share no
+    // store-visible value and the store cannot link them by id or token.
+    let seed_bytes = crypto::random::random_bytes(BRIDGE_SEED_BYTES);
+    let seed: [u8; BRIDGE_SEED_BYTES] = seed_bytes
+        .try_into()
+        .expect("random seed length is fixed by BRIDGE_SEED_BYTES");
+    let fetch_token = bridge_fetch_token(&seed);
+
+    // The token must be chosen before the upload — it rides in the upload's
+    // own header — and the id is only knowable after it.
+    let uploaded = client.upload(&object, ttl_seconds, &fetch_token)?;
+    let id = bridge_id_from_hex(&uploaded.id_hex)?;
 
     let cipher = derive_scope_cipher(scope_input)?;
-    let cover_text = stego::encode_token(&cipher, detection_key, pointer.as_bytes());
+    let cover_text = stego::encode_token(&cipher, detection_key, &bridge_pack(&id, &seed));
 
     Ok(ProseTokenSendOutput {
         cover_text,
-        blob_id: blob_id_hex,
+        blob_id: uploaded.id_hex,
         expires_at: uploaded.expires_at,
     })
 }
@@ -388,19 +481,22 @@ pub fn prose_token_recv_classified(
     msg: &str,
 ) -> Result<ProseTokenRecv, ProseTokenError> {
     let cipher = derive_scope_cipher(scope_input)?;
-    let pointer = match stego::decode_token(&cipher, detection_key, msg) {
-        Some(seed) => Pointer::from_bytes(seed),
+    let carrier = match stego::decode_token(&cipher, detection_key, msg) {
+        Some(bytes) => bytes,
         None => return Ok(ProseTokenRecv::Missed(ProseTokenMiss::NoToken)),
     };
-    // The pointer is the whole of the receiver's authority: the id it must ask
-    // for and the capability that reads it, both from `P` and nothing else. No
-    // roundtrip, and no scope metadata anywhere in the derivation.
-    let authority = derive_fetch_authority(&pointer)?;
-    let id_hex = hex_lower(&authority.blob_id);
+    // BRIDGE (B0-01). The destination read the carrier as a pointer `P` and
+    // called `derive_fetch_authority` for both the id and the capability. The
+    // deployed Worker assigns ids itself, so the id has to be carried and the
+    // capability comes from the rest of the carrier. Still no roundtrip and
+    // still no scope metadata in the derivation — see the BRIDGE section above.
+    let (id, seed) = bridge_unpack(&carrier);
+    let id_hex = hex_lower(&id);
+    let fetch_token = bridge_fetch_token(&seed);
 
     let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir);
     let client = CipherStoreClient::new(base_url)?;
-    let object = match client.fetch(&id_hex, &authority.fetch_cap) {
+    let object = match client.fetch_legacy_token(&id_hex, &fetch_token) {
         Ok(b) => b,
         // The one line this split exists for. A clean 404 means the pointer was
         // real and its ciphertext is gone; it is NOT "this was never a token".
@@ -485,6 +581,12 @@ pub fn prose_token_burn_id_with_client(
 
 #[cfg(test)]
 mod tests {
+    // BRIDGE (B0-01): the pointer-capability tests below still pin the
+    // destination's authority split, which the bridge send path does not yet
+    // exercise. They are the standing proof that Phase 2 has something to
+    // return to, so they must keep passing.
+    use crate::transport;
+    use crypto::pointer::{derive_capabilities, derive_fetch_authority, Pointer};
     use super::*;
 
     /// The retired scope-derived capability key. It is no longer part of any
@@ -728,6 +830,69 @@ mod tests {
         assert_ne!(
             detector, delivery,
             "D-SEP requires independent HKDF outputs"
+        );
+    }
+}
+
+#[cfg(test)]
+mod b0_01_scope_isolation {
+    //! B0-01 finding: what actually isolates one conversation's cover text
+    //! from another's is the *detection key*, not the scope cipher.
+    //!
+    //! `crates/ipc/tests/prose_token_live.rs::cross_scope_does_not_decode`
+    //! asserts the opposite -- "different cipher permutation + different MAC
+    //! key" -- while holding the detection key constant across both scopes. It
+    //! passed only because the blob id it derived from the recovered carrier
+    //! had never been uploaded, so the store answered 404 and the client
+    //! folded that to `None`. The assertion was reading a storage miss as a
+    //! cryptographic refusal. These two tests pin the real behaviour so the
+    //! next reader does not have to rediscover it.
+
+    use super::*;
+    use crate::scope::{ScopeInput, ScopeKind};
+
+    fn scope(id: &str) -> ScopeInput {
+        ScopeInput { kind: ScopeKind::Dm, id: id.to_string(), server_id: None, channel_id: None }
+    }
+
+    /// The scope cipher permutes word choice, not payload bits: a cover text
+    /// encoded under one scope decodes to the identical carrier under another
+    /// when the detection key is shared. Not a leak in shipping use -- the
+    /// shipping caller derives the detection key from secret conversation
+    /// material, so two conversations never share one -- but it does mean the
+    /// scope label carries no isolation of its own, and nothing should be
+    /// built on the assumption that it does.
+    #[test]
+    fn scope_cipher_alone_does_not_isolate_the_carrier() {
+        let key = derive_detection_key(&[0x44; 32]).unwrap();
+        let a = derive_scope_cipher(&scope("scope-a-id")).unwrap();
+        let b = derive_scope_cipher(&scope("scope-b-id")).unwrap();
+        let carrier = [0x5Au8; stego::TOKEN_ID_BYTES];
+        let cover = stego::encode_token(&a, &key, &carrier);
+        assert_eq!(stego::decode_token(&a, &key, &cover), Some(carrier));
+        assert_eq!(
+            stego::decode_token(&b, &key, &cover),
+            Some(carrier),
+            "the scope cipher does not key the payload; only the detector does"
+        );
+    }
+
+    /// The property the live test meant to assert, stated against the value
+    /// that actually carries it. A distinct conversation secret yields a
+    /// distinct detector, and the cover text stops decoding entirely -- no
+    /// carrier, no id, and therefore no request to the store at all.
+    #[test]
+    fn a_distinct_detection_key_is_what_isolates() {
+        let mine = derive_detection_key(&[0x44; 32]).unwrap();
+        let theirs = derive_detection_key(&[0x77; 32]).unwrap();
+        let cipher = derive_scope_cipher(&scope("scope-a-id")).unwrap();
+        let carrier = [0x5Au8; stego::TOKEN_ID_BYTES];
+        let cover = stego::encode_token(&cipher, &mine, &carrier);
+        assert_eq!(stego::decode_token(&cipher, &mine, &cover), Some(carrier));
+        assert_eq!(
+            stego::decode_token(&cipher, &theirs, &cover),
+            None,
+            "a foreign conversation must not recover the carrier"
         );
     }
 }

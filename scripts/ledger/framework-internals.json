@@ -1,0 +1,25 @@
+{
+  "note": "Commands issued by code the FRAMEWORK injects, not by ours. Nothing in apps/osl-hub-ui mentions these strings, so a ledger built by grepping our own source scores the file green while the feature is silently dead. Each entry names the injected script, the exact line, and the condition under which it fires. `tauriVersion` is checked against apps/osl-hub/Cargo.lock on every run: if the pin moves, this file is stale by definition and the ledger fails until someone re-reads the new drag.js.",
+  "tauriVersion": "2.11.1",
+  "sourceRoot": "~/.cargo/registry/src/*/tauri-2.11.1/src",
+  "issuers": [
+    {
+      "command": "plugin:window|start_dragging",
+      "script": "tauri/src/window/scripts/drag.js:104",
+      "trigger": { "kind": "markup-contains", "needle": "data-tauri-drag-region" },
+      "why": "drag.js binds mousedown on any element carrying data-tauri-drag-region and invokes start_dragging on a single click."
+    },
+    {
+      "command": "plugin:window|internal_toggle_maximize",
+      "script": "tauri/src/window/scripts/drag.js:103",
+      "trigger": { "kind": "markup-contains", "needle": "data-tauri-drag-region" },
+      "why": "Same handler, e.detail === 2. This is a DIFFERENT command from toggle_maximize, which is what a hand-written title bar calls and what this app grants. drag.js does not handle the rejection, so an ungranted internal_toggle_maximize makes double-clicking the title bar do nothing at all, with no error anywhere. The first thing a Windows user tries on a custom title bar."
+    },
+    {
+      "command": "plugin:webview|internal_toggle_devtools",
+      "script": "tauri/src/webview/scripts/toggle-devtools.js:17",
+      "trigger": { "kind": "never", "reason": "Injected only in debug builds; the shipped release build does not carry it." },
+      "why": "Recorded so the next person does not have to re-derive whether it matters."
+    }
+  ]
+}

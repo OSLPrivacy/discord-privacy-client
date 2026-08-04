@@ -1,0 +1,345 @@
+$ node scripts/ledger/state.mjs
+LEDGER state -- persisted state writes vs behavioural reads, ledger 8 of 8
+  frontend production files scanned: 154
+  rust production files scanned: 213
+  persisted state entries found: 120
+  unresolved persisted write keys: 6
+  production SecureLocalStore instantiations: 0
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (37):
+    persisted-state-never-read (12):
+      - frontend-localStorage:firstRunPreset -- firstRunPreset is persisted in frontend-localStorage, but no scanned production read consumes it
+          apps/osl-hub-ui/src/preferences.ts:112
+      - frontend-localStorage:firstRunSendBehavior -- firstRunSendBehavior is persisted in frontend-localStorage, but no scanned production read consumes it
+          apps/osl-hub-ui/src/preferences.ts:113
+      - frontend-localStorage:onboardingResume -- onboardingResume is persisted in frontend-localStorage, but no scanned production read consumes it
+          apps/osl-hub-ui/src/main.ts:1134
+          apps/osl-hub-ui/src/main.ts:1145
+      - rust-preferences:forward_secrecy_mode -- forward_secrecy_mode is persisted in rust-preferences, but no scanned production read consumes it
+          apps/osl-hub/src/models.rs:51
+          apps/osl-hub/src/models.rs:67
+          apps/osl-hub/src/models.rs:88
+          apps/osl-hub/src/models.rs:99
+          apps/osl-hub/src/models.rs:99
+          apps/osl-hub/src/models.rs:371
+          ... 3 more
+      - rust-preferences:placement_mode -- placement_mode is persisted in rust-preferences, but no scanned production read consumes it
+          apps/osl-hub/src/models.rs:45
+          apps/osl-hub/src/models.rs:63
+          apps/osl-hub/src/models.rs:82
+          apps/osl-hub/src/models.rs:95
+          apps/osl-hub/src/models.rs:95
+          apps/osl-hub/src/models.rs:367
+          ... 3 more
+      - rust-preferences:show_plaintext_preview -- show_plaintext_preview is persisted in rust-preferences, but no scanned production read consumes it
+          apps/osl-hub/src/models.rs:46
+          apps/osl-hub/src/models.rs:64
+          apps/osl-hub/src/models.rs:83
+          apps/osl-hub/src/models.rs:96
+          apps/osl-hub/src/models.rs:96
+          apps/osl-hub/src/models.rs:368
+          ... 3 more
+      - rust-sql:attachments.chan_bi -- attachments.chan_bi is persisted in rust-sql, but no scanned production read consumes it
+          crates/store/src/lib.rs:1176
+          crates/store/src/lib.rs:1193
+          crates/store/src/lib.rs:1584
+          crates/store/src/lib.rs:1599
+      - rust-sql:message_device_acks.ack_kind -- message_device_acks.ack_kind is persisted in rust-sql, but no scanned production read consumes it
+          crates/store/src/schema.rs:1662
+      - rust-sql:message_device_acks.acknowledged_at -- message_device_acks.acknowledged_at is persisted in rust-sql, but no scanned production read consumes it
+          crates/store/src/schema.rs:1662
+      - rust-sql:message_device_acks.destruct_reason -- message_device_acks.destruct_reason is persisted in rust-sql, but no scanned production read consumes it
+          crates/store/src/schema.rs:1662
+      - rust-sql:message_device_acks.device_bi -- message_device_acks.device_bi is persisted in rust-sql, but no scanned production read consumes it
+          crates/store/src/schema.rs:1662
+      - rust-sql:message_device_acks.mid_bi -- message_device_acks.mid_bi is persisted in rust-sql, but no scanned production read consumes it
+          crates/store/src/schema.rs:1662
+    persisted-state-render-only (15):
+      - frontend-localStorage:accessibility -- accessibility is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/accessibility-preference.ts:43
+          apps/osl-hub-ui/src/accessibility-preference.ts:36
+      - frontend-localStorage:experimentalSendConsent -- experimentalSendConsent is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:763
+          apps/osl-hub-ui/src/main.ts:747
+      - frontend-localStorage:onboardingBranch -- onboardingBranch is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:1154
+          apps/osl-hub-ui/src/main.ts:732
+      - frontend-localStorage:osl-default-browser-companion-v1 -- osl-default-browser-companion-v1 is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:2178
+          apps/osl-hub-ui/src/main.ts:400
+      - frontend-localStorage:oslMailNotifications -- oslMailNotifications is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:6950
+          apps/osl-hub-ui/src/main.ts:472
+          apps/osl-hub-ui/src/main.ts:1252
+          apps/osl-hub-ui/src/main.ts:9512
+      - frontend-localStorage:protectionPreset -- protectionPreset is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:305
+          apps/osl-hub-ui/src/main.ts:301
+      - frontend-localStorage:rnWirePolicy -- rnWirePolicy is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:6995
+          apps/osl-hub-ui/src/main.ts:1253
+      - frontend-localStorage:scrubSignals -- scrubSignals is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:5523
+          apps/osl-hub-ui/src/main.ts:1259
+      - frontend-localStorage:serviceGuide -- serviceGuide is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:8516
+          apps/osl-hub-ui/src/main.ts:8490
+      - rust-preferences:acknowledge_experimental_send_risk -- acknowledge_experimental_send_risk is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub/src/models.rs:49
+          apps/osl-hub/src/models.rs:66
+          apps/osl-hub/src/models.rs:86
+          apps/osl-hub/src/models.rs:98
+          apps/osl-hub/src/models.rs:370
+          apps/osl-hub/src/preferences.rs:124
+          ... 4 more
+      - rust-preferences:onboarding_complete -- onboarding_complete is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub/src/models.rs:43
+          apps/osl-hub/src/models.rs:61
+          apps/osl-hub/src/models.rs:80
+          apps/osl-hub/src/models.rs:93
+          apps/osl-hub/src/models.rs:365
+          apps/osl-hub/src/preferences.rs:119
+          ... 7 more
+      - rust-preferences:send_mode -- send_mode is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub/src/models.rs:44
+          apps/osl-hub/src/models.rs:62
+          apps/osl-hub/src/models.rs:81
+          apps/osl-hub/src/models.rs:94
+          apps/osl-hub/src/models.rs:366
+          apps/osl-hub/src/preferences.rs:120
+          ... 3 more
+      - rust-sql:_meta.key -- _meta.key is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          crates/store/src/anchor.rs:468
+          crates/store/src/anchor.rs:473
+          crates/store/src/anchor.rs:549
+          crates/store/src/anchor.rs:858
+          crates/store/src/anchor.rs:1206
+          crates/store/src/anchor.rs:1254
+          ... 4 more
+      - rust-sql:attachments.burned -- attachments.burned is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          crates/store/src/lib.rs:452
+          crates/store/src/lib.rs:1176
+          crates/store/src/lib.rs:1193
+          crates/store/src/lib.rs:1584
+          crates/store/src/lib.rs:1599
+          crates/store/src/lib.rs:1792
+          ... 1 more
+      - rust-sql:messages.wrapped_key -- messages.wrapped_key is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          crates/store/src/lib.rs:434
+          crates/store/src/lib.rs:1900
+          crates/store/src/anchor.rs:626
+    secure-local-store-never-instantiated (4):
+      - frontend-secureLocalStore:osl-chat-muted-people-v1 -- oslChatMuted (osl-chat-muted-people-v1) is written through the SecureLocalStore hook, but production code never constructs the hook
+          apps/osl-hub-ui/src/main.ts:859
+          apps/osl-hub-ui/src/main.ts:939
+          apps/osl-hub-ui/src/main.ts:881
+      - frontend-secureLocalStore:osl-chat-notifications-v1 -- oslChatNotification (osl-chat-notifications-v1) is written through the SecureLocalStore hook, but production code never constructs the hook
+          apps/osl-hub-ui/src/main.ts:7771
+          apps/osl-hub-ui/src/main.ts:956
+          apps/osl-hub-ui/src/main.ts:948
+      - frontend-secureLocalStore:osl-chat-previews-visible-v1 -- oslChatPreview (osl-chat-previews-visible-v1) is written through the SecureLocalStore hook, but production code never constructs the hook
+          apps/osl-hub-ui/src/main.ts:855
+          apps/osl-hub-ui/src/main.ts:919
+          apps/osl-hub-ui/src/main.ts:880
+      - frontend-secureLocalStore:osl-chat-unread-v1 -- oslChatUnread (osl-chat-unread-v1) is written through the SecureLocalStore hook, but production code never constructs the hook
+          apps/osl-hub-ui/src/main.ts:7766
+          apps/osl-hub-ui/src/main.ts:929
+          apps/osl-hub-ui/src/main.ts:882
+    unresolved-persisted-state-key (6):
+      - unresolved-write:apps/osl-hub-ui/src/local-protected-sheet.ts:56 -- storage write key is not a literal or known string constant: key
+          apps/osl-hub-ui/src/local-protected-sheet.ts:56
+      - unresolved-write:apps/osl-hub-ui/src/main.ts:1084 -- storage write key is not a literal or known string constant: importsKey
+          apps/osl-hub-ui/src/main.ts:1084
+      - unresolved-write:apps/osl-hub-ui/src/main.ts:1085 -- storage write key is not a literal or known string constant: readyKey
+          apps/osl-hub-ui/src/main.ts:1085
+      - unresolved-write:apps/osl-hub-ui/src/main.ts:1298 -- storage write key is not a literal or known string constant: preferredKey
+          apps/osl-hub-ui/src/main.ts:1298
+      - unresolved-write:apps/osl-hub-ui/src/main.ts:1301 -- storage write key is not a literal or known string constant: importsKey
+          apps/osl-hub-ui/src/main.ts:1301
+      - unresolved-write:apps/osl-hub-ui/src/main.ts:1313 -- storage write key is not a literal or known string constant: pendingKey
+          apps/osl-hub-ui/src/main.ts:1313
+  RESULT: RED
+exit=1
+
+$ tmp=$(mktemp -d /tmp/osl-ledger-state.XXXXXX); rsync temp root; append render-only persisted-state mutant to apps/osl-hub-ui/src/main.ts
+$ node scripts/ledger/state.mjs --root=/tmp/osl-ledger-state.UkP3yN
+LEDGER state -- persisted state writes vs behavioural reads, ledger 8 of 8
+  frontend production files scanned: 154
+  rust production files scanned: 213
+  persisted state entries found: 121
+  unresolved persisted write keys: 6
+  production SecureLocalStore instantiations: 0
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (38):
+    persisted-state-never-read (12):
+      - frontend-localStorage:firstRunPreset -- firstRunPreset is persisted in frontend-localStorage, but no scanned production read consumes it
+          apps/osl-hub-ui/src/preferences.ts:112
+      - frontend-localStorage:firstRunSendBehavior -- firstRunSendBehavior is persisted in frontend-localStorage, but no scanned production read consumes it
+          apps/osl-hub-ui/src/preferences.ts:113
+      - frontend-localStorage:onboardingResume -- onboardingResume is persisted in frontend-localStorage, but no scanned production read consumes it
+          apps/osl-hub-ui/src/main.ts:1134
+          apps/osl-hub-ui/src/main.ts:1145
+      - rust-preferences:forward_secrecy_mode -- forward_secrecy_mode is persisted in rust-preferences, but no scanned production read consumes it
+          apps/osl-hub/src/models.rs:51
+          apps/osl-hub/src/models.rs:67
+          apps/osl-hub/src/models.rs:88
+          apps/osl-hub/src/models.rs:99
+          apps/osl-hub/src/models.rs:99
+          apps/osl-hub/src/models.rs:371
+          ... 3 more
+      - rust-preferences:placement_mode -- placement_mode is persisted in rust-preferences, but no scanned production read consumes it
+          apps/osl-hub/src/models.rs:45
+          apps/osl-hub/src/models.rs:63
+          apps/osl-hub/src/models.rs:82
+          apps/osl-hub/src/models.rs:95
+          apps/osl-hub/src/models.rs:95
+          apps/osl-hub/src/models.rs:367
+          ... 3 more
+      - rust-preferences:show_plaintext_preview -- show_plaintext_preview is persisted in rust-preferences, but no scanned production read consumes it
+          apps/osl-hub/src/models.rs:46
+          apps/osl-hub/src/models.rs:64
+          apps/osl-hub/src/models.rs:83
+          apps/osl-hub/src/models.rs:96
+          apps/osl-hub/src/models.rs:96
+          apps/osl-hub/src/models.rs:368
+          ... 3 more
+      - rust-sql:attachments.chan_bi -- attachments.chan_bi is persisted in rust-sql, but no scanned production read consumes it
+          crates/store/src/lib.rs:1176
+          crates/store/src/lib.rs:1193
+          crates/store/src/lib.rs:1584
+          crates/store/src/lib.rs:1599
+      - rust-sql:message_device_acks.ack_kind -- message_device_acks.ack_kind is persisted in rust-sql, but no scanned production read consumes it
+          crates/store/src/schema.rs:1662
+      - rust-sql:message_device_acks.acknowledged_at -- message_device_acks.acknowledged_at is persisted in rust-sql, but no scanned production read consumes it
+          crates/store/src/schema.rs:1662
+      - rust-sql:message_device_acks.destruct_reason -- message_device_acks.destruct_reason is persisted in rust-sql, but no scanned production read consumes it
+          crates/store/src/schema.rs:1662
+      - rust-sql:message_device_acks.device_bi -- message_device_acks.device_bi is persisted in rust-sql, but no scanned production read consumes it
+          crates/store/src/schema.rs:1662
+      - rust-sql:message_device_acks.mid_bi -- message_device_acks.mid_bi is persisted in rust-sql, but no scanned production read consumes it
+          crates/store/src/schema.rs:1662
+    persisted-state-render-only (16):
+      - frontend-localStorage:accessibility -- accessibility is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/accessibility-preference.ts:43
+          apps/osl-hub-ui/src/accessibility-preference.ts:36
+      - frontend-localStorage:experimentalSendConsent -- experimentalSendConsent is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:763
+          apps/osl-hub-ui/src/main.ts:747
+      - frontend-localStorage:onboardingBranch -- onboardingBranch is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:1154
+          apps/osl-hub-ui/src/main.ts:732
+      - frontend-localStorage:osl-default-browser-companion-v1 -- osl-default-browser-companion-v1 is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:2178
+          apps/osl-hub-ui/src/main.ts:400
+      - frontend-localStorage:oslLedgerRenderOnlyMutant -- oslLedgerRenderOnlyMutant is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:9747
+          apps/osl-hub-ui/src/main.ts:9749
+      - frontend-localStorage:oslMailNotifications -- oslMailNotifications is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:6950
+          apps/osl-hub-ui/src/main.ts:472
+          apps/osl-hub-ui/src/main.ts:1252
+          apps/osl-hub-ui/src/main.ts:9512
+      - frontend-localStorage:protectionPreset -- protectionPreset is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:305
+          apps/osl-hub-ui/src/main.ts:301
+      - frontend-localStorage:rnWirePolicy -- rnWirePolicy is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:6995
+          apps/osl-hub-ui/src/main.ts:1253
+      - frontend-localStorage:scrubSignals -- scrubSignals is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:5523
+          apps/osl-hub-ui/src/main.ts:1259
+      - frontend-localStorage:serviceGuide -- serviceGuide is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub-ui/src/main.ts:8516
+          apps/osl-hub-ui/src/main.ts:8490
+      - rust-preferences:acknowledge_experimental_send_risk -- acknowledge_experimental_send_risk is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub/src/models.rs:49
+          apps/osl-hub/src/models.rs:66
+          apps/osl-hub/src/models.rs:86
+          apps/osl-hub/src/models.rs:98
+          apps/osl-hub/src/models.rs:370
+          apps/osl-hub/src/preferences.rs:124
+          ... 4 more
+      - rust-preferences:onboarding_complete -- onboarding_complete is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub/src/models.rs:43
+          apps/osl-hub/src/models.rs:61
+          apps/osl-hub/src/models.rs:80
+          apps/osl-hub/src/models.rs:93
+          apps/osl-hub/src/models.rs:365
+          apps/osl-hub/src/preferences.rs:119
+          ... 7 more
+      - rust-preferences:send_mode -- send_mode is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          apps/osl-hub/src/models.rs:44
+          apps/osl-hub/src/models.rs:62
+          apps/osl-hub/src/models.rs:81
+          apps/osl-hub/src/models.rs:94
+          apps/osl-hub/src/models.rs:366
+          apps/osl-hub/src/preferences.rs:120
+          ... 3 more
+      - rust-sql:_meta.key -- _meta.key is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          crates/store/src/anchor.rs:468
+          crates/store/src/anchor.rs:473
+          crates/store/src/anchor.rs:549
+          crates/store/src/anchor.rs:858
+          crates/store/src/anchor.rs:1206
+          crates/store/src/anchor.rs:1254
+          ... 4 more
+      - rust-sql:attachments.burned -- attachments.burned is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          crates/store/src/lib.rs:452
+          crates/store/src/lib.rs:1176
+          crates/store/src/lib.rs:1193
+          crates/store/src/lib.rs:1584
+          crates/store/src/lib.rs:1599
+          crates/store/src/lib.rs:1792
+          ... 1 more
+      - rust-sql:messages.wrapped_key -- messages.wrapped_key is read after persistence, but every observed consumer is render/display/validation-only rather than an action boundary
+          crates/store/src/lib.rs:434
+          crates/store/src/lib.rs:1900
+          crates/store/src/anchor.rs:626
+    secure-local-store-never-instantiated (4):
+      - frontend-secureLocalStore:osl-chat-muted-people-v1 -- oslChatMuted (osl-chat-muted-people-v1) is written through the SecureLocalStore hook, but production code never constructs the hook
+          apps/osl-hub-ui/src/main.ts:859
+          apps/osl-hub-ui/src/main.ts:939
+          apps/osl-hub-ui/src/main.ts:881
+      - frontend-secureLocalStore:osl-chat-notifications-v1 -- oslChatNotification (osl-chat-notifications-v1) is written through the SecureLocalStore hook, but production code never constructs the hook
+          apps/osl-hub-ui/src/main.ts:7771
+          apps/osl-hub-ui/src/main.ts:956
+          apps/osl-hub-ui/src/main.ts:948
+      - frontend-secureLocalStore:osl-chat-previews-visible-v1 -- oslChatPreview (osl-chat-previews-visible-v1) is written through the SecureLocalStore hook, but production code never constructs the hook
+          apps/osl-hub-ui/src/main.ts:855
+          apps/osl-hub-ui/src/main.ts:919
+          apps/osl-hub-ui/src/main.ts:880
+      - frontend-secureLocalStore:osl-chat-unread-v1 -- oslChatUnread (osl-chat-unread-v1) is written through the SecureLocalStore hook, but production code never constructs the hook
+          apps/osl-hub-ui/src/main.ts:7766
+          apps/osl-hub-ui/src/main.ts:929
+          apps/osl-hub-ui/src/main.ts:882
+    unresolved-persisted-state-key (6):
+      - unresolved-write:apps/osl-hub-ui/src/local-protected-sheet.ts:56 -- storage write key is not a literal or known string constant: key
+          apps/osl-hub-ui/src/local-protected-sheet.ts:56
+      - unresolved-write:apps/osl-hub-ui/src/main.ts:1084 -- storage write key is not a literal or known string constant: importsKey
+          apps/osl-hub-ui/src/main.ts:1084
+      - unresolved-write:apps/osl-hub-ui/src/main.ts:1085 -- storage write key is not a literal or known string constant: readyKey
+          apps/osl-hub-ui/src/main.ts:1085
+      - unresolved-write:apps/osl-hub-ui/src/main.ts:1298 -- storage write key is not a literal or known string constant: preferredKey
+          apps/osl-hub-ui/src/main.ts:1298
+      - unresolved-write:apps/osl-hub-ui/src/main.ts:1301 -- storage write key is not a literal or known string constant: importsKey
+          apps/osl-hub-ui/src/main.ts:1301
+      - unresolved-write:apps/osl-hub-ui/src/main.ts:1313 -- storage write key is not a literal or known string constant: pendingKey
+          apps/osl-hub-ui/src/main.ts:1313
+  RESULT: RED
+exit=1
+
+$ node scripts/ledger/state.mjs --root=/tmp/osl-ledger-missing-root-b0-17
+LEDGER state -- persisted state writes vs behavioural reads, ledger 8 of 8
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (4):
+    ledger-input-missing (4):
+      - missing-input:apps/osl-hub-ui/src -- required ledger input is missing: apps/osl-hub-ui/src
+          apps/osl-hub-ui/src:1
+      - missing-input:apps/osl-hub/src -- required ledger input is missing: apps/osl-hub/src
+          apps/osl-hub/src:1
+      - missing-input:crates/ipc/src -- required ledger input is missing: crates/ipc/src
+          crates/ipc/src:1
+      - missing-input:crates/store/src -- required ledger input is missing: crates/store/src
+          crates/store/src:1
+  RESULT: RED
+exit=1

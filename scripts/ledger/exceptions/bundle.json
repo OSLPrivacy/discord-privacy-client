@@ -1,0 +1,446 @@
+{
+  "note": "Ledger 7. Every entry is an ADMISSION that a file does not ship. `status: known-defect` means the entry is not an approval -- it is a record. The list may only shrink: highWaterMark must equal entries.length, and an entry that stops matching a live violation fails the ledger until it is deleted.",
+  "highWaterMark": 55,
+  "entries": [
+    {
+      "id": "apps/osl-hub-ui/src/accessibility-preference.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "G",
+      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:877"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/autoscrub-progress.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/browser-service-qa-shell.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "F",
+      "reason": "QA shells with no importer and no HTML entry referencing them, unlike the signal-qa set which at least has a build mode. NOT accepted as correct; give them an entry or delete them.",
+      "citation": "apps/osl-hub-ui/vite.config.ts:26"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/cloud-autoscrub-provisioning.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "G",
+      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:877"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/cover-generation-eligibility.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "D",
+      "reason": "Cover-generation cluster: only cover-generation-progress.ts has an importer and that importer is itself outside the bundle. The onboarding cover step shows a Pro `types naturally` preview backed by none of it. NOT accepted as correct; remove this entry when wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:2573"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/cover-generation-fallback.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "D",
+      "reason": "Cover-generation cluster: only cover-generation-progress.ts has an importer and that importer is itself outside the bundle. The onboarding cover step shows a Pro `types naturally` preview backed by none of it. NOT accepted as correct; remove this entry when wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:2573"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/cover-generation-progress.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "D",
+      "reason": "Cover-generation cluster: only cover-generation-progress.ts has an importer and that importer is itself outside the bundle. The onboarding cover step shows a Pro `types naturally` preview backed by none of it. NOT accepted as correct; remove this entry when wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:2573"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/cover-generation-visibility.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "D",
+      "reason": "Cover-generation cluster: only cover-generation-progress.ts has an importer and that importer is itself outside the bundle. The onboarding cover step shows a Pro `types naturally` preview backed by none of it. NOT accepted as correct; remove this entry when wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:2573"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/cover-generation.css",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "D",
+      "reason": "Cover-generation cluster: only cover-generation-progress.ts has an importer and that importer is itself outside the bundle. The onboarding cover step shows a Pro `types naturally` preview backed by none of it. NOT accepted as correct; remove this entry when wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:2573"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/discord-media-staging.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "G",
+      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:877"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/expiry-picker.css",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "G",
+      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:877"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/expiry-picker.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "G",
+      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:877"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/focus-retention.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "G",
+      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:877"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/hosted-session-scan.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "G",
+      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:877"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/latest.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "G",
+      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:877"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/native-qa-shell.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "F",
+      "reason": "QA shells with no importer and no HTML entry referencing them, unlike the signal-qa set which at least has a build mode. NOT accepted as correct; give them an entry or delete them.",
+      "citation": "apps/osl-hub-ui/vite.config.ts:26"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/osl-assets.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "C",
+      "reason": "Notes/Office/Creative cluster: roughly 80 data-* controls with zero handlers, reachable only through a type-only edge that esbuild erases, so it looks wired and ships as nothing. NOT accepted as correct. The Rust half of this decision is tracked (owner decision D40); the TypeScript half is tracked by nothing but this line. Remove this entry when the module is wired or deleted.",
+      "citation": "docs/design/untracked-orphan-modules.md"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/osl-enclaves-members.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "E",
+      "reason": "Enclaves state and membership. The Enclaves view chain IS in the bundle; its state machinery is not, which is why the surface renders a green Private card over nothing. NOT accepted as correct; remove this entry when wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/osl-enclaves-view.ts:1"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/osl-enclaves-state.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "E",
+      "reason": "Enclaves state and membership. The Enclaves view chain IS in the bundle; its state machinery is not, which is why the surface renders a green Private card over nothing. NOT accepted as correct; remove this entry when wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/osl-enclaves-view.ts:1"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/osl-export.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "C",
+      "reason": "Notes/Office/Creative cluster: roughly 80 data-* controls with zero handlers, reachable only through a type-only edge that esbuild erases, so it looks wired and ships as nothing. NOT accepted as correct. The Rust half of this decision is tracked (owner decision D40); the TypeScript half is tracked by nothing but this line. Remove this entry when the module is wired or deleted.",
+      "citation": "docs/design/untracked-orphan-modules.md"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/osl-formats.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "C",
+      "reason": "Notes/Office/Creative cluster: roughly 80 data-* controls with zero handlers, reachable only through a type-only edge that esbuild erases, so it looks wired and ships as nothing. NOT accepted as correct. The Rust half of this decision is tracked (owner decision D40); the TypeScript half is tracked by nothing but this line. Remove this entry when the module is wired or deleted.",
+      "citation": "docs/design/untracked-orphan-modules.md"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/osl-import.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "C",
+      "reason": "Notes/Office/Creative cluster: roughly 80 data-* controls with zero handlers, reachable only through a type-only edge that esbuild erases, so it looks wired and ships as nothing. NOT accepted as correct. The Rust half of this decision is tracked (owner decision D40); the TypeScript half is tracked by nothing but this line. Remove this entry when the module is wired or deleted.",
+      "citation": "docs/design/untracked-orphan-modules.md"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/osl-knowledge.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "C",
+      "reason": "Notes/Office/Creative cluster: roughly 80 data-* controls with zero handlers, reachable only through a type-only edge that esbuild erases, so it looks wired and ships as nothing. NOT accepted as correct. The Rust half of this decision is tracked (owner decision D40); the TypeScript half is tracked by nothing but this line. Remove this entry when the module is wired or deleted.",
+      "citation": "docs/design/untracked-orphan-modules.md"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/osl-notes-mods.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "C",
+      "reason": "Notes/Office/Creative cluster: roughly 80 data-* controls with zero handlers, reachable only through a type-only edge that esbuild erases, so it looks wired and ships as nothing. NOT accepted as correct. The Rust half of this decision is tracked (owner decision D40); the TypeScript half is tracked by nothing but this line. Remove this entry when the module is wired or deleted.",
+      "citation": "docs/design/untracked-orphan-modules.md"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/osl-notes.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "C",
+      "reason": "Notes/Office/Creative cluster: roughly 80 data-* controls with zero handlers, reachable only through a type-only edge that esbuild erases, so it looks wired and ships as nothing. NOT accepted as correct. The Rust half of this decision is tracked (owner decision D40); the TypeScript half is tracked by nothing but this line. Remove this entry when the module is wired or deleted.",
+      "citation": "docs/design/untracked-orphan-modules.md"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/osl-office.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "C",
+      "reason": "Notes/Office/Creative cluster: roughly 80 data-* controls with zero handlers, reachable only through a type-only edge that esbuild erases, so it looks wired and ships as nothing. NOT accepted as correct. The Rust half of this decision is tracked (owner decision D40); the TypeScript half is tracked by nothing but this line. Remove this entry when the module is wired or deleted.",
+      "citation": "docs/design/untracked-orphan-modules.md"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/osl-plugin-runtime.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "C",
+      "reason": "Notes/Office/Creative cluster: roughly 80 data-* controls with zero handlers, reachable only through a type-only edge that esbuild erases, so it looks wired and ships as nothing. NOT accepted as correct. The Rust half of this decision is tracked (owner decision D40); the TypeScript half is tracked by nothing but this line. Remove this entry when the module is wired or deleted.",
+      "citation": "docs/design/untracked-orphan-modules.md"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/osl-properties.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "C",
+      "reason": "Notes/Office/Creative cluster: roughly 80 data-* controls with zero handlers, reachable only through a type-only edge that esbuild erases, so it looks wired and ships as nothing. NOT accepted as correct. The Rust half of this decision is tracked (owner decision D40); the TypeScript half is tracked by nothing but this line. Remove this entry when the module is wired or deleted.",
+      "citation": "docs/design/untracked-orphan-modules.md"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/osl-property-query.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "C",
+      "reason": "Notes/Office/Creative cluster: roughly 80 data-* controls with zero handlers, reachable only through a type-only edge that esbuild erases, so it looks wired and ships as nothing. NOT accepted as correct. The Rust half of this decision is tracked (owner decision D40); the TypeScript half is tracked by nothing but this line. Remove this entry when the module is wired or deleted.",
+      "citation": "docs/design/untracked-orphan-modules.md"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-attended-imap-run.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-confirm.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-coverage-view.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-dryrun-view.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-hosted-session-assisted.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-hosted-session-channel.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-hosted-session-port.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-hosted-session-scan.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-imap-adapter.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-imap-ipc.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-imap.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-protected.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-provider-policy.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-provider-preloads.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/scrub-receipt-view.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "A",
+      "reason": "Scrub deletion lane, held out of the graph on purpose until the native authority and consent-spend paths exist; autoscrub-progress.ts specifically so the UI cannot report deletions it did not perform. Already pinned by set equality, so a module entering or leaving this list is a test failure independently of this ledger.",
+      "citation": "apps/osl-hub-ui/src/scrub-reachability.test.ts:32"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/secure-local-store.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "G",
+      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:877"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/send-guard.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "G",
+      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:877"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/setup-persistence.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "G",
+      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:877"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/signal-qa-ipc.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "B",
+      "reason": "Signal QA shell, built only under `vite build --mode signal-qa`, which swaps the main entry. Absent from the default production build by construction, not by accident.",
+      "citation": "apps/osl-hub-ui/vite.config.ts:28"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/signal-qa-main.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "B",
+      "reason": "Signal QA shell, built only under `vite build --mode signal-qa`, which swaps the main entry. Absent from the default production build by construction, not by accident.",
+      "citation": "apps/osl-hub-ui/vite.config.ts:28"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/signal-qa-runtime.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "B",
+      "reason": "Signal QA shell, built only under `vite build --mode signal-qa`, which swaps the main entry. Absent from the default production build by construction, not by accident.",
+      "citation": "apps/osl-hub-ui/vite.config.ts:28"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/signal-qa-shell.ts",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "B",
+      "reason": "Signal QA shell, built only under `vite build --mode signal-qa`, which swaps the main entry. Absent from the default production build by construction, not by accident.",
+      "citation": "apps/osl-hub-ui/vite.config.ts:28"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/signal-qa.css",
+      "class": "accepted",
+      "status": "deliberate",
+      "category": "B",
+      "reason": "Signal QA shell, built only under `vite build --mode signal-qa`, which swaps the main entry. Absent from the default production build by construction, not by accident.",
+      "citation": "apps/osl-hub-ui/vite.config.ts:28"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/theme-mod.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "G",
+      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:877"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/view-once-timer.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "G",
+      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:877"
+    },
+    {
+      "id": "apps/osl-hub-ui/src/whatsapp-protected-controls.ts",
+      "class": "accepted",
+      "status": "known-defect",
+      "category": "G",
+      "reason": "Untracked singleton with no non-test importer at all. secure-local-store.ts is the reason chat metadata sits in plaintext despite being implemented and unit-tested; accessibility-preference.ts is an accessibility preference that never runs. NOT accepted as correct; this entry exists only so the ledger can catch NEW orphans. Remove it when the module is wired or deleted.",
+      "citation": "apps/osl-hub-ui/src/main.ts:877"
+    }
+  ]
+}

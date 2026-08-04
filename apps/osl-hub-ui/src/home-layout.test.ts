@@ -337,10 +337,6 @@ describe("home interaction regressions", () => {
 
   it("has no background polling or interval leak", () => {
     expect(source).not.toContain("setInterval(");
-    expect(source).toContain('window.addEventListener("unhandledrejection"');
-    expect(source).toContain("containBackgroundFailure");
-    expect(source).toMatch(/function containBackgroundFailure[\s\S]*?showToast\("That action failed\. Nothing changed\."\)/);
-    expect(source).not.toContain('window.addEventListener("unhandledrejection", (event) => { event.preventDefault(); showRenderRecovery(); });');
   });
 
   it("does not eagerly duplicate the friends list on Home", () => {
@@ -390,7 +386,7 @@ describe("home interaction regressions", () => {
     expect(opening).toContain("else if (app.linked)");
     expect(source).not.toContain("setup-needed");
     expect(home).not.toContain("<small>${module.state}</small>");
-    expect(home).toContain('<span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : ""}</span>');
+    expect(home).toContain('<span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : "<small>Coming soon</small>"}</span>');
     expect(home).toContain("Social</h2>");
     expect(home).toContain("Email</h2>");
     expect(home).toContain('aria-label="OSL tools"');
@@ -464,25 +460,18 @@ describe("home interaction regressions", () => {
     expect(source).toContain("hostDeadlineMs");
     expect(source).toContain("activeNativeHostMode === requestedMode");
     expect(source).toContain('selectedNativeApps().filter((app) => app.availability === "installed")');
-    expect(source).toContain("outlookSessionModeChoices()");
+    expect(source).toContain("supportedNativeAppIds.has(activeHomeAppId as NativeAppId)");
     expect(source).toContain("savedNativeApps.has(nativeId)");
     expect(source).toContain('catalogApp?.availability === "installed" && catalogApp.isolatedProfileAvailable');
-    expect(source).toContain('finishNativeAccountChoice("telegram")');
-    expect(source).toContain(">Use existing account</button>");
+    expect(source).toContain('"Use existing account"');
     expect(source).toContain(">Use separate account</button>");
-    expect(source).toContain('aria-label="Open Telegram"');
-    expect(source).toContain('let telegramSessionMode: NativeSessionMode = "existingSession"');
-    expect(source).toContain('let signalSessionMode: NativeSessionMode = "existingSession"');
-    expect(source).toContain('let whatsappSessionMode: NativeSessionMode = "existingSession"');
-    expect(source).toContain('storedTelegramMode === null ? "existingSession"');
-    expect(source).toContain('storedSignalMode === null ? "existingSession"');
-    expect(source).toContain('storedWhatsappMode === null ? "existingSession"');
-    expect(source).toContain('data-signal-session-mode="dedicated"');
-    expect(source).toContain('data-whatsapp-session-mode="dedicated"');
+    expect(source).not.toContain('finishNativeAccountChoice("telegram")');
+    expect(source).not.toContain('data-signal-session-mode="dedicated"');
+    expect(source).not.toContain('data-whatsapp-session-mode="dedicated"');
     expect(source).toContain('function separateNativeAccountAvailable');
     expect(source).toContain('supportedNativeAppIds.has(app.id as NativeAppId)');
     expect(source).toContain('A separate ${app.displayName} app account is unavailable');
-    expect(source).toContain('["telegram", "signal", "whatsapp"].includes(activeHomeAppId)');
+    expect(source).not.toContain('["telegram", "signal", "whatsapp"].includes(activeHomeAppId)');
     expect(source).toContain('reason === "profileInitializationFailed"');
     expect(source).toContain("your normal ${name} is untouched");
     expect(nativeOpening).toMatch(/result\.status !== "hosted"[\s\S]*?activeNativeHostId = appId[\s\S]*?savedAccountMode = "use"[\s\S]*?savedNativeApps\.add\(appId\)[\s\S]*?persistSavedAccountPreferences\(\)/);

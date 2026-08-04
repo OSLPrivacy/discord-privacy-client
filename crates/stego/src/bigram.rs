@@ -65,12 +65,8 @@ pub const BOS_IDX: usize = 0;
 pub const TOKEN_PAYLOAD_BITS: u32 = (20 + 4) * 8;
 
 /// Interval precision (bits). We subdivide a `[0, 2^PRECISION)`
-/// integer interval by the model CDF until the top
-/// [`TOKEN_PAYLOAD_BITS`] of the interval are pinned. The headroom
-/// For payloads up to [`PRECISION`] bits, the remaining interval headroom
-/// keeps the interval width well above any row's total count during the
-/// final subdivision, so no step ever collapses to a zero-width slice.
-/// The shipping 192-bit pointer uses the fixed-width codec below instead.
+/// integer interval by the model CDF until the top [`CHUNK_BITS`] of the
+/// interval are pinned.
 ///
 /// Overflow budget: the hot products are `width * total` and
 /// `(value - lo) * total`, both bounded by `2^PRECISION * total`.
@@ -78,6 +74,34 @@ pub const TOKEN_PAYLOAD_BITS: u32 = (20 + 4) * 8;
 /// `2^126 < 2^128` — safe in `u128`.
 const PRECISION: u32 = 110;
 const FULL: u128 = 1u128 << PRECISION;
+
+/// Payload bits carried by one arithmetic-coded chunk.
+///
+/// A `u128` interval cannot pin a 192-bit payload in one pass, which is why
+/// the pointer used to fall out of the arithmetic coder entirely into the
+/// fixed-width substitution table below. Chunking removes that cliff: the
+/// payload is split into `ceil(target_bits / CHUNK_BITS)` chunks, each coded
+/// by the real model, and the word streams are concatenated. The model
+/// context (`prev`) carries across a chunk boundary, so the prose does not
+/// restart mid-cover; only the interval resets.
+///
+/// Chunk boundaries are **self-delimiting** — both directions stop a chunk on
+/// the same `(lo, hi)` predicate, so no length prefix or separator reaches
+/// the wire.
+///
+/// ## Why 64 and not `PRECISION`
+///
+/// `bits_to_value` aims at the **centre** of the target block rather than its
+/// base, which makes termination provable rather than empirical: with
+/// `shift = PRECISION - CHUNK_BITS`, any interval of width `<= 2^(shift-1)`
+/// that contains the centre is necessarily inside the block, so the chunk is
+/// pinned. Therefore every subdivision runs with `width > 2^(shift-1)`, i.e.
+/// `> 2^45` at `CHUNK_BITS = 64`, against a row total below `2^16` — no step
+/// can round a bucket down to zero width. Widening the chunk toward
+/// `PRECISION` shrinks that margin to nothing (at `CHUNK_BITS = 110`,
+/// `shift = 0` and a bucket collapses immediately). 64 also divides the
+/// 192-bit pointer exactly.
+pub const CHUNK_BITS: u32 = 64;
 /// Safety bound on emitted word count. The interval-subdivision loop
 /// is guaranteed to terminate (width strictly decreases by a factor
 /// < 1 each step), but a near-deterministic model could in principle
@@ -85,10 +109,12 @@ const FULL: u128 = 1u128 << PRECISION;
 /// case ≈ 96, so 256 is comfortable headroom.
 const MAX_WORDS: usize = 256;
 
-/// The wide pointer codec carries six payload bits in each cover word.  The
-/// 24-byte pointer-v2 carrier therefore has a fixed 32-word floor.  Keeping
-/// this as a named budget lets shaping reserve the real carrier capacity
-/// rather than the obsolete 96-bit estimate.
+/// LEGACY (receive-only as of B0-06). The wide pointer codec carries six
+/// payload bits in each cover word, so the 24-byte pointer-v2 carrier had a
+/// fixed 32-word floor. This is the format that produced uniform word salad;
+/// senders no longer emit it, but [`legacy_wide_encode_words`] is still
+/// reachable from the decoder so covers posted by pre-B0-06 peers keep
+/// decoding during the rollout window.
 pub const WIDE_TOKEN_WORD_BITS: usize = 6;
 pub const WIDE_TOKEN_WORDS: usize = (TOKEN_PAYLOAD_BITS as usize).div_ceil(WIDE_TOKEN_WORD_BITS);
 
@@ -282,7 +308,17 @@ fn is_punct(b: u8) -> bool {
 // belt-and-suspenders cap.
 
 /// Pack `target_bits` booleans (MSB-first) into the high bits of a
-/// `u128` target value inside `[0, 2^PRECISION)`.
+/// `u128` target value inside `[0, 2^PRECISION)`, then aim at the
+/// **centre** of the resulting block rather than its base.
+///
+/// The block for payload `p` is `[p << shift, (p+1) << shift)`. Aiming at
+/// the base leaves the target on a block boundary, so an interval that
+/// contains it can straddle two blocks no matter how narrow it gets — the
+/// subdivision then has to keep going until the interval collapses, and a
+/// collapsed interval rounds buckets to zero width. Aiming at the centre
+/// makes "width <= 2^(shift-1)" sufficient for containment, which bounds
+/// the loop and keeps every subdivision far above the row total. See
+/// [`CHUNK_BITS`].
 fn bits_to_value(bits: &[bool], target_bits: u32) -> u128 {
     let mut payload: u128 = 0;
     for i in 0..target_bits as usize {
@@ -290,8 +326,14 @@ fn bits_to_value(bits: &[bool], target_bits: u32) -> u128 {
         payload = (payload << 1) | b as u128;
     }
     // Left-align so the payload occupies the top `target_bits` of
-    // the PRECISION-bit interval; low bits are zero.
-    payload << (PRECISION - target_bits)
+    // the PRECISION-bit interval; low bits address within the block.
+    let shift = PRECISION - target_bits;
+    let base = payload << shift;
+    if shift == 0 {
+        base
+    } else {
+        base | (1u128 << (shift - 1))
+    }
 }
 
 /// Read the pinned top `target_bits` of `lo` back out as a MSB-first
@@ -310,46 +352,63 @@ fn value_to_bits(lo: u128, target_bits: u32) -> Vec<bool> {
 /// length, typically ~15-25 for a 96-bit payload on a 128-word
 /// flat-ish model.
 pub fn arithmetic_decode_bits(bits: &[bool], target_bits: u32) -> Vec<usize> {
-    if target_bits > PRECISION {
-        return wide_token_decode(bits, target_bits);
+    if target_bits == 0 {
+        return Vec::new();
     }
     let model = model();
-    let value = bits_to_value(bits, target_bits);
-    let shift = PRECISION - target_bits;
-
-    let mut lo: u128 = 0;
-    let mut hi: u128 = FULL; // exclusive upper bound
-    let mut prev = BOS_IDX;
     let mut out: Vec<usize> = Vec::new();
+    // Model context carries across chunk boundaries so the cover reads as
+    // one continuous utterance; only the interval restarts.
+    let mut prev = BOS_IDX;
 
-    while out.len() < MAX_WORDS {
-        // Stop once the top `target_bits` of the interval are
-        // pinned: lo and (hi-1) share their high bits.
-        if (lo >> shift) == ((hi - 1) >> shift) {
-            break;
+    let mut coded = 0u32;
+    while coded < target_bits {
+        let chunk_bits = (target_bits - coded).min(CHUNK_BITS);
+        let chunk: Vec<bool> = (0..chunk_bits as usize)
+            .map(|i| bits.get(coded as usize + i).copied().unwrap_or(false))
+            .collect();
+        let value = bits_to_value(&chunk, chunk_bits);
+        let shift = PRECISION - chunk_bits;
+
+        let mut lo: u128 = 0;
+        let mut hi: u128 = FULL; // exclusive upper bound
+
+        while out.len() < MAX_WORDS {
+            // Stop once the top `chunk_bits` of the interval are
+            // pinned: lo and (hi-1) share their high bits.
+            if (lo >> shift) == ((hi - 1) >> shift) {
+                break;
+            }
+            let width = hi - lo;
+            let total = model.cum[prev][VOCAB_SIZE - 1] as u128;
+            // Unreachable for a centred target (see `CHUNK_BITS`): the chunk
+            // pins while width is still above 2^(shift-1) >> total. Bail
+            // rather than subdivide a width that cannot hold every bucket.
+            if width <= total {
+                break;
+            }
+            // Pick the word whose NARROWED bucket actually contains
+            // `value`. Bucket w spans [lo + ⌊width·cum[w-1]/total⌋,
+            // lo + ⌊width·cum[w]/total⌋). We can't search in CDF space
+            // (the floor in the narrowing shifts boundaries by up to a
+            // unit), so search directly on the floored boundary:
+            // smallest w with ⌊width·cum[w]/total⌋ > value - lo.
+            let offset = value - lo;
+            let word = find_word_by_boundary(&model.cum[prev], width, total, offset);
+            let cum_lo = if word == 0 {
+                0u128
+            } else {
+                model.cum[prev][word - 1] as u128
+            };
+            let cum_hi = model.cum[prev][word] as u128;
+            let new_lo = lo + (width * cum_lo) / total;
+            let new_hi = lo + (width * cum_hi) / total;
+            lo = new_lo;
+            hi = new_hi;
+            out.push(word);
+            prev = word;
         }
-        let width = hi - lo;
-        let total = model.cum[prev][VOCAB_SIZE - 1] as u128;
-        // Pick the word whose NARROWED bucket actually contains
-        // `value`. Bucket w spans [lo + ⌊width·cum[w-1]/total⌋,
-        // lo + ⌊width·cum[w]/total⌋). We can't search in CDF space
-        // (the floor in the narrowing shifts boundaries by up to a
-        // unit), so search directly on the floored boundary:
-        // smallest w with ⌊width·cum[w]/total⌋ > value - lo.
-        let offset = value - lo;
-        let word = find_word_by_boundary(&model.cum[prev], width, total, offset);
-        let cum_lo = if word == 0 {
-            0u128
-        } else {
-            model.cum[prev][word - 1] as u128
-        };
-        let cum_hi = model.cum[prev][word] as u128;
-        let new_lo = lo + (width * cum_lo) / total;
-        let new_hi = lo + (width * cum_hi) / total;
-        lo = new_lo;
-        hi = new_hi;
-        out.push(word);
-        prev = word;
+        coded += chunk_bits;
     }
     out
 }
@@ -360,40 +419,81 @@ pub fn arithmetic_decode_bits(bits: &[bool], target_bits: u32) -> Vec<usize> {
 /// final `lo`. Returns a zero-filled vector on an out-of-vocab
 /// index (surfaced as a decode miss upstream).
 pub fn arithmetic_encode_words(words: &[usize], target_bits: u32) -> Vec<bool> {
-    if target_bits > PRECISION {
-        return wide_token_encode(words, target_bits);
+    if target_bits == 0 {
+        return Vec::new();
     }
     let model = model();
-    let mut lo: u128 = 0;
-    let mut hi: u128 = FULL;
+    let mut bits: Vec<bool> = Vec::with_capacity(target_bits as usize);
     let mut prev = BOS_IDX;
+    let mut cursor = 0usize;
 
-    for &word in words {
-        if word >= VOCAB_SIZE {
-            return vec![false; target_bits as usize];
+    let mut coded = 0u32;
+    while coded < target_bits {
+        let chunk_bits = (target_bits - coded).min(CHUNK_BITS);
+        let shift = PRECISION - chunk_bits;
+        let mut lo: u128 = 0;
+        let mut hi: u128 = FULL;
+
+        // Same stopping predicate as the decoder, evaluated on the same
+        // (lo, hi) — that is what makes the chunk boundary self-delimiting
+        // without a marker on the wire.
+        while (lo >> shift) != ((hi - 1) >> shift) {
+            let width = hi - lo;
+            let total = model.cum[prev][VOCAB_SIZE - 1] as u128;
+            // Arbitrary in-vocabulary prose (every inbound Discord message
+            // reaches here) can narrow the interval past the point where the
+            // model's buckets still fit in it. Our own covers never can — the
+            // centred target pins the chunk while width is still above
+            // 2^(shift-1). Reject instead of subdividing a degenerate width,
+            // which would underflow `hi - 1` on the next pass.
+            if width <= total {
+                return vec![false; target_bits as usize];
+            }
+            let Some(&word) = words.get(cursor) else {
+                // Ran out of words before the chunk pinned: not our cover.
+                return vec![false; target_bits as usize];
+            };
+            if word >= VOCAB_SIZE {
+                return vec![false; target_bits as usize];
+            }
+            cursor += 1;
+            let cum_lo = if word == 0 {
+                0u128
+            } else {
+                model.cum[prev][word - 1] as u128
+            };
+            let cum_hi = model.cum[prev][word] as u128;
+            let new_lo = lo + (width * cum_lo) / total;
+            let new_hi = lo + (width * cum_hi) / total;
+            if new_hi <= new_lo {
+                // Zero-mass bucket (BOS as a successor). Not producible by
+                // the decoder, so this word stream is not one of our covers.
+                return vec![false; target_bits as usize];
+            }
+            lo = new_lo;
+            hi = new_hi;
+            prev = word;
         }
-        let width = hi - lo;
-        let total = model.cum[prev][VOCAB_SIZE - 1] as u128;
-        let cum_lo = if word == 0 {
-            0u128
-        } else {
-            model.cum[prev][word - 1] as u128
-        };
-        let cum_hi = model.cum[prev][word] as u128;
-        let new_lo = lo + (width * cum_lo) / total;
-        let new_hi = lo + (width * cum_hi) / total;
-        lo = new_lo;
-        hi = new_hi;
-        prev = word;
+        bits.extend(value_to_bits(lo, chunk_bits));
+        coded += chunk_bits;
     }
-    value_to_bits(lo, target_bits)
+
+    if cursor != words.len() {
+        // Trailing words the chunk walk never consumed: not a canonical cover.
+        return vec![false; target_bits as usize];
+    }
+    bits
 }
 
-// Payloads wider than the arithmetic interval precision use this lossless
-// 6-bit packing. The 192-bit shipping pointer wire takes this path; it emits
-// `ceil(target_bits / 6)` words, which is the capacity budget consumed by the
-// row shaper.
-fn wide_token_decode(bits: &[bool], target_bits: u32) -> Vec<usize> {
+// LEGACY, RECEIVE ONLY (B0-06). Before chunking, payloads wider than the
+// arithmetic interval precision fell back to this lossless 6-bit packing, and
+// the 192-bit shipping pointer always did. It ignores the language model
+// entirely — each 6-bit group indexes the first 64 vocabulary words — so its
+// output is uniform word salad at ~8.8 bits/word of model surprisal against a
+// ~5.05 bits/word model. Senders no longer emit it. It is retained, and still
+// reachable from `mode1::decode_token`, so covers posted by pre-B0-06 peers
+// keep decoding. Do not delete: that is the rollout compatibility path.
+pub fn legacy_wide_decode_bits(bits: &[bool], target_bits: u32) -> Vec<usize> {
     bits.iter()
         .copied()
         .chain(std::iter::repeat(false))
@@ -408,7 +508,19 @@ fn wide_token_decode(bits: &[bool], target_bits: u32) -> Vec<usize> {
         .collect()
 }
 
-fn wide_token_encode(words: &[usize], target_bits: u32) -> Vec<bool> {
+/// LEGACY, RECEIVE ONLY (B0-06). Inverse of [`legacy_wide_decode_bits`].
+///
+/// The word count is fixed by the format at `ceil(target_bits / 6)`. It must
+/// be checked before the loop, not implied by it: this function is fed every
+/// inbound Discord message (via `mode1::decode_token`), and a longer stream
+/// used to underflow `target_bits - index * WIDE_TOKEN_WORD_BITS` on the
+/// 33rd word — a remotely reachable panic in debug builds and a masked shift
+/// in release. Any in-vocabulary sentence over 32 words drawn from the first
+/// 64 vocabulary slots reached it.
+pub fn legacy_wide_encode_words(words: &[usize], target_bits: u32) -> Vec<bool> {
+    if words.len() != (target_bits as usize).div_ceil(WIDE_TOKEN_WORD_BITS) {
+        return vec![false; target_bits as usize];
+    }
     let mut bits = Vec::with_capacity(target_bits as usize);
     for (index, &word) in words.iter().enumerate() {
         if !(1..=64).contains(&word) {

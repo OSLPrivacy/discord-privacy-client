@@ -27,7 +27,7 @@ describe("onboarding protection presets", () => {
   });
 
   it("selects Balanced by default and marks it as recommended", () => {
-    expect(presetContent).toContain('const selected = preset.id === "balanced"');
+    expect(presetContent).toContain("const selected = preset.id === protectionPreset");
     expect(presetContent).toContain('badge: "Recommended"');
     expect(presetContent).toContain("Balanced starts on and is safe without more setup.");
     expect(presetContent).toContain('type="radio"');
@@ -59,5 +59,15 @@ describe("onboarding protection presets", () => {
     expect(presetContent).toContain('id="continue-onboarding-privacy"');
     expect(binding).toContain('"#continue-onboarding-privacy"');
     expect(binding).toContain('onboardingRoute = "defaults"');
+  });
+
+  it("binds preset radios through the same change-rerender pattern as nearby onboarding choices", () => {
+    const binding = functionSource("bindOnboarding", "completeOnboarding");
+
+    expect(binding).toContain('input[name="protection-preset"]');
+    expect(binding).toContain("protectionPresetValues.includes(input.value as ProtectionPreset)");
+    expect(binding).toContain("protectionPreset = input.value as ProtectionPreset");
+    expect(binding).toContain("persistProtectionPreset();");
+    expect(binding).toContain("render();");
   });
 });

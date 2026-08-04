@@ -16,10 +16,12 @@ describe("Privacy destination", () => {
 
   it("starts with the active preset and then shows global policy", () => {
     expect(destination).toContain("ACTIVE PRESET");
-    expect(destination).toContain("<h2 id=\"privacy-preset-title\">Balanced</h2>");
+    expect(destination).toContain('const activePreset = presetCopy[protectionPreset]');
+    expect(destination).toContain('<h2 id="privacy-preset-title">${activePreset.title}</h2>');
     expect(destination.indexOf("ACTIVE PRESET")).toBeLessThan(destination.indexOf("Global policy"));
-    expect(destination).toContain("Inherited from Balanced");
-    expect(destination).toContain("Balanced preset / app / account / conversation exception");
+    expect(destination).toContain("title: \"Balanced\"");
+    expect(destination).toContain("Inherited from ${activePreset.title}");
+    expect(destination).toContain("${activePreset.title} preset / app / account / conversation exception");
     expect(destination).toContain("Deletion off");
     expect(destination).not.toMatch(/keyserver|ratchet|receipt|browser profile|provider adapter/i);
   });

@@ -15,7 +15,7 @@ function functionSource(name: string, nextName: string): string {
 describe("guarded sending choices", () => {
   it("stores the explicit choice and never bypasses risk acceptance", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    expect(binding).toContain('"clipboard", "double", "single"');
+    expect(binding).toContain('"manual", "clipboard", "double"');
     expect(binding).toContain('setup.placementMode = "atomic"');
     expect(binding).toContain("canCompleteSetup(setup)");
   });

@@ -15,15 +15,19 @@
   --panel-3: #202020;
   --line: #2a2a2a;
   --line-soft: #202020;
+  --line-strong: var(--line);
   --text: #e8e8e8;
   --muted: #9aa0a6;
+  --text-muted: var(--muted);
   --subtle: #888;
   --brand: #06b6d4;
+  --cyan: var(--brand);
   --brand-hover: #0891b2;
   --brand-ink: #0a0a0a;
   --brand-wash: rgba(6, 182, 212, .1);
   --success: #49c58a;
   --warn: #f2b84b;
+  --warning: var(--warn);
   --danger: #ef626b;
   --scrollbar-thumb: #4d5968;
   --scrollbar-track: #141414;
@@ -4115,6 +4119,9 @@ code {
 .app-tile-copy small { display: block; }
 .app-tile-copy strong { overflow: hidden; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .app-tile-copy small { margin-top: 2px; color: var(--subtle); font-size: 11px; }
+.app-tile.app-unavailable { opacity: .42; }
+.app-tile.app-unavailable button { cursor: not-allowed; }
+.app-tile.app-unavailable .app-logo-plate { filter: grayscale(1); }
 .home-module.module-unavailable { opacity: .42; }
 .home-module.module-unavailable button { cursor: not-allowed; }
 
@@ -5466,6 +5473,24 @@ code {
 .onboarding-app.selected { border: 1px solid var(--brand); background: var(--panel-2); }
 .onboarding-app .app-logo-plate { width: 54px; height: 54px; }
 .onboarding-app strong { font-size: 11px; }
+.onboarding-app.unavailable {
+  opacity: .42;
+  cursor: not-allowed;
+  filter: grayscale(1);
+}
+.onboarding-app.unavailable:hover {
+  background: transparent;
+  transform: none;
+}
+.onboarding-app small {
+  display: block;
+  margin-top: 2px;
+  color: var(--subtle);
+  /* 11px, matching .onboarding-app strong and .setup-status-row small. Was 10px,
+     which trips the typography guard against text below 11px -- a real
+     accessibility floor, not a style preference. */
+  font-size: 11px;
+}
 
 .password-input-row { position: relative; display: block; }
 .password-input-row input { padding-right: 52px; border-right: 1px solid var(--line); }
