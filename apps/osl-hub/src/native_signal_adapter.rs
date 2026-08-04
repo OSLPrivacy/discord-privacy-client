@@ -87,6 +87,10 @@ pub enum SignalPlacementStatus {
     ComposerNotEmpty,
     ReadbackMismatch,
     ProbeClearFailed,
+    /// The backend reported a submit-shaped interaction. Placement is abandoned:
+    /// OSL never authorizes a send, so a backend that performed one is refused
+    /// rather than trusted for the rest of the path.
+    SubmitShapedCallObserved,
 }
 
 pub struct SignalLivePlacementRequest<'a> {
@@ -115,6 +119,16 @@ impl SignalLivePlacementReceipt {
             readback_contains_carrier: false,
         }
     }
+
+    /// The backend admitted a submit-shaped interaction. `enter_sent` is this
+    /// report, not a constant: it is the only place in this module that can set
+    /// the field true, and it is set from backend evidence.
+    fn refused_after_submit_shaped_call() -> Self {
+        Self {
+            enter_sent: true,
+            ..Self::refused(SignalPlacementStatus::SubmitShapedCallObserved)
+        }
+    }
 }
 
 pub trait SignalComposerPlacementBackend {
@@ -123,6 +137,19 @@ pub trait SignalComposerPlacementBackend {
     fn current_value(&mut self) -> Result<Option<String>, SignalPlacementStatus>;
     fn set_value(&mut self, carrier: &str) -> Result<(), SignalPlacementStatus>;
     fn read_value(&mut self) -> Result<Option<String>, SignalPlacementStatus>;
+
+    /// How many submit-shaped interactions this backend has performed since it
+    /// was bound.
+    ///
+    /// Submit-shaped means anything that could commit the composer: invoking a
+    /// send control, synthesising a key or input event, posting a keyboard
+    /// message to the composer window, or writing a value the composer treats
+    /// as a commit (one carrying CR or LF). A conforming backend performs none
+    /// of these and returns 0. This is a required method precisely so that a
+    /// new backend cannot inherit a silent "no" it never checked, and so that
+    /// `enter_sent` is derived from what the backend reports rather than from a
+    /// literal this module writes about itself.
+    fn submit_shaped_calls(&mut self) -> usize;
 }
 
 pub trait SignalComposerProbeBackend: SignalComposerPlacementBackend {
@@ -131,15 +158,34 @@ pub trait SignalComposerProbeBackend: SignalComposerPlacementBackend {
 
 /// Place text into the already-bound Signal composer and verify by containment.
 ///
-/// This is deliberately not a send path. It never presses Enter, invokes a send
-/// button, or reports `enter_sent = true`; the only mutation it can authorize is
+/// This is deliberately not a send path. The only mutation it can authorize is
 /// a value-pattern placement followed by read-back.
+///
+/// The prohibition is enforced by three separate mechanisms, because the field
+/// alone proved nothing:
+/// 1. the carrier is refused if it carries CR or LF, so a commit cannot ride
+///    inside the placed value;
+/// 2. the backend is asked, before and after the placement, how many
+///    submit-shaped interactions it performed, and any non-zero delta abandons
+///    placement with [`SignalPlacementStatus::SubmitShapedCallObserved`] and
+///    `enter_sent = true`; and
+/// 3. `signal_placement_module_holds_no_submit_shaped_mechanism` scans this
+///    module's own source for submit-shaped mechanisms that would bypass the
+///    backend entirely (`SendInput`, `keybd_event`, `VK_RETURN`, a posted
+///    keyboard message, an invoke pattern, or a newline-carrying literal).
 pub fn drive_signal_composer_placement(
     backend: &mut dyn SignalComposerPlacementBackend,
     request: SignalLivePlacementRequest<'_>,
 ) -> SignalLivePlacementReceipt {
-    if !valid_candidate_text(request.carrier, SIGNAL_LIVE_CARRIER_MAX_BYTES) {
+    if !valid_candidate_text(request.carrier, SIGNAL_LIVE_CARRIER_MAX_BYTES)
+        || carrier_carries_submit(request.carrier)
+    {
         return SignalLivePlacementReceipt::refused(SignalPlacementStatus::InvalidCarrier);
+    }
+
+    let submit_shaped_baseline = backend.submit_shaped_calls();
+    if submit_shaped_baseline > 0 {
+        return SignalLivePlacementReceipt::refused_after_submit_shaped_call();
     }
 
     let element_count = match backend.element_count() {
@@ -205,9 +251,13 @@ pub fn drive_signal_composer_placement(
         .ok()
         .flatten()
         .is_some_and(|readback| readback.contains(request.carrier));
+    let enter_sent = backend.submit_shaped_calls() > submit_shaped_baseline;
+    if enter_sent {
+        return SignalLivePlacementReceipt::refused_after_submit_shaped_call();
+    }
     SignalLivePlacementReceipt {
         placed: readback_contains_carrier,
-        enter_sent: false,
+        enter_sent,
         status: if readback_contains_carrier {
             SignalPlacementStatus::Placed
         } else {
@@ -222,9 +272,10 @@ pub fn drive_signal_composer_placement(
 /// Probe Signal placement into an already-resolved composer, then clear it.
 ///
 /// This is for live capability checks only. It uses the same contains read-back
-/// as production placement, does not press Enter or invoke any send control, and
-/// always clears after a successful `SetValue` attempt so a real chat is not
-/// left with probe text.
+/// as production placement, carries the same submit-shaped-call prohibition,
+/// and always clears after a successful `SetValue` attempt so a real chat is not
+/// left with probe text. The clear is itself covered: the backend is re-asked
+/// afterwards, so a clear that commits the composer is caught.
 pub fn probe_signal_composer_write_then_clear(
     backend: &mut dyn SignalComposerProbeBackend,
     request: SignalLivePlacementRequest<'_>,
@@ -233,10 +284,15 @@ pub fn probe_signal_composer_write_then_clear(
     if matches!(
         receipt.status,
         SignalPlacementStatus::Placed | SignalPlacementStatus::ReadbackMismatch
-    ) && backend.clear_value().is_err()
-    {
-        receipt.placed = false;
-        receipt.status = SignalPlacementStatus::ProbeClearFailed;
+    ) {
+        let submit_shaped_before_clear = backend.submit_shaped_calls();
+        if backend.clear_value().is_err() {
+            receipt.placed = false;
+            receipt.status = SignalPlacementStatus::ProbeClearFailed;
+        }
+        if backend.submit_shaped_calls() > submit_shaped_before_clear {
+            return SignalLivePlacementReceipt::refused_after_submit_shaped_call();
+        }
     }
     receipt
 }
@@ -680,6 +736,17 @@ fn descendants(nodes: &[SignalNode], root: usize) -> Result<Vec<usize>, SignalSe
     Ok(result)
 }
 
+/// A live-placement carrier that carries CR or LF is a submit, not a value.
+///
+/// `valid_candidate_text` deliberately tolerates CR/LF for transcript row text,
+/// which is read, never written. Nothing written into a live composer may carry
+/// them: Signal commits the message on Enter, so the newline *is* the send.
+fn carrier_carries_submit(carrier: &str) -> bool {
+    carrier
+        .chars()
+        .any(|character| matches!(character, '\n' | '\r' | '\u{000b}' | '\u{2028}' | '\u{2029}'))
+}
+
 fn valid_candidate_text(value: &str, max_text_bytes: usize) -> bool {
     !value.is_empty()
         && value.len() <= max_text_bytes
@@ -727,6 +794,13 @@ mod tests {
         set_values: Vec<String>,
         cleared: usize,
         clear_result: Result<(), SignalPlacementStatus>,
+        /// Submit-shaped interactions this fake has performed. It models the
+        /// real composer: a written value carrying CR/LF is a commit.
+        submit_shaped: usize,
+        /// Models a backend whose write path also invokes the send control or
+        /// synthesises a key — the exact thing the prohibition forbids.
+        submits_after_set_value: bool,
+        submits_after_clear: bool,
     }
 
     impl FakeSignalBackend {
@@ -739,6 +813,9 @@ mod tests {
                 set_values: Vec::new(),
                 cleared: 0,
                 clear_result: Ok(()),
+                submit_shaped: 0,
+                submits_after_set_value: false,
+                submits_after_clear: false,
             }
         }
     }
@@ -758,6 +835,12 @@ mod tests {
 
         fn set_value(&mut self, carrier: &str) -> Result<(), SignalPlacementStatus> {
             self.set_values.push(carrier.to_owned());
+            if carrier.contains('\n') || carrier.contains('\r') {
+                self.submit_shaped += 1;
+            }
+            if self.submits_after_set_value {
+                self.submit_shaped += 1;
+            }
             Ok(())
         }
 
@@ -767,11 +850,18 @@ mod tests {
                 .last()
                 .map(|value| format!("{value}{}", self.readback_suffix)))
         }
+
+        fn submit_shaped_calls(&mut self) -> usize {
+            self.submit_shaped
+        }
     }
 
     impl SignalComposerProbeBackend for FakeSignalBackend {
         fn clear_value(&mut self) -> Result<(), SignalPlacementStatus> {
             self.cleared += 1;
+            if self.submits_after_clear {
+                self.submit_shaped += 1;
+            }
             self.clear_result
         }
     }
@@ -870,6 +960,184 @@ mod tests {
         assert!(receipt.placed);
         assert!(receipt.readback_contains_carrier);
         assert!(!receipt.enter_sent);
+        assert_eq!(
+            backend.submit_shaped, 0,
+            "the backend must observe no submit-shaped interaction on the placement path"
+        );
+    }
+
+    #[test]
+    fn signal_live_placement_refuses_and_reports_a_backend_that_submits() {
+        let mut backend = FakeSignalBackend::empty();
+        backend.submits_after_set_value = true;
+
+        let receipt = drive_signal_composer_placement(
+            &mut backend,
+            SignalLivePlacementRequest {
+                carrier: "echo-4471-osl",
+                allow_replace_existing: false,
+            },
+        );
+
+        assert_eq!(
+            receipt.status,
+            SignalPlacementStatus::SubmitShapedCallObserved
+        );
+        assert!(
+            receipt.enter_sent,
+            "enter_sent must be derived from backend evidence, not written as a literal"
+        );
+        assert!(!receipt.placed);
+    }
+
+    #[test]
+    fn signal_live_placement_refuses_a_backend_that_had_already_submitted() {
+        let mut backend = FakeSignalBackend::empty();
+        backend.submit_shaped = 1;
+
+        let receipt = drive_signal_composer_placement(
+            &mut backend,
+            SignalLivePlacementRequest {
+                carrier: "foxtrot-8820-osl",
+                allow_replace_existing: false,
+            },
+        );
+
+        assert_eq!(
+            receipt.status,
+            SignalPlacementStatus::SubmitShapedCallObserved
+        );
+        assert!(receipt.enter_sent);
+        assert!(
+            backend.set_values.is_empty(),
+            "a backend that already submitted must not be written to at all"
+        );
+    }
+
+    #[test]
+    fn signal_live_probe_refuses_a_clear_that_commits_the_composer() {
+        let mut backend = FakeSignalBackend::empty();
+        backend.submits_after_clear = true;
+
+        let receipt = probe_signal_composer_write_then_clear(
+            &mut backend,
+            SignalLivePlacementRequest {
+                carrier: "golf-3312-osl",
+                allow_replace_existing: false,
+            },
+        );
+
+        assert_eq!(
+            receipt.status,
+            SignalPlacementStatus::SubmitShapedCallObserved
+        );
+        assert!(receipt.enter_sent);
+        assert!(!receipt.placed);
+    }
+
+    #[test]
+    fn signal_live_placement_refuses_a_carrier_that_carries_a_commit() {
+        for carrier in [
+            "hotel-1180-osl\n",
+            "hotel-1180-osl\r\n",
+            "hotel\n1180-osl",
+            "hotel-1180-osl\u{2028}",
+        ] {
+            let mut backend = FakeSignalBackend::empty();
+            let receipt = drive_signal_composer_placement(
+                &mut backend,
+                SignalLivePlacementRequest {
+                    carrier,
+                    allow_replace_existing: false,
+                },
+            );
+
+            assert_eq!(
+                receipt.status,
+                SignalPlacementStatus::InvalidCarrier,
+                "a carrier carrying {carrier:?} is a send, not a placement"
+            );
+            assert!(!receipt.placed);
+            assert!(backend.set_values.is_empty());
+        }
+    }
+
+    /// Every mechanism that could commit a Signal message without going through
+    /// the placement backend, spelled as it would appear in Rust source. The
+    /// scan is case-insensitive and runs over code with comments removed.
+    const SUBMIT_SHAPED_MECHANISMS: &[&str] = &[
+        "sendinput",
+        "keybd_event",
+        "keyeventf",
+        "input_keyboard",
+        "vk_return",
+        "vk_enter",
+        "postmessage",
+        "sendmessage",
+        "sendnotifymessage",
+        "wm_keydown",
+        "wm_keyup",
+        "wm_char",
+        "wm_ime_char",
+        "invoke",
+        "\\n\"",
+        "\\r\"",
+        "\\u{000a}",
+        "\\u{000d}",
+    ];
+
+    /// The production half of a module, lowercased, with comments removed so a
+    /// doc comment describing the prohibition is not mistaken for breaking it.
+    fn production_code(source: &str) -> String {
+        source
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_default()
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_ascii_lowercase()
+    }
+
+    #[test]
+    fn signal_placement_module_holds_no_submit_shaped_mechanism() {
+        // The scanner must be able to fire, or this guard is decoration.
+        assert!(production_code("let _ = element.Invoke(0);").contains("invoke"));
+        assert!(production_code("set_value(&format!(\"{carrier}\\n\"))").contains("\\n\""));
+        assert!(
+            production_code("// element.Invoke(0) described in a comment")
+                .trim()
+                .is_empty(),
+            "comments must be stripped before scanning"
+        );
+
+        for (module, source, anchor) in [
+            (
+                "native_signal_adapter.rs",
+                include_str!("native_signal_adapter.rs"),
+                "fn drive_signal_composer_placement",
+            ),
+            (
+                "native_a11y.rs",
+                include_str!("native_a11y.rs"),
+                "fn resolve_uia2_window",
+            ),
+        ] {
+            let code = production_code(source);
+            assert!(
+                code.contains(anchor),
+                "{module}: scanned region lost its production code, so the scan is vacuous"
+            );
+            for mechanism in SUBMIT_SHAPED_MECHANISMS {
+                assert!(
+                    !code.contains(mechanism),
+                    "{module} contains the submit-shaped mechanism {mechanism:?}. \
+                     No OSL mode may silently send: the placement path may only write a \
+                     value and read it back."
+                );
+            }
+        }
     }
 
     #[test]
@@ -890,6 +1158,10 @@ mod tests {
         assert_eq!(receipt.status, SignalPlacementStatus::Placed);
         assert!(receipt.placed);
         assert!(!receipt.enter_sent);
+        assert_eq!(
+            backend.submit_shaped, 0,
+            "the probe path must observe no submit-shaped interaction either"
+        );
     }
 
     #[test]
