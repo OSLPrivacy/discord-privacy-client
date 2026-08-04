@@ -6037,7 +6037,13 @@ fn get_osl_chat_local_state_key() -> Result<String, String> {
         format!("OSL Chat local-state directory is unavailable: {error}")
     })?;
     let key = osl_privacy_hub::osl_chat_local_state_key::osl_chat_local_state_key(&directory)?;
-    Ok(URL_SAFE_NO_PAD.encode(&*key))
+    // Fully qualified on purpose: the `URL_SAFE_NO_PAD` import at :4 is gated behind
+    // `whatsapp-qa-identity`, so a bare reference here compiles under that feature and
+    // fails under `--features desktop` -- i.e. it fails in the build that ships. See D-146.
+    Ok(base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        &*key,
+    ))
 }
 
 #[tauri::command]
