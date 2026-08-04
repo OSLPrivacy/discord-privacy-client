@@ -5,7 +5,9 @@
 //! it when an authenticated pointer arrives, never when its conversation view
 //! happens to be open.
 
-use crate::eager_fetch::{CipherStoreTransport, EagerFetchDriver, LocalMessageStore, PointerArrival};
+use crate::eager_fetch::{
+    CipherStoreTransport, EagerFetchDriver, LocalMessageStore, PointerArrival,
+};
 
 /// Fetch, authenticate/decrypt, and durably persist an OSL Chat payload on
 /// pointer arrival.  ACK ownership remains with the post-persistence path.

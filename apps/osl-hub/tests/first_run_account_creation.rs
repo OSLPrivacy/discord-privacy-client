@@ -37,10 +37,7 @@ fn isolated_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "osl-hub-first-run-{}-{nonce}",
-        std::process::id()
-    ))
+    std::env::temp_dir().join(format!("osl-hub-first-run-{}-{nonce}", std::process::id()))
 }
 
 /// One test, deliberately: base directory, active account directory and the
@@ -142,8 +139,7 @@ fn a_fresh_profile_creates_a_recoverable_account_and_records_its_recovery_kit() 
         account.join("recovery_kit_status.json").is_file(),
         "the reminder belongs beside the account it describes"
     );
-    account_recovery::clear_recovery_kit_unsaved()
-        .expect("the owner can confirm the kit is saved");
+    account_recovery::clear_recovery_kit_unsaved().expect("the owner can confirm the kit is saved");
     assert_eq!(account_recovery::recovery_kit_unsaved(), Ok(false));
 
     // 5. The phrase from step 2 really is this account's recovery phrase: it

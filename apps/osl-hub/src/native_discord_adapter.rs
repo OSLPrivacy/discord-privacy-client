@@ -35,10 +35,10 @@ use crate::discord_carrier_geometry::{
     self, CarrierGeometryInput, CarrierPlan, FixedPaddingSize, LineMetrics, PrivacyPaddingMode,
     VisibleStructure,
 };
-#[cfg(any(target_os = "windows", test))]
-use crate::native_a11y::MsaaBridgeCallClass;
 #[cfg(test)]
 use crate::native_a11y::msaa_bridge_call_class;
+#[cfg(any(target_os = "windows", test))]
+use crate::native_a11y::MsaaBridgeCallClass;
 
 /// `Scan -> Preview -> Confirm -> Execute -> Verify -> Receipt` for deleting the
 /// operator's OWN messages from Discord through Discord's own UI.
@@ -8036,14 +8036,13 @@ mod windows {
         SafeArrayUnaccessData,
     };
     use ::windows::Win32::UI::Accessibility::{
-        AccessibleObjectFromPoint, CUIAutomation, IAccessible, IUIAutomation,
-        IUIAutomationElement, IUIAutomationInvokePattern, IUIAutomationTextPattern,
-        IUIAutomationTextPattern2, IUIAutomationTextRange, IUIAutomationTreeWalker,
-        IUIAutomationValuePattern, UIA_ButtonControlTypeId, UIA_DocumentControlTypeId,
-        UIA_EditControlTypeId, UIA_FontNameAttributeId, UIA_FontSizeAttributeId,
-        UIA_FontWeightAttributeId, UIA_ForegroundColorAttributeId, UIA_InvokePatternId,
-        UIA_TextControlTypeId, UIA_TextPattern2Id, UIA_TextPatternId, UIA_ValuePatternId,
-        SELFLAG_TAKEFOCUS,
+        AccessibleObjectFromPoint, CUIAutomation, IAccessible, IUIAutomation, IUIAutomationElement,
+        IUIAutomationInvokePattern, IUIAutomationTextPattern, IUIAutomationTextPattern2,
+        IUIAutomationTextRange, IUIAutomationTreeWalker, IUIAutomationValuePattern,
+        UIA_ButtonControlTypeId, UIA_DocumentControlTypeId, UIA_EditControlTypeId,
+        UIA_FontNameAttributeId, UIA_FontSizeAttributeId, UIA_FontWeightAttributeId,
+        UIA_ForegroundColorAttributeId, UIA_InvokePatternId, UIA_TextControlTypeId,
+        UIA_TextPattern2Id, UIA_TextPatternId, UIA_ValuePatternId, SELFLAG_TAKEFOCUS,
     };
     // Only the MSAA transcript walk needs to enumerate children or to re-prove
     // which window an `IAccessible` belongs to, and that walk is QA-shell only.
@@ -11789,10 +11788,9 @@ mod windows {
         // The enumeration is rooted at the borrowed window rather than at the
         // desktop: OSL reparents Discord's window into its own hierarchy, so a
         // top-level walk would not find it at all.
-        let target = discord_uia2_wake_target(&crate::native_a11y::win32::Uia2Win32Host::rooted_at(
-            window,
-        ))
-        .ok()?;
+        let target =
+            discord_uia2_wake_target(&crate::native_a11y::win32::Uia2Win32Host::rooted_at(window))
+                .ok()?;
         // Issued on this thread, in this thread's apartment, exactly as before:
         // the returned reference is only usable where it was obtained.
         crate::native_a11y::wake_electron_accessibility(target.bound_hwnd)
@@ -12078,9 +12076,7 @@ mod windows {
             // busy, ask again". It is an integer, never text, so classifying it
             // cannot leak anything.
             Err(class) => {
-                return MsaaBridgeElement::CallFailed(MsaaBridgeRefusal::Call(
-                    class,
-                ));
+                return MsaaBridgeElement::CallFailed(MsaaBridgeRefusal::Call(class));
             }
         };
         let Ok(process_id) = (unsafe { element.CurrentProcessId() }) else {
@@ -18994,8 +18990,7 @@ mod tests {
         use crate::native_a11y::{Uia2TreeRoute, Uia2WakePolicy};
 
         let host = RecordedHost::new(discord_graph(), 696).chromium(0);
-        let target =
-            discord_uia2_wake_target(&host).expect("Discord's outer window must resolve");
+        let target = discord_uia2_wake_target(&host).expect("Discord's outer window must resolve");
 
         assert_eq!(
             target.bound_hwnd, 0x1001,

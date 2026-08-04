@@ -27,10 +27,7 @@ fn isolated_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("clock")
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "osl-hub-first-run-{}-{nonce}",
-        std::process::id()
-    ))
+    std::env::temp_dir().join(format!("osl-hub-first-run-{}-{nonce}", std::process::id()))
 }
 
 /// The account directory onboarding writes into: the shared base, because no
@@ -93,7 +90,10 @@ fn settings_reads_the_identity_list_right_after_first_run_account_creation() {
 
     assert_eq!(slots.len(), 1, "one identity exists, so one slot is listed");
     let slot = &slots[0];
-    assert!(slot.active, "the only identity on the device is the active one");
+    assert!(
+        slot.active,
+        "the only identity on the device is the active one"
+    );
     assert_eq!(slot.osl_user_id, created.user_id);
     // The renderer rejects the whole list on an empty label or user id.
     assert!(!slot.label.is_empty());

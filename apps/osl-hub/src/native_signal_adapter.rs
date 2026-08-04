@@ -803,9 +803,12 @@ fn descendants(nodes: &[SignalNode], root: usize) -> Result<Vec<usize>, SignalSe
 /// which is read, never written. Nothing written into a live composer may carry
 /// them: Signal commits the message on Enter, so the newline *is* the send.
 fn carrier_carries_submit(carrier: &str) -> bool {
-    carrier
-        .chars()
-        .any(|character| matches!(character, '\n' | '\r' | '\u{000b}' | '\u{2028}' | '\u{2029}'))
+    carrier.chars().any(|character| {
+        matches!(
+            character,
+            '\n' | '\r' | '\u{000b}' | '\u{2028}' | '\u{2029}'
+        )
+    })
 }
 
 fn valid_candidate_text(value: &str, max_text_bytes: usize) -> bool {

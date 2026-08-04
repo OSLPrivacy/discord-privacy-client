@@ -527,8 +527,7 @@ pub fn legacy_wide_encode_words(words: &[usize], target_bits: u32) -> Vec<bool> 
             return vec![false; target_bits as usize];
         }
         let value = word - 1;
-        let width = (target_bits as usize - index * WIDE_TOKEN_WORD_BITS)
-            .min(WIDE_TOKEN_WORD_BITS);
+        let width = (target_bits as usize - index * WIDE_TOKEN_WORD_BITS).min(WIDE_TOKEN_WORD_BITS);
         for shift in (0..width).rev() {
             bits.push((value >> shift) & 1 == 1);
         }

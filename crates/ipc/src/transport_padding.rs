@@ -61,8 +61,7 @@ pub fn frame_padded_transport_object(payload: &[u8]) -> Option<Vec<u8>> {
 pub fn unframe_padded_transport_object(object: &[u8]) -> Option<&[u8]> {
     let header = object.get(..LENGTH_PREFIX_BYTES)?;
     let length = usize::try_from(u32::from_be_bytes(header.try_into().ok()?)).ok()?;
-    object
-        .get(LENGTH_PREFIX_BYTES..LENGTH_PREFIX_BYTES.checked_add(length)?)
+    object.get(LENGTH_PREFIX_BYTES..LENGTH_PREFIX_BYTES.checked_add(length)?)
 }
 
 #[cfg(test)]

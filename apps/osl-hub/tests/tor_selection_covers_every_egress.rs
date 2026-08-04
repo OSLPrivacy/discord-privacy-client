@@ -137,12 +137,11 @@ fn the_username_directory_refuses_instead_of_looking_up_direct() {
 
     // A directory lookup carries the name of somebody the user is about to
     // talk to, so it is exactly the kind of request that must not slip out.
-    let attempted =
-        keystore::username::Resolver::new(&witness.base_url()).and_then(|resolver| {
-            resolver
-                .resolve("someone")
-                .map(|resolved| resolved.map(|identity| identity.user_id))
-        });
+    let attempted = keystore::username::Resolver::new(&witness.base_url()).and_then(|resolver| {
+        resolver
+            .resolve("someone")
+            .map(|resolved| resolved.map(|identity| identity.user_id))
+    });
 
     assert!(
         attempted.is_err(),

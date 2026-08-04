@@ -16,8 +16,8 @@
 //! compatibility path.
 
 use stego::{
-    bigram::WIDE_TOKEN_WORDS, decode_token, encode_token_shaped, rendered_rows,
-    ConversationCipher, RowBudget, TOKEN_PAYLOAD_BITS,
+    bigram::WIDE_TOKEN_WORDS, decode_token, encode_token_shaped, rendered_rows, ConversationCipher,
+    RowBudget, TOKEN_PAYLOAD_BITS,
 };
 
 #[test]
@@ -43,5 +43,8 @@ fn t1_t33_wide_pointer_round_trips_through_the_rebudgeted_cover() {
     );
 
     assert_eq!(shaped.rows, rendered_rows(shaped.text(), 40));
-    assert_eq!(decode_token(&cipher, detect_key, shaped.text()), Some(pointer));
+    assert_eq!(
+        decode_token(&cipher, detect_key, shaped.text()),
+        Some(pointer)
+    );
 }

@@ -8,8 +8,8 @@ use crate::credits::{unavailable_balance, BalanceDisplay};
 use cover_ai::fallback::{select_carrier, CarrierCapabilities, CarrierDecision};
 use serde::Serialize;
 use std::collections::HashSet;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 #[derive(Default)]
 pub struct AiCarrierState {
@@ -84,7 +84,9 @@ impl AiCarrierState {
             word_bank_fallback: !local_model_ready,
             cloud_consent_granted: self.cloud_consent.is_granted(),
             cloud_credit_balance: match unavailable_balance() {
-                BalanceDisplay::Current(balance) | BalanceDisplay::Stale(balance) => Some(balance.0),
+                BalanceDisplay::Current(balance) | BalanceDisplay::Stale(balance) => {
+                    Some(balance.0)
+                }
                 BalanceDisplay::Unknown => None,
             },
         }
@@ -152,7 +154,10 @@ mod tests {
 
     #[test]
     fn shipping_carrier_status_reports_an_unavailable_credit_ledger_as_unknown() {
-        assert_eq!(AiCarrierState::default().status().cloud_credit_balance, None);
+        assert_eq!(
+            AiCarrierState::default().status().cloud_credit_balance,
+            None
+        );
     }
 
     #[test]

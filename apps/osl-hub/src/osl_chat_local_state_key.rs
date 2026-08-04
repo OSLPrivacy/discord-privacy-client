@@ -50,9 +50,7 @@ pub fn osl_chat_local_state_key(dir: &Path) -> Result<Zeroizing<[u8; 32]>, Strin
         Some(key) => Zeroizing::new(key),
         None => Zeroizing::new(
             ipc::main_password::ensure_device_bound_fallback_file_storage_key(dir).map_err(
-                |error| {
-                    format!("OSL: no storage-key authority for OSL Chat local state: {error}")
-                },
+                |error| format!("OSL: no storage-key authority for OSL Chat local state: {error}"),
             )?,
         ),
     };

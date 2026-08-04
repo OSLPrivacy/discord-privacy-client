@@ -39,7 +39,9 @@ fn rn_wire_is_reported_by_the_command_dispatcher_and_overlay_drain() {
     // bare `continue`) makes this assertion fail.
     let drain = BROKER_SOURCE
         .split_once("if !ipc::wire_v2::is_native_overlay_relay_bundle(&bundle) {")
-        .and_then(|(_, tail)| tail.split_once("let wire = format!(\"DPC0::{}\", STANDARD.encode(&bundle));"))
+        .and_then(|(_, tail)| {
+            tail.split_once("let wire = format!(\"DPC0::{}\", STANDARD.encode(&bundle));")
+        })
         .map(|(drain, _)| drain)
         .expect("overlay drain's unknown-wire branch must remain present");
     assert!(

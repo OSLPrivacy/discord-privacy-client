@@ -184,7 +184,11 @@ mod tests {
         // the kit unsaved.
         ipc::main_password::set_file_storage_key(Some(TEST_KEY));
 
-        assert_eq!(recovery_kit_unsaved(), Ok(false), "a fresh profile has no kit");
+        assert_eq!(
+            recovery_kit_unsaved(),
+            Ok(false),
+            "a fresh profile has no kit"
+        );
         mark_recovery_kit_unsaved().expect("a first account can record its unsaved recovery kit");
         assert_eq!(recovery_kit_unsaved(), Ok(true));
         assert!(

@@ -244,9 +244,9 @@ pub fn reload_encrypted_state_after_unlock(
         // no-op read on every unlock once the marker is already set.
         if !bs.scopes.is_empty() {
             if let Err(e) = crate::whitelist_state::mark_burn_ledger_enrolled(config_dir) {
-                report
-                    .errors
-                    .push(format!("burned_scopes: enrolment marker not refreshed: {e}"));
+                report.errors.push(format!(
+                    "burned_scopes: enrolment marker not refreshed: {e}"
+                ));
             }
         }
         report.burned_scopes_count = bs.scopes.len();
@@ -282,20 +282,22 @@ pub fn reload_encrypted_state_after_unlock(
         let live = sk
             .states
             .into_iter()
-            .filter_map(|(scope, disk)| match crypto::sender_keys::SenderKeyState::try_from(disk) {
-                Ok(mut state) => {
-                    // A persisted sender root is intentionally absent. Do not
-                    // synthesize one here: the next outbound send must create
-                    // a chain and redistribute its SKDM.
-                    state.discard_sender_chain();
-                    Some((scope, state))
-                }
-                Err(error) => {
-                    tracing::warn!(scope = %crate::log_id::log_id(&scope), %error,
+            .filter_map(
+                |(scope, disk)| match crypto::sender_keys::SenderKeyState::try_from(disk) {
+                    Ok(mut state) => {
+                        // A persisted sender root is intentionally absent. Do not
+                        // synthesize one here: the next outbound send must create
+                        // a chain and redistribute its SKDM.
+                        state.discard_sender_chain();
+                        Some((scope, state))
+                    }
+                    Err(error) => {
+                        tracing::warn!(scope = %crate::log_id::log_id(&scope), %error,
                         "OSL: ignoring unreadable persisted sender-key state");
-                    None
-                }
-            })
+                        None
+                    }
+                },
+            )
             .collect();
         *state
             .sender_key_state

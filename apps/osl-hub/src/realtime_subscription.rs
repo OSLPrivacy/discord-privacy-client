@@ -60,8 +60,14 @@ impl Default for SubscriptionWindowManager {
 impl SubscriptionWindowManager {
     /// Refuse a size outside the protocol's fixed 1..=92 tag capacity.
     pub const fn new(window_size: usize) -> Self {
-        assert!(window_size > 0, "a subscription window must contain a tag slot");
-        assert!(window_size <= MAX_TAGS_PER_TICK, "window exceeds TICK tag capacity");
+        assert!(
+            window_size > 0,
+            "a subscription window must contain a tag slot"
+        );
+        assert!(
+            window_size <= MAX_TAGS_PER_TICK,
+            "window exceeds TICK tag capacity"
+        );
         Self {
             tags: BTreeSet::new(),
             next_start: 0,
@@ -122,7 +128,10 @@ mod tests {
         assert_eq!(first.last().copied(), Some(tag(32)));
         assert_eq!(second.first().copied(), Some(tag(33)));
         assert!(second.contains(&tag(1)));
-        assert!(first.iter().chain(&second).all(|tag| tag.as_bytes() != [0; DELIVERY_TAG_BYTES]));
+        assert!(first
+            .iter()
+            .chain(&second)
+            .all(|tag| tag.as_bytes() != [0; DELIVERY_TAG_BYTES]));
 
         manager.replace_tags([tag(77)]);
         assert_eq!(manager.next_window(), vec![tag(77)]);

@@ -124,7 +124,11 @@ fn a_message_actually_travels_through_production() {
     // The deployed Worker assigns the id, so it is 16 hex chars, not the 32 the
     // destination protocol produces. Asserting the bridge shape keeps this file
     // honest about which of the two protocols it is testing.
-    assert_eq!(sent.blob_id.len(), 16, "deployed Worker assigns an 8-byte id");
+    assert_eq!(
+        sent.blob_id.len(),
+        16,
+        "deployed Worker assigns an 8-byte id"
+    );
     assert!(sent.blob_id.bytes().all(|b| b.is_ascii_hexdigit()));
     assert!(
         !sent.cover_text.starts_with("DPC"),
@@ -247,7 +251,10 @@ fn the_destination_protocol_is_still_not_deployed() {
             None,
         )
         .expect_err("production does not implement the capability upload");
-    println!("[mutant absent-grant / destination-protocol] {}", status_of(&err));
+    println!(
+        "[mutant absent-grant / destination-protocol] {}",
+        status_of(&err)
+    );
     match &err {
         CipherStoreError::Status { status, .. } => assert!(
             (400..500).contains(status) || *status == 503,

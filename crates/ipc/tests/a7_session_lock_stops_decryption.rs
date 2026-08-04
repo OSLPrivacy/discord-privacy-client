@@ -430,7 +430,10 @@ fn locking_the_session_stops_decryption_and_unlocking_restores_it() {
     );
 
     // ---- 4b. Now the bookkeeping, which says WHAT was removed. ------------
-    assert!(!report.trigger_was_noop, "the lock must be a real transition");
+    assert!(
+        !report.trigger_was_noop,
+        "the lock must be a real transition"
+    );
     assert!(report.identity_cleared, "identity secret must be dropped");
     assert!(report.message_store_closed, "MessageStore must be closed");
     assert!(
@@ -484,7 +487,10 @@ fn locking_the_session_stops_decryption_and_unlocking_restores_it() {
         "unlock reported reload errors: {:?}",
         unlock.reload.errors
     );
-    assert!(unlock.identity_reloaded, "identity must come back from disk");
+    assert!(
+        unlock.identity_reloaded,
+        "identity must come back from disk"
+    );
     assert!(
         unlock.message_store_reopened,
         "the message store must reopen"
@@ -531,8 +537,9 @@ fn an_expired_idle_window_locks_the_session_at_the_command_boundary() {
 
     // Push last-activity back past the window. `Instant` cannot go before the
     // process/boot epoch, so skip rather than panic on a just-booted host.
-    let stale = Instant::now()
-        .checked_sub(Duration::from_secs(session_lock::SESSION_IDLE_LOCK_SECONDS + 60));
+    let stale = Instant::now().checked_sub(Duration::from_secs(
+        session_lock::SESSION_IDLE_LOCK_SECONDS + 60,
+    ));
     let Some(stale) = stale else {
         eprintln!("skipping: host clock cannot express a stale Instant");
         keystore::set_active_account_dir(None);

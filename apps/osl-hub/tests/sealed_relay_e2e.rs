@@ -395,21 +395,21 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                 (None, _) => json_response(400, json!({ "error": "bad_fetch_token" })),
                 (Some(_), false) => json_response(400, json!({ "error": "bad_ttl" })),
                 (Some(token), true) => {
-            let mut state = state.lock().unwrap();
-            let id = format!("{:016x}", state.blobs.len() as u64 + 1);
-            let digest = sha256_hex(&token);
-            state.blobs.insert(
-                id.clone(),
-                BlobRow {
-                    bytes: body,
-                    // Legacy has ONE credential: the same token authorises fetch and
-                    // delete. That is D-117, and the fixture must reproduce it rather
-                    // than quietly model the safer capability split.
-                    fetch_digest: digest.clone(),
-                    manage_digest: digest,
-                },
-            );
-            json_response(201, json!({ "id": id, "expires_at": now + 3600 }))
+                    let mut state = state.lock().unwrap();
+                    let id = format!("{:016x}", state.blobs.len() as u64 + 1);
+                    let digest = sha256_hex(&token);
+                    state.blobs.insert(
+                        id.clone(),
+                        BlobRow {
+                            bytes: body,
+                            // Legacy has ONE credential: the same token authorises fetch and
+                            // delete. That is D-117, and the fixture must reproduce it rather
+                            // than quietly model the safer capability split.
+                            fetch_digest: digest.clone(),
+                            manage_digest: digest,
+                        },
+                    );
+                    json_response(201, json!({ "id": id, "expires_at": now + 3600 }))
                 }
             }
         }

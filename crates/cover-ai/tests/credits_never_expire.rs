@@ -18,7 +18,8 @@ fn t13_tf5_v1_has_no_credit_balance_to_expire_or_renew() {
         "v1 must not sell a balance with an undisclosed expiry or renewal rule"
     );
     assert!(
-        ARCHITECTURE.contains("Credits and Pro time are separate balances and must never be conflated."),
+        ARCHITECTURE
+            .contains("Credits and Pro time are separate balances and must never be conflated."),
         "a future credit balance must never inherit Pro-time semantics"
     );
 }
