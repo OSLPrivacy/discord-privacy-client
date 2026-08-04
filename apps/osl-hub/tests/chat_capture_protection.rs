@@ -1,3 +1,9 @@
+// D-172 MUTANT M6. Break a TEST target that is not on the known-broken list.
+// The shipping build (gate (b) step 1) must stay GREEN -- this file is not in
+// the binary -- and scripts/ci/hub-target-ratchet.mjs must go RED with
+// "no longer compiles and is not on the known-broken list".
+fn d172_mutant() -> u32 { this_symbol_does_not_exist() }
+
 use osl_privacy_hub::chat_capture_protection::{CaptureConsent, EffectiveCaptureProtection as Effective};
 
 #[test]
