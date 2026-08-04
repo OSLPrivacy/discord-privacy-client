@@ -1,7 +1,7 @@
 {
   "ledger": "integration-branch quarantine",
   "note": "D-172. THIS IS A RATCHET, NOT AN EXCUSE. Every entry below is a check that is RED on integrate/first-usable today. None of them is fixed here and none of them is suppressed: each one still runs in full on every push to the integration branch and its findings are printed verbatim. What this file adds is the only thing a permanently-red step cannot give you -- a number that can FAIL. scripts/ci/quarantine-ratchet.mjs fails if a count goes UP (a regression slipped in) and also if a count goes DOWN without this file being lowered in the same change (a ratchet checked in one direction rots into a floor nobody ever lowers). Identical policy to scripts/ledger/state-baseline.json. To lower a number you must land the fix and the new number together.",
-  "measured": "scripts/ci/quarantine-ratchet.mjs on fix/d172-gate-integration-branch, 2026-08-04",
+  "measured": "scripts/ci/quarantine-ratchet.mjs on fix/d172-gate-integration-branch, 2026-08-04; the four vitest numbers measured by running each config directly, because `npm test` cannot reach the second one while the first is red",
   "provenance": "ts-test.yml, rust-test.yml and public-release-audit.yml last ran on main at 30658453352 / 30658453451 / 30658453416 on 2026-07-31, ALL GREEN. claims.yml, site-tests.yml and state-authority.yml do not exist on the default branch at all and have therefore never run anywhere. Every count below is therefore red that arrived on integrate/first-usable AFTER 2026-07-31 and was never seen, because no workflow has ever run on that branch. That is D-172 itself, measured.",
   "entries": [
     {
@@ -59,29 +59,50 @@
       "owner": "unassigned - surfaced by D-172"
     },
     {
-      "id": "keyserver-tests",
+      "id": "keyserver-tests-worker",
       "count": 13,
       "cwd": "keyserver-cf",
       "cmd": [
-        "npm",
-        "test"
+        "npx",
+        "vitest",
+        "run"
       ],
       "extract": "vitest-failed",
       "runsIn": ".github/workflows/ts-test.yml lane keyserver-worker",
-      "why": "13 failing vitest cases, 527 passing: 10 in test/integration/mail.test.ts, plus pool-separation, telegram-route and stripe-checkout. Unrelated to the username/bundle path.",
+      "why": "13 failing cases, 527 passing: 10 in test/integration/mail.test.ts, plus pool-separation, telegram-route and stripe-checkout. Run as its OWN entry rather than through `npm test`, which is `vitest run && vitest run --config vitest.node.config.ts` -- the && means the node pass never runs while this one is red. That is the same masking pattern as the D-162 CI step, one layer further down, inside an npm script.",
       "owner": "unassigned - keyserver lane"
     },
     {
-      "id": "cipher-store-tests",
+      "id": "keyserver-tests-node",
+      "count": 11,
+      "cwd": "keyserver-cf",
+      "cmd": [
+        "npx",
+        "vitest",
+        "run",
+        "--config",
+        "vitest.node.config.ts",
+        "--passWithNoTests"
+      ],
+      "extract": "vitest-failed",
+      "runsIn": "nothing, until this change",
+      "why": "11 failing cases, 119 passing, and NOBODY HAS EVER SEEN THEM. `npm test` short-circuits at the worker pass above, which has been red the whole time, so this config has never run in CI or in any hand-run of the four-command verification. Measured 2026-08-04 by running it directly.",
+      "owner": "unassigned - surfaced by D-172"
+    },
+    {
+      "id": "cipher-store-tests-node",
       "count": 4,
       "cwd": "cipher-store-cf",
       "cmd": [
-        "npm",
-        "test"
+        "npx",
+        "vitest",
+        "run",
+        "--config",
+        "vitest.node.config.ts"
       ],
       "extract": "vitest-failed",
       "runsIn": ".github/workflows/ts-test.yml lane cipher-store-worker",
-      "why": "4 failing cases in the vitest.node.config.ts pass (the worker pass is 219/219 green). Same reason as cipher-store-typecheck: never ran in CI, because the lane died earlier.",
+      "why": "4 failing cases in test-node/: d2-0010-release-contract, two in deletion-durability-probe, and policy-portability. Same short-circuit story as the keyserver pair -- reached only because the cipher-store worker pass happens to be green.",
       "owner": "unassigned - surfaced by D-172"
     }
   ],
@@ -92,6 +113,13 @@
       "runsIn": ".github/workflows/site-tests.yml, which does not exist on the default branch and has therefore never run anywhere",
       "why": "NOT ratcheted, and that is a finding rather than an omission. The check drives a real browser and measures horizontal overflow in pixels, so its finding count depends on the renderer: 6 blocking findings on WSL/Chromium (/docs/compare, /docs/download and /docs/faq at 320px and 390px @200%, overflow 8-81px) but 2 on ubuntu-latest/google-chrome (/docs/compare 320px by 18px, /docs/download 320px by 2px) -- measured on runs 30928896726 and 30929905893. Pinning either number produces a false red on the other machine. A ratchet whose value depends on which font stack is installed is not a ratchet. Recorded here so the finding is not lost and so nobody re-adds it to the ratchet without first making the measurement reproducible.",
       "owner": "unassigned - website lane; surfaced by D-172"
+    },
+    {
+      "id": "cipher-store-tests-worker",
+      "check": "npx vitest run   (in cipher-store-cf)",
+      "runsIn": ".github/workflows/ts-test.yml lane cipher-store-worker",
+      "why": "NOT ratcheted because it is FLAKY, which is the finding. 219/219 green locally and on run 30929905893; on run 30930446967, with byte-identical cipher-store code, `test/attachment-sweep.test.ts > attachment quota and expiry sweep > retains marked legacy metadata when multipart abort fails` failed. A count that changes without the code changing cannot be a ratchet in either direction. It also demonstrated the short-circuit: when this pass failed, the 134 tests of the node config did not run at all, and the naive total dropped from 4 to 1, which the ratchet correctly refused as a stale baseline rather than banking.",
+      "owner": "unassigned - cipher-store lane; surfaced by D-172"
     }
   ]
 }
