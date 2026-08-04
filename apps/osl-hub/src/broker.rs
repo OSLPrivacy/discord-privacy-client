@@ -1789,7 +1789,11 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
         &encrypted,
         ttl_seconds,
     )
-    .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
+    // D-144: the user-facing sentence stays byte-identical, but the cause is no
+    // longer thrown away. `map_err(|_| ...)` here cost D-127 a bisect: the word
+    // "prepare" reads as client-side, while this call is the UPLOAD, so the
+    // investigation looked past the server interaction that had actually failed.
+    .map_err(|error| format!("OSL could not prepare the encrypted copy text ({error})"))?;
     if security::record_peer_prose_blob(security_state, scope.clone(), uploaded.blob_id.clone())
         .is_err()
     {
@@ -1944,7 +1948,11 @@ fn prepare_peer_prose_text_inner_with_chunk(
             ttl_seconds,
         )
     }
-    .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
+    // D-144: the user-facing sentence stays byte-identical, but the cause is no
+    // longer thrown away. `map_err(|_| ...)` here cost D-127 a bisect: the word
+    // "prepare" reads as client-side, while this call is the UPLOAD, so the
+    // investigation looked past the server interaction that had actually failed.
+    .map_err(|error| format!("OSL could not prepare the encrypted copy text ({error})"))?;
     if security::record_peer_prose_blob(
         security_state,
         manual.scope.clone(),
