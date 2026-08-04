@@ -11,6 +11,7 @@ const ledgers = [
   ["events", () => import("./events.mjs")],
   ["routes", () => import("./routes.mjs")],
   ["bundle", () => import("./bundle.mjs")],
+  ["state", () => import("./state.mjs")],
 ];
 
 let failed = false;
