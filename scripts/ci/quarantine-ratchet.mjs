@@ -151,14 +151,30 @@ export const EXTRACTORS = {
   },
 
   // tsc --noEmit prints "file(line,col): error TS1234: message", with indented
-  // continuation lines for the elaborated ones. Line and column churn on every
-  // unrelated edit above the error, so the identity is file + code + message.
+  // continuation lines for the elaborated ones.
+  //
+  // The identity is FILE + ERROR CODE, plus a repeat number, and deliberately
+  // NOT the message. Two things rule the message out:
+  //   * line and column churn on every unrelated edit above the error;
+  //   * MEASURED on run 30936689646: tsc truncates a long type string at a
+  //     budget that counts the ABSOLUTE PATHS it embeds in that string, so the
+  //     same error reads "... CRYPTO_PRO_USD_CENTS?: string | undefined; }'" in
+  //     a short checkout and "... CRYPTO_PRO_USD_CENTS?: strin...'" under
+  //     /home/runner/work/discord-privacy-client/discord-privacy-client. An
+  //     identity that changes with the directory you cloned into is not an
+  //     identity; it reported a phantom DRIFT on a clean tree.
+  // The full message is printed verbatim on every run either way -- the ratchet
+  // grades identity, the log carries the description.
+  //
+  // Five `'first' is possibly 'undefined'` errors in one file are five findings,
+  // and fixing one of them must be visible, which is what withMultiplicity is
+  // for: they are "...: TS18048" through "...: TS18048  #5".
   'tsc-errors': (out) => {
     const ids = withMultiplicity(
       lines(normalisePaths(out))
-        .map((l) => l.match(/^(.+?)\((\d+),(\d+)\): error (TS\d+): (.*)$/))
+        .map((l) => l.match(/^(.+?)\((\d+),(\d+)\): error (TS\d+): /))
         .filter(Boolean)
-        .map((m) => `${m[1]}: ${m[4]}: ${m[5].trim()}`.slice(0, 400)),
+        .map((m) => `${m[1]}: ${m[4]}`),
     );
     return { ids, metrics: {} };
   },
@@ -477,8 +493,8 @@ function selfTest() {
       ['a/b.rs: personal WSL path', 'c/d.rs: personal WSL path'],
     ],
     'tsc-errors': [
-      'src/a.ts(1,1): error TS2304: nope\nsrc/a.ts(9,9): error TS2304: nope\nsrc/b.ts(2,2): error TS2551: no',
-      ['src/a.ts: TS2304: nope', 'src/a.ts: TS2304: nope  #2', 'src/b.ts: TS2551: no'],
+      'src/a.ts(1,1): error TS2304: nope\nsrc/a.ts(9,9): error TS2304: also nope\nsrc/b.ts(2,2): error TS2551: no',
+      ['src/a.ts: TS2304', 'src/a.ts: TS2304  #2', 'src/b.ts: TS2551'],
     ],
   };
   for (const [id, [sample, want]] of Object.entries(samples)) {
@@ -524,6 +540,14 @@ function selfTest() {
   ok('extractor a11y pins the combination count', a11yGot.metrics.combinations === 40);
   ok('extractor a11y refuses output whose ids do not add up to its own total',
     EXTRACTORS['a11y-findings']('check-a11y: 40 combinations, 9 blocking findings.') === null);
+
+  // Run 30936689646: the same tsc error read differently in a long checkout,
+  // because tsc's type-truncation budget counts the absolute paths it embeds.
+  ok('a tsc identity does not move when the checkout directory does',
+    JSON.stringify(EXTRACTORS['tsc-errors'](
+      "src/lib/t.ts(553,5): error TS2322: Type '{ MAILBOX: X<import(\"/short/src\").M>; ... 45 more ...; C?: string | undefined; }' is not assignable.").ids)
+    === JSON.stringify(EXTRACTORS['tsc-errors'](
+      "src/lib/t.ts(553,5): error TS2322: Type '{ MAILBOX: X<import(\"/home/runner/work/a-very-long-repo-name/a-very-long-repo-name/src\").M>; ... 45 more ...; C?: strin...' is not assignable.").ids));
 
   // tsc puts the checkout directory inside type names. Two machines must agree.
   ok('absolute checkout paths are normalised out of identities',

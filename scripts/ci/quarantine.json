@@ -69,22 +69,22 @@
       ],
       "extract": "tsc-errors",
       "runsIn": ".github/workflows/ts-test.yml lane keyserver-worker, and graded here by the quarantine-ratchet job of integration-gate.yml",
-      "why": "13 pre-existing TypeScript errors. THIS IS THE ENTRY D-192 WAS PROVEN ON: with a count-only ratchet, deleting the fail-closed comp-token guard in src/lib/auth.ts (one new error) and fixing one of the five `first is possibly undefined` errors in test/integration/license-redeem-idempotency.test.ts (one fewer) returned the count to 13 and printed HELD. By identity that pair is a DRIFT and fails. It is also the step the D-162 build gate was originally placed BEHIND, so that gate could never execute; the bundle gate now lives in its own job (worker-bundles) and no longer depends on this being green.",
+      "why": "13 pre-existing TypeScript errors. THIS IS THE ENTRY D-192 WAS PROVEN ON: with a count-only ratchet, deleting the fail-closed comp-token guard in src/lib/auth.ts (one new error) and fixing one of the five `first is possibly undefined` errors in test/integration/license-redeem-idempotency.test.ts (one fewer) returned the count to 13 and printed HELD. By identity that pair is a DRIFT and fails. It is also the step the D-162 build gate was originally placed BEHIND, so that gate could never execute; the bundle gate now lives in its own job (worker-bundles) and no longer depends on this being green. The identity is file + error code + a repeat number, NOT the message: run 30936689646 showed tsc truncating a long type string at a budget that counts the absolute paths embedded in it, so the same error reads differently under a long checkout path and reported a phantom DRIFT on a clean tree. The full message is printed verbatim on every run regardless.",
       "owner": "unassigned - keyserver lane",
       "ids": [
-        "src/endpoints/space-events.ts: TS18046: 'expiresAt' is of type 'unknown'.",
-        "src/endpoints/telegram.ts: TS2739: Type '{ DB: D1Database; MAILBOX: DurableObjectNamespace<Mailbox>; RATE_LIMIT_5: RateLimit; RATE_LIMIT_10: RateLimit; ... 5 more ...; TELEGRAM_OPERATOR_CHAT_IDS: string; }' is missing the following properties from type 'Env': ARCHIVE, ARCHIVE_PAYLOADS",
-        "src/lib/telegram.ts: TS2322: Type '{ DB: D1Database; AI?: Ai | undefined; AI_CARRIER_MODEL?: string | undefined; MAILBOX: DurableObjectNamespace<import(\"<repo>/keyserver-cf/src/index\").Mailbox>; ARCHIVE?: DurableObjectNamespace<Archive> | undefined; ... 45 more ...; CRYPTO_PRO_USD_CENTS?: string | undefined; }' is not assignable to type 'Env'.",
-        "src/lib/unicode-identifier/spike-worker.ts: TS2578: Unused '@ts-expect-error' directive.",
-        "src/lib/unicode-identifier/spike-worker.ts: TS2349: This expression is not callable.",
-        "test/integration/license-redeem-idempotency.test.ts: TS18048: 'first' is possibly 'undefined'.",
-        "test/integration/license-redeem-idempotency.test.ts: TS18048: 'first' is possibly 'undefined'.  #2",
-        "test/integration/license-redeem-idempotency.test.ts: TS18048: 'first' is possibly 'undefined'.  #3",
-        "test/integration/license-redeem-idempotency.test.ts: TS18048: 'first' is possibly 'undefined'.  #4",
-        "test/integration/license-redeem-idempotency.test.ts: TS18048: 'first' is possibly 'undefined'.  #5",
-        "test/unit/ai-generate.test.ts: TS2352: Conversion of type 'undefined' to type '{ messages: { content: string; }[]; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.",
-        "test/unit/ai-generate.test.ts: TS2493: Tuple type '[]' of length '0' has no element at index '1'.",
-        "test/unit/ai-generate.test.ts: TS2493: Tuple type '[]' of length '0' has no element at index '1'.  #2"
+        "src/endpoints/space-events.ts: TS18046",
+        "src/endpoints/telegram.ts: TS2739",
+        "src/lib/telegram.ts: TS2322",
+        "src/lib/unicode-identifier/spike-worker.ts: TS2578",
+        "src/lib/unicode-identifier/spike-worker.ts: TS2349",
+        "test/integration/license-redeem-idempotency.test.ts: TS18048",
+        "test/integration/license-redeem-idempotency.test.ts: TS18048  #2",
+        "test/integration/license-redeem-idempotency.test.ts: TS18048  #3",
+        "test/integration/license-redeem-idempotency.test.ts: TS18048  #4",
+        "test/integration/license-redeem-idempotency.test.ts: TS18048  #5",
+        "test/unit/ai-generate.test.ts: TS2352",
+        "test/unit/ai-generate.test.ts: TS2493",
+        "test/unit/ai-generate.test.ts: TS2493  #2"
       ]
     },
     {
@@ -97,16 +97,16 @@
       ],
       "extract": "tsc-errors",
       "runsIn": ".github/workflows/ts-test.yml lane cipher-store-worker, and graded here by the quarantine-ratchet job of integration-gate.yml",
-      "why": "7 pre-existing TypeScript errors. NOT previously recorded anywhere: the cipher-store steps sat after the keyserver typecheck in the same ts-test lane, so they had never run in CI at all. Split into their own lane by D-172.",
+      "why": "7 pre-existing TypeScript errors. NOT previously recorded anywhere: the cipher-store steps sat after the keyserver typecheck in the same ts-test lane, so they had never run in CI at all. Split into their own lane by D-172. Same file + error code identity as the keyserver entry, for the same measured reason.",
       "owner": "unassigned - surfaced by D-172",
       "ids": [
-        "src/endpoints/attachment-reserve.ts: TS18047: 'current' is possibly 'null'.",
-        "test-node/deletion-durability-probe.test.ts: TS7016: Could not find a declaration file for module '../scripts/deletion-durability-probe.mjs'. '<repo>/cipher-store-cf/scripts/deletion-durability-probe.mjs' implicitly has an 'any' type.",
-        "test/d2-0010-release-local.test.ts: TS2345: Argument of type 'string' is not assignable to parameter of type '\"0001_init.sql\" | \"0002_fetch_token.sql\" | \"0003_r2_attachments.sql\" | \"0004_attachment_capability_digests_and_quota.sql\" | \"0005_view_once_links.sql\" | \"0006_session_budget_and_atomic_rate_counters.sql\" | \"0007_link_grant_consumption.sql\" | \"0008_attachment_sweep_claims.sql\" | \"0009_prede",
-        "test/padme.test.ts: TS2352: Conversion of type '{ readonly DB: never; readonly PAYLOADS: never; }' to type 'Env' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.",
-        "test/rate-limit.test.ts: TS2741: Property 'PAYLOADS' is missing in type '{ DB: D1Database; ATTACHMENTS: R2Bucket; RATE_LIMIT: KVNamespace; RATE_LIMIT_HASH_KEY: string; }' but required in type 'Env'.",
-        "test/sweep-bounds.test.ts: TS2352: Conversion of type '{ waitUntil(): void; passThroughOnException(): void; }' to type 'ExecutionContext<unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.",
-        "test/undelivered-floor.test.ts: TS2352: Conversion of type '{ DB: D1Database; readonly PAYLOADS: never; }' to type 'Env' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first."
+        "src/endpoints/attachment-reserve.ts: TS18047",
+        "test-node/deletion-durability-probe.test.ts: TS7016",
+        "test/d2-0010-release-local.test.ts: TS2345",
+        "test/padme.test.ts: TS2352",
+        "test/rate-limit.test.ts: TS2741",
+        "test/sweep-bounds.test.ts: TS2352",
+        "test/undelivered-floor.test.ts: TS2352"
       ]
     },
     {
