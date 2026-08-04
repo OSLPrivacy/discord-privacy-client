@@ -6,9 +6,6 @@ const launchServices: LinkedService[] = [
   ["instagram", "Instagram"],
   ["snapchat", "Snapchat"],
   ["x", "X"],
-  ["telegram", "Telegram"],
-  ["signal", "Signal"],
-  ["whatsapp", "WhatsApp"],
   ["messenger", "Messenger"],
   ["email", "Email"],
 ].map(([id, displayName], sidebarOrder) => ({
@@ -40,11 +37,12 @@ describe("L1 Protect reachability", () => {
     vi.stubGlobal("cancelAnimationFrame", () => undefined);
     vi.resetModules();
     const { __oslHubUiTest } = await import("./main");
-    const apps = homeAppsFromServices(launchServices).filter((app) => app.visibility === "launch");
+    const apps = homeAppsFromServices(launchServices)
+      .filter((app) => app.visibility === "launch" && app.launchState === "available");
 
-    // The catalogue has two explicitly deferred apps (Slack and LinkedIn); L1's
-    // current shipping surface is the remaining sixteen launchable apps.
-    expect(apps).toHaveLength(16);
+    // Unsupported app specs may stay visible as roadmap tiles, but L1 Protect
+    // reachability only applies to the app catalog entries that can open.
+    expect(apps.map((app) => app.id)).toEqual(["discord"]);
 
     for (const app of apps) {
       const service = launchServices.find((candidate) => candidate.id === app.serviceId);

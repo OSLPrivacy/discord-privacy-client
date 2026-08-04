@@ -8,8 +8,8 @@ vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.li
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: mocks.getCurrentWindow }));
 
 const shippingHomeAppIds = [
-  "discord", "instagram", "snapchat", "x", "telegram", "signal", "whatsapp", "messenger",
-  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+  "discord", "instagram", "snapchat", "x", "messenger",
+  "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
 ] as const;
 
 async function loadUi() {

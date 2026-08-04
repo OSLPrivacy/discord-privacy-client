@@ -28,7 +28,9 @@ describe("local protected context policy", () => {
       .toBeLessThan(prepare.indexOf("prepareLocalProtectedText(contextToken"));
     expect(prepare).not.toContain("localProtectedSheet.ttlSeconds = ttlSeconds");
     expect(prepare).toContain("localProtectedSheet.draft = plaintext");
-    expect(prepare).toContain("navigator.clipboard.writeText(prepared.capsule)");
+    expect(prepare).toContain('setup.sendMode === "manual"');
+    expect(prepare.indexOf('setup.sendMode === "manual"'))
+      .toBeLessThan(prepare.indexOf("navigator.clipboard.writeText(prepared.capsule)"));
     expect(prepare.indexOf("hasExperimentalSendConsent")).toBeLessThan(prepare.indexOf("prepareLocalProtectedText(contextToken"));
     expect(prepare).toContain("Copied safely; nothing was sent.");
   });
