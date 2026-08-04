@@ -259,7 +259,7 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT = "osl://native-discord-composer
 // warning.
 const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-focus", "session-ended"] as const;
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
-type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
+type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
 type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
@@ -1852,6 +1852,7 @@ function onboardingContent(): string {
 
   if (onboardingRoute === "create") return identityPasswordForm("Create a password", "Create account", "setup");
   if (onboardingRoute === "unlock") return identityPasswordForm("Unlock OSL", "Unlock", "unlock");
+  if (onboardingRoute === "keylost") return identityKeyLostContent();
   if (onboardingRoute === "account-recovery") {
     // A legacy marker refusal is not a generic reset failure: it keeps its own
     // migration screen, which is the only place the two repair paths exist.
@@ -1877,6 +1878,30 @@ function onboardingContent(): string {
   if (onboardingRoute === "decoy") return `<section class="decoy-workspace" aria-labelledby="route-heading"><h1 id="route-heading" tabindex="-1">Workspace</h1><p>No recent items.</p><button class="button ghost" id="close-decoy" type="button">Close</button></section>`;
 
   return sendingSetupContent();
+}
+
+/**
+ * D-207 / D-150 — the device key that opens this account is gone.
+ *
+ * `identity.json` is on disk and will not unseal, so nothing the user can type
+ * will open it. This screen exists so that failure stops looking like the two
+ * it is routinely mistaken for: a fresh install (which would offer "Create
+ * account" over an account that still exists) and a locked session (which
+ * would offer a password box that cannot work). Both of those are how an
+ * unrecoverable state came to present as a healthy one.
+ *
+ * The only real way forward is the recovery phrase, so that is the primary
+ * action and it is the only one offered.
+ */
+function identityKeyLostContent(): string {
+  return `<section class="signin-card" aria-labelledby="route-heading">
+    <img class="osl-logo signin-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/>
+    <h1 id="route-heading" tabindex="-1">This device can no longer open your account</h1>
+    <p class="compact-lead onboarding-centered-copy">Your account is still on this device, but the key that unlocks it is gone from this device's secure storage. Your password cannot open it, and OSL will not pretend otherwise.</p>
+    <p class="compact-lead onboarding-centered-copy">Restore it with your 12-word recovery phrase. That restores the same account and the same contacts &mdash; on this device or any other.</p>
+    <button class="button primary signin-primary" data-onboarding="import">Restore with recovery phrase</button>
+    <p class="send-mode-truth">Nothing has been deleted. Until you restore, your saved messages and contacts stay encrypted and unreadable.</p>
+  </section>`;
 }
 
 function welcomeOnboardingContent(): string {
@@ -5359,7 +5384,11 @@ function settingsDivider(): string {
  */
 function accountUnlocked(): boolean {
   return core.readiness.bootstrapStatus !== "setupRequired"
-    && core.readiness.bootstrapStatus !== "passwordRequired";
+    && core.readiness.bootstrapStatus !== "passwordRequired"
+    // D-207: an account whose device key is gone is the least unlocked state
+    // there is. Reading it as unlocked is how "Protected \u2014 Device
+    // protection confirmed" came to sit above an account nothing could open.
+    && core.readiness.bootstrapStatus !== "identityKeyLost";
 }
 
 function passwordSecuritySettingsContent(): string {
@@ -5367,7 +5396,9 @@ function passwordSecuritySettingsContent(): string {
     ? `<button class="button primary" data-onboarding-action="create">Create password</button>`
     : core.readiness.bootstrapStatus === "passwordRequired"
       ? `<button class="button primary" data-onboarding-action="unlock">Unlock OSL</button>`
-      : `<span class="setting-status"><span class="dot"></span>Password configured and unlocked</span><button class="button" type="button" data-lock-session="now">Lock now</button>`;
+      : core.readiness.bootstrapStatus === "identityKeyLost"
+        ? `<span class="setting-status"><span class="dot"></span>This device can no longer open this account</span><button class="button primary" data-onboarding-action="import">Restore with recovery phrase</button>`
+        : `<span class="setting-status"><span class="dot"></span>Password configured and unlocked</span><button class="button" type="button" data-lock-session="now">Lock now</button>`;
   const roleForm = (role: "stealth" | "burn", configured: boolean, wired: boolean): string => {
     const title = role === "stealth" ? "Stealth password" : "Burn password";
     const consequence = role === "stealth" ? "decoy screen" : "account burn";
@@ -9465,6 +9496,12 @@ async function bootstrap(): Promise<void> {
       route = "service";
       serviceGuideStep = null;
       void startDiscordQaShell();
+    } else if (core.readiness.bootstrapStatus === "identityKeyLost") {
+      // D-207/D-150. This branch sits ABOVE both of the others on purpose: the
+      // account exists, so `welcome` would lie, and no password can open it, so
+      // `unlock` would send the user to type something that cannot work.
+      onboardingRoute = "keylost";
+      route = "onboarding";
     } else if (core.readiness.bootstrapStatus === "setupRequired") {
       onboardingRoute = "welcome";
       route = "onboarding";

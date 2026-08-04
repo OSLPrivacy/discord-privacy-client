@@ -17,7 +17,11 @@ export interface CoreReadiness {
   storageMethod: string | null;
 }
 
-export type BootstrapStatus = "notAttempted" | "setupRequired" | "inProgress" | "passwordRequired" | "ready" | "failed";
+// `identityKeyLost` (D-207/D-150): `identity.json` exists but the device
+// sealing key that opens it is gone. Deliberately NOT folded into
+// `setupRequired` (which shows a new-install screen over an account that still
+// exists) or `passwordRequired` (which asks for a password that cannot help).
+export type BootstrapStatus = "notAttempted" | "setupRequired" | "inProgress" | "passwordRequired" | "identityKeyLost" | "ready" | "failed";
 
 export interface CoreFeature {
   id: string;
@@ -156,7 +160,7 @@ const extendedReadinessKeys = [
   "bootstrapStatus",
 ] as const;
 const protectedStorageMethods = new Set(["tpm-pcp", "keyring", "os-keyring"]);
-const bootstrapStatuses: readonly BootstrapStatus[] = ["notAttempted", "setupRequired", "inProgress", "passwordRequired", "ready", "failed"];
+const bootstrapStatuses: readonly BootstrapStatus[] = ["notAttempted", "setupRequired", "inProgress", "passwordRequired", "identityKeyLost", "ready", "failed"];
 const featureKeys = ["id", "group", "label", "bridgeState"] as const;
 const bridgeStates: CoreFeature["bridgeState"][] = [
   "source-linked",
@@ -443,6 +447,9 @@ export function parseCoreReadiness(raw: unknown): CoreReadiness {
     (record.unlocked === true && record.originalCoreLinked !== true)
     || (record.identityLoaded !== true && record.storageMethod !== undefined && record.storageMethod !== null)
     || (record.bootstrapStatus === "passwordRequired" && record.unlocked === true)
+    // `identityKeyLost` means the blob would not open. A payload claiming both
+    // is incoherent, and the renderer must not act on it.
+    || (record.bootstrapStatus === "identityKeyLost" && record.identityLoaded === true)
     || (record.bootstrapStatus === "ready" && (
       record.unlocked !== true
       || record.identityLoaded !== true
