@@ -252,6 +252,17 @@ function selfTest() {
       if (!e[field]) { console.error(`  self-test FAILED: ${e.id} has no ${field}; a quarantine with no stated reason is a suppression`); bad = 1; }
     }
   }
+  // Checks that were considered and could NOT be ratcheted have to say so in
+  // the same file, with the same fields. Otherwise "we looked at it and decided
+  // not to" is indistinguishable from "we forgot", which is how a finding
+  // disappears.
+  for (const e of config.notRatcheted ?? []) {
+    for (const field of ['check', 'why', 'owner', 'runsIn']) {
+      if (!e[field]) { console.error(`  self-test FAILED: notRatcheted ${e.id} has no ${field}`); bad = 1; }
+    }
+    if (ids.has(e.id)) { console.error(`  self-test FAILED: ${e.id} is both ratcheted and not ratcheted`); bad = 1; }
+  }
+  process.stdout.write(`  self-test ok: ${config.entries.length} ratcheted, ${(config.notRatcheted ?? []).length} documented as unratchetable\n`);
   process.stdout.write(bad ? '\nquarantine ratchet self-test: FAILED\n' : '\nquarantine ratchet self-test: ok\n');
   return bad;
 }
