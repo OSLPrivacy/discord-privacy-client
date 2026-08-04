@@ -355,25 +355,21 @@ struct FrameJudge {
 
 impl FrameJudge {
     fn train(lines: &[&str]) -> Self {
+        // `CLOSED_CLASS` may repeat a word across categories (`no`, `that`,
+        // `there`); dedup, then assign dense ids so `unigram` can be a flat
+        // vector and the symbol count stays honest.
+        let ordered: std::collections::BTreeSet<&'static str> =
+            CLOSED_CLASS.iter().copied().collect();
         let mut alphabet = std::collections::HashMap::new();
-        for (offset, word) in CLOSED_CLASS.iter().enumerate() {
-            // `CLOSED_CLASS` may repeat a word across categories (`no`, `that`,
-            // `there`); the first index wins and the symbol count stays honest.
-            alphabet.entry(*word).or_insert(FIRST_CLOSED + offset);
-        }
-        // Re-pack so symbol ids are dense: `unigram` is a flat vector.
-        let mut packed = std::collections::HashMap::new();
         let mut next = FIRST_CLOSED;
-        let mut ordered: Vec<&&str> = alphabet.keys().collect();
-        ordered.sort_unstable();
         for word in ordered {
-            packed.insert(**word, next);
+            alphabet.insert(word, next);
             next += 1;
         }
         let alphabet_size = next;
 
         let mut judge = Self {
-            alphabet: packed,
+            alphabet,
             alphabet_size,
             unigram: vec![0; alphabet_size],
             unigram_total: 0,
@@ -899,7 +895,7 @@ fn control_3_the_judge_flags_word_salad() {
     let half = held_out.len() / 2;
     let (source, reference) = held_out.split_at(half);
 
-    let mut seed = 0xd215_c0n7_r0l3_5eedu64;
+    let mut seed = 0xd215_c047_9013_5eedu64;
     let salad: Vec<String> = suspects_from(source, trials(), CONTROL_WORDS)
         .iter()
         .map(|text| shuffled(text, &mut seed))
@@ -920,7 +916,7 @@ fn control_3_the_judge_flags_word_salad() {
         .into_iter()
         .collect();
     vocabulary.sort();
-    let mut seed = 0xd215_5a1a_d0_0002u64;
+    let mut seed = 0xd215_5a1a_d000_0002u64;
     let random: Vec<String> = (0..trials())
         .map(|_| {
             (0..CONTROL_WORDS)
