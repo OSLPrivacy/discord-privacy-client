@@ -1206,11 +1206,16 @@ fn first_party_osl_chat_reopen_backfills_waiting_rows_in_order_without_push() {
         3,
         "ordinary inbound OSL Chat messages are durable after the reopen drain"
     );
-    assert!(
+    assert_eq!(
         history
             .iter()
             .map(|row| row.discord_message_id.as_str())
-            .eq(prepared_ids.iter().rev().map(String::as_str)),
+            .collect::<Vec<_>>(),
+        prepared_ids
+            .iter()
+            .rev()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
         "durable history dedupes on the authenticated message id"
     );
 

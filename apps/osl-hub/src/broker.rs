@@ -1448,11 +1448,20 @@ struct NativeTextReassembly {
 /// peer permanently blocked one logical message. A disagreeing row now forms its
 /// own group, which simply never reassembles, and the legitimate group is
 /// untouched.
+///
+/// Field order is load-bearing: the derived `Ord` is what `chunk_groups`
+/// iterates by, and that iteration order is the order rows are PERSISTED,
+/// consumed and deleted in -- D-128 requires the durable write to happen inside
+/// the loop, before anything is consumed, so it cannot be reordered afterwards
+/// the way the returned batch can. Keyed on `logical_message_id` first, that
+/// order was the sort order of a random id, so durable OSL Chat history came
+/// back in a different order on every run. The authenticated sender sequence
+/// leads instead, so the durable record and the delivered batch agree.
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 struct NativeTextGroupKey {
-    logical_message_id: String,
     send_seq: Option<u64>,
     scope_commitment: Option<String>,
+    logical_message_id: String,
     chunk_count: u16,
     whole_sha256: String,
     version: u32,
@@ -6663,9 +6672,9 @@ fn valid_peer_message_id(value: &str) -> bool {
 /// key cannot be steered by anything the wire did not prove.
 fn native_text_group_key(payload: &PeerProtectedPayload) -> Option<NativeTextGroupKey> {
     Some(NativeTextGroupKey {
-        logical_message_id: payload.logical_message_id.clone()?,
         send_seq: payload.send_seq,
         scope_commitment: payload.scope_commitment.clone(),
+        logical_message_id: payload.logical_message_id.clone()?,
         chunk_count: payload.chunk_count?,
         whole_sha256: payload.whole_sha256.clone()?,
         version: payload.version,
