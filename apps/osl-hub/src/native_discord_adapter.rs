@@ -18463,6 +18463,1005 @@ mod windows {
              (wake=true wrapper=false means the resolve refused, not the handshake)"
         );
     }
+
+    /// D-212: drive `matching_conversation_document_count` -- the CONVERSATION
+    /// DOCUMENT PROOF -- against a live Discord, for the first time.
+    ///
+    /// Pre-D-204 this walk returned `Err` at its first statement, because
+    /// `msaa_client_from_window` was `None` unconditionally. That made the
+    /// outcome `Unproven`, which `header_proof_refuses`, and in a shipping build
+    /// (`header_proof_is_enforced()` is `!cfg!(feature = "discord-qa-shell")`)
+    /// every locate was refused. D-204 moves it from ALWAYS REFUSING to ABLE TO
+    /// PASS, and it is the gate that stops a carrier being placed in the wrong
+    /// conversation. This is the probe that watches it pass AND watches it
+    /// refuse.
+    ///
+    /// It calls the shipping function itself -- no re-implementation, no fake
+    /// host -- with the same arguments `locate_with_timeout` passes it:
+    ///
+    /// * `automation`, `root_bounds` and `target_window` from the same resolve;
+    /// * `composer_bounds` from `trusted_visible_element` applied to the ONE
+    ///   candidate `msaa_composer_candidates_from_window` returns, which is
+    ///   literally the production line at `13690`;
+    /// * `process_is_trusted` replicating `pinned_process_trust`, which trusts
+    ///   exactly one pid: the pid that owns the borrowed HWND.
+    ///
+    /// The independent oracle for "which conversation is actually open" is the
+    /// **Win32 window title** (`GetWindowTextW`), which is not an accessibility
+    /// call, does not go through Chromium's tree, and cannot be produced by the
+    /// thing under test.
+    ///
+    /// PRIVACY: no conversation name, DM name or transcript text is ever
+    /// printed. Names are reported as `stable_hash` digests, lengths and
+    /// booleans.
+    ///
+    /// Read-only. It never writes a value, never presses a key, never moves the
+    /// pointer, and never raises a window. Every walk is one of the shipping
+    /// bounded walks or an equally bounded census below.
+    ///
+    /// ```text
+    /// osl_privacy_hub-<hash>.exe --ignored --nocapture --test-threads=1 \
+    ///   report_the_discord_conversation_document_proof
+    /// ```
+    #[cfg(test)]
+    #[test]
+    #[ignore = "reads live Discord on a Windows host; run explicitly"]
+    fn report_the_discord_conversation_document_proof() {
+        use crate::native_a11y::{resolve_uia2_wake_target, Uia2WindowPlan};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowTextW;
+
+        const PROBE_CALL_TIMEOUT_MS: u64 = 5_000;
+        const PROBE_POLL_BUDGET_MS: u64 = 20_000;
+        // The composer discovery gets its own budget; the proof itself always
+        // runs on the shipping `COMPOSER_HEADER_PROOF_BUDGET`.
+        const DISCOVERY_BUDGET: Duration = Duration::from_millis(8_000);
+        // The census is bounded exactly like the shipping walks: a fixed point
+        // grid times a fixed ancestor depth, and no walker.
+        const CENSUS_X_PERCENTS: [i32; 5] = [30, 40, 50, 60, 70];
+        const CENSUS_Y_OFFSETS: [i32; 4] = [18, 30, 42, 56];
+        const SIDEBAR_X_PERCENTS: [i32; 3] = [8, 14, 20];
+        const SIDEBAR_Y_PERCENTS: [i32; 8] = [22, 30, 38, 46, 54, 62, 70, 78];
+        const MAX_OTHER_NAMES: usize = 10;
+
+        let digest = |value: &str| {
+            let full = stable_hash("d212-name", value);
+            full.chars().take(12).collect::<String>()
+        };
+
+        let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let _com = ComGuard(initialized.is_ok());
+
+        let desktop = crate::native_a11y::win32::Uia2Win32Host::desktop();
+        match resolve_uia2_wake_target(DISCORD_UIA2_WINDOW_PLAN, &desktop) {
+            Ok(window) => eprintln!(
+                "d212: SHIPPING plan resolve OK bound_pid={} route={:?}",
+                window.bound_process_id, window.tree_route
+            ),
+            Err(error) => eprintln!("d212: SHIPPING plan resolve REFUSED {error:?}"),
+        }
+        let image =
+            std::env::var("OSL_D212_DISCORD_IMAGE").unwrap_or_else(|_| "Discord".to_owned());
+        let image: &'static str = Box::leak(image.into_boxed_str());
+        let plan = Uia2WindowPlan::chromium_outer_msaa_root(
+            "Discord",
+            image,
+            crate::native_a11y::ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
+            PROBE_POLL_BUDGET_MS,
+            PROBE_CALL_TIMEOUT_MS,
+        );
+        let window = resolve_uia2_wake_target(plan, &desktop)
+            .unwrap_or_else(|error| panic!("d212: no Discord window for {image:?}: {error:?}"));
+        let target_window = window.bound_hwnd;
+        let mut window_pid = 0u32;
+        unsafe { GetWindowThreadProcessId(target_window as _, &mut window_pid) };
+        assert!(window_pid != 0, "the borrowed window must have an owner pid");
+        // `pinned_process_trust` trusts exactly one pid and nothing else.
+        let trusted_pid = window_pid;
+        let is_trusted = move |process_id: u32| process_id != 0 && process_id == trusted_pid;
+        let never_trusted = |_: u32| false;
+        eprintln!(
+            "d212: image={image:?} target_window_pid={window_pid} route={:?}",
+            window.tree_route
+        );
+
+        let automation: IUIAutomation =
+            unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }
+                .expect("d212: UI Automation must be available");
+        let root = unsafe { automation.ElementFromHandle(HWND(target_window as _)) }
+            .expect("d212: the Discord window must publish a root element");
+        let root_bounds = element_bounds(&root).expect("d212: the root must publish bounds");
+        eprintln!(
+            "d212: root {}x{} at ({},{})",
+            root_bounds.right - root_bounds.left,
+            root_bounds.bottom - root_bounds.top,
+            root_bounds.left,
+            root_bounds.top
+        );
+
+        // ---- the composer, exactly the way production finds it ----------------
+        let profile = ComposerDiscoveryProfile::default();
+        let probe_points = composer_probe_points(root_bounds)
+            .into_iter()
+            .map(|(x, y)| POINT { x, y })
+            .collect::<Vec<_>>();
+        let discovery_started = Instant::now();
+        let mut scan = msaa_composer_candidates_from_window(
+            &automation,
+            &profile,
+            root_bounds,
+            target_window,
+            &is_trusted,
+            discovery_started,
+            DISCOVERY_BUDGET,
+            &probe_points,
+        )
+        .expect("d212: the composer scan must answer inside its budget");
+        eprintln!(
+            "d212: composer scan candidates={} accessible_nodes={} bound_tripped={}",
+            scan.candidates.len(),
+            scan.accessible_nodes,
+            scan.bound_tripped
+        );
+        assert_eq!(
+            scan.candidates.len(),
+            1,
+            "d212: production binds only when exactly one composer candidate answers"
+        );
+        let (composer_element, _) = scan.candidates.pop().unwrap();
+        let composer_bounds = trusted_visible_element(&composer_element, root_bounds, &is_trusted)
+            .expect("d212: the composer must pass the trusted-visible cross-check");
+        let composer_name = unsafe { composer_element.CurrentName() }
+            .ok()
+            .map(|value| value.to_string())
+            .filter(|value| bounded_identity(Some(value)).is_some())
+            .expect("d212: the composer must publish a bounded name");
+        let conversation = profile
+            .conversation_from_composer_name(&composer_name)
+            .expect("d212: the composer name must yield a conversation")
+            .to_owned();
+        eprintln!(
+            "d212: composer name_hash={} conversation_hash={} conversation_len={} \
+             composer_bounds {}x{} at ({},{})",
+            digest(&composer_name),
+            digest(&conversation),
+            conversation.chars().count(),
+            composer_bounds.right - composer_bounds.left,
+            composer_bounds.bottom - composer_bounds.top,
+            composer_bounds.left,
+            composer_bounds.top
+        );
+
+        // ---- the INDEPENDENT oracle: the Win32 window title -------------------
+        let mut title = [0u16; 512];
+        let title_len =
+            unsafe { GetWindowTextW(target_window as _, title.as_mut_ptr(), title.len() as i32) };
+        let title = String::from_utf16_lossy(&title[..title_len.max(0) as usize]);
+        let variants = conversation_name_variants(&conversation);
+        let title_names_conversation = variants.iter().any(|variant| title.contains(variant));
+        eprintln!(
+            "d212: WIN32 TITLE ORACLE title_hash={} title_len={} title_names_conversation={}",
+            digest(&title),
+            title.chars().count(),
+            title_names_conversation
+        );
+
+        // ---- what the HEADER-shaped proof answers, so the fallback's role is
+        // ---- stated by measurement rather than by the code comment ------------
+        let header_started = Instant::now();
+        let header_count = matching_visible_msaa_header_count(
+            &automation,
+            root_bounds,
+            target_window,
+            &conversation,
+            &is_trusted,
+            header_started,
+            COMPOSER_HEADER_PROOF_BUDGET,
+        );
+        eprintln!(
+            "d212: header proof count={header_count:?} outcome={:?} admits_document_proof={}",
+            header_count.as_ref().map(|count| header_proof_outcome(*count)),
+            header_count
+                .as_ref()
+                .map(|count| header_absence_admits_document_proof(header_proof_outcome(*count)))
+                .unwrap_or(false)
+        );
+
+        // ---- a bounded census of every document the walk can reach ------------
+        // Not the proof: a diagnostic that answers "how many distinct documents
+        // could ever be counted here", which is the ambiguity question.
+        let census = || {
+            let Some(client) = msaa_client_from_window(target_window) else {
+                eprintln!("d212: census -- no client object, nothing to count");
+                return;
+            };
+            let width = root_bounds.right - root_bounds.left;
+            let mut ids = Vec::<Vec<i32>>::new();
+            let mut named_ids = Vec::<Vec<i32>>::new();
+            let mut contained_ids = Vec::<Vec<i32>>::new();
+            let mut name_digests = Vec::<String>::new();
+            let mut accepted_hits = 0usize;
+            for x_percent in CENSUS_X_PERCENTS {
+                for y_offset in CENSUS_Y_OFFSETS {
+                    let point = POINT {
+                        x: root_bounds.left + width * x_percent / 100,
+                        y: root_bounds.top + y_offset,
+                    };
+                    let Some(mut accessible) = msaa_hit_test_from_root(&client, point) else {
+                        continue;
+                    };
+                    for _ in 0..MSAA_MAX_ANCESTOR_DEPTH {
+                        if msaa_role(&accessible) == Some(MSAA_ROLE_SYSTEM_DOCUMENT) {
+                            let name = msaa_name(&accessible);
+                            let bounds = msaa_bounds(&accessible);
+                            if let Some(element) = trusted_document_bridge_element(
+                                &automation,
+                                &accessible,
+                                &is_trusted,
+                            ) {
+                                if let Ok(id) = runtime_id(&element) {
+                                    if !ids.contains(&id) {
+                                        ids.push(id.clone());
+                                        if let Some(name) = name.as_deref() {
+                                            let mark = digest(name);
+                                            if !name_digests.contains(&mark) {
+                                                name_digests.push(mark);
+                                            }
+                                        }
+                                    }
+                                    let names_match = name
+                                        .as_deref()
+                                        .is_some_and(|name| {
+                                            variants.iter().any(|variant| variant == name)
+                                        });
+                                    if names_match && !named_ids.contains(&id) {
+                                        named_ids.push(id.clone());
+                                    }
+                                    let contained = bounds.is_some_and(|bounds| {
+                                        conversation_document_bounds(
+                                            bounds,
+                                            composer_bounds,
+                                            root_bounds,
+                                        )
+                                    });
+                                    // Everything the shipping walk requires
+                                    // before it pushes a runtime id: name,
+                                    // containment, the trusted bridge above,
+                                    // the geometry agreement and the bridged
+                                    // name cross-check. Counted per HIT, not
+                                    // per distinct id, so the gap between the
+                                    // two is the dedup doing its work -- which
+                                    // is the whole of the ambiguity question.
+                                    let accepted = names_match
+                                        && contained
+                                        && bounds.is_some_and(|bounds| {
+                                            document_bridge_geometry_agrees(&element, bounds)
+                                        })
+                                        && unsafe { element.CurrentName() }
+                                            .ok()
+                                            .map(|value| value.to_string())
+                                            == name;
+                                    if accepted {
+                                        accepted_hits += 1;
+                                    }
+                                    if accepted && !contained_ids.contains(&id) {
+                                        contained_ids.push(id);
+                                    }
+                                }
+                            }
+                        }
+                        let Some(parent) = msaa_parent(&accessible) else {
+                            break;
+                        };
+                        accessible = parent;
+                    }
+                }
+            }
+            eprintln!(
+                "d212: census trusted_documents={} distinct_document_name_hashes={:?} \
+                 named_after_conversation={} accepted_hits={} distinct_accepted_documents={}",
+                ids.len(),
+                name_digests,
+                named_ids.len(),
+                accepted_hits,
+                contained_ids.len()
+            );
+        };
+        census();
+
+        // ---- the proof itself, case by case -----------------------------------
+        let proof = |label: &str,
+                     conversation: &str,
+                     bounds: AccessibilityBounds,
+                     window: isize,
+                     trust: &dyn Fn(u32) -> bool| {
+            let started = Instant::now();
+            let count = matching_conversation_document_count(
+                &automation,
+                root_bounds,
+                bounds,
+                window,
+                conversation,
+                trust,
+                started,
+                COMPOSER_HEADER_PROOF_BUDGET,
+            );
+            let outcome = match &count {
+                Ok(count) => header_proof_outcome(*count),
+                Err(_) => HeaderProofOutcome::Unproven,
+            };
+            eprintln!(
+                "d212: CASE {label:<34} count={count:?} outcome={outcome:?} \
+                 refuses={} stage={} elapsed_ms={}",
+                header_proof_refuses(outcome),
+                document_proof_stage(outcome),
+                started.elapsed().as_millis()
+            );
+            outcome
+        };
+
+        // 1. The right conversation, everything real.
+        let right = proof(
+            "the-open-conversation",
+            &conversation,
+            composer_bounds,
+            target_window,
+            &is_trusted,
+        );
+
+        // 2. Absent: a conversation name no client anywhere has.
+        let absent = proof(
+            "absent-name",
+            "osl-d212-no-such-conversation",
+            composer_bounds,
+            target_window,
+            &is_trusted,
+        );
+
+        // 3. A near-miss of the right name, so the match is not a prefix match.
+        let near_miss = proof(
+            "near-miss-of-the-open-name",
+            &format!("{conversation}x"),
+            composer_bounds,
+            target_window,
+            &is_trusted,
+        );
+
+        // 4. Starved: the same window and the same name, but the composer OSL
+        //    bound is not inside the document. This is the containment that ties
+        //    the conversation NAME to THIS composer.
+        let displaced = AccessibilityBounds {
+            left: root_bounds.right + 10,
+            top: root_bounds.bottom + 10,
+            right: root_bounds.right + 30,
+            bottom: root_bounds.bottom + 30,
+        };
+        let starved_containment = proof(
+            "starved-composer-outside-doc",
+            &conversation,
+            displaced,
+            target_window,
+            &is_trusted,
+        );
+
+        // 5. Starved: no trusted process. The document is still there, still
+        //    named, still containing the composer -- and the bridge refuses it.
+        let starved_trust = proof(
+            "starved-nothing-is-trusted",
+            &conversation,
+            composer_bounds,
+            target_window,
+            &never_trusted,
+        );
+
+        // 6. Starved: a window with no Discord anywhere beneath it, which is how
+        //    `msaa_client_from_window` returns `None` -- the EXACT pre-D-204
+        //    state, reproduced on demand at a live window. The shell window is
+        //    the default: it is owned by Explorer and has no Discord descendant.
+        //    The desktop window would be wrong here, because Discord's own
+        //    top-level window is a descendant of it.
+        let foreign = std::env::var("OSL_D212_FOREIGN_WINDOW")
+            .ok()
+            .and_then(|value| value.parse::<isize>().ok())
+            .unwrap_or_else(|| unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::GetShellWindow() as isize
+            });
+        let mut foreign_pid = 0u32;
+        unsafe { GetWindowThreadProcessId(foreign as _, &mut foreign_pid) };
+        let foreign_trusted = move |process_id: u32| process_id != 0 && process_id == foreign_pid;
+        eprintln!(
+            "d212: foreign window={foreign} pid={foreign_pid} client={}",
+            msaa_client_from_window(foreign).is_some()
+        );
+        let starved_window = proof(
+            "starved-foreign-window",
+            &conversation,
+            composer_bounds,
+            foreign,
+            &foreign_trusted,
+        );
+
+        // 7. Starved at the earliest possible point: a conversation string whose
+        //    name variants are empty, so the walk refuses before it asks Chromium
+        //    for anything at all.
+        let starved_names = proof(
+            "starved-empty-name-variants",
+            "@",
+            composer_bounds,
+            target_window,
+            &is_trusted,
+        );
+
+        // 8. Every other conversation the client is showing. Harvested from
+        //    Discord's own sidebar so the probe supplies no names of its own,
+        //    and every one of them is a plausible target a caller could ask for.
+        let mut others = Vec::<String>::new();
+        if let Some(client) = msaa_client_from_window(target_window) {
+            let width = root_bounds.right - root_bounds.left;
+            let height = root_bounds.bottom - root_bounds.top;
+            'harvest: for x_percent in SIDEBAR_X_PERCENTS {
+                for y_percent in SIDEBAR_Y_PERCENTS {
+                    let point = POINT {
+                        x: root_bounds.left + width * x_percent / 100,
+                        y: root_bounds.top + height * y_percent / 100,
+                    };
+                    let Some(mut accessible) = msaa_hit_test_from_root(&client, point) else {
+                        continue;
+                    };
+                    for _ in 0..4 {
+                        if let Some(name) = msaa_name(&accessible) {
+                            let name = name.trim().to_owned();
+                            if bounded_identity(Some(&name)).is_some()
+                                && name.chars().count() <= 64
+                                && !variants.contains(&name)
+                                && !others.contains(&name)
+                            {
+                                others.push(name);
+                                if others.len() >= MAX_OTHER_NAMES {
+                                    break 'harvest;
+                                }
+                            }
+                        }
+                        let Some(parent) = msaa_parent(&accessible) else {
+                            break;
+                        };
+                        accessible = parent;
+                    }
+                }
+            }
+        }
+        eprintln!("d212: harvested {} other candidate names", others.len());
+        let mut other_unique = 0usize;
+        for name in &others {
+            let outcome = proof(
+                "another-candidate-conversation",
+                name,
+                composer_bounds,
+                target_window,
+                &is_trusted,
+            );
+            eprintln!("d212:   ^ candidate name_hash={}", digest(name));
+            if matches!(outcome, HeaderProofOutcome::Unique) {
+                other_unique += 1;
+            }
+        }
+
+        eprintln!(
+            "d212: VERDICT right={right:?} absent={absent:?} near_miss={near_miss:?} \
+             starved_containment={starved_containment:?} starved_trust={starved_trust:?} \
+             starved_window={starved_window:?} starved_names={starved_names:?} \
+             others={} others_unique={other_unique} title_agrees={title_names_conversation}",
+            others.len()
+        );
+    }
+
+    /// D-212, the crossover: the same proof either side of a conversation
+    /// SWITCH.
+    ///
+    /// The read-only probe above shows the gate answering `Unique` for the open
+    /// conversation and refusing for every other name it was offered. What it
+    /// cannot show on its own is that `Unique` FOLLOWS the conversation rather
+    /// than being a constant of the window. This one switches the conversation
+    /// and re-asks both names, including the one that was right a second ago,
+    /// which is exactly the "carrier in the wrong conversation" shape.
+    ///
+    /// The switch is `IAccessible::accDoDefaultAction` on a sidebar entry. That
+    /// is a single accessibility call: **no key is pressed, no pointer moves and
+    /// no synthetic input event of any kind is generated.** The node it is
+    /// issued on must be a link or list item, must sit in the left sidebar
+    /// strip, and must carry a bounded name that is not the open conversation's.
+    ///
+    /// Run it once with no `OSL_D212_SWITCH_INDEX` to get the census, then again
+    /// with the index of the entry to open.
+    ///
+    /// PRIVACY: names are reported as digests only.
+    #[cfg(test)]
+    #[test]
+    #[ignore = "drives live Discord on a Windows host; run explicitly"]
+    fn report_the_discord_conversation_document_proof_across_a_switch() {
+        use crate::native_a11y::{resolve_uia2_wake_target, Uia2WindowPlan};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowTextW;
+
+        const PROBE_CALL_TIMEOUT_MS: u64 = 5_000;
+        const PROBE_POLL_BUDGET_MS: u64 = 20_000;
+        const DISCOVERY_BUDGET: Duration = Duration::from_millis(8_000);
+        const MSAA_ROLE_SYSTEM_LINK: u32 = 30;
+        const MSAA_ROLE_SYSTEM_LIST: u32 = 33;
+        const MSAA_ROLE_SYSTEM_LISTITEM: u32 = 34;
+        const MSAA_ROLE_SYSTEM_GROUPING: u32 = 20;
+        const SIDEBAR_X_PERCENTS: [i32; 4] = [6, 11, 16, 21];
+        const SIDEBAR_Y_PERCENTS: [i32; 12] =
+            [18, 24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84];
+        const CENSUS_CAP: usize = 24;
+        const SETTLE_MS: u64 = 2_000;
+
+        let digest = |value: &str| {
+            stable_hash("d212-name", value)
+                .chars()
+                .take(12)
+                .collect::<String>()
+        };
+
+        let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let _com = ComGuard(initialized.is_ok());
+
+        let desktop = crate::native_a11y::win32::Uia2Win32Host::desktop();
+        let image =
+            std::env::var("OSL_D212_DISCORD_IMAGE").unwrap_or_else(|_| "Discord".to_owned());
+        let image: &'static str = Box::leak(image.into_boxed_str());
+        let plan = Uia2WindowPlan::chromium_outer_msaa_root(
+            "Discord",
+            image,
+            crate::native_a11y::ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
+            PROBE_POLL_BUDGET_MS,
+            PROBE_CALL_TIMEOUT_MS,
+        );
+        let window = resolve_uia2_wake_target(plan, &desktop)
+            .unwrap_or_else(|error| panic!("d212s: no Discord window for {image:?}: {error:?}"));
+        let target_window = window.bound_hwnd;
+        let mut window_pid = 0u32;
+        unsafe { GetWindowThreadProcessId(target_window as _, &mut window_pid) };
+        let trusted_pid = window_pid;
+        let is_trusted = move |process_id: u32| process_id != 0 && process_id == trusted_pid;
+
+        let automation: IUIAutomation =
+            unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }
+                .expect("d212s: UI Automation must be available");
+        let root = unsafe { automation.ElementFromHandle(HWND(target_window as _)) }
+            .expect("d212s: the Discord window must publish a root element");
+        let root_bounds = element_bounds(&root).expect("d212s: the root must publish bounds");
+        let profile = ComposerDiscoveryProfile::default();
+
+        // What the window says it is showing, from Win32 rather than from the
+        // tree under test.
+        let title_of = || {
+            let mut buffer = [0u16; 512];
+            let length = unsafe {
+                GetWindowTextW(target_window as _, buffer.as_mut_ptr(), buffer.len() as i32)
+            };
+            String::from_utf16_lossy(&buffer[..length.max(0) as usize])
+        };
+
+        // The composer, and therefore the conversation, exactly as production
+        // derives them.
+        let bind = || -> (String, AccessibilityBounds) {
+            let probe_points = composer_probe_points(root_bounds)
+                .into_iter()
+                .map(|(x, y)| POINT { x, y })
+                .collect::<Vec<_>>();
+            let mut scan = msaa_composer_candidates_from_window(
+                &automation,
+                &profile,
+                root_bounds,
+                target_window,
+                &is_trusted,
+                Instant::now(),
+                DISCOVERY_BUDGET,
+                &probe_points,
+            )
+            .expect("d212s: the composer scan must answer");
+            assert_eq!(
+                scan.candidates.len(),
+                1,
+                "d212s: exactly one composer candidate must answer"
+            );
+            let (element, _) = scan.candidates.pop().unwrap();
+            let bounds = trusted_visible_element(&element, root_bounds, &is_trusted)
+                .expect("d212s: the composer must pass the trusted-visible cross-check");
+            let name = unsafe { element.CurrentName() }
+                .ok()
+                .map(|value| value.to_string())
+                .filter(|value| bounded_identity(Some(value)).is_some())
+                .expect("d212s: the composer must publish a bounded name");
+            let conversation = profile
+                .conversation_from_composer_name(&name)
+                .expect("d212s: the composer name must yield a conversation")
+                .to_owned();
+            (conversation, bounds)
+        };
+
+        let count_for = |conversation: &str, bounds: AccessibilityBounds| -> HeaderProofOutcome {
+            let started = Instant::now();
+            match matching_conversation_document_count(
+                &automation,
+                root_bounds,
+                bounds,
+                target_window,
+                conversation,
+                &is_trusted,
+                started,
+                COMPOSER_HEADER_PROOF_BUDGET,
+            ) {
+                Ok(count) => header_proof_outcome(count),
+                Err(_) => HeaderProofOutcome::Unproven,
+            }
+        };
+
+        let (before_conversation, before_bounds) = bind();
+        let before_title = title_of();
+        eprintln!(
+            "d212s: BEFORE conversation_hash={} title_hash={} title_names_conversation={} \
+             outcome={:?}",
+            digest(&before_conversation),
+            digest(&before_title),
+            conversation_name_variants(&before_conversation)
+                .iter()
+                .any(|variant| before_title.contains(variant)),
+            count_for(&before_conversation, before_bounds)
+        );
+
+        // ---- census the sidebar ----------------------------------------------
+        let client =
+            msaa_client_from_window(target_window).expect("d212s: Discord must answer the wake");
+        let width = root_bounds.right - root_bounds.left;
+        let height = root_bounds.bottom - root_bounds.top;
+        let before_variants = conversation_name_variants(&before_conversation);
+        let mut entries = Vec::<(u32, String, AccessibilityBounds)>::new();
+        'census: for x_percent in SIDEBAR_X_PERCENTS {
+            for y_percent in SIDEBAR_Y_PERCENTS {
+                let point = POINT {
+                    x: root_bounds.left + width * x_percent / 100,
+                    y: root_bounds.top + height * y_percent / 100,
+                };
+                let Some(mut accessible) = msaa_hit_test_from_root(&client, point) else {
+                    continue;
+                };
+                for _ in 0..6 {
+                    let role = msaa_role(&accessible).unwrap_or(0);
+                    let mut record = |role: u32, name: Option<String>, bounds| {
+                        let Some(name) = name else { return false };
+                        let name = name.trim().to_owned();
+                        let Some(bounds) = bounds else { return false };
+                        if bounded_identity(Some(&name)).is_some()
+                            && name.chars().count() <= 64
+                            && !before_variants.contains(&name)
+                            && !entries.iter().any(|(_, existing, _)| existing == &name)
+                        {
+                            entries.push((role, name, bounds));
+                        }
+                        entries.len() >= CENSUS_CAP
+                    };
+                    if record(role, msaa_name(&accessible), msaa_bounds(&accessible)) {
+                        break 'census;
+                    }
+                    // A hit test lands on the container, not on the row. The DM
+                    // list's own children are where the other conversations
+                    // are, so enumerate them once, bounded.
+                    if matches!(role, MSAA_ROLE_SYSTEM_LIST | MSAA_ROLE_SYSTEM_GROUPING) {
+                        if let Some(children) = msaa_child_refs(&accessible, 256) {
+                            for child in &children {
+                                if record(
+                                    child.role().unwrap_or(0),
+                                    child.name(),
+                                    child.bounds(),
+                                ) {
+                                    break 'census;
+                                }
+                            }
+                        }
+                    }
+                    let Some(parent) = msaa_parent(&accessible) else {
+                        break;
+                    };
+                    accessible = parent;
+                }
+            }
+        }
+        for (index, (role, name, bounds)) in entries.iter().enumerate() {
+            eprintln!(
+                "d212s: sidebar[{index}] role={role} name_hash={} name_len={} \
+                 at ({},{}) {}x{} document_proof={:?}",
+                digest(name),
+                name.chars().count(),
+                bounds.left,
+                bounds.top,
+                bounds.right - bounds.left,
+                bounds.bottom - bounds.top,
+                count_for(name, before_bounds)
+            );
+        }
+
+        // ---- the same census through UI Automation ----------------------------
+        // Discord's DM rows are not reachable by an MSAA hit test at the strip
+        // above: the deepest object under those points is a container, and the
+        // list's own children are groups. UI Automation names them directly.
+        // `FindAll(TreeScope_Descendants)` is the same call the substrate's own
+        // `subtree` makes (`native_a11y.rs:1840`), bounded by the provider.
+        let mut rows = Vec::<(IUIAutomationElement, String, AccessibilityBounds)>::new();
+        {
+            use ::windows::Win32::UI::Accessibility::{
+                UIA_ControlTypePropertyId, UIA_ListItemControlTypeId,
+            };
+            use ::windows::Win32::UI::Accessibility::TreeScope_Descendants;
+            let condition = unsafe {
+                automation.CreatePropertyCondition(
+                    UIA_ControlTypePropertyId,
+                    &VARIANT::from(UIA_ListItemControlTypeId.0),
+                )
+            }
+            .expect("d212s: the list-item condition must build");
+            // Exactly what `tree_root`'s `MsaaBridge` arm builds
+            // (`native_a11y.rs:1829-1832`), which is the ninth consumer of the
+            // wake and the one every Discord element read goes through.
+            let bridged = crate::native_a11y::element_from_ia_accessible(
+                &automation,
+                &msaa_client_from_window(target_window)
+                    .expect("d212s: Discord must answer the wake"),
+            )
+            .expect("d212s: the MsaaBridge root must bridge");
+            if let Ok(found) = unsafe { bridged.FindAll(TreeScope_Descendants, &condition) } {
+                let length = unsafe { found.Length() }.unwrap_or(0);
+                for index in 0..length {
+                    let Ok(element) = (unsafe { found.GetElement(index) }) else {
+                        continue;
+                    };
+                    let Some(bounds) = element_bounds(&element) else {
+                        continue;
+                    };
+                    // The left sidebar strip only.
+                    if bounds.left > root_bounds.left + width * 30 / 100 {
+                        continue;
+                    }
+                    let Some(name) = unsafe { element.CurrentName() }
+                        .ok()
+                        .map(|value| value.to_string())
+                        .filter(|value| bounded_identity(Some(value.trim())).is_some())
+                    else {
+                        continue;
+                    };
+                    let name = name.trim().to_owned();
+                    rows.push((element, name, bounds));
+                }
+            }
+        }
+        for (index, (_, name, bounds)) in rows.iter().enumerate() {
+            eprintln!(
+                "d212s: uia_row[{index}] name_hash={} name_len={} at ({},{}) {}x{} \
+                 document_proof={:?}",
+                digest(name),
+                name.chars().count(),
+                bounds.left,
+                bounds.top,
+                bounds.right - bounds.left,
+                bounds.bottom - bounds.top,
+                count_for(name, before_bounds)
+            );
+        }
+
+        if let Some(index) = std::env::var("OSL_D212_UIA_INDEX")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+        {
+            use ::windows::Win32::UI::Accessibility::{
+                IUIAutomationLegacyIAccessiblePattern, IUIAutomationSelectionItemPattern,
+                UIA_LegacyIAccessiblePatternId, UIA_SelectionItemPatternId,
+            };
+            let (element, name, _) = rows
+                .get(index)
+                .unwrap_or_else(|| panic!("d212s: no uia row at index {index}"));
+            eprintln!("d212s: activating uia_row[{index}] name_hash={}", digest(name));
+            let invoked = unsafe { element.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId) }
+                .and_then(|pattern| unsafe { pattern.Invoke() })
+                .is_ok();
+            let selected = if invoked {
+                false
+            } else {
+                unsafe {
+                    element.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                        UIA_SelectionItemPatternId,
+                    )
+                }
+                .and_then(|pattern| unsafe { pattern.Select() })
+                .is_ok()
+            };
+            // Chromium publishes navigational rows through the legacy bridge
+            // rather than through `Invoke`, so this is the arm that answers.
+            let legacy = if invoked || selected {
+                false
+            } else {
+                unsafe {
+                    element.GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
+                        UIA_LegacyIAccessiblePatternId,
+                    )
+                }
+                .and_then(|pattern| unsafe { pattern.DoDefaultAction() })
+                .is_ok()
+            };
+            eprintln!(
+                "d212s: uia activation invoked={invoked} selected={selected} legacy={legacy}"
+            );
+            assert!(
+                invoked || selected || legacy,
+                "d212s: the row exposed no activation pattern at all"
+            );
+            std::thread::sleep(Duration::from_millis(SETTLE_MS));
+            let (after_conversation, after_bounds) = bind();
+            let after_title = title_of();
+            eprintln!(
+                "d212s: AFTER(uia) conversation_hash={} changed={} title_hash={} \
+                 title_names_conversation={}",
+                digest(&after_conversation),
+                after_conversation != before_conversation,
+                digest(&after_title),
+                conversation_name_variants(&after_conversation)
+                    .iter()
+                    .any(|variant| after_title.contains(variant))
+            );
+            eprintln!(
+                "d212s: CROSSOVER(uia) new_name_new_bounds={:?} OLD_name_new_bounds={:?} \
+                 OLD_name_OLD_bounds={:?} new_name_OLD_bounds={:?}",
+                count_for(&after_conversation, after_bounds),
+                count_for(&before_conversation, after_bounds),
+                count_for(&before_conversation, before_bounds),
+                count_for(&after_conversation, before_bounds)
+            );
+            // Put the operator's client back where it was found.
+            let restore = rows.iter().position(|(_, name, bounds)| {
+                bounds.left <= root_bounds.left + width * 30 / 100
+                    && before_variants
+                        .iter()
+                        .any(|variant| name.contains(variant.as_str()))
+            });
+            match restore {
+                Some(restore) => {
+                    let (element, name, _) = &rows[restore];
+                    eprintln!(
+                        "d212s: restoring uia_row[{restore}] name_hash={}",
+                        digest(name)
+                    );
+                    let invoked = unsafe {
+                        element.GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
+                            UIA_LegacyIAccessiblePatternId,
+                        )
+                    }
+                    .and_then(|pattern| unsafe { pattern.DoDefaultAction() })
+                    .is_ok();
+                    std::thread::sleep(Duration::from_millis(SETTLE_MS));
+                    let (restored, _) = bind();
+                    eprintln!(
+                        "d212s: restored invoked={invoked} back_to_original={}",
+                        restored == before_conversation
+                    );
+                }
+                None => eprintln!("d212s: no row named the original conversation to restore to"),
+            }
+            return;
+        }
+
+        let Some(index) = std::env::var("OSL_D212_SWITCH_INDEX")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+        else {
+            eprintln!("d212s: census only, nothing was activated");
+            return;
+        };
+        let (role, name, _) = entries
+            .get(index)
+            .unwrap_or_else(|| panic!("d212s: no sidebar entry at index {index}"));
+        eprintln!(
+            "d212s: activating sidebar[{index}] role={role} name_hash={}",
+            digest(name)
+        );
+
+        // Re-find the node by name and activate it. One accessibility call, no
+        // synthetic input of any kind.
+        let mut activated = false;
+        'activate: for x_percent in SIDEBAR_X_PERCENTS {
+            for y_percent in SIDEBAR_Y_PERCENTS {
+                let point = POINT {
+                    x: root_bounds.left + width * x_percent / 100,
+                    y: root_bounds.top + height * y_percent / 100,
+                };
+                let Some(mut accessible) = msaa_hit_test_from_root(&client, point) else {
+                    continue;
+                };
+                // The activation is allowed only on a navigational node: a link
+                // or a list item by default, overridable to a single named role
+                // so a census can be acted on without a rebuild. Never a
+                // button, never an edit, never the composer.
+                let allowed_role = std::env::var("OSL_D212_SWITCH_ROLE")
+                    .ok()
+                    .and_then(|value| value.parse::<u32>().ok());
+                let role_is_allowed = |observed: u32| match allowed_role {
+                    Some(allowed) => observed == allowed,
+                    None => {
+                        matches!(observed, MSAA_ROLE_SYSTEM_LINK | MSAA_ROLE_SYSTEM_LISTITEM)
+                    }
+                };
+                for _ in 0..6 {
+                    let observed_role = msaa_role(&accessible).unwrap_or(0);
+                    if role_is_allowed(observed_role)
+                        && msaa_name(&accessible)
+                            .is_some_and(|value| value.trim() == name.as_str())
+                    {
+                        let child = msaa_self_variant();
+                        match unsafe { accessible.accDoDefaultAction(&child) } {
+                            Ok(()) => {
+                                activated = true;
+                                break 'activate;
+                            }
+                            Err(error) => {
+                                eprintln!("d212s: accDoDefaultAction refused: {error:?}");
+                                break 'activate;
+                            }
+                        }
+                    }
+                    if matches!(observed_role, MSAA_ROLE_SYSTEM_LIST | MSAA_ROLE_SYSTEM_GROUPING) {
+                        if let Some(children) = msaa_child_refs(&accessible, 256) {
+                            for entry in &children {
+                                if role_is_allowed(entry.role().unwrap_or(0))
+                                    && entry
+                                        .name()
+                                        .is_some_and(|value| value.trim() == name.as_str())
+                                {
+                                    match unsafe {
+                                        entry.reader.accDoDefaultAction(&entry.child)
+                                    } {
+                                        Ok(()) => {
+                                            activated = true;
+                                            break 'activate;
+                                        }
+                                        Err(error) => {
+                                            eprintln!(
+                                                "d212s: accDoDefaultAction refused: {error:?}"
+                                            );
+                                            break 'activate;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let Some(parent) = msaa_parent(&accessible) else {
+                        break;
+                    };
+                    accessible = parent;
+                }
+            }
+        }
+        assert!(activated, "d212s: the sidebar entry was never activated");
+        std::thread::sleep(Duration::from_millis(SETTLE_MS));
+
+        let (after_conversation, after_bounds) = bind();
+        let after_title = title_of();
+        let changed = after_conversation != before_conversation;
+        eprintln!(
+            "d212s: AFTER conversation_hash={} changed={changed} title_hash={} \
+             title_names_conversation={}",
+            digest(&after_conversation),
+            digest(&after_title),
+            conversation_name_variants(&after_conversation)
+                .iter()
+                .any(|variant| after_title.contains(variant))
+        );
+        eprintln!(
+            "d212s: CROSSOVER new_name_new_bounds={:?} OLD_name_new_bounds={:?} \
+             OLD_name_OLD_bounds={:?} new_name_OLD_bounds={:?}",
+            count_for(&after_conversation, after_bounds),
+            count_for(&before_conversation, after_bounds),
+            count_for(&before_conversation, before_bounds),
+            count_for(&after_conversation, before_bounds)
+        );
+    }
 }
 
 #[cfg(test)]
