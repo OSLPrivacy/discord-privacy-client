@@ -125,11 +125,23 @@ describe("D-162 username endpoints validate and never transform", () => {
     expect(await hit.json()).toMatchObject({ found: true, username: "d162_alice" });
 
     // A confusable-adjacent but grammatically legal handle is a DIFFERENT
-    // identity here. Folding it would be the T5-K2 behaviour, which is parked
-    // as D-162 and deliberately absent.
+    // identity under the shipping semantics, and a second user may CLAIM it.
+    // Under T5-K2's skeleton index this claim was a 409 -- the parked
+    // `rejects a UTS #39 skeleton collision` spec in usernames.test.ts is
+    // exactly this case. Asserting the claim succeeds is what makes this
+    // discriminating: a bare `found: false` lookup of an unclaimed name passes
+    // under every implementation that does not crash, T5-K2 included.
+    const other = userId();
+    const otherPair = await registerTestUser(SELF, other);
+    expect((await claim("d162_a1ice", other, otherPair)).status).toBe(200);
+
     const distinct = await lookup("d162_a1ice");
     expect(distinct.status).toBe(200);
-    expect(await distinct.json()).toMatchObject({ found: false });
+    expect(await distinct.json()).toMatchObject({ found: true, username: "d162_a1ice" });
+    // ...and the original is untouched by it.
+    expect(await (await lookup("d162_alice")).json()).toMatchObject({
+      found: true, username: "d162_alice",
+    });
 
     // And the capitalised spelling is refused outright rather than folded onto
     // the row that exists.
