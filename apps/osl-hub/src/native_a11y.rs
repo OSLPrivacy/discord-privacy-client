@@ -1200,7 +1200,7 @@ pub(crate) mod win32 {
     unsafe extern "system" fn collect_window(
         window: windows_sys::Win32::Foundation::HWND,
         param: windows_sys::Win32::Foundation::LPARAM,
-    ) -> windows_sys::core::BOOL {
+    ) -> windows_sys::Win32::Foundation::BOOL {
         let sink = &mut *(param as *mut Vec<isize>);
         sink.push(window as isize);
         1
@@ -1265,11 +1265,8 @@ pub(crate) mod win32 {
                 }
                 let (visible, area) = visible_and_area(hwnd);
                 let parent_hwnd = parent_of(hwnd);
-                let associated_app_hwnd = root_ancestor_of(hwnd)
-                    .filter(|root| process_id_of(*root) != process_id)
-                    .or_else(|| {
-                        root_ancestor_of(hwnd).filter(|_| parent_hwnd.is_none())
-                    });
+                let associated_app_hwnd =
+                    root_ancestor_of(hwnd).filter(|root| process_id_of(*root) != process_id);
                 Some(Uia2OwnedWindow {
                     hwnd,
                     parent_hwnd,
@@ -1525,12 +1522,16 @@ pub(crate) mod win32 {
     }
 }
 
+/// The recorded-provider test host lives here rather than in a private test
+/// module so every adapter's own tests can drive the same fake through the
+/// same seam. One fake, one pipeline: a second copy would be exactly the fork
+/// this task exists to avoid.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    const WAIT_MS: u64 = 90_000;
-    const CALL_TIMEOUT_MS: u64 = 750;
+    pub(crate) const WAIT_MS: u64 = 90_000;
+    pub(crate) const CALL_TIMEOUT_MS: u64 = 750;
 
     #[test]
     fn electron_wake_alerts_then_requests_the_same_custom_object() {
@@ -1789,7 +1790,7 @@ mod tests {
     // The producer, driven off Windows against A-00's recorded graphs.
     // -----------------------------------------------------------------
 
-    fn owned(
+    pub(crate) fn owned(
         hwnd: isize,
         parent_hwnd: Option<isize>,
         associated_app_hwnd: Option<isize>,
@@ -1813,30 +1814,30 @@ mod tests {
     /// A recorded provider: the window graph A-00 measured, plus the one
     /// behaviour that matters for the poll -- how many elements the tree
     /// exposes before it is woken, and how many after.
-    struct RecordedHost {
-        windows: Vec<Uia2OwnedWindow>,
+    pub(crate) struct RecordedHost {
+        pub(crate) windows: Vec<Uia2OwnedWindow>,
         /// What `element_count` answers before the wake, or for a provider
         /// that needs none, before the tree has settled.
-        unpopulated_elements: usize,
-        populated_elements: usize,
+        pub(crate) unpopulated_elements: usize,
+        pub(crate) populated_elements: usize,
         /// How many settles the tree needs after the wake before it populates.
-        settles_before_populated: usize,
-        needs_wake_to_populate: bool,
-        wake_answers: bool,
-        editables: Vec<Uia2Editable>,
-        value: std::cell::RefCell<Option<String>>,
-        readback_suffix: &'static str,
-        woken: std::cell::Cell<bool>,
-        settles: std::cell::RefCell<Vec<u64>>,
-        deadlines: std::cell::RefCell<Vec<u64>>,
-        set_values: std::cell::RefCell<Vec<String>>,
-        submit_shaped: std::cell::Cell<usize>,
-        submit_shaped_on_set: bool,
-        never_answers: bool,
+        pub(crate) settles_before_populated: usize,
+        pub(crate) needs_wake_to_populate: bool,
+        pub(crate) wake_answers: bool,
+        pub(crate) editables: Vec<Uia2Editable>,
+        pub(crate) value: std::cell::RefCell<Option<String>>,
+        pub(crate) readback_suffix: &'static str,
+        pub(crate) woken: std::cell::Cell<bool>,
+        pub(crate) settles: std::cell::RefCell<Vec<u64>>,
+        pub(crate) deadlines: std::cell::RefCell<Vec<u64>>,
+        pub(crate) set_values: std::cell::RefCell<Vec<String>>,
+        pub(crate) submit_shaped: std::cell::Cell<usize>,
+        pub(crate) submit_shaped_on_set: bool,
+        pub(crate) never_answers: bool,
     }
 
     impl RecordedHost {
-        fn new(windows: Vec<Uia2OwnedWindow>, populated_elements: usize) -> Self {
+        pub(crate) fn new(windows: Vec<Uia2OwnedWindow>, populated_elements: usize) -> Self {
             Self {
                 windows,
                 unpopulated_elements: 1,
@@ -1857,13 +1858,13 @@ mod tests {
             }
         }
 
-        fn chromium(mut self, settles_before_populated: usize) -> Self {
+        pub(crate) fn chromium(mut self, settles_before_populated: usize) -> Self {
             self.needs_wake_to_populate = true;
             self.settles_before_populated = settles_before_populated;
             self
         }
 
-        fn with_editables(mut self, editables: Vec<Uia2Editable>) -> Self {
+        pub(crate) fn with_editables(mut self, editables: Vec<Uia2Editable>) -> Self {
             self.editables = editables;
             self
         }
@@ -1962,7 +1963,7 @@ mod tests {
         }
     }
 
-    fn composer(name: &str) -> Uia2Editable {
+    pub(crate) fn composer(name: &str) -> Uia2Editable {
         Uia2Editable {
             runtime_id: vec![42, 7],
             name: name.to_owned(),
@@ -1980,7 +1981,7 @@ mod tests {
 
     /// Discord: outer `Chrome_WidgetWin_1`, woken, read through the MSAA
     /// client object. 696 elements measured.
-    fn discord_graph() -> Vec<Uia2OwnedWindow> {
+    pub(crate) fn discord_graph() -> Vec<Uia2OwnedWindow> {
         vec![
             owned(
                 0x1001,
@@ -2004,7 +2005,7 @@ mod tests {
     }
 
     /// Telegram: Qt, outer window directly, no renderer child, no wake.
-    fn telegram_graph() -> Vec<Uia2OwnedWindow> {
+    pub(crate) fn telegram_graph() -> Vec<Uia2OwnedWindow> {
         vec![owned(
             0x2001,
             None,
@@ -2017,7 +2018,7 @@ mod tests {
     }
 
     /// Signal: Electron, outer -> renderer child, woken.
-    fn signal_graph() -> Vec<Uia2OwnedWindow> {
+    pub(crate) fn signal_graph() -> Vec<Uia2OwnedWindow> {
         vec![
             owned(
                 0x3001,
@@ -2042,7 +2043,7 @@ mod tests {
 
     /// WhatsApp: a WinUI 3 shell whose content is a renderer child inside a
     /// SIBLING `msedgewebview2` process, rooted at the shell's window.
-    fn whatsapp_graph() -> Vec<Uia2OwnedWindow> {
+    pub(crate) fn whatsapp_graph() -> Vec<Uia2OwnedWindow> {
         vec![
             owned(
                 0x4001,

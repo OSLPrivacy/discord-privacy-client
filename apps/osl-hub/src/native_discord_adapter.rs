@@ -49,6 +49,58 @@ use crate::native_a11y::msaa_bridge_call_class;
 /// Burn -- see `docs/design/burn-contract.md:14`, which stays true.
 pub mod guided_deletion;
 
+/// How long Discord's accessibility tree is given to populate after the wake.
+///
+/// The same budget the recovery ladder already spends
+/// (`A11Y_ENABLE_RECOVERY_BUDGET`), stated in the plan so the substrate
+/// describes Discord's real timing rather than a plausible one.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) const DISCORD_UIA2_POLL_BUDGET_MS: u64 = 1_000;
+
+/// The deadline every cross-process call the substrate issues on Discord's
+/// behalf must answer inside. Cross-process accessibility has frozen both OSL
+/// and Discord on this machine; an unbounded call is a hang waiting to happen.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) const DISCORD_UIA2_CALL_TIMEOUT_MS: u64 = 1_500;
+
+/// Discord's measured UIA2 window plan.
+///
+/// Discord reaches its tree through Chromium's custom MSAA client object at the
+/// **outer** host window, and bridges that object into UI Automation. It does
+/// not bind the `Chrome_RenderWidgetHostHWND` child, which is the route A-00
+/// measured from PowerShell. Both reach a writable composer; only one of them
+/// is the mechanism that ships, and `Uia2TreeRoute::MsaaBridge` is what names
+/// the difference.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) const DISCORD_UIA2_WINDOW_PLAN: crate::native_a11y::Uia2WindowPlan =
+    crate::native_a11y::Uia2WindowPlan::chromium_outer_msaa_root(
+        "Discord",
+        "Discord",
+        crate::native_a11y::ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
+        DISCORD_UIA2_POLL_BUDGET_MS,
+        DISCORD_UIA2_CALL_TIMEOUT_MS,
+    );
+
+/// Which window Discord's accessibility wake is issued at.
+///
+/// This is Discord's whole consumption of the shared substrate, and it is
+/// deliberately only the shape decision. Discord keeps its own poll ladder and
+/// its own write path: the ladder is driven by composer candidates rather than
+/// by an element count, and the write path is Slate-aware, which
+/// `ValuePattern::SetValue` is not. Adopting either would change the timing or
+/// the mechanism of the one provider with a proven end-to-end path, and that
+/// is a regression, not a refactor.
+///
+/// When the substrate refuses, the caller sees exactly what it sees today when
+/// Chromium declines the handshake -- no accessibility tree -- and the existing
+/// recovery ladder handles it. No new failure shape is introduced.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn discord_uia2_wake_target(
+    host: &dyn crate::native_a11y::Uia2Syscalls,
+) -> Result<crate::native_a11y::Uia2ResolvedWindow, crate::native_a11y::Uia2AcquireError> {
+    crate::native_a11y::resolve_uia2_wake_target(DISCORD_UIA2_WINDOW_PLAN, host)
+}
+
 #[cfg(any(target_os = "windows", test, feature = "discord-qa-shell"))]
 const MAX_CARRIERS: usize = 32;
 
@@ -11728,7 +11780,22 @@ mod windows {
     /// issues `WM_GETOBJECT`; holding the returned reference keeps the lazily
     /// built tree alive for the rest of this bounded operation.
     fn msaa_client_from_window(window: isize) -> Option<IAccessible> {
-        crate::native_a11y::wake_electron_accessibility(window)
+        // The shared substrate decides WHICH window the wake is issued at. For
+        // Discord's plan that resolves to the borrowed outer window itself, so
+        // the handshake below is byte-for-byte the one that shipped -- but the
+        // decision now lives in one place for all four providers instead of
+        // being implied by the argument this function was handed.
+        //
+        // The enumeration is rooted at the borrowed window rather than at the
+        // desktop: OSL reparents Discord's window into its own hierarchy, so a
+        // top-level walk would not find it at all.
+        let target = discord_uia2_wake_target(&crate::native_a11y::win32::Uia2Win32Host::rooted_at(
+            window,
+        ))
+        .ok()?;
+        // Issued on this thread, in this thread's apartment, exactly as before:
+        // the returned reference is only usable where it was obtained.
+        crate::native_a11y::wake_electron_accessibility(target.bound_hwnd)
     }
 
     thread_local! {
@@ -18915,6 +18982,87 @@ mod tests {
             .find("\n    }\n")
             .unwrap_or_else(|| panic!("{signature} is unterminated"));
         &body[..end]
+    }
+
+    /// Discord's window shape now comes from the shared substrate rather than
+    /// from whatever handle this module happened to be passed. Starving the
+    /// substrate's resolver has to break Discord, or the substrate is still the
+    /// taxonomy with no consumer that D-139 found.
+    #[test]
+    fn discord_resolves_its_wake_target_through_the_shared_substrate() {
+        use crate::native_a11y::tests::{discord_graph, RecordedHost};
+        use crate::native_a11y::{Uia2TreeRoute, Uia2WakePolicy};
+
+        let host = RecordedHost::new(discord_graph(), 696).chromium(0);
+        let target =
+            discord_uia2_wake_target(&host).expect("Discord's outer window must resolve");
+
+        assert_eq!(
+            target.bound_hwnd, 0x1001,
+            "Discord binds the outer host window, not a renderer child"
+        );
+        assert_eq!(target.app_outer_hwnd, 0x1001);
+        assert_eq!(target.wake_policy, Uia2WakePolicy::WmGetObjectChromium);
+        assert_eq!(
+            target.tree_route,
+            Uia2TreeRoute::MsaaBridge,
+            "Discord reads Chromium's MSAA client object, never a UIA tree at that window"
+        );
+        assert_eq!(target.call_timeout_ms, DISCORD_UIA2_CALL_TIMEOUT_MS);
+        let deadlines = host.deadlines.borrow().clone();
+        assert!(
+            !deadlines.is_empty()
+                && deadlines
+                    .iter()
+                    .all(|deadline| *deadline == DISCORD_UIA2_CALL_TIMEOUT_MS),
+            "every cross-process call must carry the plan's deadline, saw {deadlines:?}"
+        );
+    }
+
+    #[test]
+    fn discord_refuses_a_window_graph_that_holds_no_discord_window() {
+        use crate::native_a11y::tests::{telegram_graph, RecordedHost};
+        use crate::native_a11y::{Uia2AcquireError, Uia2WindowResolveError};
+
+        let host = RecordedHost::new(telegram_graph(), 743);
+
+        assert_eq!(
+            discord_uia2_wake_target(&host),
+            Err(Uia2AcquireError::Resolve(
+                Uia2WindowResolveError::MissingAppOuter
+            )),
+            "someone else's window is not Discord's, however plausible it looks"
+        );
+    }
+
+    /// The live wake is `cfg(windows)`, so it is neither compiled nor run here.
+    /// Asserted structurally, the way this file already guards every other
+    /// Windows-only route: the wake must be issued at the window the substrate
+    /// resolved, not at the argument.
+    #[test]
+    fn the_discord_wake_is_issued_at_the_window_the_substrate_resolved() {
+        let body = nested_function_body(
+            adapter_source(),
+            "fn msaa_client_from_window(window: isize)",
+        );
+
+        assert!(
+            body.contains("discord_uia2_wake_target("),
+            "the wake must go through the shared substrate"
+        );
+        assert!(
+            body.contains("wake_electron_accessibility(target.bound_hwnd)"),
+            "the wake must be issued at the resolved window, not at the argument"
+        );
+        assert!(
+            !body.contains("wake_electron_accessibility(window)"),
+            "waking the raw argument would leave the shape decision unconsumed"
+        );
+        assert!(
+            body.contains("rooted_at("),
+            "a reparented Discord window is not in the top-level set, so a \
+             desktop-wide enumeration would never find it"
+        );
     }
 
     #[test]
