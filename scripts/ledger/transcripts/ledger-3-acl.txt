@@ -1,106 +1,198 @@
-$ tmp=/tmp/osl-ledger-acl-mutants.peXlLk; git archive HEAD, apply pending OSL Mail ACL grants
-$ node scripts/ledger/acl-diff.mjs --root=$tmp --no-cache  # baseline restore check
+$ tmp=$(mktemp -d /tmp/osl-ledger-acl.XXXXXX); rsync temp root; remove core:window:allow-minimize grant
+$ node scripts/ledger/acl-diff.mjs --root=$tmp --no-cache
 LEDGER acl -- commands issued vs ACL-granted, including framework-internal, ledger 3 of 7
   capability files covering webview main: 6
-  distinct permissions granted: 167
+  distinct permissions granted: 159
   modules reachable from main-window entries: 104
-  distinct commands issued: 130
+  distinct commands issued: 158
   framework-injected issuers that fire here: 2
   tauri version (Cargo.lock / vendored): 2.11.1 / 2.11.1
   @tauri-apps/api version: 2.11.1
-  invoke() calls with a non-literal command (not analysable): 0
-  dead exported command issuers excepted: 15
-  accepted exceptions: 15/15 (high-water mark 15)
-  RESULT: GREEN
-
-$ mutant 1: remove core:window:allow-is-maximized from apps/osl-hub/capabilities/hub.json
-LEDGER acl -- commands issued vs ACL-granted, including framework-internal, ledger 3 of 7
-  capability files covering webview main: 6
-  distinct permissions granted: 166
-  modules reachable from main-window entries: 104
-  distinct commands issued: 130
-  framework-injected issuers that fire here: 2
-  tauri version (Cargo.lock / vendored): 2.11.1 / 2.11.1
-  @tauri-apps/api version: 2.11.1
-  invoke() calls with a non-literal command (not analysable): 0
-  dead exported command issuers excepted: 15
-  accepted exceptions: 15/15 (high-water mark 15)
-  VIOLATIONS (1):
-    ungranted (1):
+  invoke() calls with a non-literal command (not analysable): 8
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (35):
+    ungranted (26):
+      - burn_native_discord_overlay_chat -- needs "allow-burn-native-discord-overlay-chat" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:557
+      - claim_hub_username -- needs "allow-claim-hub-username" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:934
+      - execute_discord_guided_deletion -- needs "allow-execute-discord-guided-deletion" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1433
+      - get_hub_recovery_kit_unsaved -- needs "allow-get-hub-recovery-kit-unsaved" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1091
+      - get_native_discord_overlay_state -- needs "allow-get-native-discord-overlay-state" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:137
+      - host_osl_lan_room -- needs "allow-host-osl-lan-room" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/osl-collab.ts:69
+      - join_osl_lan_room -- needs "allow-join-osl-lan-room" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/osl-collab.ts:70
+      - list_native_discord_overlay_attachments -- needs "allow-list-native-discord-overlay-attachments" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:595
+      - open_native_discord_overlay_attachment -- needs "allow-open-native-discord-overlay-attachment" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:605
+      - open_native_discord_overlay_text -- needs "allow-open-native-discord-overlay-text" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:527
+      - osl_mail_list_threads -- needs "allow-osl-mail-list-threads" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/osl-mail-adapter.ts:226
+      - plugin:window|is_focused -- needs "core:window:allow-is-focused" in a capability covering the main webview; issued via @tauri-apps/api getCurrentWindow().isFocused()
+          apps/osl-hub-ui/src/main.ts:2415
       - plugin:window|is_maximized -- needs "core:window:allow-is-maximized" in a capability covering the main webview; issued via @tauri-apps/api getCurrentWindow().isMaximized()
-          apps/osl-hub-ui/src/main.ts:1611
-  RESULT: RED
-exit=1 (expected RED)
-
-$ restore mutant 1 from baseline temp root
-LEDGER acl -- commands issued vs ACL-granted, including framework-internal, ledger 3 of 7
-  capability files covering webview main: 6
-  distinct permissions granted: 167
-  modules reachable from main-window entries: 104
-  distinct commands issued: 130
-  framework-injected issuers that fire here: 2
-  tauri version (Cargo.lock / vendored): 2.11.1 / 2.11.1
-  @tauri-apps/api version: 2.11.1
-  invoke() calls with a non-literal command (not analysable): 0
-  dead exported command issuers excepted: 15
-  accepted exceptions: 15/15 (high-water mark 15)
-  RESULT: GREEN
-
-$ mutant 2: add fake main-webview issuer of overlay-only send_native_discord_overlay_carrier
-LEDGER acl -- commands issued vs ACL-granted, including framework-internal, ledger 3 of 7
-  capability files covering webview main: 6
-  distinct permissions granted: 167
-  modules reachable from main-window entries: 104
-  distinct commands issued: 131
-  framework-injected issuers that fire here: 2
-  tauri version (Cargo.lock / vendored): 2.11.1 / 2.11.1
-  @tauri-apps/api version: 2.11.1
-  invoke() calls with a non-literal command (not analysable): 0
-  dead exported command issuers excepted: 15
-  accepted exceptions: 15/15 (high-water mark 15)
-  VIOLATIONS (1):
-    ungranted (1):
+          apps/osl-hub-ui/src/main.ts:1527
+      - plugin:window|minimize -- needs "core:window:allow-minimize" in a capability covering the main webview; issued via @tauri-apps/api appWindow.minimize(), @tauri-apps/api currentWindow.minimize()
+          apps/osl-hub-ui/src/main.ts:1539
+          apps/osl-hub-ui/src/whatsapp-qa.ts:248
+          apps/osl-hub-ui/src/signal-qa-main.ts:59
+      - plugin:window|set_focus -- needs "core:window:allow-set-focus" in a capability covering the main webview; issued via @tauri-apps/api getCurrentWindow().setFocus()
+          apps/osl-hub-ui/src/main.ts:5756
+      - prepare_native_discord_overlay_text -- needs "allow-prepare-native-discord-overlay-text" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:273
+      - preview_discord_guided_deletion -- needs "allow-preview-discord-guided-deletion" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1415
+      - reveal_native_discord_overlay_view_once -- needs "allow-reveal-native-discord-overlay-view-once" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:537
+      - scan_discord_own_messages_for_deletion -- needs "allow-scan-discord-own-messages-for-deletion" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1402
+      - select_native_discord_overlay_attachment -- needs "allow-select-native-discord-overlay-attachment" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:587
       - send_native_discord_overlay_carrier -- needs "allow-send-native-discord-overlay-carrier" in a capability covering the main webview; issued via direct
-          apps/osl-hub-ui/src/main.ts:9882
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:471
+      - send_native_discord_qa_atomic_text -- needs "allow-send-native-discord-qa-atomic-text" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:507
+      - set_hub_recovery_kit_unsaved -- needs "allow-set-hub-recovery-kit-unsaved" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1099
+      - set_native_discord_overlay_security -- needs "allow-set-native-discord-overlay-security" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:576
+      - stop_osl_lan_room -- needs "allow-stop-osl-lan-room" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/osl-collab.ts:72
+      - surface_adapter_paint_targets -- needs "allow-surface-adapter-paint-targets" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:124
+    ungranted-framework-internal (1):
+      - plugin:window|internal_toggle_maximize -- needs "core:window:allow-internal-toggle-maximize" in a capability covering the main webview; issued via framework-injected
+          tauri/src/window/scripts/drag.js:103
+    unresolved-command-name (8):
+      - unresolved-command:apps/osl-hub-ui/src/core.ts:170 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:170
+      - unresolved-command:apps/osl-hub-ui/src/core.ts:224 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:224
+      - unresolved-command:apps/osl-hub-ui/src/core.ts:230 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:230
+      - unresolved-command:apps/osl-hub-ui/src/native-overlay-adapter.ts:78 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:78
+      - unresolved-command:apps/osl-hub-ui/src/osl-collab.ts:71 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-collab.ts:71
+      - unresolved-command:apps/osl-hub-ui/src/osl-mail-adapter.ts:214 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-mail-adapter.ts:214
+      - unresolved-command:apps/osl-hub-ui/src/ui-behavior.ts:303 -- direct invoke() command is not a literal or known string constant: command: "remove_hub_friend"
+          apps/osl-hub-ui/src/ui-behavior.ts:303
+      - unresolved-command:apps/osl-hub-ui/src/whatsapp-qa-shell.ts:49 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/whatsapp-qa-shell.ts:49
   RESULT: RED
-exit=1 (expected RED)
-
-$ restore mutant 2 from baseline temp root
+exit=1
+$ restore temp root and rerun
+$ node scripts/ledger/acl-diff.mjs --root=$tmp --no-cache
 LEDGER acl -- commands issued vs ACL-granted, including framework-internal, ledger 3 of 7
   capability files covering webview main: 6
-  distinct permissions granted: 167
+  distinct permissions granted: 160
   modules reachable from main-window entries: 104
-  distinct commands issued: 130
+  distinct commands issued: 158
   framework-injected issuers that fire here: 2
   tauri version (Cargo.lock / vendored): 2.11.1 / 2.11.1
   @tauri-apps/api version: 2.11.1
-  invoke() calls with a non-literal command (not analysable): 0
-  dead exported command issuers excepted: 15
-  accepted exceptions: 15/15 (high-water mark 15)
-  RESULT: GREEN
-
-$ mutant 3: point acl-diff.mjs at nonexistent capabilities dir
-LEDGER acl -- commands issued vs ACL-granted, including framework-internal, ledger 3 of 7
-  accepted exceptions: 0/15 (high-water mark 15)
-  VIOLATIONS (1):
-    ledger-input-missing (1):
-      - missing-input:apps/osl-hub/capabilities-does-not-exist -- required ledger input is missing: apps/osl-hub/capabilities-does-not-exist
-          apps/osl-hub/capabilities-does-not-exist:1
+  invoke() calls with a non-literal command (not analysable): 8
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (34):
+    ungranted (25):
+      - burn_native_discord_overlay_chat -- needs "allow-burn-native-discord-overlay-chat" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:557
+      - claim_hub_username -- needs "allow-claim-hub-username" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:934
+      - execute_discord_guided_deletion -- needs "allow-execute-discord-guided-deletion" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1433
+      - get_hub_recovery_kit_unsaved -- needs "allow-get-hub-recovery-kit-unsaved" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1091
+      - get_native_discord_overlay_state -- needs "allow-get-native-discord-overlay-state" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:137
+      - host_osl_lan_room -- needs "allow-host-osl-lan-room" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/osl-collab.ts:69
+      - join_osl_lan_room -- needs "allow-join-osl-lan-room" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/osl-collab.ts:70
+      - list_native_discord_overlay_attachments -- needs "allow-list-native-discord-overlay-attachments" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:595
+      - open_native_discord_overlay_attachment -- needs "allow-open-native-discord-overlay-attachment" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:605
+      - open_native_discord_overlay_text -- needs "allow-open-native-discord-overlay-text" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:527
+      - osl_mail_list_threads -- needs "allow-osl-mail-list-threads" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/osl-mail-adapter.ts:226
+      - plugin:window|is_focused -- needs "core:window:allow-is-focused" in a capability covering the main webview; issued via @tauri-apps/api getCurrentWindow().isFocused()
+          apps/osl-hub-ui/src/main.ts:2415
+      - plugin:window|is_maximized -- needs "core:window:allow-is-maximized" in a capability covering the main webview; issued via @tauri-apps/api getCurrentWindow().isMaximized()
+          apps/osl-hub-ui/src/main.ts:1527
+      - plugin:window|set_focus -- needs "core:window:allow-set-focus" in a capability covering the main webview; issued via @tauri-apps/api getCurrentWindow().setFocus()
+          apps/osl-hub-ui/src/main.ts:5756
+      - prepare_native_discord_overlay_text -- needs "allow-prepare-native-discord-overlay-text" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:273
+      - preview_discord_guided_deletion -- needs "allow-preview-discord-guided-deletion" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1415
+      - reveal_native_discord_overlay_view_once -- needs "allow-reveal-native-discord-overlay-view-once" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:537
+      - scan_discord_own_messages_for_deletion -- needs "allow-scan-discord-own-messages-for-deletion" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1402
+      - select_native_discord_overlay_attachment -- needs "allow-select-native-discord-overlay-attachment" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:587
+      - send_native_discord_overlay_carrier -- needs "allow-send-native-discord-overlay-carrier" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:471
+      - send_native_discord_qa_atomic_text -- needs "allow-send-native-discord-qa-atomic-text" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:507
+      - set_hub_recovery_kit_unsaved -- needs "allow-set-hub-recovery-kit-unsaved" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/adapters.ts:1099
+      - set_native_discord_overlay_security -- needs "allow-set-native-discord-overlay-security" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:576
+      - stop_osl_lan_room -- needs "allow-stop-osl-lan-room" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/osl-collab.ts:72
+      - surface_adapter_paint_targets -- needs "allow-surface-adapter-paint-targets" in a capability covering the main webview; issued via direct
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:124
+    ungranted-framework-internal (1):
+      - plugin:window|internal_toggle_maximize -- needs "core:window:allow-internal-toggle-maximize" in a capability covering the main webview; issued via framework-injected
+          tauri/src/window/scripts/drag.js:103
+    unresolved-command-name (8):
+      - unresolved-command:apps/osl-hub-ui/src/core.ts:170 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:170
+      - unresolved-command:apps/osl-hub-ui/src/core.ts:224 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:224
+      - unresolved-command:apps/osl-hub-ui/src/core.ts:230 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:230
+      - unresolved-command:apps/osl-hub-ui/src/native-overlay-adapter.ts:78 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:78
+      - unresolved-command:apps/osl-hub-ui/src/osl-collab.ts:71 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-collab.ts:71
+      - unresolved-command:apps/osl-hub-ui/src/osl-mail-adapter.ts:214 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-mail-adapter.ts:214
+      - unresolved-command:apps/osl-hub-ui/src/ui-behavior.ts:303 -- direct invoke() command is not a literal or known string constant: command: "remove_hub_friend"
+          apps/osl-hub-ui/src/ui-behavior.ts:303
+      - unresolved-command:apps/osl-hub-ui/src/whatsapp-qa-shell.ts:49 -- direct invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/whatsapp-qa-shell.ts:49
   RESULT: RED
-exit=1 (expected RED)
+exit=1
 
-$ restore mutant 3 from baseline temp root
+## Missing-input probe
+$ rm -rf /tmp/osl-ledger-missing-root-b0-08
+$ node scripts/ledger/acl-diff.mjs --root=/tmp/osl-ledger-missing-root-b0-08
 LEDGER acl -- commands issued vs ACL-granted, including framework-internal, ledger 3 of 7
-  capability files covering webview main: 6
-  distinct permissions granted: 167
-  modules reachable from main-window entries: 104
-  distinct commands issued: 130
-  framework-injected issuers that fire here: 2
-  tauri version (Cargo.lock / vendored): 2.11.1 / 2.11.1
-  @tauri-apps/api version: 2.11.1
-  invoke() calls with a non-literal command (not analysable): 0
-  dead exported command issuers excepted: 15
-  accepted exceptions: 15/15 (high-water mark 15)
-  RESULT: GREEN
-
-$ rm -rf /tmp/osl-ledger-acl-mutants.peXlLk
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (6):
+    ledger-input-missing (6):
+      - missing-input:apps/osl-hub-ui/src/main.ts -- required ledger input is missing: apps/osl-hub-ui/src/main.ts
+          apps/osl-hub-ui/src/main.ts:1
+      - missing-input:apps/osl-hub-ui/vite.config.ts -- required ledger input is missing: apps/osl-hub-ui/vite.config.ts
+          apps/osl-hub-ui/vite.config.ts:1
+      - missing-input:apps/osl-hub-ui/whatsapp-qa.html -- required ledger input is missing: apps/osl-hub-ui/whatsapp-qa.html
+          apps/osl-hub-ui/whatsapp-qa.html:1
+      - missing-input:apps/osl-hub/capabilities -- required ledger input is missing: apps/osl-hub/capabilities
+          apps/osl-hub/capabilities:1
+      - missing-input:apps/osl-hub/Cargo.lock -- required ledger input is missing: apps/osl-hub/Cargo.lock
+          apps/osl-hub/Cargo.lock:1
+      - missing-input:scripts/ledger/framework-internals.json -- required ledger input is missing: scripts/ledger/framework-internals.json
+          scripts/ledger/framework-internals.json:1
+  RESULT: RED
+exit=1

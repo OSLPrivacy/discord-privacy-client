@@ -11,9 +11,6 @@
     "allow-osl-mail-provision",
     "allow-osl-mail-send",
     "allow-osl-mail-burn",
-    "allow-osl-mail-list-threads",
-    "allow-osl-mail-retrieve-thread",
-    "allow-osl-mail-acknowledge-retrieval",
     "allow-emit-active-session-reset",
     "allow-add-hub-friend-by-username"
   ]

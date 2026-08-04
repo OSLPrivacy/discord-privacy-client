@@ -39,21 +39,6 @@ description = "Burn the active OSL Mail mailbox only after its exact address is 
 commands.allow = ["osl_mail_burn"]
 
 [[permission]]
-identifier = "allow-osl-mail-list-threads"
-description = "List bounded OSL Mail thread summaries for the active unlocked identity without returning message bodies."
-commands.allow = ["osl_mail_list_threads"]
-
-[[permission]]
-identifier = "allow-osl-mail-retrieve-thread"
-description = "Retrieve one selected OSL Mail thread body for the active unlocked identity by opaque thread id."
-commands.allow = ["osl_mail_retrieve_thread"]
-
-[[permission]]
-identifier = "allow-osl-mail-acknowledge-retrieval"
-description = "Acknowledge deletion of one retrieved OSL Mail batch by opaque retrieval and message ids after the trusted UI has displayed it."
-commands.allow = ["osl_mail_acknowledge_retrieval"]
-
-[[permission]]
 identifier = "allow-activate-native-manual-peer-context"
 description = "Bind one verified friend scope to the exact current signed native Discord host generation; accepts no Discord credentials, process, window, or conversation identifiers."
 commands.allow = ["activate_native_manual_peer_context"]
