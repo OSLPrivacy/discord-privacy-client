@@ -1938,6 +1938,157 @@ mod tests {
             "a deletion promised while a drain was in flight must still be owed; \
              erasing it orphans remote ciphertext for its full TTL"
         );
+        // D-149 and D-135 are the same story from two ends: `retained` is the
+        // number this pass reports to `.osl-chat-deletion-unconfirmed`, and a
+        // pass that leaves a promise owed may not report zero owed. Before the
+        // fix this was 0 twice over -- no record and no warning.
+        assert_eq!(
+            report.retained, 1,
+            "the count D-135 renders must match what is actually still owed \
+             after the write-back, not just what this pass retried"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The other half of D-149's ruling: reconciliation must not become
+    /// resurrection.
+    ///
+    /// The write-back re-reads the outbox, so it can see records that were not
+    /// in its snapshot. It must not therefore hand back a record whose object
+    /// the cipher store confirmed gone during this very pass. The concrete case
+    /// is a rollback re-enqueueing the **same `object_id`** — with a refreshed
+    /// fetch token and a longer TTL, so it is a genuinely different record on
+    /// disk — while the drain is mid-flight deleting it.
+    ///
+    /// `object_id` names the remote object. Once the store answers `Deleted`
+    /// (or `AlreadyGone`), any promise about that object is already fulfilled,
+    /// and keeping the re-enqueued copy buys nothing but one more round trip
+    /// that returns `Gone`, plus a `retained` count that tells the D-135 surface
+    /// a copy is unconfirmed when the store said it is not there. So the remote
+    /// answer wins and the record leaves.
+    ///
+    /// The mutant: make the write-back drop only records it *saw*, by matching
+    /// the snapshot's `fetch_token` as well as its `object_id`. The re-enqueued
+    /// copy no longer matches, survives, and this test goes RED at 1 != 0.
+    #[test]
+    fn a_record_the_store_confirmed_gone_is_not_resurrected_by_a_mid_pass_enqueue() {
+        use std::sync::{Arc, Barrier};
+
+        let root = root("outbox-no-resurrection");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("deletions.json");
+        let key = outbox_key();
+        let now = 5_000_000i64;
+
+        enqueue_attachment_deletion_at_path(
+            &path,
+            &key,
+            &object_id(7),
+            &fetch_token_hex(7),
+            now + 3_600,
+            now,
+            true,
+        )
+        .unwrap();
+
+        let loaded = Arc::new(Barrier::new(2));
+        let enqueued = Arc::new(Barrier::new(2));
+        let drain_path = path.clone();
+        let drain_loaded = Arc::clone(&loaded);
+        let drain_enqueued = Arc::clone(&enqueued);
+        let drain = std::thread::spawn(move || {
+            drain_attachment_deletions_at_path(&drain_path, &key, now, |pending| {
+                assert_eq!(pending.object_id, object_id(7));
+                drain_loaded.wait();
+                drain_enqueued.wait();
+                // The store confirms the object is gone.
+                DeletionAttempt::Deleted
+            })
+            .unwrap()
+        });
+
+        loaded.wait();
+        // The same object promised again mid-pass, with a fresh token and a
+        // later expiry, so the on-disk record is not byte-identical to the one
+        // the drain is acting on.
+        enqueue_attachment_deletion_at_path(
+            &path,
+            &key,
+            &object_id(7),
+            &fetch_token_hex(8),
+            now + 7_200,
+            now,
+            true,
+        )
+        .unwrap();
+        enqueued.wait();
+
+        let report = drain.join().unwrap();
+        assert_eq!(report.deleted, 1);
+        assert_eq!(
+            pending_attachment_deletions_at_path(&path, &key).unwrap(),
+            0,
+            "the cipher store confirmed this object gone during the pass; \
+             re-reading the outbox at write-back must not hand the record back"
+        );
+        assert_eq!(
+            report.retained, 0,
+            "nothing is owed, so the D-135 surface must not be told a copy is \
+             unconfirmed"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A pass that cannot re-read the outbox at write-back writes NOTHING.
+    ///
+    /// The reconciliation needs a fresh read. If that read fails — the file was
+    /// replaced with something unopenable while the pass was on the network —
+    /// the alternative would be to fall back on the stale snapshot, which is
+    /// exactly the clobber D-149 is about. So the pass fails instead, and the
+    /// records it already deleted remotely stay in the outbox until the next
+    /// pass, where the store answers `Gone` and they leave.
+    ///
+    /// Over-retrying a deleted object costs one request. Losing a live promise
+    /// orphans view-once ciphertext for its TTL. The failure direction is
+    /// chosen, not accidental.
+    #[test]
+    fn a_write_back_that_cannot_re_read_the_outbox_refuses_rather_than_clobbers() {
+        let root = root("outbox-writeback-unreadable");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("deletions.json");
+        let key = outbox_key();
+        let now = 6_000_000i64;
+
+        enqueue_attachment_deletion_at_path(
+            &path,
+            &key,
+            &object_id(4),
+            &fetch_token_hex(4),
+            now + 3_600,
+            now,
+            true,
+        )
+        .unwrap();
+        let sealed = std::fs::read(&path).unwrap();
+
+        let outcome = drain_attachment_deletions_at_path(&path, &key, now, |_| {
+            // Mid-pass, the outbox on disk stops being an outbox.
+            std::fs::write(&path, b"not an encrypted outbox").unwrap();
+            DeletionAttempt::Deleted
+        });
+        assert!(
+            outcome.is_err(),
+            "a pass that cannot read the outbox back must report failure, not \
+             write its stale snapshot over whatever is there"
+        );
+
+        // The promise is recoverable: nothing was written, so restoring the file
+        // restores the record, and the next pass retries it.
+        std::fs::write(&path, &sealed).unwrap();
+        assert_eq!(
+            pending_attachment_deletions_at_path(&path, &key).unwrap(),
+            1
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
