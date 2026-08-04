@@ -492,7 +492,7 @@ fn reopen_message_store(state: &AppState, account_dir: &Path) -> bool {
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                path = %store_dir.display(),
+                path = %crate::log_id::redact_path(&store_dir),
                 "OSL: message_store could not be reopened after unlock; \
                  persistence stays disabled for this session"
             );

@@ -129,7 +129,7 @@ pub fn load_burned_scopes(path: &Path) -> BurnedScopesFile {
             == crate::whitelist_state::BurnLedgerEnrollment::Enrolled
         {
             tracing::error!(
-                path = %path.display(),
+                path = %crate::log_id::redact_path(path),
                 "OSL: burned_scopes.json is missing but this account has recorded burns — \
                  treating all scopes as still burned"
             );
