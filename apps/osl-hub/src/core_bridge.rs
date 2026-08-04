@@ -233,8 +233,8 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     // encrypted file was unreadable -- with no way to reach the unlock screen,
     // because the app believed it was already unlocked. A key only satisfies
     // the gate when its authority is the one the gate demands.
-    let unlocked = !password_gate_required
-        || ipc::main_password::file_storage_key_satisfies_password_gate();
+    let unlocked =
+        !password_gate_required || ipc::main_password::file_storage_key_satisfies_password_gate();
     // The original Discord command resolves the identity through a
     // Discord-snowflake row in peer_map.json. A native OSL Privacy identity is
     // deliberately service-neutral and has no such row, so use the loaded

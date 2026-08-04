@@ -725,7 +725,6 @@ pub(crate) mod tests {
         }
     }
 
-
     /// A composer that accepts a write and then reports something else, like a
     /// field whose provider rewrites what was placed. Decorates the shared
     /// recorded host rather than replacing it: everything but the read-back is
@@ -1269,7 +1268,11 @@ pub(crate) mod tests {
 
         placement.expect("cover text places into the live composer");
         cleared.expect("the composer is always cleared");
-        assert_eq!(host.submit_shaped_calls(), 0, "nothing may be committed, ever");
+        assert_eq!(
+            host.submit_shaped_calls(),
+            0,
+            "nothing may be committed, ever"
+        );
 
         let composer_empty_after_clear = after_clear
             .expect("Telegram answers the read after the clear")

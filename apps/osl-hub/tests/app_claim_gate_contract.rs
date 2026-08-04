@@ -346,10 +346,7 @@ fn shell_result_env_refs(script: &str) -> BTreeSet<&str> {
         .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'))
         .filter_map(|word| word.strip_prefix('$'))
         .filter(|word| {
-            word.ends_with("_RESULT")
-                && word
-                    .chars()
-                    .all(|ch| ch.is_ascii_uppercase() || ch == '_')
+            word.ends_with("_RESULT") && word.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_')
         })
         .collect()
 }

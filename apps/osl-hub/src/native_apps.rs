@@ -2917,20 +2917,22 @@ pub(crate) mod tests {
         use crate::native_a11y::Uia2Syscalls;
 
         /// `NativeAppId::Telegram => Uia2Substrate`
-        const _TELEGRAM_TAKES_THE_SUBSTRATE: for<'a, 'b> fn(
-            &'a dyn Uia2Syscalls,
-            crate::native_telegram_adapter::TelegramLivePlacementRequest<'b>,
-        )
-            -> crate::native_telegram_adapter::TelegramLivePlacementReceipt =
+        const _TELEGRAM_TAKES_THE_SUBSTRATE:
+            for<'a, 'b> fn(
+                &'a dyn Uia2Syscalls,
+                crate::native_telegram_adapter::TelegramLivePlacementRequest<'b>,
+            )
+                -> crate::native_telegram_adapter::TelegramLivePlacementReceipt =
             crate::native_telegram_adapter::drive_telegram_composer_placement;
 
         /// `NativeAppId::Whatsapp => Uia2Substrate`
-        const _WHATSAPP_TAKES_THE_SUBSTRATE: for<'a, 'b> fn(
-            &'a dyn Uia2Syscalls,
-            &'b str,
-            bool,
-        )
-            -> crate::native_whatsapp_adapter::WhatsAppLivePlacementReceipt =
+        const _WHATSAPP_TAKES_THE_SUBSTRATE:
+            for<'a, 'b> fn(
+                &'a dyn Uia2Syscalls,
+                &'b str,
+                bool,
+            )
+                -> crate::native_whatsapp_adapter::WhatsAppLivePlacementReceipt =
             crate::native_whatsapp_adapter::drive_whatsapp_composer_placement;
     }
 
@@ -3061,7 +3063,10 @@ pub(crate) mod tests {
     fn the_carry_seam_map_distinguishes_the_providers() {
         assert_eq!(carry_seam(NativeAppId::Telegram), CarrySeam::Uia2Substrate);
         assert_eq!(carry_seam(NativeAppId::Whatsapp), CarrySeam::Uia2Substrate);
-        assert_eq!(carry_seam(NativeAppId::Discord), CarrySeam::NativeWindowHost);
+        assert_eq!(
+            carry_seam(NativeAppId::Discord),
+            CarrySeam::NativeWindowHost
+        );
         assert_eq!(
             carry_seam(NativeAppId::Signal),
             CarrySeam::ProviderOwnedBackend
@@ -3366,7 +3371,10 @@ pub(crate) mod tests {
             let string = |key: &str| value[key].as_str().unwrap_or_default().to_owned();
 
             if string("schema") != RECEIPT_SCHEMA {
-                bad!("schema is {:?}, expected {RECEIPT_SCHEMA:?}", string("schema"))
+                bad!(
+                    "schema is {:?}, expected {RECEIPT_SCHEMA:?}",
+                    string("schema")
+                )
             }
             if string("provider") != provider_slug(id) {
                 bad!(
@@ -3377,7 +3385,10 @@ pub(crate) mod tests {
             }
 
             let Some(adapter) = adapter_source(id) else {
-                bad!("{:?} has no adapter module, so no receipt can bind to one", id)
+                bad!(
+                    "{:?} has no adapter module, so no receipt can bind to one",
+                    id
+                )
             };
             if string("adapter_source") != adapter {
                 bad!(
@@ -3477,15 +3488,27 @@ pub(crate) mod tests {
             vec![
                 (|r| r.schema = "other".into(), "schema"),
                 (|r| r.provider = "whatsapp".into(), "provider"),
-                (|r| r.adapter_source = "src/native_signal_adapter.rs".into(), "adapter_source"),
-                (|r| r.adapter_source_sha256 = "0".repeat(64), "adapter source hash"),
-                (|r| r.substrate_source_sha256 = "0".repeat(64), "substrate source hash"),
+                (
+                    |r| r.adapter_source = "src/native_signal_adapter.rs".into(),
+                    "adapter_source",
+                ),
+                (
+                    |r| r.adapter_source_sha256 = "0".repeat(64),
+                    "adapter source hash",
+                ),
+                (
+                    |r| r.substrate_source_sha256 = "0".repeat(64),
+                    "substrate source hash",
+                ),
                 (|r| r.recovered_sha256 = "0".repeat(64), "recovered payload"),
                 (|r| r.recovered_sha256 = String::new(), "recovered payload"),
                 (|r| r.readback_sha256 = String::new(), "readback hash"),
                 (|r| r.byte_exact = false, "byte_exact"),
                 (|r| r.enter_sent = true, "enter_sent"),
-                (|r| r.composer_empty_after_clear = false, "composer_empty_after_clear"),
+                (
+                    |r| r.composer_empty_after_clear = false,
+                    "composer_empty_after_clear",
+                ),
                 (|r| r.carrier_bytes = 0, "carrier_bytes"),
                 (|r| r.readback_bytes = 0, "readback_bytes"),
                 (|r| r.element_count = 0, "element_count"),

@@ -52,7 +52,9 @@ const PASSWORD: &str = "osl-D207-Passw0rd!";
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn serialize() -> MutexGuard<'static, ()> {
-    SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 struct Profile {
@@ -212,7 +214,10 @@ fn reopening_a_password_protected_profile_refuses_the_mint_and_asks_for_the_pass
     // missing user action and everything opens.
     ipc::main_password::verify_main_password(&profile.base, PASSWORD).expect("unlock");
     let unlocked = readiness(&state);
-    assert!(unlocked.unlocked, "the real password must unlock the session");
+    assert!(
+        unlocked.unlocked,
+        "the real password must unlock the session"
+    );
     assert!(
         osl_privacy_hub::osl_chat_local_state_key::osl_chat_local_state_key(&directory).is_ok(),
         "after a real unlock the local-state key must derive from the password key"
@@ -286,8 +291,9 @@ fn a_legacy_per_identity_key_is_adopted_rather_than_replaced() {
     // its key under the identity directory, and its state files are sealed
     // under it. Re-minting at the base would orphan them — the very failure
     // D-207 is about, arriving from the fix.
-    let legacy = ipc::main_password::ensure_device_bound_fallback_file_storage_key(&profile.account)
-        .expect("legacy mint");
+    let legacy =
+        ipc::main_password::ensure_device_bound_fallback_file_storage_key(&profile.account)
+            .expect("legacy mint");
     let legacy_path = profile.account.join("file_storage_key_fallback.json");
     std::fs::rename(
         profile.base.join("file_storage_key_fallback.json"),

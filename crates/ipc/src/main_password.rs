@@ -1459,10 +1459,7 @@ pub fn set_file_storage_key(key: Option<[u8; 32]>) {
     set_file_storage_key_with_authority(key, FileStorageKeyAuthority::MainPassword);
 }
 
-fn set_file_storage_key_with_authority(
-    key: Option<[u8; 32]>,
-    authority: FileStorageKeyAuthority,
-) {
+fn set_file_storage_key_with_authority(key: Option<[u8; 32]>, authority: FileStorageKeyAuthority) {
     {
         let mut slot = file_storage_authority_slot()
             .lock()
