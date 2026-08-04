@@ -104,6 +104,52 @@ jobs:
       - name: Test the OSL Privacy desktop binary
         run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features desktop --bin osl-privacy-hub -- --test-threads=1
 
+  # D-160. Until this job existed, `grep -rn "scripts/ledger" .github/workflows/`
+  # returned one comment and nothing else: eight Binding Ledgers, and the only
+  # thing that ran them was a human remembering to. That is the failure PLAN.md
+  # §9 already names -- "verify_all.sh existed and no loop ever ran it" --
+  # applied to the mechanism built to replace it. Everything the ledgers caught
+  # on 2026-08-03 (a branch that could not build the shipping app, two commands
+  # dead on the IPC surface, a prohibition guarded by a tautology) was caught
+  # because someone typed the command by hand.
+  #
+  # Ledgers 1-7 are green and any violation here fails the build. Ledger 8 is
+  # RED with 20, correctly -- D-092, D-108 and D-114 are open defects, not noise
+  # -- so it is ratcheted against scripts/ledger/state-baseline.json rather than
+  # gated at zero: a permanently-red CI trains everyone to ignore it, which is
+  # the same defeat in a different costume. The baseline fails on an increase AND
+  # on a decrease that did not lower the file in the same change. It is not an
+  # exception file; exceptions/*.json record things that do not ship, and every
+  # id in the baseline ships. See scripts/ledger/all.mjs for the full policy.
+  #
+  # ubuntu, not windows-latest: this is a node-only check and belongs with the
+  # other node checks. It runs rollup (ledger 7 asks the bundler for real module
+  # ids, which is why apps/osl-hub-ui dependencies are installed) and it invokes
+  # no cargo at all.
+  #
+  # If you are deleting this job, `quality-checks` below will fail and name it.
+  binding-ledgers:
+    name: Binding Ledgers
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/osl-hub-ui/package-lock.json
+      # Ledger 7 drives a real vite/rollup build to get `this.getModuleIds()`,
+      # and vite is a devDependency of apps/osl-hub-ui, not of the repo root.
+      - name: Install the renderer's dependencies
+        working-directory: apps/osl-hub-ui
+        run: npm ci
+      # --no-cache is mandatory. Without it, ledgers 1 and 7 refuse to report
+      # from a stale bundle cache and fail loudly instead of guessing. That
+      # refusal is correct behaviour -- do not "fix" it by dropping the flag.
+      - name: Run all eight Binding Ledgers
+        run: node scripts/ledger/all.mjs --no-cache
+
   quality-checks:
     runs-on: ubuntu-latest
     steps:
@@ -131,8 +177,9 @@ jobs:
       # about code that does not ship is worse than no line. The
       # five-artifact discipline now lives in scripts/ledger/acl-diff.mjs
       # and scripts/ledger/commands.mjs, aimed at apps/osl-hub; see
-      # scripts/CAPABILITY_AUDIT.md for the artifact-to-enforcer map and
-      # for the open item that the ledgers are not yet a CI job.
+      # scripts/CAPABILITY_AUDIT.md for the artifact-to-enforcer map. D-159
+      # left one open item -- the ledgers were not a CI job -- and the
+      # `binding-ledgers` job above closes it.
       # This file has held the rust-cache write policy since it was written and
       # nothing has ever executed it. It now also holds D-152's contract that
       # some job runs the shipping binary's test target, which is only worth
