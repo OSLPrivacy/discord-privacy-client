@@ -1716,6 +1716,179 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// D-134's "two overlapping drains" question, driven deterministically.
+    ///
+    /// `drain_attachment_deletions_at_path` is a read-modify-write with no
+    /// mutual exclusion of any kind: it loads the outbox (:746), spends up to
+    /// `MAX_DELETION_RETRIES_PER_PASS` *network round trips* inside `attempt`,
+    /// and then stores its own `retained` list back over whatever is on disk
+    /// (:788-790). Anything enqueued during that window is erased by the
+    /// write-back.
+    ///
+    /// The window is not theoretical. `enqueue_attachment_deletion` runs on the
+    /// send/rollback path while the detached tick drain (main.rs:9120) may be
+    /// mid-flight against a dead store. Losing that record orphans remote
+    /// view-once ciphertext for its full TTL with nothing owing it.
+    ///
+    /// Barrier-driven, so it is deterministic rather than a timing race.
+    ///
+    /// THIS TEST IS RED AND `#[ignore]`d, AND THAT IS NOT A WEAKENING.
+    /// It asserts the *correct* behaviour and it fails at
+    /// `integrate/first-usable` — `left: 0, right: 1`, the promise is gone. It is
+    /// ignored only so that an OPEN defect does not redden the shared branch for
+    /// every other lane, because the repair (merge-on-write-back instead of
+    /// clobber, or a process-wide outbox lock) changes the durability semantics
+    /// of a security-critical store and needs an owner's ruling, not this lane's
+    /// guess. Do NOT relax the assertion to make it green — un-ignore it when the
+    /// outbox gets a writer discipline. Found while refuting D-134; see
+    /// `plan-test/tasklogs/D-134.md`.
+    ///
+    /// ```text
+    /// cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --lib \
+    ///     -- --test-threads=1 --ignored a_deletion_enqueued
+    /// ```
+    #[test]
+    #[ignore = "reproduces an OPEN defect: a deletion enqueued during a drain pass is erased by its write-back"]
+    fn a_deletion_enqueued_during_a_drain_pass_survives_its_write_back() {
+        use std::sync::{Arc, Barrier};
+
+        let root = root("outbox-concurrent-enqueue");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("deletions.json");
+        let key = outbox_key();
+        let now = 4_000_000i64;
+
+        // One record already owed; the drain below will confirm it deleted.
+        enqueue_attachment_deletion_at_path(
+            &path,
+            &key,
+            &object_id(1),
+            &fetch_token_hex(1),
+            now + 3_600,
+            now,
+            true,
+        )
+        .unwrap();
+
+        let loaded = Arc::new(Barrier::new(2));
+        let enqueued = Arc::new(Barrier::new(2));
+        let drain_path = path.clone();
+        let drain_loaded = Arc::clone(&loaded);
+        let drain_enqueued = Arc::clone(&enqueued);
+        let drain = std::thread::spawn(move || {
+            drain_attachment_deletions_at_path(&drain_path, &key, now, |_| {
+                // The pass has loaded the outbox and is now "on the network".
+                drain_loaded.wait();
+                // Hold there until a second deletion has been recorded.
+                drain_enqueued.wait();
+                DeletionAttempt::Deleted
+            })
+            .unwrap()
+        });
+
+        loaded.wait();
+        // A send rolls back while the drain is in flight and records its promise.
+        enqueue_attachment_deletion_at_path(
+            &path,
+            &key,
+            &object_id(2),
+            &fetch_token_hex(2),
+            now + 3_600,
+            now,
+            true,
+        )
+        .unwrap();
+        enqueued.wait();
+
+        let report = drain.join().unwrap();
+        assert_eq!(report.deleted, 1);
+        assert_eq!(
+            pending_attachment_deletions_at_path(&path, &key).unwrap(),
+            1,
+            "a deletion promised while a drain was in flight must still be owed; \
+             erasing it orphans remote ciphertext for its full TTL"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// D-134's locked-session question, pinned.
+    ///
+    /// The outbox drain is the one attachment path that runs on a schedule
+    /// nobody asked for: `spawn_lifecycle_tick` (apps/osl-hub/src/main.rs:9097)
+    /// subsamples the lifecycle tick down to `DELETION_DRAIN_INTERVAL` and
+    /// calls `drain_pending_deletions_detached` at main.rs:9120. It therefore
+    /// meets a locked session routinely, and for the life of the process.
+    ///
+    /// So it must report an *empty pass*, never `session_lock::SESSION_LOCKED_ERROR`.
+    /// A background task that raises a refusal every interval forever is worse
+    /// than no task at all. It must also not reach the cipher store while
+    /// locked: a locked pass that still made a request would turn the tick into
+    /// a periodic beacon, which is exactly what `DELETION_DRAIN_INTERVAL`'s own
+    /// justification (native_attachment_transport.rs:419-437) promises it is not.
+    ///
+    /// The outbox must be **non-empty** for this to gate anything. With an empty
+    /// or absent outbox a locked pass and an unlocked pass are indistinguishable
+    /// — both return `Ok(default())` — so a test that only calls this with no
+    /// records cannot fail, and the first version of this test did not: it
+    /// survived the mutant. Owing a real deletion first is what makes the two
+    /// paths diverge.
+    #[test]
+    fn a_drain_pass_taken_while_locked_is_a_silent_no_op_not_a_refusal() {
+        const UNLOCKED_KEY: [u8; 32] = [0x5c; 32];
+
+        let root = root("outbox-locked-pass");
+        std::fs::create_dir_all(&root).unwrap();
+        let restore_dir = keystore::active_account_dir();
+        keystore::set_active_account_dir(Some(root.clone()));
+        let outbox = deletion_outbox_path().unwrap();
+
+        // OSL owes a real remote deletion, recorded while unlocked.
+        ipc::main_password::set_file_storage_key(Some(UNLOCKED_KEY));
+        let now = ipc::main_password::now_unix_secs_pub();
+        enqueue_attachment_deletion(&object_id(9), &fetch_token_hex(9), now + 3_600, true).unwrap();
+        assert_eq!(
+            pending_attachment_deletions_at_path(&outbox, &UNLOCKED_KEY).unwrap(),
+            1
+        );
+
+        // Then the session locks, and the tick fires anyway — it is on a clock,
+        // not on the user. This is the pass that must stay quiet.
+        ipc::main_password::set_file_storage_key(None);
+        let mut attempts = 0usize;
+        let report = drain_attachment_deletions(|_| {
+            attempts += 1;
+            DeletionAttempt::Deleted
+        })
+        .expect(
+            "a locked pass reports an empty drain, never an error: this runs every \
+             DELETION_DRAIN_INTERVAL for the life of the process, so an error here is \
+             a refusal loop",
+        );
+        assert_eq!(
+            attempts, 0,
+            "a locked pass must not reach the cipher store: the outbox is sealed with \
+             the file storage key, so there is nothing readable to retry"
+        );
+        assert_eq!(
+            report,
+            DeletionDrainReport::default(),
+            "a locked pass must not report work it did not do"
+        );
+
+        // And the promise must still be owed once OSL is unlocked again: the
+        // quiet pass may not consume, evict or corrupt what it could not read.
+        ipc::main_password::set_file_storage_key(Some(UNLOCKED_KEY));
+        assert_eq!(
+            pending_attachment_deletions_at_path(&outbox, &UNLOCKED_KEY).unwrap(),
+            1,
+            "a locked pass must leave the outbox exactly as it found it"
+        );
+
+        ipc::main_password::set_file_storage_key(None);
+        keystore::set_active_account_dir(restore_dir);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn deletion_outbox_refuses_records_it_could_never_act_on() {
         let root = root("outbox-validate");
