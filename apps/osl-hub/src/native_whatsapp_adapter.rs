@@ -672,6 +672,26 @@ pub const WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS: u64 = 2_000;
 /// required, and a host that is parented here while naming another application
 /// is refused rather than guessed at.
 ///
+/// **The anchor is not a unique key, and ambiguity fails closed (D-180).** If
+/// more than one host satisfies both signals the substrate refuses; it does not
+/// pick the larger, because size is not evidence of which host holds the
+/// conversation and "biggest visible `msedgewebview2`" was already rejected as
+/// this task's mutant [1]. Nothing downstream would catch a wrong choice --
+/// `whatsapp_placement` guards only `bound_is_app_shell` -- and the text this
+/// adapter places IS the carrier for the payload, so binding the wrong window
+/// sends it somewhere the user did not choose. If a legitimate second window
+/// ever appears (a popped-out chat, a media viewer), the resolution is a
+/// positive discriminator built on [`WHATSAPP_COMPOSER_MATCHER`], never a
+/// heuristic.
+///
+/// **And the corroboration is an accident control, not an anti-spoofing
+/// defence.** A process can choose its apparent parent with
+/// `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, and a command line is chosen by
+/// whoever launches the process, so both signals are attacker-controlled and
+/// requiring both costs an adversary nothing. What it does buy is telling
+/// Windows Search's WebView2 apart from WhatsApp's, which is the failure that
+/// was actually measured on this machine.
+///
 /// It still must not fall back to "the biggest visible msedgewebview2 window":
 /// this machine runs a second one for Windows Search, it is larger, and
 /// `native_a11y`'s `largest_visible_webview2_is_the_decoy_not_whatsapp` pins
