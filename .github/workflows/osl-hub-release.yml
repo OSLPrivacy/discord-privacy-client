@@ -56,6 +56,12 @@ jobs:
           npm test -- --run
           npm run build
 
+      - name: Verify frontendDist embedding contract
+        working-directory: apps/osl-hub-ui
+        env:
+          OSL_QA_BUILD_CONTRACTS: "1"
+        run: npx vitest run src/qa-doc-contracts.test.ts -t frontend_dist_is_embedded_after_frontend_build
+
       - name: Test OSL Privacy core
         run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --lib
 
