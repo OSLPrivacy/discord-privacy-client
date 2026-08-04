@@ -1198,6 +1198,100 @@ mod tests {
         }
     }
 
+    /// **The carry, not the placement.** Encode a real payload into real OSL
+    /// cover text, put that exact cover text into the owner's live Telegram
+    /// composer, read back *what Telegram hands out*, and decode the payload
+    /// from that string.
+    ///
+    /// Why this is a different claim from `drive_the_real_telegram_composer`:
+    /// that test asserts `readback_holds_carrier`, which is
+    /// `readback.contains(carrier)` inside `place_uia2_carrier`. This one never
+    /// looks at the carrier again. It hands the *returned* string to
+    /// `decode_mode1` and requires the original bytes back, so the round trip
+    /// is judged by the receiving side's own decoder rather than by a
+    /// comparison OSL performs against its own input.
+    ///
+    /// **Nothing is sent.** The composer is cleared before any assertion runs,
+    /// so a failed decode still leaves the owner's chat as it was found, and
+    /// the backend's submit-shaped counter is read at the end.
+    ///
+    /// ```text
+    /// osl_privacy_hub-<hash>.exe --ignored --test-threads=1 --nocapture \
+    ///   native_telegram_adapter::tests::carry_real_cover_text_through_live_telegram
+    /// ```
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "drives the owner's live Telegram client; run explicitly"]
+    fn carry_real_cover_text_through_live_telegram() {
+        use crate::native_a11y::read_uia2_composer_value;
+        use stego::{decode_mode1, encode_mode1, ConversationCipher};
+
+        // A fixed salt and a fixed payload, so the run is reproducible and the
+        // conductor can re-derive the expected bytes without this test's help.
+        let cipher = ConversationCipher::from_salt(b"osl/telegram-ungate/carry-proof/v1");
+        let secret: &[u8] = b"telegram carries osl";
+        let cover = encode_mode1(&cipher, secret).expect("mode 1 encodes the payload");
+
+        // Unshaped cover is space-separated: line shaping is Discord's row-count
+        // lever, and a newline in a carrier *is* the send on every provider.
+        assert!(
+            !crate::native_a11y::uia2_carrier_carries_submit(&cover),
+            "cover text carrying a line break must never reach a live composer"
+        );
+
+        let host = crate::native_a11y::win32::Uia2Win32Host::desktop();
+        let acquired = acquire_uia2_window(TELEGRAM_UIA2_WINDOW_PLAN, &host)
+            .expect("Telegram's Qt outer window resolves");
+        let editables =
+            acquire_uia2_editables(&host, acquired).expect("Telegram lists its editable elements");
+        let composer = resolve_uia2_composer(TELEGRAM_COMPOSER_MATCHER, &editables)
+            .expect("exactly one writable composer; open Telegram on a conversation");
+
+        let placement = place_uia2_carrier(&host, acquired, &composer, &cover, false);
+        // Read before clearing, and clear before asserting: the owner's chat is
+        // restored whatever the outcome.
+        let readback = read_uia2_composer_value(&host, acquired, &composer);
+        let cleared = clear_uia2_composer(&host, acquired, &composer);
+        let submit_shaped = host.submit_shaped_calls();
+
+        placement.expect("cover text places into the live composer");
+        cleared.expect("the composer is always cleared");
+        assert_eq!(submit_shaped, 0, "nothing may be committed, ever");
+
+        let returned = readback
+            .expect("Telegram answers the read")
+            .expect("the composer holds a value after placement");
+
+        let recovered = decode_mode1(&cipher, returned.trim())
+            .expect("the string Telegram handed back still decodes");
+        assert_eq!(
+            recovered.as_slice(),
+            secret,
+            "the payload recovered from Telegram's own read-back must be the payload sent"
+        );
+
+        // Negative stem, inline: the decoder must actually be reading these
+        // words. Drop one and the recovery has to fail, or this test would pass
+        // on a decoder that ignored its input.
+        let mut words: Vec<&str> = returned.trim().split_whitespace().collect();
+        assert!(words.len() > 3, "cover text is a word sequence");
+        words.remove(words.len() / 2);
+        let starved = words.join(" ");
+        assert!(
+            !decode_mode1(&cipher, &starved).is_ok_and(|bytes| bytes == secret),
+            "removing a word from the read-back must not still recover the payload"
+        );
+
+        eprintln!(
+            "telegram-carry: cover_bytes={} readback_bytes={} recovered_bytes={} \
+             byte_exact={} enter_sent=false",
+            cover.len(),
+            returned.len(),
+            recovered.len(),
+            returned == cover
+        );
+    }
+
     /// Every mechanism that could commit a Telegram message without going
     /// through the syscall seam, spelled as it would appear in Rust source.
     const SUBMIT_SHAPED_MECHANISMS: &[&str] = &[
