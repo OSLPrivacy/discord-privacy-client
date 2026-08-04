@@ -60,19 +60,76 @@ export function grantsForWebview(root, label) {
   return { grants, unresolvable, files };
 }
 
-export function commandPermissions(root) {
-  const out = new Map();
+/**
+ * Every `[[permission]]` block under apps/osl-hub/permissions, with the line it
+ * starts on so a dangling grant can be cited rather than merely named.
+ */
+export function permissionBlocks(root) {
+  const blocks = [];
   for (const rel of walk(root, "apps/osl-hub/permissions", (r) => r.endsWith(".toml"))) {
     const src = read(root, rel);
+    const starts = lineIndex(src);
     for (const m of src.matchAll(/\[\[permission\]\]([\s\S]*?)(?=\n\[\[permission\]\]|\s*$)/g)) {
       const body = m[1];
       const identifier = /\bidentifier\s*=\s*"([^"]+)"/.exec(body)?.[1] ?? null;
       const commands = /\bcommands\.allow\s*=\s*\[([^\]]*)\]/.exec(body)?.[1] ?? "";
       if (!identifier) continue;
-      for (const cmd of commands.matchAll(/"([^"]+)"/g)) out.set(cmd[1], identifier);
+      blocks.push({
+        rel,
+        identifier,
+        site: `${rel}:${lineOf(starts, m.index)}`,
+        commands: [...commands.matchAll(/"([^"]+)"/g)].map((c) => c[1]),
+      });
+    }
+  }
+  return blocks;
+}
+
+export function commandPermissions(root, blocks = permissionBlocks(root)) {
+  const out = new Map();
+  for (const block of blocks) {
+    for (const cmd of block.commands) out.set(cmd, block.identifier);
+  }
+  return out;
+}
+
+/**
+ * command -> every permission identifier that allows it. `commandPermissions`
+ * is last-wins because `permissionFor` needs one answer; the "granted to no
+ * webview" direction needs all of them, or a command allowed by two blocks is
+ * reported ungranted whenever the losing block is the granted one.
+ */
+export function permissionsAllowingCommand(blocks) {
+  const out = new Map();
+  for (const block of blocks) {
+    for (const cmd of block.commands) {
+      if (!out.has(cmd)) out.set(cmd, []);
+      out.get(cmd).push(block);
     }
   }
   return out;
+}
+
+/**
+ * Permission identifiers granted by ANY capability file, to any webview.
+ *
+ * Deliberately not "granted to main". The conductor measured the naive version:
+ * 54 violations, almost all noise, because the overlay capabilities legitimately
+ * hold commands the main webview must never have -- "ungranted to main" is the
+ * correct and expected state for those. The defect D-158 actually was is a
+ * command that NO capability grants to ANY webview, so the ACL rejects it before
+ * its handler runs no matter which window issues it.
+ */
+export function grantsAnyWebview(root) {
+  const grants = new Map();
+  for (const rel of walk(root, "apps/osl-hub/capabilities", (r) => r.endsWith(".json"))) {
+    const doc = JSON.parse(read(root, rel));
+    for (const p of doc.permissions ?? []) {
+      const id = typeof p === "string" ? p : p.identifier;
+      if (id && !grants.has(id)) grants.set(id, rel);
+    }
+  }
+  return grants;
 }
 
 /** `plugin:window|is_maximized` -> `core:window:allow-is-maximized`; `foo_bar` -> `allow-foo-bar`. */
