@@ -3469,6 +3469,208 @@ pub(crate) mod tests {
         eprintln!("{provider}: composer cleared -- nothing was sent");
     }
 
+    /// D-205's gate: drive the REAL Discord composer through the
+    /// [`Uia2TreeRoute::MsaaBridge`] route -- the route `wake_electron_accessibility`
+    /// is the root of -- and place, read back and clear without sending.
+    ///
+    /// This is deliberately a separate probe from
+    /// [`drive_a_real_composer_through_the_substrate`] rather than an edit to
+    /// its `discord` arm, for two reasons:
+    ///
+    /// 1. That arm hard-codes the image name `Discord`, and the owner's host
+    ///    runs **`DiscordPTB.exe`**. `same_process_name` strips only `.exe`, so
+    ///    `DiscordPTB` never equals `Discord` and the shipping plan resolves
+    ///    `MissingAppOuter` there. The image name is read from the environment
+    ///    here so the mismatch can be *measured* instead of worked around, and
+    ///    the shipping plan is resolved first, on the same enumeration, so the
+    ///    report always states what the shipping constant does on this host.
+    /// 2. It reports the whole ladder -- resolve, wake, count, settle, editables,
+    ///    composer, place, read back, clear, re-read -- because D-205 asks which
+    ///    rung a merge changes, not merely whether the end works.
+    ///
+    /// Nothing here can commit a message: the only write verbs in
+    /// [`Uia2Syscalls`] are `set_value` and the read-backs around it, and
+    /// [`place_uia2_carrier`] refuses a carrier carrying a line break before
+    /// anything reaches the composer.
+    ///
+    /// ```text
+    /// # from WSL, build the Windows test binary:
+    /// flock -o /tmp/osl-cargo.lock cargo test --manifest-path apps/osl-hub/Cargo.toml \
+    ///   --lib --target x86_64-pc-windows-gnu -j 4 --no-run
+    /// # then, on the Windows host, Discord signed in with a conversation open:
+    /// set OSL_D205_DISCORD_IMAGE=DiscordPTB
+    /// set OSL_D205_CARRIER=alpha7731osl
+    /// osl_privacy_hub-<hash>.exe --ignored --nocapture --test-threads=1 \
+    ///   drive_the_real_discord_composer_through_the_msaa_bridge
+    /// ```
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "drives live Discord on a Windows host; run explicitly"]
+    fn drive_the_real_discord_composer_through_the_msaa_bridge() {
+        const PROBE_CALL_TIMEOUT_MS: u64 = 5_000;
+        // Short of the shipping 90 s so the gate cannot sit in a settle ladder
+        // for a minute and a half on a host where the tree never populates. It
+        // is a probe budget, and it is reported next to the result.
+        const PROBE_POLL_BUDGET_MS: u64 = 20_000;
+
+        let host = win32::Uia2Win32Host::desktop();
+
+        // The shipping constant, on this host, first and unmodified.
+        let shipping =
+            resolve_uia2_wake_target(crate::native_discord_adapter::DISCORD_UIA2_WINDOW_PLAN, &host);
+        match shipping {
+            Ok(window) => eprintln!(
+                "discord: SHIPPING plan (image \"Discord\") resolved: bound_pid={} route={:?}",
+                window.bound_process_id, window.tree_route
+            ),
+            Err(error) => eprintln!(
+                "discord: SHIPPING plan (image \"Discord\") REFUSED: {error:?} \
+                 -- this is what msaa_client_from_window answers on this host"
+            ),
+        }
+
+        let image = std::env::var("OSL_D205_DISCORD_IMAGE").unwrap_or_else(|_| "Discord".to_owned());
+        let image: &'static str = Box::leak(image.into_boxed_str());
+        let plan = Uia2WindowPlan::chromium_outer_msaa_root(
+            "Discord",
+            image,
+            ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
+            PROBE_POLL_BUDGET_MS,
+            PROBE_CALL_TIMEOUT_MS,
+        );
+        eprintln!("discord: probing with image={image:?} poll_budget_ms={PROBE_POLL_BUDGET_MS}");
+
+        let acquired = acquire_uia2_window(plan, &host)
+            .unwrap_or_else(|error| panic!("discord: acquire failed: {error:?}"));
+        eprintln!(
+            "discord: pid={} route={:?} elements={} woke={} settled_ms={} bound_is_app_outer={}",
+            acquired.window.bound_process_id,
+            acquired.window.tree_route,
+            acquired.elements,
+            acquired.woke,
+            acquired.settled_ms,
+            acquired.window.bound_hwnd == acquired.window.app_outer_hwnd,
+        );
+
+        let editables = host
+            .editable_elements(
+                acquired.window.bound_hwnd,
+                acquired.window.tree_route,
+                Uia2Deadline(acquired.window.call_timeout_ms),
+            )
+            .expect("the editable scan must answer inside its deadline");
+        eprintln!(
+            "discord: editable={} writable={}",
+            editables.len(),
+            editables.iter().filter(|element| element.writable()).count()
+        );
+        for element in &editables {
+            eprintln!(
+                "  edit name={:?} value_pattern={} enabled={} kbd={} read_only={}",
+                element.name,
+                element.value_pattern,
+                element.enabled,
+                element.keyboard_focusable,
+                element.read_only
+            );
+        }
+
+        let composer = resolve_uia2_composer(MATCHER, &editables)
+            .unwrap_or_else(|error| panic!("discord: no composer resolved: {error:?}"));
+        eprintln!("discord: composer name={:?}", composer.name);
+
+        let Ok(carrier) = std::env::var("OSL_D205_CARRIER") else {
+            eprintln!("discord: read-only probe, nothing written");
+            return;
+        };
+
+        // Discord's empty Slate composer does not read back as `""`. It reads
+        // back as `"\u{feff}\n"` -- a zero-width no-break space and a newline --
+        // and `char::is_whitespace` is false for `U+FEFF`, so `str::trim` leaves
+        // it non-empty. `place_uia2_carrier`'s existing-draft gate therefore
+        // refuses a *genuinely empty* Discord composer with `ExistingDraft`.
+        // That is measured, reported as a finding, and NOT worked around in
+        // production: the probe declares its own emptiness predicate here, and
+        // only opts into replacement when the composer is empty by it. A
+        // composer holding real words still refuses, because this predicate is
+        // false for them.
+        let provably_empty = |value: Option<&str>| {
+            value.is_some_and(|value| {
+                value
+                    .chars()
+                    .all(|character| character.is_whitespace() || character == '\u{feff}')
+            })
+        };
+
+        let before = host
+            .value_of(
+                acquired.window.bound_hwnd,
+                acquired.window.tree_route,
+                &composer,
+                Uia2Deadline(acquired.window.call_timeout_ms),
+            )
+            .expect("the pre-placement read must answer inside its deadline");
+        let replace_zero_width_only = provably_empty(before.as_deref());
+        eprintln!(
+            "discord: composer value BEFORE={before:?} \
+             empty_modulo_zero_width={replace_zero_width_only}"
+        );
+
+        let receipt = place_uia2_carrier(&host, acquired, &composer, &carrier, replace_zero_width_only)
+            .unwrap_or_else(|error| panic!("discord: placement refused: {error:?}"));
+        let readback = host
+            .value_of(
+                acquired.window.bound_hwnd,
+                acquired.window.tree_route,
+                &composer,
+                Uia2Deadline(acquired.window.call_timeout_ms),
+            )
+            .expect("the readback must answer inside its deadline");
+        eprintln!(
+            "discord: placed={} readback_holds_carrier={} submit_shaped={} readback={:?}",
+            receipt.placed, receipt.readback_holds_carrier, receipt.submit_shaped_observed, readback
+        );
+
+        // A window in which the carrier is on screen and can be photographed.
+        // Zero by default, so the probe is not slowed for a run that does not
+        // want the artifact.
+        let hold_ms = std::env::var("OSL_D205_HOLD_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0)
+            .min(30_000);
+        if hold_ms > 0 {
+            eprintln!("discord: holding the carrier on screen for {hold_ms} ms");
+            std::thread::sleep(std::time::Duration::from_millis(hold_ms));
+        }
+
+        clear_uia2_composer(&host, acquired, &composer)
+            .unwrap_or_else(|error| panic!("discord: the composer did not clear: {error:?}"));
+        let after = host
+            .value_of(
+                acquired.window.bound_hwnd,
+                acquired.window.tree_route,
+                &composer,
+                Uia2Deadline(acquired.window.call_timeout_ms),
+            )
+            .expect("the post-clear read must answer inside its deadline");
+        eprintln!(
+            "discord: composer value AFTER={after:?} empty_modulo_zero_width={}",
+            provably_empty(after.as_deref())
+        );
+        assert!(
+            !after
+                .as_deref()
+                .is_some_and(|value| value.contains(carrier.as_str())),
+            "the composer must never be left holding a carrier"
+        );
+        assert!(
+            provably_empty(after.as_deref()),
+            "the composer must be empty after the probe clears it"
+        );
+        eprintln!("discord: composer cleared -- nothing was sent");
+    }
+
     #[test]
     fn discords_plan_is_not_the_outer_window_mutant() {
         let discord = discord_plan();

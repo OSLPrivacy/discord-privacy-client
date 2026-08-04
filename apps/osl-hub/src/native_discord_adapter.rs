@@ -18390,6 +18390,79 @@ mod windows {
         let _ = (root, started, target.process_id, process_is_trusted);
         assemble_snapshot(target.generation, ProvenEvidence::default())
     }
+
+    /// D-205: what the EIGHT `?` call sites' shared gate answers at the real
+    /// Discord window on this host.
+    ///
+    /// `msaa_client_from_window` is the single expression every one of those
+    /// sites consumes, and it is two decisions in a trench coat: the substrate
+    /// resolve (`discord_uia2_wake_target`, which decides WHICH window) and the
+    /// Chromium handshake (`wake_electron_accessibility`, which D-204 fixed).
+    /// A `None` from the wrapper does not say which half refused, and that is
+    /// exactly the question a merge gate has to answer, so this reports the
+    /// two halves separately against the same live window.
+    ///
+    /// Read-only. It enumerates, resolves and asks for an accessibility object;
+    /// it walks no tree, writes nothing, and touches no focus.
+    ///
+    /// ```text
+    /// set OSL_D205_DISCORD_IMAGE=DiscordPTB
+    /// osl_privacy_hub-<hash>.exe --ignored --nocapture --test-threads=1 \
+    ///   report_the_discord_msaa_client_gate
+    /// ```
+    #[cfg(test)]
+    #[test]
+    #[ignore = "reads live Discord on a Windows host; run explicitly"]
+    fn report_the_discord_msaa_client_gate() {
+        use crate::native_a11y::{resolve_uia2_wake_target, Uia2WindowPlan};
+
+        const PROBE_CALL_TIMEOUT_MS: u64 = 5_000;
+        const PROBE_POLL_BUDGET_MS: u64 = 20_000;
+
+        let desktop = crate::native_a11y::win32::Uia2Win32Host::desktop();
+
+        // Half one, with the shipping constant exactly as it ships.
+        match resolve_uia2_wake_target(DISCORD_UIA2_WINDOW_PLAN, &desktop) {
+            Ok(window) => eprintln!(
+                "gate: shipping resolve OK bound_pid={} route={:?}",
+                window.bound_process_id, window.tree_route
+            ),
+            Err(error) => eprintln!("gate: shipping resolve REFUSED {error:?}"),
+        }
+
+        // The same resolve against whatever image is actually running, so the
+        // window handle below is a real one even when the shipping constant
+        // cannot name it.
+        let image =
+            std::env::var("OSL_D205_DISCORD_IMAGE").unwrap_or_else(|_| "Discord".to_owned());
+        let image: &'static str = Box::leak(image.into_boxed_str());
+        let plan = Uia2WindowPlan::chromium_outer_msaa_root(
+            "Discord",
+            image,
+            crate::native_a11y::ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
+            PROBE_POLL_BUDGET_MS,
+            PROBE_CALL_TIMEOUT_MS,
+        );
+        let window = resolve_uia2_wake_target(plan, &desktop)
+            .unwrap_or_else(|error| panic!("gate: no Discord window for image {image:?}: {error:?}"));
+        eprintln!(
+            "gate: image={image:?} resolve OK bound_pid={} route={:?}",
+            window.bound_process_id, window.tree_route
+        );
+
+        // Half two, at that same window: the handshake D-204 changed, called
+        // directly, with no resolve in front of it.
+        let woke = crate::native_a11y::wake_electron_accessibility(window.bound_hwnd).is_some();
+        eprintln!("gate: wake_electron_accessibility -> {woke}");
+
+        // And the wrapper the eight sites actually call, at that same window.
+        let client = msaa_client_from_window(window.bound_hwnd).is_some();
+        eprintln!("gate: msaa_client_from_window -> {client}");
+        eprintln!(
+            "gate: verdict wake={woke} wrapper={client} \
+             (wake=true wrapper=false means the resolve refused, not the handshake)"
+        );
+    }
 }
 
 #[cfg(test)]
