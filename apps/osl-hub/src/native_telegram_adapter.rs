@@ -62,13 +62,21 @@ pub const TELEGRAM_LIVE_CARRIER_MAX_BYTES: usize = 4096;
 /// # Tree route: `UiaNative`, and why it is not Discord's
 ///
 /// Discord's shipping route is `Uia2TreeRoute::MsaaBridge`: it wakes the outer
-/// Chromium window, takes the *custom MSAA client object* Chromium hands back
-/// for object id 1, and bridges that object into UI Automation. That route is
-/// available only because Chromium implements that handshake.
+/// Chromium window with Chromium's activation handshake and bridges the MSAA
+/// client object into UI Automation.
 ///
-/// Telegram implements no such handshake. Qt answers `WM_GETOBJECT` for
-/// `OBJID_CLIENT`, not for Chromium's custom object id, so `MsaaBridge` has
-/// nothing to bridge *from* -- and it would also be pointless, because the
+/// **Corrected by D-176.** This paragraph used to say the bridged object is the
+/// one Chromium hands back "for object id 1", and that Qt differs from Chromium
+/// by answering `OBJID_CLIENT` instead. Both halves are false, measured live on
+/// the owner's host: object id 1 is Chromium's screen-reader honeypot and is
+/// answered with `LRESULT 0` by design, and Telegram's own Qt window answers
+/// exactly as Chromium's windows do -- `0` at object id 1, an object at
+/// `OBJID_CLIENT` (`hwnd=327920 -> 0xC0CF`). Chromium and Qt agree on where the
+/// object lives; what Chromium adds is the honeypot that switches its lazily
+/// built tree on.
+///
+/// So `MsaaBridge` is not unavailable to Telegram for want of a handshake. It
+/// is simply pointless here, because the
 /// thing the bridge exists to reach is already there: `ElementFromHandle` on
 /// the Qt window returns a populated native UIA root directly. So Telegram is
 /// the one provider whose window shape and tree route agree that the outer

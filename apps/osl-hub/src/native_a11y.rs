@@ -30,15 +30,55 @@
 //!
 //! # Chromium's lazy accessibility tree
 //!
-//! Chromium enables its accessibility tree lazily.  Its documented handshake is
-//! an `EVENT_SYSTEM_ALERT` for custom object id 1, followed by `WM_GETOBJECT`
-//! for that same object id.  `OBJID_CLIENT` alone is not that handshake.
+//! Chromium enables its accessibility tree lazily, and the activation is a
+//! `WM_GETOBJECT` for custom object id 1 preceded by an `EVENT_SYSTEM_ALERT`
+//! for that same id.
+//!
+//! **Object id 1 activates; it does not hand anything back.** It is Chromium's
+//! screen-reader *honeypot*: a client that answers the fake alert by asking for
+//! that id is thereby detected, accessibility is switched on, and the request
+//! itself is answered with `LRESULT 0` by design. The accessibility object is
+//! then served at `OBJID_CLIENT`, and only there.
+//!
+//! This module used to end the handshake at the honeypot and judge the wake on
+//! whether that request produced an object. It never can, so the wake could
+//! never succeed on any provider -- which is D-176, measured live on the
+//! owner's Windows host, raw `WM_GETOBJECT` sent per window per object id:
+//!
+//! ```text
+//! WhatsApp  Chrome_RenderWidgetHostHWND 132018  id=1 -> 0x0   OBJID_CLIENT -> 0xC0DB
+//! WhatsApp  Chrome_WidgetWin_1           67446  id=1 -> 0x0   OBJID_CLIENT -> 0xC0D6
+//! Discord   Chrome_WidgetWin_1          132548  id=1 -> 0x0   OBJID_CLIENT -> 0xC0DB
+//! Telegram  Qt51519QWindowIcon          327920  id=1 -> 0x0   OBJID_CLIENT -> 0xC0CF
+//! ```
+//!
+//! Every window on the desktop answers the honeypot with zero, Chromium and Qt
+//! alike, so `AccessibleObjectFromWindow` at object id 1 returns `E_FAIL`
+//! (`0x80004005`) everywhere. The handshake below therefore issues the honeypot
+//! request for its activation effect, **discards its result**, and takes the
+//! object at `OBJID_CLIENT`.
 
 /// Chromium's accessibility-presence event.
 pub(crate) const EVENT_SYSTEM_ALERT: u32 = 0x0002;
 
-/// Chromium's documented custom accessibility object id.
+/// Chromium's screen-reader honeypot object id.
+///
+/// Asking for it is what switches accessibility on. It is **not** an object
+/// source: Chromium answers it with `LRESULT 0` deliberately, so this id may
+/// only ever be issued for its side effect. See the module header for the live
+/// measurement, and [`wake_electron_accessibility_with`] for the consequence.
 pub(crate) const ELECTRON_A11Y_OBJECT_ID: i32 = 1;
+
+/// `OBJID_CLIENT` -- the object id that actually serves an accessibility
+/// object, on Chromium, on WebView2 and on Qt.
+///
+/// Declared here rather than imported from `windows-sys` so the handshake's
+/// ordering stays a decision over data that a Linux build compiles and tests.
+/// A `cfg(windows)` test asserts it equals
+/// `windows_sys::Win32::UI::WindowsAndMessaging::OBJID_CLIENT`, the same
+/// constant `native_window_host`'s caption-button walk already uses, so this
+/// declaration cannot drift into a number that merely happens to work.
+pub(crate) const OBJID_CLIENT: i32 = -4;
 
 /// Electron's top-level Chromium host window class.
 pub const ELECTRON_OUTER_WINDOW_CLASS: &str = "Chrome_WidgetWin_1";
@@ -672,17 +712,40 @@ fn same_image_name(left: &str, right: &str) -> bool {
     strip(left) == strip(right)
 }
 
-/// Execute Chromium's two-part accessibility activation handshake.
+/// Execute Chromium's accessibility activation handshake and return the object
+/// it makes available.
 ///
-/// Kept generic so the ordering and object-id invariant are unit-testable on
-/// non-Windows hosts.  The returned value is the owned accessibility reference
-/// obtained by the second half of the handshake.
+/// Three steps, in this order, and the order is the whole contract:
+///
+/// 1. `EVENT_SYSTEM_ALERT` for [`ELECTRON_A11Y_OBJECT_ID`].
+/// 2. A request at [`ELECTRON_A11Y_OBJECT_ID`]. **This is the activation, and
+///    its result is deliberately thrown away.** Chromium answers the honeypot
+///    with nothing by design; a handshake that stops here and reports what it
+///    got reports a refusal every single time, on every provider (D-176).
+/// 3. A request at [`OBJID_CLIENT`], whose result is the answer.
+///
+/// What this returning `Some` does and does not prove: it proves an
+/// accessibility object was served for the window, not that the object is
+/// Chromium's own. `AccessibleObjectFromWindow` will synthesise oleacc's
+/// default proxy for a window that answers `OBJID_CLIENT` with zero -- Discord's
+/// `Chrome_RenderWidgetHostHWND` was measured doing exactly that -- and the
+/// proxy is indistinguishable here without reading the raw `LRESULT`. That is
+/// left to the caller's tree gate: [`acquire_uia2_window`] refuses at
+/// [`Uia2AcquireError::TreeNeverPopulated`] when the bound window's tree is
+/// below `populated_min_elements`, so a proxy that carries no content is
+/// rejected one layer down and named for what it is. This function's contract
+/// is deliberately the narrower one it can actually keep.
+///
+/// Kept generic so the ordering and object-id invariants are unit-testable on
+/// non-Windows hosts, which is the only place they were ever wrong.
 pub(crate) fn wake_electron_accessibility_with<T>(
     notify_alert: impl FnOnce(u32, i32),
-    get_object: impl FnOnce(i32) -> Option<T>,
+    mut get_object: impl FnMut(i32) -> Option<T>,
 ) -> Option<T> {
     notify_alert(EVENT_SYSTEM_ALERT, ELECTRON_A11Y_OBJECT_ID);
-    get_object(ELECTRON_A11Y_OBJECT_ID)
+    let activation = get_object(ELECTRON_A11Y_OBJECT_ID);
+    drop(activation);
+    get_object(OBJID_CLIENT)
 }
 
 /// The class of an `ElementFromIAccessible` HRESULT.
@@ -746,6 +809,12 @@ pub(crate) fn msaa_bridge_call_class(hresult: i32) -> MsaaBridgeCallClass {
     }
 }
 
+/// The live half of [`wake_electron_accessibility_with`].
+///
+/// The seam was already parameterised by object id, so the correction in D-176
+/// is entirely in the sequence above and nothing here changed: the same closure
+/// now serves the honeypot request and the `OBJID_CLIENT` request. `-4 as u32`
+/// is `0xFFFF_FFFC`, which is what `AccessibleObjectFromWindow` expects.
 #[cfg(target_os = "windows")]
 pub(crate) fn wake_electron_accessibility(
     window: isize,
@@ -1994,24 +2063,227 @@ pub(crate) mod tests {
     pub(crate) const WAIT_MS: u64 = 90_000;
     pub(crate) const CALL_TIMEOUT_MS: u64 = 750;
 
+    /// A window that answers the way every measured provider answers: nothing
+    /// at the honeypot, an object at `OBJID_CLIENT`.
+    fn a_window_that_answers_like_chromium(object_id: i32) -> Option<&'static str> {
+        (object_id == OBJID_CLIENT).then_some("the client accessible")
+    }
+
     #[test]
-    fn electron_wake_alerts_then_requests_the_same_custom_object() {
+    fn electron_wake_alerts_the_honeypot_then_takes_the_object_at_objid_client() {
         let calls = std::cell::RefCell::new(Vec::new());
         let reference = wake_electron_accessibility_with(
             |event, object_id| calls.borrow_mut().push(("alert", event as i32, object_id)),
             |object_id| {
                 calls.borrow_mut().push(("get_object", 0, object_id));
-                Some("owned reference")
+                a_window_that_answers_like_chromium(object_id)
             },
         );
 
-        assert_eq!(reference, Some("owned reference"));
+        assert_eq!(
+            reference,
+            Some("the client accessible"),
+            "the handshake's answer is the OBJID_CLIENT object, not the honeypot's"
+        );
         assert_eq!(
             calls.into_inner(),
             vec![
                 ("alert", EVENT_SYSTEM_ALERT as i32, ELECTRON_A11Y_OBJECT_ID),
                 ("get_object", 0, ELECTRON_A11Y_OBJECT_ID),
-            ]
+                ("get_object", 0, OBJID_CLIENT),
+            ],
+            "the honeypot request must still be issued -- it is the activation -- \
+             and it must be followed by the OBJID_CLIENT request"
+        );
+    }
+
+    /// The measured shape of the defect, as a test.
+    ///
+    /// Every provider on the owner's desktop answers object id 1 with
+    /// `LRESULT 0` and `AccessibleObjectFromWindow` therefore with `E_FAIL`.
+    /// Against a host that behaves that way, the handshake that stopped at the
+    /// honeypot returned `None` unconditionally, which the substrate reported
+    /// as `WakeRefused`. This pins that the corrected handshake does not.
+    #[test]
+    fn a_honeypot_that_answers_with_nothing_is_the_normal_case_and_still_wakes() {
+        let honeypot_answers = std::cell::Cell::new(0usize);
+        let reference = wake_electron_accessibility_with(
+            |_, _| {},
+            |object_id| {
+                if object_id == ELECTRON_A11Y_OBJECT_ID {
+                    honeypot_answers.set(honeypot_answers.get() + 1);
+                }
+                a_window_that_answers_like_chromium(object_id)
+            },
+        );
+
+        assert_eq!(
+            honeypot_answers.get(),
+            1,
+            "the activation request must be issued exactly once"
+        );
+        assert_eq!(
+            reference,
+            Some("the client accessible"),
+            "a honeypot that hands back nothing is Chromium behaving as documented, \
+             not a provider refusing accessibility"
+        );
+    }
+
+    /// The refusal must stay reachable. A window that serves nothing at
+    /// `OBJID_CLIENT` either -- which is what a genuinely absent or dead
+    /// provider looks like -- must still produce `None`, and through it
+    /// `WakeRefused`.
+    #[test]
+    fn a_window_that_serves_nothing_at_objid_client_still_refuses() {
+        let reference =
+            wake_electron_accessibility_with(|_, _| {}, |_| Option::<&'static str>::None);
+        assert_eq!(
+            reference, None,
+            "a wake that cannot refuse is worse than one that cannot wake"
+        );
+    }
+
+    /// The honeypot's answer must never become the handshake's answer again.
+    /// A host that answers ONLY the honeypot -- the exact assumption the old
+    /// code encoded -- must now be treated as having served nothing.
+    #[test]
+    fn an_object_offered_at_the_honeypot_is_not_taken_as_the_answer() {
+        let reference = wake_electron_accessibility_with(
+            |_, _| {},
+            |object_id| (object_id == ELECTRON_A11Y_OBJECT_ID).then_some("the honeypot's object"),
+        );
+        assert_eq!(
+            reference, None,
+            "object id 1 is an activation, not an object source; taking its answer \
+             is how a handshake gets pinned to something no provider does"
+        );
+    }
+
+    /// Measure Chromium's accessibility handshake against every live provider
+    /// on this desktop, old sequence beside new, in OSL's own code.
+    ///
+    /// This is D-176's evidence, and it is a measurement rather than an
+    /// assertion about one provider on purpose: the claim under test --
+    /// "object id 1 hands back Chromium's accessibility object" -- was written
+    /// into this module, into `native_telegram_adapter` and into
+    /// `native_whatsapp_adapter`, and it is either true of every Chromium
+    /// window or of none.
+    ///
+    /// Read-only. It requests accessibility objects and counts tree nodes; it
+    /// writes nothing, focuses nothing and sends no input. Bounded: every call
+    /// goes through the substrate's own deadline, and the element counts are
+    /// taken through `Uia2Syscalls::element_count`, which is the same bounded
+    /// path the acquisition uses. Nothing here walks an unbounded tree -- the
+    /// previous lane froze WhatsApp with one of those.
+    ///
+    /// ```text
+    /// flock -o /tmp/osl-cargo.lock cargo test --manifest-path apps/osl-hub/Cargo.toml \
+    ///   --lib --target x86_64-pc-windows-gnu -j 4 --no-run
+    /// powershell.exe -NoProfile -Command "& '<exe>' --ignored --nocapture \
+    ///   --test-threads=1 report_the_live_chromium_wake_handshake"
+    /// ```
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "measures live third-party windows on a Windows host; run explicitly"]
+    fn report_the_live_chromium_wake_handshake() {
+        use ::windows::core::Interface;
+        use ::windows::Win32::Foundation::HWND;
+        use ::windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+        use ::windows::Win32::UI::Accessibility::{
+            AccessibleObjectFromWindow, IAccessible, NotifyWinEvent,
+        };
+        use std::ffi::c_void;
+
+        let _com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+
+        // The old sequence, spelled out rather than referenced, so this stays a
+        // measurement of the two policies even after the old one is gone from
+        // production.
+        fn object_at(window: isize, object_id: i32) -> Option<IAccessible> {
+            let mut object: *mut c_void = std::ptr::null_mut();
+            unsafe {
+                AccessibleObjectFromWindow(
+                    HWND(window as _),
+                    object_id as u32,
+                    &IAccessible::IID,
+                    &mut object,
+                )
+            }
+            .ok()?;
+            (!object.is_null()).then(|| unsafe { IAccessible::from_raw(object) })
+        }
+
+        let host = win32::Uia2Win32Host::desktop();
+        let deadline = Uia2Deadline(2_000);
+        let windows = host
+            .enumerate_windows(deadline)
+            .expect("the desktop enumeration must answer inside its deadline");
+
+        let mut measured = 0usize;
+        for window in &windows {
+            let class = window.class_name.as_str();
+            if class != ELECTRON_OUTER_WINDOW_CLASS
+                && class != ELECTRON_RENDERER_WINDOW_CLASS
+                && class != TELEGRAM_OUTER_WINDOW_CLASS
+                && class != WHATSAPP_OUTER_WINDOW_CLASS
+            {
+                continue;
+            }
+            if !window.visible {
+                continue;
+            }
+            measured += 1;
+
+            let old = wake_electron_accessibility_with(
+                |event, object_id| unsafe {
+                    NotifyWinEvent(event, HWND(window.hwnd as _), object_id, 0)
+                },
+                |object_id| {
+                    // The old policy: the honeypot is the only id ever asked
+                    // for an object, so every other id yields nothing.
+                    if object_id == ELECTRON_A11Y_OBJECT_ID {
+                        object_at(window.hwnd, object_id)
+                    } else {
+                        None
+                    }
+                },
+            );
+            let new = wake_electron_accessibility(window.hwnd);
+            let elements = host
+                .element_count(window.hwnd, Uia2TreeRoute::UiaNative, deadline)
+                .unwrap_or(usize::MAX);
+
+            eprintln!(
+                "wake hwnd={} pid={} image={:?} class={:?} host_exe={:?} \
+                 honeypot_only={} objid_client={} uia_elements={}",
+                window.hwnd,
+                window.process_id,
+                window.process_name,
+                window.class_name,
+                window.host_exe_name,
+                old.is_some(),
+                new.is_some(),
+                elements,
+            );
+        }
+
+        assert!(
+            measured > 0,
+            "no Chromium, WebView2 or Qt window was visible, so this run measured \
+             nothing and must not be read as evidence about either sequence"
+        );
+    }
+
+    /// The constant is the Win32 one, not a number that happens to work.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn objid_client_is_the_win32_constant() {
+        assert_eq!(
+            OBJID_CLIENT,
+            windows_sys::Win32::UI::WindowsAndMessaging::OBJID_CLIENT,
+            "the handshake must use the Win32 object id, not a number that happens \
+             to work"
         );
     }
 
