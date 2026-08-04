@@ -10,6 +10,15 @@ describe("OSL Mail Home integration", () => {
     expect(main).toContain('if (route === "osl-mail") return oslMailContent()');
   });
 
+  it("does not call the missing thread-list bridge or coerce failures to an empty inbox", () => {
+    expect(main).not.toContain("listOslMailThreads,");
+    expect(main).not.toContain("listOslMailThreads()");
+    expect(main).not.toContain("retrieveOslMailThread,");
+    expect(main).not.toContain("acknowledgeOslMailRetrieval,");
+    expect(main).not.toMatch(/listOslMailThreads\(\)\s*\?\?\s*\[\]/u);
+    expect(main).toContain("oslMailThreadSyncUnavailable");
+  });
+
   it("provisions only from the claimed signed OSL username", () => {
     expect(main).toContain("provisionOslMail(claimedOslUsername)");
     expect(main).not.toContain("osl-mail-phone");

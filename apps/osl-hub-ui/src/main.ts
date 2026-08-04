@@ -153,12 +153,9 @@ import { oslMailStage, type OslMailStage } from "./desktop-service-policy";
 import { webSurfaceLabel, type WebSurfaceCapability } from "./web-surface-label";
 import { homeProtectionState } from "./home-protection-state";
 import {
-  acknowledgeOslMailRetrieval,
   burnOslMailbox,
-  listOslMailThreads,
   loadOslMailStatus,
   provisionOslMail,
-  retrieveOslMailThread,
   sendOslMail,
   type OslMailBurnReceipt,
   type OslMailDeleteReceipt,
@@ -499,6 +496,7 @@ let oslMailDeleteReceipt: OslMailDeleteReceipt | null = null;
 let oslMailSendReceipt: OslMailSendReceipt | null = null;
 let oslMailBurnReceipt: OslMailBurnReceipt | null = null;
 let oslMailError: string | null = null;
+let oslMailThreadSyncUnavailable = false;
 let appNotifications: AppNotification[] | null = null;
 let notificationsEnabled = false;
 let notificationAppPreferences: Partial<Record<ServiceId, boolean>> = {};
@@ -4667,16 +4665,23 @@ function oslMailContent(): string {
     sendReceipt: oslMailSendReceipt,
     burnReceipt: oslMailBurnReceipt,
     error: oslMailError,
+    threadSyncUnavailable: oslMailThreadSyncUnavailable,
   });
 }
 
 async function refreshOslMail(): Promise<void> {
   oslMailLoading = true;
   oslMailError = null;
+  oslMailThreadSyncUnavailable = false;
   renderWhenIdle();
   const status = await loadOslMailStatus();
   oslMailStatus = status;
-  if (status?.provisioned) oslMailThreads = await listOslMailThreads() ?? [];
+  oslMailThreads = [];
+  oslMailActiveThread = null;
+  if (status?.provisioned) {
+    oslMailThreadSyncUnavailable = true;
+    oslMailError = "Inbox sync is unavailable in this build; messages are not being reported as empty";
+  }
   oslMailLoading = false;
   if (route === "osl-mail") render();
 }
@@ -4688,7 +4693,11 @@ async function provisionOslMailFromProfile(): Promise<void> {
     return;
   }
   oslMailStatus = await provisionOslMail(claimedOslUsername);
+  oslMailThreads = [];
+  oslMailActiveThread = null;
+  oslMailThreadSyncUnavailable = Boolean(oslMailStatus?.provisioned);
   if (!oslMailStatus) oslMailError = "Mailbox setup was refused";
+  else if (oslMailThreadSyncUnavailable) oslMailError = "Inbox sync is unavailable in this build; messages are not being reported as empty";
   if (route === "osl-mail") render();
 }
 
@@ -7066,15 +7075,13 @@ function bindWorkspace(): void {
     render();
   });
   document.querySelectorAll<HTMLButtonElement>("[data-mail-thread]").forEach((button) => button.addEventListener("click", async () => {
-    const threadId = button.dataset.mailThread ?? "";
-    oslMailActiveThread = await retrieveOslMailThread(threadId);
-    oslMailError = oslMailActiveThread ? null : "Message retrieval was refused";
+    oslMailActiveThread = null;
+    oslMailError = "Message retrieval is unavailable in this build";
     render();
   }));
   document.querySelector<HTMLButtonElement>("#osl-mail-ack")?.addEventListener("click", async () => {
-    if (!oslMailActiveThread) return;
-    oslMailDeleteReceipt = await acknowledgeOslMailRetrieval(oslMailActiveThread.retrievalId, oslMailActiveThread.messages.map((message) => message.messageId));
-    oslMailError = oslMailDeleteReceipt ? null : "Retrieval acknowledged locally; server deletion was not requested or confirmed by this build";
+    oslMailDeleteReceipt = null;
+    oslMailError = "Server deletion requests are unavailable in this build";
     render();
   });
   document.querySelector<HTMLFormElement>("#osl-mail-compose-form")?.addEventListener("submit", (event) => {
@@ -9626,6 +9633,13 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   inboxFilter = patch.inboxFilter ?? "all";
   resetAccountRecovery();
   oslMailNotifications = patch.oslMailNotifications ?? (localStorage.getItem(oslMailNotificationsStorageKey) !== "false");
+  oslMailThreadSyncUnavailable = false;
+  oslMailThreads = [];
+  oslMailActiveThread = null;
+  oslMailError = null;
+  oslMailDeleteReceipt = null;
+  oslMailSendReceipt = null;
+  oslMailBurnReceipt = null;
   services = patch.services ?? [];
   linkedServicesChecked = patch.servicesChecked ?? patch.services !== undefined;
   hubPeople = (patch.hubPeople ?? []).map(testHubPerson);

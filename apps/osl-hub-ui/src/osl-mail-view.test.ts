@@ -12,7 +12,7 @@ import { OSL_MAIL_DELETION_UNVERIFIED_NOTE, oslMailViewMarkup, type OslMailViewM
 const VERIFIED_DELETION_CLAIM =
   /\b(deletion|deleted|delete|burn|burned|erasure|erased|removal|removed)\b[^.]{0,80}\b(confirmed|verified)\b|\b(confirmed|verified)\b[^.]{0,80}\b(deletion|deleted|delete|burn|burned|erasure|erased|removal|removed)\b/iu;
 
-const base: OslMailViewModel = { loading: false, available: false, signedUsername: "liam", status: null, threads: [], activeThread: null, pane: "inbox", notifications: true, deleteReceipt: null, sendReceipt: null, burnReceipt: null, error: null };
+const base: OslMailViewModel = { loading: false, available: false, signedUsername: "liam", status: null, threads: [], activeThread: null, pane: "inbox", notifications: true, deleteReceipt: null, sendReceipt: null, burnReceipt: null, error: null, threadSyncUnavailable: false };
 const status = { available: true as const, provisioned: true as const, address: "liam@oslprivacy.com" as const, unreadCount: 0, retentionSeconds: 3600 };
 
 describe("OSL Mail view", () => {
@@ -27,6 +27,14 @@ describe("OSL Mail view", () => {
     expect(html).toContain("liam@oslprivacy.com");
     expect(html).not.toContain('type="tel"');
     expect(html).not.toContain('id="osl-mail-phone"');
+  });
+
+  it("does not render a failed inbox sync as an empty inbox", () => {
+    const html = oslMailViewMarkup({ ...base, available: true, status: { ...status, unreadCount: 2 }, threadSyncUnavailable: true });
+    expect(html).toContain("Inbox sync unavailable");
+    expect(html).toContain("Messages are not being reported as empty");
+    expect(html).not.toContain("Inbox clear");
+    expect(html).not.toContain("No server-confirmed messages");
   });
 
   it("keeps external outbound unavailable and explains external inbound as ordinary email", () => {
