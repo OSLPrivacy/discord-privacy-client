@@ -72,14 +72,17 @@ pub(crate) const DISCORD_UIA2_CALL_TIMEOUT_MS: u64 = 1_500;
 /// is the mechanism that ships, and `Uia2TreeRoute::MsaaBridge` is what names
 /// the difference.
 #[cfg(any(target_os = "windows", test))]
-pub(crate) const DISCORD_UIA2_WINDOW_PLAN: crate::native_a11y::Uia2WindowPlan =
+pub(crate) fn discord_uia2_window_plan(
+    app_process_name: &'static str,
+) -> crate::native_a11y::Uia2WindowPlan {
     crate::native_a11y::Uia2WindowPlan::chromium_outer_msaa_root(
         "Discord",
-        "Discord",
+        app_process_name,
         crate::native_a11y::ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
         DISCORD_UIA2_POLL_BUDGET_MS,
         DISCORD_UIA2_CALL_TIMEOUT_MS,
-    );
+    )
+}
 
 /// Which window Discord's accessibility wake is issued at.
 ///
@@ -95,10 +98,21 @@ pub(crate) const DISCORD_UIA2_WINDOW_PLAN: crate::native_a11y::Uia2WindowPlan =
 /// Chromium declines the handshake -- no accessibility tree -- and the existing
 /// recovery ladder handles it. No new failure shape is introduced.
 #[cfg(any(target_os = "windows", test))]
+pub(crate) fn discord_uia2_wake_target_for_process(
+    app_process_name: &'static str,
+    host: &dyn crate::native_a11y::Uia2Syscalls,
+) -> Result<crate::native_a11y::Uia2ResolvedWindow, crate::native_a11y::Uia2AcquireError> {
+    crate::native_a11y::resolve_uia2_wake_target(discord_uia2_window_plan(app_process_name), host)
+}
+
+#[cfg(any(target_os = "windows", test))]
 pub(crate) fn discord_uia2_wake_target(
     host: &dyn crate::native_a11y::Uia2Syscalls,
 ) -> Result<crate::native_a11y::Uia2ResolvedWindow, crate::native_a11y::Uia2AcquireError> {
-    crate::native_a11y::resolve_uia2_wake_target(DISCORD_UIA2_WINDOW_PLAN, host)
+    discord_uia2_wake_target_for_process(
+        crate::native_window_host::dedicated_discord_process_name(),
+        host,
+    )
 }
 
 #[cfg(any(target_os = "windows", test, feature = "discord-qa-shell"))]
@@ -9561,7 +9575,7 @@ mod windows {
         // Taking the client object is also the documented way to switch Chromium's
         // tree on, and holding it for the whole descent keeps the reference-counted
         // tree from being torn down underneath the probes.
-        let client = msaa_client_from_window(target.window)?;
+        let client = msaa_client_from_target(target)?;
         let mut probes = 0usize;
         for point in carrier_row_probe_points(root_bounds, composer) {
             if probes >= MSAA_ROW_LIST_POINT_PROBES || Instant::now() >= deadline {
@@ -9827,7 +9841,7 @@ mod windows {
         process_is_trusted: &dyn Fn(u32) -> bool,
         deadline: Instant,
     ) -> Option<NativeDiscordSelfProviderIdentity> {
-        let root = msaa_client_from_window(target.window)?;
+        let root = msaa_client_from_target(target)?;
         if !msaa_object_belongs_to_target(&root, target, process_is_trusted) {
             return None;
         }
@@ -9983,7 +9997,7 @@ mod windows {
         self_identity: &NativeDiscordSelfProviderIdentity,
         deadline: Instant,
     ) -> Option<NativeDiscordPeerProviderIdentity> {
-        let root = msaa_client_from_window(target.window)?;
+        let root = msaa_client_from_target(target)?;
         if !msaa_object_belongs_to_target(&root, target, process_is_trusted) {
             return None;
         }
@@ -11778,7 +11792,9 @@ mod windows {
     /// reference. The shared helper sends Chromium's required alert before it
     /// issues `WM_GETOBJECT`; holding the returned reference keeps the lazily
     /// built tree alive for the rest of this bounded operation.
-    fn msaa_client_from_window(window: isize) -> Option<IAccessible> {
+    fn msaa_client_from_target(
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+    ) -> Option<IAccessible> {
         // The shared substrate decides WHICH window the wake is issued at. For
         // Discord's plan that resolves to the borrowed outer window itself, so
         // the handshake below is byte-for-byte the one that shipped -- but the
@@ -11788,12 +11804,26 @@ mod windows {
         // The enumeration is rooted at the borrowed window rather than at the
         // desktop: OSL reparents Discord's window into its own hierarchy, so a
         // top-level walk would not find it at all.
-        let target =
-            discord_uia2_wake_target(&crate::native_a11y::win32::Uia2Win32Host::rooted_at(window))
-                .ok()?;
+        let target = discord_uia2_wake_target_for_process(
+            target.app_process_name,
+            &crate::native_a11y::win32::Uia2Win32Host::rooted_at(target.window),
+        )
+        .ok()?;
         // Issued on this thread, in this thread's apartment, exactly as before:
         // the returned reference is only usable where it was obtained.
         crate::native_a11y::wake_electron_accessibility(target.bound_hwnd)
+    }
+
+    fn msaa_client_from_window_for_process(
+        window: isize,
+        app_process_name: &'static str,
+    ) -> Option<IAccessible> {
+        discord_uia2_wake_target_for_process(
+            app_process_name,
+            &crate::native_a11y::win32::Uia2Win32Host::rooted_at(window),
+        )
+        .ok()
+        .and_then(|target| crate::native_a11y::wake_electron_accessibility(target.bound_hwnd))
     }
 
     thread_local! {
@@ -12584,6 +12614,7 @@ mod windows {
         profile: &ComposerDiscoveryProfile,
         root_bounds: AccessibilityBounds,
         target_window: isize,
+        app_process_name: &'static str,
         process_is_trusted: &dyn Fn(u32) -> bool,
         started: Instant,
         timeout: Duration,
@@ -12599,7 +12630,8 @@ mod windows {
         // Taking the client object is also the documented way to switch
         // Chromium's tree on, and holding it for the whole scan keeps the
         // reference-counted tree from being torn down underneath the probes.
-        let Some(client) = msaa_client_from_window(target_window) else {
+        let Some(client) = msaa_client_from_window_for_process(target_window, app_process_name)
+        else {
             return Ok(MsaaProbeScan {
                 candidates,
                 candidate_found,
@@ -12795,6 +12827,7 @@ mod windows {
         root_bounds: AccessibilityBounds,
         composer_bounds: AccessibilityBounds,
         target_window: isize,
+        app_process_name: &'static str,
         conversation: &str,
         process_is_trusted: &dyn Fn(u32) -> bool,
         started: Instant,
@@ -12807,7 +12840,8 @@ mod windows {
         // The borrowed window's own client object. Everything below is reached from
         // here, which is what makes the walk independent of whatever OSL has painted
         // over Discord.
-        let Some(client) = msaa_client_from_window(target_window) else {
+        let Some(client) = msaa_client_from_window_for_process(target_window, app_process_name)
+        else {
             return Err("Discord did not expose an accessible client object".to_owned());
         };
         let width = root_bounds.right - root_bounds.left;
@@ -13315,6 +13349,7 @@ mod windows {
                         profile,
                         root_bounds,
                         target.window,
+                        target.app_process_name,
                         process_is_trusted,
                         started,
                         msaa_budget,
@@ -13544,7 +13579,7 @@ mod windows {
                             last_a11y_enable_poke_age(target.window),
                         ) {
                             record_a11y_enable_poke(target.window);
-                            match msaa_client_from_window(target.window) {
+                            match msaa_client_from_target(target) {
                                 Some(_enable_reference) => {
                                     let plan = a11y_enable_settle_plan(A11Y_ENABLE_RECOVERY_BUDGET);
                                     // No affordable settle step still leaves the
@@ -13602,6 +13637,7 @@ mod windows {
                                             profile,
                                             root_bounds,
                                             target.window,
+                                            target.app_process_name,
                                             process_is_trusted,
                                             started,
                                             effective_timeout,
@@ -13753,6 +13789,7 @@ mod windows {
                     root_bounds,
                     bounds,
                     target.window,
+                    target.app_process_name,
                     conversation,
                     process_is_trusted,
                     // The SAME clock and the SAME budget as the header walk, so the
@@ -13842,6 +13879,7 @@ mod windows {
     fn composer_text_with_a11y_recovery(
         element: &IUIAutomationElement,
         window: isize,
+        app_process_name: &'static str,
         urgency: A11yEnableUrgency,
     ) -> DraftRead {
         let (first, first_route) = composer_text_with_route(element);
@@ -13862,7 +13900,8 @@ mod windows {
         record_a11y_enable_poke(window);
         // Discord would not even hand out a client accessible object, which is
         // itself the answer.
-        let Some(_enable_reference) = msaa_client_from_window(window) else {
+        let Some(_enable_reference) = msaa_client_from_window_for_process(window, app_process_name)
+        else {
             return DraftRead {
                 text: None,
                 route: ComposerTextRoute::Unreadable,
@@ -13917,8 +13956,16 @@ mod windows {
     /// still fully preservable. Demanding writability here is what made an
     /// apparently empty composer refuse to open protection: reading is a read, and
     /// mutation no longer goes through `ValuePattern` anywhere.
-    fn exact_native_draft(element: &IUIAutomationElement, window: isize) -> Result<String, String> {
-        let read = composer_text_with_a11y_recovery(element, window, A11yEnableUrgency::Placement);
+    fn exact_native_draft(
+        element: &IUIAutomationElement,
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+    ) -> Result<String, String> {
+        let read = composer_text_with_a11y_recovery(
+            element,
+            target.window,
+            target.app_process_name,
+            A11yEnableUrgency::Placement,
+        );
         if let Some(stage) = draft_read_stage(read.outcome) {
             qa_place_stage(stage);
         }
@@ -14150,7 +14197,7 @@ mod windows {
             scope_binding,
             require_header,
         )?;
-        let draft = exact_native_draft(&before.element, target.window)?;
+        let draft = exact_native_draft(&before.element, target)?;
         // Whose text is in the composer. OSL's own stranded carrier from a failed
         // send is not operator data and must never be preserved as though it were:
         // saving it made the next attempt restore OSL's flagtext into the operator's
@@ -14213,7 +14260,7 @@ mod windows {
                 require_header,
             )?;
             if !binding_identity_matches(&before.binding, &current.binding)
-                || exact_native_draft(&current.element, target.window)? != draft
+                || exact_native_draft(&current.element, target)? != draft
             {
                 return Err("The Discord composer changed before protection opened".to_owned());
             }
@@ -14380,7 +14427,7 @@ mod windows {
             return Err(DRAFT_SAVED_FOR_ANOTHER_CONVERSATION.to_owned());
         }
         match existing_draft_restore(
-            &exact_native_draft(&before.element, target.window)?,
+            &exact_native_draft(&before.element, target)?,
             saved.plaintext.as_str(),
         ) {
             ExistingDraftRestore::AlreadyRestored => {
@@ -14436,7 +14483,7 @@ mod windows {
         // proof, so it stays strict -- but comparing the stale saved binding
         // made it fail for reasons that had nothing to do with the keystrokes.
         if !post_mutation_binding_matches(&before.binding, &restored.binding)
-            || exact_native_draft(&restored.element, target.window)? != saved.plaintext.as_str()
+            || exact_native_draft(&restored.element, target)? != saved.plaintext.as_str()
         {
             return Err(
                 "The saved Discord draft could not be verified after restoration".to_owned(),
@@ -14486,7 +14533,7 @@ mod windows {
             }
         }
         let before = before.ok_or(last_error)?;
-        let original = exact_native_draft(&before.element, target.window)?;
+        let original = exact_native_draft(&before.element, target)?;
         let inserted = original.is_empty();
         let expected = if inserted {
             QA_DRAFT.to_owned()
@@ -14516,7 +14563,7 @@ mod windows {
             }
             let seeded = locate(target, process_is_trusted, &profile, scope_binding, false)?;
             if !post_mutation_binding_matches(&before.binding, &seeded.binding)
-                || exact_native_draft(&seeded.element, target.window)? != expected
+                || exact_native_draft(&seeded.element, target)? != expected
             {
                 let _ = clear_saved_native_draft(
                     target,
@@ -14563,7 +14610,7 @@ mod windows {
         restore_suspended_draft(state, target, process_is_trusted, scope_binding)?;
         let restored = locate(target, process_is_trusted, &profile, scope_binding, false)?;
         if !post_mutation_binding_matches(&before.binding, &restored.binding)
-            || exact_native_draft(&restored.element, target.window)? != expected
+            || exact_native_draft(&restored.element, target)? != expected
         {
             return Err("The native Discord draft probe did not restore exactly".to_owned());
         }
@@ -15117,11 +15164,14 @@ mod windows {
     ///
     /// Neither route is input and neither authorises anything: the caller still
     /// has to read the focus back before a keystroke may go out.
-    fn take_composer_keyboard_focus(element: &IUIAutomationElement) -> bool {
+    fn take_composer_keyboard_focus(
+        element: &IUIAutomationElement,
+        app_process_name: &'static str,
+    ) -> bool {
         if unsafe { element.SetFocus() }.is_ok() {
             return true;
         }
-        let Some(accessible) = composer_msaa_object(element) else {
+        let Some(accessible) = composer_msaa_object(element, app_process_name) else {
             return false;
         };
         let took =
@@ -15146,10 +15196,11 @@ mod windows {
     /// window: the protected composer stays exactly where it is, visible, for the
     /// whole placement.
     fn request_target_input_focus(
-        target_window: isize,
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
         element: &IUIAutomationElement,
         protected_foreground: &mut ProtectedForegroundRestore,
     ) -> InputFocusRequest {
+        let target_window = target.window;
         // Raising Discord stays in scope only while OSL already owns the
         // foreground, or Discord already does. A third application owning it is
         // the one case where nothing may be raised at all.
@@ -15164,9 +15215,9 @@ mod windows {
         // composer still on screen, which is the exact state in which the
         // operator's next keystrokes leave in the clear.
         protected_foreground.arm();
-        let target = target_window as windows_sys::Win32::Foundation::HWND;
+        let target_hwnd = target_window as windows_sys::Win32::Foundation::HWND;
         if !foreground_is_exact_discord(target_window) {
-            unsafe { SetForegroundWindow(target) };
+            unsafe { SetForegroundWindow(target_hwnd) };
             if !foreground_is_exact_discord(target_window) {
                 // The unaided call was refused, or has not landed yet. Ask once
                 // more with the input queue shared, which is the documented way
@@ -15175,12 +15226,12 @@ mod windows {
                 // caller's settle.
                 {
                     let _attachment = ForegroundQueueAttachment::acquire();
-                    unsafe { SetForegroundWindow(target) };
+                    unsafe { SetForegroundWindow(target_hwnd) };
                 }
                 qa_place_stage("place_foreground_attached_request");
             }
         }
-        if !take_composer_keyboard_focus(element) {
+        if !take_composer_keyboard_focus(element, target.app_process_name) {
             return InputFocusRequest::FocusRefused;
         }
         InputFocusRequest::Requested
@@ -15316,7 +15367,7 @@ mod windows {
         expected_composer_text: &str,
     ) -> bool {
         carrier_write_target_is_current(target, element, expected, process_is_trusted)
-            && composer_holds_exact_text(element, expected_composer_text)
+            && composer_holds_exact_text(element, expected_composer_text, target.app_process_name)
     }
 
     /// Fixed label naming which clause refused an injection gate.
@@ -15487,8 +15538,13 @@ mod windows {
     /// refusal cannot be used to confirm placement. This predicate compares
     /// instead of returning: the observed string is bounded by OSL's own carrier
     /// length, is zeroized on drop, and only a boolean leaves the function.
-    fn composer_holds_exact_text(element: &IUIAutomationElement, expected: &str) -> bool {
-        composer_exact_text_probe(element, expected).is_some_and(|probe| probe.matches)
+    fn composer_holds_exact_text(
+        element: &IUIAutomationElement,
+        expected: &str,
+        app_process_name: &'static str,
+    ) -> bool {
+        composer_exact_text_probe(element, expected, app_process_name)
+            .is_some_and(|probe| probe.matches)
     }
 
     /// One read of the composer, reduced to the two facts a bounded wait needs:
@@ -15713,7 +15769,10 @@ mod windows {
     /// The descent is capped by `MSAA_HIT_TEST_MAX_DEPTH` and the climb by
     /// `MSAA_MAX_ANCESTOR_DEPTH`, so the whole acquisition is a fixed handful of
     /// calls whether or not it succeeds.
-    fn composer_msaa_object(element: &IUIAutomationElement) -> Option<IAccessible> {
+    fn composer_msaa_object(
+        element: &IUIAutomationElement,
+        app_process_name: &'static str,
+    ) -> Option<IAccessible> {
         let id = runtime_id(element).ok()?;
         let name = unsafe { element.CurrentName() }.ok()?.to_string();
         if name.is_empty() {
@@ -15738,7 +15797,7 @@ mod windows {
         // Taking the client object is also the documented way to keep Chromium's
         // tree switched on, and holding it for the descent keeps the
         // reference-counted tree from being torn down underneath it.
-        let client = msaa_client_from_window(window)?;
+        let client = msaa_client_from_window_for_process(window, app_process_name)?;
         let point = POINT {
             x: bounds.left + (bounds.right - bounds.left) / 2,
             y: bounds.top + (bounds.bottom - bounds.top) / 2,
@@ -15848,13 +15907,17 @@ mod windows {
 
     /// The composer's complete text from Chromium's own MSAA tree, addressed by
     /// the UI Automation element the rest of this file works in.
-    fn composer_msaa_tree_text(element: &IUIAutomationElement) -> Option<Zeroizing<String>> {
-        msaa_composer_subtree_text(&composer_msaa_object(element)?)
+    fn composer_msaa_tree_text(
+        element: &IUIAutomationElement,
+        app_process_name: &'static str,
+    ) -> Option<Zeroizing<String>> {
+        msaa_composer_subtree_text(&composer_msaa_object(element, app_process_name)?)
     }
 
     fn composer_exact_text_probe(
         element: &IUIAutomationElement,
         expected: &str,
+        app_process_name: &'static str,
     ) -> Option<ComposerTextProbe> {
         if expected.is_empty() {
             // Emptiness keeps `composer_text`'s own proof, because that is the
@@ -15869,7 +15932,7 @@ mod windows {
             // `expected` is empty on this branch, so every answer trivially accounts
             // for its (single, empty) line and the route order is exactly what it
             // was: cheapest first, MSAA tree only if neither answered.
-            let complete = composer_complete_text(element, expected);
+            let complete = composer_complete_text(element, expected, app_process_name);
             let complete_is_empty = complete
                 .as_deref()
                 .map(|value| canonical_accessible_text(value).is_empty());
@@ -15917,7 +15980,7 @@ mod windows {
             .flatten()
             .any(|text| read_spans_expected_lines(text, expected));
         let msaa = (!uia_spans)
-            .then(|| composer_msaa_tree_text(element))
+            .then(|| composer_msaa_tree_text(element, app_process_name))
             .flatten();
         // Kept, and still able to prove a match on its own, because on a host that
         // does answer it fully it is by far the cheapest route. It just may no
@@ -15995,6 +16058,7 @@ mod windows {
     fn await_composer_write(
         element: &IUIAutomationElement,
         expected: &str,
+        app_process_name: &'static str,
         budget_ms: u64,
         deadline: Instant,
         still_current: &mut dyn FnMut() -> bool,
@@ -16015,7 +16079,7 @@ mod windows {
             if !still_current() {
                 return CarrierWriteOutcome::TargetChanged;
             }
-            let Some(probe) = composer_exact_text_probe(element, expected) else {
+            let Some(probe) = composer_exact_text_probe(element, expected, app_process_name) else {
                 reads_without_progress = reads_without_progress.saturating_add(1);
                 if ever_readable && carrier_write_stalled(reads_without_progress) {
                     break;
@@ -16193,7 +16257,8 @@ mod windows {
                 carrier_target_identity_holds(target, &held.element, expected, process_is_trusted);
             match carrier_observation_source(held_is_current) {
                 CarrierObservationSource::HeldElement => {
-                    match composer_exact_text_probe(&held.element, carrier) {
+                    match composer_exact_text_probe(&held.element, carrier, target.app_process_name)
+                    {
                         Some(probe) if probe.matches => {
                             qa_place_stage(carrier_observation_source_stage(
                                 CarrierObservationSource::HeldElement,
@@ -16204,7 +16269,7 @@ mod windows {
                             // too: a trail that only reports failures cannot tell
                             // "the fold was needed and worked" from "the fold was
                             // never exercised".
-                            qa_report_carrier_read(&held.element, carrier);
+                            qa_report_carrier_read(&held.element, carrier, target.app_process_name);
                             return Some(held.clone());
                         }
                         Some(probe) => {
@@ -16252,7 +16317,7 @@ mod windows {
                 target_change = Some(CarrierTargetChange::PostMutationBinding);
                 break;
             }
-            if composer_holds_exact_text(&observed.element, carrier) {
+            if composer_holds_exact_text(&observed.element, carrier, target.app_process_name) {
                 qa_carrier_write_stage(CarrierWriteOutcome::Complete, None);
                 return Some(observed);
             }
@@ -16271,7 +16336,7 @@ mod windows {
             ),
             target_change,
         );
-        qa_report_carrier_read(&held.element, carrier);
+        qa_report_carrier_read(&held.element, carrier, target.app_process_name);
         None
     }
 
@@ -16331,8 +16396,9 @@ mod windows {
     fn composer_complete_text(
         element: &IUIAutomationElement,
         expected: &str,
+        app_process_name: &'static str,
     ) -> Option<Zeroizing<String>> {
-        composer_complete_read(element, expected).map(|(text, _)| text)
+        composer_complete_read(element, expected, app_process_name).map(|(text, _)| text)
     }
 
     /// The same complete read, plus which route produced it.
@@ -16351,6 +16417,7 @@ mod windows {
     fn composer_complete_read(
         element: &IUIAutomationElement,
         expected: &str,
+        app_process_name: &'static str,
     ) -> Option<(Zeroizing<String>, CompleteReadRoute)> {
         let bounded_length = (MAX_COVER_BYTES + 8) as i32;
         let spans = |candidate: &Option<(Zeroizing<String>, CompleteReadRoute)>| {
@@ -16380,8 +16447,8 @@ mod windows {
             }
         }
         if !spans(&answer) {
-            let msaa =
-                composer_msaa_tree_text(element).map(|text| (text, CompleteReadRoute::MsaaTree));
+            let msaa = composer_msaa_tree_text(element, app_process_name)
+                .map(|text| (text, CompleteReadRoute::MsaaTree));
             if spans(&msaa) || answer.is_none() {
                 answer = msaa.or(answer);
             }
@@ -16419,7 +16486,11 @@ mod windows {
     }
 
     #[cfg(feature = "discord-qa-shell")]
-    fn qa_report_carrier_read(element: &IUIAutomationElement, carrier: &str) {
+    fn qa_report_carrier_read(
+        element: &IUIAutomationElement,
+        carrier: &str,
+        app_process_name: &'static str,
+    ) {
         // The complete route is what the labels describe, falling back to the raw
         // read only when no complete route answered -- and saying which, because
         // "the composer does not hold the carrier" and "OSL cannot see the whole
@@ -16453,7 +16524,7 @@ mod windows {
         // loop, and it holds no lock -- so it cannot reproduce the cross-process
         // accessibility deadlock this file is careful about.
         let msaa = (!uia_matched)
-            .then(|| composer_msaa_tree_text(element))
+            .then(|| composer_msaa_tree_text(element, app_process_name))
             .flatten();
         let value = (!uia_matched)
             .then(|| composer_value_pattern_text(element))
@@ -16517,7 +16588,12 @@ mod windows {
     }
 
     #[cfg(not(feature = "discord-qa-shell"))]
-    fn qa_report_carrier_read(_element: &IUIAutomationElement, _carrier: &str) {}
+    fn qa_report_carrier_read(
+        _element: &IUIAutomationElement,
+        _carrier: &str,
+        _app_process_name: &'static str,
+    ) {
+    }
 
     /// Type `text` into the composer that is already focused and proven, as the
     /// same real Unicode keystrokes every other write in this file uses.
@@ -16582,13 +16658,16 @@ mod windows {
             // inherits the completeness verdict rather than forming its own.
             // `composer_raw_text` alone would put it back on the single-leaf read
             // that made appending destructive.
-            let Some(probe) = composer_exact_text_probe(&held.element, expected_text) else {
+            let Some(probe) =
+                composer_exact_text_probe(&held.element, expected_text, target.app_process_name)
+            else {
                 break;
             };
             if probe.matches {
                 return true;
             }
-            let observed = composer_complete_text(&held.element, expected_text);
+            let observed =
+                composer_complete_text(&held.element, expected_text, target.app_process_name);
             // Said once per re-drive attempt rather than once per poll: whether the
             // read this decision rests on actually accounted for every hard line
             // OSL typed. A trail that only said `send_carrier_write_plateaued`
@@ -16611,7 +16690,11 @@ mod windows {
                 // Already complete, or nothing OSL may touch. Either way there is
                 // no re-drive to make.
                 CarrierRedrive::Nothing => {
-                    return composer_holds_exact_text(&held.element, expected_text)
+                    return composer_holds_exact_text(
+                        &held.element,
+                        expected_text,
+                        target.app_process_name,
+                    )
                 }
                 CarrierRedrive::AppendRemainder => {
                     let Some(remainder) = observed
@@ -16641,6 +16724,7 @@ mod windows {
             let outcome = await_composer_write(
                 &held.element,
                 expected_text,
+                target.app_process_name,
                 CARRIER_WRITE_BUDGET_MS,
                 deadline,
                 &mut || {
@@ -16957,10 +17041,14 @@ mod windows {
         } else {
             CARRIER_WRITE_BUDGET_MS
         };
-        let outcome =
-            await_composer_write(element, expected_text, budget_ms, deadline, &mut || {
-                reclaimed_element_is_readable(target, element, expected, process_is_trusted)
-            });
+        let outcome = await_composer_write(
+            element,
+            expected_text,
+            target.app_process_name,
+            budget_ms,
+            deadline,
+            &mut || reclaimed_element_is_readable(target, element, expected, process_is_trusted),
+        );
         // The guard here is `reclaimed_element_is_readable`, so a `TargetChanged` is
         // one of the facts that predicate covers; it is not tracked per poll, so the
         // cause is reported honestly as unattributed rather than invented.
@@ -16971,7 +17059,7 @@ mod windows {
         // The reclaim and the draft restore both end here when they cannot prove
         // the composer holds what OSL wrote. Same one-label diagnosis the carrier
         // observation emits, because it is the same defect in the same comparator.
-        qa_report_carrier_read(element, expected_text);
+        qa_report_carrier_read(element, expected_text, target.app_process_name);
         false
     }
 
@@ -17033,8 +17121,7 @@ mod windows {
                 // carrier back out of the operator's message box, and giving up on
                 // the first attempt is what left ~117 characters of flagtext
                 // sitting in it.
-                let _ =
-                    request_target_input_focus(target.window, &held.element, protected_foreground);
+                let _ = request_target_input_focus(target, &held.element, protected_foreground);
                 std::thread::sleep(Duration::from_millis(settle_ms));
                 if may_continue_input(
                     target,
@@ -17075,7 +17162,11 @@ mod windows {
             // `NotOurs`, which strands.
             let holds_exact_text =
                 carrier_target_element_is_ours(&held.element, expected, process_is_trusted)
-                    && composer_holds_exact_text(&held.element, exact_text);
+                    && composer_holds_exact_text(
+                        &held.element,
+                        exact_text,
+                        target.app_process_name,
+                    );
             if !may_reclaim_typed_carrier(exact_text, holds_exact_text) {
                 // Which clause refused, so a `place_carrier_reclaim_not_ours` on a cover
                 // OSL provably typed is diagnosable instead of arguable. Evaluated only
@@ -17191,8 +17282,7 @@ mod windows {
             // Retried to the deadline, like every other handover in this file: the
             // operator's own saved draft is what goes back through here, so a
             // first-attempt refusal must not be allowed to strand it.
-            let _ =
-                request_target_input_focus(target.window, &held.element, &mut protected_foreground);
+            let _ = request_target_input_focus(target, &held.element, &mut protected_foreground);
             std::thread::sleep(Duration::from_millis(settle_ms));
             // The empty expected text is deliberate: restoring a draft must never
             // append to something else that is sitting in the composer.
@@ -17782,11 +17872,8 @@ mod windows {
         let mut last_request = InputFocusRequest::Requested;
         let mut confirmed: Option<LocatedComposer> = None;
         for settle_ms in PLACEMENT_FOCUS_SETTLE_MS {
-            last_request = request_target_input_focus(
-                target.window,
-                &focus_element,
-                &mut protected_foreground,
-            );
+            last_request =
+                request_target_input_focus(target, &focus_element, &mut protected_foreground);
             std::thread::sleep(Duration::from_millis(settle_ms));
             let Ok(observed) =
                 locate_urgent(target, process_is_trusted, &profile, scope_binding, false)
@@ -17972,6 +18059,7 @@ mod windows {
                     let outcome = await_composer_write(
                         &focused.element,
                         chunk.settled,
+                        target.app_process_name,
                         CARRIER_CHUNK_BUDGET_MS,
                         write_deadline,
                         &mut still_current,
@@ -18001,7 +18089,7 @@ mod windows {
                     // paced write that still stops must not be the one failure that
                     // reports no measurement. Bounded, no lock held, at most once per
                     // send, and a no-op outside a QA build.
-                    qa_report_carrier_read(&focused.element, carrier);
+                    qa_report_carrier_read(&focused.element, carrier, target.app_process_name);
                 }
                 ok
             }
@@ -18092,7 +18180,7 @@ mod windows {
         cleanup.observe(&final_check, &expected);
         if !carrier_post_mutation_binding_matches(&expected, &final_check.binding)
             || !exact_composer_holds_keyboard_focus(target.window, &final_check.element, &expected)
-            || !composer_holds_exact_text(&final_check.element, carrier)
+            || !composer_holds_exact_text(&final_check.element, carrier, target.app_process_name)
             || !foreground_is_exact_discord(target.window)
         {
             qa_place_stage("place_refused_post_typing_context");
@@ -18200,11 +18288,8 @@ mod windows {
             // Same correction as the placement handover: a refused request is not
             // a refused handover, so the ladder runs to its deadline instead of
             // abandoning a carrier that is already sitting in the composer.
-            let _ = request_target_input_focus(
-                target.window,
-                &final_check.element,
-                &mut protected_foreground,
-            );
+            let _ =
+                request_target_input_focus(target, &final_check.element, &mut protected_foreground);
             std::thread::sleep(Duration::from_millis(settle_ms));
             // `may_continue_input` re-proves the exact foreground root, the
             // exact calibrated composer identity, its keyboard focus and that it
@@ -18417,8 +18502,11 @@ mod windows {
 
         let desktop = crate::native_a11y::win32::Uia2Win32Host::desktop();
 
-        // Half one, with the shipping constant exactly as it ships.
-        match resolve_uia2_wake_target(DISCORD_UIA2_WINDOW_PLAN, &desktop) {
+        // Half one, with the dedicated process name exactly as it ships.
+        match resolve_uia2_wake_target(
+            discord_uia2_window_plan(crate::native_window_host::dedicated_discord_process_name()),
+            &desktop,
+        ) {
             Ok(window) => eprintln!(
                 "gate: shipping resolve OK bound_pid={} route={:?}",
                 window.bound_process_id, window.tree_route
@@ -18439,8 +18527,9 @@ mod windows {
             PROBE_POLL_BUDGET_MS,
             PROBE_CALL_TIMEOUT_MS,
         );
-        let window = resolve_uia2_wake_target(plan, &desktop)
-            .unwrap_or_else(|error| panic!("gate: no Discord window for image {image:?}: {error:?}"));
+        let window = resolve_uia2_wake_target(plan, &desktop).unwrap_or_else(|error| {
+            panic!("gate: no Discord window for image {image:?}: {error:?}")
+        });
         eprintln!(
             "gate: image={image:?} resolve OK bound_pid={} route={:?}",
             window.bound_process_id, window.tree_route
@@ -18452,8 +18541,8 @@ mod windows {
         eprintln!("gate: wake_electron_accessibility -> {woke}");
 
         // And the wrapper the eight sites actually call, at that same window.
-        let client = msaa_client_from_window(window.bound_hwnd).is_some();
-        eprintln!("gate: msaa_client_from_window -> {client}");
+        let client = msaa_client_from_window_for_process(window.bound_hwnd, image).is_some();
+        eprintln!("gate: msaa_client_from_window_for_process -> {client}");
         eprintln!(
             "gate: verdict wake={woke} wrapper={client} \
              (wake=true wrapper=false means the resolve refused, not the handshake)"
@@ -18528,7 +18617,10 @@ mod windows {
         let _com = ComGuard(initialized.is_ok());
 
         let desktop = crate::native_a11y::win32::Uia2Win32Host::desktop();
-        match resolve_uia2_wake_target(DISCORD_UIA2_WINDOW_PLAN, &desktop) {
+        match resolve_uia2_wake_target(
+            discord_uia2_window_plan(crate::native_window_host::dedicated_discord_process_name()),
+            &desktop,
+        ) {
             Ok(window) => eprintln!(
                 "d212: SHIPPING plan resolve OK bound_pid={} route={:?}",
                 window.bound_process_id, window.tree_route
@@ -18550,7 +18642,10 @@ mod windows {
         let target_window = window.bound_hwnd;
         let mut window_pid = 0u32;
         unsafe { GetWindowThreadProcessId(target_window as _, &mut window_pid) };
-        assert!(window_pid != 0, "the borrowed window must have an owner pid");
+        assert!(
+            window_pid != 0,
+            "the borrowed window must have an owner pid"
+        );
         // `pinned_process_trust` trusts exactly one pid and nothing else.
         let trusted_pid = window_pid;
         let is_trusted = move |process_id: u32| process_id != 0 && process_id == trusted_pid;
@@ -18586,6 +18681,7 @@ mod windows {
             &profile,
             root_bounds,
             target_window,
+            image,
             &is_trusted,
             discovery_started,
             DISCOVERY_BUDGET,
@@ -18655,7 +18751,9 @@ mod windows {
         );
         eprintln!(
             "d212: header proof count={header_count:?} outcome={:?} admits_document_proof={}",
-            header_count.as_ref().map(|count| header_proof_outcome(*count)),
+            header_count
+                .as_ref()
+                .map(|count| header_proof_outcome(*count)),
             header_count
                 .as_ref()
                 .map(|count| header_absence_admits_document_proof(header_proof_outcome(*count)))
@@ -18666,7 +18764,7 @@ mod windows {
         // Not the proof: a diagnostic that answers "how many distinct documents
         // could ever be counted here", which is the ambiguity question.
         let census = || {
-            let Some(client) = msaa_client_from_window(target_window) else {
+            let Some(client) = msaa_client_from_window_for_process(target_window, image) else {
                 eprintln!("d212: census -- no client object, nothing to count");
                 return;
             };
@@ -18704,11 +18802,9 @@ mod windows {
                                             }
                                         }
                                     }
-                                    let names_match = name
-                                        .as_deref()
-                                        .is_some_and(|name| {
-                                            variants.iter().any(|variant| variant == name)
-                                        });
+                                    let names_match = name.as_deref().is_some_and(|name| {
+                                        variants.iter().any(|variant| variant == name)
+                                    });
                                     if names_match && !named_ids.contains(&id) {
                                         named_ids.push(id.clone());
                                     }
@@ -18776,6 +18872,7 @@ mod windows {
                 root_bounds,
                 bounds,
                 window,
+                image,
                 conversation,
                 trust,
                 started,
@@ -18850,7 +18947,7 @@ mod windows {
         );
 
         // 6. Starved: a window with no Discord anywhere beneath it, which is how
-        //    `msaa_client_from_window` returns `None` -- the EXACT pre-D-204
+        //    `msaa_client_from_window_for_process` returns `None` -- the EXACT pre-D-204
         //    state, reproduced on demand at a live window. The shell window is
         //    the default: it is owned by Explorer and has no Discord descendant.
         //    The desktop window would be wrong here, because Discord's own
@@ -18866,7 +18963,7 @@ mod windows {
         let foreign_trusted = move |process_id: u32| process_id != 0 && process_id == foreign_pid;
         eprintln!(
             "d212: foreign window={foreign} pid={foreign_pid} client={}",
-            msaa_client_from_window(foreign).is_some()
+            msaa_client_from_window_for_process(foreign, image).is_some()
         );
         let starved_window = proof(
             "starved-foreign-window",
@@ -18891,7 +18988,7 @@ mod windows {
         //    Discord's own sidebar so the probe supplies no names of its own,
         //    and every one of them is a plausible target a caller could ask for.
         let mut others = Vec::<String>::new();
-        if let Some(client) = msaa_client_from_window(target_window) {
+        if let Some(client) = msaa_client_from_window_for_process(target_window, image) {
             let width = root_bounds.right - root_bounds.left;
             let height = root_bounds.bottom - root_bounds.top;
             'harvest: for x_percent in SIDEBAR_X_PERCENTS {
@@ -18985,8 +19082,7 @@ mod windows {
         const MSAA_ROLE_SYSTEM_LISTITEM: u32 = 34;
         const MSAA_ROLE_SYSTEM_GROUPING: u32 = 20;
         const SIDEBAR_X_PERCENTS: [i32; 4] = [6, 11, 16, 21];
-        const SIDEBAR_Y_PERCENTS: [i32; 12] =
-            [18, 24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84];
+        const SIDEBAR_Y_PERCENTS: [i32; 12] = [18, 24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84];
         const CENSUS_CAP: usize = 24;
         const SETTLE_MS: u64 = 2_000;
 
@@ -19049,6 +19145,7 @@ mod windows {
                 &profile,
                 root_bounds,
                 target_window,
+                image,
                 &is_trusted,
                 Instant::now(),
                 DISCOVERY_BUDGET,
@@ -19082,6 +19179,7 @@ mod windows {
                 root_bounds,
                 bounds,
                 target_window,
+                image,
                 conversation,
                 &is_trusted,
                 started,
@@ -19106,8 +19204,8 @@ mod windows {
         );
 
         // ---- census the sidebar ----------------------------------------------
-        let client =
-            msaa_client_from_window(target_window).expect("d212s: Discord must answer the wake");
+        let client = msaa_client_from_window_for_process(target_window, image)
+            .expect("d212s: Discord must answer the wake");
         let width = root_bounds.right - root_bounds.left;
         let height = root_bounds.bottom - root_bounds.top;
         let before_variants = conversation_name_variants(&before_conversation);
@@ -19145,11 +19243,7 @@ mod windows {
                     if matches!(role, MSAA_ROLE_SYSTEM_LIST | MSAA_ROLE_SYSTEM_GROUPING) {
                         if let Some(children) = msaa_child_refs(&accessible, 256) {
                             for child in &children {
-                                if record(
-                                    child.role().unwrap_or(0),
-                                    child.name(),
-                                    child.bounds(),
-                                ) {
+                                if record(child.role().unwrap_or(0), child.name(), child.bounds()) {
                                     break 'census;
                                 }
                             }
@@ -19184,10 +19278,10 @@ mod windows {
         // `subtree` makes (`native_a11y.rs:1840`), bounded by the provider.
         let mut rows = Vec::<(IUIAutomationElement, String, AccessibilityBounds)>::new();
         {
+            use ::windows::Win32::UI::Accessibility::TreeScope_Descendants;
             use ::windows::Win32::UI::Accessibility::{
                 UIA_ControlTypePropertyId, UIA_ListItemControlTypeId,
             };
-            use ::windows::Win32::UI::Accessibility::TreeScope_Descendants;
             let condition = unsafe {
                 automation.CreatePropertyCondition(
                     UIA_ControlTypePropertyId,
@@ -19200,7 +19294,7 @@ mod windows {
             // wake and the one every Discord element read goes through.
             let bridged = crate::native_a11y::element_from_ia_accessible(
                 &automation,
-                &msaa_client_from_window(target_window)
+                &msaa_client_from_window_for_process(target_window, image)
                     .expect("d212s: Discord must answer the wake"),
             )
             .expect("d212s: the MsaaBridge root must bridge");
@@ -19254,10 +19348,15 @@ mod windows {
             let (element, name, _) = rows
                 .get(index)
                 .unwrap_or_else(|| panic!("d212s: no uia row at index {index}"));
-            eprintln!("d212s: activating uia_row[{index}] name_hash={}", digest(name));
-            let invoked = unsafe { element.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId) }
-                .and_then(|pattern| unsafe { pattern.Invoke() })
-                .is_ok();
+            eprintln!(
+                "d212s: activating uia_row[{index}] name_hash={}",
+                digest(name)
+            );
+            let invoked = unsafe {
+                element.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
+            }
+            .and_then(|pattern| unsafe { pattern.Invoke() })
+            .is_ok();
             let selected = if invoked {
                 false
             } else {
@@ -19386,8 +19485,7 @@ mod windows {
                 for _ in 0..6 {
                     let observed_role = msaa_role(&accessible).unwrap_or(0);
                     if role_is_allowed(observed_role)
-                        && msaa_name(&accessible)
-                            .is_some_and(|value| value.trim() == name.as_str())
+                        && msaa_name(&accessible).is_some_and(|value| value.trim() == name.as_str())
                     {
                         let child = msaa_self_variant();
                         match unsafe { accessible.accDoDefaultAction(&child) } {
@@ -19401,7 +19499,10 @@ mod windows {
                             }
                         }
                     }
-                    if matches!(observed_role, MSAA_ROLE_SYSTEM_LIST | MSAA_ROLE_SYSTEM_GROUPING) {
+                    if matches!(
+                        observed_role,
+                        MSAA_ROLE_SYSTEM_LIST | MSAA_ROLE_SYSTEM_GROUPING
+                    ) {
                         if let Some(children) = msaa_child_refs(&accessible, 256) {
                             for entry in &children {
                                 if role_is_allowed(entry.role().unwrap_or(0))
@@ -19409,9 +19510,7 @@ mod windows {
                                         .name()
                                         .is_some_and(|value| value.trim() == name.as_str())
                                 {
-                                    match unsafe {
-                                        entry.reader.accDoDefaultAction(&entry.child)
-                                    } {
+                                    match unsafe { entry.reader.accDoDefaultAction(&entry.child) } {
                                         Ok(()) => {
                                             activated = true;
                                             break 'activate;
@@ -20057,12 +20156,13 @@ mod tests {
     /// substrate's resolver has to break Discord, or the substrate is still the
     /// taxonomy with no consumer that D-139 found.
     #[test]
-    fn discord_resolves_its_wake_target_through_the_shared_substrate() {
+    fn discord_resolves_its_stable_wake_target_through_the_shared_substrate() {
         use crate::native_a11y::tests::{discord_graph, RecordedHost};
         use crate::native_a11y::{Uia2TreeRoute, Uia2WakePolicy};
 
         let host = RecordedHost::new(discord_graph(), 696).chromium(0);
-        let target = discord_uia2_wake_target(&host).expect("Discord's outer window must resolve");
+        let target = discord_uia2_wake_target_for_process("Discord", &host)
+            .expect("stable Discord's outer window must resolve");
 
         assert_eq!(
             target.bound_hwnd, 0x1001,
@@ -20084,6 +20184,34 @@ mod tests {
                     .all(|deadline| *deadline == DISCORD_UIA2_CALL_TIMEOUT_MS),
             "every cross-process call must carry the plan's deadline, saw {deadlines:?}"
         );
+    }
+
+    #[test]
+    fn mutant_revert_dedicated_process_to_stable_makes_ptb_unresolvable() {
+        use crate::native_a11y::tests::{discord_graph, RecordedHost};
+        use crate::native_a11y::{Uia2AcquireError, Uia2WindowResolveError};
+
+        let ptb_graph = discord_graph()
+            .into_iter()
+            .map(|mut window| {
+                if window.process_name == "Discord.exe" {
+                    window.process_name = "DiscordPTB.exe".to_owned();
+                }
+                window
+            })
+            .collect::<Vec<_>>();
+        let host = RecordedHost::new(ptb_graph, 696).chromium(0);
+
+        assert_eq!(
+            discord_uia2_wake_target_for_process("Discord", &host),
+            Err(Uia2AcquireError::Resolve(
+                Uia2WindowResolveError::MissingAppOuter
+            )),
+            "the old stable process name must not resolve the dedicated PTB graph"
+        );
+        let target = discord_uia2_wake_target(&host)
+            .expect("the dedicated Discord process name must resolve the PTB graph");
+        assert_eq!(target.bound_hwnd, 0x1001);
     }
 
     #[test]
@@ -20110,11 +20238,11 @@ mod tests {
     fn the_discord_wake_is_issued_at_the_window_the_substrate_resolved() {
         let body = nested_function_body(
             adapter_source(),
-            "fn msaa_client_from_window(window: isize)",
+            "fn msaa_client_from_target(\n        target:",
         );
 
         assert!(
-            body.contains("discord_uia2_wake_target("),
+            body.contains("discord_uia2_wake_target_for_process("),
             "the wake must go through the shared substrate"
         );
         assert!(
@@ -20122,8 +20250,12 @@ mod tests {
             "the wake must be issued at the resolved window, not at the argument"
         );
         assert!(
-            !body.contains("wake_electron_accessibility(window)"),
+            !body.contains("wake_electron_accessibility(target.window)"),
             "waking the raw argument would leave the shape decision unconsumed"
+        );
+        assert!(
+            body.contains("target.app_process_name"),
+            "the resolver must use the trusted target's process identity"
         );
         assert!(
             body.contains("rooted_at("),
@@ -20217,7 +20349,7 @@ mod tests {
         let focus = nested_function_body(source, "fn take_composer_keyboard_focus(");
         assert!(focus.contains("element.SetFocus()"));
         assert!(focus.contains("accSelect(SELFLAG_TAKEFOCUS as i32"));
-        assert!(focus.contains("composer_msaa_object(element)"));
+        assert!(focus.contains("composer_msaa_object(element, app_process_name)"));
     }
 
     #[test]
@@ -20482,7 +20614,7 @@ mod tests {
 
         let route = nested_function_body(source, "fn msaa_message_list_from_window(");
         // Rooted at the borrowed window, never at a pixel.
-        assert!(route.contains("msaa_client_from_window(target.window)"));
+        assert!(route.contains("msaa_client_from_target(target)"));
         assert!(route.contains("msaa_hit_test_from_root(&client, point)"));
         assert!(!route.contains("AccessibleObjectFromPoint"));
         assert!(!route.contains("msaa_self_at_point"));
@@ -22416,7 +22548,9 @@ mod tests {
         }
         let source = adapter_source();
         assert!(
-            source.contains("chunk.settled,\n                        CARRIER_CHUNK_BUDGET_MS,"),
+            source.contains(
+                "chunk.settled,\n                        target.app_process_name,\n                        CARRIER_CHUNK_BUDGET_MS,"
+            ),
             "the convergence wait must be handed the chunk's own expected prefix"
         );
         // A switch really does still stop the write: the guard is consulted on every
@@ -22448,7 +22582,9 @@ mod tests {
         let source = adapter_source();
         let walk = nested_function_body(source, "fn matching_conversation_document_count(");
         // Discord's own client object, hit tested through Discord's own tree.
-        assert!(walk.contains("msaa_client_from_window(target_window)"));
+        assert!(
+            walk.contains("msaa_client_from_window_for_process(target_window, app_process_name)")
+        );
         assert!(walk.contains("msaa_hit_test_from_root(&client, point)"));
         // A desktop hit test is what the overlay defeats, so neither remains.
         assert!(
@@ -22609,7 +22745,9 @@ mod tests {
         assert!(!gate.contains("expected.bounds"));
         // Every other clause is kept, and the exact-text proof is unchanged.
         assert!(gate.contains("carrier_write_target_is_current("));
-        assert!(gate.contains("composer_holds_exact_text(element, expected_composer_text)"));
+        assert!(gate.contains(
+            "composer_holds_exact_text(element, expected_composer_text, target.app_process_name)"
+        ));
         // One definition, no cfg divergence: this file has already shipped three gates
         // that differed between QA and production and hid a production refusal.
         // `adapter_source()` excludes the test module, so this counts real definitions
@@ -22896,7 +23034,9 @@ mod tests {
         // Ownership is identity plus the exact string, which is strictly stronger than
         // a rectangle.
         assert!(clear.contains("carrier_target_element_is_ours("));
-        assert!(clear.contains("composer_holds_exact_text(&held.element, exact_text)"));
+        assert!(clear.contains(
+            "composer_holds_exact_text(\n                        &held.element,\n                        exact_text,\n                        target.app_process_name,"
+        ));
         assert!(clear.contains("may_reclaim_typed_carrier(exact_text, holds_exact_text)"));
         // Neither focus nor foreground is an ownership question. Both are still
         // required before any keystroke goes out, and reported as `Refused`, which
@@ -24042,7 +24182,7 @@ mod tests {
             .expect("uia subtree");
         let document = read.find("UIA_TextPatternId").expect("document range");
         let msaa = read
-            .find("composer_msaa_tree_text(element)")
+            .find("composer_msaa_tree_text(element, app_process_name)")
             .expect("chromium msaa tree");
         assert!(subtree < document && document < msaa);
         // And the same rule gates the probe the polling wait uses, so the two
@@ -24055,7 +24195,7 @@ mod tests {
         assert!(
             probe.find("UIA_ValuePatternId").expect("value pattern")
                 > probe
-                    .find("composer_msaa_tree_text(element)")
+                    .find("composer_msaa_tree_text(element, app_process_name)")
                     .expect("msaa before value")
         );
     }
