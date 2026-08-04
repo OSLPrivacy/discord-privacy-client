@@ -449,7 +449,13 @@ const NATIVE_APPS: &[NativeAppManifest] = &[
         display_name: "Telegram",
         adapter_service: AdapterService::Telegram,
         adapter_surface: AdapterSurface::InstalledNativeClient,
-        adapter_support: SupportLevel::ComingSoon,
+        // Experimental, not Supported. Placement is proven live -- carrier in,
+        // read back byte-exact, payload decoded out of Telegram's own answer
+        // (D-154, and the carry proof in native_telegram_adapter) -- and the
+        // signed-client row probe now returns `supported` on a real
+        // conversation. Committing a message is still deliberately absent, so
+        // Beta is the honest ceiling.
+        adapter_support: SupportLevel::Experimental,
         package_id: "Telegram.TelegramDesktop",
         package_source: "winget",
         candidates: TELEGRAM_CANDIDATES,
@@ -2555,7 +2561,7 @@ mod tests {
             telegram.adapter_surface,
             AdapterSurface::InstalledNativeClient
         );
-        assert_eq!(telegram.adapter_support, SupportLevel::ComingSoon);
+        assert_eq!(telegram.adapter_support, SupportLevel::Experimental);
         assert_eq!(telegram.package_id, "Telegram.TelegramDesktop");
         assert_eq!(telegram.package_source, "winget");
         assert_eq!(telegram.publisher, Some(ExecutablePublisher::Telegram));
@@ -2574,7 +2580,7 @@ mod tests {
         );
         assert_eq!(
             native_app_support_status(NativeAppId::Telegram),
-            NativeAppSupportStatus::ComingSoon
+            NativeAppSupportStatus::Beta
         );
         assert_eq!(
             native_app_protected_mode(NativeAppId::Telegram),
@@ -2789,10 +2795,14 @@ mod tests {
                     assert_eq!(status.support_status, NativeAppSupportStatus::Beta);
                     assert_eq!(status.protected_mode, NativeAppProtectedMode::AssistOnly);
                 }
-                NativeAppId::Telegram
-                | NativeAppId::Signal
-                | NativeAppId::Whatsapp
-                | NativeAppId::Outlook => {
+                // Telegram carries -- placement is driven and proven -- but
+                // protected mode stays Unavailable: the carry stops at the
+                // composer, and nothing in the adapter can commit a message.
+                NativeAppId::Telegram => {
+                    assert_eq!(status.support_status, NativeAppSupportStatus::Beta);
+                    assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
+                }
+                NativeAppId::Signal | NativeAppId::Whatsapp | NativeAppId::Outlook => {
                     assert_eq!(status.support_status, NativeAppSupportStatus::ComingSoon);
                     assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
                 }

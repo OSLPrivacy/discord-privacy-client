@@ -295,7 +295,11 @@ const firefoxServiceIds: readonly HomeAppId[] = [
 ];
 const nativePreviewApps: readonly NativeApp[] = [
   { id: "discord", displayName: "Discord", availability: "installable", supportStatus: "beta", protectedMode: "assistOnly", isolatedProfileAvailable: true, supportsOverlay: false },
-  { id: "telegram", displayName: "Telegram", availability: "installable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
+  // Telegram's placement path is driven and proven against the real client, so
+  // it is no longer "coming soon" -- but `protectedMode` stays `unavailable`:
+  // the carry stops at the composer and nothing in the adapter can commit a
+  // message. The two fields are separate claims and only one of them moved.
+  { id: "telegram", displayName: "Telegram", availability: "installable", supportStatus: "beta", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
   { id: "signal", displayName: "Signal", availability: "installable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
   { id: "whatsapp", displayName: "WhatsApp", availability: "installable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
   { id: "outlook", displayName: "Outlook", availability: "unavailable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
