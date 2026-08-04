@@ -10,8 +10,8 @@
 use sha2::{Digest, Sha256};
 
 pub use crate::native_a11y::{
-    ELECTRON_OUTER_WINDOW_CLASS, ELECTRON_RENDERER_WINDOW_CLASS,
-    ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
+    Uia2WakePolicy, Uia2WindowPlan, Uia2WindowShape, ELECTRON_OUTER_WINDOW_CLASS,
+    ELECTRON_RENDERER_WINDOW_CLASS, ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
 };
 
 /// Process/window facts for the shared Electron UIA2 substrate.
@@ -22,6 +22,12 @@ pub const SIGNAL_DESKTOP_PROCESS_NAME: &str = "Signal";
 pub const SIGNAL_UIA2_DEFAULT_WAIT_MS: u64 = 90_000;
 pub const SIGNAL_UIA2_DEFAULT_CALL_TIMEOUT_MS: u64 = 750;
 pub const SIGNAL_LIVE_CARRIER_MAX_BYTES: usize = 4096;
+pub const SIGNAL_UIA2_WINDOW_PLAN: Uia2WindowPlan = Uia2WindowPlan::chromium_renderer_child(
+    "Signal",
+    SIGNAL_DESKTOP_PROCESS_NAME,
+    SIGNAL_UIA2_DEFAULT_WAIT_MS,
+    SIGNAL_UIA2_DEFAULT_CALL_TIMEOUT_MS,
+);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SignalUia2ProbeConfig {
@@ -33,9 +39,7 @@ pub enum SignalUia2ProbeConfig {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SignalUia2ProbePlan {
-    pub bind_renderer_child: bool,
-    pub send_wm_getobject: bool,
-    pub poll_until_populated: bool,
+    pub window_plan: Uia2WindowPlan,
 }
 
 impl SignalUia2ProbeConfig {
@@ -47,28 +51,27 @@ impl SignalUia2ProbeConfig {
     ];
 
     pub fn plan(self) -> SignalUia2ProbePlan {
-        match self {
-            Self::Corrected => SignalUia2ProbePlan {
-                bind_renderer_child: true,
-                send_wm_getobject: true,
-                poll_until_populated: true,
-            },
-            Self::OuterWindow => SignalUia2ProbePlan {
-                bind_renderer_child: false,
-                send_wm_getobject: true,
-                poll_until_populated: true,
-            },
-            Self::RendererNoWake => SignalUia2ProbePlan {
-                bind_renderer_child: true,
-                send_wm_getobject: false,
-                poll_until_populated: true,
-            },
-            Self::RendererImmediate => SignalUia2ProbePlan {
-                bind_renderer_child: true,
-                send_wm_getobject: true,
-                poll_until_populated: false,
-            },
-        }
+        let window_plan = match self {
+            Self::Corrected => SIGNAL_UIA2_WINDOW_PLAN,
+            Self::OuterWindow => Uia2WindowPlan::chromium_outer_mutant(
+                "Signal",
+                SIGNAL_DESKTOP_PROCESS_NAME,
+                SIGNAL_UIA2_DEFAULT_WAIT_MS,
+                SIGNAL_UIA2_DEFAULT_CALL_TIMEOUT_MS,
+            ),
+            Self::RendererNoWake => Uia2WindowPlan::chromium_renderer_no_wake_mutant(
+                "Signal",
+                SIGNAL_DESKTOP_PROCESS_NAME,
+                SIGNAL_UIA2_DEFAULT_WAIT_MS,
+                SIGNAL_UIA2_DEFAULT_CALL_TIMEOUT_MS,
+            ),
+            Self::RendererImmediate => Uia2WindowPlan::chromium_renderer_immediate_mutant(
+                "Signal",
+                SIGNAL_DESKTOP_PROCESS_NAME,
+                SIGNAL_UIA2_DEFAULT_CALL_TIMEOUT_MS,
+            ),
+        };
+        SignalUia2ProbePlan { window_plan }
     }
 }
 
@@ -83,6 +86,7 @@ pub enum SignalPlacementStatus {
     ComposerNotWritable,
     ComposerNotEmpty,
     ReadbackMismatch,
+    ProbeClearFailed,
 }
 
 pub struct SignalLivePlacementRequest<'a> {
@@ -119,6 +123,10 @@ pub trait SignalComposerPlacementBackend {
     fn current_value(&mut self) -> Result<Option<String>, SignalPlacementStatus>;
     fn set_value(&mut self, carrier: &str) -> Result<(), SignalPlacementStatus>;
     fn read_value(&mut self) -> Result<Option<String>, SignalPlacementStatus>;
+}
+
+pub trait SignalComposerProbeBackend: SignalComposerPlacementBackend {
+    fn clear_value(&mut self) -> Result<(), SignalPlacementStatus>;
 }
 
 /// Place text into the already-bound Signal composer and verify by containment.
@@ -209,6 +217,28 @@ pub fn drive_signal_composer_placement(
         writable_composer_count,
         readback_contains_carrier,
     }
+}
+
+/// Probe Signal placement into an already-resolved composer, then clear it.
+///
+/// This is for live capability checks only. It uses the same contains read-back
+/// as production placement, does not press Enter or invoke any send control, and
+/// always clears after a successful `SetValue` attempt so a real chat is not
+/// left with probe text.
+pub fn probe_signal_composer_write_then_clear(
+    backend: &mut dyn SignalComposerProbeBackend,
+    request: SignalLivePlacementRequest<'_>,
+) -> SignalLivePlacementReceipt {
+    let mut receipt = drive_signal_composer_placement(backend, request);
+    if matches!(
+        receipt.status,
+        SignalPlacementStatus::Placed | SignalPlacementStatus::ReadbackMismatch
+    ) && backend.clear_value().is_err()
+    {
+        receipt.placed = false;
+        receipt.status = SignalPlacementStatus::ProbeClearFailed;
+    }
+    receipt
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -343,17 +373,67 @@ pub struct SignalPaintGeometry {
     pub authenticated_node_indices: Vec<usize>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SignalComposerResolutionMethod {
+    AccessibleNameAndRole,
+    UnnamedGeometryFallback,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SignalComposerResolution {
+    pub node_index: usize,
+    pub method: SignalComposerResolutionMethod,
+}
+
 pub fn discover_signal_composer(
     nodes: &[SignalNode],
     window_bounds: SignalRect,
 ) -> Result<usize, SignalSelectorError> {
-    let matches = nodes
+    resolve_signal_composer(nodes, window_bounds).map(|resolution| resolution.node_index)
+}
+
+/// Resolve Signal's composer from role and accessible name first.
+///
+/// Signal link or login screens can expose writable fields such as search or
+/// phone-number entry. Those are valid `Edit` controls but not composers, so a
+/// named writable field with no composer-like name is refused. The only fallback
+/// is geometric, and only for unnamed writable edit controls in the conversation
+/// pane; that keeps localized or placeholder-free composers usable without
+/// placing text into an unrelated named field.
+pub fn resolve_signal_composer(
+    nodes: &[SignalNode],
+    window_bounds: SignalRect,
+) -> Result<SignalComposerResolution, SignalSelectorError> {
+    let named_matches = nodes
         .iter()
         .enumerate()
-        .filter_map(|(index, node)| signal_composer_candidate(node, window_bounds).then_some(index))
+        .filter_map(|(index, node)| {
+            signal_named_composer_candidate(node, window_bounds).then_some(index)
+        })
         .collect::<Vec<_>>();
-    match matches.as_slice() {
-        [index] => Ok(*index),
+    match named_matches.as_slice() {
+        [index] => {
+            return Ok(SignalComposerResolution {
+                node_index: *index,
+                method: SignalComposerResolutionMethod::AccessibleNameAndRole,
+            })
+        }
+        [] => {}
+        _ => return Err(SignalSelectorError::Ambiguous),
+    }
+
+    let fallback_matches = nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, node)| {
+            signal_unnamed_geometry_composer_candidate(node, window_bounds).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    match fallback_matches.as_slice() {
+        [index] => Ok(SignalComposerResolution {
+            node_index: *index,
+            method: SignalComposerResolutionMethod::UnnamedGeometryFallback,
+        }),
         [] => Err(SignalSelectorError::Missing),
         _ => Err(SignalSelectorError::Ambiguous),
     }
@@ -508,10 +588,34 @@ pub fn signal_paint_geometry(
 }
 
 fn signal_composer_candidate(node: &SignalNode, window_bounds: SignalRect) -> bool {
+    signal_named_composer_candidate(node, window_bounds)
+        || signal_unnamed_geometry_composer_candidate(node, window_bounds)
+}
+
+fn signal_named_composer_candidate(node: &SignalNode, window_bounds: SignalRect) -> bool {
+    writable_signal_edit(node, window_bounds)
+        && node
+            .localized_name
+            .as_deref()
+            .is_some_and(signal_composer_accessible_name)
+}
+
+fn signal_unnamed_geometry_composer_candidate(
+    node: &SignalNode,
+    window_bounds: SignalRect,
+) -> bool {
     let right_pane_left = window_bounds.left.saturating_add(window_bounds.width() / 3);
     let lower_band_top = window_bounds
         .top
         .saturating_add(window_bounds.height() * 3 / 5);
+    writable_signal_edit(node, window_bounds)
+        && node.localized_name.as_deref().is_none_or(str::is_empty)
+        && node.bounds.contained_by(window_bounds)
+        && node.bounds.left >= right_pane_left
+        && node.bounds.top >= lower_band_top
+}
+
+fn writable_signal_edit(node: &SignalNode, window_bounds: SignalRect) -> bool {
     node.role == SignalRole::EditableText
         && node.visible
         && node.enabled
@@ -519,8 +623,17 @@ fn signal_composer_candidate(node: &SignalNode, window_bounds: SignalRect) -> bo
         && node.editable
         && !node.read_only
         && node.bounds.contained_by(window_bounds)
-        && node.bounds.left >= right_pane_left
-        && node.bounds.top >= lower_band_top
+}
+
+fn signal_composer_accessible_name(name: &str) -> bool {
+    let normalized = name
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase()
+        .replace('\u{2026}', "");
+    normalized.contains("message")
+        || normalized.contains("nachricht")
+        || normalized.contains("mensaje")
 }
 
 fn signal_transcript_candidate(
@@ -612,6 +725,8 @@ mod tests {
         current: Result<Option<String>, SignalPlacementStatus>,
         readback_suffix: &'static str,
         set_values: Vec<String>,
+        cleared: usize,
+        clear_result: Result<(), SignalPlacementStatus>,
     }
 
     impl FakeSignalBackend {
@@ -622,6 +737,8 @@ mod tests {
                 current: Ok(Some(String::new())),
                 readback_suffix: "",
                 set_values: Vec::new(),
+                cleared: 0,
+                clear_result: Ok(()),
             }
         }
     }
@@ -649,6 +766,13 @@ mod tests {
                 .set_values
                 .last()
                 .map(|value| format!("{value}{}", self.readback_suffix)))
+        }
+    }
+
+    impl SignalComposerProbeBackend for FakeSignalBackend {
+        fn clear_value(&mut self) -> Result<(), SignalPlacementStatus> {
+            self.cleared += 1;
+            self.clear_result
         }
     }
 
@@ -686,24 +810,46 @@ mod tests {
     #[test]
     fn signal_uia2_probe_configs_name_the_three_required_mutants() {
         let corrected = SignalUia2ProbeConfig::Corrected.plan();
-        assert!(corrected.bind_renderer_child);
-        assert!(corrected.send_wm_getobject);
-        assert!(corrected.poll_until_populated);
+        assert_eq!(
+            corrected.window_plan.shape,
+            Uia2WindowShape::ChromiumRendererChild
+        );
+        assert_eq!(
+            corrected.window_plan.wake_policy,
+            Uia2WakePolicy::WmGetObjectChromium
+        );
+        assert!(corrected.window_plan.poll_until_populated);
+        assert_eq!(
+            corrected.window_plan.renderer_child_class,
+            Some(ELECTRON_RENDERER_WINDOW_CLASS)
+        );
 
         let outer = SignalUia2ProbeConfig::OuterWindow.plan();
-        assert!(!outer.bind_renderer_child);
-        assert!(outer.send_wm_getobject);
-        assert!(outer.poll_until_populated);
+        assert_eq!(outer.window_plan.shape, Uia2WindowShape::DirectOuterWindow);
+        assert_eq!(
+            outer.window_plan.wake_policy,
+            Uia2WakePolicy::WmGetObjectChromium
+        );
+        assert!(outer.window_plan.poll_until_populated);
 
         let no_wake = SignalUia2ProbeConfig::RendererNoWake.plan();
-        assert!(no_wake.bind_renderer_child);
-        assert!(!no_wake.send_wm_getobject);
-        assert!(no_wake.poll_until_populated);
+        assert_eq!(
+            no_wake.window_plan.shape,
+            Uia2WindowShape::ChromiumRendererChild
+        );
+        assert_eq!(no_wake.window_plan.wake_policy, Uia2WakePolicy::None);
+        assert!(no_wake.window_plan.poll_until_populated);
 
         let immediate = SignalUia2ProbeConfig::RendererImmediate.plan();
-        assert!(immediate.bind_renderer_child);
-        assert!(immediate.send_wm_getobject);
-        assert!(!immediate.poll_until_populated);
+        assert_eq!(
+            immediate.window_plan.shape,
+            Uia2WindowShape::ChromiumRendererChild
+        );
+        assert_eq!(
+            immediate.window_plan.wake_policy,
+            Uia2WakePolicy::WmGetObjectChromium
+        );
+        assert!(!immediate.window_plan.poll_until_populated);
     }
 
     #[test]
@@ -723,6 +869,45 @@ mod tests {
         assert_eq!(receipt.status, SignalPlacementStatus::Placed);
         assert!(receipt.placed);
         assert!(receipt.readback_contains_carrier);
+        assert!(!receipt.enter_sent);
+    }
+
+    #[test]
+    fn signal_live_probe_clears_after_setvalue_without_sending() {
+        let mut backend = FakeSignalBackend::empty();
+        backend.readback_suffix = " augmented by live UI";
+
+        let receipt = probe_signal_composer_write_then_clear(
+            &mut backend,
+            SignalLivePlacementRequest {
+                carrier: "probe-5019-osl",
+                allow_replace_existing: false,
+            },
+        );
+
+        assert_eq!(backend.set_values, vec!["probe-5019-osl"]);
+        assert_eq!(backend.cleared, 1);
+        assert_eq!(receipt.status, SignalPlacementStatus::Placed);
+        assert!(receipt.placed);
+        assert!(!receipt.enter_sent);
+    }
+
+    #[test]
+    fn signal_live_probe_does_not_clear_when_it_refuses_before_setvalue() {
+        let mut backend = FakeSignalBackend::empty();
+        backend.current = Ok(Some("operator draft".to_owned()));
+
+        let receipt = probe_signal_composer_write_then_clear(
+            &mut backend,
+            SignalLivePlacementRequest {
+                carrier: "probe-6284-osl",
+                allow_replace_existing: false,
+            },
+        );
+
+        assert_eq!(receipt.status, SignalPlacementStatus::ComposerNotEmpty);
+        assert!(backend.set_values.is_empty());
+        assert_eq!(backend.cleared, 0);
         assert!(!receipt.enter_sent);
     }
 
@@ -779,9 +964,9 @@ mod tests {
         let window = rect(0, 0, 1200, 900);
         let nodes = vec![
             editable(rect(20, 30, 340, 72), "Nach Signal suchen"),
-            editable(rect(460, 735, 1120, 820), "localized placeholder A"),
+            editable(rect(460, 735, 1120, 820), "Write a message..."),
             {
-                let mut node = editable(rect(460, 620, 1120, 680), "localized placeholder B");
+                let mut node = editable(rect(460, 620, 1120, 680), "message helper");
                 node.read_only = true;
                 node
             },
@@ -789,6 +974,10 @@ mod tests {
         ];
 
         assert_eq!(discover_signal_composer(&nodes, window), Ok(1));
+        assert_eq!(
+            resolve_signal_composer(&nodes, window).map(|resolution| resolution.method),
+            Ok(SignalComposerResolutionMethod::AccessibleNameAndRole)
+        );
 
         let mut renamed = nodes.clone();
         renamed[1].localized_name = Some("Escribe un mensaje".to_owned());
@@ -799,12 +988,27 @@ mod tests {
             node.localized_name = None;
         }
         assert_eq!(discover_signal_composer(&unnamed, window), Ok(1));
+        assert_eq!(
+            resolve_signal_composer(&unnamed, window).map(|resolution| resolution.method),
+            Ok(SignalComposerResolutionMethod::UnnamedGeometryFallback)
+        );
 
         let mut ambiguous = renamed;
-        ambiguous.push(editable(rect(480, 740, 1130, 825), "another locale"));
+        ambiguous.push(editable(rect(480, 740, 1130, 825), "Message"));
         assert_eq!(
             discover_signal_composer(&ambiguous, window),
             Err(SignalSelectorError::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn signal_composer_refuses_login_or_search_field_instead_of_placing_there() {
+        let window = rect(0, 0, 1200, 900);
+        let nodes = vec![editable(rect(460, 735, 1120, 820), "Search")];
+
+        assert_eq!(
+            discover_signal_composer(&nodes, window),
+            Err(SignalSelectorError::Missing)
         );
     }
 
