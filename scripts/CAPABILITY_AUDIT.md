@@ -61,12 +61,18 @@ webview-agnostic ("granted to no webview at all"), because scoring overlay
 commands against `main` produces false positives for every command the overlay
 legitimately holds and `main` must never have — measured: 14 on this tree.
 
-## Open item for the conductor
+## Open item for the conductor — CLOSED by D-160
 
-**The ledgers are not wired into CI.** They are run by the plan's ODC harness
-(`node scripts/ledger/all.mjs`, or one ledger at a time). Deleting the Python
-step therefore does not reduce CI's coverage of the shipping app — that coverage
-was zero either way — but it does mean no CI job checks the ACL of the app that
-ships. Wiring the ledgers into CI is a larger decision than this lane owns
-(they need the frontend bundle for reachability), and it is recorded here rather
-than left implied.
+D-159 recorded this as open: **the ledgers were not wired into CI**, so deleting
+the Python step did not reduce CI's coverage of the shipping app — that coverage
+was zero either way — but no CI job checked the ACL of the app that ships.
+
+**D-160 closed it.** The `binding-ledgers` job in
+`.github/workflows/rust-test.yml` runs `node scripts/ledger/all.mjs --no-cache`
+on ubuntu after `npm ci` in `apps/osl-hub-ui` (the frontend-bundle dependency
+D-159 named is why that install is there; ledger 7 drives rollup). Ledgers 1–7
+fail the job on any violation. Ledger 8 is ratcheted against
+`scripts/ledger/state-baseline.json` rather than gated at zero, because its ~20
+rows are open defects (D-092, D-108, D-114) and a permanently-red CI is one
+everybody learns to ignore. `.github/workflows/rust-test.workflow-test.py`,
+which runs from `quality-checks`, fails by name if that job is deleted.
