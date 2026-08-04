@@ -141,6 +141,13 @@ describe("§7.13 · OSL never extracts a Discord credential", () => {
     for (const workflow of workflows) {
       for (const line of workflow.text.split("\n")) {
         if (!line.includes("src-tauri")) continue;
+        // A YAML comment cannot build anything. D-159 replaced the deleted
+        // audit_capabilities.py step with a comment explaining that it had been
+        // auditing src-tauri -- the excluded legacy shell -- rather than the
+        // shipping app, and that explanation tripped this guard. The prohibition
+        // is "CI must never BUILD or BUNDLE the legacy shell"; skipping comments
+        // keeps exactly that and stops the guard from policing prose.
+        if (/^\s*#/u.test(line)) continue;
         expect(line, `${workflow.path} does more than syntax-check the legacy shell`).toMatch(/node --check/u);
       }
     }

@@ -426,6 +426,18 @@ describe("bundled preview security boundary", () => {
       "allow-execute-hub-full-cleanup",
       "allow-get-hub-service-burn-readiness",
       "allow-burn-hub-service-account",
+      // Raised deliberately, 2026-08-04 (D-158). Both commands were registered on
+      // the shipping IPC surface with no grant, so the ACL rejected them before
+      // their handlers ran -- found only when a bin test target that had never
+      // compiled finally did. Checked before granting rather than trusting names:
+      // `compose_scrub_erasure_request` SOUNDS like Scrub's deletion lane, which
+      // the owner ruled must stay unreachable, but scrub_erasure.rs:1-5 says it
+      // "deliberately has no transport dependency ... prepares plain text for the
+      // user to send from their own mailbox". OSL deletes nothing; it helps the
+      // user ask. `build_integrity_status` returns a Copy struct out of state.
+      // Neither is invoked by any UI today, so nothing observable changes.
+      "allow-build-integrity-status",
+      "allow-compose-scrub-erasure-request",
       "allow-burn-active-hub-context",
       // A7 manual "Lock now" (Settings → Password & security). Purely local
       // and purely destructive-to-memory: it drops the identity, prekeys,
