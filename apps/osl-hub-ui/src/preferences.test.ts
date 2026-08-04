@@ -38,7 +38,7 @@ describe("first-run onboarding preference persistence", () => {
     vi.unstubAllGlobals();
   });
 
-  it("persists the selected preset and inherited manual send behavior in browser storage", async () => {
+  it("persists inherited manual send behavior through the onboarding contract only", async () => {
     const storage = memoryStorage();
     vi.stubGlobal("localStorage", storage);
 
@@ -61,12 +61,8 @@ describe("first-run onboarding preference persistence", () => {
     });
     expect(storage.getItem("osl-preview-onboarded")).toBe("true");
     expect(JSON.parse(storage.getItem("osl-preview-setup") ?? "{}")).toEqual(saved.setup);
-    expect(storage.getItem("osl-preview-first-run-preset")).toBe("balanced");
-    expect(JSON.parse(storage.getItem("osl-preview-first-run-send-behavior") ?? "{}")).toEqual({
-      source: "inherited",
-      preset: "balanced",
-      mode: "manual",
-    });
+    expect(storage.getItem("osl-preview-first-run-preset")).toBeNull();
+    expect(storage.getItem("osl-preview-first-run-send-behavior")).toBeNull();
   });
 
   it("refuses Double Enter without explicit first-run acknowledgement before saving", async () => {
@@ -127,11 +123,7 @@ describe("first-run onboarding preference persistence", () => {
       },
     });
     expect(saved.setup.sendMode).toBe("clipboard");
-    expect(storage.getItem("osl-preview-first-run-preset")).toBe("basic");
-    expect(JSON.parse(storage.getItem("osl-preview-first-run-send-behavior") ?? "{}")).toEqual({
-      source: "override",
-      preset: "basic",
-      mode: "clipboard",
-    });
+    expect(storage.getItem("osl-preview-first-run-preset")).toBeNull();
+    expect(storage.getItem("osl-preview-first-run-send-behavior")).toBeNull();
   });
 });
