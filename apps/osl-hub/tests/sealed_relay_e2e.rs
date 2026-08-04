@@ -369,6 +369,50 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
             let removed = state.wrapped_keys.remove(&content_id).is_some();
             json_response(200, json!({ "burned": removed }))
         }
+        // D-144: production deploys the LEGACY blob protocol, and B0-01 phase 1
+        // deliberately moved the client onto it. This fixture only understood the
+        // capability protocol of the UNDEPLOYED worker, so a legacy upload fell
+        // through to `bad_blob_metadata` and the whole suite read as a client bug.
+        //
+        // The shape below is not copied from the client -- it is what the live
+        // store at https://ciphers.oslprivacy.com was measured doing:
+        //   POST /v1/blob  + X-OSL-TTL-Seconds + X-OSL-Fetch-Token(32 hex) -> 201 {id}
+        //   GET  /v1/blob/<id> + the same token                            -> 200
+        //   DELETE /v1/blob/<id> + the same token                          -> 204
+        //   wrong token -> 403, absent -> 401
+        // Matching the deployed server is the point; matching the client would be
+        // the very construction that made "12/12 green" a lie.
+        ("POST", "/v1/blob")
+            if headers.contains_key("x-osl-fetch-token")
+                && !headers.contains_key("x-osl-blob-id") =>
+        {
+            let token = canonical_hex_header(headers.get("x-osl-fetch-token"), 32);
+            let ttl_ok = headers
+                .get("x-osl-ttl-seconds")
+                .and_then(|ttl| ttl.parse::<u64>().ok())
+                .is_some_and(|ttl| matches!(ttl, 3600 | 86_400 | 259_200 | 604_800));
+            match (token, ttl_ok) {
+                (None, _) => json_response(400, json!({ "error": "bad_fetch_token" })),
+                (Some(_), false) => json_response(400, json!({ "error": "bad_ttl" })),
+                (Some(token), true) => {
+            let mut state = state.lock().unwrap();
+            let id = format!("{:016x}", state.blobs.len() as u64 + 1);
+            let digest = sha256_hex(&token);
+            state.blobs.insert(
+                id.clone(),
+                BlobRow {
+                    bytes: body,
+                    // Legacy has ONE credential: the same token authorises fetch and
+                    // delete. That is D-117, and the fixture must reproduce it rather
+                    // than quietly model the safer capability split.
+                    fetch_digest: digest.clone(),
+                    manage_digest: digest,
+                },
+            );
+            json_response(201, json!({ "id": id, "expires_at": now + 3600 }))
+                }
+            }
+        }
         ("POST", "/v1/blob") => {
             let blob_id = canonical_hex_header(headers.get("x-osl-blob-id"), 32);
             let fetch_digest = canonical_hex_header(headers.get("x-osl-fetch-digest"), 64);
@@ -420,7 +464,10 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
         ("GET", path) if path.starts_with("/v1/blob/") => {
             let id = path.trim_start_matches("/v1/blob/");
             let state = state.lock().unwrap();
-            let presented = headers.get("x-osl-fetch-cap").map(|cap| sha256_hex(cap));
+            let presented = headers
+                .get("x-osl-fetch-cap")
+                .or_else(|| headers.get("x-osl-fetch-token"))
+                .map(|cap| sha256_hex(cap));
             match state.blobs.get(id) {
                 Some(blob) if presented.as_deref() == Some(blob.fetch_digest.as_str()) => {
                     bytes_response(200, "application/octet-stream", blob.bytes.clone())
@@ -432,7 +479,10 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
         ("DELETE", path) if path.starts_with("/v1/blob/") => {
             let id = path.trim_start_matches("/v1/blob/");
             let mut state = state.lock().unwrap();
-            let presented = headers.get("x-osl-manage-cap").map(|cap| sha256_hex(cap));
+            let presented = headers
+                .get("x-osl-manage-cap")
+                .or_else(|| headers.get("x-osl-fetch-token"))
+                .map(|cap| sha256_hex(cap));
             let allowed = state
                 .blobs
                 .get(id)
