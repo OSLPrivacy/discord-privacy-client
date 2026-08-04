@@ -105,10 +105,7 @@ fn prose_conversation_secret(
 /// Derives the private carrier detector from the bilateral secret held by both
 /// ends of an approved manual-peer conversation. It never crosses the adapter
 /// boundary and uses a domain distinct from the delivery tag (D-SEP).
-fn prose_detection_key(
-    core: &HubCoreState,
-    peer: &ManualPeerBinding,
-) -> Result<[u8; 32], String> {
+fn prose_detection_key(core: &HubCoreState, peer: &ManualPeerBinding) -> Result<[u8; 32], String> {
     let shared = prose_conversation_secret(core, peer)?;
     ipc::prose_token::derive_detection_key(&shared)
         .map_err(|_| "OSL protected conversation key is unavailable".to_owned())
@@ -1248,6 +1245,8 @@ pub struct OpenedNativeOverlayText {
     /// as `PendingNativeOverlayText::message_id`, so a pending view-once entry
     /// and the text it later reveals name the same message.
     pub message_id: String,
+    #[serde(skip)]
+    sender_order: Option<AuthenticatedSenderOrder>,
     /// The public Discord carrier text that points at this message, i.e. the
     /// exact row the renderer must paint over.
     ///
@@ -1373,6 +1372,10 @@ struct LocalProtectedPayload {
 struct PeerProtectedPayload {
     version: u32,
     message_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    send_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scope_commitment: Option<String>,
     created_at: i64,
     expires_at: i64,
     service_id: String,
@@ -1448,6 +1451,8 @@ struct NativeTextReassembly {
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 struct NativeTextGroupKey {
     logical_message_id: String,
+    send_seq: Option<u64>,
+    scope_commitment: Option<String>,
     chunk_count: u16,
     whole_sha256: String,
     version: u32,
@@ -1494,12 +1499,81 @@ struct NativeOverlayAcknowledgmentPayload {
     recipient_osl_user_id: String,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PeerProtectionPolicy {
     view_once: bool,
     require_capture_protection: bool,
     created_at: i64,
     expires_at: i64,
+    send_order: Option<AuthenticatedSenderOrder>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct AuthenticatedSenderOrder {
+    send_seq: u64,
+    scope_commitment: String,
+}
+
+fn valid_authenticated_sender_order_shape(payload: &PeerProtectedPayload) -> bool {
+    match (payload.send_seq, payload.scope_commitment.as_deref()) {
+        (None, None) => true,
+        (Some(send_seq), Some(scope_commitment)) => {
+            send_seq > 0
+                && STANDARD
+                    .decode(scope_commitment)
+                    .ok()
+                    .is_some_and(|bytes| bytes.len() == 32)
+        }
+        _ => false,
+    }
+}
+
+fn authenticated_sender_order(payload: &PeerProtectedPayload) -> Option<AuthenticatedSenderOrder> {
+    if !valid_authenticated_sender_order_shape(payload) {
+        return None;
+    }
+    Some(AuthenticatedSenderOrder {
+        send_seq: payload.send_seq?,
+        scope_commitment: payload.scope_commitment.clone()?,
+    })
+}
+
+fn sort_opened_native_overlay_text_by_sender_order(
+    messages: Vec<OpenedNativeOverlayText>,
+) -> Vec<OpenedNativeOverlayText> {
+    let mut ordered_messages = messages.into_iter().enumerate().collect::<Vec<_>>();
+    ordered_messages.sort_by(|(left_index, left), (right_index, right)| {
+        match (&left.sender_order, &right.sender_order) {
+            (Some(left), Some(right)) => left.cmp(right),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left_index.cmp(right_index),
+        }
+        .then_with(|| left_index.cmp(right_index))
+    });
+    ordered_messages
+        .into_iter()
+        .map(|(_, message)| message)
+        .collect()
+}
+
+fn validate_authenticated_sender_order_scope(
+    core: &HubCoreState,
+    verified: &ManualPeerBinding,
+    manual: &ManualPeerContext,
+    payload: &PeerProtectedPayload,
+) -> Result<(), String> {
+    let Some(scope_commitment) = payload.scope_commitment.as_deref() else {
+        return Ok(());
+    };
+    let storage_key = scope_storage_key(&manual.scope)?;
+    let expected =
+        security::peer_scope_commitment(core, &verified.peer_x25519_public, &storage_key)?;
+    if scope_commitment == expected {
+        Ok(())
+    } else {
+        Err("This encrypted message could not be opened".to_owned())
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1767,6 +1841,7 @@ pub fn prepare_peer_prose_text_with_capture_and_store_client(
         require_capture_protection,
         None,
         Some(store_client),
+        None,
     )
     .map(|envelope| envelope.prepared)
 }
@@ -1805,6 +1880,7 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
             require_capture_protection: false,
             created_at: now,
             expires_at,
+            send_order: None,
         },
         random_peer_message_id(),
         None,
@@ -1870,6 +1946,7 @@ fn prepare_peer_prose_text_inner(
         require_capture_protection,
         None,
         None,
+        None,
     )
 }
 
@@ -1887,7 +1964,9 @@ fn burn_uploaded_prose_blob(
     blob_id: &str,
 ) -> Result<(), ipc::prose_token::ProseTokenError> {
     match store_client {
-        Some(client) => ipc::prose_token::prose_token_burn_id_with_client(client, send_key, blob_id),
+        Some(client) => {
+            ipc::prose_token::prose_token_burn_id_with_client(client, send_key, blob_id)
+        }
         None => ipc::prose_token::prose_token_burn_id(config_dir, send_key, blob_id),
     }
 }
@@ -1903,6 +1982,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
     require_capture_protection: bool,
     chunk: Option<NativeTextChunkMeta>,
     store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
+    send_order: Option<AuthenticatedSenderOrder>,
 ) -> Result<PreparedPeerProseEnvelope, String> {
     let manual = broker.manual_peer_for(context_token)?;
     let verified = security::require_manual_peer_scope_approved(
@@ -1944,6 +2024,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
             require_capture_protection,
             created_at: now,
             expires_at,
+            send_order,
         },
         message_id.clone(),
         chunk.as_ref(),
@@ -2112,6 +2193,11 @@ fn prepare_direct_manual_v3(
             PEER_PROTECTED_VERSION
         },
         message_id,
+        send_seq: policy.send_order.as_ref().map(|order| order.send_seq),
+        scope_commitment: policy
+            .send_order
+            .as_ref()
+            .map(|order| order.scope_commitment.clone()),
         created_at: policy.created_at,
         expires_at: policy.expires_at,
         service_id: manual.service_id.clone(),
@@ -3396,6 +3482,8 @@ fn native_overlay_wrapped_key_matches_payload(
 fn same_peer_protected_payload(left: &PeerProtectedPayload, right: &PeerProtectedPayload) -> bool {
     left.version == right.version
         && left.message_id == right.message_id
+        && left.send_seq == right.send_seq
+        && left.scope_commitment == right.scope_commitment
         && left.created_at == right.created_at
         && left.expires_at == right.expires_at
         && left.service_id == right.service_id
@@ -3457,6 +3545,8 @@ fn authenticate_native_overlay_wrapped_payload(
         ipc::main_password::now_unix_secs_pub(),
     )
     .map_err(|_| PeerProsePointerFailure::Rejected)?;
+    validate_authenticated_sender_order_scope(core, verified, manual, &payload)
+        .map_err(|_| PeerProsePointerFailure::Rejected)?;
     if native_overlay_wrapped_key_matches_payload(
         &wrapped, identity, notice, manual, context, &payload,
     ) {
@@ -3597,6 +3687,8 @@ fn authenticate_oriented_prose_pointer(
         ),
     }
     .map_err(|_| PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected))?;
+    validate_authenticated_sender_order_scope(core, &verified, &manual, &payload)
+        .map_err(|_| PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected))?;
     let ciphertext_sha256 = sha256_hex(recovered.wire.as_bytes());
     Ok(AuthenticatedProsePointer {
         payload,
@@ -3933,6 +4025,19 @@ fn prepare_peer_inbox_text_with_route_clients(
     let allow_device_bound_qa_receipt_key = native_discord_qa_receipt_context(&context);
     #[cfg(not(feature = "discord-qa-shell"))]
     let allow_device_bound_qa_receipt_key = false;
+    let storage_key = scope_storage_key(&manual.scope)?;
+    let scope_commitment =
+        security::peer_scope_commitment(core, &verified.peer_x25519_public, &storage_key)?;
+    let send_seq = security::next_peer_send_seq(
+        core,
+        security_state,
+        &verified.peer_x25519_public,
+        &storage_key,
+    )?;
+    let send_order = AuthenticatedSenderOrder {
+        send_seq,
+        scope_commitment,
+    };
     // One prose-token cover per chunk. Only a single-chunk message can carry a
     // Discord row: the row is one token, and a token is all-or-nothing.
     let mut carrier_flagtext = None::<String>;
@@ -3967,6 +4072,7 @@ fn prepare_peer_inbox_text_with_route_clients(
             true,
             Some(meta),
             store_client,
+            Some(send_order.clone()),
         );
         #[cfg(feature = "discord-qa-shell")]
         if let Err(error) = &encrypted_result {
@@ -4853,12 +4959,14 @@ fn drain_peer_inbox_text(
         // disclosure is disabled until both peers have durable scope-bound
         // consent.
         let _ = client.delete_control_inbox(&identity, &item.id);
+        let sender_order = authenticated_sender_order(&payload);
         messages.push(OpenedNativeOverlayText {
             // The correlation handle. Both halves are already authenticated
             // facts about this exact row: the payload's own message id, and the
             // cover the signed notice pointed at -- which is the public text of
             // the Discord row this plaintext has to be painted over.
             message_id: payload.message_id,
+            sender_order,
             cover_pointer: native_overlay_cover_handle(&notice.cover_pointer),
             plaintext: payload.plaintext,
             context_verified: true,
@@ -5030,8 +5138,10 @@ fn drain_peer_inbox_text(
             let _ = client.delete_control_inbox(&identity, inbox_id);
         }
         if !already_consumed {
+            let sender_order = authenticated_sender_order(&logical);
             messages.push(OpenedNativeOverlayText {
                 message_id: logical.message_id,
+                sender_order,
                 cover_pointer: single_carrier_cover,
                 plaintext: logical.plaintext,
                 context_verified: true,
@@ -5059,6 +5169,7 @@ fn drain_peer_inbox_text(
         &scope_id,
         ipc::main_password::now_unix_secs_pub(),
     );
+    let messages = sort_opened_native_overlay_text_by_sender_order(messages);
     let fetched = u32::try_from(messages.len().saturating_add(pending_view_once.len()))
         .unwrap_or(MAX_NATIVE_OVERLAY_OPEN_BATCH as u32);
     Ok(OpenedNativeOverlayTextBatch {
@@ -6184,6 +6295,19 @@ fn encode_peer_protected_chunk(payload: &PeerProtectedPayload) -> Result<Vec<u8>
         encoded.extend_from_slice(&length.to_be_bytes());
         encoded.extend_from_slice(value.as_bytes());
     }
+    match (payload.send_seq, payload.scope_commitment.as_deref()) {
+        (Some(send_seq), Some(scope_commitment))
+            if send_seq > 0 && scope_commitment.len() <= 64 =>
+        {
+            encoded.extend_from_slice(&send_seq.to_be_bytes());
+            let length = u32::try_from(scope_commitment.len())
+                .map_err(|_| "OSL could not prepare a single manual peer message".to_owned())?;
+            encoded.extend_from_slice(&length.to_be_bytes());
+            encoded.extend_from_slice(scope_commitment.as_bytes());
+        }
+        (None, None) => {}
+        _ => return Err("OSL could not prepare a single manual peer message".to_owned()),
+    }
     Ok(encoded)
 }
 
@@ -6219,12 +6343,21 @@ fn decode_peer_protected_chunk(encoded: &[u8]) -> Result<PeerProtectedPayload, S
     let logical_message_id = read_bounded_utf8(encoded, &mut offset, 96)?;
     let whole_sha256 = read_bounded_utf8(encoded, &mut offset, 64)?;
     let plaintext = read_bounded_utf8(encoded, &mut offset, MAX_NATIVE_OVERLAY_CHUNK_BYTES)?;
+    let (send_seq, scope_commitment) = if offset == encoded.len() {
+        (None, None)
+    } else {
+        let send_seq = read_u64(encoded, &mut offset)?;
+        let scope_commitment = read_bounded_utf8(encoded, &mut offset, 64)?;
+        (Some(send_seq), Some(scope_commitment))
+    };
     if offset != encoded.len() {
         return Err(ERROR.to_owned());
     }
     Ok(PeerProtectedPayload {
         version: PEER_PROTECTED_CHUNK_VERSION,
         message_id,
+        send_seq,
+        scope_commitment,
         created_at,
         expires_at,
         service_id,
@@ -6259,6 +6392,16 @@ fn read_i64(input: &[u8], offset: &mut usize) -> Result<i64, String> {
         .ok_or_else(|| "This encrypted message could not be opened".to_owned())?;
     *offset = end;
     Ok(i64::from_be_bytes(bytes))
+}
+
+fn read_u64(input: &[u8], offset: &mut usize) -> Result<u64, String> {
+    let end = offset.saturating_add(8);
+    let bytes: [u8; 8] = input
+        .get(*offset..end)
+        .and_then(|value| value.try_into().ok())
+        .ok_or_else(|| "This encrypted message could not be opened".to_owned())?;
+    *offset = end;
+    Ok(u64::from_be_bytes(bytes))
 }
 
 fn read_bounded_utf8(input: &[u8], offset: &mut usize, maximum: usize) -> Result<String, String> {
@@ -6458,6 +6601,7 @@ fn validate_oriented_peer_protected_payload(
         || payload.expires_at <= now
         || payload.expires_at
             > now.saturating_add(MAX_PEER_LIFETIME_SECONDS + MAX_PEER_CLOCK_SKEW_SECONDS)
+        || !valid_authenticated_sender_order_shape(payload)
         || payload.service_id != manual.service_id
         || payload.conversation_binding != context.conversation_id
         || payload.sender_osl_user_id != expected_sender
@@ -6494,6 +6638,8 @@ fn valid_peer_message_id(value: &str) -> bool {
 fn native_text_group_key(payload: &PeerProtectedPayload) -> Option<NativeTextGroupKey> {
     Some(NativeTextGroupKey {
         logical_message_id: payload.logical_message_id.clone()?,
+        send_seq: payload.send_seq,
+        scope_commitment: payload.scope_commitment.clone(),
         chunk_count: payload.chunk_count?,
         whole_sha256: payload.whole_sha256.clone()?,
         version: payload.version,
@@ -6527,6 +6673,8 @@ fn native_overlay_cover_handle(cover_pointer: &str) -> Option<String> {
 
 fn same_native_text_group(left: &PeerProtectedPayload, right: &PeerProtectedPayload) -> bool {
     left.version == right.version
+        && left.send_seq == right.send_seq
+        && left.scope_commitment == right.scope_commitment
         && left.created_at == right.created_at
         && left.expires_at == right.expires_at
         && left.service_id == right.service_id
@@ -10453,6 +10601,8 @@ mod tests {
         PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: message_id.to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: 1_700_000_000,
             expires_at: 1_700_003_600,
             service_id: manual.service_id.clone(),
@@ -10485,6 +10635,7 @@ mod tests {
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
+                send_order: None,
             },
             message_id.to_owned(),
             None,
@@ -10614,6 +10765,7 @@ mod tests {
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
+                send_order: None,
             },
             message_id.to_owned(),
             None,
@@ -11729,6 +11881,7 @@ mod tests {
         assert_eq!(MAX_NATIVE_OVERLAY_OPEN_BATCH, 64);
         let opened = OpenedNativeOverlayText {
             message_id: "peer-fedcba98765432100123456789abcdef".to_owned(),
+            sender_order: None,
             cover_pointer: Some("ordinary looking cover prose".to_owned()),
             plaintext: "first\n\nthird".to_owned(),
             context_verified: true,
@@ -11780,6 +11933,7 @@ mod tests {
         // renderer's exact-key parser expects rather than an explicit null.
         let reassembled = serde_json::to_value(OpenedNativeOverlayText {
             message_id: "peer-11112222333344445555666677778888".to_owned(),
+            sender_order: None,
             cover_pointer: None,
             plaintext: "joined".to_owned(),
             context_verified: true,
@@ -11789,6 +11943,43 @@ mod tests {
         })
         .unwrap();
         assert!(reassembled.get("coverPointer").is_none());
+    }
+
+    #[test]
+    fn opened_native_overlay_text_sorts_by_authenticated_sender_order_only() {
+        fn opened(message_id: &str, plaintext: &str, send_seq: u64) -> OpenedNativeOverlayText {
+            OpenedNativeOverlayText {
+                message_id: message_id.to_owned(),
+                sender_order: Some(AuthenticatedSenderOrder {
+                    send_seq,
+                    scope_commitment: STANDARD.encode([0x42; 32]),
+                }),
+                cover_pointer: None,
+                plaintext: plaintext.to_owned(),
+                context_verified: true,
+                person_to_person_e2ee: true,
+                view_once_consumed: false,
+                expires_at: 1_787_000_000,
+            }
+        }
+
+        let sorted = sort_opened_native_overlay_text_by_sender_order(vec![
+            opened("peer-11111111111111111111111111111111", "two", 2),
+            opened("peer-22222222222222222222222222222222", "one", 1),
+            opened("peer-33333333333333333333333333333333", "three", 3),
+        ]);
+
+        assert!(
+            sorted
+                .iter()
+                .map(|message| message.plaintext.as_str())
+                .eq(["one", "two", "three"]),
+            "display order comes from the authenticated sender sequence, not arrival or id order"
+        );
+        let value = serde_json::to_value(&sorted[0]).unwrap();
+        assert!(value.get("senderOrder").is_none());
+        assert!(value.get("sendSeq").is_none());
+        assert!(value.get("scopeCommitment").is_none());
     }
 
     #[test]
@@ -12192,6 +12383,7 @@ mod tests {
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
+                send_order: None,
             },
             message_id.to_owned(),
             None,
@@ -12445,6 +12637,8 @@ mod tests {
         let payload = PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: "d7-received-message".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: now.saturating_sub(1),
             expires_at: now.saturating_add(3_600),
             service_id: context.service_id.clone(),
@@ -12534,6 +12728,8 @@ mod tests {
         let payload = PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: "msg-receipt".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: 1_700_000_000,
             expires_at: 1_700_003_600,
             service_id: manual.service_id.clone(),
@@ -13897,6 +14093,7 @@ mod tests {
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
+                send_order: None,
             },
             "peer-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
             Some(&NativeTextChunkMeta {
@@ -14078,6 +14275,8 @@ mod tests {
         let mut payload = PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: "peer-00112233445566778899aabbccddeeff".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: now - 10,
             expires_at: now + 3_600,
             service_id: "discord".to_owned(),
@@ -14222,6 +14421,7 @@ mod tests {
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
+                send_order: None,
             },
             "peer-0123456789abcdef0123456789abcdef".to_owned(),
             None,
@@ -14291,6 +14491,7 @@ mod tests {
                 require_capture_protection: false,
                 created_at: 1_700_000_002,
                 expires_at: 1_700_003_602,
+                send_order: None,
             },
             "peer-fedcba9876543210fedcba9876543210".to_owned(),
             None,
@@ -14545,6 +14746,7 @@ mod tests {
                 require_capture_protection: true,
                 created_at: meta.created_at,
                 expires_at: meta.expires_at,
+                send_order: None,
             },
             "peer-00001111222233334444555566667777".to_owned(),
             Some(&meta),
@@ -14647,6 +14849,8 @@ mod tests {
         let base = PeerProtectedPayload {
             version: PEER_PROTECTED_CHUNK_VERSION,
             message_id: "peer-00001111222233334444555566667777".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: 1_700_000_000,
             expires_at: 1_700_003_600,
             service_id: "discord".to_owned(),
@@ -15088,6 +15292,8 @@ mod tests {
         let mut payload = PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: "peer-a9000000000000000000000000000000".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: 1_700_000_000,
             expires_at: 1_700_003_600,
             service_id: "discord".to_owned(),
@@ -15325,6 +15531,8 @@ ok i will weekend again with you",
             payload: PeerProtectedPayload {
                 version: PEER_PROTECTED_VERSION,
                 message_id: payload_id.to_owned(),
+                send_seq: None,
+                scope_commitment: None,
                 created_at: 1,
                 expires_at: 2,
                 service_id: "discord".to_owned(),
@@ -16013,6 +16221,7 @@ ok i will weekend again with you",
                 require_capture_protection: false,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
+                send_order: None,
             },
             "peer-0123456789abcdef0123456789abcdef".to_owned(),
             None,
@@ -16177,6 +16386,8 @@ ok i will weekend again with you",
         let payload = PeerProtectedPayload {
             version: PEER_PROTECTED_CHUNK_VERSION,
             message_id: notice.message_id.clone(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: notice.created_at,
             expires_at: notice.expires_at,
             service_id: manual.service_id.clone(),
@@ -16273,6 +16484,8 @@ ok i will weekend again with you",
         let mut payload = PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: "peer-0123456789abcdef0123456789abcdef".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: 1_700_000_000,
             expires_at: 1_700_003_600,
             service_id: "discord".to_owned(),
@@ -16299,6 +16512,8 @@ ok i will weekend again with you",
         let mut payload = PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: "peer-0123456789abcdef0123456789abcdef".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: 1_700_000_000,
             expires_at: 1_700_003_600,
             service_id: "discord".to_owned(),

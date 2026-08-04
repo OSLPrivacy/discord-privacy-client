@@ -499,24 +499,22 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
         // server assigns the blob id, and that same token gates fetch/delete.
         // The destination capability protocol (`x-osl-blob-id` plus digests)
         // must keep failing here until it is actually deployed.
-        ("POST", "/v1/blob") => {
-            match canonical_hex_header(headers.get("x-osl-fetch-token"), 32) {
-                Some(fetch_token) => {
-                    let mut state = state.lock().unwrap();
-                    state.next_id += 1;
-                    let blob_id = format!("{:016x}", state.next_id);
-                    state.blobs.insert(
-                        blob_id.clone(),
-                        BlobRow {
-                            bytes: body,
-                            fetch_token,
-                        },
-                    );
-                    json_response(201, json!({ "id": blob_id, "expires_at": now + 3600 }))
-                }
-                None => json_response(400, json!({ "error": "fetch_token_required" })),
+        ("POST", "/v1/blob") => match canonical_hex_header(headers.get("x-osl-fetch-token"), 32) {
+            Some(fetch_token) => {
+                let mut state = state.lock().unwrap();
+                state.next_id += 1;
+                let blob_id = format!("{:016x}", state.next_id);
+                state.blobs.insert(
+                    blob_id.clone(),
+                    BlobRow {
+                        bytes: body,
+                        fetch_token,
+                    },
+                );
+                json_response(201, json!({ "id": blob_id, "expires_at": now + 3600 }))
             }
-        }
+            None => json_response(400, json!({ "error": "fetch_token_required" })),
+        },
         ("GET", path) if path.starts_with("/v1/blob/") => {
             let id = path.trim_start_matches("/v1/blob/");
             let state = state.lock().unwrap();
@@ -1277,6 +1275,99 @@ fn first_party_osl_chat_reopen_backfills_waiting_rows_in_order_without_push() {
     assert!(
         relay.still_pending(&corrupt_id),
         "the corrupt row is retained for investigation/retry"
+    );
+}
+
+#[test]
+fn first_party_osl_chat_reopen_sorts_shuffled_waiting_rows_by_sender_order() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("osl-chat-reopen-shuffled-backfill");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice-chat-shuffled", &relay_url, "a1a18888");
+    let bob = Peer::new(&storage, "bob-chat-shuffled", &relay_url, "b2b28888");
+    alice.open_osl_chat_context_to(&bob.friend_code);
+    let bob_person_id = bob.open_osl_chat_context_to(&alice.friend_code);
+    let _bob_history_dir = bob.open_history_store("shuffled-backfill");
+    let store_client = ipc::cipher_store_client::CipherStoreClient::new(relay_url.clone())
+        .expect("loopback cipher-store client");
+
+    const ONE: &str = "OSL Chat shuffled reopen fixture one";
+    const TWO: &str = "OSL Chat shuffled reopen fixture two";
+    const THREE: &str = "OSL Chat shuffled reopen fixture three";
+    let mut prepared_ids = Vec::new();
+    for fixture in [ONE, TWO, THREE] {
+        alice.activate();
+        let prepared = prepare_osl_chat_text_with_route_clients(
+            &alice.core,
+            &alice.security,
+            &alice.broker,
+            &ai_carrier_fixture(),
+            fixture.to_owned(),
+            false,
+            &store_client,
+            alice.core.osl.keyserver.lock().unwrap().as_ref(),
+        )
+        .expect("sender queues an OSL Chat row while receiver is closed");
+        prepared_ids.push(prepared.message_id);
+    }
+
+    let mut rows = relay.take_inbox_for(&bob.identity_id);
+    assert_eq!(rows.len(), 3, "the shuffled fixture has three waiting rows");
+    rows.swap(0, 1);
+    relay.put_inbox_rows(rows);
+
+    bob.reopen_osl_chat_context(&bob_person_id);
+    bob.activate();
+    let opened = drain_osl_chat_text(&bob.core, &bob.security, &bob.broker, true)
+        .expect("reopen drain backfills shuffled waiting OSL Chat rows");
+    assert_eq!(
+        opened.messages.len(),
+        3,
+        "all three shuffled waiting messages appear on reopen"
+    );
+    assert!(
+        opened
+            .messages
+            .iter()
+            .map(|message| message.message_id.as_str())
+            .eq(prepared_ids.iter().map(String::as_str)),
+        "the reopen sweep preserves authenticated sender order despite shuffled arrival"
+    );
+    assert!(
+        opened
+            .messages
+            .iter()
+            .map(|message| message.plaintext.as_str())
+            .eq([ONE, TWO, THREE]),
+        "shuffled arrival still decrypts in sender order"
+    );
+    assert_eq!(
+        relay.pending_for(&bob.identity_id),
+        0,
+        "shuffled rows are retired after the ordered reopen drain"
+    );
+}
+
+#[test]
+fn first_party_osl_chat_reopen_order_assertions_remain_present() {
+    let source = include_str!("native_discord_receive_e2e.rs");
+    assert!(
+        source
+            .matches("the reopen sweep preserves authenticated inbox order")
+            .count()
+            >= 2,
+        "the original reopen ordering assertion must stay live"
+    );
+    assert!(
+        source
+            .matches("the reopen sweep preserves authenticated sender order despite shuffled arrival")
+            .count()
+            >= 2,
+        "the shuffled-arrival reopen ordering assertion must stay live"
     );
 }
 
