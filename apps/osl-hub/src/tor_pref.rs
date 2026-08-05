@@ -819,6 +819,7 @@ mod tests {
         "activate_manual_peer_context",
         "activate_native_manual_peer_context",
         "activate_osl_chat_context",
+        "set_osl_chat_capture_preference",
         "close_osl_chat_context",
         "prepare_peer_prose_text",
         "open_peer_prose_text",
