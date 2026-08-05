@@ -4,6 +4,7 @@ import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   DEPLOYMENT_EVIDENCE_CHALLENGE_FORMAT,
+  DEPLOYMENT_MIGRATION_DIRECTORIES,
   DEPLOYMENT_TRANSITIONS,
 } from "./deployment-evidence-receipt-contract.mjs";
 import {
@@ -186,22 +187,32 @@ export function loadCommittedMigrationClosure(
   expectedCommit,
   gitRun = git,
 ) {
-  const output = gitRun(repoRoot, [
-    "ls-tree",
-    "-r",
-    "--name-only",
-    expectedCommit,
-    "--",
-    "keyserver-cf/migrations",
-  ]);
-  const paths = output.trim().split("\n").filter(Boolean).sort();
+  const paths = DEPLOYMENT_MIGRATION_DIRECTORIES.flatMap((directory) => {
+    const output = gitRun(repoRoot, [
+      "ls-tree",
+      "-r",
+      "--name-only",
+      expectedCommit,
+      "--",
+      `keyserver-cf/${directory}`,
+    ]);
+    return output
+      .trim()
+      .split("\n")
+      .filter((sourcePath) => sourcePath.endsWith(".sql"))
+      .sort();
+  });
   if (paths.length === 0) {
     throw new Error("committed migration closure is empty");
   }
-  const expectedPrefix = "keyserver-cf/migrations/";
   return paths.map((sourcePath) => {
+    const directory = DEPLOYMENT_MIGRATION_DIRECTORIES.find((candidate) =>
+      sourcePath.startsWith(`keyserver-cf/${candidate}/`),
+    );
+    const expectedPrefix =
+      directory === undefined ? null : `keyserver-cf/${directory}/`;
     if (
-      !sourcePath.startsWith(expectedPrefix) ||
+      expectedPrefix === null ||
       !/^\d{4}_[a-z0-9_]+\.sql$/.test(sourcePath.slice(expectedPrefix.length))
     ) {
       throw new Error(`committed migration path is invalid: ${sourcePath}`);
@@ -214,8 +225,10 @@ export function loadCommittedMigrationClosure(
     if (!Buffer.isBuffer(bytes) || bytes.byteLength === 0) {
       throw new Error(`committed migration is empty: ${sourcePath}`);
     }
+    const name = sourcePath.slice(expectedPrefix.length);
     return {
-      name: sourcePath.slice(expectedPrefix.length),
+      name,
+      path: `${directory}/${name}`,
       sha256: sha256(bytes),
     };
   });

@@ -533,6 +533,57 @@ describe("producer-owned deployment evidence receipt v3", () => {
     }
   });
 
+  it("MUTANT cross-directory filename replay is refused and names both paths", () => {
+    const payload = deploymentEvidencePayload("A");
+    const expectation = deploymentEvidenceExpectation("A");
+    expectation.expectedMigrations = [
+      {
+        name: "0030_reserve_derived_identity_namespace.sql",
+        path: "migrations-contract/0030_reserve_derived_identity_namespace.sql",
+        sha256: payload.migrations[0].sha256,
+      },
+    ];
+    payload.migrations[0] = {
+      ...payload.migrations[0],
+      path: "migrations/0030_reserve_derived_identity_namespace.sql",
+    };
+    expect(() =>
+      verifyDeploymentEvidenceReceipt(resign(payload), expectation, {
+        trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+        nowMs: DEPLOYMENT_FIXTURE_NOW,
+      }),
+    ).toThrow(
+      /receipt migrations\/0030_reserve_derived_identity_namespace\.sql cannot admit migrations-contract\/0030_reserve_derived_identity_namespace\.sql/,
+    );
+  });
+
+  it("MUTANT contract migration without a receipt is refused", () => {
+    const payload = deploymentEvidencePayload("B");
+    const expectation = deploymentEvidenceExpectation("B");
+    expectation.expectedMigrations = [
+      ...expectation.expectedMigrations,
+      {
+        name: "0100_username_identity_contract.sql",
+        path: "migrations-contract/0100_username_identity_contract.sql",
+        sha256: "9".repeat(64),
+      },
+    ];
+    expect(() =>
+      verifyDeploymentEvidenceReceipt(resign(payload), expectation, {
+        trustedProducers: TEST_TRUSTED_DEPLOYMENT_PRODUCERS,
+        nowMs: DEPLOYMENT_FIXTURE_NOW,
+      }),
+    ).toThrow(/Artifact B requires the exact ordered 0030 then 0031 chain/);
+  });
+
+  it("MUTANT legacy migrations path behaviour keeps order refusal unchanged", () => {
+    const payload = deploymentEvidencePayload("B");
+    payload.migrations.reverse();
+    expect(() => verify(payload)).toThrow(
+      "producer migration order or digest mismatch",
+    );
+  });
+
   it("requires deployed migration 0031 retention schema and hidden-row behavior", () => {
     const missingTrigger = deploymentEvidencePayload();
     missingTrigger.database.schema_rows =
@@ -900,34 +951,43 @@ describe("producer-owned deployment evidence receipt v3", () => {
       ["-C", REPO_ROOT, "rev-parse", "HEAD"],
       { encoding: "utf8" },
     ).trim();
-    const committedMigrationNames = execFileSync(
-      "git",
-      [
-        "-C",
-        REPO_ROOT,
-        "ls-tree",
-        "-r",
-        "--name-only",
-        head,
-        "--",
-        "keyserver-cf/migrations",
-      ],
-      { encoding: "utf8" },
-    )
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .sort()
-      .map((entry) => entry.slice("keyserver-cf/migrations/".length));
+    const committedMigrationPaths = [
+      "migrations",
+      "migrations-contract",
+    ].flatMap((directory) =>
+      execFileSync(
+        "git",
+        [
+          "-C",
+          REPO_ROOT,
+          "ls-tree",
+          "-r",
+          "--name-only",
+          head,
+          "--",
+          `keyserver-cf/${directory}`,
+        ],
+        { encoding: "utf8" },
+      )
+        .trim()
+        .split("\n")
+        .filter((entry) => entry.endsWith(".sql"))
+        .sort()
+        .map((entry) => entry.slice("keyserver-cf/".length)),
+    );
     const migrations = loadCommittedMigrationClosure(REPO_ROOT, head);
-    expect(migrations.map((entry) => entry.name)).toEqual(
-      committedMigrationNames,
+    expect(migrations.map((entry) => entry.path)).toEqual(
+      committedMigrationPaths,
     );
     expect(migrations.length).toBeGreaterThan(0);
     expect(migrations[0].name).toMatch(/^0001_/);
     expect(
+      migrations.some((entry) => entry.path.startsWith("migrations-contract/")),
+    ).toBe(true);
+    expect(
       migrations.every(
         (entry) =>
+          entry.path.endsWith(`/${entry.name}`) &&
           /^[0-9a-f]{64}$/.test(entry.sha256) &&
           entry.sha256 !== "0".repeat(64),
       ),
@@ -935,7 +995,10 @@ describe("producer-owned deployment evidence receipt v3", () => {
     expect(new Set(migrations.map((entry) => entry.sha256)).size).toBe(
       migrations.length,
     );
-    expect(new Set(migrations.map((entry) => entry.name)).size).toBe(
+    expect(
+      migrations.every((entry) => /^\d{4}_[a-z0-9_]+\.sql$/.test(entry.name)),
+    ).toBe(true);
+    expect(new Set(migrations.map((entry) => entry.path)).size).toBe(
       migrations.length,
     );
   });

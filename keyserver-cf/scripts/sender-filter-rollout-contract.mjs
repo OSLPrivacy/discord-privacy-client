@@ -744,7 +744,7 @@ export async function deriveAuthenticatedSenderFilterPhaseReceipt(
   const payload = verified.payload;
   const migration0031 = deploymentExpectation.expectedMigrations.find(
     (entry) =>
-      entry.name === "0031_control_inbox_sender_retention.sql",
+      entry.path === "migrations/0031_control_inbox_sender_retention.sql",
   );
   if (
     !migration0031 ||
@@ -759,7 +759,7 @@ export async function deriveAuthenticatedSenderFilterPhaseReceipt(
   }
   const migration0032 = deploymentExpectation.expectedMigrations.find(
     (entry) =>
-      entry.name === "0032_sender_filter_capability_floor.sql",
+      entry.path === "migrations/0032_sender_filter_capability_floor.sql",
   );
   if (
     !migration0032 ||
