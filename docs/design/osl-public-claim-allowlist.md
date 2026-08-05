@@ -9,7 +9,24 @@
 > the claim-eligibility half of master §20.2 and §8.2.
 > Authority: [`osl-master-decision-2026-07-26.md`](osl-master-decision-2026-07-26.md).
 > Status vocabulary: master §0.3. Evidence detail: [`../THREAT_MODEL.md`](../THREAT_MODEL.md).
-> Claim-gate source SHA-256: `2f950413bc86c27a56502703fc900c90d427505d5192142e44e9e06bd49f5637`
+> Claim-gate source SHA-256: `8a3b8c347b1da3bd2958f71db9cf0e621c95b551649514993aa40b735391e47f`
+>
+> **Re-pin log.** This hash moves only in the same commit as the gate change that
+> caused it, with the reason written here. Re-pinning to settle drift you did not
+> intend is the move this pin exists to prevent.
+> - `965bd2bc…` → `2f950413…` (D-242) — `extractTypeScriptStrings` learned regex
+>   literals; 1,318 real strings had been invisible to the gate.
+> - `2f950413…` → `8a3b8c34…` (D-249 + D-243) — the two detectors stopped deciding
+>   exemption by matching surface phrasing. `semanticScrubClaimSpans`'s present-tense
+>   `attachedLimitation` list and `semanticAtRestClaimSpans`'s destructive-verb
+>   exemption were **deleted**, not extended, and both detectors now call one shared
+>   policy, `limitationGovernsClaim`, which asks whether the claim span lies inside
+>   the scope of an operator that withholds or narrows it. **This change makes the
+>   gate see strictly more:** no trigger condition was weakened, no assertion relaxed,
+>   no fixture deleted, and nothing was added to this allowlist. Proven by four
+>   mutants, each of which kills a self-test fixture (exit 1): restoring either old
+>   exemption list, admitting a shortfall verb to `LIMITING_VERBS`, or removing the
+>   clause-scope cut.
 
 ## How to use it
 

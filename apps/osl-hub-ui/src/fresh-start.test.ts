@@ -31,6 +31,12 @@ describe("Fresh Start limits", () => {
       "Messages already opened by another person",
       "Server blobs whose deletion is still queued",
       "Cover text already posted on a platform",
+      // D-249a: Fresh Start deletes a fixed enumeration (cleanup.rs cleanup_targets),
+      // and does NOT run the duress wipe's TPM/keyring steps. Both limits must be
+      // shown before the confirmation, not left to be inferred from a "removes
+      // everything" success line.
+      "The account key Windows holds in secure storage is not removed",
+      "Fresh Start works from a fixed cleanup list",
     ];
 
     expect(confirmAt).toBeGreaterThan(0);
