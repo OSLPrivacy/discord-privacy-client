@@ -40,14 +40,28 @@ describe("Padmé blob lengths", () => {
   });
 
   it("refuses an unpadded upload before storage is touched", async () => {
-    const env = {
+    // Every binding on Env is a throwing getter, so this fixture no longer
+    // needs `as Env` -- it IS an Env. The three added below (ATTACHMENTS,
+    // RATE_LIMIT, RATE_LIMIT_HASH_KEY) were simply absent, which is what the
+    // cast was papering over; absent bindings assert nothing, whereas a
+    // throwing getter is the same statement the other two already make.
+    const env: Env = {
       get DB(): never {
         throw new Error("storage must not be touched for invalid padding");
       },
       get PAYLOADS(): never {
         throw new Error("storage must not be touched for invalid padding");
       },
-    } as Env;
+      get ATTACHMENTS(): never {
+        throw new Error("storage must not be touched for invalid padding");
+      },
+      get RATE_LIMIT(): never {
+        throw new Error("storage must not be touched for invalid padding");
+      },
+      get RATE_LIMIT_HASH_KEY(): never {
+        throw new Error("storage must not be touched for invalid padding");
+      },
+    };
     const request = new Request("https://cipher.test/v1/blob", {
       method: "PUT",
       headers: uploadHeaders(),

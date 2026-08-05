@@ -21,6 +21,13 @@ declare module "cloudflare:test" {
   /// the URL" is a claim about routing, not about a handler.
   export const SELF: { fetch: typeof globalThis.fetch };
   export function reset(): Promise<void>;
+  /// The pool's real ExecutionContext factory, transcribed verbatim from
+  /// @cloudflare/vitest-pool-workers/types/cloudflare-test.d.ts. This local
+  /// `declare module` replaces that one rather than augmenting it, so anything
+  /// the suite uses has to be named here. sweep-bounds.test.ts needs it because
+  /// ExecutionContext gained `exports`, `props` and `tracing` and a
+  /// two-method object literal is no longer a legal assertion to it.
+  export function createExecutionContext(): ExecutionContext;
   export function applyD1Migrations(
     db: D1Database,
     migrations: import("@cloudflare/vitest-pool-workers").D1Migration[],

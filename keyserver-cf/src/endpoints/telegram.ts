@@ -42,6 +42,12 @@ if (import.meta.vitest) {
   const configuredEnv = (): Env => ({
     DB: {} as D1Database,
     MAILBOX: {} as DurableObjectNamespace<import("../mail/mailbox.js").Mailbox>,
+    // Env gained ARCHIVE/ARCHIVE_PAYLOADS as REQUIRED bindings; this fixture
+    // was never updated, so it stopped being a valid Env. Unreached by the
+    // Telegram webhook, but a fixture that does not typecheck as the real Env
+    // is not standing in for the real Env.
+    ARCHIVE: {} as DurableObjectNamespace<import("../archive/archive.js").Archive>,
+    ARCHIVE_PAYLOADS: {} as R2Bucket,
     RATE_LIMIT_5: {} as RateLimit,
     RATE_LIMIT_10: {} as RateLimit,
     RATE_LIMIT_120: {} as RateLimit,
