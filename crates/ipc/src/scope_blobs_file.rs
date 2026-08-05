@@ -30,6 +30,35 @@ pub struct ScopeBlobsFile {
     /// BTree for stable JSON ordering.
     #[serde(default)]
     pub entries: BTreeMap<String, Vec<String>>,
+    /// D-232. `Scope::storage_key()` → `blob_id` → the credential that object
+    /// can be destroyed with.
+    ///
+    /// Recording the id alone was enough under the destination capability
+    /// protocol, where the manage capability is recomputable from the sender's
+    /// own `send_key`. It is not enough under the deployed bridge, whose DELETE
+    /// honours only the fetch token the sender drew before uploading — a value
+    /// that exists for the duration of one send and is otherwise unrecoverable.
+    /// Without this map the burn walk holds ids it cannot authenticate for.
+    ///
+    /// Kept as a sibling of `entries` rather than folded into it so that a
+    /// ledger written by an earlier build still loads, and so that the id list
+    /// stays the single authority on *what* was uploaded. An id present in
+    /// `entries` with no matching capability here is exactly the pre-D-232 row:
+    /// real, undeletable, and required to be reported as a burn failure rather
+    /// than skipped or counted as destroyed.
+    #[serde(default)]
+    pub burn_capabilities: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+/// One recorded upload and the credential needed to destroy it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedBlob {
+    pub blob_id: String,
+    /// `None` means this object cannot be destroyed by this client — either a
+    /// pre-D-232 row, or a destination-protocol id whose manage capability the
+    /// burn path recomputes. The burn path tells those apart by the id's width;
+    /// neither may be silently dropped.
+    pub burn_capability: Option<String>,
 }
 
 pub fn load(path: &Path) -> ScopeBlobsFile {
@@ -71,7 +100,57 @@ pub fn record_blob(file: &mut ScopeBlobsFile, storage_key: String, blob_id: Stri
 /// Used by the scope-burn flow: take the list, iterate the burns
 /// outside the mutex/file lifetime, then persist the cleared state.
 pub fn take_blobs(file: &mut ScopeBlobsFile, storage_key: &str) -> Vec<String> {
+    file.burn_capabilities.remove(storage_key);
     file.entries.remove(storage_key).unwrap_or_default()
+}
+
+/// Append `blob_id` together with the credential it can be destroyed with.
+///
+/// D-232: the burn walk cannot delete a bridge-protocol object without this,
+/// so every send path that uploads one must record it here.
+pub fn record_blob_with_capability(
+    file: &mut ScopeBlobsFile,
+    storage_key: String,
+    recorded: RecordedBlob,
+) {
+    record_blob(file, storage_key.clone(), recorded.blob_id.clone());
+    match recorded.burn_capability {
+        Some(capability) => {
+            file.burn_capabilities
+                .entry(storage_key)
+                .or_default()
+                .insert(recorded.blob_id, capability);
+        }
+        None => {
+            if let Some(scope) = file.burn_capabilities.get_mut(&storage_key) {
+                scope.remove(&recorded.blob_id);
+            }
+        }
+    }
+}
+
+/// Drain `storage_key`, pairing every recorded id with its burn credential.
+///
+/// This is what the burn walk must use. An id whose capability is `None` is a
+/// row this client cannot destroy; it is returned rather than hidden precisely
+/// so the walk counts it as a failure.
+pub fn take_blobs_for_burn(file: &mut ScopeBlobsFile, storage_key: &str) -> Vec<RecordedBlob> {
+    let mut capabilities = file
+        .burn_capabilities
+        .remove(storage_key)
+        .unwrap_or_default();
+    file.entries
+        .remove(storage_key)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|blob_id| {
+            let burn_capability = capabilities.remove(&blob_id);
+            RecordedBlob {
+                blob_id,
+                burn_capability,
+            }
+        })
+        .collect()
 }
 
 /// Read-only count for diagnostics. Returns 0 when no entry exists.
