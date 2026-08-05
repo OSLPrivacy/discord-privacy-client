@@ -319,9 +319,20 @@ describe("fresh-account continuation", () => {
     const completeness = functionSource("isCompleteNativeCatalog", "hasSelectedInstalledNativeApps");
     const chooser = functionSource("ensureNativeCatalogForAppChoice", "selectedNativeAppIntent");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    expect(completeness).toContain("catalog.length === supportedNativeAppIds.size");
-    expect(completeness).toContain("ids.size === supportedNativeAppIds.size");
+    // D-190. This used to pin `catalog.length === supportedNativeAppIds.size` and
+    // `ids.size === supportedNativeAppIds.size`. Equality was an accident of the
+    // two sets being the same size the day it was written: once `f02104ac0`
+    // narrowed `supportedNativeAppIds` to `{discord}` while `list_native_apps` kept
+    // returning all five `NATIVE_APPS` rows, the predicate was false for EVERY real
+    // catalog and Continue became a no-op. Pinning the line kept this test green
+    // through the whole regression, because the line never changed.
+    //
+    // Coverage is the invariant that was actually wanted, and it is pinned both
+    // ways here. What the predicate DOES is proven by execution against the real
+    // backend catalog in `onboarding-app-choice-deadend.test.ts`.
     expect(completeness).toContain("every((appId) => ids.has(appId))");
+    expect(completeness).not.toContain("catalog.length === supportedNativeAppIds.size");
+    expect(completeness).not.toContain("ids.size === supportedNativeAppIds.size");
     expect(chooser).toContain("hasSelectedNativeAppChoice()");
     expect(chooser).not.toContain("nativeAppsReady");
     expect(chooser).toContain('withNativeDeadline(loadNativeApps(), "Check Windows apps", nativeCatalogDecisionDeadlineMs)');
