@@ -8041,6 +8041,62 @@ pub(crate) fn snapshot_claimed_window(
     windows::snapshot(target, process_is_trusted)
 }
 
+/// The shipping carrier write primitive, exposed for the landing oracle's live
+/// calibration and for nothing else.
+///
+/// This is the exact function [`windows::place`] drives at `:18017`: real
+/// `SendInput` Unicode keystrokes through Slate's own input pipeline, which is
+/// why `ValuePattern.SetValue` is rejected at `:1557-1563`.
+///
+/// **It cannot commit.** There is no Enter in it. `send_enter` is a different
+/// function, guarded by its own foreground proof, and it is not reachable from
+/// here.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_type_text(text: &str) -> bool {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    windows::send_unicode_chunk(&units)
+}
+
+/// Discord's soft line break: Shift is pressed around a single Enter, which is
+/// how `carrier_input_steps` (`:1579`) maps every `\n`. **Never a bare Enter** —
+/// a bare Enter mid-carrier would send early.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_type_soft_break() -> bool {
+    windows::send_shift_enter()
+}
+
+/// How many delete encodings the shipping reclaim knows: the grey extended
+/// `Delete` first, then `Backspace`.
+#[cfg(target_os = "windows")]
+pub(crate) const SHIPPING_RECLAIM_KEY_COUNT: usize = 2;
+
+/// One round of the shipping reclaim: Ctrl+A, then the `index`-th key of
+/// `CARRIER_RECLAIM_DELETE_KEYS` (`:16761`).
+///
+/// Indexed rather than looped, because the answer here is only *"SendInput
+/// accepted the events"* — never *"the composer is empty"*. The shipping path
+/// re-reads the composer between rounds for exactly that reason, and so must
+/// any caller: a reclaim that reports success on a queued keystroke is how a
+/// stage inherits the previous stage's text.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_select_all_then_delete(index: usize) -> bool {
+    windows::select_all_then_delete_variant(index)
+}
+
+/// Ctrl+A alone, with no delete after it. Exposed so the landing oracle can
+/// tell a select-all that did not happen from a delete that did not happen --
+/// `send_select_all_then_delete` bundles them and answers one boolean for both.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_select_all() -> bool {
+    windows::select_all_only()
+}
+
+/// One delete keystroke by index, with no select-all before it.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_delete_key(index: usize) -> bool {
+    windows::delete_key_only(index)
+}
+
 #[cfg(target_os = "windows")]
 mod windows {
     use super::*;
@@ -15431,7 +15487,7 @@ mod windows {
     /// prefix -- the measured `send_carrier_write_plateaued`. Any batch being
     /// rejected still fails the whole write, exactly as before, and the text still
     /// arrives as real keystrokes through Slate's own input pipeline.
-    fn send_unicode_chunk(units: &[u16]) -> bool {
+    pub(super) fn send_unicode_chunk(units: &[u16]) -> bool {
         units.chunks(MAX_UNICODE_UNITS_PER_SEND).all(|batch| {
             let mut inputs = Vec::with_capacity(batch.len() * 2);
             for unit in batch {
@@ -15466,7 +15522,7 @@ mod windows {
     /// single physical Enter, and the release is always attempted even when the
     /// Enter itself is rejected, so a failed carrier can never leave Shift
     /// latched on the user's desktop.
-    fn send_shift_enter() -> bool {
+    pub(super) fn send_shift_enter() -> bool {
         let shift_down =
             send_inputs(&[keyboard_input(DISCORD_SHIFT_SCAN_CODE, KEYEVENTF_SCANCODE)]);
         let newline = shift_down
@@ -16784,6 +16840,45 @@ mod windows {
             keyboard_input(delete_scan, delete_flags),
             keyboard_input(delete_scan, delete_flags | KEYEVENTF_KEYUP),
         ])
+    }
+
+    /// Ctrl+A alone: exactly the first half of `send_select_all_then_delete`,
+    /// including the guarantee that Control is released on every path.
+    pub(super) fn select_all_only() -> bool {
+        let control_down = send_inputs(&[keyboard_input(
+            DISCORD_CONTROL_SCAN_CODE,
+            KEYEVENTF_SCANCODE,
+        )]);
+        let select_all = control_down
+            && send_inputs(&[
+                keyboard_input(DISCORD_A_SCAN_CODE, KEYEVENTF_SCANCODE),
+                keyboard_input(DISCORD_A_SCAN_CODE, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP),
+            ]);
+        let control_up = send_inputs(&[keyboard_input(
+            DISCORD_CONTROL_SCAN_CODE,
+            KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP,
+        )]);
+        control_down && select_all && control_up
+    }
+
+    /// One delete keystroke alone: the second half of the same function.
+    pub(super) fn delete_key_only(index: usize) -> bool {
+        let Some((scan, flags)) = CARRIER_RECLAIM_DELETE_KEYS.get(index) else {
+            return false;
+        };
+        send_inputs(&[
+            keyboard_input(*scan, *flags),
+            keyboard_input(*scan, *flags | KEYEVENTF_KEYUP),
+        ])
+    }
+
+    /// One round of the shipping reclaim, by index. Exposed for the landing
+    /// oracle's live calibration; it contains no Enter and cannot commit.
+    pub(super) fn select_all_then_delete_variant(index: usize) -> bool {
+        let Some((scan, flags)) = CARRIER_RECLAIM_DELETE_KEYS.get(index) else {
+            return false;
+        };
+        send_select_all_then_delete(*scan, *flags)
     }
 
     /// The delete keys the reclaim tries, in order: the grey extended `Delete`
