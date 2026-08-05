@@ -25,7 +25,20 @@ function fullPoolEnv(statements: string[]): Env {
     get PAYLOADS(): never {
       throw new Error("a capacity refusal must not write or remove an R2 object");
     },
-  } as Env;
+    // ATTACHMENTS, RATE_LIMIT and RATE_LIMIT_HASH_KEY were missing outright and
+    // the trailing `as Env` hid it. Given as throwing getters they extend the
+    // claim this fixture already makes about PAYLOADS -- a capacity refusal
+    // touches no storage at all -- rather than merely satisfying the compiler.
+    get ATTACHMENTS(): never {
+      throw new Error("a capacity refusal must not touch R2 attachments");
+    },
+    get RATE_LIMIT(): never {
+      throw new Error("a capacity refusal must not touch the rate-limit KV namespace");
+    },
+    get RATE_LIMIT_HASH_KEY(): never {
+      throw new Error("a capacity refusal must not read the rate-limit hash key");
+    },
+  };
 }
 
 describe("undelivered storage floor", () => {

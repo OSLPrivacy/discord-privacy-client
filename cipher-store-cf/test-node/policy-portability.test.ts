@@ -31,11 +31,30 @@ describe("payload policy portability", () => {
     expect(isPadmeLength(1_024)).toBe(true);
     expect(isPadmeLength(1_001)).toBe(false);
 
-    for (const ttl of ["3600", "86400", "259200", "604800"]) {
-      const response = await handleUpload(uploadRequest(ttl, false), undefined as never);
+    // This loop used to run all four allowlisted TTLs through a
+    // metadata-less request and expect `bad_blob_metadata` from each. That was
+    // the pre-floor contract: commit c7eb15c42 ("T6-W7 enforce seven-day
+    // default TTL floor", Aug 2) landed DEFAULT_DELIVERY_TTL_FLOOR the day
+    // AFTER this gate was written (48425edd8, Aug 1) and did not update it, so
+    // 3600/86400/259200 now stop at `bad_ttl` in handleUpload before the
+    // metadata check is reached. Nobody saw it because this suite is the
+    // second half of `npm test` and the cipher-store lane never ran to it.
+    //
+    // The code is right and the assertion was stale. Split into the two claims
+    // handleUpload actually makes, so both are covered rather than one being
+    // asserted wrongly:
+    //   1. a default-mode-valid TTL with no metadata -> bad_blob_metadata
+    //   2. a TTL below the seven-day default floor -> bad_ttl, metadata or not
+    const missingMetadata = await handleUpload(uploadRequest("604800", false), undefined as never);
+    expect(missingMetadata.status).toBe(400);
+    await expect(missingMetadata.json()).resolves.toMatchObject({ error: "bad_blob_metadata" });
+
+    for (const belowFloor of ["3600", "86400", "259200"]) {
+      const response = await handleUpload(uploadRequest(belowFloor), undefined as never);
       expect(response.status).toBe(400);
-      await expect(response.json()).resolves.toMatchObject({ error: "bad_blob_metadata" });
+      await expect(response.json()).resolves.toMatchObject({ error: "bad_ttl" });
     }
+
     const unsupportedTtl = await handleUpload(uploadRequest("3601"), undefined as never);
     expect(unsupportedTtl.status).toBe(400);
     await expect(unsupportedTtl.json()).resolves.toMatchObject({ error: "bad_ttl" });
@@ -53,7 +72,12 @@ describe("payload policy portability", () => {
       },
       PAYLOADS: { put },
     };
-    const quotaExceeded = await handleUpload(uploadRequest("3600"), env as never);
+    // Same stale TTL as the loop above, and this one matters more: with "3600"
+    // handleUpload refused at `bad_ttl` and returned 400 long before it counted
+    // capacity, so the storage-capacity refusal -- and `put` never being called
+    // once the pool is full -- has been asserted against a request that never
+    // reached either check since the floor landed.
+    const quotaExceeded = await handleUpload(uploadRequest("604800"), env as never);
     expect(quotaExceeded.status).toBe(503);
     await expect(quotaExceeded.json()).resolves.toMatchObject({ error: "storage_capacity" });
     expect(put).not.toHaveBeenCalled();

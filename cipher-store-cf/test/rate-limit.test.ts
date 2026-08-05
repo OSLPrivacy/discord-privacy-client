@@ -11,6 +11,12 @@ function envWith(namespace: Partial<KVNamespace>): Env {
     ATTACHMENTS: {} as R2Bucket,
     RATE_LIMIT: namespace as KVNamespace,
     RATE_LIMIT_HASH_KEY: secret,
+    // PAYLOADS is a required Env binding and was missing; the rate limiter must
+    // never reach it, so a getter that throws says so instead of leaving a hole
+    // in the fixture.
+    get PAYLOADS(): never {
+      throw new Error("the rate limiter must not touch the payload bucket");
+    },
   };
 }
 

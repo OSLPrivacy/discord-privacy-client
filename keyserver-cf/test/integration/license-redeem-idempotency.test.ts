@@ -51,10 +51,22 @@ describe("POST /v1/license/redeem idempotency", () => {
       Array.from({ length: 20 }, () => redeem(plaintext)),
     );
     const first = responses[0];
+    // `noUncheckedIndexedAccess` is on, so `responses[0]` is possibly
+    // undefined. Throwing is the honest narrowing: it fails the test loudly if
+    // the twenty concurrent redemptions ever produce no first response, where
+    // an assertion-free `!` would have let the five checks below run against
+    // undefined.
+    if (first === undefined) throw new Error("twenty concurrent redemptions returned no response");
 
     expect(first).toMatchObject({ status: "ACTIVE", checksum_ok: true });
-    expect(first.redeemed_at).toBeTypeOf("number");
-    expect(first.expires_at).toBe((first.redeemed_at as number) + GRANT_SECONDS);
+    const redeemedAt = first.redeemed_at;
+    expect(redeemedAt).toBeTypeOf("number");
+    // Replaces `(first.redeemed_at as number)`. The cast asserted the very
+    // thing the line above is testing; this narrows on the real value, so the
+    // arithmetic below can never silently become `undefined + GRANT_SECONDS`
+    // (NaN), which `toBe` would have reported as an ordinary value mismatch.
+    if (typeof redeemedAt !== "number") throw new Error("redeemed_at was not a number");
+    expect(first.expires_at).toBe(redeemedAt + GRANT_SECONDS);
     expect(responses).toEqual(Array.from({ length: 20 }, () => first));
 
     const stored = await env.DB.prepare(

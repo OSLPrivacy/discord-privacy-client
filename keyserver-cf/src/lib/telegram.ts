@@ -553,6 +553,12 @@ function registerTelegramSourceTests(vitest: TelegramSourceVitest): void {
     return {
       DB: {} as D1Database,
       MAILBOX: {} as DurableObjectNamespace<import("../mail/mailbox.js").Mailbox>,
+      // Same omission as the fixture in src/endpoints/telegram.ts: ARCHIVE and
+      // ARCHIVE_PAYLOADS are required on Env and were missing here, so the
+      // `...overrides` spread left them `| undefined` and the declared `: Env`
+      // return type was a claim the body did not satisfy.
+      ARCHIVE: {} as DurableObjectNamespace<import("../archive/archive.js").Archive>,
+      ARCHIVE_PAYLOADS: {} as R2Bucket,
       RATE_LIMIT_5: {} as RateLimit,
       RATE_LIMIT_10: {} as RateLimit,
       RATE_LIMIT_120: {} as RateLimit,

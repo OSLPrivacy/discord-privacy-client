@@ -35,7 +35,13 @@ export async function handleSpaceEventPost(request: Request, env: Env): Promise<
   const recipientTag = decode(body.recipient_tag);
   const ciphertext = decode(body.ciphertext);
   const expiresAt = body.expires_at;
-  if (!recipientTag || recipientTag.length !== TAG_BYTES || !ciphertext || ciphertext.length === 0 || ciphertext.length > MAX_CIPHERTEXT_BYTES || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() / 1000) {
+  // `typeof expiresAt !== "number"` is the narrowing half of the check
+  // `Number.isSafeInteger` already performed at runtime -- that predicate is
+  // typed `(value: unknown) => boolean`, not a type guard, so it rejected a
+  // string at runtime while leaving `expiresAt` `unknown` to the compiler and
+  // the `<=` comparison below unchecked. Both clauses are kept: neither is
+  // redundant to the reader, and the accept/reject set is unchanged.
+  if (!recipientTag || recipientTag.length !== TAG_BYTES || !ciphertext || ciphertext.length === 0 || ciphertext.length > MAX_CIPHERTEXT_BYTES || typeof expiresAt !== "number" || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() / 1000) {
     return badRequest("invalid opaque Space event envelope");
   }
   try {
