@@ -200,10 +200,40 @@ fn report(stage: &str, verdict: &Result<super::LandingProof, LandingRefusal>) {
     }
 }
 
-fn clear(stage: &str) {
+/// Record a stage's outcome instead of panicking on it. The ladder must always
+/// reach its restore step: a mid-run panic would leave a carrier in a real
+/// person's composer and lose the draft that was there before.
+fn record(
+    outcomes: &mut Vec<(&'static str, String)>,
+    stage: &'static str,
+    expected: &str,
+    verdict: &Result<super::LandingProof, LandingRefusal>,
+) {
+    let got = match verdict {
+        Ok(_) => "LANDED".to_owned(),
+        Err(refusal) => refusal.name().to_owned(),
+    };
+    if got != expected {
+        eprintln!("oracle: {stage}: EXPECTED {expected}, GOT {got}");
+    }
+    outcomes.push((stage, format!("{expected}|{got}")));
+}
+
+/// Clear the composer the way the shipping reclaim does — behind the same
+/// focus proof as every other injection.
+///
+/// `SendInput` is global. A Ctrl+A followed by a Delete sent at whatever
+/// happens to have focus is a destructive action in someone else's window, so
+/// this refuses rather than assuming focus survived the last stage.
+fn clear(stage: &str, acquired: &Uia2Acquired, composer: &Uia2Editable) -> bool {
+    if !focus_reaches_the_composer(acquired, composer) {
+        eprintln!("oracle: {stage}: reclaim REFUSED -- no focus proof; nothing was typed");
+        return false;
+    }
     let cleared = crate::native_discord_adapter::shipping_clear_composer();
     eprintln!("oracle: {stage}: composer reclaimed (Ctrl+A, Delete) -> {cleared}");
     std::thread::sleep(std::time::Duration::from_millis(300));
+    cleared
 }
 
 /// Read-only reconnaissance: bind, report every channel's answer, write
@@ -224,8 +254,10 @@ fn report_what_the_landing_oracle_can_see() {
     eprintln!("oracle: window identity = {identity:?}");
     let uia = judge.rendered_document_uia(&bound, profile.walk, profile.leaf_join, deadline);
     eprintln!("oracle: J1 rendered document (UIA)  = {uia:?}");
+    let text_pattern = judge.rendered_document_text_pattern(&bound, profile.walk, deadline);
+    eprintln!("oracle: J2 rendered document (TextPattern) = {text_pattern:?}");
     let msaa = judge.rendered_document_msaa(&bound, profile.walk, profile.leaf_join, deadline);
-    eprintln!("oracle: J2 rendered document (MSAA) = {msaa:?}");
+    eprintln!("oracle: J2b rendered document (MSAA) = {msaa:?}");
     let ink = judge.composer_ink(&bound, deadline);
     eprintln!("oracle: J3 composer ink            = {ink:?}");
     let value = judge.disowned_value_property(&bound, deadline);
@@ -261,6 +293,8 @@ fn calibrate_the_landing_oracle() {
         profile.commit_key,
     );
 
+    let mut outcomes: Vec<(&'static str, String)> = Vec::new();
+
     // --- stage 0: the owner's own draft, recorded before anything is typed --
     //
     // This is a live conversation. Whatever is already in the composer belongs
@@ -283,7 +317,7 @@ fn calibrate_the_landing_oracle() {
     );
 
     // --- stage 1: the ink baseline, taken while the composer is empty -------
-    clear("stage 1");
+    clear("stage 1", &acquired, &composer);
     let deadline = JudgeDeadline::from_profile(&profile);
     let empty_ink = judge
         .composer_ink(&bound, deadline)
@@ -299,11 +333,7 @@ fn calibrate_the_landing_oracle() {
     // --- stage 2: REFUSAL — nothing placed ----------------------------------
     let verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
     report("stage 2 (REFUSAL: nothing placed)", &verdict);
-    assert_eq!(
-        verdict.as_ref().err().map(LandingRefusal::name),
-        Some("NothingPlaced"),
-        "an empty composer must be refused by name"
-    );
+    record(&mut outcomes, "an empty composer must be refused by name", "NothingPlaced", &verdict);
 
     // --- stage 3: place by the SHIPPING write channel, and confirm ----------
     assert!(
@@ -315,8 +345,10 @@ fn calibrate_the_landing_oracle() {
     settle(&profile);
     let verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
     report("stage 3 (LANDED)", &verdict);
-    let landed = verdict.expect("the shipping write channel must produce a landing the oracle sees");
-    assert_eq!(landed.document, carrier);
+    record(&mut outcomes, "stage 3 the shipping write channel lands", "LANDED", &verdict);
+    if let Ok(landed) = &verdict {
+        assert_eq!(landed.document, carrier);
+    }
 
     let hold_ms = std::env::var("OSL_ORACLE_HOLD_MS")
         .ok()
@@ -329,14 +361,10 @@ fn calibrate_the_landing_oracle() {
     }
 
     // --- stage 4: clear, and confirm it is gone ------------------------------
-    clear("stage 4");
+    clear("stage 4", &acquired, &composer);
     let verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
     report("stage 4 (cleared)", &verdict);
-    assert_eq!(
-        verdict.as_ref().err().map(LandingRefusal::name),
-        Some("NothingPlaced"),
-        "a cleared composer must be refused by name"
-    );
+    record(&mut outcomes, "a cleared composer must be refused by name", "NothingPlaced", &verdict);
 
     // --- stage 5: REFUSAL — a truncated carrier -----------------------------
     let cut = carrier
@@ -351,12 +379,8 @@ fn calibrate_the_landing_oracle() {
     settle(&profile);
     let verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
     report("stage 5 (REFUSAL: truncated)", &verdict);
-    assert_eq!(
-        verdict.as_ref().err().map(LandingRefusal::name),
-        Some("Truncated"),
-        "a dropped chunk must be refused by name"
-    );
-    clear("stage 5");
+    record(&mut outcomes, "a dropped chunk must be refused by name", "Truncated", &verdict);
+    clear("stage 5", &acquired, &composer);
 
     // --- stage 6: REFUSAL — a carrier the composer re-wrapped ---------------
     // Typed exactly as the shipping path types a `\n`: Shift+Enter, which Slate
@@ -370,12 +394,8 @@ fn calibrate_the_landing_oracle() {
     settle(&profile);
     let verdict = judge_landing(&judge, &profile, &bound, &wrapped_expectation, baseline, &[]);
     report("stage 6 (REFUSAL: re-wrapped)", &verdict);
-    assert_eq!(
-        verdict.as_ref().err().map(LandingRefusal::name),
-        Some("Rewrapped"),
-        "a document the composer re-encoded must be refused by name"
-    );
-    clear("stage 6");
+    record(&mut outcomes, "a document the composer re-encoded must be refused by name", "Rewrapped", &verdict);
+    clear("stage 6", &acquired, &composer);
 
     // --- stage 7: REFUSAL — the wrong window --------------------------------
     // Place in the bound instance, then ask the oracle about the OTHER one.
@@ -404,27 +424,32 @@ fn calibrate_the_landing_oracle() {
                 std::slice::from_ref(&bound),
             );
             report("stage 7 (REFUSAL: wrong window)", &verdict);
-            assert_eq!(
-                verdict.as_ref().err().map(LandingRefusal::name),
-                Some("WrongWindow"),
-                "a carrier that landed in another window must be refused by name"
-            );
+            record(&mut outcomes, "a carrier that landed in another window must be refused by name", "WrongWindow", &verdict);
         }
         None => {
-            // The second instance is not on this host. The other half of the
-            // same refusal is still live: judge the bound window against the
-            // SHIPPING profile, whose process name is the constant `Discord`.
-            eprintln!("oracle: stage 7: {other} not bindable; using the shipping profile instead");
-            let verdict = judge_landing(&judge, &DISCORD, &bound, &carrier, baseline, &[]);
-            report("stage 7 (REFUSAL: wrong window, by process identity)", &verdict);
-            assert_eq!(
-                verdict.as_ref().err().map(LandingRefusal::name),
-                Some("WrongWindow"),
-                "a bound window of the wrong process must be refused by name"
+            // The second instance is not usable on this host (it is at a login
+            // screen), so the carrier cannot be made to land in it. The other
+            // half of the same refusal is still fully live: ask the oracle
+            // whether the carrier landed in `other`'s composer while it is
+            // bound to `target`'s window. It reads the image name off the real
+            // HWND and refuses. This is D-211's shape -- `same_process_name`
+            // strips only `.exe`, so `DiscordPTB` never equals `Discord`.
+            eprintln!(
+                "oracle: stage 7: {other} is not bindable on this host; asking the oracle about \
+                 {other} while bound to {target}"
+            );
+            let expecting_other = calibration_profile(other);
+            let verdict = judge_landing(&judge, &expecting_other, &bound, &carrier, baseline, &[]);
+            report("stage 7 (REFUSAL: wrong window, by live process identity)", &verdict);
+            record(
+                &mut outcomes,
+                "stage 7 wrong window",
+                "WrongWindow",
+                &verdict,
             );
         }
     }
-    clear("stage 7");
+    clear("stage 7", &acquired, &composer);
 
     // --- stage 8: REFUSAL — D-205, reproduced --------------------------------
     // Write through `ValuePattern::SetValue`, the substrate's doctrine, and
@@ -445,7 +470,7 @@ fn calibrate_the_landing_oracle() {
     );
     let verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
     report("stage 8 (REFUSAL: D-205 reproduced)", &verdict);
-    clear("stage 8");
+    clear("stage 8", &acquired, &composer);
 
     // --- the composer must be empty, and nothing must have been sent --------
     let final_verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
@@ -470,4 +495,17 @@ fn calibrate_the_landing_oracle() {
     }
 
     eprintln!("oracle: no Enter was sent at any point -- send_enter is not reachable from this file");
+
+    eprintln!("oracle: ===== tally (stage: expected|got) =====");
+    for (stage, result) in &outcomes {
+        eprintln!("oracle:   {stage}: {result}");
+    }
+    let wrong: Vec<_> = outcomes
+        .iter()
+        .filter(|(_, result)| {
+            let (expected, got) = result.split_once('|').unwrap_or(("", ""));
+            expected != got
+        })
+        .collect();
+    assert!(wrong.is_empty(), "stages that did not answer as required: {wrong:?}");
 }
