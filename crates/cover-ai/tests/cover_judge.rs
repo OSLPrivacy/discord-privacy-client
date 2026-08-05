@@ -325,40 +325,280 @@ impl LegacyReader {
 /// content back into the alphabet.
 const CLOSED_CLASS: &[&str] = &[
     // determiners and quantifiers
-    "a", "an", "the", "this", "that", "these", "those", "my", "your", "his", "her", "its", "our",
-    "their", "some", "any", "every", "no", "each", "another", "all", "both", "much", "many",
-    "more", "most", "few", "fewer", "less", "least", "such", "own", "same", "other", "either",
-    "neither", "enough",
+    "a",
+    "an",
+    "the",
+    "this",
+    "that",
+    "these",
+    "those",
+    "my",
+    "your",
+    "his",
+    "her",
+    "its",
+    "our",
+    "their",
+    "some",
+    "any",
+    "every",
+    "no",
+    "each",
+    "another",
+    "all",
+    "both",
+    "much",
+    "many",
+    "more",
+    "most",
+    "few",
+    "fewer",
+    "less",
+    "least",
+    "such",
+    "own",
+    "same",
+    "other",
+    "either",
+    "neither",
+    "enough",
     // pronouns
-    "i", "you", "he", "she", "it", "we", "they", "me", "him", "us", "them", "who", "whom", "whose",
-    "someone", "something", "anyone", "anything", "everyone", "everything", "nothing", "nobody",
-    "myself", "yourself", "himself", "herself", "itself", "ourselves", "themselves", "there",
-    "here", "mine", "yours", "hers", "ours", "theirs", "one",
+    "i",
+    "you",
+    "he",
+    "she",
+    "it",
+    "we",
+    "they",
+    "me",
+    "him",
+    "us",
+    "them",
+    "who",
+    "whom",
+    "whose",
+    "someone",
+    "something",
+    "anyone",
+    "anything",
+    "everyone",
+    "everything",
+    "nothing",
+    "nobody",
+    "myself",
+    "yourself",
+    "himself",
+    "herself",
+    "itself",
+    "ourselves",
+    "themselves",
+    "there",
+    "here",
+    "mine",
+    "yours",
+    "hers",
+    "ours",
+    "theirs",
+    "one",
     // prepositions and particles
-    "of", "in", "on", "at", "to", "for", "with", "from", "by", "about", "into", "onto", "over",
-    "under", "after", "before", "between", "through", "during", "without", "against", "across",
-    "around", "behind", "beside", "near", "since", "until", "till", "upon", "within", "among",
-    "along", "toward", "towards", "off", "out", "up", "down", "back", "away", "again", "together",
-    "per", "via", "like",
+    "of",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "with",
+    "from",
+    "by",
+    "about",
+    "into",
+    "onto",
+    "over",
+    "under",
+    "after",
+    "before",
+    "between",
+    "through",
+    "during",
+    "without",
+    "against",
+    "across",
+    "around",
+    "behind",
+    "beside",
+    "near",
+    "since",
+    "until",
+    "till",
+    "upon",
+    "within",
+    "among",
+    "along",
+    "toward",
+    "towards",
+    "off",
+    "out",
+    "up",
+    "down",
+    "back",
+    "away",
+    "again",
+    "together",
+    "per",
+    "via",
+    "like",
     // auxiliaries and modals
-    "am", "is", "are", "was", "were", "be", "been", "being", "do", "does", "did", "done", "have",
-    "has", "had", "having", "will", "would", "can", "could", "should", "shall", "may", "might",
-    "must", "ought", "gonna", "gotta", "wanna",
+    "am",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "do",
+    "does",
+    "did",
+    "done",
+    "have",
+    "has",
+    "had",
+    "having",
+    "will",
+    "would",
+    "can",
+    "could",
+    "should",
+    "shall",
+    "may",
+    "might",
+    "must",
+    "ought",
+    "gonna",
+    "gotta",
+    "wanna",
     // conjunctions and complementisers
-    "and", "or", "but", "so", "because", "if", "when", "while", "although", "though", "unless",
-    "whether", "than", "as", "nor", "yet", "once", "whenever", "wherever", "however",
+    "and",
+    "or",
+    "but",
+    "so",
+    "because",
+    "if",
+    "when",
+    "while",
+    "although",
+    "though",
+    "unless",
+    "whether",
+    "than",
+    "as",
+    "nor",
+    "yet",
+    "once",
+    "whenever",
+    "wherever",
+    "however",
     // negation, wh-words, degree
-    "not", "never", "how", "why", "where", "what", "which", "too", "very", "just", "only", "also",
-    "still", "already", "even", "quite", "rather", "almost", "always", "sometimes", "often",
+    "not",
+    "never",
+    "how",
+    "why",
+    "where",
+    "what",
+    "which",
+    "too",
+    "very",
+    "just",
+    "only",
+    "also",
+    "still",
+    "already",
+    "even",
+    "quite",
+    "rather",
+    "almost",
+    "always",
+    "sometimes",
+    "often",
     // contractions, apostrophised and not
-    "i'm", "im", "it's", "that's", "thats", "you're", "youre", "we're", "they're", "theyre",
-    "i've", "ive", "you've", "youve", "we've", "weve", "they've", "theyve", "can't", "cant",
-    "don't", "dont", "doesn't", "doesnt", "didn't", "didnt", "won't", "wont", "isn't", "isnt",
-    "aren't", "arent", "wasn't", "wasnt", "weren't", "werent", "haven't", "havent", "hasn't",
-    "hasnt", "hadn't", "hadnt", "shouldn't", "shouldnt", "wouldn't", "wouldnt", "couldn't",
-    "couldnt", "i'll", "you'll", "youll", "he'll", "she'll", "we'll", "they'll", "theyll", "i'd",
-    "you'd", "youd", "he'd", "she'd", "we'd", "they'd", "theyd", "he's", "hes", "she's", "shes",
-    "there's", "theres", "what's", "whats", "let's", "lets", "who's", "whos", "ain't", "aint",
+    "i'm",
+    "im",
+    "it's",
+    "that's",
+    "thats",
+    "you're",
+    "youre",
+    "we're",
+    "they're",
+    "theyre",
+    "i've",
+    "ive",
+    "you've",
+    "youve",
+    "we've",
+    "weve",
+    "they've",
+    "theyve",
+    "can't",
+    "cant",
+    "don't",
+    "dont",
+    "doesn't",
+    "doesnt",
+    "didn't",
+    "didnt",
+    "won't",
+    "wont",
+    "isn't",
+    "isnt",
+    "aren't",
+    "arent",
+    "wasn't",
+    "wasnt",
+    "weren't",
+    "werent",
+    "haven't",
+    "havent",
+    "hasn't",
+    "hasnt",
+    "hadn't",
+    "hadnt",
+    "shouldn't",
+    "shouldnt",
+    "wouldn't",
+    "wouldnt",
+    "couldn't",
+    "couldnt",
+    "i'll",
+    "you'll",
+    "youll",
+    "he'll",
+    "she'll",
+    "we'll",
+    "they'll",
+    "theyll",
+    "i'd",
+    "you'd",
+    "youd",
+    "he'd",
+    "she'd",
+    "we'd",
+    "they'd",
+    "theyd",
+    "he's",
+    "hes",
+    "she's",
+    "shes",
+    "there's",
+    "theres",
+    "what's",
+    "whats",
+    "let's",
+    "lets",
+    "who's",
+    "whos",
+    "ain't",
+    "aint",
 ];
 
 /// Every word outside `CLOSED_CLASS` maps here. This symbol is why a word the
@@ -499,7 +739,9 @@ impl FrameJudge {
                     .unwrap_or(0),
             ) / context
         };
-        TRIGRAM_WEIGHTS[0] * conditional + TRIGRAM_WEIGHTS[1] * bigram + TRIGRAM_WEIGHTS[2] * unigram
+        TRIGRAM_WEIGHTS[0] * conditional
+            + TRIGRAM_WEIGHTS[1] * bigram
+            + TRIGRAM_WEIGHTS[2] * unigram
     }
 
     /// **REJECTED SCORER — kept as evidence, never asserted on.**
@@ -571,7 +813,8 @@ impl FrameJudge {
         match order {
             Order::Bigram => {
                 for pair in symbols.windows(2) {
-                    total += self.bigram_prob(pair[0], pair[1]).ln() - self.unigram_prob(pair[1]).ln();
+                    total +=
+                        self.bigram_prob(pair[0], pair[1]).ln() - self.unigram_prob(pair[1]).ln();
                     counted += 1;
                 }
             }
@@ -763,7 +1006,13 @@ fn forced_choice(judge: &dyn Judge, suspects: &[String], reference: &[&str]) -> 
 }
 
 /// Runs one suspect set through all three judges and prints the block.
-fn report(label: &str, legacy: &LegacyReader, frames: &FrameJudge, suspects: &[String], reference: &[&str]) -> Vec<Row> {
+fn report(
+    label: &str,
+    legacy: &LegacyReader,
+    frames: &FrameJudge,
+    suspects: &[String],
+    reference: &[&str],
+) -> Vec<Row> {
     let words: usize = suspects.iter().map(|text| normalise(text).len()).sum();
     let mean_words = words as f64 / suspects.len().max(1) as f64;
     let unknown: f64 = suspects
@@ -848,7 +1097,6 @@ fn interleaved(lines: &[&'static str]) -> (Vec<&'static str>, Vec<&'static str>)
         lines.iter().skip(1).step_by(2).copied().collect(),
     )
 }
-
 
 // ==========================================================================
 // The bench: what is trained on what, and what is deliberately never trained on
@@ -989,8 +1237,11 @@ fn bench() -> Bench {
     // The legacy reader keeps its ORIGINAL training split -- the first 400 lines
     // of the project corpus, contiguous -- because reproducing D-161's published
     // numbers is the point of keeping it.
-    let legacy_training: Vec<&'static str> =
-        project_chat.iter().take(READER_TRAINING_LINES).copied().collect();
+    let legacy_training: Vec<&'static str> = project_chat
+        .iter()
+        .take(READER_TRAINING_LINES)
+        .copied()
+        .collect();
 
     // Pool both held-out provenances, permute so neither reference stream is a
     // run of one of them, then split by parity. Both halves carry the same
@@ -1041,7 +1292,11 @@ fn control_1_the_judge_is_unbiased_within_its_own_corpus() {
     println!("  THIS IS A BIAS GATE, NOT A VALIDITY GATE. See D-215.");
 
     let suspects = suspects_from(&bench.reference, trials(), CONTROL_WORDS);
-    let rows = bench.report("held-out training-provenance vs held-out training-provenance", &suspects, &bench.reference_b);
+    let rows = bench.report(
+        "held-out training-provenance vs held-out training-provenance",
+        &suspects,
+        &bench.reference_b,
+    );
 
     for (index, label) in GATED {
         assert!(
@@ -1051,7 +1306,6 @@ fn control_1_the_judge_is_unbiased_within_its_own_corpus() {
         );
     }
 }
-
 
 // ==========================================================================
 // CONTROL 2 - THE ONE THAT MATTERS. Different provenance, still human.
@@ -1159,7 +1413,10 @@ fn control_2_the_judge_does_not_flag_human_text_of_another_provenance() {
     println!("  Each corpus in turn is EXCLUDED from training and used as the control;");
     println!("  the judge is trained on the other two. |rate-0.500| is the defect,");
     println!("  whichever way it points -- 0.000 is as broken as 1.000.");
-    println!("  length-matched to {CONTROL_WORDS} words, {} trials per row.", trials());
+    println!(
+        "  length-matched to {CONTROL_WORDS} words, {} trials per row.",
+        trials()
+    );
 
     // Worst |rate - 0.5| each scorer reaches across the three configurations.
     let mut worst = [0.0f64; 6];
@@ -1221,7 +1478,8 @@ fn control_2_the_judge_does_not_flag_human_text_of_another_provenance() {
     // This is what makes the empty `QUOTABLE` list a claim rather than an absence.
     let certified: Vec<usize> = QUOTABLE.to_vec();
     assert_eq!(
-        passing, certified,
+        passing,
+        certified,
         "D-215: the certified-quotable list and the measurement disagree.\n  \
          measured as passing: {:?}\n  recorded as quotable: {:?}\n  \
          If a scorer now passes, record it in QUOTABLE deliberately -- and check \
@@ -1238,7 +1496,10 @@ fn control_2_the_judge_does_not_flag_human_text_of_another_provenance() {
     );
     println!(
         "\n  CERTIFIED QUOTABLE: {:?} -- D-215 stands.",
-        certified.iter().map(|index| JUDGE_NAMES[*index]).collect::<Vec<_>>()
+        certified
+            .iter()
+            .map(|index| JUDGE_NAMES[*index])
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1266,19 +1527,33 @@ fn the_control_is_passable_only_above_a_training_scale() {
     let reference = permuted(&pool, 0xd215_5911_7c0d_e001);
 
     println!("\n======= WHY THE POOL: control rate against training scale =======");
-    println!("  suspect = the third-provenance control corpus. reference = held-out training text.");
+    println!(
+        "  suspect = the third-provenance control corpus. reference = held-out training text."
+    );
     println!("  'seen' = share of the control corpus's frame bigrams the judge has ever read.");
-    println!("  {:>28}  {:>6}  {:>9}  {:>9}", "training set", "lines", "seen", "rate(PMI2)");
+    println!(
+        "  {:>28}  {:>6}  {:>9}  {:>9}",
+        "training set", "lines", "seen", "rate(PMI2)"
+    );
 
     let mut pooled = project_train.clone();
     pooled.extend_from_slice(&external_train);
     let suspects = suspects_from(&control, trials(), CONTROL_WORDS);
 
     for (label, lines) in [
-        ("project corpus only (D-161)", project_train.iter().take(400).copied().collect::<Vec<_>>()),
+        (
+            "project corpus only (D-161)",
+            project_train.iter().take(400).copied().collect::<Vec<_>>(),
+        ),
         ("project corpus, all", project_train.clone()),
-        ("pooled, 1/4", pooled.iter().step_by(4).copied().collect::<Vec<_>>()),
-        ("pooled, 1/2", pooled.iter().step_by(2).copied().collect::<Vec<_>>()),
+        (
+            "pooled, 1/4",
+            pooled.iter().step_by(4).copied().collect::<Vec<_>>(),
+        ),
+        (
+            "pooled, 1/2",
+            pooled.iter().step_by(2).copied().collect::<Vec<_>>(),
+        ),
         ("pooled, all (the judge)", pooled.clone()),
     ] {
         let judge = FrameJudge::train(&lines);
@@ -1404,7 +1679,10 @@ fn control_3_the_judge_flags_word_salad() {
 fn the_three_rows_remeasured() {
     let bench = bench();
     println!("\n==================== THE ROWS, RE-MEASURED ====================");
-    println!("  *** NOT QUOTABLE. QUOTABLE is {:?} -- see Control 2. ***", QUOTABLE);
+    println!(
+        "  *** NOT QUOTABLE. QUOTABLE is {:?} -- see Control 2. ***",
+        QUOTABLE
+    );
     println!("  Every rate below comes from a scorer that Control 2 classifies as a provenance");
     println!("  detector. These rows are DIRECTIONAL EVIDENCE about where the difference lies,");
     println!("  not measurements of how often a person would look twice. Row 1b is the only one");
@@ -1417,7 +1695,10 @@ fn the_three_rows_remeasured() {
         "  reference: {} held-out human lines of those provenances",
         bench.reference.len()
     );
-    println!("  length-matched, {} trials per row, payload seed 0x0517d161c0defa11", trials());
+    println!(
+        "  length-matched, {} trials per row, payload seed 0x0517d161c0defa11",
+        trials()
+    );
 
     let mut payloads = Payloads(0x0517_d161_c0de_fa11);
     let word_table: Vec<String> = (0..trials()).map(|_| payloads.next_cover()).collect();
@@ -1450,7 +1731,10 @@ fn the_three_rows_remeasured() {
                 .map(str::to_owned)
                 .collect();
             covers.truncate(trials());
-            println!("\n    ({} model-written covers read from OSL_COVER_DUMP)", covers.len());
+            println!(
+                "\n    ({} model-written covers read from OSL_COVER_DUMP)",
+                covers.len()
+            );
             bench.report(
                 "ROW 2 -- B0-06 arithmetic-coded MODEL covers (feat/b006-arithmetic-cover)",
                 &covers,
