@@ -2,7 +2,12 @@
 // in `dispatch`, i.e. ahead of every gate the router applies before a caller may
 // send. These tests hold each of the three bypasses shut, and hold the lane's
 // actual behaviour (enqueue, then a consuming drain) unchanged by the move.
-import { SELF } from "cloudflare:test";
+//
+// D-273 later changed HOW the drain consumes -- it leases rather than deletes,
+// and `POST /v1/space-events/ack` is what destroys a row. Nothing about the
+// ingress ordering these tests hold changed, and no assertion here was
+// relaxed for it; see d273-space-event-ack.test.ts.
+import { SELF, env } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import worker from "../../src/index.js";
 import type { Env } from "../../src/env.js";
@@ -21,8 +26,8 @@ function rateLimitBinding(success: boolean) {
 
 /**
  * A worker env whose limiters answer as instructed and whose DB throws if it is
- * touched at all. `prepare` is the instrument for "did a row get read or
- * deleted": the drain's only database access goes through it.
+ * touched at all. `prepare` is the instrument for "did a row get read, leased
+ * or deleted": the drain's only database access goes through it.
  */
 function envWith(args: { publicGetAllowed: boolean; mutationAllowed: boolean }) {
   const allow = rateLimitBinding(true);
@@ -124,7 +129,10 @@ describe("D-260 /v1/space-events sits behind the ingress gates", () => {
     expect(prepare).not.toHaveBeenCalled();
   });
 
-  it("refuses the DESTRUCTIVE drain on the public-GET bucket, deleting nothing", async () => {
+  // D-273 renamed this spec only: the drain no longer deletes, it leases. Every
+  // assertion below is unchanged, and the property is the same one -- a
+  // throttled drain must not reach the queue at all. A lease is still a write.
+  it("refuses the drain on the public-GET bucket, touching the queue not at all", async () => {
     const { env, publicGetLimit, mutationLimit, prepare } = envWith({
       publicGetAllowed: false,
       mutationAllowed: true,
@@ -146,7 +154,8 @@ describe("D-260 /v1/space-events sits behind the ingress gates", () => {
       key: "public-get-ingress:203.0.113.91",
     });
     expect(mutationLimit).not.toHaveBeenCalled();
-    // The whole point: `handleSpaceEventDrain` DELETEs every row it returns.
+    // The whole point: `handleSpaceEventDrain` both reads and writes the queue
+    // (D-273: it leases every row it returns; before that it DELETEd them).
     // A throttled drain must not have reached the queue at all.
     expect(prepare).not.toHaveBeenCalled();
   });
@@ -167,11 +176,28 @@ describe("D-260 /v1/space-events sits behind the ingress gates", () => {
     expect(post.status).toBe(202);
     expect(await post.json()).toEqual({ accepted: true });
 
+    // D-273 added `event_id` to each event: the acknowledgement half of D15
+    // has to name what it is acknowledging. The assertion is not relaxed for
+    // it -- `toEqual` still pins the response exactly, and the id is pinned to
+    // the actual `space_event_queue` row id read out of D1 rather than waved
+    // through with `expect.any(String)`.
+    const queued = await (env as unknown as { DB: D1Database }).DB.prepare(
+      "SELECT id FROM space_event_queue WHERE recipient_tag = ?",
+    )
+      .bind(Uint8Array.from(atob(tag), (c) => c.charCodeAt(0)))
+      .first<{ id: Uint8Array }>();
+    const expectedEventId = Array.from(queued!.id, (b) =>
+      b.toString(16).padStart(2, "0"),
+    ).join("");
+    expect(expectedEventId).toHaveLength(32);
+
     const drain = await SELF.fetch(
       `http://test/v1/space-events/${encodeURIComponent(tag)}`,
     );
     expect(drain.status).toBe(200);
-    expect(await drain.json()).toEqual({ events: [{ ciphertext }] });
+    expect(await drain.json()).toEqual({
+      events: [{ event_id: expectedEventId, ciphertext }],
+    });
 
     // The drain consumes: a second call returns nothing.
     const again = await SELF.fetch(
