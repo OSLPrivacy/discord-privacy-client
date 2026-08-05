@@ -1250,19 +1250,298 @@ mod tests {
         assert_zeroize_on_drop::<SessionKey>();
     }
 
+    // ---------------------------------------------------------------------
+    // D-277. The zeroization census used to be
+    // `assert_eq!(source.matches("#[zeroize(skip)]").count(), 1)` plus a
+    // `contains` demanding the exemption's exact text stay present. Both fire
+    // when an exemption is REMOVED -- measured: deriving `Zeroize,
+    // ZeroizeOnDrop` on `SessionContextOnDisk` and dropping the attribute (a
+    // strictly safer state, and one that compiles) failed it `left: 0, right:
+    // 1`. A guard over secret-zeroization that resists being tightened is
+    // pointed the wrong way, and counting spellings never was the property
+    // anyway: it cannot tell "one reviewed opt-out" from "the opt-out is over
+    // a secret".
+    //
+    // What is graded below is the property: NO FIELD CARRYING SECRET MATERIAL
+    // IS EXEMPT FROM ZEROIZATION. Exemptions are graded, never counted, so
+    // removing one is always accepted and adding one is accepted only against
+    // a reviewed inventory of what the exempted type holds.
+
+    /// Field inventories, in declaration order, of the types a `zeroize(skip)`
+    /// is permitted to exempt -- each with the review that says why it carries
+    /// no secret material.
+    ///
+    /// Keyed by SHAPE, not by type name. A rename does not change what a type
+    /// holds, so a rename must not fire this census; a field appearing,
+    /// disappearing, or changing type must.
+    ///
+    /// Read at source before this entry was written (D-277), against
+    /// `SessionContext` at :299 and the `From`/`TryFrom` conversions at
+    /// :1035 and :1103:
+    ///
+    ///   * the four `*_ik_*_pub_b64` fields are base64 of the X25519 and
+    ///     ML-KEM identity **public** keys -- `SessionContext` holds them as
+    ///     `x25519::PublicKey` and the ML-KEM public encapsulation key, and
+    ///     both are what the peer is given;
+    ///   * `conversation_id_b64` is base64 of `SessionContext::conversation_id`,
+    ///     whose only use is `canonical_ad` -- it rides as ASSOCIATED DATA, so
+    ///     it is authenticated and never confidential, and both parties must
+    ///     already hold it to decrypt at all;
+    ///   * `session_version` is a `u32` that likewise appears only in the AD.
+    ///
+    /// Every secret in the persisted ratchet is elsewhere and inside the
+    /// derive: the root key, the DH secret, the chain keys, the header keys,
+    /// and each cached `SkippedKeyOnDisk`.
+    const REVIEWED_NON_SECRET_SHAPES: &[(&str, &[(&str, &str)])] = &[(
+        "public session context: four identity PUBLIC keys, plus the \
+         conversation id and session version that ride in the associated data",
+        &[
+            ("local_ik_x25519_pub_b64", "String"),
+            ("local_ik_mlkem_pub_b64", "String"),
+            ("peer_ik_x25519_pub_b64", "String"),
+            ("peer_ik_mlkem_pub_b64", "String"),
+            ("conversation_id_b64", "String"),
+            ("session_version", "u32"),
+        ],
+    )];
+
+    /// The half of a source file that SHIPS.
+    ///
+    /// Everything from the test-module marker down is `mod tests` -- which is
+    /// where the reviewed inventory above and the synthetic fixtures below are
+    /// written. A checker that reads the text declaring what it checks always
+    /// finds what it is looking for (D-285), so the census is never shown its
+    /// own declaration.
+    fn shipping_half(source: &str) -> &str {
+        match source.find(concat!("#", "[cfg(test)]")) {
+            Some(cut) => &source[..cut],
+            None => source,
+        }
+    }
+
+    /// `pub name: Type,` -> `("name", "Type")`. Visibility is not required.
+    fn parse_field(line: &str) -> Option<(String, String)> {
+        let line = line.trim();
+        let line = line.strip_prefix("pub ").unwrap_or(line);
+        let (name, rest) = line.split_once(':')?;
+        let name = name.trim();
+        let ty = rest.trim().trim_end_matches(',').trim();
+        if name.is_empty() || ty.is_empty() || name.contains(char::is_whitespace) {
+            return None;
+        }
+        Some((name.to_owned(), ty.to_owned()))
+    }
+
+    /// `(field, type)` for every zeroize exemption in `source`.
+    ///
+    /// Deliberately strict: an exemption whose field cannot be parsed is
+    /// reported as an error rather than passed over, because a census that
+    /// silently ignores what it cannot read grades nothing.
+    fn zeroize_exemptions(source: &str) -> Vec<std::result::Result<(String, String), String>> {
+        let attribute = concat!("#", "[zeroize(skip)]");
+        source
+            .match_indices(attribute)
+            .map(|(at, _)| {
+                let tail = &source[at + attribute.len()..];
+                tail.lines()
+                    .map(str::trim)
+                    .find(|line| {
+                        !line.is_empty() && !line.starts_with('#') && !line.starts_with("//")
+                    })
+                    .and_then(parse_field)
+                    .ok_or_else(|| {
+                        format!("cannot parse the field the exemption at byte {at} sits on")
+                    })
+            })
+            .collect()
+    }
+
+    /// Field inventory of `pub struct <name> { .. }` as declared in `source`.
+    fn struct_fields(source: &str, name: &str) -> Option<Vec<(String, String)>> {
+        let header = format!("pub struct {name} {{");
+        let start = source.find(&header)? + header.len();
+        let end = start + source[start..].find("\n}")?;
+        let mut fields = Vec::new();
+        for line in source[start..end].lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+                continue;
+            }
+            fields.push(parse_field(line)?);
+        }
+        Some(fields)
+    }
+
+    /// Grade every zeroization exemption in `sources` (file name -> shipping
+    /// source) against the reviewed inventories. Returns how many were graded.
+    ///
+    /// There is no lower bound anywhere in here. Removing an exemption leaves
+    /// nothing to grade and is accepted, which is the direction the old census
+    /// fired on.
+    fn zeroization_census(sources: &[(String, String)]) -> std::result::Result<usize, String> {
+        let mut graded = 0usize;
+        for (file, source) in sources {
+            for exemption in zeroize_exemptions(source) {
+                let (field, ty) = exemption.map_err(|why| format!("{file}: {why}"))?;
+                let fields = sources
+                    .iter()
+                    .find_map(|(_, other)| struct_fields(other, &ty))
+                    .ok_or_else(|| {
+                        format!(
+                            "{file}: `{field}` is exempt from zeroization, but its type `{ty}` is \
+                             not a struct declared in these sources, so what it holds cannot be \
+                             reviewed"
+                        )
+                    })?;
+                let reviewed = REVIEWED_NON_SECRET_SHAPES.iter().any(|(_, shape)| {
+                    shape.len() == fields.len()
+                        && shape
+                            .iter()
+                            .zip(fields.iter())
+                            .all(|((name, ty), (field, field_ty))| name == field && ty == field_ty)
+                });
+                if !reviewed {
+                    return Err(format!(
+                        "{file}: `{field}: {ty}` is exempt from zeroization, but `{ty}` holds \
+                         {fields:?}, which is not a reviewed non-secret shape. Either that field \
+                         carries secret material and the exemption must go, or the shape must be \
+                         reviewed and recorded."
+                    ));
+                }
+                graded += 1;
+            }
+        }
+        Ok(graded)
+    }
+
+    /// Every `.rs` under this crate's `src`, shipping halves only.
+    fn crate_shipping_sources() -> Vec<(String, String)> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut pending = vec![root];
+        let mut sources = Vec::new();
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).expect("crypto sources are readable") {
+                let path = entry.expect("readable directory entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                    continue;
+                }
+                let name = path
+                    .file_name()
+                    .expect("source file has a name")
+                    .to_string_lossy()
+                    .into_owned();
+                let text = std::fs::read_to_string(&path).expect("readable source file");
+                sources.push((name, shipping_half(&text).to_owned()));
+            }
+        }
+        sources.sort();
+        sources
+    }
+
     #[test]
-    fn zeroization_census_is_derive_driven_with_one_reviewed_opt_out() {
-        // The derives make a newly added zeroizable field part of the wipe at
-        // compile time. This guard prevents a future secret field from being
-        // silently exempted with another zeroize-skip attribute.
-        let source = include_str!("ratchet.rs");
-        assert!(source.contains(
+    fn no_field_carrying_secret_material_is_exempt_from_zeroization() {
+        // The derive makes a newly added zeroizable field part of the wipe at
+        // compile time; this keeps it on the persisted state.
+        let ratchet_source = include_str!("ratchet.rs");
+        assert!(ratchet_source.contains(
             "#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]\n"
         ));
-        assert_eq!(source.matches(concat!("#", "[zeroize(skip)]")).count(), 1);
-        assert!(source.contains(concat!(
-            "#",
-            "[zeroize(skip)]\n    pub ctx: SessionContextOnDisk"
-        )));
+
+        // Crate-wide, not one file: an exemption added in a sibling module is
+        // the same defect. A walk that found nothing would grade nothing, so
+        // it is asserted to have found real files with real content.
+        let sources = crate_shipping_sources();
+        let bytes: usize = sources.iter().map(|(_, text)| text.len()).sum();
+        assert!(
+            sources.len() >= 10 && bytes > 50_000,
+            "the crate walk found {} files / {bytes} bytes -- a census over nothing grades nothing",
+            sources.len()
+        );
+        assert!(sources.iter().any(|(name, _)| name == "ratchet.rs"));
+
+        // D-285: the fixtures in this module carry exemption spellings, and
+        // the census must not be reading them. The whole file therefore holds
+        // strictly more than the shipping half does.
+        assert!(
+            zeroize_exemptions(ratchet_source).len()
+                > zeroize_exemptions(shipping_half(ratchet_source)).len(),
+            "the test module's own fixtures are inside the scanned region"
+        );
+
+        if let Err(why) = zeroization_census(&sources) {
+            panic!("{why}");
+        }
+    }
+
+    /// Synthetic sources, so the census's behaviour in BOTH directions is
+    /// asserted here rather than only under a mutation run.
+    const FIXTURE_REVIEWED_EXEMPTION: &str = "\
+pub struct Persisted {
+    pub root_key_b64: String,
+    #[zeroize(skip)]
+    pub ctx: PublicContext,
+}
+
+pub struct PublicContext {
+    pub local_ik_x25519_pub_b64: String,
+    pub local_ik_mlkem_pub_b64: String,
+    pub peer_ik_x25519_pub_b64: String,
+    pub peer_ik_mlkem_pub_b64: String,
+    pub conversation_id_b64: String,
+    pub session_version: u32,
+}
+";
+
+    #[test]
+    fn the_zeroization_census_accepts_a_removed_exemption_and_refuses_a_new_one() {
+        let reviewed = vec![(
+            "fixture.rs".to_owned(),
+            FIXTURE_REVIEWED_EXEMPTION.to_owned(),
+        )];
+        assert_eq!(zeroization_census(&reviewed), Ok(1));
+
+        // REMOVING an exemption -- the safer direction, and the one the old
+        // census fired on -- leaves nothing to grade and is accepted.
+        let tightened = vec![(
+            "fixture.rs".to_owned(),
+            FIXTURE_REVIEWED_EXEMPTION.replace("    #[zeroize(skip)]\n", ""),
+        )];
+        assert!(!tightened[0].1.contains("zeroize(skip)"));
+        assert_eq!(zeroization_census(&tightened), Ok(0));
+
+        // A RENAME of the exempted type changes no field, so it is accepted.
+        let renamed = vec![(
+            "fixture.rs".to_owned(),
+            FIXTURE_REVIEWED_EXEMPTION.replace("PublicContext", "PublicSessionContext"),
+        )];
+        assert!(!renamed[0].1.contains("PublicContext "));
+        assert_eq!(zeroization_census(&renamed), Ok(1));
+
+        // Exempting a field whose type is not a reviewable struct is refused.
+        let over_a_secret = vec![(
+            "fixture.rs".to_owned(),
+            FIXTURE_REVIEWED_EXEMPTION.replace(
+                "    pub root_key_b64",
+                "    #[zeroize(skip)]\n    pub root_key_b64",
+            ),
+        )];
+        let refusal = zeroization_census(&over_a_secret).expect_err("must refuse");
+        assert!(refusal.contains("root_key_b64"), "{refusal}");
+
+        // So is keeping an exemption over a type that GAINED a field: the
+        // shape no longer matches anything reviewed.
+        let widened = vec![(
+            "fixture.rs".to_owned(),
+            FIXTURE_REVIEWED_EXEMPTION.replace(
+                "    pub session_version: u32,",
+                "    pub session_version: u32,\n    pub chain_key_b64: String,",
+            ),
+        )];
+        let refusal = zeroization_census(&widened).expect_err("must refuse");
+        assert!(refusal.contains("chain_key_b64"), "{refusal}");
     }
 }
