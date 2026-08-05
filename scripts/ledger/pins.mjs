@@ -332,6 +332,452 @@ function chainAfter(src, closeIndex) {
 // TypeScript / JavaScript
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// HOW TEXT MOVES ONWARD -- the two derivations, D-297
+//
+// D-270, D-271 and D-293 were ORIGIN bugs: the census could not see where text
+// came from. This one is different in kind. Once a binding holds text, the
+// census has to follow it, and it followed exactly ONE relation:
+//
+//   TRANSFORMATION -- a text-preserving operation applied to text yields text.
+//                     `const body = source.replace(...).split(";")`.
+//
+// There is a second relation, and every `for…of` in this repository is an
+// instance of it:
+//
+//   PROJECTION     -- a MEMBER TAKEN OUT of a value that holds text also holds
+//                     text. `for (const statement of statements)`.
+//
+// `statements` was counted and `statement` was not, so a spec that splits a
+// migration and asserts over each statement in a loop scored ZERO pins.
+//
+// The fix is the relation, not the syntax. Projection has several spellings and
+// listing them one at a time is how this family of defects keeps recurring, so
+// `projectionSites()` reduces every spelling to the SAME triple -- (the names
+// bound, the expression they come out of, the region of source they are visible
+// in) -- and ONE rule decides all of them:
+//
+//   a projected name holds text  <=>  the expression it is projected out of
+//                                     holds text, AND every step on the path
+//                                     from the text-bearing binding to it is
+//                                     text-preserving or element-preserving.
+//
+// The path condition is the same discriminator the transformation rule already
+// uses (`stringMethod`), and it is what stops the census tripling: feeding text
+// into something that RUNS is the opposite of a pin, so a call that is neither
+// a string operation nor an element operation CUTS the path.
+//
+// SCOPE IS NOT OPTIONAL HERE, and Rust already learned why (see rustScopes:
+// one `let source = include_str!(..)` made a 28,000-line file's every `source`
+// a pin, a 14x over-report). Projected names are things like `line`, `entry`,
+// `value`, `key` -- names that recur all over a spec file with no relation to
+// each other. So unlike a module-level `const`, a projected name is recorded
+// with the REGION it is visible in (a loop body, a callback body, the rest of
+// the file after a destructuring declaration) and an assertion only sees the
+// projected names whose region contains it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Operations that hand back the same text, or a part of it. Kept as an array so
+ * the regex below and the path test below cannot drift apart.
+ */
+const STRING_METHODS = [
+  "slice", "substring", "substr", "split", "replace", "replaceAll", "trim", "trimStart", "trimEnd",
+  "toLowerCase", "toUpperCase", "normalize", "padStart", "padEnd", "repeat", "concat", "join",
+  "match", "matchAll", "search", "at", "charAt", "indexOf", "lastIndexOf", "includes",
+  "startsWith", "endsWith", "length",
+];
+
+/**
+ * Methods that hand a callback ONE ELEMENT of the receiver at a time, with the
+ * position of the callback parameter that is the INDEX rather than an element.
+ *
+ * The signatures are fixed by the language (ECMA-262 23.1.3), not by this
+ * project, so this is a closed set in the same sense as MODULE_EXTENSIONS:
+ * `(element, index, array)` for the single-pass methods, `(acc, element,
+ * index, array)` for the two folds, `(a, b)` for `sort`. Every parameter
+ * EXCEPT the index is bound to text when the receiver holds text -- including
+ * the third, which is the receiver itself, and the fold accumulator, which is
+ * whatever the fold is building out of the text.
+ */
+const ELEMENT_METHODS = new Map([
+  ["map", 1], ["forEach", 1], ["filter", 1], ["find", 1], ["findLast", 1],
+  ["findIndex", 1], ["findLastIndex", 1], ["some", 1], ["every", 1], ["flatMap", 1],
+  ["reduce", 2], ["reduceRight", 2],
+  ["sort", -1], ["flat", -1], ["reverse", -1], ["entries", -1], ["values", -1],
+]);
+
+/** A step on a path from text to text: the value that comes out still holds text. */
+const PATH_PRESERVING = new Set([...STRING_METHODS, ...ELEMENT_METHODS.keys()]);
+
+/** Identifiers in a binding pattern. `[a, [b]]`, `{ a: b, ...rest }`, defaults. */
+function patternNames(pattern) {
+  const out = [];
+  const text = pattern.trim().replace(/^[[{]/, "").replace(/[\]}]$/, "");
+  let depth = 0;
+  let quote = null;
+  const parts = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) {
+      if (c === "\\") i += 1;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") quote = c;
+    else if ("([{".includes(c)) depth += 1;
+    else if (")]}".includes(c)) depth -= 1;
+    else if (c === "," && depth === 0) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(text.slice(start));
+
+  for (const raw of parts) {
+    // A default value is an expression, not a binding: `{ a = fallback }`.
+    let part = raw.replace(/(^|[^=!<>])=(?!=|>)[\s\S]*$/, "$1").trim();
+    if (!part) continue;
+    part = part.replace(/^\.\.\./, "").trim();
+    // `key: <target>` binds the TARGET, and the target may itself be a pattern.
+    const colon = topLevelIndex(part, ":");
+    if (colon !== -1) part = part.slice(colon + 1).trim();
+    if (!part) continue;
+    if (part.startsWith("[") || part.startsWith("{")) {
+      out.push(...patternNames(part));
+      continue;
+    }
+    const id = /^([A-Za-z_$][\w$]*)/.exec(part);
+    if (id) out.push(id[1]);
+  }
+  return out;
+}
+
+/** Index of `needle` at bracket/quote depth 0, or -1. */
+function topLevelIndex(text, needle) {
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) {
+      if (c === "\\") i += 1;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") quote = c;
+    else if ("([{".includes(c)) depth += 1;
+    else if (")]}".includes(c)) depth -= 1;
+    else if (depth === 0 && text.startsWith(needle, i)) return i;
+  }
+  return -1;
+}
+
+/** The `of`/`in` keyword of a for-head, at depth 0, or null. */
+function forHeadSplit(header) {
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < header.length; i += 1) {
+    const c = header[i];
+    if (quote) {
+      if (c === "\\") i += 1;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") quote = c;
+    else if ("([{".includes(c)) depth += 1;
+    else if (")]}".includes(c)) depth -= 1;
+    else if (depth === 0) {
+      const m = /^\s(of|in)\s/.exec(header.slice(i, i + 5));
+      if (m) return { keyword: m[1], pattern: header.slice(0, i), source: header.slice(i + m[0].length) };
+    }
+  }
+  return null;
+}
+
+/** End of the statement that starts at `from`, brace- and quote-aware. */
+function statementEnd(src, from) {
+  let depth = 0;
+  let quote = null;
+  for (let i = from; i < src.length; i += 1) {
+    const c = src[i];
+    if (quote) {
+      if (c === "\\") i += 1;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") quote = c;
+    else if ("([{".includes(c)) depth += 1;
+    else if (")]}".includes(c)) {
+      if (depth === 0) return i;
+      depth -= 1;
+    } else if (depth === 0 && (c === ";" || c === "\n")) return i;
+  }
+  return src.length;
+}
+
+/** The body of a statement that follows a `for (...)` head closing at `close`. */
+function bodyRegion(src, close) {
+  let i = close + 1;
+  while (i < src.length && /\s/.test(src[i])) i += 1;
+  if (src[i] === "{") {
+    const end = matchDelimiter(src, i);
+    if (end !== -1) return { start: i, end: end + 1 };
+  }
+  return { start: i, end: statementEnd(src, i) };
+}
+
+/**
+ * Every place in this file where names are PROJECTED out of an expression,
+ * reduced to one shape: the names, the expression, where that expression sits,
+ * and the region of source the names are visible in.
+ *
+ * Three spellings occur in this tree, and they are handled by one rule, not
+ * three: `for (const x of xs)`, `const [a, b] = xs` / `const { a } = o`, and a
+ * callback parameter (`xs.map((line) => ...)`). `for…in` and `for await…of`
+ * occur ZERO times here and are still handled, because the cost of a spelling
+ * this recogniser has never seen is exactly what D-293 was.
+ */
+export function projectionSites(src) {
+  const sites = [];
+  const forHeads = [];
+
+  // for (const x of xs) / for (const k in o) / for await (const x of xs)
+  for (const m of src.matchAll(/\bfor\s*(?:await\s+)?\(\s*(?:const|let|var)\s+/g)) {
+    const open = src.indexOf("(", m.index);
+    if (open === -1) continue;
+    const close = matchDelimiter(src, open);
+    if (close === -1) continue;
+    forHeads.push([open, close]);
+    const header = src.slice(open + 1, close);
+    const split = forHeadSplit(header);
+    if (!split) continue;
+    // `for (const k in o)` binds the KEY, which is structure and not the text
+    // the object holds -- `o[k]` mentions `o` and is already counted. Recorded
+    // rather than guessed at: there are zero `for…in` statements in this tree.
+    if (split.keyword === "in") continue;
+    const names = patternNames(split.pattern.replace(/^\s*(?:const|let|var)\s+/, ""));
+    if (!names.length) continue;
+    const region = bodyRegion(src, close);
+    sites.push({
+      form: "for-of",
+      names,
+      source: split.source,
+      at: open,
+      start: region.start,
+      end: region.end,
+    });
+  }
+
+  // const [a, b] = xs   /   const { a } = o
+  for (const m of src.matchAll(/\b(?:const|let|var)\s+(?=[[{])/g)) {
+    const open = m.index + m[0].length;
+    if (forHeads.some(([o, c]) => open > o && open < c)) continue;
+    const close = matchDelimiter(src, open);
+    if (close === -1) continue;
+    const eq = src.indexOf("=", close);
+    if (eq === -1 || !/^[\s\w$:<>,.[\]|?]*$/.test(src.slice(close + 1, eq))) continue;
+    const names = patternNames(src.slice(open, close + 1));
+    if (!names.length) continue;
+    const end = statementEnd(src, eq + 1);
+    sites.push({
+      form: "destructuring",
+      names,
+      source: src.slice(eq + 1, end),
+      at: eq,
+      nameAt: open,
+      // A destructured name is visible from its declaration onward. That is
+      // strictly NARROWER than the whole-file treatment `const x = ...` already
+      // gets, and unlike a loop variable there is no body to bound it with.
+      start: end,
+      end: src.length,
+    });
+  }
+  return sites;
+}
+
+/**
+ * Element-callback projections reachable from the identifier ending at `from`
+ * by a path of text-preserving steps.
+ *
+ * The walk goes FORWARD from a binding that is already known to hold text, so
+ * the receiver is text-bearing by construction and never has to be recovered by
+ * guessing where an expression started. Any call that is neither a string
+ * operation nor an element operation ENDS the walk: that is the path condition,
+ * and it is what keeps `createApp(source).mount()` out of the census.
+ */
+function callbackProjections(src, from) {
+  const out = [];
+  let i = from;
+  let guard = 0;
+  while (i < src.length && (guard += 1) < 64) {
+    while (i < src.length && /[\s\n]/.test(src[i])) i += 1;
+    if (src[i] === "!") {
+      i += 1;
+      continue;
+    }
+    if (src[i] === "[") {
+      const end = matchDelimiter(src, i);
+      if (end === -1) break;
+      i = end + 1;
+      continue;
+    }
+    if (src[i] === "?" && src[i + 1] === ".") i += 2;
+    else if (src[i] === ".") i += 1;
+    else break;
+    while (i < src.length && /[\s\n]/.test(src[i])) i += 1;
+    const id = /^[A-Za-z_$][\w$]*/.exec(src.slice(i, i + 80));
+    if (!id) break;
+    const name = id[0];
+    i += name.length;
+    let j = i;
+    while (j < src.length && /[\s\n]/.test(src[j])) j += 1;
+    if (src[j] !== "(") {
+      if (!PATH_PRESERVING.has(name)) break;
+      continue;
+    }
+    if (!PATH_PRESERVING.has(name)) break;
+    const close = matchDelimiter(src, j);
+    if (close === -1) break;
+    const site = elementCallbackBinding(src, name, j, close);
+    if (site) out.push(site);
+    i = close + 1;
+  }
+  return out;
+}
+
+/**
+ * The names an inline callback binds to ELEMENTS of its receiver, and the body
+ * span they are visible in -- or null if `name` is not an element method or the
+ * argument is not an inline function.
+ *
+ * Separated out so the TypeScript-parser oracle can drive THE SAME code the
+ * census runs, rather than a second implementation that could agree with the
+ * compiler while the census disagreed with both.
+ */
+export function elementCallbackBinding(src, name, open, close) {
+  const indexParam = ELEMENT_METHODS.get(name);
+  if (indexParam === undefined) return null;
+  const cb = callbackParams(src, open, close);
+  if (!cb) return null;
+  // A top-level `:` in a PARAMETER is a type annotation, not an object
+  // pattern's `key: target` rename. `(entry: string) => ...` binds `entry`;
+  // reading it as a rename bound the name `string`, in eight places, and the
+  // compiler is what said so.
+  const names = cb.params
+    .filter((_, k) => k !== indexParam)
+    .map((param) => {
+      const colon = topLevelIndex(param, ":");
+      return colon === -1 ? param : param.slice(0, colon);
+    })
+    .flatMap((param) => patternNames(param));
+  if (!names.length) return null;
+  return { form: `callback param .${name}()`, names, start: cb.start, end: close };
+}
+
+/** The parameter list and body span of an inline callback in `(...)`. */
+function callbackParams(src, open, close) {
+  const args = src.slice(open + 1, close);
+  const arrow = /^\s*(?:async\s+)?(\([\s\S]*?\)|[A-Za-z_$][\w$]*)\s*(?::[^=]{0,80})?=>/.exec(args);
+  if (arrow) {
+    const head = arrow[1].startsWith("(") ? arrow[1].slice(1, -1) : arrow[1];
+    return { params: splitTopLevel(head), start: open + 1 + arrow[0].length };
+  }
+  const fn = /^\s*(?:async\s+)?function\s*[A-Za-z_$][\w$]*?\s*\(([\s\S]*?)\)/.exec(args) ||
+    /^\s*(?:async\s+)?function\s*\(([\s\S]*?)\)/.exec(args);
+  if (fn) return { params: splitTopLevel(fn[1]), start: open + 1 + fn[0].length };
+  return null;
+}
+
+/**
+ * Blank the LITERAL TEXT of every string and template, preserving length and
+ * every `${...}` substitution, which is code and not text.
+ *
+ * A name cannot occur inside a string literal, and pretending otherwise is a
+ * measured false positive rather than a theoretical one. `for (const required
+ * of ["/docs/design/external-overlay-security-contract.md", ...])` iterates
+ * five path literals and has nothing to do with file text -- but the file
+ * binds `contract`, and `\bcontract\b` matches inside that path. Three more
+ * came the same way, including a `for (const route of ["pro", "privacy", ...])`
+ * caught by a binding called `pro`.
+ *
+ * Length is preserved so an offset into the blanked text is still an offset
+ * into the real one.
+ */
+export function blankStringLiterals(text) {
+  const out = text.split("");
+  let i = 0;
+  const blank = (from, to) => {
+    for (let k = from; k < to && k < out.length; k += 1) if (out[k] !== "\n") out[k] = " ";
+  };
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < text.length && text[j] !== c) j += text[j] === "\\" ? 2 : 1;
+      blank(i + 1, j);
+      i = j + 1;
+      continue;
+    }
+    if (c === "`") {
+      let j = i + 1;
+      let literalFrom = j;
+      while (j < text.length && text[j] !== "`") {
+        if (text[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (text[j] === "$" && text[j + 1] === "{") {
+          blank(literalFrom, j);
+          let depth = 0;
+          j += 1;
+          for (; j < text.length; j += 1) {
+            if (text[j] === "{") depth += 1;
+            else if (text[j] === "}") {
+              depth -= 1;
+              if (depth === 0) break;
+            }
+          }
+          j += 1;
+          literalFrom = j;
+          continue;
+        }
+        j += 1;
+      }
+      blank(literalFrom, j);
+      i = j + 1;
+      continue;
+    }
+    i += 1;
+  }
+  return out.join("");
+}
+
+/** Split on top-level commas. */
+function splitTopLevel(text) {
+  const parts = [];
+  let depth = 0;
+  let quote = null;
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote) {
+      if (c === "\\") i += 1;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") quote = c;
+    else if ("([{".includes(c)) depth += 1;
+    else if (")]}".includes(c)) depth -= 1;
+    else if (c === "," && depth === 0) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts.map((p) => p.trim()).filter(Boolean);
+}
+
 /**
  * Identifiers in this file that hold the TEXT of a file on disk.
  *
@@ -346,6 +792,9 @@ function tsTextBindings(src, fromDir = null) {
   // the whole point of fixing this as an origin rather than as a list entry.
   const bindings = tsImportTextBindings(src, fromDir);
   const textHelpers = new Set();
+  // A projected name and the region it is visible in. See projectionSites().
+  const scoped = [];
+  const seenCallbacks = new Set();
 
   const declaration = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]{0,80})?=\s*/g;
   const decls = [];
@@ -374,7 +823,7 @@ function tsTextBindings(src, fromDir = null) {
         if (/^\s*(?:const|let|var|function|export|import|\})/.test(rest)) break;
       }
     }
-    decls.push({ name: m[1], init: src.slice(bodyStart, end) });
+    decls.push({ name: m[1], init: src.slice(bodyStart, end), at: m.index });
   }
 
   // Every named function body, so a helper can be re-judged once we know what
@@ -418,10 +867,50 @@ function tsTextBindings(src, fromDir = null) {
   // `const app = createApp(source)` treated as text, every assertion about the
   // running app became a "pin" and the census tripled. Feeding source text into
   // something that RUNS is the opposite of a pin.
-  const stringMethod = /\.(?:slice|substring|substr|split|replace|replaceAll|trim|trimStart|trimEnd|toLowerCase|toUpperCase|normalize|padStart|padEnd|repeat|concat|join|match|matchAll|search|at|charAt|indexOf|lastIndexOf|includes|startsWith|endsWith|length)\b/;
+  const stringMethod = new RegExp(`\\.(?:${STRING_METHODS.join("|")})\\b`);
 
-  for (let pass = 0; pass < 6; pass += 1) {
-    const before = bindings.size + readers.size;
+  // Every projection SITE in the file, found once. What changes from pass to
+  // pass is not the site but whether its source expression is known to hold
+  // text yet -- which is what makes nesting work without special-casing it:
+  // `for (const block of blocks) for (const line of block.split("\n"))` binds
+  // `block` in one pass and `line` in the next, by the same rule both times.
+  // A name cannot live inside a string literal, and neither can a loop. Every
+  // projection is found in, and every mention test reads, the blanked copy;
+  // offsets are identical because blanking preserves length, so a body region
+  // found here still indexes the real source.
+  //
+  // This is not hypothetical: `expect(source).toContain("for (const message of
+  // batch.pendingViewOnce) ...")` asserts a loop that lives in ANOTHER file, and
+  // a fixture in external-overlay-reachability.test.ts contains the string
+  // "const { invoke: callNative } = tauriCore;". The TypeScript parser reported
+  // all fourteen of them as things it does not see.
+  const bare = blankStringLiterals(src);
+  const sites = projectionSites(bare);
+  const visibleAt = (index) => {
+    const names = new Set(bindings);
+    for (const region of scoped) {
+      if (index >= region.start && index < region.end) for (const n of region.names) names.add(n);
+    }
+    return names;
+  };
+  const mentions = (expr, names) => [...names].some((n) => new RegExp(`\\b${n}\\b`).test(expr));
+  /** Is every call on the way out of this expression text- or element-preserving? */
+  const pathIntact = (expr) => {
+    for (const m of expr.matchAll(/\.([A-Za-z_$][\w$]*)\s*\(/g)) {
+      if (!PATH_PRESERVING.has(m[1])) return false;
+    }
+    for (const m of expr.matchAll(/(?:^|[^.\w$])([A-Za-z_$][\w$]*)\s*\(/g)) {
+      const name = m[1];
+      if (name === "Boolean" || name === "String" || name === "Array") continue;
+      if (readers.has(name) || textHelpers.has(name)) continue;
+      if (/^(?:if|for|while|switch|return|typeof|await|new|function|catch)$/.test(name)) continue;
+      return false;
+    }
+    return true;
+  };
+
+  for (let pass = 0; pass < 8; pass += 1) {
+    const before = bindings.size + readers.size + scoped.length;
 
     // A helper that CLOSES OVER file text and is declared to hand text back is
     // a reader, whatever its arguments are. This is not academic: every
@@ -441,23 +930,101 @@ function tsTextBindings(src, fromDir = null) {
     for (const d of decls) {
       if (bindings.has(d.name) || d.init.includes("JSON.parse")) continue;
       if (readers.has(d.name)) continue;
-      const overText = [...bindings].some((b) => new RegExp(`\\b${b}\\b`).test(d.init));
+      // A declaration inside a loop body sees that loop's variable, so the
+      // TRANSFORMATION rule reads the same visibility the PROJECTION rule does:
+      // `for (const block of blocks) { const lines = block.split("\n"); }`.
+      //
+      // And it INHERITS THE SCOPE it borrowed. A `const` justified only by a
+      // loop variable cannot be visible outside that loop, or the scoping the
+      // projection rule just established leaks straight back out through the
+      // next declaration -- measured: `const alias = statement[1].match(...)`
+      // inside one loop otherwise made the name `alias` file-wide, and a
+      // synthetic fixture 750 lines away that merely contains the word became
+      // "file text" because of it.
+      const fileWide = [...bindings].some((b) => new RegExp(`\\b${b}\\b`).test(d.init));
+      const host = fileWide
+        ? null
+        : scoped
+            .filter((g) => d.at >= g.start && d.at < g.end)
+            .filter((g) => [...g.names].some((n) => new RegExp(`\\b${n}\\b`).test(d.init)))
+            .sort((a, b) => a.end - a.start - (b.end - b.start))[0] ?? null;
+      const overText = fileWide || host !== null;
       const derived =
         [...readers].some((r) => new RegExp(`\\b${r}\\s*\\(`).test(d.init)) ||
         (overText && stringMethod.test(d.init)) ||
         (overText && [...textHelpers].some((h) => new RegExp(`\\b${h}\\s*\\(`).test(d.init)));
-      if (derived) bindings.add(d.name);
+      if (!derived) continue;
+      if (host) {
+        if (!scoped.some((g) => g.start === d.at && g.end === host.end && g.names.has(d.name))) {
+          scoped.push({ start: d.at, end: host.end, names: new Set([d.name]), form: "derived-in-scope" });
+        }
+      } else {
+        bindings.add(d.name);
+      }
     }
 
-    if (bindings.size + readers.size === before) break;
+    // PROJECTION. One rule for `for…of`, destructuring and callback parameters
+    // alike: a member taken out of a value that holds text holds text, provided
+    // no step on the way turned the text into behaviour.
+    for (const site of sites) {
+      if (site.bound) continue;
+      if (!mentions(site.source, visibleAt(site.at))) continue;
+      if (!pathIntact(site.source)) continue;
+      if (site.source.includes("JSON.parse")) continue;
+      site.bound = true;
+      scoped.push({ start: site.start, end: site.end, names: new Set(site.names), form: site.form });
+    }
+
+    // The same rule again, reached by walking FORWARD out of a name already
+    // known to hold text -- which is how a callback parameter is found without
+    // having to reconstruct the receiver of `.map(` by scanning backwards.
+    const found = [];
+    for (const after of textNameOccurrences(bare, bindings, [...scoped])) {
+      for (const site of callbackProjections(bare, after)) {
+        const key = `${site.start}:${site.end}:${site.names.join(",")}`;
+        if (seenCallbacks.has(key)) continue;
+        seenCallbacks.add(key);
+        found.push({ start: site.start, end: site.end, names: new Set(site.names), form: site.form });
+      }
+    }
+    scoped.push(...found);
+
+    if (bindings.size + readers.size + scoped.length === before) break;
   }
-  return { readers, bindings };
+  return { readers, bindings, scoped };
+}
+
+/**
+ * Every occurrence of a name that holds text, with the offset just past it --
+ * the starting point for a forward chain walk. A projected name only counts
+ * where it is visible.
+ */
+function* textNameOccurrences(src, bindings, scoped) {
+  for (const name of bindings) {
+    for (const m of src.matchAll(new RegExp(`\\b${name}\\b`, "g"))) yield m.index + name.length;
+  }
+  for (const region of scoped) {
+    for (const name of region.names) {
+      for (const m of src.matchAll(new RegExp(`\\b${name}\\b`, "g"))) {
+        if (m.index < region.start || m.index >= region.end) continue;
+        yield m.index + name.length;
+      }
+    }
+  }
 }
 
 /** The subject a pin is about: the binding it reads, or `<inline>`. */
-function subjectOf(expr, bindings, readers) {
+function subjectOf(expr, bindings, readers, projected = new Set()) {
   for (const name of [...bindings].sort((a, b) => b.length - a.length)) {
     if (new RegExp(`\\b${name}\\b`).test(expr)) return name;
+  }
+  // A projected name is only ever the subject when no whole-value binding is in
+  // the expression. That is not cosmetic: it keeps every pin that existed
+  // before this change on the identity it already had, so the delta is pure
+  // addition and can be merged by set arithmetic.
+  const bare = blankStringLiterals(expr);
+  for (const name of [...projected].sort((a, b) => b.length - a.length)) {
+    if (new RegExp(`\\b${name}\\b`).test(bare)) return name;
   }
   for (const name of [...readers].sort((a, b) => b.length - a.length)) {
     if (new RegExp(`\\b${name}\\s*\\(`).test(expr)) return `<${name}()>`;
@@ -469,8 +1036,20 @@ function scanTs(rel, raw, root) {
   const src = blankComments(raw);
   const starts = lineIndex(src);
   const fromDir = root ? dirname(join(root, rel)) : null;
-  const { readers, bindings } = tsTextBindings(src, fromDir);
+  const { readers, bindings, scoped } = tsTextBindings(src, fromDir);
   const pins = [];
+
+  /** The projected names visible AT this offset -- a loop variable is not
+   * visible outside its loop, which is the whole reason projection is scoped. */
+  const projectedAt = (index) => {
+    const names = new Set();
+    for (const region of scoped) {
+      if (index >= region.start && index < region.end) for (const n of region.names) names.add(n);
+    }
+    return names;
+  };
+  const mentionsAny = (expr, names) =>
+    [...names].some((n) => new RegExp(`\\b${n}\\b`).test(blankStringLiterals(expr)));
 
   const push = (index, subject, kind, detail) =>
     pins.push({ file: rel, line: lineOf(starts, index), subject, kind, detail });
@@ -485,13 +1064,15 @@ function scanTs(rel, raw, root) {
     const chain = chainAfter(src, close);
     const matcher = TS_MATCHERS.find((name) => new RegExp(`\\.${name}\\s*\\(`).test(chain));
     if (!matcher) continue;
+    const projected = projectedAt(m.index);
     const touchesText =
       TEXT_READERS.some((r) => expr.includes(`${r}(`)) ||
       initImportsFileText(expr, fromDir) ||
       [...bindings].some((b) => new RegExp(`\\b${b}\\b`).test(expr)) ||
+      mentionsAny(expr, projected) ||
       [...readers].some((r) => new RegExp(`\\b${r}\\s*\\(`).test(expr));
     if (!touchesText) continue;
-    push(m.index, subjectOf(expr, bindings, readers), "expect-over-source-text", `.${matcher}()`);
+    push(m.index, subjectOf(expr, bindings, readers, projected), "expect-over-source-text", `.${matcher}()`);
   }
 
   // `assert(x.includes("..."))`, `assert.ok(...)`, `if (!x.includes(...)) throw`
@@ -501,12 +1082,14 @@ function scanTs(rel, raw, root) {
     if (close === -1) continue;
     const expr = src.slice(open + 1, close);
     if (expr.includes("JSON.parse")) continue;
+    const projected = projectedAt(m.index);
     const touchesText =
       TEXT_READERS.some((r) => expr.includes(`${r}(`)) ||
       initImportsFileText(expr, fromDir) ||
-      [...bindings].some((b) => new RegExp(`\\b${b}\\b`).test(expr));
+      [...bindings].some((b) => new RegExp(`\\b${b}\\b`).test(expr)) ||
+      mentionsAny(expr, projected);
     if (!touchesText) continue;
-    push(m.index, subjectOf(expr, bindings, readers), "assert-over-source-text", "assert()");
+    push(m.index, subjectOf(expr, bindings, readers, projected), "assert-over-source-text", "assert()");
   }
 
   // A bare guard over file text: `if (!source.includes("x")) throw new Error(...)`
@@ -517,10 +1100,11 @@ function scanTs(rel, raw, root) {
     const expr = src.slice(open + 1, close);
     if (!/\.(?:includes|match|test|indexOf)\s*\(/.test(expr)) continue;
     if (expr.includes("JSON.parse")) continue;
-    if (![...bindings].some((b) => new RegExp(`\\b${b}\\b`).test(expr))) continue;
+    const projected = projectedAt(m.index);
+    if (![...bindings].some((b) => new RegExp(`\\b${b}\\b`).test(expr)) && !mentionsAny(expr, projected)) continue;
     const after = src.slice(close + 1, close + 200);
     if (!/\b(?:throw|process\.exit|fail\s*\()/.test(after)) continue;
-    push(m.index, subjectOf(expr, bindings, readers), "guard-over-source-text", "throws on file text");
+    push(m.index, subjectOf(expr, bindings, readers, projected), "guard-over-source-text", "throws on file text");
   }
 
   return pins;
