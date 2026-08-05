@@ -376,7 +376,7 @@ describe("home interaction regressions", () => {
     expect(source).toContain("openEmbeddedHomeApp(app, services)");
     expect(source).toContain("setupEmbeddedHomeApp(app,");
     expect(source).not.toContain("Firefox workspace");
-    expect(importedApps).toContain('"instagram"');
+    expect(importedApps).toContain('"tuta"');
     expect(importedApps).toContain('"gmail"');
     expect(importedApps).not.toContain('"discord"');
     expect(opening).toMatch(/selectedNativeAppIntent\(app\.id\)[\s\S]*?if \(nativeIntent\)[\s\S]*?openNativeHostedApp/);

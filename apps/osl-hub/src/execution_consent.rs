@@ -197,7 +197,7 @@ mod tests {
         );
 
         let wrong_provider =
-            ExecutionScope::new("slack", "account-123", fingerprint).expect("valid scope");
+            ExecutionScope::new("telegram", "account-123", fingerprint).expect("valid scope");
         let wrong_account =
             ExecutionScope::new("discord", "account-456", fingerprint).expect("valid scope");
         let wrong_fingerprint = ExecutionScope::new("discord", "account-123", changed_fingerprint)

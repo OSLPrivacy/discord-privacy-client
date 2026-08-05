@@ -6479,8 +6479,8 @@ key"
         let discord_a_other_account =
             Scope::dm(manual_peer_scope_id("discord", "account-two", "hub-person-a").unwrap())
                 .storage_key();
-        let instagram_a =
-            Scope::dm(manual_peer_scope_id("instagram", "account-one", "hub-person-a").unwrap())
+        let telegram_a =
+            Scope::dm(manual_peer_scope_id("telegram", "account-one", "hub-person-a").unwrap())
                 .storage_key();
         let discord_b =
             Scope::dm(manual_peer_scope_id("discord", "account-one", "hub-person-b").unwrap())
@@ -6488,7 +6488,7 @@ key"
         let mut prefs = SecurityPreferences::default();
         prefs.manual_approved_scopes.insert(discord_a.clone());
         assert!(manual_scope_preference_approved(&prefs, &discord_a));
-        assert!(!manual_scope_preference_approved(&prefs, &instagram_a));
+        assert!(!manual_scope_preference_approved(&prefs, &telegram_a));
         assert!(!manual_scope_preference_approved(&prefs, &discord_b));
         assert!(!manual_scope_preference_approved(
             &prefs,
@@ -6503,8 +6503,8 @@ key"
         let discord_a =
             Scope::dm(manual_peer_scope_id("discord", "account-one", "hub-person-a").unwrap())
                 .storage_key();
-        let instagram_a =
-            Scope::dm(manual_peer_scope_id("instagram", "account-one", "hub-person-a").unwrap())
+        let telegram_a =
+            Scope::dm(manual_peer_scope_id("telegram", "account-one", "hub-person-a").unwrap())
                 .storage_key();
         let discord_b =
             Scope::dm(manual_peer_scope_id("discord", "account-one", "hub-person-b").unwrap())
@@ -6515,19 +6515,19 @@ key"
         let mut prefs = SecurityPreferences::default();
         prefs.manual_approved_scopes.extend([
             discord_a.clone(),
-            instagram_a.clone(),
+            telegram_a.clone(),
             discord_b.clone(),
             discord_a_other_account.clone(),
         ]);
         prefs.decrypt_display_by_scope.extend([
             (discord_a.clone(), true),
-            (instagram_a.clone(), true),
+            (telegram_a.clone(), true),
             (discord_b.clone(), true),
             (discord_a_other_account.clone(), true),
         ]);
         let mut ttl = ipc::scope_ttl_file::ScopeTtlFile::default();
         ttl.entries.insert(discord_a.clone(), 3_600);
-        ttl.entries.insert(instagram_a.clone(), 86_400);
+        ttl.entries.insert(telegram_a.clone(), 86_400);
         ttl.entries.insert(discord_b.clone(), 259_200);
         ttl.entries.insert(discord_a_other_account.clone(), 604_800);
         let mut blobs = ipc::scope_blobs_file::ScopeBlobsFile::default();
@@ -6538,7 +6538,7 @@ key"
         );
         ipc::scope_blobs_file::record_blob(
             &mut blobs,
-            instagram_a.clone(),
+            telegram_a.clone(),
             "1122334455667788".to_owned(),
         );
         ipc::scope_blobs_file::record_blob(
@@ -6585,18 +6585,18 @@ key"
             ["0011223344556677"]
         );
         assert!(!manual_scope_preference_approved(&prefs, &discord_a));
-        assert!(manual_scope_preference_approved(&prefs, &instagram_a));
+        assert!(manual_scope_preference_approved(&prefs, &telegram_a));
         assert!(manual_scope_preference_approved(&prefs, &discord_b));
         assert!(manual_scope_preference_approved(
             &prefs,
             &discord_a_other_account
         ));
         assert!(!ttl.entries.contains_key(&discord_a));
-        assert_eq!(ttl.entries.get(&instagram_a), Some(&86_400));
+        assert_eq!(ttl.entries.get(&telegram_a), Some(&86_400));
         assert_eq!(ttl.entries.get(&discord_b), Some(&259_200));
         assert_eq!(ttl.entries.get(&discord_a_other_account), Some(&604_800));
         assert_eq!(ipc::scope_blobs_file::count_for(&blobs, &discord_a), 0);
-        assert_eq!(ipc::scope_blobs_file::count_for(&blobs, &instagram_a), 1);
+        assert_eq!(ipc::scope_blobs_file::count_for(&blobs, &telegram_a), 1);
         assert_eq!(ipc::scope_blobs_file::count_for(&blobs, &discord_b), 1);
         assert_eq!(
             ipc::scope_blobs_file::count_for(&blobs, &discord_a_other_account),

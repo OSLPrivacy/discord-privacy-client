@@ -3,6 +3,15 @@
   "updated_utc": "2026-07-30T00:00:00Z",
   "schema_version": 1,
   "generated_from": "manual-verdict-ingest",
+  "surface_ruling": {
+    "schema": "osl-surface-ruling-v1",
+    "ruled_on": "2026-08-05",
+    "chat_carriers": ["discord", "signal", "whatsapp", "telegram"],
+    "email_carriers": ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"],
+    "native_email_carriers": ["outlook"],
+    "first_party_surfaces": ["osl-chats", "osl-mail"],
+    "cut_surfaces": ["instagram", "snapchat", "x", "messenger", "slack", "linkedin", "teams"]
+  },
   "updated": "2026-07-30",
   "versioned_public_support_matrix": {
     "schema_version": 1,

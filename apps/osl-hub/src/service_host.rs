@@ -176,31 +176,10 @@ const SERVICES: &[ServiceManifest] = &[
         launch_active: false,
     },
     ServiceManifest {
-        id: "instagram",
-        display_name: "Instagram",
-        initial_url: "https://www.instagram.com/",
-        allowed_hosts: &["www.instagram.com"],
-        launch_active: true,
-    },
-    ServiceManifest {
-        id: "snapchat",
-        display_name: "Snapchat",
-        initial_url: "https://www.snapchat.com/web/",
-        allowed_hosts: &["www.snapchat.com", "accounts.snapchat.com"],
-        launch_active: true,
-    },
-    ServiceManifest {
         id: "email",
         display_name: "Email",
         initial_url: "https://mail.google.com/",
         allowed_hosts: &["mail.google.com", "accounts.google.com"],
-        launch_active: true,
-    },
-    ServiceManifest {
-        id: "x",
-        display_name: "X",
-        initial_url: "https://x.com/messages",
-        allowed_hosts: &["x.com"],
         launch_active: true,
     },
     ServiceManifest {
@@ -211,32 +190,6 @@ const SERVICES: &[ServiceManifest] = &[
         initial_url: "https://signal.org/download/",
         allowed_hosts: &["signal.org"],
         launch_active: false,
-    },
-    ServiceManifest {
-        id: "slack",
-        display_name: "Slack",
-        initial_url: "https://app.slack.com/",
-        allowed_hosts: &["app.slack.com", "slack.com"],
-        launch_active: false,
-    },
-    ServiceManifest {
-        id: "teams",
-        display_name: "Microsoft Teams",
-        initial_url: "https://teams.microsoft.com/",
-        allowed_hosts: &[
-            "teams.microsoft.com",
-            "teams.cloud.microsoft",
-            "login.microsoftonline.com",
-            "login.live.com",
-        ],
-        launch_active: false,
-    },
-    ServiceManifest {
-        id: "messenger",
-        display_name: "Facebook Messenger",
-        initial_url: "https://www.facebook.com/messages/",
-        allowed_hosts: &["www.facebook.com"],
-        launch_active: true,
     },
 ];
 
@@ -261,25 +214,11 @@ const EMAIL_TUTA: ServiceManifest = ServiceManifest {
     allowed_hosts: &["app.tuta.com"],
     launch_active: true,
 };
-const EMAIL_FASTMAIL: ServiceManifest = ServiceManifest {
-    id: "email",
-    display_name: "Fastmail",
-    initial_url: "https://app.fastmail.com/login/",
-    allowed_hosts: &["app.fastmail.com"],
-    launch_active: true,
-};
 const EMAIL_YAHOO: ServiceManifest = ServiceManifest {
     id: "email",
     display_name: "Yahoo Mail",
     initial_url: "https://mail.yahoo.com/",
     allowed_hosts: &["mail.yahoo.com", "login.yahoo.com"],
-    launch_active: true,
-};
-const EMAIL_ZOHO: ServiceManifest = ServiceManifest {
-    id: "email",
-    display_name: "Zoho Mail",
-    initial_url: "https://mail.zoho.com/",
-    allowed_hosts: &["mail.zoho.com", "accounts.zoho.com"],
     launch_active: true,
 };
 const EMAIL_AOL: ServiceManifest = ServiceManifest {
@@ -364,9 +303,7 @@ pub fn service_manifest_for_provider(
         EmailProvider::Outlook => return Err(ServiceHostError::ServiceUnavailable),
         EmailProvider::Proton => &EMAIL_PROTON,
         EmailProvider::Tuta => &EMAIL_TUTA,
-        EmailProvider::Fastmail => &EMAIL_FASTMAIL,
         EmailProvider::Yahoo => &EMAIL_YAHOO,
-        EmailProvider::Zoho => &EMAIL_ZOHO,
         EmailProvider::Aol => &EMAIL_AOL,
         EmailProvider::Gmx => &EMAIL_GMX,
         EmailProvider::Maildotcom => &EMAIL_MAIL_COM,
@@ -1713,20 +1650,8 @@ mod tests {
     }
 
     #[test]
-    fn messenger_uses_metas_current_first_party_messages_surface() {
-        let manifest = service_manifest("messenger").unwrap();
-        assert_eq!(
-            validated_initial_url(manifest).unwrap().as_str(),
-            "https://www.facebook.com/messages/"
-        );
-        assert!(navigation_allowed(
-            manifest,
-            &Url::parse("https://www.facebook.com/login/").unwrap()
-        ));
-        assert!(!navigation_allowed(
-            manifest,
-            &Url::parse("https://messenger-plus.example/").unwrap()
-        ));
+    fn superseded_messenger_surface_is_cut_by_owner_ruling_2026_08_05() {
+        assert_eq!(service_manifest("messenger"), Err(ServiceHostError::UnknownService));
     }
 
     #[test]
@@ -1766,26 +1691,26 @@ mod tests {
         let owner = "osl_owner_aaaaaaaaaaaaaaaa";
         let namespace = owner_profile_namespace(owner).unwrap();
         let active = state
-            .begin_open(&namespace, "instagram", "account-one", "www.instagram.com")
+            .begin_open(&namespace, "email", "account-one", "mail.google.com")
             .unwrap();
         assert_eq!(
             state
-                .require_current_owned(owner, "instagram", "account-one")
+                .require_current_owned(owner, "email", "account-one")
                 .unwrap(),
             active
         );
         assert!(state
-            .require_current_owned("osl_owner_bbbbbbbbbbbbbbbb", "instagram", "account-one")
+            .require_current_owned("osl_owner_bbbbbbbbbbbbbbbb", "email", "account-one")
             .is_err());
         assert!(state
             .require_current_owned(owner, "discord", "account-one")
             .is_err());
         assert!(state
-            .require_current_owned(owner, "instagram", "account-two")
+            .require_current_owned(owner, "email", "account-two")
             .is_err());
         state.next_generation().unwrap();
         assert!(state
-            .require_current_owned(owner, "instagram", "account-one")
+            .require_current_owned(owner, "email", "account-one")
             .is_err());
     }
 
@@ -1920,9 +1845,9 @@ mod tests {
                 );
             }
         }
-        let snapchat = service_manifest("snapchat").unwrap();
-        assert_eq!(snapchat.initial_url, "https://www.snapchat.com/web/");
-        assert!(snapchat.allowed_hosts.contains(&"accounts.snapchat.com"));
+        for cut in ["instagram", "snapchat", "x", "messenger", "slack", "teams"] {
+            assert_eq!(service_manifest(cut), Err(ServiceHostError::UnknownService), "{cut}");
+        }
     }
 
     #[test]
@@ -1944,9 +1869,7 @@ mod tests {
             (EmailProvider::Gmail, "mail.google.com"),
             (EmailProvider::Proton, "mail.proton.me"),
             (EmailProvider::Tuta, "app.tuta.com"),
-            (EmailProvider::Fastmail, "app.fastmail.com"),
             (EmailProvider::Yahoo, "mail.yahoo.com"),
-            (EmailProvider::Zoho, "mail.zoho.com"),
             (EmailProvider::Aol, "mail.aol.com"),
             (EmailProvider::Gmx, "www.gmx.com"),
             (EmailProvider::Maildotcom, "www.mail.com"),
@@ -1993,7 +1916,7 @@ mod tests {
         );
 
         let second = state
-            .begin_open("owner-a", "instagram", "osl", "www.instagram.com")
+            .begin_open("owner-a", "email", "osl", "mail.google.com")
             .unwrap();
         state
             .page_load(first.generation, Some("discord.com"), true)
@@ -2001,7 +1924,7 @@ mod tests {
         let current = state.status().unwrap();
         assert_eq!(current.phase, ServiceHostPhase::Opening);
         assert_eq!(current.active.unwrap().generation, second.generation);
-        assert_eq!(current.host.as_deref(), Some("www.instagram.com"));
+        assert_eq!(current.host.as_deref(), Some("mail.google.com"));
 
         state.navigation_blocked(second.generation).unwrap();
         let blocked = state.status().unwrap();
@@ -2047,10 +1970,10 @@ mod tests {
     #[test]
     fn profile_paths_are_opaque_and_contained() {
         let root = Path::new("/tmp/osl-profiles");
-        let path = profile_path(root, "instagram", "rose-2").unwrap();
+        let path = profile_path(root, "email", "rose-2").unwrap();
         assert!(path.starts_with(root));
-        assert_eq!(path, root.join("service-instagram").join("account-rose-2"));
-        assert!(profile_path(root, "instagram", "../../escape").is_err());
+        assert_eq!(path, root.join("service-email").join("account-rose-2"));
+        assert!(profile_path(root, "email", "../../escape").is_err());
         assert!(profile_path(root, "unknown", "rose").is_err());
     }
 
@@ -2215,7 +2138,7 @@ mod tests {
         assert!(!active_profile_matches(
             Some(&active),
             "owner-a",
-            "instagram",
+            "telegram",
             "acct-rose"
         ));
         assert!(!active_profile_matches(

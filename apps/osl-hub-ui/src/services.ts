@@ -1,13 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./preferences";
 
-export type ServiceId = "discord" | "telegram" | "instagram" | "snapchat" | "email" | "x" | "slack" | "linkedin" | "teams" | "messenger" | "signal" | "whatsapp";
+export type ServiceId = "discord" | "telegram" | "email" | "signal" | "whatsapp";
 export type ConnectionState = "demoLinked" | "notLinked";
-export type EmailProvider = "gmail" | "outlook" | "proton" | "tuta" | "fastmail" | "yahoo" | "zoho" | "aol" | "gmx" | "maildotcom" | "icloud";
+export type EmailProvider = "gmail" | "outlook" | "proton" | "tuta" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
 export type ServiceCategory = "consumer" | "enterprise";
 export type LaunchState = "available" | "comingSoon";
-export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
-export type HomeAppId = Exclude<ServiceId, "email" | "slack" | "linkedin" | "teams"> | OfferedEmailProvider | "slack" | "linkedin";
+export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud" | "tuta";
+export type HomeAppId = Exclude<ServiceId, "email"> | OfferedEmailProvider;
 export type HomeAppVisibility = "launch" | "later";
 export type HomeAppSection = "social" | "email" | "later";
 export type NativeAppId = "discord" | "telegram" | "signal" | "whatsapp" | "outlook";
@@ -284,14 +284,14 @@ export const AndroidSurface = {
   },
 };
 
-const serviceIds: readonly ServiceId[] = ["discord", "telegram", "instagram", "snapchat", "email", "x", "slack", "linkedin", "teams", "messenger", "signal", "whatsapp"];
+const serviceIds: readonly ServiceId[] = ["discord", "telegram", "email", "signal", "whatsapp"];
 const connectionStates: readonly ConnectionState[] = ["demoLinked", "notLinked"];
-const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "fastmail", "yahoo", "zoho", "aol", "gmx", "maildotcom", "icloud"];
+const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "yahoo", "aol", "gmx", "maildotcom", "icloud"];
 const maxAccountsPerService = 10;
 const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "signal", "whatsapp", "outlook"];
 const browserImportIds: readonly BrowserImportId[] = ["chrome", "edge", "firefox", "brave", "opera", "duckduckgo"];
 const firefoxServiceIds: readonly HomeAppId[] = [
-  "instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
 ];
 const nativePreviewApps: readonly NativeApp[] = [
   { id: "discord", displayName: "Discord", availability: "installable", supportStatus: "beta", protectedMode: "assistOnly", isolatedProfileAvailable: true, supportsOverlay: false },
@@ -322,10 +322,6 @@ const homeAppDefinitions: readonly HomeAppDefinition[] = [
   // not just the native-account setup branch. Keep the specs visible for
   // roadmap signaling, but only Discord can present as a working integration.
   homeApp("telegram", "Telegram", "telegram", null, "launch", "comingSoon"),
-  homeApp("instagram", "Instagram", "instagram", null, "launch", "comingSoon"),
-  homeApp("snapchat", "Snapchat", "snapchat", null, "launch", "comingSoon"),
-  homeApp("x", "X", "x", null, "launch", "comingSoon"),
-  homeApp("messenger", "Messenger", "messenger", null, "launch", "comingSoon"),
   homeApp("signal", "Signal", "signal", null, "launch", "comingSoon"),
   homeApp("whatsapp", "WhatsApp", "whatsapp", null, "launch", "comingSoon"),
   homeApp("gmail", "Gmail", "email", "gmail", "launch", "comingSoon"),
@@ -336,23 +332,15 @@ const homeAppDefinitions: readonly HomeAppDefinition[] = [
   homeApp("gmx", "GMX", "email", "gmx", "launch", "comingSoon"),
   homeApp("maildotcom", "Mail.com", "email", "maildotcom", "launch", "comingSoon"),
   homeApp("icloud", "iCloud Mail", "email", "icloud", "launch", "comingSoon"),
-  homeApp("slack", "Slack", "slack", null, "later", "comingSoon"),
-  homeApp("linkedin", "LinkedIn messaging", "linkedin", null, "later", "comingSoon"),
+  homeApp("tuta", "Tuta", "email", "tuta", "launch", "comingSoon"),
 ];
 
 const previewRegistry: unknown = [
   service("discord", "Discord", "DC", 0, "consumer", "available"),
   service("telegram", "Telegram", "TG", 1, "consumer", "available"),
-  service("instagram", "Instagram", "IG", 2, "consumer", "available"),
-  service("snapchat", "Snapchat", "SC", 3, "consumer", "available"),
-  service("email", "Email", "EM", 4, "consumer", "available"),
-  service("x", "X", "X", 5, "consumer", "available"),
-  service("messenger", "Facebook Messenger", "MS", 6, "consumer", "available"),
-  service("signal", "Signal", "SG", 7, "consumer", "available"),
-  service("whatsapp", "WhatsApp", "WA", 8, "consumer", "available"),
-  service("slack", "Slack", "SL", 9, "enterprise", "comingSoon"),
-  service("linkedin", "LinkedIn messaging", "LI", 10, "enterprise", "comingSoon"),
-  service("teams", "Microsoft Teams", "TM", 11, "enterprise", "comingSoon"),
+  service("email", "Email", "EM", 2, "consumer", "available"),
+  service("signal", "Signal", "SG", 3, "consumer", "available"),
+  service("whatsapp", "WhatsApp", "WA", 4, "consumer", "available"),
 ];
 
 export async function loadLinkedServices(): Promise<LinkedService[]> {

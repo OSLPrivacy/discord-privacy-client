@@ -548,15 +548,8 @@ pub enum ServiceKind {
     Telegram,
     #[serde(rename = "whatsapp")]
     WhatsApp,
-    Instagram,
-    Snapchat,
     Email,
-    X,
     Signal,
-    Slack,
-    Linkedin,
-    Teams,
-    Messenger,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -566,9 +559,7 @@ pub enum EmailProvider {
     Outlook,
     Proton,
     Tuta,
-    Fastmail,
     Yahoo,
-    Zoho,
     Aol,
     Gmx,
     Maildotcom,

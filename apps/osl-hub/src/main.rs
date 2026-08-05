@@ -9261,7 +9261,7 @@ mod local_protected_context_tests {
         ));
         assert!(!local_protected_origin_requires_host_revalidation(
             &ProtectedContextOrigin::Standalone {
-                service_id: "instagram".to_owned(),
+                service_id: "telegram".to_owned(),
             }
         ));
         assert!(local_protected_origin_requires_host_revalidation(

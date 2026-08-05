@@ -21,29 +21,22 @@ const PERMISSION_RELIABILITY_SUMMARY: u16 = 1 << 2;
 
 const PROPRIETARY_RECIPE_MATRIX: &[ProprietaryRecipeDescriptor] = &[
     ProprietaryRecipeDescriptor::new(
-        BoundaryService::X,
-        "x-native-autoscrub-visible-rows-v1",
+        BoundaryService::Discord,
+        "discord-native-autoscrub-visible-rows-v1",
         BoundaryOperation::ServiceLayoutAdvice,
         ProprietaryNetworkPolicy::NoNetwork,
         ProprietaryRecipeAuthority::NativeAutoscrub,
     ),
     ProprietaryRecipeDescriptor::new(
-        BoundaryService::Instagram,
-        "instagram-native-autoscrub-visible-rows-v1",
+        BoundaryService::Telegram,
+        "telegram-native-autoscrub-visible-rows-v1",
         BoundaryOperation::ServiceLayoutAdvice,
         ProprietaryNetworkPolicy::NoNetwork,
         ProprietaryRecipeAuthority::NativeAutoscrub,
     ),
     ProprietaryRecipeDescriptor::new(
-        BoundaryService::Facebook,
-        "facebook-native-autoscrub-visible-rows-v1",
-        BoundaryOperation::ServiceLayoutAdvice,
-        ProprietaryNetworkPolicy::NoNetwork,
-        ProprietaryRecipeAuthority::NativeAutoscrub,
-    ),
-    ProprietaryRecipeDescriptor::new(
-        BoundaryService::Messenger,
-        "messenger-native-autoscrub-visible-rows-v1",
+        BoundaryService::Signal,
+        "signal-native-autoscrub-visible-rows-v1",
         BoundaryOperation::ServiceLayoutAdvice,
         ProprietaryNetworkPolicy::NoNetwork,
         ProprietaryRecipeAuthority::NativeAutoscrub,
@@ -51,13 +44,6 @@ const PROPRIETARY_RECIPE_MATRIX: &[ProprietaryRecipeDescriptor] = &[
     ProprietaryRecipeDescriptor::new(
         BoundaryService::WhatsApp,
         "whatsapp-native-autoscrub-visible-rows-v1",
-        BoundaryOperation::ServiceLayoutAdvice,
-        ProprietaryNetworkPolicy::NoNetwork,
-        ProprietaryRecipeAuthority::NativeAutoscrub,
-    ),
-    ProprietaryRecipeDescriptor::new(
-        BoundaryService::Snapchat,
-        "snapchat-native-autoscrub-visible-rows-v1",
         BoundaryOperation::ServiceLayoutAdvice,
         ProprietaryNetworkPolicy::NoNetwork,
         ProprietaryRecipeAuthority::NativeAutoscrub,
@@ -157,30 +143,24 @@ impl fmt::Debug for BoundaryOperation {
 #[serde(rename_all = "camelCase")]
 pub enum BoundaryService {
     Discord,
+    Telegram,
+    Signal,
     BrowserCompanion,
     NativeApp,
     OslHub,
-    X,
-    Instagram,
-    Facebook,
-    Messenger,
     WhatsApp,
-    Snapchat,
 }
 
 impl fmt::Debug for BoundaryService {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Discord => "BoundaryService::Discord",
+            Self::Telegram => "BoundaryService::Telegram",
+            Self::Signal => "BoundaryService::Signal",
             Self::BrowserCompanion => "BoundaryService::BrowserCompanion",
             Self::NativeApp => "BoundaryService::NativeApp",
             Self::OslHub => "BoundaryService::OslHub",
-            Self::X => "BoundaryService::X",
-            Self::Instagram => "BoundaryService::Instagram",
-            Self::Facebook => "BoundaryService::Facebook",
-            Self::Messenger => "BoundaryService::Messenger",
             Self::WhatsApp => "BoundaryService::WhatsApp",
-            Self::Snapchat => "BoundaryService::Snapchat",
         })
     }
 }
@@ -1709,12 +1689,10 @@ mod tests {
     #[test]
     fn recipe_matrix_expansion() {
         let expected_services = [
-            BoundaryService::X,
-            BoundaryService::Instagram,
-            BoundaryService::Facebook,
-            BoundaryService::Messenger,
+            BoundaryService::Discord,
+            BoundaryService::Telegram,
+            BoundaryService::Signal,
             BoundaryService::WhatsApp,
-            BoundaryService::Snapchat,
         ];
         let matrix = proprietary_recipe_matrix();
 
@@ -1741,7 +1719,6 @@ mod tests {
         }
 
         for unsupported_service in [
-            BoundaryService::Discord,
             BoundaryService::BrowserCompanion,
             BoundaryService::NativeApp,
             BoundaryService::OslHub,
@@ -1752,12 +1729,10 @@ mod tests {
         assert_eq!(
             seen_ids,
             vec![
-                "x-native-autoscrub-visible-rows-v1",
-                "instagram-native-autoscrub-visible-rows-v1",
-                "facebook-native-autoscrub-visible-rows-v1",
-                "messenger-native-autoscrub-visible-rows-v1",
+                "discord-native-autoscrub-visible-rows-v1",
+                "telegram-native-autoscrub-visible-rows-v1",
+                "signal-native-autoscrub-visible-rows-v1",
                 "whatsapp-native-autoscrub-visible-rows-v1",
-                "snapchat-native-autoscrub-visible-rows-v1",
             ]
         );
     }
@@ -1801,8 +1776,8 @@ mod tests {
             }
         }
 
-        let recipe = proprietary_recipe_for_service(BoundaryService::Instagram)
-            .expect("Instagram has a proprietary recipe");
+        let recipe = proprietary_recipe_for_service(BoundaryService::Telegram)
+            .expect("Telegram has a proprietary recipe");
         let layout_access = optional_access(&[OpenPermission::ServiceLayoutAdvice]);
         let risk_only_access = optional_access(&[OpenPermission::LocalRiskAdvice]);
 
@@ -1868,7 +1843,7 @@ mod tests {
         assert_eq!(recipe_request.recipe(), Some(recipe));
         assert!(recipe_request.native_recipe_authority().is_some());
         let rendered = format!("{recipe_request:?}");
-        assert!(rendered.contains("instagram-native-autoscrub-visible-rows-v1"));
+        assert!(rendered.contains("telegram-native-autoscrub-visible-rows-v1"));
         assert!(!rendered.contains("5555"));
 
         let expected_advice =

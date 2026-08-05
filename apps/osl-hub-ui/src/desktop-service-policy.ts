@@ -10,17 +10,12 @@ import type { SendMode } from "./state";
  */
 export type DesktopServiceId =
   | "discord"
+  | "telegram"
+  | "signal"
+  | "whatsapp"
   | "outlook"
   | "proton"
   | "tuta"
-  | "fastmail"
-  | "zoho"
-  | "slack"
-  | "teams"
-  | "instagram"
-  | "messenger"
-  | "x"
-  | "snapchat"
   | "gmail"
   | "yahoo"
   | "aol"
@@ -162,17 +157,12 @@ const discordSendModeRisk: NonNullable<DesktopServicePolicy["sendModeRisk"]> = [
  */
 export const desktopServicePolicies: readonly DesktopServicePolicy[] = [
   policy("discord", "verified", discordSendModeRisk),
+  policy("telegram", "verified"),
+  policy("signal", "verified"),
+  policy("whatsapp", "verified"),
   policy("outlook", "verified"),
   policy("proton", "candidate"),
   policy("tuta", "candidate"),
-  policy("fastmail", "candidate"),
-  policy("zoho", "candidate"),
-  policy("slack", "candidate"),
-  policy("teams", "candidate"),
-  policy("instagram", "packagedWeb"),
-  policy("messenger", "browserOnly"),
-  policy("x", "packagedWeb"),
-  policy("snapchat", "browserOnly"),
   policy("gmail", "browserOnly"),
   policy("yahoo", "browserOnly"),
   policy("aol", "browserOnly"),

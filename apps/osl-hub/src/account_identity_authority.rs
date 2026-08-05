@@ -134,15 +134,8 @@ fn canonical_service_id(service: ServiceKind) -> &'static str {
         ServiceKind::Discord => "discord",
         ServiceKind::Telegram => "telegram",
         ServiceKind::WhatsApp => "whatsapp",
-        ServiceKind::Instagram => "instagram",
-        ServiceKind::Snapchat => "snapchat",
         ServiceKind::Email => "email",
-        ServiceKind::X => "x",
         ServiceKind::Signal => "signal",
-        ServiceKind::Slack => "slack",
-        ServiceKind::Linkedin => "linkedin",
-        ServiceKind::Teams => "teams",
-        ServiceKind::Messenger => "messenger",
     }
 }
 
@@ -230,7 +223,7 @@ mod tests {
         // service nor a noncanonical alias can select the Discord row.
         load_identity(&core, identity.clone());
         assert!(reloaded
-            .require_identity_authority(&core, ServiceKind::Instagram, &account.id)
+            .require_identity_authority(&core, ServiceKind::Telegram, &account.id)
             .is_err());
         assert_eq!(service_kind_from_id("Discord"), None);
         assert_eq!(service_kind_from_id("discord.com"), None);
