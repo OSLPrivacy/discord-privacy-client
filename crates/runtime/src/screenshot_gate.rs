@@ -123,7 +123,7 @@ pub fn verify_capture_protection(hwnd_isize: isize) -> Result<(), CaptureProtect
         is_top_level_window: unsafe { GetAncestor(hwnd, GA_ROOT) == hwnd },
         dwm_is_composing: dwm_is_composing()?,
         is_layered_window: unsafe {
-            GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_LAYERED != 0
+            GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_LAYERED.0 != 0
         },
     };
     validate_prerequisites(prerequisites)?;
