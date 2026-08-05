@@ -747,7 +747,8 @@ fn open_pending_inner(
         // Decode and create the window while it is hidden. `prepare` applies
         // and reads back capture exclusion before returning; Drop closes the
         // hidden window and zeroizes its pixels on every later failure.
-        let viewer = super::native_image_viewer::prepare(app, opened)?;
+        let viewer =
+            super::native_image_viewer::prepare(app, opened, plan.display_duration_seconds)?;
         validate_surface(app, broker_state, overlay_context)?;
         require_active_pro(core)?;
         if overlay_context.is_some() {
