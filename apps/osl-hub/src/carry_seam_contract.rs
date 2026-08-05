@@ -107,7 +107,10 @@ pub enum SeamContractError {
     /// name and would silently under-cover the seam.
     Unresolved(Vec<String>),
     /// The extractor produced a contract too small to be believable.
-    TooFewItems { found: usize, minimum: usize },
+    TooFewItems {
+        found: usize,
+        minimum: usize,
+    },
     Unreadable(String),
 }
 
@@ -360,7 +363,10 @@ pub fn normalise(src: &str) -> String {
     let mut last_kept: Option<(char, bool)> = None;
     for (i, (ch, literal)) in without_trailing_commas.iter().enumerate() {
         if *ch == ' ' && !*literal {
-            let opens = matches!(last_kept, Some(('(', false)) | Some(('[', false)) | Some(('<', false)));
+            let opens = matches!(
+                last_kept,
+                Some(('(', false)) | Some(('[', false)) | Some(('<', false))
+            );
             let closes = matches!(
                 without_trailing_commas.get(i + 1),
                 Some((')', false))
@@ -1091,7 +1097,10 @@ pub fn drive() {
             ),
             (
                 "enum variant added",
-                SUBSTRATE.replace("    Window,\n    Renderer,", "    Window,\n    Renderer,\n    Overlay,"),
+                SUBSTRATE.replace(
+                    "    Window,\n    Renderer,",
+                    "    Window,\n    Renderer,\n    Overlay,",
+                ),
             ),
             (
                 "struct field removed",
@@ -1107,10 +1116,16 @@ pub fn drive() {
             ),
             (
                 "inherent method signature changed",
-                SUBSTRATE.replace("pub fn is_composer(&self) -> bool", "pub fn is_composer(&self) -> Option<bool>"),
+                SUBSTRATE.replace(
+                    "pub fn is_composer(&self) -> bool",
+                    "pub fn is_composer(&self) -> Option<bool>",
+                ),
             ),
         ] {
-            assert_ne!(mutated, SUBSTRATE, "{label}: the mutant must edit the source");
+            assert_ne!(
+                mutated, SUBSTRATE,
+                "{label}: the mutant must edit the source"
+            );
             let after = contract(&mutated);
             assert_ne!(
                 before.sha256, after.sha256,
@@ -1121,11 +1136,8 @@ pub fn drive() {
 
     #[test]
     fn an_unresolvable_reference_refuses_rather_than_under_covering() {
-        match seam_contract_with_floor(
-            "use crate::native_a11y::{place, NoSuchItem};",
-            SUBSTRATE,
-            1,
-        ) {
+        match seam_contract_with_floor("use crate::native_a11y::{place, NoSuchItem};", SUBSTRATE, 1)
+        {
             Err(SeamContractError::Unresolved(names)) => {
                 assert!(names.iter().any(|n| n == "NoSuchItem"), "{names:?}")
             }
@@ -1192,7 +1204,13 @@ pub fn drive() {
         assert_eq!(normalise("let x = 1; // note"), normalise("let x = 1;"));
         assert_eq!(normalise("let x = 1; /* note */"), normalise("let x = 1;"));
         // A literal's own bytes survive both rules.
-        assert_ne!(normalise(r#"const A: &str = "a  b";"#), normalise(r#"const A: &str = "a b";"#));
-        assert_ne!(normalise(r#"const A: &str = "x,)";"#), normalise(r#"const A: &str = "x)";"#));
+        assert_ne!(
+            normalise(r#"const A: &str = "a  b";"#),
+            normalise(r#"const A: &str = "a b";"#)
+        );
+        assert_ne!(
+            normalise(r#"const A: &str = "x,)";"#),
+            normalise(r#"const A: &str = "x)";"#)
+        );
     }
 }

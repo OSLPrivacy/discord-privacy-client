@@ -2965,7 +2965,8 @@ pub(crate) mod tests {
     const RECEIPT_DEBT_CEILING: usize = 1;
 
     /// The one command an operator runs when the seam changes.
-    const FLEET_RERUN_COMMAND: &str = "cargo test --manifest-path apps/osl-hub/Cargo.toml --lib -- \
+    const FLEET_RERUN_COMMAND: &str =
+        "cargo test --manifest-path apps/osl-hub/Cargo.toml --lib -- \
                                        --exact --nocapture \
                                        native_apps::tests::carry_receipt_fleet_rerun_report";
 
@@ -2982,7 +2983,9 @@ pub(crate) mod tests {
             return out;
         }
         for (id, defect) in PUBLISHED_WITHOUT_A_LIVE_RECEIPT {
-            out.push_str(&format!("\n  - {id:?} published on no live receipt, against {defect}"));
+            out.push_str(&format!(
+                "\n  - {id:?} published on no live receipt, against {defect}"
+            ));
         }
         out
     }
@@ -3074,7 +3077,8 @@ pub(crate) mod tests {
             .map(|(id, _)| *id)
             .collect();
         assert_eq!(
-            debts_seen, recorded,
+            debts_seen,
+            recorded,
             "PUBLISHED_WITHOUT_A_LIVE_RECEIPT must name exactly the published apps that have no \
              receipt. An entry that no longer applies is a stale exemption; one that has been \
              added is a provider published on nothing.\n{}",
@@ -3259,8 +3263,8 @@ pub(crate) mod tests {
     fn the_real_substrate_survives_a_refactor_and_not_a_seam_change() {
         use crate::carry_seam_contract::seam_contract_from_sources;
 
-        let adapter_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/native_telegram_adapter.rs");
+        let adapter_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/native_telegram_adapter.rs");
         let substrate_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(carry_receipt::SUBSTRATE_SOURCE);
         let adapter = std::fs::read_to_string(adapter_path).expect("the adapter is readable");
@@ -3297,7 +3301,8 @@ pub(crate) mod tests {
         let after_refactor = seam_contract_from_sources(&adapter, &refactored)
             .expect("the contract still computes after a refactor");
         assert_eq!(
-            base.sha256, after_refactor.sha256,
+            base.sha256,
+            after_refactor.sha256,
             "a behaviour-preserving refactor of {} invalidated the seam contract. At 12-14 \
              published providers that is 12-14 live signed-in Windows runs for a renamed local.",
             carry_receipt::SUBSTRATE_SOURCE
@@ -3363,8 +3368,7 @@ pub(crate) mod tests {
         use crate::carry_seam_contract::{seam_contract_from_sources, sha256_hex};
 
         let adapter = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/native_telegram_adapter.rs"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/native_telegram_adapter.rs"),
         )
         .expect("the adapter is readable");
         let substrate = std::fs::read_to_string(
@@ -4345,7 +4349,10 @@ pub(crate) mod tests {
                 ),
                 (|r| r.seam_contract_items = 0, "seam contract items"),
                 (
-                    |r| r.seam_contract_items = crate::carry_seam_contract::SEAM_CONTRACT_MIN_ITEMS - 1,
+                    |r| {
+                        r.seam_contract_items =
+                            crate::carry_seam_contract::SEAM_CONTRACT_MIN_ITEMS - 1
+                    },
                     "seam contract items",
                 ),
                 (|r| r.recovered_sha256 = "0".repeat(64), "recovered payload"),
