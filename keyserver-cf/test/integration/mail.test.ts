@@ -16,6 +16,11 @@ beforeEach(async () => {
     env.DB.prepare("DELETE FROM mail_control_receipts"),
     env.DB.prepare("DELETE FROM mail_sender_consents"),
     env.DB.prepare("DELETE FROM mail_address_epochs"),
+    // Deleting a directory row fires `username_directory_retire_before_delete`
+    // (migrations/0038_username_identity_hardening.sql), which permanently
+    // retires the handle.  That ledger is deliberately NOT bulk-cleared here:
+    // `claimUsername` releases exactly the one handle it is about to claim, so
+    // every fabricated re-claim is visible at the line that needs it.
     env.DB.prepare("DELETE FROM username_directory"),
     env.DB.prepare("DELETE FROM users"),
   ]);
@@ -145,18 +150,14 @@ describe("OSL Mail Worker", () => {
     expect(response.status).toBe(201);
     expect(await response.json()).toMatchObject({ address: "alice@oslprivacy.com", address_epoch: 1, state: "active" });
 
-    await env.DB.prepare("DELETE FROM username_directory WHERE user_id = ?").bind(alice.userId).run();
-    await env.DB.prepare("INSERT INTO username_directory(username,user_id,friend_code,claimed_at,updated_at) VALUES ('alice_new',?,?,?,?)")
-      .bind(alice.userId, "friend-code-placeholder", new Date().toISOString(), new Date().toISOString()).run();
+    await replaceUsername(alice.userId, "alice_new");
     response = await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice_new", rotate: true });
     expect(response.status).toBe(201);
     expect(await response.json()).toMatchObject({ address: "alice_new@oslprivacy.com", address_epoch: 2 });
     const old = await env.DB.prepare("SELECT state FROM mail_address_epochs WHERE address='alice@oslprivacy.com'").first<{ state: string }>();
     expect(old?.state).toBe("tombstoned");
 
-    await env.DB.prepare("DELETE FROM username_directory WHERE user_id = ?").bind(alice.userId).run();
-    await env.DB.prepare("INSERT INTO username_directory(username,user_id,friend_code,claimed_at,updated_at) VALUES ('alice',?,?,?,?)")
-      .bind(alice.userId, "friend-code-placeholder", new Date().toISOString(), new Date().toISOString()).run();
+    await replaceUsername(alice.userId, "alice");
     response = await signedPost("/v1/mail/address", "PROVISION", alice, { username: "alice", rotate: true });
     expect(response.status).toBe(409);
     const stillActive = await env.DB.prepare("SELECT state FROM mail_address_epochs WHERE address='alice_new@oslprivacy.com'").first<{ state: string }>();
@@ -507,18 +508,42 @@ async function createIdentity(userId: string, username: string): Promise<Identit
     `INSERT INTO users(user_id,ik_x25519_pub,ik_ed25519_pub,ik_mlkem768_pub,ik_x25519_signature,registered_at,ik_ratchet_initial_pub,identity_lookup_enabled)
      VALUES (?,?,?,?,?,?,?,1)`,
   ).bind(userId, base64Encode(new Uint8Array(xRaw)), base64Encode(new Uint8Array(edRaw)), "mlkem", "signature", now, null).run();
-  await env.DB.prepare(
-    "INSERT INTO username_directory(username,user_id,friend_code,claimed_at,updated_at) VALUES (?,?,?,?,?)",
-  ).bind(username, userId, "friend-code-placeholder", now, now).run();
+  await claimUsername(userId, username);
   return { userId, username, signingKey: ed.privateKey, x25519PrivateKey: x.privateKey };
 }
 
-async function replaceUsername(userId: string, username: string): Promise<void> {
+/**
+ * Put `userId` in possession of `username`, the way the shipping claim path
+ * does it (src/endpoints/usernames.ts:145 supplies username_skeleton and
+ * display_username).  Two things about this fixture are load-bearing:
+ *
+ *  1. It writes the skeleton.  A directory INSERT with a NULL skeleton hits
+ *     `username_directory_reject_retired_legacy_writer`, whose whole point is
+ *     to be a SILENT no-op (`RAISE(IGNORE)`).  A fixture that fails silently
+ *     does not set up the test, it deletes the test — so we write the real
+ *     shape and assert below that a row actually landed.
+ *  2. It releases any tombstone for exactly this name first.  Migration 0038
+ *     retires a handle on every release path, so "this identity holds this
+ *     handle again" is no longer reachable through the identity lane.  These
+ *     are OSL Mail tests: they must prove that mail_address_epochs refuses to
+ *     re-issue a retired ADDRESS on its own authority, not borrow the identity
+ *     lane's guard and call the mail guard proven.  Releasing the tombstone is
+ *     what puts the mail guard under test alone.
+ */
+async function claimUsername(userId: string, username: string): Promise<void> {
   const now = new Date().toISOString();
+  await env.DB.prepare("DELETE FROM username_tombstones WHERE username = ? OR skeleton = ?")
+    .bind(username, username).run();
+  const written = await env.DB.prepare(
+    `INSERT INTO username_directory(username,username_skeleton,display_username,user_id,friend_code,claimed_at,updated_at)
+     VALUES (?,?,?,?,?,?,?)`,
+  ).bind(username, username, username, userId, "friend-code-placeholder", now, now).run();
+  expect(written.meta?.changes ?? 0).toBe(1);
+}
+
+async function replaceUsername(userId: string, username: string): Promise<void> {
   await env.DB.prepare("DELETE FROM username_directory WHERE user_id = ?").bind(userId).run();
-  await env.DB.prepare(
-    "INSERT INTO username_directory(username,user_id,friend_code,claimed_at,updated_at) VALUES (?,?,?,?,?)",
-  ).bind(username, userId, "friend-code-placeholder", now, now).run();
+  await claimUsername(userId, username);
 }
 
 async function mailEpochCount(): Promise<number> {

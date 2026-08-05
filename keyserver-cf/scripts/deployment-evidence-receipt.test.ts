@@ -109,7 +109,15 @@ describe("producer-owned deployment evidence receipt v3", () => {
         sender_filter: { advertised: true, version: 1 },
       },
     });
-    expect(finalReceipt.receipt_sha256).toMatch(/^[1-9a-f][0-9a-f]{63}$/);
+    // `[1-9a-f][0-9a-f]{63}` rejected every SHA-256 whose first nibble is 0,
+    // and this receipt hash is fresh per process (the fixture generates the
+    // producer Ed25519 key at module load), so the gate failed roughly one run
+    // in sixteen: measured 5 leading-zero digests in 116 sampled runs, first
+    // nibble uniform over all 16 values.  The intent — a well-formed, non
+    // degenerate digest — is spelled correctly elsewhere in this same suite
+    // (scripts/sender-filter-rollout-contract.test.ts:255); use that form, so
+    // an all-zero placeholder still fails but a valid digest never does.
+    expect(finalReceipt.receipt_sha256).toMatch(/^(?!0{64}$)[0-9a-f]{64}$/);
 
     const bridgeReceipt = verify(
       deploymentEvidencePayload("A"),
