@@ -1,8 +1,8 @@
 {
   "schema": "osl-support-matrix-v1",
-  "updated_utc": "2026-07-30T00:00:00Z",
+  "updated_utc": "2026-08-05T00:00:00Z",
   "schema_version": 1,
-  "generated_from": "manual-verdict-ingest",
+  "generated_from": "manual-verdict-ingest; the telegram row was re-scoped 2026-08-05 by owner ruling, and its status value did NOT move",
   "surface_ruling": {
     "schema": "osl-surface-ruling-v1",
     "ruled_on": "2026-08-05",
@@ -52,7 +52,23 @@
         "claim_allowed": false,
         "evidence_status": "externally_blocked",
         "evidence": "docs/reports/telegram-adapter-verdict.md#TelegramSupportVerdict",
-        "support_boundary": "Telegram Desktop cannot be listed as supported until a signed-client UI Automation probe proves stable, text-exposed message rows on an actual conversation surface."
+        "blocking_scope": "osl_release_gate",
+        "blocking_authority": "This status is OSL's, not Telegram's. It was written once, on 2026-07-29, from a probe that reached only a login wall and therefore measured nothing about Telegram Desktop; the verdict it was transcribed from says in its own words that it 'cannot establish that the adapter is technically blocked'. What holds the label is OSL's own release gate: the Telegram adapter has no verb that can commit a message, it has never proven live delivery, and Experimental -- the single non-blocked label the claim allowlist permits for Telegram -- is not expressible by any shipping status. Re-scoped 2026-08-05 on the owner's ruling; the status value itself did not move.",
+        "client_accessibility_measurement": {
+          "taken_utc": "2026-08-04",
+          "probe": "plan-test/probes/A03d-telegram-row-probe.ps1",
+          "result": "plan-test/runlogs/tg-ungate-rowprobe.json",
+          "client": "Telegram Desktop 7.0.8.0, signature Valid, CN=Telegram FZ-LLC",
+          "surface": "an actual conversation surface, not a login wall",
+          "candidate_rows": 109,
+          "text_exposed_rows": 109,
+          "threshold": 2,
+          "probe_verdict_field": "supported",
+          "starves": "plan-test/runlogs/tg-ungate-rowprobe-selftest.json -- removing row-typed elements from the pane returns 0 rows and 'externally blocked', so the probe can fail",
+          "establishes": "On this client, at this version, the conversation pane exposes accessible rows. That is the promotion rule's NECESSARY condition, satisfied. One measurement, one machine, one prober; it is not sufficient.",
+          "does_not_establish": "Nothing about OSL's ability to deliver. The Telegram adapter has no verb that can commit a message, and DeliveryEvidence::NeverProvenLive caps the app below Beta regardless of this probe."
+        },
+        "support_boundary": "This status records OSL's release gate and never a technical block in Telegram's client. Telegram Desktop cannot be listed as supported until a signed-client UI Automation probe proves stable, text-exposed message rows on an actual conversation surface AND OSL's own adapter proves live delivery: the probe half was measured on 2026-08-04 and is met; the delivery half is not, and it is the half that keeps the label."
       },
       {
         "id": "osl_mail_public",
@@ -117,8 +133,24 @@
         "evidence_report": "docs/reports/telegram-adapter-verdict.md",
         "evidence_anchor": "TelegramSupportVerdict",
         "last_verified": "2026-07-30",
-        "limitation": "Telegram cannot be listed as supported until the signed-client row probe proves stable, text-exposed conversation rows.",
-        "support_boundary": "Telegram Desktop cannot be listed as supported until a signed-client UI Automation probe proves stable, text-exposed message rows on an actual conversation surface."
+        "blocking_scope": "osl_release_gate",
+        "blocking_authority": "This status is OSL's, not Telegram's. It was written once, on 2026-07-29, from a probe that reached only a login wall and therefore measured nothing about Telegram Desktop; the verdict it was transcribed from says in its own words that it 'cannot establish that the adapter is technically blocked'. What holds the label is OSL's own release gate: the Telegram adapter has no verb that can commit a message, it has never proven live delivery, and Experimental -- the single non-blocked label the claim allowlist permits for Telegram -- is not expressible by any shipping status. Re-scoped 2026-08-05 on the owner's ruling; the status value itself did not move.",
+        "client_accessibility_measurement": {
+          "taken_utc": "2026-08-04",
+          "probe": "plan-test/probes/A03d-telegram-row-probe.ps1",
+          "result": "plan-test/runlogs/tg-ungate-rowprobe.json",
+          "client": "Telegram Desktop 7.0.8.0, signature Valid, CN=Telegram FZ-LLC",
+          "surface": "an actual conversation surface, not a login wall",
+          "candidate_rows": 109,
+          "text_exposed_rows": 109,
+          "threshold": 2,
+          "probe_verdict_field": "supported",
+          "starves": "plan-test/runlogs/tg-ungate-rowprobe-selftest.json -- removing row-typed elements from the pane returns 0 rows and 'externally blocked', so the probe can fail",
+          "establishes": "On this client, at this version, the conversation pane exposes accessible rows. That is the promotion rule's NECESSARY condition, satisfied. One measurement, one machine, one prober; it is not sufficient.",
+          "does_not_establish": "Nothing about OSL's ability to deliver. The Telegram adapter has no verb that can commit a message, and DeliveryEvidence::NeverProvenLive caps the app below Beta regardless of this probe."
+        },
+        "limitation": "OSL's own release gate, not a fault in Telegram Desktop: the signed-client row probe returned stable, text-exposed conversation rows on 2026-08-04 -- 109 of 109 against a threshold of 2, on a signed 7.0.8.0 client, on a real conversation surface -- which satisfies the promotion rule's necessary condition and nothing beyond it. Telegram stays unlisted because OSL's own adapter cannot commit a message and has never proven live delivery, and because Experimental, the one non-blocked label the allowlist permits here, is not expressible by any shipping status.",
+        "support_boundary": "This status records OSL's release gate and never a technical block in Telegram's client. Telegram Desktop cannot be listed as supported until a signed-client UI Automation probe proves stable, text-exposed message rows on an actual conversation surface AND OSL's own adapter proves live delivery: the probe half was measured on 2026-08-04 and is met; the delivery half is not, and it is the half that keeps the label."
       },
       {
         "id": "osl_mail_public",
@@ -301,7 +333,23 @@
       "evidence_report": "docs/reports/telegram-adapter-verdict.md",
       "evidence_anchor": "TelegramSupportVerdict",
       "verdict_recorded": "2026-07-30",
-      "support_boundary": "Cannot be listed as supported until a signed-client UI Automation probe proves stable, text-exposed message rows on an actual conversation surface."
+        "blocking_scope": "osl_release_gate",
+        "blocking_authority": "This status is OSL's, not Telegram's. It was written once, on 2026-07-29, from a probe that reached only a login wall and therefore measured nothing about Telegram Desktop; the verdict it was transcribed from says in its own words that it 'cannot establish that the adapter is technically blocked'. What holds the label is OSL's own release gate: the Telegram adapter has no verb that can commit a message, it has never proven live delivery, and Experimental -- the single non-blocked label the claim allowlist permits for Telegram -- is not expressible by any shipping status. Re-scoped 2026-08-05 on the owner's ruling; the status value itself did not move.",
+        "client_accessibility_measurement": {
+          "taken_utc": "2026-08-04",
+          "probe": "plan-test/probes/A03d-telegram-row-probe.ps1",
+          "result": "plan-test/runlogs/tg-ungate-rowprobe.json",
+          "client": "Telegram Desktop 7.0.8.0, signature Valid, CN=Telegram FZ-LLC",
+          "surface": "an actual conversation surface, not a login wall",
+          "candidate_rows": 109,
+          "text_exposed_rows": 109,
+          "threshold": 2,
+          "probe_verdict_field": "supported",
+          "starves": "plan-test/runlogs/tg-ungate-rowprobe-selftest.json -- removing row-typed elements from the pane returns 0 rows and 'externally blocked', so the probe can fail",
+          "establishes": "On this client, at this version, the conversation pane exposes accessible rows. That is the promotion rule's NECESSARY condition, satisfied. One measurement, one machine, one prober; it is not sufficient.",
+          "does_not_establish": "Nothing about OSL's ability to deliver. The Telegram adapter has no verb that can commit a message, and DeliveryEvidence::NeverProvenLive caps the app below Beta regardless of this probe."
+        },
+      "support_boundary": "This status records OSL's release gate and never a technical block in Telegram's client. Telegram Desktop cannot be listed as supported until a signed-client UI Automation probe proves stable, text-exposed message rows on an actual conversation surface AND OSL's own adapter proves live delivery: the probe half was measured on 2026-08-04 and is met; the delivery half is not, and it is the half that keeps the label."
     },
     {
       "id": "outlook_osl_mail",

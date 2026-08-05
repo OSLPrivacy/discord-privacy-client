@@ -101,7 +101,10 @@ Scope: the space-event lane, implemented in
 (`migrations/0041_space_event_queue_reserved.sql`, as altered by
 `migrations/0043_space_event_expiry_hardening.sql`). Since D-273 the lane is
 **three** routes and one scheduled job, not two routes: `POST /v1/space-events`,
-the `GET` drain, `POST /v1/space-events/ack`, and the hourly retention sweep.
+`POST /v1/space-events/drain`, `POST /v1/space-events/ack`, and the hourly
+retention sweep. **All three are `POST`.** The drain was
+`GET /v1/space-events/:recipient_tag` until the owner decided OPEN-4 on
+2026-08-05; see §6b.3.
 
 ### 6b.1 The envelope — OBSERVED
 
@@ -183,10 +186,12 @@ ratcheted census broken is not an improvement**, so the fix is handed over
 whole. Until it lands, read this section's enforcement claim as: the module
 header states the rule, and one gate holds it against `0041`.
 
-### 6b.3 The drain — OBSERVED, and no longer destructive
+### 6b.3 The drain — OBSERVED, no longer destructive, and no longer a `GET`
 
-`GET /v1/space-events/:recipient_tag`:
+`POST /v1/space-events/drain`, body `{ recipient_tag }`:
 
+- The tag is read from the **body**, not the path (D81, §6b.5). A
+  non-string `recipient_tag` takes the same rejection a malformed one takes.
 - The tag in the request must decode to exactly 32 bytes, else `400`
   `invalid recipient tag` (`space-events.ts:124`).
 - The read selects rows for that **exact** tag with `expires_at > now` **and
@@ -223,9 +228,24 @@ must be preserved — and note that the acknowledgement route was built so as no
 to break it (§6b.5).
 
 **"Returns and consumes" (T21-C1) still holds on the reading the code takes:** a
-leased row stops being returned. The frozen wording was not changed, and neither
-the drain's method nor its path was touched. Whether "consumes" was *meant* to
-require destruction is not resolved here and is not this document's to resolve.
+leased row stops being returned. That wording was not changed by the OPEN-4
+ruling either — the amendment to T21-C1 changed the drain's **method and path
+only**. Whether "consumes" was *meant* to require destruction is not resolved
+here and is not this document's to resolve.
+
+**The method — ANSWERED (OPEN-4), and the `GET` is gone.** `GET
+/v1/space-events/:recipient_tag` no longer exists; it answers `404`. It carried
+the lane's entire bearer capability in the request path, where every
+intermediary logs it, while performing a write — a lease since D-273, a delete
+before that — under a method proxies, prefetchers and generic retry logic all
+treat as safe and repeatable. It was **removed rather than kept during a
+transition**, because no caller of this lane exists in this repository outside
+its own tests and contracts (§6b.7), so there was nothing to transition and a
+reachable destructive-shaped route would have retained the whole hazard for
+nobody. **The cost bound did not move with the method.** The drain's only bound
+was the 1200/min public-GET bucket; mutation-ingress is 3600/min, so the new
+route is charged to the *same* public-GET bucket and key as well as the mutation
+gate, and the binding limit is still 1200 (§6b.4).
 
 ### 6b.4 The capability — OBSERVED
 
@@ -241,10 +261,15 @@ and anyone able to acknowledge an event could already have drained it
 (`space-events.ts:152-154`).
 
 After D-260, all three routes sit behind the worker's ingress rate limits — the
-mutation limit on both `POST`s (`index.ts:343-356`, routes at `index.ts:477`
-and `index.ts:481`), the public-GET limit on the drain (`index.ts:331-341`,
-route at `index.ts:403-404`). Those bound the *cost* of probing the tag space;
-they are not an authorization check and must not be described as one.
+mutation limit on all three `POST`s (`index.ts:343-356`, routes at
+`index.ts:477`, `index.ts:481` and `index.ts:488`), **and the drain is
+additionally charged to the public-GET bucket** at
+`PUBLIC_GET_INGRESS_MAX_PER_MINUTE` under the same key it used when it was a
+`GET` (`index.ts:489-495`). Both limits must pass on the drain, so the binding
+one is still 1200/min and moving the method did not raise the budget for probing
+the 32-byte tag space to the mutation gate's 3600. Those bound the *cost* of
+probing the tag space; they are not an authorization check and must not be
+described as one.
 
 **There is still no invite capability in this repository.** `spaces.md` reserved
 migrations `0041`–`0043` for "event queue, invite capability state, and
@@ -278,8 +303,8 @@ is a **new** route, added so that neither frozen T21-C1 route had to change.
 `GET /v1/usernames/:username` because a handle in a request path is written into
 every intermediary's default log (`index.ts:413-417`), and the ack was shaped to
 match: the tag rides in the body (`space-events.ts:147-151`). Any future route
-in this lane must do the same. The `GET` drain is the standing exception, and it
-is an exception only because `spaces.md` T21-C1 freezes it — see OPEN-4.
+in this lane must do the same. **There is no longer an exception**: the drain was
+the last route with a tag in its path, and OPEN-4 removed it (§6b.3).
 
 ### 6b.6 Retention — OBSERVED (new since the first draft)
 
@@ -505,8 +530,8 @@ time (`space-events.ts:117`). Three consequences a client must not assume away:
 - **Must not put the tag in a request path for any route it adds.** D81 removed
   `GET /v1/usernames/:username` because a handle in a path is written into every
   intermediary's default log (`index.ts:413-417`), and the ack was shaped
-  accordingly (§6b.5). The frozen `GET` drain is the standing exception and is
-  an exception only because `spaces.md` T21-C1 freezes it (OPEN-4).
+  accordingly (§6b.5). The rule now has **no exception**: OPEN-4 moved the drain
+  off its path too (§6b.3).
 - **Must not treat the 60-second lease as a deadline.** Missing it costs a
   duplicate, which §6b.8.4 makes harmless; it costs nothing else. A client must
   not skip §6b.8.1's durable commit to fit inside it.
@@ -650,21 +675,23 @@ to supply, are recorded there instead of here: the sweep is **bounded and says
 what it could not remove**, and a sweep alone would not have been a retention
 policy without the `expires_at` ceiling now in §6b.1.
 
-**OPEN-4 — the drain's method is an owner decision (D-260). STILL OPEN.**
-`spaces.md` T21-C1 freezes `GET /v1/space-events/:recipient_tag` as the route
-that "returns and consumes". A `GET` that mutates what it returns is not safe or
-idempotent, and the tag rides in the request path where intermediaries log it.
-**D-273 did not relieve this.** The drain still writes on a `GET` — it leases
-instead of deleting, which is a smaller write, not no write — and the tag is
-still in the path. The D-260 lane ruled that it **should not** be a `GET` and
-deliberately did not change it, because the method is frozen by a contract
-outside that lane's ownership; the D-273 lane declined it for the same reason
-and said so; this lane declines it for the same reason again. Recommended shape,
-unchanged: `POST /v1/space-events/drain` with the tag in the body — which is
-precisely the shape D-273 chose for the **new** ack route (§6b.5) the moment it
-was free to choose. **Client impact in this repository is zero** — no caller
-exists outside tests and documentation. **Three lanes have now declined this;
-it is owed to an owner, not to another lane.**
+**OPEN-4 — the drain's method (D-260). ANSWERED by the owner, 2026-08-05.
+CLOSED.** `spaces.md` T21-C1 froze `GET /v1/space-events/:recipient_tag` as the
+route that "returns and consumes". A `GET` that mutates what it returns is not
+safe or idempotent, and the tag rode in the request path where intermediaries
+log it. D-273 did not relieve it — a lease is a smaller write, not no write.
+Four lanes in turn ruled it *should not* be a `GET` and each declined to change
+it, because the method was frozen by a contract outside that lane's ownership.
+
+The ruling: **`POST /v1/space-events/drain`, tag in the body — the shape every
+declining lane recommended, and the shape D-273 chose for the ack the moment it
+was free to choose (§6b.5). The `GET` is REMOVED, not deprecated.** Client
+impact in this repository was zero — no caller existed outside tests and
+documentation (§6b.7) — so there was no transition to keep it alive for, and a
+route that stays reachable is the one an intermediary actually replays. T21-C1
+was amended under explicit owner authorisation for exactly this and nothing
+else; the amendment is recorded inside the clause itself. Relabelled: OBSERVED
+at §6b.3, with the ingress bound and what did *not* change stated there.
 
 **OPEN-5 — a full page is indistinguishable from the last page. STILL OPEN,
 narrowed.** The drain returns at most 64 events (§6b.3) with no continuation

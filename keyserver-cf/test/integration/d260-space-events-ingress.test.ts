@@ -129,9 +129,17 @@ describe("D-260 /v1/space-events sits behind the ingress gates", () => {
     expect(prepare).not.toHaveBeenCalled();
   });
 
-  // D-273 renamed this spec only: the drain no longer deletes, it leases. Every
-  // assertion below is unchanged, and the property is the same one -- a
-  // throttled drain must not reach the queue at all. A lease is still a write.
+  // D-273 renamed this spec: the drain no longer deletes, it leases. D-260/
+  // OPEN-4 then moved it off `GET /v1/space-events/:tag` onto
+  // `POST /v1/space-events/drain`. The property asserted is the SAME one and
+  // the bound is the SAME number -- a throttled drain must not reach the queue
+  // at all, and it must still be refused on the 1200/min public-GET bucket.
+  //
+  // THE FLOOR IS THE POINT OF THIS SPEC. The mutation-ingress limit is 3600/min
+  // (index.ts) and the public-GET limit is 1200/min, so registering the drain
+  // as an ordinary POST and stopping there would have TRIPLED the budget for
+  // probing the 32-byte tag space. The route is charged to both, and this
+  // asserts the binding one is still the 1200 bucket, under the same key.
   it("refuses the drain on the public-GET bucket, touching the queue not at all", async () => {
     const { env, publicGetLimit, mutationLimit, prepare } = envWith({
       publicGetAllowed: false,
@@ -139,10 +147,14 @@ describe("D-260 /v1/space-events sits behind the ingress gates", () => {
     });
 
     const res = await worker.fetch(
-      new Request(
-        `https://keyserver.test/v1/space-events/${encodeURIComponent(b64(0x00, TAG_BYTES))}`,
-        { headers: { "cf-connecting-ip": "203.0.113.91" } },
-      ),
+      new Request("https://keyserver.test/v1/space-events/drain", {
+        method: "POST",
+        headers: {
+          "cf-connecting-ip": "203.0.113.91",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ recipient_tag: b64(0x00, TAG_BYTES) }),
+      }),
       env,
       ctx,
     );
@@ -153,10 +165,40 @@ describe("D-260 /v1/space-events sits behind the ingress gates", () => {
     expect(publicGetLimit).toHaveBeenCalledWith({
       key: "public-get-ingress:203.0.113.91",
     });
-    expect(mutationLimit).not.toHaveBeenCalled();
-    // The whole point: `handleSpaceEventDrain` both reads and writes the queue
-    // (D-273: it leases every row it returns; before that it DELETEd them).
+    // The mutation gate ran and ADMITTED it; the public-GET bucket is what
+    // refused. That is the floor being preserved rather than merely present.
+    expect(mutationLimit).toHaveBeenCalledWith({
+      key: "mutation-ingress:203.0.113.91",
+    });
+    // The whole point: the drain both reads and writes the queue (D-273: it
+    // leases every row it returns; before that it DELETEd them).
     // A throttled drain must not have reached the queue at all.
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  // D-260/OPEN-4: the removed method, asserted by its effect. A replayed `GET`
+  // must not be able to lease a recipient's events away from it.
+  it("has no GET drain to bypass anything: the old route is gone", async () => {
+    const { env, publicGetLimit, prepare } = envWith({
+      publicGetAllowed: true,
+      mutationAllowed: true,
+    });
+
+    const res = await worker.fetch(
+      new Request(
+        `https://keyserver.test/v1/space-events/${encodeURIComponent(b64(0x00, TAG_BYTES))}`,
+        { headers: { "cf-connecting-ip": "203.0.113.92" } },
+      ),
+      env,
+      ctx,
+    );
+
+    expect(res.status).toBe(404);
+    // It is still gated -- the removal did not hoist anything above the limit --
+    // and it reaches no database at all.
+    expect(publicGetLimit).toHaveBeenCalledWith({
+      key: "public-get-ingress:203.0.113.92",
+    });
     expect(prepare).not.toHaveBeenCalled();
   });
 
@@ -191,18 +233,24 @@ describe("D-260 /v1/space-events sits behind the ingress gates", () => {
     ).join("");
     expect(expectedEventId).toHaveLength(32);
 
-    const drain = await SELF.fetch(
-      `http://test/v1/space-events/${encodeURIComponent(tag)}`,
-    );
+    // D-260/OPEN-4: over `POST /v1/space-events/drain`, tag in the body.
+    const drainBody = JSON.stringify({ recipient_tag: tag });
+    const drain = await SELF.fetch("http://test/v1/space-events/drain", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: drainBody,
+    });
     expect(drain.status).toBe(200);
     expect(await drain.json()).toEqual({
       events: [{ event_id: expectedEventId, ciphertext }],
     });
 
     // The drain consumes: a second call returns nothing.
-    const again = await SELF.fetch(
-      `http://test/v1/space-events/${encodeURIComponent(tag)}`,
-    );
+    const again = await SELF.fetch("http://test/v1/space-events/drain", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: drainBody,
+    });
     expect(again.status).toBe(200);
     expect(await again.json()).toEqual({ events: [] });
   });

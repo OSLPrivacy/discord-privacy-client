@@ -13,11 +13,11 @@
 //! could recover it.  It now *reserves* what it returns and an explicit
 //! acknowledgement destroys it:
 //!
-//!   GET  /v1/space-events/:tag   returns ≤64 events and leases them for
-//!                                LEASE_SECONDS -- they stop being returned,
-//!                                so the frozen T21-C1 wording "returns and
-//!                                consumes" still holds, but nothing is
-//!                                destroyed on transmission.
+//!   POST /v1/space-events/drain  the tag rides in the BODY (D81); returns ≤64
+//!                                events and leases them for LEASE_SECONDS --
+//!                                they stop being returned, so T21-C1's
+//!                                "returns and consumes" still holds, but
+//!                                nothing is destroyed on transmission.
 //!   POST /v1/space-events/ack    the caller names the event ids it actually
 //!                                received; only those rows are deleted.
 //!
@@ -181,4 +181,47 @@ export async function handleSpaceEventAck(request: Request, env: Env): Promise<R
     // route into the existence oracle the drain is careful not to be.
     return json({ acknowledged: true });
   } catch { return serverError("could not acknowledge Space events"); }
+}
+
+/**
+ * POST /v1/space-events/drain — D-260 / OPEN-4, decided by the owner.
+ *
+ * THE DRAIN IS NO LONGER A `GET`. `GET /v1/space-events/:tag` is removed, not
+ * deprecated, and `03-CONTRACTS/spaces.md` T21-C1 was amended to name this
+ * route instead. Two defects went with the old method and both are gone:
+ *
+ *   1. The 32-byte tag IS the entire capability on this lane, and it rode in
+ *      the request path, where every intermediary writes it to a default log.
+ *      That is exactly the defect D81 removed `GET /v1/usernames/:username`
+ *      for, and it is why `POST /v1/space-events/ack` already took its tag in
+ *      the body the moment it was free to choose.
+ *   2. The drain WRITES -- it leases every row it returns (D-273; before that
+ *      it deleted them). Proxies, prefetchers, link scanners and generic retry
+ *      logic all treat a `GET` as safe and repeatable, so a replayed drain
+ *      could lease a recipient's events away from it for LEASE_SECONDS with no
+ *      client involved at all.
+ *
+ * The GET was NOT kept alive during a transition, because there is nothing to
+ * transition: no caller of this lane exists anywhere in this repository outside
+ * its own tests and contracts. A reachable destructive-shaped route retains the
+ * whole hazard for no client's benefit.
+ *
+ * NOTHING ELSE ABOUT THE LANE MOVES. The body below is the same drain: same
+ * lease, same 64-row page, same ordering, same acknowledgement route, same
+ * sweep. The `400` for a bad tag is the same single rejection, so the no-oracle
+ * property of §6b.3 is unchanged -- a well-formed tag with nothing queued, one
+ * never used, and one whose rows are all leased still answer identically.
+ *
+ * The ingress bound is NOT relaxed by the move: `index.ts` charges this route
+ * to the same public-GET bucket and key that used to be the drain's only cost
+ * bound, in addition to the mutation-ingress gate every `POST` passes.
+ */
+export async function handleSpaceEventDrainPost(request: Request, env: Env): Promise<Response> {
+  let body: Record<string, unknown>;
+  try { body = await request.json() as Record<string, unknown>; } catch { return badRequest("invalid JSON"); }
+  // A non-string tag joins the SAME rejection a malformed one gets: a caller
+  // must not be able to tell which way its tag was wrong.
+  const tagText = body.recipient_tag;
+  if (typeof tagText !== "string") return badRequest("invalid recipient tag");
+  return await handleSpaceEventDrain(tagText, env);
 }

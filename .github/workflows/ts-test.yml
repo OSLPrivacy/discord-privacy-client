@@ -59,6 +59,66 @@ jobs:
       - name: Plan-governance-acceptance-gates
         if: ${{ !cancelled() }}
         run: python3 scripts/validate-plan-governance.py
+      # D-296. THE 34 `docs/**/*.test.mjs` SUITES RAN IN NOTHING. No CI job, no
+      # npm script, no verify-all.sh step referenced them; `scripts/verify-all.sh`
+      # runs `node --test screenshots/*.test.mjs` and stops there. 61 assertions
+      # over the shipped documentation — the download page, the FAQ, the release
+      # procedure, the retention copy, the transport boundary, the Telegram
+      # verdict — were maintained by hand and graded by nobody.
+      #
+      # WHY THIS JOB. It is the repo's only zero-dependency node job: no `npm ci`
+      # can fail for unrelated reasons ahead of it, and every docs suite imports
+      # `node:` builtins only, so it needs no lockfile the checkout does not have.
+      # A standalone job would pay a second cold checkout for the same 34 files.
+      #
+      # WHY BELOW THE INCUMBENTS, AND THIS IS THE PART THAT HAS BITTEN THIS
+      # REPOSITORY THREE TIMES (D-194): Actions aborts a job at its first failing
+      # step, so a step placed ABOVE one that carries no `if:` does not merely
+      # fail — it SKIPS it. `Claim-gate-in-app-copy-and-README` above carries no
+      # condition. So these steps are APPENDED, below both incumbents, and both
+      # carry `!cancelled()` so neither a red claim gate nor a red plan-governance
+      # gate can skip them, and they cannot skip anything either. The ordering is
+      # ASSERTED POSITIONALLY in .github/workflows/ts-test.workflow-test.py, which
+      # runs from `quality-checks` in rust-test.yml — a different workflow — for
+      # the same reason the other contracts run there.
+      #
+      # NOTHING IS WEAKENED: no test is skipped, softened or allowlisted. 34
+      # files that ran nowhere now execute, and if they find something they go red.
+      #
+      # D-195, and it is not ceremony here: `node --test` over a glob matching
+      # NOTHING exits 0. Verified on node 22.23:
+      #   node --test 'docs/**/*.nosuchtest.mjs'  ->  "# pass 0", exit 0.
+      # So the runner is not the gate — the count floor is. Without it this job
+      # would keep reporting green after the last docs suite was deleted, which
+      # is precisely the "gate that cannot fail" this repo bans. The floor is
+      # proved able to refuse before it is trusted, in a step of its own.
+      - name: Prove the docs-suite floor can refuse
+        if: ${{ !cancelled() }}
+        run: |
+          refuse_below() {
+            if [ "$1" -lt "$2" ]; then
+              echo "docs suite floor: found $1 file(s), floor is $2"
+              return 1
+            fi
+            return 0
+          }
+          if refuse_below 33 34 >/dev/null 2>&1; then
+            echo "the docs-suite floor accepted a count below the floor"
+            exit 1
+          fi
+          refuse_below 34 34
+          refuse_below 35 34
+          echo "floor refuses 33, admits 34 and 35"
+      - name: Documentation contract suites
+        if: ${{ !cancelled() }}
+        run: |
+          found=$(find docs -name '*.test.mjs' -type f | wc -l)
+          echo "docs test files found: $found"
+          if [ "$found" -lt 34 ]; then
+            echo "docs suite floor: found $found file(s), floor is 34"
+            exit 1
+          fi
+          node --test 'docs/**/*.test.mjs'
 
   ts-test:
     # t8-a5 moved this off windows-latest; t8-a6 added the 4-way shard but was

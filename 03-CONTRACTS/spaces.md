@@ -13,10 +13,28 @@ particular, it does not introduce an account-addressed control inbox.
 `POST /v1/space-events` accepts `{ recipient_tag, ciphertext, expires_at }`.
 `recipient_tag` is a 32-byte opaque rotating delivery tag encoded as base64;
 it is never an account identifier or a Space identifier.  `ciphertext` is an
-opaque encrypted membership event.  `GET /v1/space-events/:recipient_tag`
-returns and consumes only records addressed to that exact current tag.  The
+opaque encrypted membership event.  `POST /v1/space-events/drain` accepts
+`{ recipient_tag }` and returns and consumes only records addressed to that
+exact current tag.  The recipient tag is a bearer capability and therefore
+never appears in a request path on this lane (D81).  The
 relay stores no roster, plaintext event, membership count, or account/Space
 mapping.  A sender chooses one envelope per recipient tag.
+
+**Amendment, 2026-08-05 — owner ruling on D-260 / OPEN-4, the only change made
+to this frozen clause.** The drain was frozen above as
+`GET /v1/space-events/:recipient_tag`. That one sentence, and nothing else in
+T21-C1, now reads as `POST /v1/space-events/drain` with the tag in the body,
+and the D81 sentence above it is new. The `GET` is **removed**, not deprecated:
+no caller of this lane exists outside tests and contracts, so there was no
+transition to keep it alive for, and a reachable route that writes under a
+method every proxy, prefetcher and retry treats as safe and repeatable retains
+the whole hazard for nobody. Everything else T21-C1 says is unchanged and
+unmoved — the envelope, the 32-byte opaque rotating tag, "returns and consumes",
+the relay's stored-nothing rule, one envelope per recipient tag, and the
+`0041`–`0043` migration reservation. The drain's own behaviour is likewise
+unchanged: same lease, same 64-row page, same `POST /v1/space-events/ack`, same
+expiry sweep, and the same indistinguishable rejection that keeps the lane from
+being an existence oracle. See `transport.md` §6b.3.
 
 The keyserver migration numbers `0041` through `0043` are reserved for this
 lane: event queue, invite capability state, and expiry/index hardening.  No

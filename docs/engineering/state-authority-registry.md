@@ -180,6 +180,34 @@ prevent.
 }
 ```
 
+## Correction — `keyserver-space-event-queue` is stale, 2026-08-05
+
+**Read the record above for that one entry with this note beside it.** It was
+written before D-273, D-274 and the D-260/OPEN-4 ruling and has not been
+re-derived since; it is left in place rather than half-edited, because a record
+patched in the two places somebody noticed is worse than one whose staleness is
+stated. What is now false, measured against
+`keyserver-cf/src/endpoints/space-events.ts` and `03-CONTRACTS/transport.md` §6b:
+
+- **"drain deletes each returned row in the same request"** (`resets`, `crash`,
+  `teardown`, `interaction`) — false since D-273. The drain **leases** what it
+  returns for `LEASE_SECONDS`; `POST /v1/space-events/ack` is the only route
+  that deletes, and it is not listed in `resets` at all.
+- **"no expiry sweep"** / **"expired rows are NEVER deleted"** (`interaction`,
+  `teardown`) — false since D-274. `keyserver-cf/src/lib/space-event-sweep.ts`
+  deletes expired rows on the hourly cron.
+- **"0041 is the only file that names the table"** and **"No later migration
+  alters it"** (`migration`) — false since `0043_space_event_expiry_hardening.sql`.
+- **"drain — GET with a tag"** (`interaction`, `readers`) — false since the
+  D-260/OPEN-4 ruling of 2026-08-05. `GET /v1/space-events/:tag` **no longer
+  exists**; the drain is `POST /v1/space-events/drain` with the tag in the body,
+  and `03-CONTRACTS/spaces.md` T21-C1 was amended to match.
+- Every `space-events.ts:NN` line citation in the entry predates all three
+  changes and should be re-derived, not trusted.
+
+Re-deriving the entry is a state-authority task and not this lane's; what this
+note fixes is that nothing said so.
+
 ## Record shape
 
 ```text

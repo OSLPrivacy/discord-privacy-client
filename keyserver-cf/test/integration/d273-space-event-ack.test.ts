@@ -84,12 +84,23 @@ async function enqueue(
   });
 }
 
+/**
+ * D-260/OPEN-4: the drain is `POST /v1/space-events/drain` with the tag in the
+ * body. It is NOT a `GET`, and `GET /v1/space-events/:tag` no longer exists --
+ * `drainRequest` is the only transport these specs have.
+ */
+async function drainRequest(tagB64: string): Promise<Response> {
+  return await SELF.fetch("http://test/v1/space-events/drain", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ recipient_tag: tagB64 }),
+  });
+}
+
 async function drain(
   tagB64: string,
 ): Promise<{ events: { event_id: string; ciphertext: string }[] }> {
-  const res = await SELF.fetch(
-    `http://test/v1/space-events/${encodeURIComponent(tagB64)}`,
-  );
+  const res = await drainRequest(tagB64);
   expect(res.status).toBe(200);
   return (await res.json()) as {
     events: { event_id: string; ciphertext: string }[];
@@ -131,9 +142,7 @@ describe("D-273 the drain never destroys on transmission", () => {
     const ciphertext = b64(0x07, 48);
     expect((await enqueue(tag, ciphertext)).status).toBe(202);
 
-    const res = await SELF.fetch(
-      `http://test/v1/space-events/${encodeURIComponent(tag)}`,
-    );
+    const res = await drainRequest(tag);
     expect(res.status).toBe(200);
 
     // The row is STILL THERE at the instant the response reaches the socket.
@@ -154,8 +163,9 @@ describe("D-273 the drain never destroys on transmission", () => {
   });
 
   it("consumes on the drain: a second call returns nothing (T21-C1)", async () => {
-    // The frozen contract says the GET "returns and consumes". The lease is
-    // what keeps that true while the destruction waits for an ack.
+    // T21-C1 says the drain "returns and consumes". The lease is what keeps
+    // that true while the destruction waits for an ack; the amended clause
+    // changed the drain's METHOD, not this property.
     const tag = freshTag();
     expect((await enqueue(tag, b64(0x08, 16))).status).toBe(202);
 
@@ -422,5 +432,90 @@ describe("D-274 expired Space events leave storage", () => {
     );
     expect(atLimit.status).toBe(202);
     expect(await storedFor(tag)).toHaveLength(1);
+  });
+});
+
+// D-260 / OPEN-4 — the owner's ruling on the drain's METHOD.
+//
+// `GET /v1/space-events/:tag` is REMOVED, not deprecated. It carried the lane's
+// entire bearer capability -- the 32-byte tag -- in the request path, where
+// every intermediary writes it to a default log (the D81 defect), while
+// PERFORMING A WRITE: it leases every row it returns. A method that proxies,
+// prefetchers and generic retry logic all treat as safe and repeatable must not
+// do that. `POST /v1/space-events/drain` takes the tag in the body instead.
+//
+// These specs execute the route. None of them reads source text.
+describe("D-260 the drain is a POST with the tag in the body", () => {
+  it("runs the whole lifecycle over the new route: enqueue, drain, ack, empty", async () => {
+    const tag = freshTag();
+    const first = b64(0x21, 32);
+    const second = b64(0x22, 16);
+    expect((await enqueue(tag, first)).status).toBe(202);
+    expect((await enqueue(tag, second)).status).toBe(202);
+    expect(await storedFor(tag)).toHaveLength(2);
+
+    // DRAIN — over POST /v1/space-events/drain, byte for byte what was queued.
+    const drained = await drainRequest(tag);
+    expect(drained.status).toBe(200);
+    const body = (await drained.json()) as {
+      events: { event_id: string; ciphertext: string }[];
+    };
+    expect(body.events.map((event) => event.ciphertext)).toEqual([first, second]);
+    // Reserved, not destroyed: D15 still holds on the new method.
+    expect(await storedFor(tag)).toHaveLength(2);
+    for (const row of await storedFor(tag)) {
+      expect(row.lease_until).toBeGreaterThan(0);
+    }
+
+    // ACK — and only now do the rows leave storage.
+    const acked = await ack(
+      tag,
+      body.events.map((event) => event.event_id),
+    );
+    expect(acked.status).toBe(200);
+    expect(await acked.json()).toEqual({ acknowledged: true });
+
+    // EMPTY — in storage, and to a reader, including after every lease lapses.
+    expect(await storedFor(tag)).toHaveLength(0);
+    await expireLeases(tag);
+    expect((await drain(tag)).events).toHaveLength(0);
+  });
+
+  it("has no GET drain left to replay: the old route is gone", async () => {
+    // THE EFFECT OF THE REMOVAL, not its spelling. The event stays queued and
+    // undisturbed -- an intermediary replaying the old URL can no longer lease
+    // a recipient's events away from it.
+    const tag = freshTag();
+    expect((await enqueue(tag, b64(0x23, 8))).status).toBe(202);
+
+    const res = await SELF.fetch(
+      `http://test/v1/space-events/${encodeURIComponent(tag)}`,
+    );
+    expect(res.status).toBe(404);
+
+    const stored = await storedFor(tag);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.lease_until).toBe(0);
+    // And the row is still deliverable over the route that replaced it.
+    expect((await drain(tag)).events).toHaveLength(1);
+  });
+
+  it("refuses a malformed tag with the same single rejection, oracle intact", async () => {
+    // Three shapes of wrong tag, one answer. A drain for a well-formed tag with
+    // nothing queued still answers 200 with an empty list, so a caller cannot
+    // learn whether any tag exists.
+    for (const recipient_tag of [b64(0x24, 31), b64(0x24, 33), 12345]) {
+      const res = await SELF.fetch("http://test/v1/space-events/drain", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ recipient_tag }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "invalid recipient tag" });
+    }
+
+    const unused = await drainRequest(freshTag());
+    expect(unused.status).toBe(200);
+    expect(await unused.json()).toEqual({ events: [] });
   });
 });

@@ -90,7 +90,7 @@ import {
   handleSenderFilterRolloutRootProvision,
 } from "./endpoints/sender-filter-rollout-root.js";
 import { handleUpdateManifest } from "./endpoints/update-manifest.js";
-import { handleSpaceEventAck, handleSpaceEventDrain, handleSpaceEventPost } from "./endpoints/space-events.js";
+import { handleSpaceEventAck, handleSpaceEventDrainPost, handleSpaceEventPost } from "./endpoints/space-events.js";
 import {
   handleWrappedKeysDelete,
   handleWrappedKeysGet,
@@ -387,21 +387,21 @@ async function dispatch(
     if (pubkeysUserId !== null) return await handlePubkeys(env, pubkeysUserId);
     const devicesUserId = matchParam(path, /^\/v1\/devices\/([^/]+)$/);
     if (devicesUserId !== null) return await handleDevices(env, devicesUserId);
-    // D-260: this drain is unauthenticated, so the public-GET ingress limit
-    // above is the only thing that cost-bounds probing the 32-byte tag space.
-    // Whether it may remain a GET at all is a protocol question owned by
-    // `03-CONTRACTS/spaces.md`, which freezes the method; see the D-260
-    // tasklog. It must never again sit above that limit.
-    //
-    // D-273: it is no longer DESTRUCTIVE. It used to DELETE every row it
-    // returned, before the response was serialized, so a dropped response
-    // destroyed the only copy of a membership event -- exactly what owner
-    // decision D15 forbids and what the wrapped-key lane was already fixed
-    // for. It now leases what it returns, and POST /v1/space-events/ack below
-    // is what actually deletes. Still gated here, unchanged: a lease is a
-    // write, and probing the tag space must stay cost-bounded.
-    const spaceEventTag = matchParam(path, /^\/v1\/space-events\/([^/]+)$/);
-    if (spaceEventTag !== null) return await handleSpaceEventDrain(spaceEventTag, env);
+    // D-260 / OPEN-4, DECIDED: `GET /v1/space-events/:tag` NO LONGER EXISTS.
+    // It used to be dispatched here, and it was this lane's standing exception
+    // to D81 -- the 32-byte bearer tag rode in the request path, where every
+    // intermediary writes it to a default log -- while performing a write
+    // (D-273: a lease) under a method that proxies, prefetchers and generic
+    // retry logic all treat as safe and repeatable. `POST /v1/space-events/
+    // drain` below replaces it, tag in the BODY, and `03-CONTRACTS/spaces.md`
+    // T21-C1 was amended to match. No caller in this repository used the GET,
+    // so nothing was kept alive "during transition": a reachable
+    // destructive-shaped route retains the whole hazard for nobody's benefit.
+    // THE COST BOUND IS NOT RELAXED BY THE MOVE. The drain's only bound was
+    // PUBLIC_GET_INGRESS_MAX_PER_MINUTE (1200); the mutation-ingress limit is
+    // 3600, so the POST route below is charged to the SAME public-GET bucket
+    // and key as well, and both must pass. Probing the 32-byte tag space stays
+    // bounded exactly as it was, with the mutation gate added on top.
     const wrappedContentId = matchParam(path, /^\/v1\/wrapped-keys\/([^/]+)$/);
     if (wrappedContentId !== null) {
       return await handleWrappedKeysGet(request, env, wrappedContentId);
@@ -475,10 +475,26 @@ async function dispatch(
     // 64 KiB ciphertext cap is no longer the first bound on what gets read
     // and JSON.parsed.
     if (path === "/v1/space-events") return await handleSpaceEventPost(request, env);
-    // D-273: the acknowledgement half of D15 for the Space lane. A NEW route --
-    // T21-C1's frozen `POST /v1/space-events` and `GET /v1/space-events/:tag`
-    // are both unchanged. The tag is in the body, not the path (D81).
+    // D-273: the acknowledgement half of D15 for the Space lane. It was a NEW
+    // route when it landed, added so no frozen T21-C1 route had to change; the
+    // drain has since joined it here. The tag is in the body, not the path (D81).
     if (path === "/v1/space-events/ack") return await handleSpaceEventAck(request, env);
+    // D-260 / OPEN-4: THE DRAIN, moved off `GET /v1/space-events/:tag`. The tag
+    // is in the body (D81). The public-GET bucket that used to be the drain's
+    // only cost bound is charged HERE as well, with the same bucket and the
+    // same key, so changing the method did not raise the budget for probing the
+    // 32-byte tag space from 1200/min to the mutation gate's 3600/min. Both
+    // limits must pass, so the binding one is still 1200.
+    if (path === "/v1/space-events/drain") {
+      const drainIngress = await checkRateLimit(
+        env,
+        callerIp(request),
+        PUBLIC_GET_INGRESS_MAX_PER_MINUTE,
+        PUBLIC_GET_INGRESS_BUCKET,
+      );
+      if (!drainIngress.ok) return tooMany(drainIngress.retryAfter);
+      return await handleSpaceEventDrainPost(request, env);
+    }
     if (path === "/v1/control-inbox") return await handleControlInboxPost(request, env);
     if (path === "/v1/usernames/claim") return await handleUsernameClaim(request, env);
     if (path === "/v1/usernames/lookup") return await handleUsernameLookup(request, env);

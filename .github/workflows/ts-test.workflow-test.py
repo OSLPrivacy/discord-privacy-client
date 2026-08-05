@@ -289,6 +289,87 @@ class TheAnchorIsNotSatisfiedByTheSuiteTest(unittest.TestCase):
         self.assertIn("ZERO tests", self.source)
 
 
+DOCS_SUITE_STEP = "Documentation contract suites"
+DOCS_FLOOR_SELF_TEST_STEP = "Prove the docs-suite floor can refuse"
+CLAIM_GATE_STEP = "Claim-gate-in-app-copy-and-README"
+PLAN_GOVERNANCE_STEP = "Plan-governance-acceptance-gates"
+
+
+class DocsSuitesAreWiredTest(unittest.TestCase):
+    """D-296: the 34 `docs/**/*.test.mjs` suites, and WHERE they sit.
+
+    They ran in no job at all. Wiring them is only half the fix -- the other
+    half is that they were APPENDED below the incumbents rather than inserted
+    in front of them, because `Claim-gate-in-app-copy-and-README` carries no
+    `if:` and Actions aborts a job at its first failing step. A step placed
+    above it would be skipped by it, and a step placed below it without
+    `!cancelled()` would be skipped BY it. Both halves are asserted here,
+    positionally, rather than trusted -- D-194, D-172, D-268.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.steps = _steps(TS_TEST, "claim-gates")
+
+    def test_some_step_runs_the_docs_suites(self) -> None:
+        index = _index_of_name(self.steps, DOCS_SUITE_STEP)
+        self.assertIn("node --test 'docs/**/*.test.mjs'", self.steps[index].get("run", ""))
+
+    def test_the_docs_suites_run_below_both_incumbents(self) -> None:
+        # THE ORDERING, POSITIONALLY. Not "somewhere after" -- a strictly
+        # greater index than each incumbent.
+        docs = _index_of_name(self.steps, DOCS_SUITE_STEP)
+        for incumbent in (CLAIM_GATE_STEP, PLAN_GOVERNANCE_STEP):
+            self.assertGreater(
+                docs,
+                _index_of_name(self.steps, incumbent),
+                f"{DOCS_SUITE_STEP} must be appended BELOW {incumbent}, never in front of it",
+            )
+
+    def test_a_red_incumbent_cannot_skip_the_docs_suites(self) -> None:
+        for name in (DOCS_FLOOR_SELF_TEST_STEP, DOCS_SUITE_STEP):
+            condition = self.steps[_index_of_name(self.steps, name)].get("if", "")
+            self.assertIn("!cancelled()", condition, f"{name} can be skipped by a red step above it")
+
+    def test_the_incumbents_below_the_first_step_still_carry_the_condition(self) -> None:
+        # Appending must not have made it safe to drop the condition from the
+        # step that already had it: the plan-governance gate is now in front of
+        # two more steps than it was.
+        condition = self.steps[_index_of_name(self.steps, PLAN_GOVERNANCE_STEP)].get("if", "")
+        self.assertIn("!cancelled()", condition)
+
+    def test_no_step_below_the_first_can_be_masked(self) -> None:
+        first_run = next(index for index, step in enumerate(self.steps) if "run" in step)
+        for index, step in enumerate(self.steps):
+            if index <= first_run or "run" not in step:
+                continue
+            self.assertIn(
+                "!cancelled()",
+                step.get("if", ""),
+                f"step {index} ({step.get('name', '?')}) can be skipped by a red step above it",
+            )
+
+    def test_the_floor_is_proved_able_to_refuse_before_it_grades(self) -> None:
+        # D-195: `node --test` over a glob matching nothing exits 0, so the
+        # count floor IS the gate. A grader nobody has seen fail is decoration,
+        # and its exit code must be a step result of its own.
+        self.assertLess(
+            _index_of_name(self.steps, DOCS_FLOOR_SELF_TEST_STEP),
+            _index_of_name(self.steps, DOCS_SUITE_STEP),
+        )
+
+    def test_the_floor_is_a_real_count_and_matches_the_tree(self) -> None:
+        run = self.steps[_index_of_name(self.steps, DOCS_SUITE_STEP)].get("run", "")
+        self.assertIn("find docs -name '*.test.mjs'", run)
+        self.assertIn("-lt 34", run)
+        live = len(list((ROOT / "docs").rglob("*.test.mjs")))
+        self.assertGreaterEqual(
+            live,
+            34,
+            f"the workflow floor is 34 but the tree holds {live} docs suites",
+        )
+
+
 class ThisContractRunsFromAnotherWorkflowTest(unittest.TestCase):
     """The lesson of D-283, applied to this file on the day it was written."""
 

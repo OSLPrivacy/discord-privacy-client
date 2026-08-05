@@ -131,11 +131,50 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
     // Held by test/integration/d273-space-event-ack.test.ts; the ingress
     // ordering is still held by test/integration/d260-space-events-ingress.test.ts.
     //
-    // STILL OPEN, and STILL not decided by this digest: the GET method itself.
-    // D-273 is independent of it — a POST drain that deleted on transmission
-    // would have exactly the same defect.
+    // D-260/OPEN-4 re-anchor, 2026-08-05 — THE GET METHOD, DECIDED BY THE OWNER
+    // AFTER FOUR LANES DECLINED IT. Previous digest 3b2d26c41aa129c5... (26658
+    // bytes) reproduced exactly at this branch's fork point, so there is no
+    // pre-existing drift. The ledger closes exactly: 26658 -> 27585 = +927, and
+    // +2321/-1394 = +927. Attributed change by change, one hunk each:
+    //
+    //   code: the space-events import swaps `handleSpaceEventDrain`
+    //     for `handleSpaceEventDrainPost` (one line rewritten)     +116/-112
+    //   ROUTE REMOVED: `GET /v1/space-events/:tag`, and the D-260
+    //     comment block rewritten in place to record why -- same
+    //     line count, so no citation below it moved               +1153/-1051
+    //   comment: the ack note no longer says both frozen T21-C1
+    //     routes are unchanged, because one of them is gone         +242/-231
+    //   ROUTE ADDED: `POST /v1/space-events/drain`, registered
+    //     BELOW the ack so `index.ts:477` and `index.ts:481` keep
+    //     their cited positions, and charged to the public-GET
+    //     bucket as well as the mutation gate                        +810/-0
+    //
+    // EXACTLY ONE ROUTE IS ADDED AND EXACTLY ONE IS REMOVED. No route is moved,
+    // and the D-260 ordering -- every space-events route below `const method`,
+    // behind its ingress gate -- is unchanged.
+    //
+    // WHAT CHANGED IN BEHAVIOUR, deliberately, and what did NOT:
+    //   - `GET /v1/space-events/:tag` NO LONGER EXISTS. It answers 404. It was
+    //     the lane's standing exception to D81 (the 32-byte bearer tag rode in
+    //     the request path, where intermediaries log it) while performing a
+    //     write, since D-273 a lease rather than a delete. Removed rather than
+    //     deprecated: no caller of this lane exists outside tests and
+    //     contracts, so there was no transition to keep it alive for.
+    //   - `POST /v1/space-events/drain` takes the tag in the body and IS the
+    //     same drain -- same lease, same 64-row page, same ordering, same
+    //     single 400 for a malformed tag, so the no-oracle property is intact.
+    //   - THE COST BOUND IS NOT RELAXED. The drain's only bound was the
+    //     1200/min public-GET bucket; mutation-ingress is 3600/min, so the new
+    //     route is charged to the SAME public-GET bucket and key in addition to
+    //     the mutation gate. Both must pass; the binding one is still 1200.
+    //   - `03-CONTRACTS/spaces.md` T21-C1 was amended for exactly this, under
+    //     an explicit owner authorisation, and says so in the clause itself.
+    // Held by test/integration/d273-space-event-ack.test.ts (enqueue -> drain
+    // -> ack -> empty over the new route, and the old route asserted gone by
+    // its effect) and test/integration/d260-space-events-ingress.test.ts (the
+    // 1200 bucket still refuses the drain before the database).
     sha256:
-      "3b2d26c41aa129c5c1c55c594e3afbfee0e8abacca927603716e426bb1b7819c",
+      "2f3c11808b19c5e05114ff9bb2e0e1eb0c2fb696242b6ee963abb256579135e8",
   }),
   "keyserver-cf/src/endpoints/register.ts": Object.freeze({
     role: "shipping-canonical-identity-registration-caller",

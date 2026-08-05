@@ -2,7 +2,7 @@
 
 Anchor: TelegramSupportVerdict
 
-Date re-issued: 2026-08-01
+Date re-issued: 2026-08-05
 
 ## Verdict
 
@@ -13,6 +13,44 @@ only a login surface, so it did not measure message-row accessibility and cannot
 the adapter is technically blocked. The public release label nevertheless remains externally
 blocked: OSL cannot mark Telegram Desktop as `supported` until a signed-client bench proves stable,
 text-exposed message rows through Windows UI Automation.
+
+## WHAT `externally_blocked` IS RECORDING — re-scoped 2026-08-05 by owner ruling
+
+**It is a statement about OSL's release gate. It is not, and never was, a finding that Telegram
+Desktop's client blocks accessibility.** Telegram is the only surface in
+`docs/status/support-matrix.json` carrying this status, and the status value has NOT moved. What
+moved is the reason recorded beside it, which had become false.
+
+Three things decided the re-scoping, and all three were already on the record:
+
+1. **The status could not have been about Telegram's client, because nothing had measured it.**
+   It was written once, on 2026-07-29, in a commit with an empty body and
+   `"generated_from": "manual-verdict-ingest"`, transcribed from a probe run that reached only a
+   login wall.
+2. **This document said so in its own words, in the paragraph above:** the probe "cannot establish
+   that the adapter is technically blocked", and the label is kept because "OSL cannot mark
+   Telegram Desktop as `supported`" — a refusal by OSL, about OSL's own claim.
+3. **On 2026-08-04 the measurement was taken and contradicted the client-block reading**
+   (see the section below: 109 candidate rows and 109 text-exposed rows against a threshold of 2,
+   on a signed 7.0.8.0 client, on a real conversation). The release-gate reading is untouched by
+   that measurement, because OSL's Telegram adapter still has no verb that can commit a message.
+
+**What actually holds the label**, stated so it can be checked rather than believed: OSL's adapter
+has never proven live delivery — `DeliveryEvidence::NeverProvenLive` caps the app below `Beta`
+regardless of any probe — and `Experimental`, the one non-blocked label the claim allowlist permits
+for Telegram, is still not expressible by any shipping status (Correction 3 below). The gate is
+ours. The block is ours. Nothing here is a defect in Telegram Desktop.
+
+**What Telegram still may NOT present as, unchanged by this ruling:** supported, available, ready,
+working, protected, verified live, `Beta`, or anything else on the capability axis. The three
+statuses the allowlist permits for Telegram remain `Coming soon`, `Experimental` and
+`Externally blocked`, and the versioned public row remains `externally_blocked` with
+`claim_allowed: false`. This re-scoping widens no allowlist and moves no label.
+
+**Propagated, on 2026-08-05.** The 2026-08-04 measurement landed in this document and stopped
+there. It is now recorded in `docs/status/support-matrix.json` on all three Telegram rows, under
+`client_accessibility_measurement`, alongside `blocking_scope: "osl_release_gate"` and the
+`blocking_authority` sentence that names OSL rather than Telegram.
 
 ## Evidence
 
@@ -39,6 +77,11 @@ surface does not clear the gate.
 
 Until that artifact exists, product, website and in-app copy must continue to treat Telegram
 Desktop as `externally blocked` rather than available support.
+
+**Read with the re-scoping above:** the probe half of this rule was met on 2026-08-04. It is a
+NECESSARY condition, not a sufficient one, and the half that is not met is OSL's own — the adapter
+cannot commit a message. So the rule is unchanged and the label is unchanged; only the reason
+recorded beside the label has been corrected.
 
 ## 2026-08-04 — the row measurement was taken; the block is NOT lifted
 
