@@ -5,7 +5,10 @@ dangling deferral, not to settle a design. **Refreshed 2026-08-05** under W3-7,
 after D-273 and D-274 changed the behaviour this document had recorded: every
 OBSERVED statement below was re-read against the source rather than carried
 forward, and re-derived from that source rather than from the fixing lane's own
-account of what it did. Still not frozen.
+account of what it did. **Extended 2026-08-05** under OPEN-6 with §6b.8, the
+client-side half of the acknowledgement contract D-273 left unwritten — again
+re-derived from `keyserver-cf/src/**` rather than from the fixing lane's write-up,
+which is how the one sentence corrected at §6b.6 was caught. Still not frozen.
 
 `spaces.md` (T21-C1, frozen) states that the space-event lane's "envelope and
 capability rules are those of [`transport.md`](transport.md) §6b". **This
@@ -306,9 +309,24 @@ drained and never acknowledged, is deleted at its `expires_at` — at most 7 day
 after it was accepted (§6b.1). That is the honest limit of this lane's D15
 compliance. The lane errs toward **duplicate delivery**: an unacknowledged event
 becomes visible again once its lease lapses and is delivered again for as long
-as its `expires_at` allows, and two devices sharing a tag can both receive it
-(`space-events.ts:24-30`). Which way a lane errs is a property worth stating
-explicitly, because both directions are defensible and only one is recoverable.
+as its `expires_at` allows (`space-events.ts:24-30`, asserted as a property at
+`keyserver-cf/test/integration/d273-space-event-ack.test.ts:168-182`). Which way
+a lane errs is a property worth stating explicitly, because both directions are
+defensible and only one is recoverable.
+
+**One sentence of the first draft is corrected here rather than carried
+forward.** It read "and two devices sharing a tag can both receive it", cited to
+`space-events.ts:24-30`. **Those lines do not say that** — they state the
+redelivery direction and call duplication "a client-side dedupe problem", and
+say nothing about a second holder of the tag. Re-derived from the queries
+instead, the true statement is narrower and less comfortable: **the drain is a
+competing consumer, not a fan-out.** The read excludes leased rows
+(`space-events.ts:127`) and the ack deletes the row outright
+(`space-events.ts:178`), so of two holders of one tag, the second sees an event
+only if the first neither acknowledges it nor re-drains it before the 60-second
+lease lapses. Both *may* receive it; **either one acknowledging it means the
+other never will.** That is not the same claim, and the difference is the whole
+of OPEN-7.
 
 ### 6b.7 What this lane may not adopt — DERIVED
 
@@ -334,16 +352,237 @@ Two consequences bind this document rather than merely informing it:
    pairwise or recipient-device state, or a per-member subscription secret — and
    group-shared secret material alone is prohibited.
 
+### 6b.8 What a client must do — DERIVED, and where it stops
+
+D-273 built the server half of D15 — *"delete on acknowledged receipt, never on
+transmission"*. **The half that acknowledges was left unspecified**, and that is
+what this section writes down. It is the answer to OPEN-6(a) and OPEN-6(b);
+OPEN-6(c) is **not** answered here and is restated as OPEN-7 with its specific
+question.
+
+**Read the standing of this section exactly.** There is still **no client** —
+re-verified for this section, not carried forward: `recipient_tag` and
+`space-events` occur **zero** times in `crates/`, `apps/`, `src-tauri/` and
+`webview/`, and the only callers anywhere in the repository remain the Worker's
+own tests and gates. So nothing below is a description of a caller; each rule is
+**DERIVED** — it follows from behaviour marked OBSERVED above, or from a rule
+already binding elsewhere in this repository, and the derivation is stated so a
+reader can reject it. **Where the mechanism does not determine an answer, the
+question is left in the OPEN list rather than settled here.** A rule invented to
+close a question would look decided and stop the next reader looking, which is
+the failure this whole document exists to record.
+
+#### 6b.8.1 Commit, then acknowledge — never the reverse — DERIVED
+
+An acknowledgement is **irreversible destruction of the only copy**: the ack's
+`DELETE` (`space-events.ts:177-179`) is one of exactly two ways a row leaves
+storage (§6b.6), and the relay holds no second copy. A client must therefore
+have **durably** committed an event — written it where a process restart will
+still find it — *before* it names that event's `event_id` in an ack. Acking
+first and committing after re-creates D-273's defect on the client side, one
+process boundary further along: the crash between the two loses the event with
+no retry that can recover it, which is precisely the failure D15 exists to
+forbid.
+
+#### 6b.8.2 A client MUST acknowledge — DERIVED
+
+Once committed, the client **must** acknowledge, and the obligation does not
+lapse. The consequences of not acknowledging are all OBSERVED above and none of
+them is benign:
+
+- the event is redelivered on every drain after each 60-second lease lapses
+  (§6b.3, `space-events.ts:53,127,137-138`) — a cost paid by the client and by
+  the relay, for as long as `expires_at` allows, up to **7 days** (§6b.1);
+- the row occupies relay storage until its `expires_at`, so a lane of
+  never-acking clients turns the D-274 sweep into the *only* thing retiring rows
+  and pushes the hourly bound of **5,000** (`space-event-sweep.ts:22-25`) toward
+  the residue path the sweep reports but cannot fix (§6b.6);
+- and the lane's D15 compliance degenerates to retention-until-TTL, which is the
+  behaviour D15 forbids, reached by a route D15 does not police.
+
+**Late is valid, and this is load-bearing for the retry rule.** The ack's
+predicate is `lease_until > 0`, **not** `lease_until > now`
+(`space-events.ts:178` — OBSERVED). A row's `lease_until` keeps its value once
+set, so **any row that has ever been drained stays acknowledgeable for the rest
+of its life**, whether or not its lease is still live and whether or not it has
+since been redelivered. It follows (DERIVED) that a client whose ack fails —
+network error, `5xx`, process death — **must retry it, and may retry it at any
+later time**, and must not treat a missed ack window as a reason to stop.
+Retrying is safe in both directions: the second ack of an already-deleted row
+matches nothing and is a no-op, and the ack of a row that came back is the same
+`event_id` it always was.
+
+**A failed ack is never data loss.** By §6b.8.1 the event is already committed
+locally; the only cost of a failed ack is redelivery, which §6b.8.4 makes
+harmless. A client must not respond to a failing ack by discarding the event, by
+re-drawing it from the relay, or by treating it as undelivered.
+
+**Batching.** The ack accepts at most 64 `event_ids` (`space-events.ts:161`),
+which is `MAX_DRAIN` — the same constant that caps a drain page
+(`space-events.ts:43,128,161`). **A whole drain page is therefore always
+acknowledgeable in one request**, and a client carrying a backlog of unacked ids
+across pages must split it into batches of at most 64.
+
+#### 6b.8.3 The ack response is not a receipt — OBSERVED, and it bounds §6b.8.2
+
+`POST /v1/space-events/ack` returns the constant `{"acknowledged": true}`
+(`space-events.ts:180-182`) on **every** non-malformed request. It is returned
+when the ids matched nothing, when the tag was the wrong one, and when the named
+event was never delivered at all — all three are `200` with that body, asserted
+at `keyserver-cf/test/integration/d273-space-event-ack.test.ts:212-224,226-241`.
+The constant is deliberate: a count would rebuild the existence oracle §6b.3 is
+built not to be.
+
+**DERIVED, and it is the sharp edge of this section:** a `200` from the ack
+proves only that the relay parsed the request. **It is not evidence that any row
+was deleted**, and a client must not use it as a delivery receipt, as an
+existence check, or as a trigger for discarding local state. The only client
+state that may depend on an ack succeeding is the ack's own retry bookkeeping,
+and even that must be allowed to over-ack: see §6b.8.2, where over-acking is
+free and under-acking is not.
+
+#### 6b.8.4 A client MUST dedupe, on `event_id` — DERIVED
+
+The lane errs toward duplicate delivery **by design** (§6b.6), so idempotence is
+not a robustness nicety here — it is the price of the design being safe. The key
+is the response's `event_id`, and the reasons it is the right key are OBSERVED:
+
+- it is the row's own 16-byte `id` rendered as 32 lowercase hex characters
+  (`space-events.ts:44-46,74-76,140`), generated once at accept time from
+  `crypto.getRandomValues` (`space-events.ts:88-92,116-117`);
+- it is **stable across redelivery**, because redelivery re-reads the same row
+  rather than re-inserting one — asserted directly at
+  `keyserver-cf/test/integration/d273-space-event-ack.test.ts:179`, where the
+  second drain's `event_id` must equal the first's.
+
+`event_id` alone is sufficient (16 random bytes, one per accepted envelope);
+scoping the client's key to `(recipient_tag, event_id)` costs nothing and
+matches the server's own scoping (`space-events.ts:178`), so a client that holds
+more than one tag should prefer it.
+
+**Two limits on this key, both DERIVED, both easy to get wrong:**
+
+1. **The dedupe window must reach `expires_at`, not the lease.** Redelivery
+   continues for the life of the row, so a client that forgets an `event_id`
+   after 60 seconds, or after a restart, will re-process the event. The window
+   a client must be able to cover is the envelope ceiling: **7 days** (§6b.1).
+   That makes the dedupe set persistent state, not a process-lifetime cache.
+2. **It deduplicates the transport, and nothing above it.** A sender that posts
+   the same membership event twice produces **two rows with two different
+   `event_id`s**, and no field of the envelope (§6b.1 — exactly three are read)
+   distinguishes them. Application-level replay must be settled inside the
+   ciphertext; `event_id` cannot see it.
+
+#### 6b.8.5 Delivery order is server-accept order, at one-second resolution — DERIVED
+
+The drain orders by `created_at` (`space-events.ts:127`), and `created_at` is
+written as `Math.floor(Date.now() / 1000)` on the relay's own clock at accept
+time (`space-events.ts:117`). Three consequences a client must not assume away:
+
+- the order is the **relay's accept order**, not the sender's send order and not
+  any causal order;
+- its resolution is **one second**, and the ordering of rows sharing a
+  `created_at` is not determined by anything in the query — a client must treat
+  same-second rows as unordered;
+- the envelope carries **no sequence number** and none may be added (§6b.2), so
+  any ordering the application needs must travel **inside the ciphertext**.
+
+#### 6b.8.6 What a client must NOT do — DERIVED
+
+- **Must not read an empty drain as "nothing exists".** `{"events": []}` spans
+  at least four states that are indistinguishable by construction (§6b.3):
+  nothing is queued for the tag; the tag has never been used; every row for the
+  tag is currently **leased**; and — see §6b.8.7 — **someone else holding the
+  tag drained it seconds ago**. Emptiness is not evidence, and a client that
+  concludes anything from it (that a peer is absent, that a tag is wrong, that a
+  rotation completed) is reading an oracle the relay refuses to be.
+- **Must not read a full page as the last page.** The drain returns at most 64
+  events with **no continuation signal** (§6b.3, OPEN-5). A client receiving 64
+  cannot tell whether more remain. Whether the rule is "drain until empty" or
+  the response should carry a `more` flag is undecided — **that is OPEN-5 and
+  this section does not close it**; it only records that a client may not assume
+  the page it received was the whole queue.
+- **Must not put the tag in a request path for any route it adds.** D81 removed
+  `GET /v1/usernames/:username` because a handle in a path is written into every
+  intermediary's default log (`index.ts:413-417`), and the ack was shaped
+  accordingly (§6b.5). The frozen `GET` drain is the standing exception and is
+  an exception only because `spaces.md` T21-C1 freezes it (OPEN-4).
+- **Must not treat the 60-second lease as a deadline.** Missing it costs a
+  duplicate, which §6b.8.4 makes harmless; it costs nothing else. A client must
+  not skip §6b.8.1's durable commit to fit inside it.
+- **Must not treat `event_id` as anything but an opaque handle.** It is random
+  (`space-events.ts:88-92`): it carries no ordering, no timestamp, no tag, and
+  no relation to any other event.
+- **Must not assume it is the only holder of its tag.** See §6b.8.7.
+
+#### 6b.8.7 A second holder of the tag is a competing consumer — DERIVED
+
+This is the mechanism behind OPEN-7, and it is derivable even though OPEN-7
+itself is not. Possession of the tag is the entire capability (§6b.4), and the
+queue's two writes are both destructive of *visibility*:
+
+- a drain **leases** every row it returns for 60 seconds, hiding them from every
+  other holder of that tag (`space-events.ts:127,137-138`);
+- an ack **deletes** the row for every holder of that tag at once
+  (`space-events.ts:178`).
+
+So for any two holders of one tag — two of a user's devices, or a legitimate
+holder and whoever else has obtained the tag — the lane delivers each row to
+**at most one of them once either acknowledges**, and to both only in the window
+where neither has acked and the lease has lapsed. A second holder that drains
+and never acks makes the first holder's drains return empty for as long as it
+keeps draining, and **the first holder cannot distinguish that from an empty
+queue** (§6b.8.6). Nothing here is an escalation of §6b.4 — a tag holder could
+already destroy everything before D-273, by draining it — but the *silent*
+version is new, and a client contract has to say that emptiness proves nothing.
+
+**A client must therefore not treat the drain as a broadcast**, and must not
+build multi-device delivery on top of one shared tag until OPEN-7 is answered.
+
+#### 6b.8.8 What this section assumes about OPEN-1 — stated plainly: nothing
+
+OPEN-1 is unanswered: nothing in this repository derives a `recipient_tag`, and
+**rotation in particular is unspecified by anything** — there is no tag epoch,
+no tag TTL and no rekey trigger, and the word "rotating" is enforced only by a
+test asserting the *phrase* appears in `spaces.md`. **A client contract that
+assumed rotation would be building on that.** So this section does not assume
+it. Every rule in §6b.8 is derived from row-level mechanics — `event_id`, the
+lease, `expires_at`, the ack predicate — each of which is a property of a **row
+under whatever tag it was queued against**. All of them hold unchanged if the
+tag never rotates at all, and none of them is weakened if it rotates every
+minute.
+
+**One conditional is recorded rather than resolved, because it is the one place
+rotation would bite a client.** A row is addressed to the exact tag it was
+queued against (`space-events.ts:112,127`) and no route re-addresses a row. It
+follows (DERIVED, *conditional on rotation existing*) that **if** a client ever
+rotates its tag from `T_n` to `T_n+1`, it must keep draining and acking `T_n`
+until every row queued against `T_n` has expired, or those rows are delivered to
+nobody and merely sit until the sweep removes them. The upper bound on that
+overlap is the envelope ceiling — **7 days** (§6b.1). **This document cannot say
+how much overlap is actually required**, because that depends on how long a
+sender may keep using a stale tag, which is exactly what OPEN-1 does not answer.
+The conditional is written as a conditional on purpose: it is not a claim that
+tags rotate.
+
 ---
 
 ## OPEN — questions this lane could not answer, recorded rather than invented
 
-Five questions were recorded on 2026-08-05. **Two are now answered by the code**
-and are marked as such below with the source that answers them; they are kept
-rather than deleted because DEFECTS.md cites them by number, and because a
-question that was answered is a different artefact from one that was never
-asked. **Three remain open and are left open.** One new question is added, which
-did not exist before the mechanism that raises it.
+Five questions were recorded on 2026-08-05. **Two were then answered by the
+code** (OPEN-2, OPEN-3) and one is now **partly answered by §6b.8** (OPEN-6);
+each is marked as such below with the source that answers it. Answered questions
+are kept rather than deleted because DEFECTS.md cites them by number, and
+because a question that was answered is a different artefact from one that was
+never asked. **OPEN-1, OPEN-4 and OPEN-5 remain open and are left open.** Two
+new questions have been added — OPEN-6, then OPEN-7 split out of it — each
+raised by a mechanism that did not exist when the previous list was written.
+
+**Nothing was closed by writing a rule.** OPEN-4 and OPEN-5 are both touched by
+§6b.8 and neither is resolved there: §6b.8.6 tells a client it may not *assume*
+the answer to OPEN-5, which is not the same as deciding whether the loop rule or
+a `more` flag is right, and §6b.8.6 restates OPEN-4's D81 rule for new routes
+without touching the frozen `GET`.
 
 **OPEN-1 — how is `recipient_tag` derived, and when does it rotate? STILL OPEN,
 and now bounded on one side.**
@@ -380,6 +619,14 @@ So "rotating" remains a claim rather than a property, and the security argument
 for a bearer capability (§6b.4) — that a tag is short-lived — still cannot be
 checked. **This is still the single largest gap in the lane** and is still why
 §6b.4 is written as an observation rather than as a rule.
+
+**Two later sections depend on this question and say so rather than assuming
+past it.** §6b.8.8 states what the client contract assumes about rotation —
+**nothing** — and records the one client obligation that would follow *if* tags
+rotated, written as a conditional so it cannot be mistaken for evidence that
+they do. OPEN-7 is blocked on this question outright: the two derivation
+directions §6b.7 declares eligible are one per-device and one per-member, and
+which is chosen decides whether two devices may share a tag.
 
 **OPEN-2 — the drain deletes on transmission, and D15 forbids that. ANSWERED in
 the code, by D-273.** The question was whether this lane needed the
@@ -430,20 +677,74 @@ nothing tells a client to loop, and nothing in the response says whether more
 remain. Whether the client rule is "drain until empty" or the response should
 carry a `more` flag is still undecided.
 
-**OPEN-6 (NEW) — nothing specifies what a client must do.** The lane's
-correctness now depends on client behaviour that no document in this repository
-requires. Three obligations are implied by the mechanism and stated nowhere:
-(a) a client **must** acknowledge, or every event it receives is redelivered
-each time its lease lapses, until `expires_at`; (b) a client **must** dedupe on
-`event_id`, because the lane errs toward duplicate delivery by design (§6b.6);
-(c) two devices sharing a tag will both receive an event, and nothing says which
-of them is expected to acknowledge it, or what the other should do. The
-endpoint's own header calls duplication "a client-side dedupe problem"
-(`space-events.ts:27-28`), which names the obligation without imposing it.
+**OPEN-6 — nothing specifies what a client must do. (a) and (b) ANSWERED at
+§6b.8; (c) SPLIT OUT as OPEN-7 and still open.** The lane's correctness depends
+on client behaviour that no document in this repository required. Three
+obligations were implied by the mechanism and stated nowhere: (a) a client
+**must** acknowledge, or every event it receives is redelivered each time its
+lease lapses, until `expires_at`; (b) a client **must** dedupe on `event_id`,
+because the lane errs toward duplicate delivery by design (§6b.6); (c) two
+devices sharing a tag, and nothing saying which of them acknowledges or what the
+other does. The endpoint's own header calls duplication "a client-side dedupe
+problem" (`space-events.ts:27-28`), which names the obligation without imposing
+it.
 
-This is recorded as a question rather than written as a rule for the same reason
-the rest of this document exists: **no client of this lane exists yet**, so any
-rule written here would be a guess about an unbuilt caller, and the right home
-for a client obligation is a contract an owner has frozen rather than a
-description of a server. It is the direct cost of answering OPEN-2 — the server
-half of D15 is built, and the half that has to acknowledge is unspecified.
+**What changed, and why (a) and (b) could be written while (c) could not.** The
+first draft declined all three on one ground — no client exists, so any rule
+would be a guess about an unbuilt caller. That ground holds for (c) and does not
+hold for (a) and (b), and conflating them was the error. (a) and (b) are not
+claims about a caller at all: they are **consequences of the server's own
+mechanism**, each derivable from behaviour already marked OBSERVED here — the
+ack's `lease_until > 0` predicate, the stability of `event_id` across
+redelivery, the constant ack response, the `expires_at` ceiling. A rule that can
+be derived from the shipping code is not a guess, and leaving it unwritten does
+not make the client's obligation smaller — it only makes it undiscoverable. They
+are written at §6b.8 and labelled DERIVED, with the derivation shown so it can
+be rejected. **(c) is different in kind**: it asks what a `recipient_tag`
+*addresses*, which nothing in this repository decides. It is restated as OPEN-7.
+
+**OPEN-7 (NEW) — does a `recipient_tag` address a device or a member, and is
+two-devices-on-one-tag intended or a defect? STILL OPEN. The specific question
+is below.**
+
+What is **settled** (§6b.8.7, derived from the queries, not from a tasklog): the
+drain is a **competing consumer**, not a fan-out. A drain leases what it returns
+away from every other holder of the tag for 60 seconds
+(`space-events.ts:127,137-138`) and an ack deletes the row for all of them
+(`space-events.ts:178`). So two devices behind one tag do not each get a copy;
+they race for one copy, and either one acking ends it for the other. The first
+draft's "two devices sharing a tag can both receive it" was too generous and is
+corrected at §6b.6.
+
+What is **not settled** is whether that is a defect, and it cannot be settled
+from this repository, because the two readings turn on a fact nothing records:
+
+- If a tag addresses **one device**, this is correct and complete. The sender
+  fans out one envelope per device tag, each device drains its own queue, and
+  competing-consumer semantics are exactly right.
+- If a tag addresses **a member or an account** whose devices share it, this is
+  a **silent event-loss defect**: a membership event delivered to one device and
+  acked there is destroyed before the user's other devices ever see it, and
+  §6b.8.6 says the starved device cannot even detect that it happened — an empty
+  drain is indistinguishable from an empty queue.
+
+[`spaces.md` T21-C1](spaces.md#space-event-transport-t21-c1) is frozen and says
+the tag "is never an account identifier or a Space identifier" and that "a sender
+chooses one envelope per recipient tag".
+That **rules out one reading of the second case** and still does not answer the
+question: "not an account identifier" constrains what the tag may be *derived
+from* and what the relay may infer from it, not how many devices a client may
+put behind one. **The question is therefore precisely this: does the (still
+unwritten) tag derivation of OPEN-1 bind a tag to a single device's key
+material, or to per-member material that every one of that member's devices
+holds?** The first makes this section correct; the second makes it a defect that
+must be fixed before any multi-device client ships.
+
+**It is blocked on OPEN-1 and is not independently answerable.** The derivation
+is assigned to T1 and T6 by the analysis contract cited at §6b.7, which names
+"pairwise or recipient-device state" and "a per-member subscription secret" as
+the two eligible directions — **one of which is per-device and one of which is
+per-member.** Whichever they choose decides this, which is why it is recorded
+here as a question aimed at that decision rather than answered here. Until it is
+answered, §6b.8.7 stands: a client must not build multi-device delivery on a
+shared tag.
