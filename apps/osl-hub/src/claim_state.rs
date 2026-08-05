@@ -408,7 +408,7 @@ pub const SURFACE_CLAIMS: &[SurfaceClaim] = &[
         // measurement supports. Incomparable authorities -> no claim.
         matrix: MatrixPosition::ExternallyBlocked,
         authority: "D-206; support-matrix telegram_desktop_public (externally_blocked)",
-        reason: "OSL has driven Telegram's composer and carried cover text through it, but never earned a live carry receipt, and OSL's own support matrix still records Telegram as externally blocked. Those disagree, so OSL makes no claim about it.",
+        reason: "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it -- the only surface that has. But OSL's own support matrix still records Telegram as externally blocked, which is a claim about Telegram rather than about us. Those disagree, so OSL makes no claim about it.",
     },
     // ---- Native email carrier ---------------------------------------------
     SurfaceClaim {
