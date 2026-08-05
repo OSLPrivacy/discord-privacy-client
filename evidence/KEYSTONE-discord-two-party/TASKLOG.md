@@ -1,7 +1,7 @@
 # KEYSTONE — the live two-party Discord carrier proof. **STILL NOT PRODUCED.**
 # Blocker A is CLOSED. A new blocker, A′, replaced it, and it needs ~4 minutes of owner time.
 
-**Branch `proof/keystone-discord-two-party`, worktree `/home/liamw/osl-keystone2`, from
+**Branch `proof/keystone-discord-two-party`, worktree `osl-keystone2` (sibling of the repo), from
 `integrate/first-usable @ 2646513c2`. No product code was changed — the branch adds evidence and this
 log only. Nothing was typed into any Discord composer. No message was sent. The owner's machine was
 never touched.** Evidence: `evidence/KEYSTONE-discord-two-party/`.

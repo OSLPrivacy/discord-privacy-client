@@ -1,5 +1,14 @@
 # Rust
-target/
+# Slashless, deliberately -- a trailing slash matches a DIRECTORY ONLY, so a
+# symlink of the same name slips past it (that is exactly how a machine-specific
+# node_modules link got committed; see the Node section below).
+target
+# Cross-compile and per-lane target dirs. `target` alone does NOT cover these --
+# it is a different NAME, not a subdirectory. `cargo check --target
+# x86_64-pc-windows-gnu` wrote target-win/, which was therefore never ignored,
+# and the public-release audit then scanned 849 build artifacts full of an
+# absolute /home/... path and failed. Build output is never publishable.
+target-*
 **/*.rs.bk
 Cargo.lock.bak
 
