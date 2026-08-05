@@ -97,6 +97,10 @@ impl WriteChannel {
 pub enum JudgeChannel {
     /// The composer element's own subtree leaves, through UIA.
     RenderedDocumentUia,
+    /// The same document through UIA's **text** provider —
+    /// `TextPattern::DocumentRange().GetText()` — which is a different provider
+    /// interface from the element tree, not a different walk over it.
+    RenderedDocumentTextPattern,
     /// The same leaves through Chromium's MSAA provider.
     RenderedDocumentMsaa,
     /// Pixels inside the composer's bounding rectangle.
@@ -110,6 +114,7 @@ impl JudgeChannel {
     pub const fn name(self) -> &'static str {
         match self {
             Self::RenderedDocumentUia => "rendered document (UIA subtree leaves)",
+            Self::RenderedDocumentTextPattern => "rendered document (UIA TextPattern range)",
             Self::RenderedDocumentMsaa => "rendered document (MSAA subtree leaves)",
             Self::ComposerInk => "composer ink (GDI pixels)",
             Self::ComposerValueProperty => "IValueProvider::CurrentValue",
@@ -136,6 +141,7 @@ pub const fn judges_independently(write: WriteChannel, judge: JudgeChannel) -> b
         (WriteChannel::ClipboardPaste, JudgeChannel::ComposerValueProperty) => false,
         // Leaves are produced by layout, not by the value property.
         (_, JudgeChannel::RenderedDocumentUia) => true,
+        (_, JudgeChannel::RenderedDocumentTextPattern) => true,
         (_, JudgeChannel::RenderedDocumentMsaa) => true,
         // Pixels are downstream of the compositor and of nothing else.
         (_, JudgeChannel::ComposerInk) => true,
@@ -288,7 +294,15 @@ pub trait LandingJudgeSyscalls {
         deadline: JudgeDeadline,
     ) -> Result<Option<RenderedDocument>, JudgeTimeout>;
 
-    /// **J2.** The same leaves through Chromium's `IAccessible` provider.
+    /// **J2.** The same document through UIA's text provider.
+    fn rendered_document_text_pattern(
+        &self,
+        bound: &BoundComposer,
+        caps: WalkCaps,
+        deadline: JudgeDeadline,
+    ) -> Result<Option<RenderedDocument>, JudgeTimeout>;
+
+    /// **J2b.** The same leaves through Chromium's `IAccessible` provider.
     fn rendered_document_msaa(
         &self,
         bound: &BoundComposer,
@@ -451,7 +465,7 @@ pub static DISCORD: LandingProfile = LandingProfile {
     write_channel: WriteChannel::SynthesizedInput,
     judges: &[
         JudgeChannel::RenderedDocumentUia,
-        JudgeChannel::RenderedDocumentMsaa,
+        JudgeChannel::RenderedDocumentTextPattern,
         JudgeChannel::ComposerInk,
     ],
     empty_document_chars: &['\u{feff}', '\n', '\r', ' ', '\t'],
@@ -612,9 +626,17 @@ pub enum LandingRefusal {
     /// Text is present and is not the expectation by any declared
     /// normalisation.
     ForeignText { document: String },
-    /// The two rendered-document channels do not agree. One of them is wrong
-    /// and the oracle does not know which, so it refuses.
-    JudgingChannelsDisagree { uia: String, msaa: String },
+    /// Two rendered-document channels do not agree. One of them is wrong and
+    /// the oracle does not know which, so it refuses.
+    JudgingChannelsDisagree {
+        channel: JudgeChannel,
+        uia: String,
+        other: String,
+    },
+    /// A channel the profile declares as a judge answered nothing at all. A
+    /// corroborator that cannot corroborate is decoration, and a profile that
+    /// names one is claiming evidence it does not have.
+    CorroboratingChannelSilent { channel: JudgeChannel },
     /// The document channel says the carrier is there and the pixels say the
     /// composer did not change. **This is the refusal D-220's third blocker
     /// names** — placement has never been proven to land *on screen*.
@@ -654,6 +676,7 @@ impl LandingRefusal {
             Self::Rewrapped { .. } => "Rewrapped",
             Self::ForeignText { .. } => "ForeignText",
             Self::JudgingChannelsDisagree { .. } => "JudgingChannelsDisagree",
+            Self::CorroboratingChannelSilent { .. } => "CorroboratingChannelSilent",
             Self::NotOnScreen { .. } => "NotOnScreen",
             Self::JudgeWalkTooLarge { .. } => "JudgeWalkTooLarge",
             Self::JudgeTimedOut(_) => "JudgeTimedOut",
@@ -764,24 +787,40 @@ pub fn judge_landing(
         });
     }
 
-    // 4 — J2, the same document through a structurally different provider.
-    let msaa = if profile.judges.contains(&JudgeChannel::RenderedDocumentMsaa) {
-        judge.rendered_document_msaa(bound, profile.walk, profile.leaf_join, deadline)?
-    } else {
-        None
-    };
-    if let Some(msaa) = &msaa {
-        // Compared modulo the provider's declared re-encodings only: the two
-        // COM providers publish the same layout tree but need not publish the
-        // same sentinel handling.
-        if normalise(&msaa.text, profile.normalisations)
+    // 4 — every OTHER declared document channel, each of which must answer.
+    //
+    // A declared channel that answers `None` is a refusal, not a shrug. A
+    // corroborator that has never corroborated anything is decoration, and this
+    // project has shipped several: if a profile names a channel, the channel
+    // has to work or the profile has to stop naming it.
+    let mut corroborating = None;
+    for channel in profile.judges {
+        let answer = match channel {
+            JudgeChannel::RenderedDocumentTextPattern => {
+                judge.rendered_document_text_pattern(bound, profile.walk, deadline)?
+            }
+            JudgeChannel::RenderedDocumentMsaa => {
+                judge.rendered_document_msaa(bound, profile.walk, profile.leaf_join, deadline)?
+            }
+            JudgeChannel::RenderedDocumentUia | JudgeChannel::ComposerInk => continue,
+            JudgeChannel::ComposerValueProperty => unreachable!("checked by check_independence"),
+        };
+        let Some(answer) = answer else {
+            return Err(LandingRefusal::CorroboratingChannelSilent { channel: *channel });
+        };
+        // Compared modulo the provider's declared re-encodings only: two
+        // providers publish the same layout tree but need not publish the same
+        // sentinel handling.
+        if normalise(&answer.text, profile.normalisations)
             != normalise(&uia.text, profile.normalisations)
         {
             return Err(LandingRefusal::JudgingChannelsDisagree {
+                channel: *channel,
                 uia: uia.text.clone(),
-                msaa: msaa.text.clone(),
+                other: answer.text.clone(),
             });
         }
+        corroborating = Some(answer.text);
     }
 
     // 5 — D, the disowned channel. Read, reported, counted by nothing.
@@ -878,7 +917,7 @@ pub fn judge_landing(
         document,
         leaves: uia.leaves,
         nodes_visited: uia.nodes_visited,
-        corroborating_document: msaa.map(|document| document.text),
+        corroborating_document: corroborating,
         ink_before: baseline.empty_ink,
         ink_after,
         ink_delta,

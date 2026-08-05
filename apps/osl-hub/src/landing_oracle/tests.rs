@@ -17,6 +17,7 @@ use crate::native_a11y::Uia2Editable;
 struct FakeJudge {
     identity: Option<WindowIdentity>,
     uia: Option<RenderedDocument>,
+    text_pattern: Option<RenderedDocument>,
     msaa: Option<RenderedDocument>,
     ink: Option<Ink>,
     value_property: Option<String>,
@@ -67,6 +68,16 @@ impl LandingJudgeSyscalls for FakeJudge {
             return Ok(Some(document.clone()));
         }
         Ok(self.uia.clone())
+    }
+
+    fn rendered_document_text_pattern(
+        &self,
+        _bound: &BoundComposer,
+        _caps: WalkCaps,
+        _deadline: JudgeDeadline,
+    ) -> Result<Option<RenderedDocument>, JudgeTimeout> {
+        self.timeout("text_pattern")?;
+        Ok(self.text_pattern.clone())
     }
 
     fn rendered_document_msaa(
@@ -170,7 +181,7 @@ fn baseline() -> LandingBaseline {
 fn landed_judge() -> FakeJudge {
     FakeJudge {
         uia: Some(document(CARRIER)),
-        msaa: Some(document(CARRIER)),
+        text_pattern: Some(document(CARRIER)),
         ink: Some(inked(1_400)),
         value_property: Some(CARRIER.to_owned()),
         ..FakeJudge::default()
@@ -195,7 +206,7 @@ fn the_sound_landing_is_accepted() {
         proof.judged_by,
         vec![
             JudgeChannel::RenderedDocumentUia,
-            JudgeChannel::RenderedDocumentMsaa,
+            JudgeChannel::RenderedDocumentTextPattern,
             JudgeChannel::ComposerInk
         ]
     );
@@ -214,7 +225,7 @@ fn nothing_placed_is_refused_by_name() {
         // Discord's empty Slate composer. `U+FEFF` is not whitespace to
         // `str::trim`, so a naive emptiness predicate calls this a draft.
         uia: Some(leaves(&["\u{feff}", "\n"], "")),
-        msaa: Some(leaves(&["\u{feff}", "\n"], "")),
+        text_pattern: Some(leaves(&["\u{feff}", "\n"], "")),
         ink: Some(empty_ink()),
         value_property: Some(String::new()),
         ..FakeJudge::default()
@@ -241,7 +252,7 @@ fn nothing_placed_is_refused_by_name() {
 fn the_value_property_claiming_a_landing_does_not_produce_one() {
     let fake = FakeJudge {
         uia: Some(leaves(&["\u{feff}", "\n"], "")),
-        msaa: Some(leaves(&["\u{feff}", "\n"], "")),
+        text_pattern: Some(leaves(&["\u{feff}", "\n"], "")),
         ink: Some(empty_ink()),
         // What D-205 read back and believed.
         value_property: Some(CARRIER.to_owned()),
@@ -283,7 +294,7 @@ fn a_truncated_carrier_is_refused_by_name() {
     let short = &CARRIER[..17];
     let fake = FakeJudge {
         uia: Some(document(short)),
-        msaa: Some(document(short)),
+        text_pattern: Some(document(short)),
         ink: Some(inked(600)),
         value_property: Some(short.to_owned()),
         ..FakeJudge::default()
@@ -314,7 +325,7 @@ fn a_rewrapped_carrier_is_refused_by_name() {
     let expected = "first line\nsecond line";
     let fake = FakeJudge {
         uia: Some(leaves(&["first line", "second line"], "")),
-        msaa: Some(leaves(&["first line", "second line"], "")),
+        text_pattern: Some(leaves(&["first line", "second line"], "")),
         ink: Some(inked(1_100)),
         value_property: Some("first line\nsecond line".to_owned()),
         ..FakeJudge::default()
@@ -343,7 +354,7 @@ fn a_normalisation_can_never_reach_a_landing() {
     let expected = "first line\nsecond line";
     let fake = FakeJudge {
         uia: Some(leaves(&["first line", "second line"], "")),
-        msaa: Some(leaves(&["first line", "second line"], "")),
+        text_pattern: Some(leaves(&["first line", "second line"], "")),
         ink: Some(inked(1_100)),
         ..FakeJudge::default()
     };
@@ -358,7 +369,7 @@ fn a_normalisation_can_never_reach_a_landing() {
 fn text_that_is_not_the_carrier_at_all_is_refused_by_name() {
     let fake = FakeJudge {
         uia: Some(document("what time are you around tomorrow")),
-        msaa: Some(document("what time are you around tomorrow")),
+        text_pattern: Some(document("what time are you around tomorrow")),
         ink: Some(inked(1_000)),
         ..FakeJudge::default()
     };
@@ -381,7 +392,7 @@ fn a_bound_window_of_the_wrong_process_is_refused_by_name() {
             process_name: "DiscordPTB".to_owned(),
         }),
         uia: Some(document(CARRIER)),
-        msaa: Some(document(CARRIER)),
+        text_pattern: Some(document(CARRIER)),
         ink: Some(inked(1_400)),
         ..FakeJudge::default()
     };
@@ -401,7 +412,7 @@ fn a_carrier_that_landed_in_another_window_is_refused_by_name() {
     let stray_hwnd = 0x9999;
     let fake = FakeJudge {
         uia: Some(leaves(&["\u{feff}", "\n"], "")),
-        msaa: Some(leaves(&["\u{feff}", "\n"], "")),
+        text_pattern: Some(leaves(&["\u{feff}", "\n"], "")),
         ink: Some(empty_ink()),
         strays: vec![(
             stray_hwnd,
@@ -468,6 +479,14 @@ fn a_profile_that_judges_by_the_writing_channel_is_refused_before_any_call() {
             _: &BoundComposer,
             _: WalkCaps,
             _: &str,
+            _: JudgeDeadline,
+        ) -> Result<Option<RenderedDocument>, JudgeTimeout> {
+            panic!("the oracle must refuse before it touches the provider");
+        }
+        fn rendered_document_text_pattern(
+            &self,
+            _: &BoundComposer,
+            _: WalkCaps,
             _: JudgeDeadline,
         ) -> Result<Option<RenderedDocument>, JudgeTimeout> {
             panic!("the oracle must refuse before it touches the provider");
@@ -568,7 +587,7 @@ fn a_document_the_pixels_cannot_see_is_refused_by_name() {
 #[test]
 fn two_judging_channels_that_disagree_are_refused_by_name() {
     let fake = FakeJudge {
-        msaa: Some(document("something else entirely")),
+        text_pattern: Some(document("something else entirely")),
         ..landed_judge()
     };
     let refusal = judge(&fake).expect_err("two answers and no way to choose is a refusal");
@@ -604,7 +623,7 @@ fn a_walk_that_reaches_its_bound_is_refused_by_name() {
 fn a_channel_that_stops_answering_is_refused_by_name() {
     // Every channel the oracle depends on, starved one at a time. Silence must
     // never become a verdict.
-    for channel in ["identity", "uia", "msaa", "value", "ink"] {
+    for channel in ["identity", "uia", "text_pattern", "value", "ink"] {
         let fake = FakeJudge {
             timeout_on: Some(channel),
             ..landed_judge()
@@ -682,4 +701,26 @@ fn discords_profile_records_what_was_measured_rather_than_what_is_usual() {
         DISCORD.empty_document_chars.contains(&'\u{feff}'),
         "Discord's empty Slate composer publishes U+FEFF and str::trim does not remove it"
     );
+}
+
+/// A declared corroborator that answers nothing is a refusal, not a shrug.
+///
+/// This is the gate that stopped Discord's profile from claiming an MSAA
+/// corroborator it does not have: the live run measured
+/// `rendered_document_msaa -> None` against Chromium's `LegacyIAccessible`
+/// bridge, and rather than leave a channel in the profile that could never
+/// disagree with anything, the profile names `RenderedDocumentTextPattern`,
+/// which answers.
+#[test]
+fn a_declared_channel_that_answers_nothing_is_refused_by_name() {
+    let fake = FakeJudge {
+        text_pattern: None,
+        ..landed_judge()
+    };
+    let refusal = judge(&fake).expect_err("a silent corroborator cannot corroborate");
+    assert_eq!(refusal.name(), "CorroboratingChannelSilent");
+    let LandingRefusal::CorroboratingChannelSilent { channel } = refusal else {
+        panic!("wrong refusal: {refusal:?}");
+    };
+    assert_eq!(channel, JudgeChannel::RenderedDocumentTextPattern);
 }

@@ -261,6 +261,27 @@ fn calibrate_the_landing_oracle() {
         profile.commit_key,
     );
 
+    // --- stage 0: the owner's own draft, recorded before anything is typed --
+    //
+    // This is a live conversation. Whatever is already in the composer belongs
+    // to the person who put it there, and the probe types it back at the end
+    // and proves with the oracle that it did.
+    let deadline0 = JudgeDeadline::from_profile(&profile);
+    let pre_existing = judge
+        .rendered_document_uia(&bound, profile.walk, profile.leaf_join, deadline0)
+        .ok()
+        .flatten()
+        .map(|document| document.text)
+        .unwrap_or_default();
+    let pre_existing_is_a_draft = !pre_existing
+        .chars()
+        .all(|c| profile.empty_document_chars.contains(&c));
+    eprintln!(
+        "oracle: stage 0: pre-existing composer document = {} chars, is_a_draft={}",
+        pre_existing.chars().count(),
+        pre_existing_is_a_draft
+    );
+
     // --- stage 1: the ink baseline, taken while the composer is empty -------
     clear("stage 1");
     let deadline = JudgeDeadline::from_profile(&profile);
@@ -434,5 +455,19 @@ fn calibrate_the_landing_oracle() {
         Some("NothingPlaced"),
         "the probe must never leave a carrier in a real person's composer"
     );
+    // --- restore what was there before ---------------------------------------
+    if pre_existing_is_a_draft {
+        assert!(focus_reaches_the_composer(&acquired, &composer));
+        let restored = crate::native_discord_adapter::shipping_type_text(&pre_existing);
+        eprintln!("oracle: restore: retyped the owner's draft -> {restored}");
+        settle(&profile);
+        let verdict = judge_landing(&judge, &profile, &bound, &pre_existing, baseline, &[]);
+        report("restore", &verdict);
+        assert!(
+            verdict.is_ok(),
+            "the probe must leave the composer holding exactly what it found"
+        );
+    }
+
     eprintln!("oracle: no Enter was sent at any point -- send_enter is not reachable from this file");
 }

@@ -28,8 +28,9 @@ use ::windows::Win32::System::Ole::{
 };
 use ::windows::Win32::UI::Accessibility::{
     AccessibleChildren, CUIAutomation, IAccessible, IUIAutomation, IUIAutomationElement,
-    IUIAutomationLegacyIAccessiblePattern, IUIAutomationTreeWalker, IUIAutomationValuePattern,
-    TreeScope_Subtree, UIA_LegacyIAccessiblePatternId, UIA_ValuePatternId,
+    IUIAutomationLegacyIAccessiblePattern, IUIAutomationTextPattern, IUIAutomationTreeWalker,
+    IUIAutomationValuePattern, TreeScope_Subtree, UIA_LegacyIAccessiblePatternId,
+    UIA_TextPatternId, UIA_ValuePatternId,
 };
 use std::ffi::c_void;
 
@@ -556,6 +557,36 @@ impl LandingJudgeSyscalls for LandingJudgeWin32 {
                 leaves: walk.leaves,
                 nodes_visited: walk.nodes_visited,
                 depth_reached: walk.depth_reached,
+            })
+        })
+    }
+
+    fn rendered_document_text_pattern(
+        &self,
+        bound: &BoundComposer,
+        caps: WalkCaps,
+        deadline: JudgeDeadline,
+    ) -> Result<Option<RenderedDocument>, JudgeTimeout> {
+        let bound = bound.clone();
+        bounded(deadline, move || {
+            let automation = automation()?;
+            let element = composer_element(&automation, &bound)?;
+            let pattern = unsafe { element.GetCurrentPattern(UIA_TextPatternId) }
+                .ok()?
+                .cast::<IUIAutomationTextPattern>()
+                .ok()?;
+            let range = unsafe { pattern.DocumentRange() }.ok()?;
+            // Bounded by the same node cap, read as characters: an unbounded
+            // GetText would let another process's document size decide this
+            // allocation.
+            let text = unsafe { range.GetText(caps.max_nodes as i32) }
+                .ok()?
+                .to_string();
+            Some(RenderedDocument {
+                leaves: vec![text.clone()],
+                text,
+                nodes_visited: 1,
+                depth_reached: 0,
             })
         })
     }
