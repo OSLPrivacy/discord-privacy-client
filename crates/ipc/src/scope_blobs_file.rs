@@ -1,10 +1,16 @@
 //! Phase 4: `scope_blobs.json`.
 //!
-//! Per-scope list of cipher-store blob IDs this client has uploaded.
-//! The scope-burn flow walks the list and calls
-//! [`prose_token_burn_id`] on each ID, instantly making every cover
-//! that scope produced un-decryptable for everyone — the burner's
-//! own client included, since the on-server blob is gone.
+//! Per-scope list of cipher-store blob IDs this client has uploaded,
+//! each with the credential needed to destroy it. The scope-burn flow
+//! walks the list and calls [`prose_token_burn_recorded`] on each
+//! entry, instantly making every cover that scope produced
+//! un-decryptable for everyone — the burner's own client included,
+//! since the on-server blob is gone.
+//!
+//! D-232: the id alone was NOT enough. The deployed bridge Worker
+//! assigns its own id and honours only the fetch token the sender drew
+//! before uploading, so a ledger of bare ids left the burn walk holding
+//! objects it could not authenticate for, and it destroyed nothing.
 //!
 //! Recording happens inside the `osl_prose_token_send` Tauri command
 //! every time a cover is built (V2 content sends + SKDM/burn-marker
@@ -16,7 +22,7 @@
 //! [`crate::scope_ttl_file`] persistence pattern: atomic
 //! `.tmp + rename` write + `main_password::maybe_encrypt` envelope.
 //!
-//! [`prose_token_burn_id`]: crate::prose_token::prose_token_burn_id
+//! [`prose_token_burn_recorded`]: crate::prose_token::prose_token_burn_recorded
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

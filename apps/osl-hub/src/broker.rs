@@ -15796,9 +15796,9 @@ ok i will weekend again with you",
         );
         authenticated.blob_id = BRIDGE_ERA_BLOB_ID.to_owned();
 
-        let bound = bind_authenticated_native_row(&evidence, authenticated);
+        let joined = bind_authenticated_native_row(&evidence, authenticated);
 
-        let (_, _, attribution) = bound.expect(
+        let (_, _, attribution) = joined.expect(
             "a row whose pointer the shipping send path produced must keep its sender attribution",
         );
         assert_eq!(attribution.blob_id, BRIDGE_ERA_BLOB_ID);
