@@ -1,8 +1,10 @@
 //! T4-N2's signed OSL Mail provisioning bridge.
 //!
-//! The server deliberately has no status endpoint.  Availability comes from
-//! its public capability document; whether this identity has a mailbox is
-//! local state established only after a signed provision response succeeds.
+//! The server deliberately has no status endpoint. Server capability still
+//! gates the signed lab operations, but the user-facing Mail client is not
+//! available until the desktop bridge exists. Whether this identity has a
+//! mailbox is local state established only after a signed provision response
+//! succeeds.
 
 use crate::core_bridge::HubCoreState;
 use base64::{
@@ -17,6 +19,7 @@ use std::sync::Mutex;
 
 const MAIL_DOMAIN: &str = "oslprivacy.com";
 const RETENTION_SECONDS: u32 = 7 * 24 * 60 * 60;
+const OSL_MAIL_DESKTOP_BRIDGE_AVAILABLE: bool = false;
 
 #[derive(Default)]
 pub struct OslMailState {
@@ -390,7 +393,7 @@ fn ensure_capabilities(base_url: &str) -> Result<(), String> {
 fn status_from_address(address: Option<String>) -> OslMailStatus {
     let provisioned = address.is_some();
     OslMailStatus {
-        available: true,
+        available: OSL_MAIL_DESKTOP_BRIDGE_AVAILABLE,
         provisioned,
         address,
         unread_count: 0,
@@ -464,7 +467,7 @@ mod tests {
         assert_eq!(
             status_from_address(None),
             super::OslMailStatus {
-                available: true,
+                available: false,
                 provisioned: false,
                 address: None,
                 unread_count: 0,
