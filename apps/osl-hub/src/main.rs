@@ -192,7 +192,8 @@ use osl_privacy_hub::hub_command_surface::{
     require_review_ui_identity_binding_from_verifier, service_kind_id,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
     start_autoscrub_reviewed_run_inner, with_native_discord_product_send_authority,
-    BrowserFootprintConsentRequest, CheckedHost, NativeDiscordProductSendAuthority,
+    BrowserFootprintConsentRequest, CheckedHost, DiscordGuidedDeletionPlanState,
+    GuidedDeletionRunAuthorityInput, NativeDiscordProductSendAuthority,
 };
 use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
@@ -751,11 +752,13 @@ async fn open_hosted_session_scan(
 async fn request_hosted_session_scan(
     app: tauri::AppHandle,
     session: State<'_, HubAccountSessionState>,
+    plans: State<'_, DiscordGuidedDeletionPlanState>,
 ) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan, String> {
     let _session = session.transition.lock().await;
-    tauri::async_runtime::spawn_blocking(move || run_checked_hosted_session_scan(app))
+    let scan = tauri::async_runtime::spawn_blocking(move || run_checked_hosted_session_scan(app))
         .await
-        .map_err(|_| "Hosted session scan worker was interrupted".to_owned())?
+        .map_err(|_| "Hosted session scan worker was interrupted".to_owned())??;
+    plans.record_scan(scan)
 }
 
 /// Scan the exact checked native-hosted Discord context.
@@ -768,11 +771,73 @@ async fn request_hosted_session_scan(
 async fn request_hosted_session_scan_command(
     app: tauri::AppHandle,
     session: State<'_, HubAccountSessionState>,
+    plans: State<'_, DiscordGuidedDeletionPlanState>,
 ) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan, String> {
     let _session = session.transition.lock().await;
-    tauri::async_runtime::spawn_blocking(move || run_checked_hosted_session_scan(app))
+    let scan = tauri::async_runtime::spawn_blocking(move || run_checked_hosted_session_scan(app))
         .await
-        .map_err(|_| "Hosted session scan worker was interrupted".to_owned())?
+        .map_err(|_| "Hosted session scan worker was interrupted".to_owned())??;
+    plans.record_scan(scan)
+}
+
+#[tauri::command]
+async fn scan_discord_own_messages_for_deletion(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    plans: State<'_, DiscordGuidedDeletionPlanState>,
+) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan, String> {
+    let _session = session.transition.lock().await;
+    let scan = tauri::async_runtime::spawn_blocking(move || run_checked_hosted_session_scan(app))
+        .await
+        .map_err(|_| "Discord deletion scan worker was interrupted".to_owned())??;
+    plans.record_scan(scan)
+}
+
+#[tauri::command]
+fn preview_discord_guided_deletion(
+    core: State<'_, HubCoreState>,
+    plans: State<'_, DiscordGuidedDeletionPlanState>,
+    scan_ordinals: Vec<usize>,
+) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionPreview, String> {
+    plans.build_preview(
+        &scan_ordinals,
+        ipc::tier_gate::is_paid_equivalent(&core.osl),
+    )
+}
+
+#[tauri::command]
+async fn execute_discord_guided_deletion(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    plans: State<'_, DiscordGuidedDeletionPlanState>,
+    plan_digest: String,
+    authority: GuidedDeletionRunAuthorityInput,
+) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::GuidedDeletionReceipt, String>
+{
+    let _session = session.transition.lock().await;
+    let checked = checked_host_for_hosted_session_scan(&app)?;
+    require_same_overlay_context(&app, checked.context_epoch, &checked.active)?;
+    let current_scope_hash =
+        osl_privacy_hub::native_discord_adapter::guided_deletion_scope_binding_hash(
+            &checked.scope_binding,
+        );
+    let plan = plans.confirm_preview(
+        &plan_digest,
+        &current_scope_hash,
+        checked.active.generation,
+        authority,
+    )?;
+    tauri::async_runtime::spawn_blocking(move || {
+        require_same_overlay_context(&app, checked.context_epoch, &checked.active)?;
+        osl_privacy_hub::native_discord_adapter::execute_guided_deletion(
+            &app.state::<NativeWindowHostState>(),
+            &checked.owner_osl_user_id,
+            &checked.scope_binding,
+            &plan,
+        )
+    })
+    .await
+    .map_err(|_| "Discord guided deletion worker was interrupted".to_owned())?
 }
 
 #[tauri::command]
@@ -9655,6 +9720,8 @@ fn main() {
         startup_breadcrumb("setup_step_39_hub_notification_state_managed"); // STARTUP-TRACE
         app.manage(ScrubIndexState::default());
         startup_breadcrumb("setup_step_40_scrub_index_state_managed"); // STARTUP-TRACE
+        app.manage(DiscordGuidedDeletionPlanState::default());
+        startup_breadcrumb("setup_step_40_discord_guided_deletion_plan_state_managed"); // STARTUP-TRACE
         let registration_app = app.handle().clone();
         startup_breadcrumb("setup_step_41_register_after_bootstrap_spawn_before"); // STARTUP-TRACE
         tauri::async_runtime::spawn_blocking(move || {
@@ -10273,6 +10340,9 @@ mod tauri_command_acl_tests {
             "open_hosted_session_scan",
             "request_hosted_session_scan",
             "request_hosted_session_scan_command",
+            "scan_discord_own_messages_for_deletion",
+            "preview_discord_guided_deletion",
+            "execute_discord_guided_deletion",
         ]);
     }
 
