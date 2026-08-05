@@ -1642,7 +1642,6 @@ mod tauri_registration_surface_tests {
     }
 
     #[test]
-    #[test]
     fn component_lifecycle_commands_are_registered_and_acl_granted() {
         let (handlers, permissions, capability) = registration_inputs();
         assert_each_registration_surface_is_required(
@@ -1653,6 +1652,13 @@ mod tauri_registration_surface_tests {
         );
     }
 
+    // D-252: this attribute was NOT here. `component_lifecycle_commands_...`
+    // above carried two `#[test]`s and this function carried none, so the
+    // `emit_active_session_reset` registration and ACL grant were asserted by a
+    // function the harness never called. `duplicate_macro_attributes` is the
+    // only gate that ever noticed, and it is in no CI job because the hub is
+    // excluded from the linted workspace.
+    #[test]
     fn session_reset_emitter_is_registered_and_granted() {
         let (handlers, permissions, capability) = network_registration_inputs();
         assert_registered_and_granted(

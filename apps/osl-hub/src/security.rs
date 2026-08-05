@@ -859,7 +859,6 @@ pub fn remove_friend(
         .lock()
         .map_err(|_| "OSL People state is unavailable".to_owned())?;
     let dir = config_dir()?;
-    let people_path = dir.join(PEOPLE_FILE);
     let mut people = load_people_file(&dir)?;
     if !people.people.contains_key(&person_id) {
         return Err("OSL friend is unknown".to_owned());
@@ -6816,9 +6815,15 @@ key"
             ipc::main_password::now_unix_secs_pub()
         ));
         let mut ttl = ipc::scope_ttl_file::ScopeTtlFile::default();
-        ipc::scope_ttl_file::set_scope_ttl(&mut ttl, "dm:test".to_owned(), 3_600);
+        // Both writes are asserted rather than discarded: `set_scope_ttl`
+        // validates the TTL and returns `Err` for a rejected one, and this test
+        // was throwing that away -- a rejected first write would have left the
+        // file empty and the test would still have reached its assertion.
+        ipc::scope_ttl_file::set_scope_ttl(&mut ttl, "dm:test".to_owned(), 3_600)
+            .expect("3600s is one of the four accepted lifetimes");
         write_encrypted_json_with_key(&path, &ttl, &file_key).unwrap();
-        ipc::scope_ttl_file::set_scope_ttl(&mut ttl, "dm:test".to_owned(), 86_400);
+        ipc::scope_ttl_file::set_scope_ttl(&mut ttl, "dm:test".to_owned(), 86_400)
+            .expect("86400s is one of the four accepted lifetimes");
         write_encrypted_json_with_key(&path, &ttl, &file_key).unwrap();
         let on_disk = std::fs::read(&path).unwrap();
         assert!(ipc::main_password::has_enc_magic(&on_disk));
