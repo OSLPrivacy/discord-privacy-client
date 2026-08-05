@@ -64,14 +64,22 @@ describe("payload policy portability", () => {
     expect(constantTimeEqualHex(digest, DIGEST)).toBe(false);
 
     const put = vi.fn();
-    const env = {
-      DB: {
-        prepare: vi.fn()
-          .mockReturnValueOnce({ bind: () => ({ first: async () => null }) })
-          .mockReturnValueOnce({ first: async () => ({ rows: MAX_LIVE_BLOB_ROWS, bytes: MAX_LIVE_BLOB_BYTES }) }),
-      },
-      PAYLOADS: { put },
-    };
+    // RESTATED 2026-08-05 for D-256. This double was ordered for the
+    // SELECT-then-INSERT that `cc619a55e` introduced: read the aggregate, then
+    // insert unconditionally. Restoring the atomic gate the HIGH-2 comment
+    // named puts the guarded write first, and a full pool now shows up as that
+    // write changing zero rows -- how real D1 reports a false INSERT..SELECT
+    // predicate (`test/d1-meta-changes-contract.test.ts`, case B). The claims
+    // asserted below -- 503 storage_capacity, and no R2 write on a refusal --
+    // are unchanged, with the statement shapes newly pinned.
+    const prepare = vi.fn()
+      .mockReturnValueOnce({
+        bind: () => ({ run: async () => ({ success: true, meta: { changes: 0 } }) }),
+      })
+      .mockReturnValueOnce({
+        first: async () => ({ rows: MAX_LIVE_BLOB_ROWS, bytes: MAX_LIVE_BLOB_BYTES }),
+      });
+    const env = { DB: { prepare }, PAYLOADS: { put } };
     // Same stale TTL as the loop above, and this one matters more: with "3600"
     // handleUpload refused at `bad_ttl` and returned 400 long before it counted
     // capacity, so the storage-capacity refusal -- and `put` never being called
@@ -81,5 +89,19 @@ describe("payload policy portability", () => {
     expect(quotaExceeded.status).toBe(503);
     await expect(quotaExceeded.json()).resolves.toMatchObject({ error: "storage_capacity" });
     expect(put).not.toHaveBeenCalled();
+
+    // Exactly two statements, and the write is the FIRST of them: a capacity
+    // read that ran before the write would be the TOCTOU gate again. The write
+    // must also carry all three guards, and the re-read that picks the refusal
+    // message must not mention the blob id, or the refusal itself would tell a
+    // caller whether the id it named was taken (D-255).
+    expect(prepare).toHaveBeenCalledTimes(2);
+    const [write, reread] = prepare.mock.calls.map(([sql]) => String(sql));
+    expect(write).toMatch(/^\s*INSERT INTO blob_capability_index/);
+    expect(write).toMatch(/WHERE\s+NOT\s+EXISTS/i);
+    expect(write).toMatch(/SELECT\s+COUNT\(\*\)\s+FROM\s+blob_capability_index/i);
+    expect(write).toMatch(/SUM\(size_bytes\)/i);
+    expect(reread).not.toMatch(/\bINSERT\b/i);
+    expect(reread).not.toMatch(/blob_id/i);
   });
 });

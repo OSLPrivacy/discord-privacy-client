@@ -67,13 +67,45 @@ export const D2_PROBE_FORMAT =
  * v2 release. They anchor `verifyD2Migration0010ProductionRelease`, which is
  * retired and always throws, and D2_TRUSTED_PRODUCERS is empty, so the triple
  * authorizes nothing. Re-cutting them is an owner action at the next release.
+ *
+ * MOVED AGAIN 2026-08-05, from
+ * 98c4a8a0a4a8e7fb136800e86fd6c17452c4cae6000b850f9fa63df1ece46f86, to admit
+ * the fixes for the first two defects the re-anchor above filed rather than
+ * blessed. Justification is per file, and the drift is exactly one file:
+ *
+ *   src/endpoints/blob.ts  handleUpload only. D-255: the `409
+ *                          blob_id_collision` answer is gone -- a taken id and
+ *                          an unused one now get the same response, because an
+ *                          upload holds no authority over the id it names.
+ *                          D-256: the SELECT-then-INSERT is one
+ *                          INSERT..SELECT..WHERE again, with the COUNT/SUM
+ *                          predicates and a NOT EXISTS id check evaluated
+ *                          inside the write, which is the property the HIGH-2
+ *                          comment named. The R2 put moved after that write so
+ *                          a caller who named someone else's id cannot reach
+ *                          `putByDigest`.
+ *
+ *   (no other pinned file)  Verified, not assumed: recomputing the manifest
+ *                          with this branch's tree but `git show
+ *                          HEAD:cipher-store-cf/src/endpoints/blob.ts`
+ *                          substituted for the working copy reproduces
+ *                          98c4a8a0... exactly. Every byte of the move is
+ *                          attributable to the two fixes above.
+ *
+ * The two regression suites that hold the properties are
+ * `test/blob-upload-existence-oracle.test.ts` and
+ * `test/blob-capacity-atomic.test.ts`. Both were observed RED against the
+ * pre-fix source before the fix was written, and each was observed RED again
+ * with its own fix individually reverted. Neither is a pinned file: see D-258,
+ * `D2_RELEASE_SOURCE_FILES` is a static 31-entry list and no test file, and no
+ * migration past 0010, is inside it.
  */
 export const D2_RELEASE_COMMIT =
   "5a2bad492dec2d90094d2c4a797124366d7dea32";
 export const D2_RELEASE_TREE =
   "18149f3dbb14bae687cea33a56f624171958c8cd";
 export const D2_RELEASE_SOURCE_SHA256 =
-  "98c4a8a0a4a8e7fb136800e86fd6c17452c4cae6000b850f9fa63df1ece46f86";
+  "aada7c5013d81f6fd304d13f59d4bf0bb5dff5b81663d76b299e7214e19247e0";
 export const D2_MIGRATION_0010_SHA256 =
   "a545f989172c32c8f5f5c78754b4eda2f045778643cbb86c9eb81f22be2f6636";
 export const D2_DATABASE_ID = "be3d31f1-f6b4-4d6e-8ede-74514950b9e2";
