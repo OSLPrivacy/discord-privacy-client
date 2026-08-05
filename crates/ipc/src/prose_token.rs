@@ -29,6 +29,17 @@
 //! Detection-key derivation: the shipping caller supplies secret conversation
 //! material and this module expands it under [`DETECT_KEY_HKDF_INFO`]. Scope
 //! labels must never decide whether public cover text carries an OSL pointer.
+//!
+//! Scope binding (D-231): the scope label is not, on its own, allowed to decide
+//! detectability — but it must still *constrain* it, or a carrier minted in one
+//! conversation is readable in every other conversation that shares a detector.
+//! Both properties hold at once by mixing the public scope label into a key that
+//! is already secret: [`scope_bound_detection_key`] expands the caller's secret
+//! detector under the scope's own salt, and it is that bound value — never the
+//! caller's — that reaches the stego layer. A party holding only the public
+//! scope still derives nothing (T1-31 unchanged), and a party holding the
+//! detector for the wrong conversation now recovers no carrier at all, so no
+//! cipher-store request is made either.
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
@@ -248,6 +259,49 @@ pub fn derive_detection_key(
     Ok(key)
 }
 
+/// Domain separator that binds one conversation detector to one scope.
+pub const DETECT_SCOPE_BIND_HKDF_INFO: &[u8] = b"osl/detect/scope-bind/v1";
+
+/// Bind a conversation's detector to one scope, cryptographically.
+///
+/// D-231. Before this existed, nothing on the carrier path constrained decode
+/// to a scope. `derive_scope_cipher` looks like it does and does not: since the
+/// B0-06 bigram pivot `stego::encode_token` ignores its `ConversationCipher`
+/// argument outright (`crates/stego/src/mode1.rs:296-320`, the parameter is
+/// literally `_cipher`), and `decode_token_bigram` never receives one. The only
+/// value keying the carrier was the detector, and the shipping detector
+/// (`apps/osl-hub/src/broker.rs:106-110`) is a raw peer-pair X25519 shared
+/// secret with no conversation input at all — so one detector covered every
+/// conversation, every channel and every service that peer appeared in.
+///
+/// The fix is a derivation, not a comparison. A comparison would have to run
+/// *after* a successful decode, which means after the carrier is already in
+/// hand and, on this path, after the cipher-store fetch it authorizes. Binding
+/// the key means a foreign-scope cover fails the 32-bit detect tag and produces
+/// no carrier, no blob id and no network request.
+///
+/// The salt is [`prose_token_salt`] — the same value `derive_scope_cipher`
+/// uses, so the symmetry rules documented there apply unchanged and both peers
+/// of a DM derive the identical bound key. The domain separator is a fixed
+/// prefix and the variable salt is the tail, so no two (prefix, salt) pairs can
+/// alias.
+fn scope_bound_detection_key(
+    detection_key: &[u8; MAC_KEY_LEN],
+    scope_input: &ScopeInput,
+) -> Result<[u8; MAC_KEY_LEN], ProseTokenError> {
+    let scope = crate::scope::Scope::try_from(scope_input.clone())?;
+    let salt = prose_token_salt(&scope);
+    let mut info = Vec::with_capacity(DETECT_SCOPE_BIND_HKDF_INFO.len() + 1 + salt.len());
+    info.extend_from_slice(DETECT_SCOPE_BIND_HKDF_INFO);
+    info.push(0x00);
+    info.extend_from_slice(salt.as_bytes());
+    let hk = Hkdf::<Sha256>::new(None, detection_key);
+    let mut key = [0u8; MAC_KEY_LEN];
+    hk.expand(&info, &mut key)
+        .expect("HKDF expand to 32 bytes is infallible");
+    Ok(key)
+}
+
 /// Domain separator for the sender-private root of the burn authority.
 pub const SEND_KEY_HKDF_INFO: &[u8] = b"osl/prose/send-key/v1";
 
@@ -430,7 +484,10 @@ pub fn prose_token_send_with_client(
     let id = bridge_id_from_hex(&uploaded.id_hex)?;
 
     let cipher = derive_scope_cipher(scope_input)?;
-    let cover_text = stego::encode_token(&cipher, detection_key, &bridge_pack(&id, &seed));
+    // D-231: the scope-bound detector, never the caller's. See
+    // `scope_bound_detection_key`.
+    let scoped_detector = scope_bound_detection_key(detection_key, scope_input)?;
+    let cover_text = stego::encode_token(&cipher, &scoped_detector, &bridge_pack(&id, &seed));
 
     Ok(ProseTokenSendOutput {
         cover_text,
@@ -481,7 +538,11 @@ pub fn prose_token_recv_classified(
     msg: &str,
 ) -> Result<ProseTokenRecv, ProseTokenError> {
     let cipher = derive_scope_cipher(scope_input)?;
-    let carrier = match stego::decode_token(&cipher, detection_key, msg) {
+    // D-231: the scope-bound detector, never the caller's. A cover minted for a
+    // different conversation fails the detect tag here and returns `NoToken`,
+    // so nothing below this line runs and the cipher store is never contacted.
+    let scoped_detector = scope_bound_detection_key(detection_key, scope_input)?;
+    let carrier = match stego::decode_token(&cipher, &scoped_detector, msg) {
         Some(bytes) => bytes,
         None => return Ok(ProseTokenRecv::Missed(ProseTokenMiss::NoToken)),
     };
@@ -593,7 +654,7 @@ mod tests {
     /// send or receive path -- that is the point of this migration -- but the
     /// tests below still need a key a party who knows only the *public* scope
     /// could compute, in order to assert what such a party cannot do.
-    fn public_scope_derived_key(
+    pub(super) fn public_scope_derived_key(
         scope_input: &ScopeInput,
     ) -> Result<[u8; MAC_KEY_LEN], ProseTokenError> {
         let scope = crate::scope::Scope::try_from(scope_input.clone())?;
@@ -847,6 +908,16 @@ mod b0_01_scope_isolation {
     //! folded that to `None`. The assertion was reading a storage miss as a
     //! cryptographic refusal. These two tests pin the real behaviour so the
     //! next reader does not have to rediscover it.
+    //!
+    //! D-231 UPDATE. Once the bridge made the send path actually upload, the
+    //! storage miss stopped happening and `cross_scope_does_not_decode` went
+    //! red — correctly. Both findings above still hold verbatim: the scope
+    //! cipher still isolates nothing, and the detector is still the only value
+    //! that does. What changed is that the detector is now *derived per scope*
+    //! (`scope_bound_detection_key`), so the live assertion is satisfied by a
+    //! cryptographic refusal for the first time rather than by a 404. The two
+    //! tests below are unchanged and still pass, because they exercise the
+    //! `stego` layer directly and that layer's behaviour did not change.
 
     use super::*;
     use crate::scope::{ScopeInput, ScopeKind};
@@ -898,6 +969,102 @@ mod b0_01_scope_isolation {
             stego::decode_token(&cipher, &theirs, &cover),
             None,
             "a foreign conversation must not recover the carrier"
+        );
+    }
+
+    /// D-231. The property the live test names, proven without a network: one
+    /// secret detector, two scopes, two different bound keys.
+    #[test]
+    fn the_bound_detector_differs_per_scope() {
+        let key = derive_detection_key(&[0x44; 32]).unwrap();
+        let a = scope_bound_detection_key(&key, &scope("scope-a-id")).unwrap();
+        let b = scope_bound_detection_key(&key, &scope("scope-b-id")).unwrap();
+        assert_ne!(a, b, "one detector must not cover two scopes");
+        assert_ne!(a, key, "the caller's raw detector must not reach stego");
+        assert_ne!(b, key);
+    }
+
+    /// The refusal is local and total: a cover minted under scope A yields no
+    /// carrier at all under scope B, so no blob id is derived and no
+    /// cipher-store request can follow. This is the whole reason the fix is a
+    /// derivation and not a post-decode comparison.
+    #[test]
+    fn a_cover_minted_under_one_scope_yields_no_carrier_under_another() {
+        let key = derive_detection_key(&[0x44; 32]).unwrap();
+        let a = scope("scope-a-id");
+        let b = scope("scope-b-id");
+        let carrier = [0x5Au8; stego::TOKEN_ID_BYTES];
+        let cover = stego::encode_token(
+            &derive_scope_cipher(&a).unwrap(),
+            &scope_bound_detection_key(&key, &a).unwrap(),
+            &carrier,
+        );
+        assert_eq!(
+            stego::decode_token(
+                &derive_scope_cipher(&a).unwrap(),
+                &scope_bound_detection_key(&key, &a).unwrap(),
+                &cover
+            ),
+            Some(carrier),
+            "the minting scope must still read its own carrier"
+        );
+        assert_eq!(
+            stego::decode_token(
+                &derive_scope_cipher(&b).unwrap(),
+                &scope_bound_detection_key(&key, &b).unwrap(),
+                &cover
+            ),
+            None,
+            "a foreign scope must recover nothing, so it never reaches the store"
+        );
+    }
+
+    /// The binding must not break the property `prose_token_salt` exists for.
+    /// Alice and Bob see different `id`s for the same DM and must still derive
+    /// the same bound detector, or the fix would silently kill every real DM.
+    #[test]
+    fn both_peers_of_one_dm_derive_the_same_bound_detector() {
+        let key = derive_detection_key(&[0x44; 32]).unwrap();
+        let alices_view = ScopeInput {
+            kind: ScopeKind::Dm,
+            id: "900000000000000001".to_string(),
+            server_id: None,
+            channel_id: Some("manual-dm-deadbeefdeadbeef".to_string()),
+        };
+        let bobs_view = ScopeInput {
+            kind: ScopeKind::Dm,
+            id: "900000000000000002".to_string(),
+            server_id: None,
+            channel_id: Some("manual-dm-deadbeefdeadbeef".to_string()),
+        };
+        assert_eq!(
+            scope_bound_detection_key(&key, &alices_view).unwrap(),
+            scope_bound_detection_key(&key, &bobs_view).unwrap(),
+            "a symmetric DM channel binding must produce a symmetric detector"
+        );
+    }
+
+    /// T1-31 must survive the fix. The bound key mixes a *public* label into a
+    /// *secret*; a party holding only the public scope still derives nothing.
+    #[test]
+    fn binding_the_scope_does_not_make_the_scope_sufficient() {
+        let a = scope("public-channel-context");
+        let secret = derive_detection_key(&[0x5a; 32]).unwrap();
+        let bound = scope_bound_detection_key(&secret, &a).unwrap();
+        let carrier = [0x17u8; stego::TOKEN_ID_BYTES];
+        let cover = stego::encode_token(&derive_scope_cipher(&a).unwrap(), &bound, &carrier);
+
+        // What an observer who knows only the public scope label can build.
+        let public_only = super::tests::public_scope_derived_key(&a).unwrap();
+        let public_bound = scope_bound_detection_key(&public_only, &a).unwrap();
+        assert_eq!(
+            stego::decode_token(&derive_scope_cipher(&a).unwrap(), &public_bound, &cover),
+            None,
+            "the public scope label must remain insufficient to detect a token"
+        );
+        assert_eq!(
+            stego::decode_token(&derive_scope_cipher(&a).unwrap(), &public_only, &cover),
+            None
         );
     }
 }
