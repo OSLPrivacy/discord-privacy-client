@@ -385,10 +385,22 @@ pub const SURFACE_CLAIMS: &[SurfaceClaim] = &[
     SurfaceClaim {
         surface: Surface::Telegram,
         // D-206: placement driven live, cover text carried byte-exact and
-        // decoded back out, signed-client row probe `supported`. Real evidence,
-        // and still no carry receipt, so it is BUILT and UNPROVEN — which had
-        // no label at all before this module.
-        carrier: CarrierEvidence::BuiltNeverProvenLive,
+        // decoded back out, signed-client row probe `supported`.
+        //
+        // 2026-08-05: Telegram HAS NOW EARNED A LIVE CARRY RECEIPT — the first
+        // this project has ever held. `carry-receipts/telegram.json`, schema v2,
+        // cover landed byte-exact at 264 bytes judged by the landing oracle
+        // (TextPattern + GDI ink, never the accessibility value), payload
+        // recovered by `decode_mode1` from the ORACLE'S OWN document, ledger 9
+        // rates it `Ok`, and 13 mutations of the receipt were each rejected.
+        //
+        // This row previously read `BuiltNeverProvenLive`, which was true when
+        // this module was written and false by the time it merged: the only
+        // `telegram.json` then present was a schema **v1** file that
+        // `verify_receipt_bytes` rates `Stale` BY NAME. The census test caught
+        // the disagreement on the merge — the table said 0 receipts while the
+        // verifier confirmed 1 — which is exactly what it exists to do.
+        carrier: CarrierEvidence::ProvenLiveWithReceipt,
         delivery: DeliveryEvidence::NeverProvenLive,
         blockers: &[],
         // And the matrix says `externally_blocked`, which is a claim about
