@@ -227,9 +227,7 @@ fn deliver_skdm_synthetically(
     };
     // Install/rotate receiver on the peer's side.
     let mut g = receiver_state.sender_key_state.lock().unwrap();
-    let live = g
-        .entry(scope_key.to_string())
-        .or_insert_with(crypto::sender_keys::SenderKeyState::new);
+    let live = g.entry(scope_key.to_string()).or_default();
     let sender_bytes = sender_did.as_bytes().to_vec();
     if live
         .receiver_chain_for_physical_device(&sender_bytes, physical_device_id)

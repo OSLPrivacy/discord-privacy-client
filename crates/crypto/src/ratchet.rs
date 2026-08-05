@@ -1218,7 +1218,7 @@ mod tests {
     fn persistence_debug_is_redacted_and_existing_session_key_wipe_control_remains() {
         let state = state_with_canaries();
         let state_debug = format!("{state:?}");
-        let skipped_debug = format!("{:?}", &state.skipped[0]);
+        let skipped_debug = format!("{:?}", state.skipped[0]);
         for canary in [
             "root-key-canary",
             "dhs-secret-canary",

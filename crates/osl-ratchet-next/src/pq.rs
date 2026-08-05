@@ -297,8 +297,8 @@ impl Role {
     /// Epoch `e` is owned by the responder when `e` is even.
     pub fn owns(self, epoch: u32) -> bool {
         match self {
-            Role::Responder => epoch % 2 == 0,
-            Role::Initiator => epoch % 2 == 1,
+            Role::Responder => epoch.is_multiple_of(2),
+            Role::Initiator => !epoch.is_multiple_of(2),
         }
     }
 }
@@ -894,13 +894,13 @@ mod tests {
         for _ in 0..400 {
             tick += 1;
             if let Some(f) = init.on_send(&mut r).expect("send") {
-                if tick % 2 == 0 {
+                if tick.is_multiple_of(2) {
                     resp.on_fragment(&f, &mut r).expect("frag");
                 }
             }
             resp.on_peer_have(init.pq_have());
             if let Some(f) = resp.on_send(&mut r).expect("send") {
-                if tick % 3 != 0 {
+                if !tick.is_multiple_of(3) {
                     init.on_fragment(&f, &mut r).expect("frag");
                 }
             }

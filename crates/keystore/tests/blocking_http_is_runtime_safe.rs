@@ -76,9 +76,8 @@ fn keyserver_request_from_a_spawned_task_returns_instead_of_panicking() {
         })
         .await
     });
-    assert_eq!(
+    assert!(
         outcome.expect("the task must complete rather than panic"),
-        true,
         "the request must fail cleanly against a closed port"
     );
 }

@@ -11,7 +11,6 @@ use crypto::sender_keys::{
     SESSION_VERSION_V1,
 };
 use crypto::Error;
-use keystore;
 
 #[test]
 fn receiver_chain_holder_can_forge_a_message_that_opens_as_its_owner() {

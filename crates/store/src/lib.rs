@@ -668,10 +668,6 @@ impl MessageStore {
                     }
                     Some(binding)
                 }
-                // Current schemas are reconciled before this point; no
-                // migration is needed, and ordinary anchored mutations will
-                // continue to advance the binding transactionally.
-                (Some(9), Some(binding)) => Some(binding),
                 (Some(8), None) => {
                     schema::migrate(&conn, &key, &index_key)?;
                     Some(anchor::AnchorBinding::enroll_or_reconcile(
@@ -680,8 +676,19 @@ impl MessageStore {
                         provider,
                     )?)
                 }
-                // An existing v9 binding was reconciled before this open and
-                // needs no migration.
+                // A current-schema binding was reconciled before this point; no
+                // migration is needed, and ordinary anchored mutations will
+                // continue to advance the binding transactionally.
+                //
+                // Spelled `SCHEMA_VERSION`, never a literal. A duplicate
+                // `(Some(9), Some(binding))` arm was merged in beside this one
+                // and shadowed it -- harmless only because 9 *is* the current
+                // version. On the next schema bump that stale literal would
+                // have gone on claiming "no migration needed" for a database
+                // that had just become one version stale, silently skipping
+                // its migration. That is the same trap the pre-mutation guard
+                // above documents: a hardcoded version list stops tracking the
+                // schema the moment the schema moves.
                 (Some(schema::SCHEMA_VERSION), Some(binding)) => Some(binding),
                 // The pre-mutation guard above returns for an existing
                 // pre-v7 anchor.  An absent local/provider record remains the
