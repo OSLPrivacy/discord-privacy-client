@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
+
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
+vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
+vi.mock("./logos", () => ({ browserLogo: (id: string) => `<span>${id}</span>`, providerLogo: (id: string) => `<span>${id}</span>`, serviceLogo: (id: string) => `<span>${id}</span>` }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: mocks.getCurrentWindow }));
 
 const source = fs.readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const adapters = fs.readFileSync(new URL("./adapters.ts", import.meta.url), "utf8");
@@ -53,12 +60,104 @@ function body(startNeedle: string, endNeedle: string, text = source): string {
   return text.slice(start, end);
 }
 
+// --- executing harness for the roster's ACL controls (D-272) ---------------
+//
+// D-251: main.ts is ~10k lines and importing it costs seconds, so it is loaded
+// ONCE in a hook that carries its own budget. `renderWhitelistRosterPerson` is
+// pure in its arguments and reads no module state, so no per-test reset is
+// needed and the source-text tests above are unaffected.
+const localStore = new Map<string, string>();
+let ui: typeof import("./main");
+
+beforeAll(async () => {
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => localStore.get(key) ?? null,
+    setItem: (key: string, value: string) => { localStore.set(key, value); },
+    removeItem: (key: string) => { localStore.delete(key); },
+    clear: () => { localStore.clear(); },
+  });
+  vi.stubGlobal("document", { querySelector: vi.fn(() => null), createElement: vi.fn(() => ({})), documentElement: { classList: { add: vi.fn() }, dataset: {} }, addEventListener: vi.fn(), visibilityState: "visible" });
+  vi.stubGlobal("window", { addEventListener: vi.fn(), matchMedia: vi.fn(() => ({ matches: false, addEventListener: vi.fn() })), setTimeout, confirm: vi.fn(() => false) });
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
+  vi.resetModules();
+  ui = await import("./main");
+}, 300_000);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
+const PERSON_ID = "person-acl";
+const APPROVED_SCOPE = { kind: "dm" as const, contextId: "approved-context", storageKey: "dm:approved-context", userSpecific: false };
+const NARROWED_SCOPE_KEY = "gc:taken-back-context";
+
+type RosterControl = {
+  glyph: string;
+  disabled: boolean;
+  ariaLabel: string;
+  scopeKey: string | null;
+  revokesPersonId: string | null;
+};
+
+/**
+ * Read the buttons out of RENDERED row markup. This parses the row's OUTPUT,
+ * never main.ts's source: a control's identity is its data attributes and its
+ * glyph, none of which a tooltip or label rewording can move.
+ */
+function rosterControls(markup: string): RosterControl[] {
+  const found: RosterControl[] = [];
+  const pattern = /<button\b([^>]*)>([\s\S]*?)<\/button>/g;
+  for (let match = pattern.exec(markup); match !== null; match = pattern.exec(markup)) {
+    const attributes = match[1] ?? "";
+    const inner = match[2] ?? "";
+    found.push({
+      glyph: (inner.split("<")[0] ?? "").trim(),
+      disabled: /(?:^|\s)disabled(?:\s|=|$)/u.test(attributes),
+      ariaLabel: /aria-label="([^"]*)"/u.exec(attributes)?.[1] ?? "",
+      scopeKey: /data-whitelist-scope-key="([^"]*)"/u.exec(attributes)?.[1] ?? null,
+      revokesPersonId: /data-whitelist-scope-remove="([^"]*)"/u.exec(attributes)?.[1] ?? null,
+    });
+  }
+  return found;
+}
+
+function scopePair(markup: string, storageKey: string): { approveControl?: RosterControl; revokeControl?: RosterControl } {
+  const forScope = rosterControls(markup).filter((control) => control.scopeKey === storageKey);
+  return {
+    approveControl: forScope.find((control) => control.revokesPersonId === null && control.glyph === "+"),
+    revokeControl: forScope.find((control) => control.revokesPersonId !== null && control.glyph === "−"),
+  };
+}
+
+function renderRow(options: { active: boolean; busy: boolean; activeScopeApproved?: boolean }): string {
+  return ui.__oslHubUiTest.renderWhitelistRosterPerson(
+    {
+      personId: PERSON_ID,
+      alias: "Ada",
+      whitelistCount: 1,
+      whitelistedScopes: [APPROVED_SCOPE],
+      reachNarrowedScopes: [NARROWED_SCOPE_KEY],
+    },
+    options,
+  );
+}
+
+const approvedScopeControls = (options: { active: boolean; busy: boolean; activeScopeApproved?: boolean }) =>
+  scopePair(renderRow(options), APPROVED_SCOPE.storageKey);
+const narrowedScopeControls = (options: { active: boolean; busy: boolean; activeScopeApproved?: boolean }) =>
+  scopePair(renderRow(options), NARROWED_SCOPE_KEY);
+
 describe("whitelist roster", () => {
   it("opens from the existing whitelist control without changing the +/- semantics", () => {
     const controls = body("function nativeDiscordHeaderControls()", "function trustedHeader()");
     expect(controls).toContain('id="discord-qa-whitelist-roster"');
     expect(controls).toContain('aria-haspopup="dialog"');
-    // The approve / revoke pair keeps exactly its shipped disabled rules.
+    // The approve / revoke pair keeps exactly its shipped disabled rules --
+    // asserted by executing the row, in the D-272 specs at the end of this
+    // file. Both source-text assertions that used to stand here were deleted
+    // by `10bb61381 t7-25 replace native title tooltips` and this comment was
+    // left behind describing them.
     expect(source).toContain('let whitelistRosterOpen = false;');
     expect(body("function bindWorkspace", "function showToast")).toContain('document.querySelector<HTMLButtonElement>("#discord-qa-whitelist-roster")?.addEventListener("click", () => {');
   });
@@ -84,8 +183,12 @@ describe("whitelist roster", () => {
 
   it("keeps the roster's disabled states honest", () => {
     const row = body("function whitelistRosterPersonMarkup(", "function whitelistRosterMarkup()");
-    // + is disabled for a scope that is already approved.
-    // - is offered only for the verified friend behind the live context.
+    // + is disabled for a scope that is already approved, and - is offered
+    // only for the verified friend behind the live context. Both claims are
+    // asserted by executing the row, in the D-272 specs at the end of this
+    // file; the source-text assertions that used to carry them here were
+    // deleted by `10bb61381 t7-25 replace native title tooltips`, which left
+    // these two comments standing over nothing.
     expect(row).toContain('data-whitelist-scope-remove="${escapeHtml(person.personId)}" data-whitelist-scope-key="${escapeHtml(scope.storageKey)}"');
     expect(row).toContain('${!isActive || busy ? "disabled" : ""}');
     // Reach cannot be widened for somebody with nothing approved yet.
@@ -102,6 +205,66 @@ describe("whitelist roster", () => {
     expect(row).toContain("const hiddenScopeCount = Math.max(0, person.whitelistCount - visibleScopes.length);");
     expect(row).toContain("hiddenScopeCount > 0 || person.whitelistedScopesTruncated");
     expect(row).toContain("stored locally and not listed here.");
+  });
+
+  // D-272. The three claims restored below were ASSERTED HERE until
+  // `10bb61381 t7-25 replace native title tooltips` -- a cosmetic commit that
+  // moved `title="..."` into `inDomTooltipMarkup(...)`. The five assertions
+  // that matched the old literals were DELETED rather than re-anchored, and
+  // the comments describing them were left behind in the test above, still
+  // claiming checks that no longer existed. The code never changed: main.ts
+  // still renders every one of these rules. It was the instrument that moved.
+  //
+  // They are restated by EXECUTING the row instead of matching its spelling,
+  // because a source-text pin is what a tooltip edit was able to erase.
+  it("never offers approval for a scope that is already approved", () => {
+    for (const active of [true, false]) {
+      for (const busy of [true, false]) {
+        for (const activeScopeApproved of [true, false]) {
+          const approveControl = approvedScopeControls({ active, busy, activeScopeApproved }).approveControl;
+          expect(approveControl, `active=${active} busy=${busy} approved=${activeScopeApproved}`)
+            .toBeDefined();
+          expect(approveControl?.disabled, `active=${active} busy=${busy} approved=${activeScopeApproved}`)
+            .toBe(true);
+        }
+      }
+    }
+  });
+
+  it("offers revoke for an approved scope only behind the live context, and never mid-write", () => {
+    // The enabled case FIRST: without it every assertion below passes for the
+    // trivial reason that the roster disables everything unconditionally.
+    expect(approvedScopeControls({ active: true, busy: false }).revokeControl?.disabled).toBe(false);
+    expect(approvedScopeControls({ active: false, busy: false }).revokeControl?.disabled).toBe(true);
+    expect(approvedScopeControls({ active: true, busy: true }).revokeControl?.disabled).toBe(true);
+    expect(approvedScopeControls({ active: false, busy: true }).revokeControl?.disabled).toBe(true);
+    // The control that is offered must name the person it revokes for and the
+    // scope it revokes -- an enabled button carrying neither revokes nothing.
+    const live = approvedScopeControls({ active: true, busy: false }).revokeControl;
+    expect(live?.revokesPersonId).toBe(PERSON_ID);
+    expect(live?.scopeKey).toBe(APPROVED_SCOPE.storageKey);
+  });
+
+  it("offers neither control on a scope whose reach was taken back", () => {
+    for (const active of [true, false]) {
+      for (const busy of [true, false]) {
+        const { approveControl, revokeControl } = narrowedScopeControls({ active, busy });
+        expect(approveControl, `active=${active} busy=${busy}`).toBeDefined();
+        expect(revokeControl, `active=${active} busy=${busy}`).toBeDefined();
+        // A scope taken back is not approved, so it can be neither re-approved
+        // from the roster nor revoked again -- in the live context too, which
+        // is the only state in which the approved row's revoke is enabled.
+        expect(approveControl?.disabled, `approveControl active=${active} busy=${busy}`).toBe(true);
+        // NOTE: this message deliberately says `revokeControl`, not `revoke`.
+        // Ledger 10 attributes an assertion to a source-text-bound identifier
+        // when that identifier's NAME appears anywhere in the expression --
+        // including inside a string literal. `const revoke = body(...)` lower
+        // in this file therefore made a message reading "revoke active=..."
+        // count as a source-text pin, moving the census by one. Same family as
+        // D-270/D-271: the shared tokenizer does not blank string contents.
+        expect(revokeControl?.disabled, `revokeControl active=${active} busy=${busy}`).toBe(true);
+      }
+    }
   });
 
   it("changes reach and revokes one scope through their own audited commands", () => {

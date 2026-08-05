@@ -10139,6 +10139,32 @@ export const __oslHubUiTest = {
   setForeignProtectedContextForTest(token: string | null): void {
     activeContextToken = token;
   },
+  /**
+   * Render ONE whitelist-roster person row, without opening the dialog.
+   *
+   * The roster's +/- pair is an ACL surface: which control is OFFERED decides
+   * whether a scope can be approved or revoked from here. That property has to
+   * be checked by EXECUTING the row, because pinning its spelling is exactly
+   * how the claim was lost once already -- `10bb61381 t7-25 replace native
+   * title tooltips` moved `title="..."` into `inDomTooltipMarkup(...)`, and the
+   * five source-text assertions that carried the disabled rules were deleted
+   * rather than re-anchored (D-272). A rendered row cannot be moved by a
+   * cosmetic tooltip change.
+   *
+   * Pure in its arguments and reads no module state, so it needs no `reset()`.
+   */
+  renderWhitelistRosterPerson(
+    person: Partial<HubPerson> & { personId: string },
+    options: { active?: boolean; busy?: boolean; activeScopeApproved?: boolean } = {},
+  ): string {
+    const full = testHubPerson(person);
+    return whitelistRosterPersonMarkup(
+      full,
+      options.active === false ? null : full.personId,
+      options.busy ?? false,
+      options.activeScopeApproved ?? false,
+    );
+  },
   snapshot(): {
     route: Route;
     onboardingRoute: OnboardingRoute;
