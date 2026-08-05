@@ -143,6 +143,10 @@ pub mod scrub_hosted_port;
 /// because a ledger is a gate rather than product code.
 #[cfg(test)]
 pub(crate) mod seam_ledger;
+/// The one production `RawBackend` for `ipc::secure_local_store::SealedStore`.
+/// Every other implementation in the tree is `#[cfg(test)]`, which is why the
+/// offline send queue could not be wired at all before this module existed.
+pub mod secure_disk_backend;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;

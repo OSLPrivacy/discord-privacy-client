@@ -3,6 +3,7 @@
 use osl_privacy_hub::broker::{
     activate_owned_osl_chat_context, drain_osl_chat_text, prepare_osl_chat_text,
     prepare_peer_prose_text, HubBrokerState, NativeOverlayAcknowledgmentStatus,
+    OSL_RELAY_NOTICE_QUEUED,
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
 use osl_privacy_hub::security::{
@@ -67,6 +68,11 @@ struct RelayState {
     /// observation, so an unknown recipient cannot obtain one and no drain can
     /// reach a filtered page through a floor the server never issued.
     floor_identities: BTreeMap<String, Vec<u8>>,
+    /// When set, `POST /v1/control-inbox` closes the connection without
+    /// answering. Every other route keeps working, which is the only way to
+    /// reach the half-delivered window D-223 is about: the wrapped key lands,
+    /// the relay notice does not.
+    control_inbox_unreachable: bool,
 }
 
 /// One uploaded wrapped share. A share is readable ONLY by its recipient.
@@ -126,6 +132,21 @@ impl RelayServer {
 
     fn base_url(&self) -> String {
         format!("http://{}", self.address)
+    }
+
+    /// Take the relay notice lane offline without touching any other route.
+    fn set_control_inbox_unreachable(&self, unreachable: bool) {
+        self.state.lock().unwrap().control_inbox_unreachable = unreachable;
+    }
+
+    fn wrapped_keys_for(&self, sender_id: &str, recipient_id: &str) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .wrapped_keys
+            .values()
+            .filter(|row| row.sender_id == sender_id && row.recipient_id == recipient_id)
+            .count()
     }
 
     fn pending_for(&self, recipient_id: &str) -> usize {
@@ -259,6 +280,14 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
         return;
     };
     let path_without_query = path.split('?').next().unwrap_or(&path);
+    // Close without answering. The client cannot tell this apart from a dropped
+    // network, which is exactly the condition the queued-send proof needs.
+    if method == "POST"
+        && path_without_query == "/v1/control-inbox"
+        && state.lock().unwrap().control_inbox_unreachable
+    {
+        return;
+    }
     let now = now_secs();
     let response = match (method.as_str(), path_without_query) {
         ("GET", "/v1/healthz") => json_response(
@@ -934,4 +963,181 @@ pub fn osl_chat_message_survives_a_lost_wrapped_key_response() {
         false,
     )
     .is_err());
+}
+
+/// D-223, both halves, end to end.
+///
+/// The relay notice lane is taken offline *after* the wrapped key has landed —
+/// the one window where an OSL Chat send is neither delivered nor lost. The
+/// send must refuse honestly and durably queue the notice; a later receive poll
+/// must finish the delivery by itself, and the peer must read the original
+/// plaintext.
+///
+/// This executes the shipping path. Deleting the enqueue in
+/// `prepare_peer_inbox_text_with_route_clients`, or the
+/// `drain_osl_chat_send_queue` call in `drain_osl_chat_text`, makes it fail.
+pub fn osl_chat_queues_a_relay_notice_the_key_server_never_accepted() {
+    let relay = RelayServer::start();
+    let storage = TestStorage::new();
+    let relay_url = relay.base_url();
+    let alice_dir = storage.account("alice", &relay_url);
+    let bob_dir = storage.account("bob", &relay_url);
+
+    let alice_identity = keystore::generate_identity("osl-alice-queued-e2e".to_owned());
+    let bob_identity = keystore::generate_identity("osl-bob-queued-e2e".to_owned());
+    let alice_id = alice_identity.user_id.clone();
+    let bob_id = bob_identity.user_id.clone();
+    relay.register_floor_identity(&alice_identity);
+    relay.register_floor_identity(&bob_identity);
+    let alice = core(alice_identity, &relay_url);
+    let bob = core(bob_identity, &relay_url);
+    let alice_security = HubSecurityState::default();
+    let bob_security = HubSecurityState::default();
+    let alice_broker = HubBrokerState::default();
+    let bob_broker = HubBrokerState::default();
+
+    let alice_code = export_friend_code(&alice).unwrap();
+    let bob_code = export_friend_code(&bob).unwrap();
+
+    TestStorage::activate(&alice_dir);
+    let bob_friend = add_friend_code(
+        &alice,
+        &alice_security,
+        bob_code.friend_code,
+        Some("Bob fixture".to_owned()),
+    )
+    .unwrap();
+    verify_friend_safety_number(
+        &alice,
+        &alice_security,
+        bob_friend.person_id.clone(),
+        bob_friend.safety_number.clone(),
+    )
+    .unwrap();
+    let alice_binding = manual_peer_binding(&alice, bob_friend.person_id.clone()).unwrap();
+    let alice_context =
+        activate_owned_osl_chat_context(&alice_broker, &alice_id, alice_binding).unwrap();
+    set_manual_peer_scope_permission(
+        &alice,
+        &alice_security,
+        "osl-chat",
+        "osl-main",
+        alice_context.person_id.clone(),
+        alice_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_scope_security(&alice_security, alice_context.scope.clone(), 3600, true).unwrap();
+
+    TestStorage::activate(&bob_dir);
+    let alice_friend = add_friend_code(
+        &bob,
+        &bob_security,
+        alice_code.friend_code,
+        Some("Alice fixture".to_owned()),
+    )
+    .unwrap();
+    verify_friend_safety_number(
+        &bob,
+        &bob_security,
+        alice_friend.person_id.clone(),
+        alice_friend.safety_number.clone(),
+    )
+    .unwrap();
+    let bob_binding = manual_peer_binding(&bob, alice_friend.person_id.clone()).unwrap();
+    let bob_context = activate_owned_osl_chat_context(&bob_broker, &bob_id, bob_binding).unwrap();
+    set_manual_peer_scope_permission(
+        &bob,
+        &bob_security,
+        "osl-chat",
+        "osl-main",
+        bob_context.person_id.clone(),
+        bob_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_scope_security(&bob_security, bob_context.scope.clone(), 3600, true).unwrap();
+
+    let plaintext = "queued while the relay notice lane was down".to_owned();
+    let ai_carrier = osl_privacy_hub::ai_carrier::AiCarrierState::default();
+
+    // ---- the outage ---------------------------------------------------
+    TestStorage::activate(&alice_dir);
+    relay.set_control_inbox_unreachable(true);
+    // `PreparedNativeOverlayText` deliberately has no `Debug`, so this cannot
+    // use `expect_err`.
+    let refusal = match prepare_osl_chat_text(
+        &alice,
+        &alice_security,
+        &alice_broker,
+        &ai_carrier,
+        plaintext.clone(),
+        true,
+    ) {
+        Ok(_) => panic!("an unreachable relay notice lane cannot report a delivered send"),
+        Err(refusal) => refusal,
+    };
+    assert_eq!(
+        refusal, OSL_RELAY_NOTICE_QUEUED,
+        "an unreachable key server must be reported as queued, not as lost"
+    );
+
+    // Half delivered, exactly: the key is on the server, the notice is not.
+    assert_eq!(
+        relay.wrapped_keys_for(&alice_id, &bob_id),
+        1,
+        "the wrapped key must already have landed for this to be the queued window"
+    );
+    assert_eq!(
+        relay.pending_for(&bob_id),
+        0,
+        "no relay notice may exist while the notice lane is unreachable"
+    );
+
+    // The promise is durable, not a flag in memory.
+    let queued = osl_privacy_hub::osl_chat_queue::osl_chat_send_queue_at_config_dir()
+        .expect("open the durable send queue")
+        .pending()
+        .expect("read the durable send queue");
+    assert_eq!(
+        queued.len(),
+        1,
+        "the undelivered notice must be persisted, not dropped"
+    );
+    assert!(
+        !queued[0].encrypted_envelope.is_empty(),
+        "a queued record must carry the sealed notice"
+    );
+
+    // ---- reconnect ----------------------------------------------------
+    relay.set_control_inbox_unreachable(false);
+    TestStorage::activate(&alice_dir);
+    // The ordinary receive poll. Nothing here asks for a resend.
+    drain_osl_chat_text(&alice, &alice_security, &alice_broker, true)
+        .expect("Alice's own receive poll");
+    assert_eq!(
+        relay.pending_for(&bob_id),
+        1,
+        "reconnecting must finish the delivery the outage stranded"
+    );
+    assert!(
+        osl_privacy_hub::osl_chat_queue::osl_chat_send_queue_at_config_dir()
+            .expect("reopen the durable send queue")
+            .pending()
+            .expect("read the durable send queue")
+            .is_empty(),
+        "a delivered record must leave the queue"
+    );
+
+    // ---- and it is the real message -----------------------------------
+    TestStorage::activate(&bob_dir);
+    let opened = drain_osl_chat_text(&bob, &bob_security, &bob_broker, true).unwrap();
+    assert_eq!(opened.messages.len(), 1, "Bob receives exactly one message");
+    assert_eq!(
+        opened.messages[0].plaintext, plaintext,
+        "the queued message must arrive byte-identical"
+    );
+    assert!(opened.messages[0].person_to_person_e2ee);
+
+    drop(relay);
 }

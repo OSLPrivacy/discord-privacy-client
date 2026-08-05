@@ -4259,6 +4259,31 @@ fn prepare_peer_inbox_text_with_route_clients(
                     )?;
                 }
                 qa_encrypt_refusal_site("post_control_inbox_failed");
+                // D-223. `post_native_overlay_wrapped_key` above already
+                // succeeded for this chunk, so the recipient holds a key for a
+                // message nothing will ever tell them about: delivery is half
+                // done and cannot be undone. Persist the notice so a reconnect
+                // finishes it.
+                //
+                // Only an unreachable key server qualifies. An HTTP status is
+                // the server *answering* -- a refusal the operator has to see,
+                // not an outage to retry through -- and queueing those would
+                // rebuild exactly the "it says queued, nothing is queued"
+                // dishonesty this defect is about.
+                if crate::osl_chat_queue::is_unreachable(&_error)
+                    && crate::osl_chat_queue::queue_undelivered_relay_notice(
+                        &crate::osl_chat_queue::QueuedRelayNotice {
+                            message_id: notice.message_id.clone(),
+                            recipient_osl_user_id: manual.peer_osl_user_id.clone(),
+                            scope_id: scope_id.clone(),
+                            bundle: bundle.clone(),
+                            expires_at,
+                        },
+                    )
+                    .is_ok()
+                {
+                    return Err(OSL_RELAY_NOTICE_QUEUED.to_owned());
+                }
                 // Which keyserver failure it was. Fixed class labels only
                 // (http_401 / http_403 / transport / ...), never a URL, token,
                 // peer id, or payload.
@@ -4429,6 +4454,46 @@ pub fn reveal_native_discord_overlay_view_once(
     Ok(batch.messages.remove(0))
 }
 
+/// Copy for the one case where a send is neither delivered nor lost: the
+/// wrapped key landed, the relay notice did not, and the notice is now durably
+/// queued. It must not say "sent" and it must not say "not sent".
+pub const OSL_RELAY_NOTICE_QUEUED: &str =
+    "OSL could not reach the key server. This encrypted message is saved and will finish \
+     sending by itself when you are back online.";
+
+/// Finish delivering relay notices whose wrapped key is already on the key
+/// server but whose notice never landed, and report how many completed.
+///
+/// This is the reconnect half of the D-223 queue. It is called from the OSL
+/// Chat receive path, so every poll that proves the network is reachable also
+/// drains what the last outage stranded.
+pub fn drain_osl_chat_send_queue(core: &HubCoreState) -> Result<usize, String> {
+    let queue = crate::osl_chat_queue::osl_chat_send_queue_at_config_dir()?;
+    if queue
+        .pending()
+        .map_err(|error| format!("OSL Chat send queue: {error}"))?
+        .is_empty()
+    {
+        return Ok(0);
+    }
+    let (identity, client) = keyserver_transport(core)?;
+    let now = ipc::main_password::now_unix_secs_pub();
+    let outcome = queue
+        .drain_relay_notices(now, |notice| {
+            client
+                .post_control_inbox(
+                    &identity,
+                    &notice.recipient_osl_user_id,
+                    &notice.scope_id,
+                    &notice.bundle,
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+        .map_err(|error| format!("OSL Chat send queue: {error}"))?;
+    Ok(outcome.delivered)
+}
+
 pub fn drain_osl_chat_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
@@ -4436,6 +4501,11 @@ pub fn drain_osl_chat_text(
     capture_protection_ready: bool,
 ) -> Result<OpenedNativeOverlayTextBatch, String> {
     let context_token = broker.active_osl_chat_context_token()?;
+    // Reaching the inbox at all proves the key server is reachable, so this is
+    // the honest moment to finish anything the last outage stranded. A drain
+    // failure must not block receiving: the records stay queued for the next
+    // poll.
+    let _ = drain_osl_chat_send_queue(core);
     drain_peer_inbox_text(
         core,
         security_state,
