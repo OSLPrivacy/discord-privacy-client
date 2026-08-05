@@ -10,6 +10,15 @@ import type { NativeApp, NativeWindowHostAction } from "./services";
 const app = (id: NativeQaProvider, availability: NativeApp["availability"] = "installed"): NativeApp => ({
   id,
   displayName: id,
+  // These four are REQUIRED by NativeApp since the claim-state split: the
+  // public claim is DERIVED from evidence and can no longer be written by
+  // hand. This is a QA-shell fixture, so it states the weakest honest
+  // position -- built, never proven live, no receipt -- rather than
+  // inventing evidence to satisfy the type.
+  carrierEvidence: "builtNeverProvenLive",
+  deliveryEvidence: "neverProvenLive",
+  claimBlockers: [],
+  claimNote: "QA shell fixture: no live evidence, so OSL makes no claim.",
   availability,
   supportStatus: "comingSoon",
   protectedMode: "unavailable",

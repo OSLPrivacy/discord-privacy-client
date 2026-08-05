@@ -383,18 +383,48 @@ describe("native app catalog agrees with the Rust support decision", () => {
   /**
    * THE PUBLIC CLAIM FLOOR, checked at the frontend boundary.
    *
-   * `carry-receipts/` does not exist as a directory (`PLAN.md` r5-6), so no
-   * connected app may present as working. The parser must refuse a capability
-   * claim that arrives without the receipt evidence behind it, whatever the
-   * backend says.
+   * This used to assert that NO app may claim `provenLiveWithReceipt`, on the
+   * premise that `carry-receipts/` did not exist at all. That premise was true
+   * when it was written and became FALSE on 2026-08-05, when Telegram earned
+   * the first live carry receipt this project has ever held.
+   *
+   * A floor stated as an absolute ("nobody has one") stops being a floor the
+   * moment somebody legitimately does -- it can then only be satisfied by
+   * un-earning the receipt. So the floor is now stated as the property it was
+   * always meant to enforce: **a surface may claim a receipt IF AND ONLY IF a
+   * usable one exists on disk for it.** That refuses exactly what the absolute
+   * refused (a claim with nothing behind it) and additionally refuses the
+   * inverse the absolute could not see -- a real receipt the catalogue fails
+   * to report.
+   *
+   * v1 receipts do NOT count: `verify_receipt_bytes` rates them `Stale` BY
+   * NAME, which is precisely how "Telegram is already proven" survived as a
+   * stale claim in the plan for weeks.
    */
-  it("refuses a capability claim with no live carry receipt behind it", async () => {
+  it("claims a live carry receipt if and only if a usable one exists", async () => {
+    const receiptsDir = new URL("../../osl-hub/carry-receipts/", import.meta.url);
+    const usableReceipt = (id: string): boolean => {
+      try {
+        const raw = readFileSync(new URL(`${id}.json`, receiptsDir), "utf8");
+        return JSON.parse(raw).schema === "osl-live-carry-receipt-v2";
+      } catch {
+        return false;
+      }
+    };
+
     const catalog = await loadNativeApps();
     for (const app of catalog) {
+      const earned = usableReceipt(app.id);
+      expect(
+        app.carrierEvidence === "provenLiveWithReceipt",
+        earned
+          ? `${app.id} has a usable receipt on disk but the catalogue does not report it`
+          : `${app.id} claims a receipt that does not exist`,
+      ).toBe(earned);
+      // A receipt is EVIDENCE FOR a label, not permission to move one: an
+      // earned receipt still may not promote a surface on its own.
       expect(["beta", "available"], `${app.id} claims capability with no receipt`)
         .not.toContain(app.supportStatus);
-      expect(app.carrierEvidence, `${app.id} claims a receipt that does not exist`)
-        .not.toBe("provenLiveWithReceipt");
     }
 
     const promoted = {
