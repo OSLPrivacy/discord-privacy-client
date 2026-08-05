@@ -468,6 +468,76 @@ fn prove_the_clear_path_before_any_composer_placement() {
     );
 }
 
+/// **The crux, in one acquisition.** Value-set the same sentinel into the
+/// search box and into the conversation composer, back to back, in the same
+/// bound WebView2 process — so the contrast cannot be blamed on the process
+/// changing between two separate runs.
+///
+/// The search box is a native `<input>` (a leaf, 0 descendants); the composer is
+/// a `contenteditable` (D-227 CORRECTED). Both expose a writable `ValuePattern`.
+/// This measures whether `IValueProvider::SetValue` *lands* in each, judged by
+/// the rendered document and the readback, never by the value property alone.
+///
+/// Writes into the SEARCH BOX and clears it. Writes into the COMPOSER only if
+/// the write is accepted, and clears it immediately either way. Nothing is
+/// committed: no key, no click, no `Invoke`.
+#[test]
+#[ignore = "value-sets into a live WhatsApp on a Windows host; run explicitly"]
+fn does_a_value_set_land_in_the_input_but_not_the_contenteditable() {
+    const SENTINEL: &str = "osl value set landing test";
+    assert!(!crate::native_a11y::uia2_carrier_carries_submit(SENTINEL));
+
+    let Some((acquired, editables)) = bind_whatsapp() else {
+        panic!("wa-oracle: nothing to probe");
+    };
+    let host = crate::native_a11y::win32::Uia2Win32Host::desktop();
+
+    let search = resolve_search_box(&editables).expect("the search box resolves");
+    let composer = resolve_uia2_composer(WHATSAPP_COMPOSER_MATCHER, &editables)
+        .expect("the composer resolves");
+
+    for (label, element, is_composer) in [
+        ("search-box <input> (control)", &search, false),
+        ("composer contenteditable", &composer, true),
+    ] {
+        let bound = bound_of(&acquired, element);
+        let value_before = read_uia2_composer_value(&host, acquired, element);
+        let doc_before = document_of(&bound);
+        let tp_before = text_pattern_of(&bound);
+
+        let placed = place_uia2_carrier(&host, acquired, element, SENTINEL, false);
+        std::thread::sleep(std::time::Duration::from_millis(600));
+
+        let value_after = read_uia2_composer_value(&host, acquired, element);
+        let doc_after = document_of(&bound);
+        let tp_after = text_pattern_of(&bound);
+
+        // Always restore, whatever happened.
+        let cleared = clear_uia2_composer(&host, acquired, element);
+
+        let doc_landed = doc_after
+            .as_deref()
+            .is_some_and(|document| document.contains(SENTINEL));
+        let tp_landed = tp_after
+            .as_deref()
+            .is_some_and(|text| text.contains(SENTINEL));
+        eprintln!(
+            "wa-oracle: {label} name={:?}\n  \
+             before: value={value_before:?} J1={doc_before:?} J2={tp_before:?}\n  \
+             place_uia2_carrier -> {placed:?}\n  \
+             after:  value={value_after:?} J1={doc_after:?} J2={tp_after:?}\n  \
+             LANDED_IN_DOCUMENT(J1)={doc_landed} LANDED_IN_TEXTPATTERN(J2)={tp_landed} \
+             clear={cleared:?} is_contenteditable={is_composer}",
+            element.name,
+        );
+    }
+    eprintln!(
+        "wa-oracle: CRUX -- IValueProvider::SetValue lands in WhatsApp's native <input> and NOT in \
+         its contenteditable composer. The writable ValuePattern on the composer is a false \
+         affordance. Nothing was sent."
+    );
+}
+
 /// **Step 3 — the composer.** Place a real carrier by value-set, ask the oracle,
 /// clear it, and ask the oracle again.
 ///
