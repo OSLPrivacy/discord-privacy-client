@@ -1,2 +1,5 @@
-node_modules/
+# No trailing slash: `node_modules/` ignores a directory but NOT a symlink of
+# the same name, which is exactly how this directory's node_modules was once
+# committed as an absolute link into another checkout. See the root .gitignore.
+node_modules
 dist/

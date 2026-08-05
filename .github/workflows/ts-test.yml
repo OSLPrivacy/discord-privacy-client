@@ -144,9 +144,36 @@ jobs:
         if: ${{ !cancelled() && matrix.lane == 'osl-hub-ui' }}
         working-directory: apps/osl-hub-ui
         run: npm run build
+      # D-233. Five cases of this suite had NEVER run in CI. `locateChrome()` in
+      # scripts/lib/cdp-harness.mjs searches exactly two places -- $OSL_CHROME
+      # and ~/.cache/ms-playwright/** -- and this lane installs neither, so
+      # attachment-progress, cover-generation and csp-render-gate each threw
+      #   "no Chrome/Chromium binary found; set OSL_CHROME to a local browser
+      #    binary"
+      # at cdp-harness.mjs:29, and scrollbar-theme's two cases died the same way
+      # on the same missing browser. Four of those are real render gates driven
+      # through CDP, and one of them is the CSP render gate -- the gate that
+      # exists because `style-src 'self'` once silently dropped runtime styles
+      # and the navigation shipped unstyled. A browser gate that never launches
+      # a browser cannot catch that; it only reports it as an error about a
+      # missing binary, which reads as infrastructure noise.
+      #
+      # OSL_CHROME points at the browser the runner image already ships
+      # (ubuntu-24.04: Google Chrome, /usr/bin/google-chrome). This is the same
+      # line the quarantine-ratchet job of integration-gate.yml and the
+      # website-evidence job of site-tests.yml already carry, for the same
+      # script and the same reason. `locateChrome` checks the path exists before
+      # using it, so it is inert on a machine without it -- a developer with a
+      # Playwright cache still resolves through the cache.
+      #
+      # NOTHING IS WEAKENED. No test is skipped, softened or allowlisted: five
+      # cases that could not reach their subject now execute against a real
+      # browser, and if they find something they go red.
       - name: Test OSL Privacy UI
         if: ${{ !cancelled() && matrix.lane == 'osl-hub-ui' }}
         working-directory: apps/osl-hub-ui
+        env:
+          OSL_CHROME: /usr/bin/google-chrome
         run: npm test
       - name: Install keyserver worker deps
         if: ${{ matrix.lane == 'keyserver-worker' }}
