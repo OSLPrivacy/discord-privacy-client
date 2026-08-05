@@ -5097,13 +5097,20 @@ pub(crate) mod tests {
     /// A gate that cannot fail is decoration. If `send_enter(` is renamed and
     /// this is not updated, the separation check silently stops separating
     /// anything — so the rename has to come through here.
+    ///
+    /// **`native_apps.rs` is excluded, and that exclusion is the whole test.**
+    /// [`COMMIT_VERBS`] lives in this file, so every verb is trivially "present"
+    /// in it as its own string literal. Scanning this file too made the check
+    /// self-satisfying: renaming `send_enter(` to a verb that exists nowhere
+    /// still passed, measured. It is the file *being asked about* that has to be
+    /// left out.
     #[test]
     fn the_commit_verbs_the_receipt_gate_forbids_are_real() {
         let sources = hub_sources_without_comments();
         for verb in COMMIT_VERBS {
             let holders: Vec<&str> = sources
                 .iter()
-                .filter(|(_, text)| text.contains(verb))
+                .filter(|(name, text)| name != "src/native_apps.rs" && text.contains(verb))
                 .map(|(name, _)| name.as_str())
                 .collect();
             assert!(
