@@ -20,6 +20,14 @@
 #                         --dry-run` is the ONLY check that runs the real
 #                         esbuild bundle the deploy uses. It is a dry run: it
 #                         writes a local outdir and touches no remote state.
+#   * hub-bin-check.mjs  - D-267. `cargo check --bins` on apps/osl-hub WITHOUT
+#                         `--features desktop` matches no target and EXITS 0 --
+#                         measured at exit 0 with `compile_error!()` injected --
+#                         and with apps/osl-hub-ui/dist absent the un-mutated
+#                         control exits 101, so neither exit code carried
+#                         information. The hub steps below therefore run AFTER
+#                         the frontend build and go through a checker that reads
+#                         cargo's own record of what it compiled.
 set -u
 # D-162 adversary, hole 1. This used to be a `cd` to one hardcoded personal
 # checkout -- one operator's absolute home path, spelled out -- which
@@ -48,11 +56,24 @@ step "workspace builds"
 flock -o /tmp/osl-cargo.lock cargo check --workspace --quiet 2>&1 | grep -E '^error' | head -3
 flock -o /tmp/osl-cargo.lock cargo check --workspace --quiet >/dev/null 2>&1 || { echo "FAIL"; fail=1; }
 
+# D-267. The hub build has to come AFTER the frontend build, not near the end of
+# the script: `--features desktop` embeds apps/osl-hub-ui/dist at COMPILE time,
+# so on a fresh clone every hub step below used to fail for a reason that has
+# nothing to do with the hub -- `error: proc macro panicked`, exit 101, the same
+# exit code a real compile error gives. A gate whose first-run failure is always
+# spurious is a gate people learn to ignore.
+step "frontend production build (tsc + vite -- vitest does NOT typecheck; the hub embeds this)"
+( cd apps/osl-hub-ui && npm run build ) > /tmp/verify-build.txt 2>&1 \
+    || { grep -E "error TS" /tmp/verify-build.txt | head -5; echo "FAIL"; fail=1; }
+
+# D-267. NOT `cargo check --features desktop` inline any more. That command is
+# correct, and the reason it is correct -- the feature -- is exactly what two
+# lanes dropped when they copied it. hub-bin-check.mjs owns feature and target
+# selection and then refuses to report success unless cargo's own record says
+# the osl-privacy-hub binary was compiled, so "green" here cannot mean "nothing
+# was built".
 step "product app builds (the build cargo tauri dev uses)"
-flock -o /tmp/osl-cargo.lock cargo check --manifest-path apps/osl-hub/Cargo.toml \
-    --features desktop --quiet 2>&1 | grep -E '^error' | head -3
-flock -o /tmp/osl-cargo.lock cargo check --manifest-path apps/osl-hub/Cargo.toml \
-    --features desktop --quiet >/dev/null 2>&1 || { echo "FAIL"; fail=1; }
+flock -o /tmp/osl-cargo.lock node scripts/ci/hub-bin-check.mjs check || { echo "FAIL"; fail=1; }
 
 step "workspace tests"
 flock -o /tmp/osl-cargo.lock cargo test --workspace --no-fail-fast -- --test-threads=1 \
@@ -62,13 +83,38 @@ grep -E '^test result' /tmp/verify-ws.txt |
 sed -n '/^failures:$/,/^test result/p' /tmp/verify-ws.txt |
     grep -E '^    [a-z]' | sort -u | sed 's/^/    /'
 
-step "product app tests"
+# `--lib --test '*'` selects exactly what this step has always run -- the library
+# and every integration test -- but SAYS SO. It used to be bare target selection,
+# which reads as "the whole app" and silently was not: the `[[bin]]` is
+# required-features = ["desktop"], so the binary and its own suite were dropped
+# without a word (D-267). The next step is the half that was missing; naming the
+# targets here is what keeps the two steps from looking like one.
+step "product app tests (lib + integration; NOT the binary -- see the next step)"
 flock -o /tmp/osl-cargo.lock cargo test --manifest-path apps/osl-hub/Cargo.toml \
+    --features core --lib --test '*' \
     -- --test-threads=1 > /tmp/verify-hub.txt 2>&1
 grep -E '^test result' /tmp/verify-hub.txt | tail -1 | sed 's/^/  /'
 grep -qE '^test result: ok' /tmp/verify-hub.txt || fail=1
 sed -n '/^failures:$/,/^test result/p' /tmp/verify-hub.txt |
     grep -E '^    [a-z]' | sort -u | sed 's/^/    /'
+
+# D-152, and the reason it stayed open here after CI closed it: the step above
+# compiles NONE of src/main.rs. rust-test.yml and osl-hub-release.yml both run
+# the binary's own suite; verify-all -- "the one command that says whether OSL is
+# actually in a shippable state" -- did not, so a tree in which the shipping
+# binary's tests did not even compile could print SHIPPABLE.
+step "product app DESKTOP BINARY tests (src/main.rs -- compiled by nothing above)"
+flock -o /tmp/osl-cargo.lock node scripts/ci/hub-bin-check.mjs test > /tmp/verify-hub-bin.txt 2>&1
+hub_bin_status=$?
+grep -E '^test result' /tmp/verify-hub-bin.txt | tail -1 | sed 's/^/  /'
+grep -E '^hub-bin-check: (VACUOUS|REFUSED|FAILED)' /tmp/verify-hub-bin.txt | head -3 | sed 's/^/  /'
+[ "$hub_bin_status" = 0 ] || { echo "FAIL"; fail=1; }
+sed -n '/^failures:$/,/^test result/p' /tmp/verify-hub-bin.txt |
+    grep -E '^    [a-z]' | sort -u | sed 's/^/    /'
+
+# D-267. No hub-binary check anywhere in the tree may omit --features desktop.
+step "no vacuous hub-binary check is checked in (D-267)"
+node scripts/ci/hub-bin-check.mjs --audit || { echo "FAIL"; fail=1; }
 
 step "Workers bundle (the exact esbuild the deploy runs -- DRY RUN, no remote state)"
 for worker in keyserver-cf cipher-store-cf; do
@@ -92,11 +138,11 @@ for worker in keyserver-cf cipher-store-cf; do
     fi
 done
 
-step "frontend production build (tsc + vite -- vitest does NOT typecheck)"
-cd apps/osl-hub-ui || exit 1
-npm run build > /tmp/verify-build.txt 2>&1 || { grep -E "error TS" /tmp/verify-build.txt | head -5; echo "FAIL"; fail=1; }
-
+# The production build itself has already run, above the hub steps that embed
+# its output. Nothing here rebuilds it: two builds of the same thing means the
+# hub could embed one and the frontend gates grade the other.
 step "frontend"
+cd apps/osl-hub-ui || exit 1
 npx vitest run --maxWorkers=2 > /tmp/verify-ts.txt 2>&1
 grep -E 'Tests ' /tmp/verify-ts.txt | tail -1 | sed 's/^/  /'
 grep -qE 'Tests .*failed' /tmp/verify-ts.txt && fail=1
