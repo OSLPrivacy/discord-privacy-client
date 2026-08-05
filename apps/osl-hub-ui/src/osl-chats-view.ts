@@ -238,7 +238,7 @@ export function applyOslChatDraftToElement(
 
 function deliveryLabel(state: OslChatDeliveryState): string {
   switch (state) {
-    case "queued": return "Queued — not sent";
+    case "queued": return "Not sent";
     case "sent": return "Sent";
     case "delivered": return "Delivered";
     case "received": return "Received";

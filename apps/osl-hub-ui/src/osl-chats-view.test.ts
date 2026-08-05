@@ -76,7 +76,7 @@ describe("OSL chats view", () => {
     }));
     expect(OSL_CHAT_DELIVERY_STATES).toEqual(["queued", "sent", "delivered", "received", "opened", "expired", "failed"]);
     const labels: Record<typeof OSL_CHAT_DELIVERY_STATES[number], string> = {
-      queued: "Queued — not sent",
+      queued: "Not sent",
       sent: "Sent",
       delivered: "Delivered",
       received: "Received",
