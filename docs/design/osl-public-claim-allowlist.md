@@ -9,7 +9,7 @@
 > the claim-eligibility half of master §20.2 and §8.2.
 > Authority: [`osl-master-decision-2026-07-26.md`](osl-master-decision-2026-07-26.md).
 > Status vocabulary: master §0.3. Evidence detail: [`../THREAT_MODEL.md`](../THREAT_MODEL.md).
-> Claim-gate source SHA-256: `965bd2bc488cc1655c3c786a3ea40697a2870d0180d434b4b1124b3d9ba537ed`
+> Claim-gate source SHA-256: `2f950413bc86c27a56502703fc900c90d427505d5192142e44e9e06bd49f5637`
 
 ## How to use it
 
@@ -40,7 +40,7 @@ tree; re-verify anchors before relying on a row.
 | **Permitted wording** | "Message contents are encrypted with a hybrid scheme combining X25519 and ML-KEM-768. Breaking it requires breaking both." |
 | **Status** | **`Beta`** badge. *Corrected 2026-07-26:* the standard is "does the code do this", and it does — the scheme is live and encrypted sends have landed real cover text in a real Discord conversation. `implemented-unwired` describes a call path, not the cryptography. Not `Available`, because it is proven on QA builds rather than a named release build. |
 | **Evidence** | `crates/ipc/src/wire_v2.rs:685-760` (`encrypt_v3`); ML-KEM-768 ciphertext in every recipient slot, `:325-332`, `:731`; hybrid combiner `crates/crypto/src/pqxdh.rs:141-195` |
-| **Required alongside** | "This protects contents against future quantum decryption of recorded traffic. It does not make identity verification post-quantum — that is still classical." |
+| **Required alongside** | "This protects contents against future quantum decryption of recorded traffic. It does not make identity verification quantum-resistant — that is still classical X25519 and Ed25519." <br> *Re-phrased 2026-08-04 (D-242/D-243). The previous wording said "does not make identity verification post-quantum". That sentence is a mandatory limitation, so any surface claiming A1 must print it — but `RATCHET_CLAIM_TERMS` permits "post-quantum" only inside A16's verbatim sentence, so A1's own limitation could not ship past the gate. The disclosure is unchanged in meaning and is now strictly more specific (it names the classical primitives). A1's **Permitted wording** is untouched and nothing was widened. The alternative — teaching the ratchet rule to ignore negated limitations — was rejected: an exemption is what blinded the at-rest detector in D-243, and this rule's entire strength is that it is verbatim-or-nothing. `README.md:36` already ships this wording.* |
 
 ### A2 · Discord cannot read message contents
 

@@ -1685,10 +1685,127 @@ function isImportExportSpecifier(source, literalStart) {
   return false;
 }
 
+// A `/` in JavaScript is either division or the start of a regular expression
+// literal, and which one it is depends entirely on the preceding token. These
+// are the keywords after which an expression (and therefore a regex) may start;
+// after any other identifier, or after a number, string, template or regex, a
+// `/` is division.
+const REGEX_PRECEDING_KEYWORDS = new Set([
+  "await",
+  "case",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "in",
+  "instanceof",
+  "new",
+  "of",
+  "return",
+  "throw",
+  "typeof",
+  "void",
+  "yield",
+]);
+
+// `if (a) /re/.test(b)` starts a regex after `)`, but `(a + b) / c` is division.
+// The difference is the keyword that opened the parenthesis.
+const REGEX_PRECEDING_PAREN_KEYWORDS = new Set(["if", "while", "for", "with"]);
+
+const IDENTIFIER_START = /[A-Za-z_$]/u;
+const IDENTIFIER_PART = /[A-Za-z0-9_$]/u;
+const REGEX_FLAGS = /[dgimsuvy]/u;
+
+// Scans a regular expression literal starting at `start` (which must be `/`).
+// Returns null when the text is NOT a valid regex literal, which is what makes
+// this safe: a regex literal may not contain an unescaped newline, so a `/`
+// that was really division can never be mistaken for a regex that runs away
+// across the rest of the file. Character classes are tracked so that `/` and
+// quote characters inside `[...]` do not terminate the literal or open a
+// string.
+function parseRegexLiteral(source, start) {
+  let i = start + 1;
+  let inCharacterClass = false;
+
+  while (i < source.length) {
+    const char = source[i];
+
+    if (char === "\n") {
+      return null;
+    }
+
+    if (char === "\\") {
+      if (i + 1 >= source.length || source[i + 1] === "\n") {
+        return null;
+      }
+      i += 2;
+      continue;
+    }
+
+    if (char === "[") {
+      inCharacterClass = true;
+      i += 1;
+      continue;
+    }
+
+    if (char === "]") {
+      inCharacterClass = false;
+      i += 1;
+      continue;
+    }
+
+    if (char === "/" && !inCharacterClass) {
+      if (i === start + 1) {
+        // `//` is a comment, never an empty regex.
+        return null;
+      }
+      i += 1;
+      while (i < source.length && REGEX_FLAGS.test(source[i])) {
+        i += 1;
+      }
+      return { end: i };
+    }
+
+    i += 1;
+  }
+
+  return null;
+}
+
+function regexAllowedAfter(previous) {
+  if (previous === null) {
+    return true;
+  }
+
+  if (previous.type === "value") {
+    return false;
+  }
+
+  if (previous.type === "word") {
+    return REGEX_PRECEDING_KEYWORDS.has(previous.value);
+  }
+
+  if (previous.type === "closeParen") {
+    return previous.control;
+  }
+
+  // `]` closes a member access or array literal, so the next `/` is division.
+  if (previous.type === "punct" && previous.value === "]") {
+    return false;
+  }
+
+  return true;
+}
+
 function extractTypeScriptStrings(source) {
   const strings = [];
   const lineStarts = lineStartsFor(source);
   let i = 0;
+  // The last significant token, used only to decide whether a `/` opens a
+  // regex. Comments never update it, so `a /* c */ / b` stays division.
+  let previous = null;
+  // For each open `(`, whether it was introduced by if/while/for/with.
+  const parenStack = [];
 
   while (i < source.length) {
     const char = source[i];
@@ -1706,6 +1823,17 @@ function extractTypeScriptStrings(source) {
       continue;
     }
 
+    if (char === "/" && regexAllowedAfter(previous)) {
+      const literal = parseRegexLiteral(source, i);
+      if (literal !== null) {
+        // A regex literal is not user-visible copy. Its body is skipped whole
+        // so quotes inside it can never open a phantom string.
+        i = literal.end;
+        previous = { type: "value" };
+        continue;
+      }
+    }
+
     if (char === "'" || char === '"') {
       const literal = parseQuotedLiteral(source, i, char);
       if (!isImportExportSpecifier(source, i)) {
@@ -1715,6 +1843,7 @@ function extractTypeScriptStrings(source) {
         });
       }
       i = literal.end;
+      previous = { type: "value" };
       continue;
     }
 
@@ -1727,9 +1856,54 @@ function extractTypeScriptStrings(source) {
         });
       }
       i = literal.end;
+      previous = { type: "value" };
       continue;
     }
 
+    if (IDENTIFIER_START.test(char)) {
+      let end = i + 1;
+      while (end < source.length && IDENTIFIER_PART.test(source[end])) {
+        end += 1;
+      }
+      previous = { type: "word", value: source.slice(i, end) };
+      i = end;
+      continue;
+    }
+
+    if (char >= "0" && char <= "9") {
+      let end = i + 1;
+      while (end < source.length && /[0-9a-zA-Z_.]/u.test(source[end])) {
+        end += 1;
+      }
+      previous = { type: "value" };
+      i = end;
+      continue;
+    }
+
+    if (char === "(") {
+      parenStack.push(
+        previous !== null
+          && previous.type === "word"
+          && REGEX_PRECEDING_PAREN_KEYWORDS.has(previous.value),
+      );
+      previous = { type: "punct", value: char };
+      i += 1;
+      continue;
+    }
+
+    if (char === ")") {
+      const control = parenStack.length > 0 ? parenStack.pop() : false;
+      previous = { type: "closeParen", control };
+      i += 1;
+      continue;
+    }
+
+    if (char === " " || char === "\t" || char === "\r" || char === "\n") {
+      i += 1;
+      continue;
+    }
+
+    previous = { type: "punct", value: char };
     i += 1;
   }
 
@@ -4738,12 +4912,138 @@ async function runSelfTest() {
         ),
     },
   ];
+
+  const tokenizerFixtures = [
+    {
+      // The exact D-242 shape: escapeHtml's character class holds a quote.
+      // Broken, the `"` opened a string and the claim after it was INVISIBLE.
+      name: "regex character class holding a quote does not hide the next string",
+      source:
+        'const escape = (v) => v.replace(/[&<>"\']/gu, f);\n'
+        + 'const label = "End-to-end encrypted";\n',
+      expected: ["End-to-end encrypted"],
+    },
+    {
+      name: "regex is skipped whole and never yields a fragment of its own",
+      source: 'const pattern = /claims "everything"/gu;\n',
+      expected: [],
+    },
+    {
+      name: "a JSDoc comment after a regex is still skipped",
+      source:
+        'const escape = (v) => v.replace(/[&<>"\']/gu, f);\n'
+        + "/**\n"
+        + " * An outgoing message really is end-to-end encrypted.\n"
+        + " */\n"
+        + 'const label = "Visible copy";\n',
+      expected: ["Visible copy"],
+    },
+    {
+      name: "division after an identifier is not a regex",
+      source: 'const each = total / 2;\nconst unit = "per / message";\n',
+      expected: ["per / message"],
+    },
+    {
+      name: "division after a number is not a regex",
+      source: 'const ratio = 10 / 4;\nconst unit = "ten / four";\n',
+      expected: ["ten / four"],
+    },
+    {
+      name: "division after a closing bracket is not a regex",
+      source: 'const value = rows[0] / 2;\nconst unit = "a / b";\n',
+      expected: ["a / b"],
+    },
+    {
+      name: "division after a plain closing paren is not a regex",
+      source: 'const mean = (a + b) / 2;\nconst unit = "sum / count";\n',
+      expected: ["sum / count"],
+    },
+    {
+      name: "regex after an if-condition paren is a regex",
+      source: 'if (ready) /ok"x/u.test(name);\nconst copy = "Ready to send";\n',
+      expected: ["Ready to send"],
+    },
+    {
+      name: "regex after return is a regex",
+      source:
+        'function f() { return /x"y/u.test(s); }\nconst copy = "After return";\n',
+      expected: ["After return"],
+    },
+    {
+      name: "escaped slash inside a regex does not end it",
+      source: 'const p = /a\\/b"c/gu;\nconst copy = "Escaped slash handled";\n',
+      expected: ["Escaped slash handled"],
+    },
+    {
+      name: "slash inside a character class does not end the regex",
+      source: 'const p = /[/"]/gu;\nconst copy = "Class slash handled";\n',
+      expected: ["Class slash handled"],
+    },
+    {
+      name: "regex flags are consumed, not read as code",
+      source: 'const p = /"x"/gimsuy;\nconst copy = "Flags consumed";\n',
+      expected: ["Flags consumed"],
+    },
+    {
+      name: "a line comment is still a comment, never an empty regex",
+      source: 'let x = 0; // "not a string"\nconst copy = "After comment";\n',
+      expected: ["After comment"],
+    },
+    {
+      name: "an unterminated would-be regex falls back to division",
+      source: 'const share = total / count;\nconst copy = "Still visible";\n',
+      expected: ["Still visible"],
+    },
+    {
+      name: "template literals and interpolation still work after a regex",
+      source:
+        'const p = /["\']/u;\nconst copy = `Sent to ${name} now`;\n',
+      expected: ["Sent to   now"],
+    },
+    {
+      name: "nested quotes inside a string still survive a preceding regex",
+      source:
+        'const p = /[",]/u;\nconst copy = "He said \\"encrypted\\" once";\n',
+      expected: ['He said "encrypted" once'],
+    },
+    {
+      name: "import specifiers are still excluded after a regex appears",
+      source:
+        'const p = /["]/u;\nimport secret from "keyserver";\nconst copy = "Real copy";\n',
+      expected: ["Real copy"],
+    },
+    {
+      name: "consecutive regex literals stay in sync",
+      source:
+        'const a = /["]/u; const b = /[\']/u;\nconst copy = "Both skipped";\n',
+      expected: ["Both skipped"],
+    },
+  ];
   for (const inputCase of inputCases) {
     if (!inputCase.passed) {
       failures += 1;
     }
     console.log(
       `${inputCase.passed ? "PASS" : "FAIL"} ${inputCase.name}`,
+    );
+  }
+
+  // D-242. `/` is division or the start of a regex depending on the preceding
+  // token, and the extractor used to have no regex case at all. Every fixture
+  // below pins the EXACT set of strings extracted, because the failure that
+  // matters is not the phantom string a mis-parse invents -- it is the real
+  // user-visible string a mis-parse HIDES, which no violation count reveals.
+  for (const fixture of tokenizerFixtures) {
+    const extracted = extractTypeScriptStrings(fixture.source).map(
+      (fragment) => fragment.text,
+    );
+    const ok = JSON.stringify(extracted) === JSON.stringify(fixture.expected);
+    if (!ok) {
+      failures += 1;
+    }
+    console.log(
+      `${ok ? "PASS" : "FAIL"} tokenizer: ${fixture.name}`
+        + (ok ? "" : ` (expected ${JSON.stringify(fixture.expected)}, actual ${JSON.stringify(extracted)})`),
     );
   }
 
@@ -4940,7 +5240,7 @@ async function runSelfTest() {
   );
 
   console.log(
-    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + supportClaimFixtures.length + supportMatrixFixtures.length + 4}, failures=${failures}`,
+    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + supportClaimFixtures.length + supportMatrixFixtures.length + tokenizerFixtures.length + 4}, failures=${failures}`,
   );
 
   return failures === 0 ? 0 : 1;
