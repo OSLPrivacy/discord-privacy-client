@@ -8,12 +8,28 @@ import {
 } from "../src/lib/attachment-limits.js";
 import { sweepExpiredAttachments } from "../src/lib/sweep.js";
 import {
+  d1All,
   d1Count,
   d1Run,
   workerEnv,
 } from "./helpers/workerd.js";
 
 const DIGEST = "a".repeat(64);
+
+/// Store one attachment row carrying `capability` where the SHA-256 digest of
+/// the fetch token belongs. Used to make the database itself say whether a raw
+/// bearer capability can be retained.
+async function storeCapability(id: string, capability: string): Promise<void> {
+  await d1Run(
+    `INSERT INTO attachment_objects
+       (id, object_key, size_bytes, expires_at, content_expires_at, created_at,
+        fetch_token_sha256_hex, state, upload_id)
+     VALUES (?, ?, 1, 1, 1, 1, ?, 'ready', NULL)`,
+    id,
+    `attachments/capability-${id}`,
+    capability,
+  );
+}
 
 function r2WithOverrides(real: R2Bucket, overrides: Record<PropertyKey, unknown>): R2Bucket {
   return new Proxy(real, {
@@ -58,8 +74,34 @@ async function insertAttachment(
 
 describe("attachment quota and expiry sweep", () => {
   it("uses Wrangler-splittable DDL for digest-only metadata", async () => {
-    expect(migration).toContain("fetch_token_sha256_hex");
-    expect(migration).not.toMatch(/\bfetch_token\s+TEXT\b/);
+    // D-293 — the digest-only half of this claim used to be spelled out of
+    // 0004's TEXT, on a migration the harness has already APPLIED:
+    //
+    //   expect(migration).toContain("fetch_token_sha256_hex");
+    //   expect(migration).not.toMatch(/\bfetch_token\s+TEXT\b/);
+    //
+    // Both graded 0004's wording. The first passed for the word appearing in a
+    // comment; the second saw only a column spelled exactly `fetch_token TEXT`
+    // in this one file, so a raw bearer capability added under any other name,
+    // or by any LATER migration, was invisible to it. The claim is unchanged
+    // and is now made of the shipped schema, and of what the database will
+    // accept into it.
+    const columns = await d1All<{ name: string }>(
+      "PRAGMA table_info(attachment_objects)",
+    );
+    const names = columns.map((column) => column.name);
+    expect(names).toContain("fetch_token_sha256_hex");
+    // The ONLY capability-shaped column on the live table is the digest.
+    expect(names.filter((name) => /token|capabilit|secret/i.test(name))).toEqual([
+      "fetch_token_sha256_hex",
+    ]);
+    // ...and the column is a digest because the database refuses anything else:
+    // a raw bearer capability cannot be retained even if a Worker tried to.
+    await expect(storeCapability("d".repeat(32), "raw-fetch-capability")).rejects
+      .toThrow();
+    await expect(storeCapability("e".repeat(32), "A".repeat(64))).rejects.toThrow();
+    await expect(storeCapability("f".repeat(32), DIGEST)).resolves.toBeUndefined();
+
     expect(migration).not.toMatch(/CREATE\s+TRIGGER/i);
     expect(migration).not.toMatch(/^\s*(BEGIN|END)\s*;/im);
     const statements = migration.split(";").map((value: string) => value.trim()).filter(Boolean);
