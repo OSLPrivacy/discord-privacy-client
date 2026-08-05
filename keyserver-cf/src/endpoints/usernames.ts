@@ -6,7 +6,9 @@ import { isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/v
 import { verifySignedRequest } from "../lib/signed-request.js";
 import {
   USERNAME_FRESHNESS_MS,
+  UsernameNotAnalyzable,
   usernameClaimMessage,
+  usernameSkeleton,
   validNormalizedUsername,
   validateFriendCode,
 } from "../lib/username.js";
@@ -122,6 +124,16 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   }
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", message));
   const now = new Date().toISOString();
+  // D-248. Compute the skeleton BEFORE the batch and refuse the claim if it
+  // cannot be computed. A claim that reached the directory without one would
+  // be a row whose confusables nothing constrains.
+  let skeleton: string;
+  try {
+    skeleton = usernameSkeleton(username);
+  } catch (error) {
+    if (error instanceof UsernameNotAnalyzable) return badRequest(error.message);
+    throw error;
+  }
   let result: D1Result[];
   try {
     result = await env.DB.batch([
@@ -141,15 +153,32 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
                WHERE username = ?2 AND user_id <> ?1
             )`,
       ).bind(userId, username, digest),
+      // D-248. `username_skeleton` is `?6`, the UTS #39 skeleton, NOT `?1`.
+      // Writing `?1` there made the skeleton unique index decorative: a
+      // skeleton equal to the raw name cannot collide with anything the raw
+      // name did not already collide with on the primary key.
+      //
+      // `display_username` stays `?1` deliberately. The claim path is
+      // validate-don't-transform (D-162), so the accepted spelling IS what the
+      // user typed; there is no second form to display and inventing one here
+      // would be the transform D-162 removed.
+      //
+      // The upsert branch now rewrites both derived columns. Without that, a
+      // row written by an older generation keeps its raw skeleton forever
+      // through every refresh, which is exactly how D-248 would have survived
+      // its own fix. If the corrected skeleton collides with another identity's
+      // the batch aborts and the caller gets 409 — fail closed, on purpose.
       env.DB.prepare(
         `INSERT INTO username_directory
            (username, username_skeleton, display_username, user_id, friend_code, claimed_at, updated_at)
-         SELECT ?1, ?1, ?1, ?2, ?3, ?4, ?4
+         SELECT ?1, ?6, ?1, ?2, ?3, ?4, ?4
           WHERE EXISTS (SELECT 1 FROM username_claim_receipts WHERE user_id = ?2 AND request_digest = ?5)
          ON CONFLICT(username) DO UPDATE SET
-           username = excluded.username, friend_code = excluded.friend_code, updated_at = excluded.updated_at
+           username = excluded.username, username_skeleton = excluded.username_skeleton,
+           display_username = excluded.display_username,
+           friend_code = excluded.friend_code, updated_at = excluded.updated_at
          WHERE username_directory.user_id = excluded.user_id`,
-      ).bind(username, userId, body.friend_code, now, digest),
+      ).bind(username, userId, body.friend_code, now, digest, skeleton),
     ]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

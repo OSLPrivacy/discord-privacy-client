@@ -183,6 +183,22 @@ describe("username directory", () => {
   // two `it.skip` bodies are kept verbatim so the next implementer inherits the
   // assertions rather than re-deriving them.
   //
+  // ── D-248 UPDATE, 2026-08-04. Read this before assuming the skeleton half
+  // of the spec below is still unimplemented. ─────────────────────────────
+  // The SKELETON half IS now live and covered, by
+  // `test/integration/d248-confusable-username.test.ts`: the claim path
+  // computes a real UTS #39 skeleton from the pinned artifact, both bodies'
+  // assertions (a live collision is refused, and a retired skeleton stays
+  // refused after a rename) are asserted there against handles the shipping
+  // grammar accepts, and the other two writers of the column are covered too.
+  //
+  // These two stay SKIPPED because of the OTHER half only: their handles are
+  // `Michael`/`Michae1`, whose capital is refused with 400 by
+  // validate-don't-transform. Un-skipping them still needs a real
+  // `normalizeUsername()`, which still does not exist. Do not un-skip them by
+  // lowercasing the literals -- that would silently delete the transform half
+  // of the spec they are parked to preserve.
+  //
   // THEY DO NOT RUN AND THEY PROVE NOTHING. Skipped tests are not coverage.
   // Un-skip them only together with a real `normalizeUsername()` and a
   // migration plan for the identities already registered under

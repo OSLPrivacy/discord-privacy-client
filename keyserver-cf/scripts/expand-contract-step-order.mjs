@@ -29,6 +29,8 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { planBackfill } from "./backfill-username-skeletons.mjs";
+import { usernameSkeleton } from "./username-skeleton-node.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const KEYSERVER = join(HERE, "..");
@@ -180,11 +182,35 @@ let CONTRACT = [
   "migrations-contract/0100_username_identity_contract.sql",
   "migrations-contract/0101_account_ownership_binding_contract.sql",
 ];
-// The backfill of step 2 is the repeatable half of the expand migration.
-const BACKFILL = `UPDATE username_directory
-   SET username_skeleton = COALESCE(username_skeleton, username),
-       display_username  = COALESCE(display_username, username)
- WHERE username_skeleton IS NULL OR display_username IS NULL`;
+// The backfill of step 2. D-248: the skeleton half of this used to be
+// `COALESCE(username_skeleton, username)`, which writes the RAW name into the
+// skeleton column and makes the unique index decorative. A UTS #39 skeleton
+// cannot be computed in SQL, so the skeleton half is now produced by
+// `scripts/backfill-username-skeletons.mjs` from the same pinned artifact the
+// Worker uses, and it REFUSES if two live rows fold together.
+const BACKFILL_DISPLAY = `UPDATE username_directory
+   SET display_username = COALESCE(display_username, username)
+ WHERE display_username IS NULL`;
+
+function applyBackfill(d) {
+  d.exec(BACKFILL_DISPLAY);
+  const rows = d.prepare(
+    "SELECT username, username_skeleton, display_username FROM username_directory",
+  ).all();
+  const tombstones = tableExists(d, "username_tombstones")
+    ? d.prepare("SELECT username, skeleton FROM username_tombstones").all()
+    : [];
+  const plan = planBackfill({ directory: rows, tombstones });
+  if (plan.refused) {
+    // Not a silent skip: the operator backfill refuses here too, and a refusal
+    // that the step-order test swallowed would be the decoration this file
+    // exists to avoid.
+    throw new Error(
+      `backfill REFUSED — collisions ${JSON.stringify(plan.collisions)} problems ${JSON.stringify(plan.problems)}`,
+    );
+  }
+  if (plan.sql) d.exec(plan.sql);
+}
 
 function loadMigration(rel) {
   return readFileSync(join(KEYSERVER, rel), "utf8");
@@ -268,7 +294,7 @@ function freshDb(uptoStep) {
     if (step.n > uptoStep) break;
     for (const rel of step.apply) {
       try {
-        if (rel === "#backfill") { d.exec(BACKFILL); applied.push("backfill"); continue; }
+        if (rel === "#backfill") { applyBackfill(d); applied.push("backfill"); continue; }
         d.exec(migrationsFor(rel));
         applied.push(rel);
       } catch (e) {
@@ -338,13 +364,20 @@ function runSuite(d, generation) {
   const S = generation === "deployed" ? D : C;
   const problems = [];
   const note = [];
+  // D-248 made the consuming Worker's claim take a sixth parameter: the UTS #39
+  // skeleton, which cannot be computed in SQL. Bind by the statement's OWN
+  // arity rather than a hardcoded count, so this harness keeps working against
+  // a downloaded bundle from either side of that change instead of reporting
+  // the newer generation BROKEN for a binding mistake of its own making.
+  const claimArity = (sql) =>
+    Math.max(0, ...[...sql.matchAll(/\?(\d+)/g)].map((m) => Number(m[1])));
   const claim = (name, user) => {
     const digest = `dg-${name}-${user}`;
     seedReceipt(d, user, digest);
     try {
-      const r = generation === "deployed"
-        ? d.prepare(S.claim).run(name, user, "OSLFR1.code", NOW_ISO, digest)
-        : d.prepare(S.claim).run(name, user, "OSLFR1.code", NOW_ISO, digest);
+      const args = [name, user, "OSLFR1.code", NOW_ISO, digest];
+      if (claimArity(S.claim) >= 6) args.push(usernameSkeleton(name));
+      const r = d.prepare(S.claim).run(...args);
       return { changes: r.changes, status: r.changes === 1 ? "200" : "409" };
     } catch (e) {
       return { changes: 0, status: classify(generation, e.message), error: e.message };
