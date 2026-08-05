@@ -145,6 +145,15 @@ export default {
     controller: ScheduledController,
     env: Env,
     ctx: ExecutionContext,
+    // D-259: the five-minute price refresh is the ONLY scheduled branch that
+    // reaches the public internet (`api.kraken.com`). The Workers runtime
+    // calls `scheduled` with three arguments, so production always takes the
+    // default and keeps the real `fetch`; a test passes a fetcher here so the
+    // branch can be executed without a network. This exists because
+    // `refreshPriceSnapshots` swallows fetch errors and returns `{}` — a test
+    // written against the real `fetch` would pass on a DNS failure without
+    // ever reaching its assertion.
+    deps: { priceFetcher?: typeof fetch } = {},
   ): Promise<void> {
     void ctx;
     const cron = controller.cron;
@@ -166,7 +175,7 @@ export default {
     // Keep price refresh isolated from the slower housekeeping/report jobs.
     if (cron === "*/5 * * * *") {
       try {
-        await refreshPriceSnapshots(env);
+        await refreshPriceSnapshots(env, deps.priceFetcher ?? fetch);
       } catch {
         console.error("[cron] price snapshot failed");
       }
