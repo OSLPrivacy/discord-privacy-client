@@ -807,7 +807,9 @@ fn whatsapps_profile_records_what_was_measured_rather_than_what_is_usual() {
          normalisation silences a channel disagreement and must cost a measurement"
     );
     assert!(
-        !WHATSAPP.judges.contains(&JudgeChannel::RenderedDocumentMsaa),
+        !WHATSAPP
+            .judges
+            .contains(&JudgeChannel::RenderedDocumentMsaa),
         "Chromium's LegacyIAccessible bridge answered None on every live read here, so naming \
          it would be a corroborator that cannot corroborate"
     );
@@ -895,7 +897,11 @@ impl LandingJudgeSyscalls for Exploding2 {
     ) -> Result<Option<RenderedDocument>, JudgeTimeout> {
         panic!("the oracle must refuse before it touches the provider");
     }
-    fn composer_ink(&self, _: &BoundComposer, _: JudgeDeadline) -> Result<Option<Ink>, JudgeTimeout> {
+    fn composer_ink(
+        &self,
+        _: &BoundComposer,
+        _: JudgeDeadline,
+    ) -> Result<Option<Ink>, JudgeTimeout> {
         panic!("the oracle must refuse before it touches the provider");
     }
     fn disowned_value_property(
@@ -966,10 +972,7 @@ fn a_primary_channel_that_is_not_declared_in_judges_is_refused() {
     // passes it. A primary that is not in `judges` would be the one channel
     // that never did.
     let undeclared = LandingProfile {
-        judges: &[
-            JudgeChannel::RenderedDocumentUia,
-            JudgeChannel::ComposerInk,
-        ],
+        judges: &[JudgeChannel::RenderedDocumentUia, JudgeChannel::ComposerInk],
         document_channel: JudgeChannel::RenderedDocumentMsaa,
         ..DISCORD
     };
@@ -1037,7 +1040,9 @@ fn telegrams_profile_records_what_was_measured_rather_than_what_is_usual() {
         "declaring the leaf walk here would be a corroborator that cannot corroborate"
     );
     assert!(
-        !TELEGRAM.judges.contains(&JudgeChannel::RenderedDocumentMsaa),
+        !TELEGRAM
+            .judges
+            .contains(&JudgeChannel::RenderedDocumentMsaa),
         "on Qt a childless composer's MSAA leaf read collapses to accValue, which is the \
          disowned value property under another name"
     );

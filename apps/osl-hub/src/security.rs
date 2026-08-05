@@ -2579,8 +2579,12 @@ pub fn burn_scope(
     // above still stands, so the ids are retained for a later attempt rather
     // than failing the burn.
     let send_key = crate::broker::prose_send_key(core).ok();
-    let (remote_blobs_deleted, failed_blob_ids) =
-        burn_recorded_prose_blobs(&dir, None, send_key.as_ref().map(|key| key.as_slice()), recorded_blobs);
+    let (remote_blobs_deleted, failed_blob_ids) = burn_recorded_prose_blobs(
+        &dir,
+        None,
+        send_key.as_ref().map(|key| key.as_slice()),
+        recorded_blobs,
+    );
     for recorded in &failed_blob_ids {
         ipc::scope_blobs_file::record_blob_with_capability(
             &mut blobs_file,
@@ -2696,8 +2700,12 @@ pub fn burn_manual_peer_scope(
     // send key, so a missing identity leaves remote objects counted as
     // undeleted instead of aborting the local revocation.
     let send_key = crate::broker::prose_send_key(core).ok();
-    let (remote_blobs_deleted, failed_blob_ids) =
-        burn_recorded_prose_blobs(&dir, None, send_key.as_ref().map(|key| key.as_slice()), recorded_blobs);
+    let (remote_blobs_deleted, failed_blob_ids) = burn_recorded_prose_blobs(
+        &dir,
+        None,
+        send_key.as_ref().map(|key| key.as_slice()),
+        recorded_blobs,
+    );
     for recorded in &failed_blob_ids {
         ipc::scope_blobs_file::record_blob_with_capability(
             &mut blobs,
@@ -6753,8 +6761,15 @@ key"
                 burn_capability: None,
             }],
         );
-        assert_eq!(deleted, 0, "a blob with no burn credential was counted as destroyed");
-        assert_eq!(failed.len(), 1, "an undeletable blob must be retained for a later attempt");
+        assert_eq!(
+            deleted, 0,
+            "a blob with no burn credential was counted as destroyed"
+        );
+        assert_eq!(
+            failed.len(),
+            1,
+            "an undeletable blob must be retained for a later attempt"
+        );
         assert_eq!(failed[0].blob_id, bridge_id);
 
         // No device identity: nothing remote can be destroyed, and the objects
@@ -6768,7 +6783,10 @@ key"
                 burn_capability: Some(capability.clone()),
             }],
         );
-        assert_eq!(deleted, 0, "a burn without a send key was counted as destroyed");
+        assert_eq!(
+            deleted, 0,
+            "a burn without a send key was counted as destroyed"
+        );
         assert_eq!(failed.len(), 1);
         assert_eq!(
             failed[0].burn_capability.as_deref(),
@@ -6885,8 +6903,7 @@ key"
             2
         );
         let mut burned = ledger;
-        let drained =
-            ipc::scope_blobs_file::take_blobs_for_burn(&mut burned, &scope.storage_key());
+        let drained = ipc::scope_blobs_file::take_blobs_for_burn(&mut burned, &scope.storage_key());
         assert_eq!(
             drained,
             vec![

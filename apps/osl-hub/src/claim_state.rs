@@ -490,10 +490,7 @@ pub fn claim_of(surface: Surface) -> &'static SurfaceClaim {
 
 /// **The derivation.** What the evidence alone would permit, before any
 /// authority outside this module is consulted.
-pub const fn derived_claim(
-    carrier: CarrierEvidence,
-    delivery: DeliveryEvidence,
-) -> PublicClaim {
+pub const fn derived_claim(carrier: CarrierEvidence, delivery: DeliveryEvidence) -> PublicClaim {
     match (carrier, delivery) {
         // A third party blocks us. Says nothing about our implementation, and
         // is never reached from any other evidence.
@@ -1109,8 +1106,7 @@ mod tests {
             assert_eq!(
                 claim_for(&SurfaceClaim {
                     blockers: match blocker {
-                        ClaimBlocker::OpenSecurityFinding =>
-                            &[ClaimBlocker::OpenSecurityFinding],
+                        ClaimBlocker::OpenSecurityFinding => &[ClaimBlocker::OpenSecurityFinding],
                         _ => &[ClaimBlocker::UnknownRecheckRequired],
                     },
                     ..row

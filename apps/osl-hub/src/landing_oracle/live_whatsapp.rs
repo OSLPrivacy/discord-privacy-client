@@ -151,7 +151,9 @@ pub(crate) fn resolve_search_box(editables: &[Uia2Editable]) -> Option<Uia2Edita
     match named.len() {
         1 => Some(named[0].clone()),
         other => {
-            eprintln!("wa-oracle: {other} elements match a rejecting stem; the canary needs exactly one");
+            eprintln!(
+                "wa-oracle: {other} elements match a rejecting stem; the canary needs exactly one"
+            );
             None
         }
     }
@@ -269,11 +271,7 @@ fn document_of(bound: &BoundComposer) -> Option<String> {
 fn text_pattern_of(bound: &BoundComposer) -> Option<String> {
     let profile = recon_profile();
     LandingJudgeWin32
-        .rendered_document_text_pattern(
-            bound,
-            profile.walk,
-            JudgeDeadline::from_profile(&profile),
-        )
+        .rendered_document_text_pattern(bound, profile.walk, JudgeDeadline::from_profile(&profile))
         .ok()
         .flatten()
         .map(|document| document.text)
@@ -332,7 +330,10 @@ fn report_what_the_landing_oracle_can_see_on_whatsapp() {
     let host = crate::native_a11y::win32::Uia2Win32Host::desktop();
     for element in editables.iter().filter(|element| element.writable()) {
         let value = read_uia2_composer_value(&host, acquired, element);
-        eprintln!("wa-oracle: EXIT-STATE name={:?} value={value:?}", element.name);
+        eprintln!(
+            "wa-oracle: EXIT-STATE name={:?} value={value:?}",
+            element.name
+        );
     }
     eprintln!("wa-oracle: read-only probe: nothing was written, nothing was pressed");
 }
@@ -671,7 +672,10 @@ fn carry_a_real_carrier_through_live_whatsapp() {
         "wa-oracle: stage 4 (canary): place={canary_placed:?} document={canary_document:?} \
          verdict={} clear={canary_cleared:?} empty_after={}",
         match &canary_verdict {
-            Ok(proof) => format!("LANDED document={:?} ink Δ{}", proof.document, proof.ink_delta),
+            Ok(proof) => format!(
+                "LANDED document={:?} ink Δ{}",
+                proof.document, proof.ink_delta
+            ),
             Err(refusal) => format!("REFUSED {} -- {refusal:?}", refusal.name()),
         },
         match &canary_empty {
@@ -771,7 +775,10 @@ fn carry_a_real_carrier_through_live_whatsapp() {
     placement.expect("the carrier places into the live composer");
     cleared.expect("the composer is always cleared");
     let proof = verdict.unwrap_or_else(|refusal| {
-        panic!("wa-oracle: the carrier did not land: {} -- {refusal:?}", refusal.name())
+        panic!(
+            "wa-oracle: the carrier did not land: {} -- {refusal:?}",
+            refusal.name()
+        )
     });
 
     // 7 — the carry, judged by a decoder reading the ORACLE's document rather

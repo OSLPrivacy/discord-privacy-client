@@ -195,7 +195,9 @@ pub(crate) fn resolve_search_box(
         }
     }
     if candidates.is_empty() {
-        eprintln!("tg-oracle: no writable element matches a rejecting stem; the canary has no target");
+        eprintln!(
+            "tg-oracle: no writable element matches a rejecting stem; the canary has no target"
+        );
         return None;
     }
     candidates.sort_by_key(|(left, _)| *left);
@@ -726,7 +728,10 @@ fn carry_a_real_carrier_through_live_telegram() {
         "tg-oracle: stage 4 (canary): place={canary_placed:?} primary={canary_document:?} \
          leaf_walk={canary_leaf_walk:?} verdict={} clear={canary_cleared:?} empty_after={}",
         match &canary_verdict {
-            Ok(proof) => format!("LANDED document={:?} ink Δ{}", proof.document, proof.ink_delta),
+            Ok(proof) => format!(
+                "LANDED document={:?} ink Δ{}",
+                proof.document, proof.ink_delta
+            ),
             Err(refusal) => format!("REFUSED {} -- {refusal:?}", refusal.name()),
         },
         match &canary_empty {

@@ -41,7 +41,10 @@ fn t14_t17_shipping_state_wires_local_and_peer_transitions() {
 
     let on = state.apply_peer_preference("person-a", true, true);
     assert_eq!(on.effective_changed, Some(Effective::On));
-    assert_eq!(state.ensure_conversation("person-a").effective, Effective::On);
+    assert_eq!(
+        state.ensure_conversation("person-a").effective,
+        Effective::On
+    );
 
     let local_off = state.apply_local_preference("person-a", false, true);
     assert_eq!(local_off.effective_changed, None);
@@ -49,7 +52,10 @@ fn t14_t17_shipping_state_wires_local_and_peer_transitions() {
 
     let off = state.apply_peer_preference("person-a", false, true);
     assert_eq!(off.effective_changed, Some(Effective::Off));
-    assert_eq!(state.ensure_conversation("person-a").effective, Effective::Off);
+    assert_eq!(
+        state.ensure_conversation("person-a").effective,
+        Effective::Off
+    );
 }
 
 #[test]
