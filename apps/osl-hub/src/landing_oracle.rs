@@ -489,7 +489,12 @@ pub static DISCORD: LandingProfile = LandingProfile {
     },
     judge_timeout_ms: 5_000,
     commit_key: "Enter",
-    min_ink_delta: 16,
+    // Measured live 2026-08-04 against Discord pid 9020: a 40-character carrier
+    // typed by the shipping channel moved the composer rectangle's ink from 978
+    // to 1369 inked pixels of 25928 sampled -- a delta of 391, about 9.8 pixels
+    // per character. 48 is roughly five characters' worth: high enough that a
+    // repaint cannot clear it, low enough that a short carrier still passes.
+    min_ink_delta: 48,
     normalisations: &[
         Normalisation::BlockBreaksAreNotNewlines,
         Normalisation::ZeroWidthSentinelRetained,

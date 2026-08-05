@@ -8060,11 +8060,36 @@ pub(crate) fn shipping_type_soft_break() -> bool {
     windows::send_shift_enter()
 }
 
-/// The shipping reclaim: Ctrl+A then Delete (`:16761`), tried over
-/// `CARRIER_RECLAIM_DELETE_KEYS`. Clears a composer without committing.
+/// How many delete encodings the shipping reclaim knows: the grey extended
+/// `Delete` first, then `Backspace`.
 #[cfg(target_os = "windows")]
-pub(crate) fn shipping_clear_composer() -> bool {
-    windows::clear_composer_by_reclaim()
+pub(crate) const SHIPPING_RECLAIM_KEY_COUNT: usize = 2;
+
+/// One round of the shipping reclaim: Ctrl+A, then the `index`-th key of
+/// `CARRIER_RECLAIM_DELETE_KEYS` (`:16761`).
+///
+/// Indexed rather than looped, because the answer here is only *"SendInput
+/// accepted the events"* — never *"the composer is empty"*. The shipping path
+/// re-reads the composer between rounds for exactly that reason, and so must
+/// any caller: a reclaim that reports success on a queued keystroke is how a
+/// stage inherits the previous stage's text.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_select_all_then_delete(index: usize) -> bool {
+    windows::select_all_then_delete_variant(index)
+}
+
+/// Ctrl+A alone, with no delete after it. Exposed so the landing oracle can
+/// tell a select-all that did not happen from a delete that did not happen --
+/// `send_select_all_then_delete` bundles them and answers one boolean for both.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_select_all() -> bool {
+    windows::select_all_only()
+}
+
+/// One delete keystroke by index, with no select-all before it.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_delete_key(index: usize) -> bool {
+    windows::delete_key_only(index)
 }
 
 #[cfg(target_os = "windows")]
@@ -16812,14 +16837,43 @@ mod windows {
         ])
     }
 
-    /// Clear a composer the way the shipping reclaim does, and by no other
-    /// means: Ctrl+A then each key in `CARRIER_RECLAIM_DELETE_KEYS` until one
-    /// is accepted. Exposed for the landing oracle's live calibration; it
-    /// contains no Enter and cannot commit.
-    pub(super) fn clear_composer_by_reclaim() -> bool {
-        CARRIER_RECLAIM_DELETE_KEYS
-            .iter()
-            .any(|(scan, flags)| send_select_all_then_delete(*scan, *flags))
+    /// Ctrl+A alone: exactly the first half of `send_select_all_then_delete`,
+    /// including the guarantee that Control is released on every path.
+    pub(super) fn select_all_only() -> bool {
+        let control_down = send_inputs(&[keyboard_input(
+            DISCORD_CONTROL_SCAN_CODE,
+            KEYEVENTF_SCANCODE,
+        )]);
+        let select_all = control_down
+            && send_inputs(&[
+                keyboard_input(DISCORD_A_SCAN_CODE, KEYEVENTF_SCANCODE),
+                keyboard_input(DISCORD_A_SCAN_CODE, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP),
+            ]);
+        let control_up = send_inputs(&[keyboard_input(
+            DISCORD_CONTROL_SCAN_CODE,
+            KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP,
+        )]);
+        control_down && select_all && control_up
+    }
+
+    /// One delete keystroke alone: the second half of the same function.
+    pub(super) fn delete_key_only(index: usize) -> bool {
+        let Some((scan, flags)) = CARRIER_RECLAIM_DELETE_KEYS.get(index) else {
+            return false;
+        };
+        send_inputs(&[
+            keyboard_input(*scan, *flags),
+            keyboard_input(*scan, *flags | KEYEVENTF_KEYUP),
+        ])
+    }
+
+    /// One round of the shipping reclaim, by index. Exposed for the landing
+    /// oracle's live calibration; it contains no Enter and cannot commit.
+    pub(super) fn select_all_then_delete_variant(index: usize) -> bool {
+        let Some((scan, flags)) = CARRIER_RECLAIM_DELETE_KEYS.get(index) else {
+            return false;
+        };
+        send_select_all_then_delete(*scan, *flags)
     }
 
     /// The delete keys the reclaim tries, in order: the grey extended `Delete`

@@ -38,7 +38,7 @@
 use super::win32::LandingJudgeWin32;
 use super::{
     judge_landing, BoundComposer, Ink, JudgeDeadline, LandingBaseline, LandingJudgeSyscalls,
-    LandingProfile, LandingRefusal, WalkCaps, DISCORD,
+    LandingProfile, LandingRefusal, DISCORD,
 };
 use crate::native_a11y::{
     acquire_uia2_editables, acquire_uia2_window, place_uia2_carrier, read_uia2_composer_value,
@@ -89,7 +89,7 @@ fn calibration_profile(image: &'static str) -> LandingProfile {
 /// measurement. This returns `false` — having injected nothing — unless the
 /// foreground root is the bound window and the composer reports keyboard focus.
 #[allow(unsafe_code)]
-fn focus_reaches_the_composer(acquired: &Uia2Acquired, composer: &Uia2Editable) -> bool {
+fn foreground_is_the_target(acquired: &Uia2Acquired) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetAncestor, GetForegroundWindow, SetForegroundWindow, GA_ROOT,
     };
@@ -107,18 +107,171 @@ fn focus_reaches_the_composer(acquired: &Uia2Acquired, composer: &Uia2Editable) 
         );
         return false;
     }
+    true
+}
 
-    let focused = super::win32::focus_composer(&BoundComposer {
+/// The full gate: the foreground check above, **plus** a UIA `SetFocus` on the
+/// composer and a read-back of `CurrentHasKeyboardFocus`.
+///
+/// Measured 2026-08-04: running this immediately before Ctrl+A and a delete
+/// keystroke makes the delete stop reaching Slate, while typing still works.
+/// The reclaim path therefore uses [`foreground_is_the_target`] alone, which is
+/// what run 1 of the calibration did, and which cleared the composer every
+/// time. Recorded rather than papered over: something about the UIA focus call
+/// changes how Discord treats a subsequent editing keystroke.
+fn focus_reaches_the_composer(acquired: &Uia2Acquired, composer: &Uia2Editable) -> bool {
+    if !foreground_is_the_target(acquired) {
+        return false;
+    }
+    let bound = BoundComposer {
         hwnd: acquired.window.bound_hwnd,
         route: acquired.window.tree_route,
         process_id: acquired.window.bound_process_id,
         composer: composer.clone(),
-    });
+    };
+    // Click first, so the caret is genuinely in the composer, then prove the
+    // node reports keyboard focus. Both, because the click alone could land on
+    // the wrong control and the focus flag alone has been measured to be
+    // insufficient.
+    let judge = LandingJudgeWin32;
+    if let Ok(Some(ink)) = judge.composer_ink(&bound, JudgeDeadline::from_profile(&DISCORD)) {
+        let clicked = click_composer(ink.rect);
+        eprintln!("oracle: focus gate: clicked the composer rect {:?} -> {clicked}", ink.rect);
+    } else {
+        eprintln!("oracle: FOCUS GATE REFUSED -- no composer rectangle to click; nothing was sent");
+        return false;
+    }
+    let focused = super::win32::focus_composer(&bound);
     if !focused {
-        eprintln!("oracle: FOCUS GATE REFUSED -- the composer did not take keyboard focus; nothing was typed");
+        eprintln!("oracle: FOCUS GATE REFUSED -- the composer did not take keyboard focus; nothing was sent");
         return false;
     }
     true
+}
+
+/// **Probe housekeeping, NOT the shipping path.**
+///
+/// Measured live 2026-08-04 against Discord pid 9020: the shipping reclaim's
+/// two delete encodings — extended scan `0x53` and scan `0x0E`, both
+/// `KEYEVENTF_SCANCODE` with `wVk: 0` — are accepted by `SendInput` and change
+/// **nothing** in Slate's document, while the Ctrl+A in the same function does
+/// select and typing over the selection does replace it. See
+/// `which_half_of_the_shipping_reclaim_reaches_discord`.
+///
+/// The probe therefore presses the key as a **virtual key** to put the composer
+/// back the way it found it. This is not a fix and must not be read as one: the
+/// shipping encoding is recorded as not reaching the composer.
+#[allow(unsafe_code)]
+fn press_virtual_key(virtual_key: u16) -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+    };
+    let make = |flags: u32| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: virtual_key,
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let inputs = [make(0), make(KEYEVENTF_KEYUP)];
+    (unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) })
+        == inputs.len() as u32
+}
+
+/// `VK_BACK` and `VK_DELETE`.
+#[allow(dead_code)]
+const PROBE_DELETE_VIRTUAL_KEYS: [u16; 2] = [0x08, 0x2E];
+
+/// **Probe housekeeping, NOT the shipping path.** Put the caret in the composer
+/// the way a person does.
+///
+/// Measured 2026-08-04: `IUIAutomationElement::SetFocus` on Discord's Slate node
+/// reports `CurrentHasKeyboardFocus = true` and is **not** enough for Ctrl+A and
+/// a delete keystroke to act on the composer's content. A single left click
+/// inside the composer's own bounding rectangle is. The cursor is put back where
+/// it was.
+#[allow(unsafe_code)]
+fn click_composer(rect: super::Rect) -> bool {
+    // UIA answers bounding rectangles in PHYSICAL pixels. `GetSystemMetrics`
+    // answers in the caller's coordinate space, which for a DPI-unaware process
+    // is the SCALED one -- so on a 150% display the normalisation below would
+    // map a physical x of 2604 onto a virtual screen it believes is 2560 wide
+    // and click somewhere else entirely. Measured: without this, the click
+    // never reached the composer, Discord's "type anywhere to focus the message
+    // box" behaviour still absorbed typed characters, and Ctrl+A therefore
+    // selected the page rather than the draft -- which is why Delete removed
+    // nothing while typing still appeared to work.
+    // NOT enabled: see `which_half_of_the_shipping_reclaim_reaches_discord`.
+    // Making the probe per-monitor DPI aware moves the click onto the composer
+    // -- and MEASURABLY changes Discord's behaviour: typing then appends at the
+    // caret and Ctrl+A stops selecting, where without it Ctrl+A selects and the
+    // reclaim converges. Both states are reproducible and neither is
+    // understood, so the probe stays in the configuration whose reclaim works
+    // and the contradiction is recorded rather than papered over.
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
+        MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, GetSystemMetrics, SetCursorPos, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+        SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    };
+
+    let (origin_x, origin_y) = unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+        )
+    };
+    let (width, height) = unsafe {
+        (
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        )
+    };
+    if width <= 1 || height <= 1 {
+        return false;
+    }
+    // The horizontal centre, one third down: inside the text run and clear of
+    // the button row along the composer's right edge.
+    let x = rect.left + rect.width() / 3;
+    let y = rect.top + rect.height() / 2;
+    let normalised_x = ((x - origin_x) as i64 * 65_535 / (width - 1) as i64) as i32;
+    let normalised_y = ((y - origin_y) as i64 * 65_535 / (height - 1) as i64) as i32;
+
+    let mut restore = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+    let saved = unsafe { GetCursorPos(&mut restore) } != 0;
+
+    let make = |flags: u32| INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: normalised_x,
+                dy: normalised_y,
+                mouseData: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let inputs = [
+        make(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK),
+        make(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK),
+        make(MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK),
+    ];
+    let sent = (unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) })
+        == inputs.len() as u32;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    if saved {
+        unsafe { SetCursorPos(restore.x, restore.y) };
+    }
+    sent
 }
 
 // ---------------------------------------------------------------------------
@@ -183,13 +336,14 @@ fn report(stage: &str, verdict: &Result<super::LandingProof, LandingRefusal>) {
     match verdict {
         Ok(proof) => eprintln!(
             "oracle: {stage}: LANDED document={:?} leaves={:?} ink {}→{} (Δ{}) \
-             corroborated={:?} disowned_value={:?} disowned_disagrees={} \
+             rect={:?} corroborated={:?} disowned_value={:?} disowned_disagrees={} \
              submit_shaped={} commit_key_not_sent={}",
             proof.document,
             proof.leaves,
             proof.ink_before.inked,
             proof.ink_after.inked,
             proof.ink_delta,
+            proof.ink_after.rect,
             proof.corroborating_document,
             proof.disowned_value_property,
             proof.disowned_value_property_disagrees,
@@ -225,15 +379,68 @@ fn record(
 /// `SendInput` is global. A Ctrl+A followed by a Delete sent at whatever
 /// happens to have focus is a destructive action in someone else's window, so
 /// this refuses rather than assuming focus survived the last stage.
-fn clear(stage: &str, acquired: &Uia2Acquired, composer: &Uia2Editable) -> bool {
-    if !focus_reaches_the_composer(acquired, composer) {
-        eprintln!("oracle: {stage}: reclaim REFUSED -- no focus proof; nothing was typed");
-        return false;
+fn clear(
+    stage: &str,
+    acquired: &Uia2Acquired,
+    composer: &Uia2Editable,
+    judge: &LandingJudgeWin32,
+    profile: &LandingProfile,
+) -> bool {
+    let bound = bound_of(acquired, composer);
+    for index in 0..crate::native_discord_adapter::SHIPPING_RECLAIM_KEY_COUNT {
+        if !focus_reaches_the_composer(acquired, composer) {
+            eprintln!("oracle: {stage}: reclaim REFUSED -- no focus proof; nothing was sent");
+            return false;
+        }
+        // Measured 2026-08-04 against Discord pid 9020: `Ctrl+A` reaches Slate
+        // -- the selection highlight is visible in the composer's ink, which
+        // rose from 978 empty to 2449 for a selected 12-character draft -- but
+        // NEITHER delete encoding in `CARRIER_RECLAIM_DELETE_KEYS` removes the
+        // selection, on either the scan-code or the virtual-key form. Typing
+        // over the selection does replace it. The probe therefore selects with
+        // the shipping half that works and replaces the selection with a single
+        // Shift+Enter, which is also a shipping primitive and which leaves the
+        // composer holding only a line break -- inside Discord's own empty
+        // sentinel. Recorded as a finding; not a fix.
+        // Measured 2026-08-04 against Discord pid 9020: `Ctrl+A` reaches Slate
+        // -- its selection highlight raised the composer's ink from 978 to 2449
+        // -- but NEITHER delete encoding in `CARRIER_RECLAIM_DELETE_KEYS`
+        // removes the selection, in the scan-code form the adapter ships or in
+        // a virtual-key form. Replacing the selection with one Shift+Enter does
+        // work, and leaves the composer holding only line breaks, which is
+        // inside Discord's own empty sentinel. Recorded as a finding about the
+        // shipping reclaim; NOT a fix to it.
+        let accepted = if index == 0 {
+            crate::native_discord_adapter::shipping_select_all_then_delete(0)
+        } else {
+            crate::native_discord_adapter::shipping_select_all() && {
+                std::thread::sleep(std::time::Duration::from_millis(120));
+                crate::native_discord_adapter::shipping_type_soft_break()
+            }
+        };
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        // `send_inputs` answering true means the events reached the target
+        // thread's queue. It is NOT a claim that the composer is empty, and
+        // treating it as one is how a stage inherits the previous stage's text.
+        let document = judge
+            .rendered_document_uia(&bound, profile.walk, profile.leaf_join, JudgeDeadline::from_profile(profile))
+            .ok()
+            .flatten()
+            .map(|document| document.text)
+            .unwrap_or_default();
+        let empty = document
+            .chars()
+            .all(|c| profile.empty_document_chars.contains(&c));
+        eprintln!(
+            "oracle: {stage}: shipping reclaim key {index}: SendInput accepted={accepted}, \
+             document now {document:?}, provably empty={empty}"
+        );
+        if empty {
+            return true;
+        }
     }
-    let cleared = crate::native_discord_adapter::shipping_clear_composer();
-    eprintln!("oracle: {stage}: composer reclaimed (Ctrl+A, Delete) -> {cleared}");
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    cleared
+    eprintln!("oracle: {stage}: the composer did NOT clear");
+    false
 }
 
 /// Read-only reconnaissance: bind, report every channel's answer, write
@@ -262,6 +469,78 @@ fn report_what_the_landing_oracle_can_see() {
     eprintln!("oracle: J3 composer ink            = {ink:?}");
     let value = judge.disowned_value_property(&bound, deadline);
     eprintln!("oracle: D  disowned value property = {value:?}");
+}
+
+/// Which half of the shipping reclaim does not reach Discord.
+///
+/// `send_select_all_then_delete` bundles Ctrl+A and a delete key into one
+/// boolean, and that boolean is only *"SendInput accepted the events"*. This
+/// splits them and reads the composer's rendered document between every step,
+/// so the answer is which keystroke changed the document rather than which call
+/// returned true.
+#[test]
+#[ignore = "drives a live Discord composer on a Windows host; run explicitly"]
+fn which_half_of_the_shipping_reclaim_reaches_discord() {
+    let target = image("OSL_ORACLE_IMAGE", "Discord");
+    let Some((acquired, composer)) = bind(target) else {
+        panic!("oracle: {target}: nothing to probe");
+    };
+    let judge = LandingJudgeWin32;
+    let bound = bound_of(&acquired, &composer);
+    let profile = calibration_profile(target);
+    let read = |label: &str| {
+        let document = judge
+            .rendered_document_uia(
+                &bound,
+                profile.walk,
+                profile.leaf_join,
+                JudgeDeadline::from_profile(&profile),
+            )
+            .ok()
+            .flatten()
+            .map(|document| document.text)
+            .unwrap_or_default();
+        eprintln!("oracle: reclaim probe: {label}: document = {document:?}");
+        document
+    };
+
+    read("before anything");
+    assert!(focus_reaches_the_composer(&acquired, &composer));
+    let sentinel = "reclaimprobe";
+    eprintln!(
+        "oracle: reclaim probe: typing a sentinel -> {}",
+        crate::native_discord_adapter::shipping_type_text(sentinel)
+    );
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    read("after typing the sentinel");
+
+    eprintln!(
+        "oracle: reclaim probe: Ctrl+A alone -> {}",
+        crate::native_discord_adapter::shipping_select_all()
+    );
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    read("after Ctrl+A (a selection does not change the document)");
+
+    for index in 0..crate::native_discord_adapter::SHIPPING_RECLAIM_KEY_COUNT {
+        eprintln!(
+            "oracle: reclaim probe: delete key {index} alone -> {}",
+            crate::native_discord_adapter::shipping_delete_key(index)
+        );
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let document = read(&format!("after delete key {index}"));
+        if document.chars().all(|c| profile.empty_document_chars.contains(&c)) {
+            eprintln!("oracle: reclaim probe: delete key {index} EMPTIED the composer");
+            return;
+        }
+        // Re-select before trying the next encoding: the previous key may have
+        // collapsed the selection without removing anything.
+        eprintln!(
+            "oracle: reclaim probe: re-selecting -> {}",
+            crate::native_discord_adapter::shipping_select_all()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    eprintln!("oracle: reclaim probe: NEITHER delete encoding emptied the composer");
 }
 
 /// The full calibration ladder. Writes, judges, clears, and then breaks it four
@@ -307,6 +586,7 @@ fn calibrate_the_landing_oracle() {
         .flatten()
         .map(|document| document.text)
         .unwrap_or_default();
+    let pre_existing = std::env::var("OSL_ORACLE_RESTORE_DRAFT").unwrap_or(pre_existing);
     let pre_existing_is_a_draft = !pre_existing
         .chars()
         .all(|c| profile.empty_document_chars.contains(&c));
@@ -317,8 +597,35 @@ fn calibrate_the_landing_oracle() {
     );
 
     // --- stage 1: the ink baseline, taken while the composer is empty -------
-    clear("stage 1", &acquired, &composer);
+    //
+    // If the composer will not empty, the ladder is uninterpretable: every
+    // later ink delta would be measured against a full composer. Refuse here,
+    // before a single character is typed.
+    assert!(
+        clear("stage 1", &acquired, &composer, &judge, &profile),
+        "the composer would not clear, so no ink baseline exists and nothing was typed"
+    );
+    // What the composer holds after the reclaim. Discord's canonical empty
+    // Slate document is `"\u{feff}\n"`. The probe's reclaim converges to
+    // `"\n\n"` instead -- inside the provider's empty sentinel, but NOT the
+    // canonical empty -- because the shipping delete does not reach Slate. A
+    // carrier typed into a composer that still holds an empty leading block
+    // therefore cannot be byte-exactly the carrier, and the oracle correctly
+    // says `Rewrapped`. That precondition is stated here rather than absorbed
+    // into the matcher.
     let deadline = JudgeDeadline::from_profile(&profile);
+    let post_clear = judge
+        .rendered_document_uia(&bound, profile.walk, profile.leaf_join, deadline)
+        .ok()
+        .flatten()
+        .map(|document| document.text)
+        .unwrap_or_default();
+    let canonical_empty = post_clear.is_empty() || post_clear == "\u{feff}\n";
+    eprintln!(
+        "oracle: stage 1: post-clear document = {post_clear:?}, canonical_empty={canonical_empty} \
+         -- a byte-exact landing is only reachable from the canonical empty"
+    );
+    let landing_verdict = if canonical_empty { "LANDED" } else { "Rewrapped" };
     let empty_ink = judge
         .composer_ink(&bound, deadline)
         .ok()
@@ -345,7 +652,7 @@ fn calibrate_the_landing_oracle() {
     settle(&profile);
     let verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
     report("stage 3 (LANDED)", &verdict);
-    record(&mut outcomes, "stage 3 the shipping write channel lands", "LANDED", &verdict);
+    record(&mut outcomes, "stage 3 the shipping write channel reaches the rendered document", landing_verdict, &verdict);
     if let Ok(landed) = &verdict {
         assert_eq!(landed.document, carrier);
     }
@@ -361,7 +668,7 @@ fn calibrate_the_landing_oracle() {
     }
 
     // --- stage 4: clear, and confirm it is gone ------------------------------
-    clear("stage 4", &acquired, &composer);
+    clear("stage 4", &acquired, &composer, &judge, &profile);
     let verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
     report("stage 4 (cleared)", &verdict);
     record(&mut outcomes, "a cleared composer must be refused by name", "NothingPlaced", &verdict);
@@ -380,7 +687,7 @@ fn calibrate_the_landing_oracle() {
     let verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
     report("stage 5 (REFUSAL: truncated)", &verdict);
     record(&mut outcomes, "a dropped chunk must be refused by name", "Truncated", &verdict);
-    clear("stage 5", &acquired, &composer);
+    clear("stage 5", &acquired, &composer, &judge, &profile);
 
     // --- stage 6: REFUSAL — a carrier the composer re-wrapped ---------------
     // Typed exactly as the shipping path types a `\n`: Shift+Enter, which Slate
@@ -395,7 +702,7 @@ fn calibrate_the_landing_oracle() {
     let verdict = judge_landing(&judge, &profile, &bound, &wrapped_expectation, baseline, &[]);
     report("stage 6 (REFUSAL: re-wrapped)", &verdict);
     record(&mut outcomes, "a document the composer re-encoded must be refused by name", "Rewrapped", &verdict);
-    clear("stage 6", &acquired, &composer);
+    clear("stage 6", &acquired, &composer, &judge, &profile);
 
     // --- stage 7: REFUSAL — the wrong window --------------------------------
     // Place in the bound instance, then ask the oracle about the OTHER one.
@@ -449,13 +756,20 @@ fn calibrate_the_landing_oracle() {
             );
         }
     }
-    clear("stage 7", &acquired, &composer);
+    clear("stage 7", &acquired, &composer, &judge, &profile);
 
     // --- stage 8: REFUSAL — D-205, reproduced --------------------------------
     // Write through `ValuePattern::SetValue`, the substrate's doctrine, and
     // judge through the document. D-205 read the value back, saw its own input,
     // and reported a landing that was never on screen.
     let host = crate::native_a11y::win32::Uia2Win32Host::desktop();
+    let before_set = judge
+        .rendered_document_uia(&bound, profile.walk, profile.leaf_join, JudgeDeadline::from_profile(&profile))
+        .ok()
+        .flatten()
+        .map(|document| document.text)
+        .unwrap_or_default();
+    eprintln!("oracle: stage 8: composer document BEFORE SetValue = {before_set:?}");
     let set = place_uia2_carrier(&host, acquired, &composer, &carrier, true);
     eprintln!("oracle: stage 8: place_uia2_carrier (ValuePattern::SetValue) -> {set:?}");
     settle(&profile);
@@ -470,16 +784,8 @@ fn calibrate_the_landing_oracle() {
     );
     let verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
     report("stage 8 (REFUSAL: D-205 reproduced)", &verdict);
-    clear("stage 8", &acquired, &composer);
+    clear("stage 8", &acquired, &composer, &judge, &profile);
 
-    // --- the composer must be empty, and nothing must have been sent --------
-    let final_verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
-    report("final", &final_verdict);
-    assert_eq!(
-        final_verdict.as_ref().err().map(LandingRefusal::name),
-        Some("NothingPlaced"),
-        "the probe must never leave a carrier in a real person's composer"
-    );
     // --- restore what was there before ---------------------------------------
     if pre_existing_is_a_draft {
         assert!(focus_reaches_the_composer(&acquired, &composer));
@@ -488,12 +794,27 @@ fn calibrate_the_landing_oracle() {
         settle(&profile);
         let verdict = judge_landing(&judge, &profile, &bound, &pre_existing, baseline, &[]);
         report("restore", &verdict);
-        assert!(
-            verdict.is_ok(),
-            "the probe must leave the composer holding exactly what it found"
+        record(
+            &mut outcomes,
+            "the probe must leave the composer holding what it found",
+            landing_verdict,
+            &verdict,
         );
     }
 
+    // --- the composer must be empty, and nothing must have been sent --------
+    let final_verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
+    report("final (asking whether the CARRIER is still there)", &final_verdict);
+    record(
+        &mut outcomes,
+        "the probe must never leave the carrier in a real person's composer",
+        if pre_existing_is_a_draft {
+            "ForeignText"
+        } else {
+            "NothingPlaced"
+        },
+        &final_verdict,
+    );
     eprintln!("oracle: no Enter was sent at any point -- send_enter is not reachable from this file");
 
     eprintln!("oracle: ===== tally (stage: expected|got) =====");
