@@ -69,7 +69,7 @@
 //   node scripts/ledger/pins.mjs --write-baseline  # regenerate (review the diff)
 //   node scripts/ledger/pins.mjs --root=<dir>    # scan a mutated copy of a tree
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { repoRoot, read, walk, blankComments, blankRustComments, lineIndex, lineOf } from "./lib/io.mjs";
@@ -81,16 +81,172 @@ const BASELINE_REL = "scripts/ledger/pin-baseline.json";
 /** Directories that are not this project's source. */
 const SKIP = /(^|\/)(node_modules|dist|target|\.git|coverage|\.vite|build)(\/|$)/;
 
-/** A call that hands back the raw text of a file on disk. */
+// ---------------------------------------------------------------------------
+// HOW FILE TEXT ENTERS A SPEC -- the two doors, D-293
+//
+// This census used to model ONE door: a CALL that hands back a file's bytes
+// (`TEXT_READERS` below). That is why `import migration from "./0004.sql?raw"`
+// was invisible -- an import is not a call, so no entry in any call list could
+// ever have caught it, and adding `?raw` to the list would have been the same
+// defect with a longer list (D-242, D-270, D-271: "the census sees what its
+// recogniser was written to look for").
+//
+// There are exactly two syntactic doors in JavaScript/TypeScript through which
+// the bytes of a file on disk can reach a variable:
+//
+//   1. a CALL that reads the file at run time            -> TEXT_READERS
+//   2. an IMPORT whose SPECIFIER names a file the module
+//      loader hands over as bytes rather than executing   -> importYieldsFileText
+//
+// Door 2 is classified by a decision procedure over the specifier, not by an
+// enumeration of importable things:
+//
+//   * an explicit "give me the bytes" query -- Vite's `?raw`, in any of its
+//     composed forms (`?raw`, `?foo&raw`) -- is decisive whatever the file is,
+//     so one rule covers .sql, .toml, .ts, .md and anything added later;
+//   * otherwise a RELATIVE specifier is resolved AGAINST THE TREE. If it names
+//     a file that exists and whose extension is not an executable module
+//     extension, a loader can only hand it over as an asset. The set below is
+//     closed by the language (what may be `import`ed AS CODE) rather than open
+//     like a reader list, so this rule does not rot as file types are added.
+//
+// The second rule asks the disk rather than trusting the spelling, and the
+// TypeScript-parser oracle is what showed why: `import viteConfig from
+// "../vite.config"` in apps/osl-hub-ui/src/whatsapp-shipping-surface.test.ts
+// has a trailing dotted segment that reads as the extension `config`, and it is
+// nothing of the kind -- `apps/osl-hub-ui/vite.config` does not exist, and the
+// loader resolves it onto `vite.config.ts`, a MODULE. A purely syntactic
+// complement rule called that file text. Resolution says it is not.
+//
+// `.json` sits with the module extensions ON PURPOSE: an imported JSON module
+// is PARSED data, and asserting on parsed data is not a source-text pin --
+// exactly the judgement `scanTs` already makes when it skips `JSON.parse`.
+//
+// Everything downstream is unchanged. An import-origin binding enters the same
+// `bindings` set as a reader-origin one and flows through the same
+// text-preserving fixed point, so a `?raw` import sliced, split or handed to a
+// `: string` helper is followed for free. That the rest of `scanTs` needed no
+// edit is the evidence that this is a missing ORIGIN and not a missing entry.
+// ---------------------------------------------------------------------------
+
+/**
+ * A call that hands back the raw text of a file on disk, or of a subprocess's
+ * captured output. Door 1.
+ *
+ * `execFileSync` was MISSING and its absence hid 13 assertions, measured. That
+ * is not a list needing another entry -- Node's synchronous output-capturing
+ * APIs are a CLOSED set of exactly three (`execSync`, `execFileSync`,
+ * `spawnSync`) and two of the three were written down, so the census counted
+ * `expect(execSync(...))` and scored the identical `expect(execFileSync(...))`
+ * as absent. The async forms are deliberately NOT here: `exec`, `execFile` and
+ * `spawn` hand back a ChildProcess, not text.
+ *
+ * Matching is by substring, so `readFile` also covers `readFileSync` and
+ * `fs.promises.readFile`.
+ */
 const TEXT_READERS = [
   "readFileSync",
   "readFile",
   "readTextFile",
   "execSync",
+  "execFileSync",
   "spawnSync",
   "include_str!",
   "read_to_string",
 ];
+
+/**
+ * Extensions a module loader EXECUTES or PARSES rather than handing over as
+ * bytes. The complement of this set is "a file, not a module".
+ */
+const MODULE_EXTENSIONS = new Set([
+  "js", "mjs", "cjs", "jsx", "ts", "tsx", "mts", "cts", "json", "node", "wasm",
+]);
+
+/**
+ * Does importing `spec` from a module in `fromDir` bind the TEXT of a file on
+ * disk? Door 2.
+ *
+ * `fromDir` is the absolute directory of the IMPORTING file. Without it only
+ * the explicit `?raw` contract can be decided, and the complement rule -- which
+ * has to ask whether a path names a real non-module file -- answers "no",
+ * which is the pre-D-293 behaviour and therefore never inflates a census.
+ *
+ * Exported so the decision can be tested directly, and so the next reader can
+ * see that it is a rule and not a list.
+ */
+export function importYieldsFileText(spec, fromDir = null) {
+  if (typeof spec !== "string" || !spec) return false;
+  const q = spec.indexOf("?");
+  const path = q === -1 ? spec : spec.slice(0, q);
+  const query = q === -1 ? "" : spec.slice(q + 1);
+  // Vite's `?raw` is the explicit contract: hand me this file as a string.
+  if (query.split("&").some((p) => p === "raw" || p.startsWith("raw="))) return true;
+  // Only a path INTO THIS TREE can be a file; a bare specifier is a package.
+  if (!/^[./]/.test(path)) return false;
+  const ext = (/\.([A-Za-z0-9]+)$/.exec(path)?.[1] ?? "").toLowerCase();
+  if (!ext || MODULE_EXTENSIONS.has(ext)) return false;
+  if (!fromDir) return false;
+  // Ask the tree, not the spelling. `../vite.config` "ends in .config" and is
+  // extensionless module resolution onto vite.config.ts.
+  try {
+    return statSync(join(fromDir, path)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** The local names an import clause introduces. `type` imports bind nothing. */
+function importClauseBindings(clause) {
+  const names = [];
+  const text = clause.trim();
+  if (/^type\b/.test(text)) return names;
+  const braced = /\{([\s\S]*)\}/.exec(text);
+  const head = text.replace(/\{[\s\S]*\}/, "").replace(/,\s*$/, "").trim();
+  if (head) {
+    const ns = /^\*\s*as\s+([A-Za-z_$][\w$]*)$/.exec(head);
+    if (ns) names.push(ns[1]);
+    else {
+      const def = /^([A-Za-z_$][\w$]*)$/.exec(head);
+      if (def) names.push(def[1]);
+    }
+  }
+  if (braced) {
+    for (const part of braced[1].split(",")) {
+      const t = part.trim();
+      if (!t || /^type\b/.test(t)) continue;
+      const as = /\bas\s+([A-Za-z_$][\w$]*)$/.exec(t);
+      if (as) names.push(as[1]);
+      else if (/^[A-Za-z_$][\w$]*$/.test(t)) names.push(t);
+    }
+  }
+  return names;
+}
+
+/**
+ * Bindings introduced by `import x from "<a file, not a module>"`.
+ *
+ * `import(...)` and `import.meta` are excluded by the lookahead; the dynamic
+ * form is picked up in the declaration loop instead, where its binding is a
+ * declaration like any other.
+ */
+export function tsImportTextBindings(src, fromDir = null) {
+  const names = new Set();
+  const re = /\bimport\s+(?![(.])([\s\S]{0,400}?)\s+from\s*(["'])([^"']+)\2/g;
+  for (const m of src.matchAll(re)) {
+    if (!importYieldsFileText(m[3], fromDir)) continue;
+    for (const name of importClauseBindings(m[1])) names.add(name);
+  }
+  return names;
+}
+
+/** `await import("./x.sql?raw")` -- the same door, spelled as an expression. */
+function initImportsFileText(init, fromDir = null) {
+  for (const m of init.matchAll(/\bimport\s*\(\s*(["'`])([^"'`]+)\1/g)) {
+    if (importYieldsFileText(m[2], fromDir)) return true;
+  }
+  return false;
+}
 
 /** Matchers that judge TEXT. `toBe`/`toEqual` count when the subject is text. */
 const TS_MATCHERS = [
@@ -183,9 +339,12 @@ function chainAfter(src, closeIndex) {
  *   const source = readFileSync(...)                     -- direct
  *   const readSrc = (p) => readFileSync(...); const s = readSrc("./main.ts")
  */
-function tsTextBindings(src) {
+function tsTextBindings(src, fromDir = null) {
   const readers = new Set();
-  const bindings = new Set();
+  // Door 2 seeds the SAME set door 1 fills. Everything after this line treats
+  // an import-origin binding and a reader-origin binding identically, which is
+  // the whole point of fixing this as an origin rather than as a list entry.
+  const bindings = tsImportTextBindings(src, fromDir);
   const textHelpers = new Set();
 
   const declaration = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]{0,80})?=\s*/g;
@@ -231,6 +390,10 @@ function tsTextBindings(src) {
   }
   for (const f of functions) if (TEXT_READERS.some((r) => f.body.includes(r))) readers.add(f.name);
   for (const d of decls) {
+    if (initImportsFileText(d.init, fromDir) && !d.init.includes("JSON.parse")) {
+      bindings.add(d.name);
+      continue;
+    }
     if (TEXT_READERS.some((r) => d.init.includes(r))) {
       // An arrow/function value that READS is a reader; anything else is text.
       if (/^\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/.test(d.init) || /^\s*(?:async\s+)?function\b/.test(d.init)) {
@@ -302,10 +465,11 @@ function subjectOf(expr, bindings, readers) {
   return "<inline>";
 }
 
-function scanTs(rel, raw) {
+function scanTs(rel, raw, root) {
   const src = blankComments(raw);
   const starts = lineIndex(src);
-  const { readers, bindings } = tsTextBindings(src);
+  const fromDir = root ? dirname(join(root, rel)) : null;
+  const { readers, bindings } = tsTextBindings(src, fromDir);
   const pins = [];
 
   const push = (index, subject, kind, detail) =>
@@ -323,6 +487,7 @@ function scanTs(rel, raw) {
     if (!matcher) continue;
     const touchesText =
       TEXT_READERS.some((r) => expr.includes(`${r}(`)) ||
+      initImportsFileText(expr, fromDir) ||
       [...bindings].some((b) => new RegExp(`\\b${b}\\b`).test(expr)) ||
       [...readers].some((r) => new RegExp(`\\b${r}\\s*\\(`).test(expr));
     if (!touchesText) continue;
@@ -338,6 +503,7 @@ function scanTs(rel, raw) {
     if (expr.includes("JSON.parse")) continue;
     const touchesText =
       TEXT_READERS.some((r) => expr.includes(`${r}(`)) ||
+      initImportsFileText(expr, fromDir) ||
       [...bindings].some((b) => new RegExp(`\\b${b}\\b`).test(expr));
     if (!touchesText) continue;
     push(m.index, subjectOf(expr, bindings, readers), "assert-over-source-text", "assert()");
@@ -550,7 +716,7 @@ export function collect(root) {
       pins.push(...scanRust(rel, text));
     } else {
       counts.tsFiles += 1;
-      pins.push(...scanTs(rel, text));
+      pins.push(...scanTs(rel, text, root));
     }
   }
 
