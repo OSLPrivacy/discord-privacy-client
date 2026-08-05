@@ -1,24 +1,21 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+
+// D-233. This file used to carry its own `locateChrome`, which looked ONLY in
+// ~/.cache/ms-playwright and ignored $OSL_CHROME. That is why pointing CI at
+// the runner's browser fixed the other three CDP tests and left these two
+// cases still unable to start: a second, narrower copy of a lookup the repo
+// already has one of. The shared helper searches $OSL_CHROME first and then
+// the same Playwright cache directories this copy did, so a developer machine
+// resolves exactly as before. It still THROWS when it finds nothing -- the
+// binary is required, not optional, and neither case is skipped without one.
+import { locateChrome } from "../../../scripts/lib/cdp-harness.mjs";
 
 interface ScrollbarColours {
   thumb: string;
   track: string;
-}
-
-function locateChrome(): string {
-  const root = join(homedir(), ".cache", "ms-playwright");
-  for (const directory of readdirSync(root).sort().reverse()) {
-    for (const relative of ["chrome-linux64/chrome", "chrome-headless-shell-linux64/chrome-headless-shell", "chrome-linux/headless_shell"]) {
-      const candidate = join(root, directory, relative);
-      if (existsSync(candidate)) return candidate;
-    }
-  }
-  throw new Error("TU-33 requires the Playwright Chromium binary");
 }
 
 async function computedScrollbarColours(theme: "dark" | "light"): Promise<ScrollbarColours> {
