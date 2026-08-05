@@ -55,14 +55,18 @@ mutant_backend() {
 
 mutant_scope() {
   revert
-  # Unwire the relay scope id on the receive side: accept any scope.
-  perl -0pi -e 's/        if item\.sender_id != manual\.peer_osl_user_id \|\| item\.scope_id != scope_id \{\n            return None;\n        \}\n        let Ok\(bundle\) = STANDARD\.decode\(&item\.bundle_b64\) else \{\n            return None;\n        \};\n        if !ipc::wire_v2::is_native_overlay_relay_bundle/        if item.sender_id != manual.peer_osl_user_id {\n            return None;\n        }\n        let Ok(bundle) = STANDARD.decode(&item.bundle_b64) else {\n            return None;\n        };\n        if !ipc::wire_v2::is_native_overlay_relay_bundle/' "$BROKER"
+  # Unwire the relay scope id on the TEXT receive side: accept any scope.
+  # The `continue;` arm is the drain (`drain_peer_inbox_text`); the `return None;`
+  # arm at the other site is the attachment lane and is deliberately untouched.
+  perl -0pi -e 's/if item\.sender_id != manual\.peer_osl_user_id \|\| item\.scope_id != scope_id \{\n            continue;/if item.sender_id != manual.peer_osl_user_id {\n            continue;/' "$BROKER"
+  grep -q 'if item.sender_id != manual.peer_osl_user_id {' "$BROKER" || { echo "MUTANT scope DID NOT APPLY"; return; }
   code=$(run_gate --features core --test osl_chat_lost_response)
   report "M4 scope-id-unwired" "tests/osl_chat_lost_response.rs" "$code" "$([ "$code" != 0 ] && echo 'RED (gate works)' || echo '*** GREEN = DECORATION ***')"
   revert
 }
 
-for name in "${@:-enqueue drain backend scope}"; do
+if [ $# -eq 0 ]; then set -- enqueue drain backend scope; fi
+for name in "$@"; do
   case "$name" in
     enqueue) mutant_enqueue ;;
     drain)   mutant_drain ;;
