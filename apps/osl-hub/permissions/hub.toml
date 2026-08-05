@@ -639,6 +639,21 @@ description = "Request one read-only scan of the exact checked native-hosted Dis
 commands.allow = ["request_hosted_session_scan_command"]
 
 [[permission]]
+identifier = "allow-scan-discord-own-messages-for-deletion"
+description = "Request one read-only native Discord guided-deletion scan and store its content-free row metadata as the only source from which a later exact preview may be built; accepts no account, handle, credential, profile, path, URL, conversation, row, deletion, navigation, or network authority."
+commands.allow = ["scan_discord_own_messages_for_deletion"]
+
+[[permission]]
+identifier = "allow-preview-discord-guided-deletion"
+description = "Build a Pro-gated, content-free, exact Discord guided-deletion preview only from the last native-held reviewed scan; refuses rows not present in that scan and performs no deletion."
+commands.allow = ["preview_discord_guided_deletion"]
+
+[[permission]]
+identifier = "allow-execute-discord-guided-deletion"
+description = "Confirm the last exact Discord guided-deletion preview against the current native-held scope, generation, and attended run authority, then execute only that confirmed plan and return its tri-state verification receipt."
+commands.allow = ["execute_discord_guided_deletion"]
+
+[[permission]]
 identifier = "allow-close-service-host"
 description = "Close the currently hosted service child webview."
 commands.allow = ["close_service_host"]

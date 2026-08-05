@@ -4978,6 +4978,11 @@ fn stable_hash(domain: &str, value: &str) -> String {
         .collect()
 }
 
+/// The deletion-plan scope hash used by Discord guided-deletion scans.
+pub fn guided_deletion_scope_binding_hash(scope_binding: &str) -> String {
+    stable_hash("osl-discord-scope", scope_binding)
+}
+
 /// Characters a Chromium contenteditable puts in its own accessible text without
 /// them being text the operator or OSL ever typed.
 ///
@@ -7516,7 +7521,7 @@ pub fn deletion_scan_from_rows(
         });
     }
     guided_deletion::DeletionScan {
-        scope_binding_hash: stable_hash("osl-discord-scope", scope_binding),
+        scope_binding_hash: guided_deletion_scope_binding_hash(scope_binding),
         generation,
         rows_seen: seen,
         rows_unreadable: unreadable,

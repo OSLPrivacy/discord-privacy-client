@@ -55,6 +55,7 @@ import {
   parseGuidedDeletionScan,
   previewDiscordGuidedDeletion,
   scanDiscordOwnMessagesForDeletion,
+  type GuidedDeletionReceiptCategory,
   type GuidedDeletionState,
 } from "./adapters";
 import {
@@ -700,9 +701,10 @@ describe("optional OSL Privacy adapters", () => {
     stage: "rewalk_proved_the_row_is_gone",
     requestPosted: true,
     rewalkProvedAbsent: true,
+    receiptCategory: "verified_gone" as GuidedDeletionReceiptCategory,
   });
 
-  const deletionReceipt = (rows: ReturnType<typeof verifiedRow>[]) => ({
+  const deletionReceipt = (rows: Array<ReturnType<typeof verifiedRow>>) => ({
     contract: GUIDED_DELETION_CONTRACT,
     planDigest: "a".repeat(64),
     scopeBindingHash: "b".repeat(64),
@@ -762,7 +764,7 @@ describe("optional OSL Privacy adapters", () => {
   });
 
   it("refuses a receipt whose counts disagree with its own rows", () => {
-    const rows = [verifiedRow(1), { ...verifiedRow(2), state: "held" as GuidedDeletionState, stage: "row_menu_was_not_observed", requestPosted: false, rewalkProvedAbsent: false }];
+    const rows = [verifiedRow(1), { ...verifiedRow(2), state: "held" as GuidedDeletionState, stage: "row_menu_was_not_observed", requestPosted: false, rewalkProvedAbsent: false, receiptCategory: "unknown" as GuidedDeletionReceiptCategory }];
     const honest = deletionReceipt(rows);
     expect(parseGuidedDeletionReceipt(honest)?.rowsHeld).toBe(1);
     expect(parseGuidedDeletionReceipt(honest)?.platformRemovalVerified).toBe(false);
@@ -775,6 +777,28 @@ describe("optional OSL Privacy adapters", () => {
     expect(parseGuidedDeletionReceipt(deletionReceipt([verifiedRow(1), verifiedRow(1)]))).toBeNull();
   });
 
+  it("keeps verified, still-present and unknown receipt categories distinct", () => {
+    const stillPresent = {
+      ...verifiedRow(2),
+      state: "failed" as GuidedDeletionState,
+      stage: "row_is_still_in_the_transcript",
+      rewalkProvedAbsent: false,
+      receiptCategory: "still_present" as GuidedDeletionReceiptCategory,
+    };
+    const unknown = {
+      ...verifiedRow(3),
+      state: "held" as GuidedDeletionState,
+      stage: "row_menu_was_not_observed",
+      requestPosted: false,
+      rewalkProvedAbsent: false,
+      receiptCategory: "unknown" as GuidedDeletionReceiptCategory,
+    };
+    const parsed = parseGuidedDeletionReceipt(deletionReceipt([verifiedRow(1), stillPresent, unknown]));
+    expect(parsed?.rows.map((row) => row.receiptCategory)).toEqual(["verified_gone", "still_present", "unknown"]);
+    expect(parseGuidedDeletionReceipt(deletionReceipt([{ ...stillPresent, receiptCategory: "unknown" as GuidedDeletionReceiptCategory }]))).toBeNull();
+    expect(parseGuidedDeletionReceipt(deletionReceipt([{ ...unknown, receiptCategory: "still_present" as GuidedDeletionReceiptCategory }]))).toBeNull();
+  });
+
   it("refuses a deletion receipt that claims either of the other two guarantees", () => {
     const receipt = deletionReceipt([verifiedRow(1)]);
     expect(parseGuidedDeletionReceipt({ ...receipt, oslContentExpiryApplied: true })).toBeNull();
@@ -785,7 +809,7 @@ describe("optional OSL Privacy adapters", () => {
 
   it("never displays a sent request as deleted", () => {
     const label = (state: GuidedDeletionState, requestPosted: boolean) =>
-      guidedDeletionRowLabel({ ...verifiedRow(1), state, requestPosted, rewalkProvedAbsent: state === "verified" });
+      guidedDeletionRowLabel({ ...verifiedRow(1), state, requestPosted, rewalkProvedAbsent: state === "verified", receiptCategory: state === "verified" ? "verified_gone" : "unknown" });
     for (const state of ["scheduled", "running", "failed", "unsupported", "held"] as GuidedDeletionState[]) {
       for (const requestPosted of [false, true]) {
         expect(label(state, requestPosted)).not.toContain("Deleted");

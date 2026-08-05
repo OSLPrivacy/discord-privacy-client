@@ -1809,6 +1809,31 @@ mod tests {
     }
 
     #[test]
+    fn mutant_tri_state_receipt_boolean_collapse_goes_red() {
+        let categories = [
+            receipt_category_for_removal_verdict(RemovalVerdict::Proven),
+            receipt_category_for_removal_verdict(RemovalVerdict::StillPresent),
+            receipt_category_for_removal_verdict(RemovalVerdict::Unreadable(
+                "verify_surface_identity_changed",
+            )),
+        ];
+        assert_eq!(
+            categories.map(DeletionReceiptCategory::label),
+            ["verified_gone", "still_present", "unknown"],
+            "requested, confirmed present, and confirmed gone must not collapse to a boolean"
+        );
+        assert_eq!(
+            categories
+                .into_iter()
+                .map(DeletionReceiptCategory::label)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3,
+            "the receipt category domain must remain tri-state"
+        );
+    }
+
+    #[test]
     fn the_receipt_carries_lengths_and_counts_only() {
         let plan = confirmed(vec![owned_row(1)]);
         let mut surface = FakeSurface::happy();
