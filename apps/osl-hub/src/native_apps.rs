@@ -3227,6 +3227,179 @@ pub(crate) mod tests {
         }
     }
 
+    /// A v1 receipt is `Stale`, not `Invalid` and never `Earned`: the run was
+    /// sound, the binding rule changed under it. Asserted exactly in all three
+    /// directions so the superseded schema cannot become a quiet pass.
+    #[test]
+    fn a_receipt_earned_under_the_superseded_v1_binding_is_stale() {
+        use carry_receipt::{verify_receipt_bytes, ReceiptVerdict};
+
+        let mut v1 = carry_receipt::sample_sound_receipt();
+        v1.schema = "osl-live-carry-receipt-v1".to_owned();
+        match verify_receipt_bytes(NativeAppId::Telegram, &v1.to_json()) {
+            ReceiptVerdict::Stale(why) => assert!(
+                why.contains("superseded") && why.contains("seam-contract binding"),
+                "{why}"
+            ),
+            other => panic!("a v1 receipt must be stale, not {other:?}"),
+        }
+    }
+
+    /// **The two directions, on the real sources.**
+    ///
+    /// The fixtures in `carry_seam_contract` prove the extraction rules; this
+    /// proves the property that matters on `native_a11y.rs` and
+    /// `native_telegram_adapter.rs` as they actually stand, so an extractor that
+    /// happens to work on a 50-line fixture and not on a 4,500-line substrate is
+    /// a failure here.
+    ///
+    /// Each mutant is required to change the source it is applied to, so a
+    /// `replace` that stopped matching is a failure and not a silent pass.
+    #[test]
+    fn the_real_substrate_survives_a_refactor_and_not_a_seam_change() {
+        use crate::carry_seam_contract::seam_contract_from_sources;
+
+        let adapter_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/native_telegram_adapter.rs");
+        let substrate_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(carry_receipt::SUBSTRATE_SOURCE);
+        let adapter = std::fs::read_to_string(adapter_path).expect("the adapter is readable");
+        let substrate = std::fs::read_to_string(substrate_path).expect("the substrate is readable");
+
+        let base = seam_contract_from_sources(&adapter, &substrate)
+            .expect("the real Telegram seam contract computes");
+
+        // (1) BEHAVIOUR-PRESERVING. A comment, a renamed local, a reflowed
+        // signature. `uia2_settle_plan`'s body is the substrate's own poll ladder
+        // walk -- exactly the kind of code the placement-primitive work rewrites.
+        let refactored = substrate
+            .replace(
+                "    let mut plan = Vec::new();\n    let mut spent = 0u64;\n    let mut rung = 0usize;",
+                "    // A comment added by a refactor that changes nothing observable.\n    \
+                 let mut waits = Vec::new();\n    let mut elapsed = 0u64;\n    let mut step_index = 0usize;",
+            )
+            .replace("while spent < budget_ms {", "while elapsed < budget_ms {")
+            .replace(
+                "UIA2_SETTLE_LADDER_MS[rung.min(UIA2_SETTLE_LADDER_MS.len() - 1)]",
+                "UIA2_SETTLE_LADDER_MS[step_index.min(UIA2_SETTLE_LADDER_MS.len() - 1)]",
+            )
+            .replace("let step = step.min(budget_ms - spent);", "let step = step.min(budget_ms - elapsed);")
+            .replace("        spent += step;\n        plan.push(step);\n        rung += 1;", "        elapsed += step;\n        waits.push(step);\n        step_index += 1;")
+            .replace("    plan\n}", "    waits\n}")
+            .replace(
+                "pub fn uia2_settle_plan(budget_ms: u64) -> Vec<u64> {",
+                "pub fn uia2_settle_plan(\n    budget_ms: u64,\n) -> Vec<u64> {",
+            );
+        assert_ne!(
+            refactored, substrate,
+            "the refactor mutant matched nothing; it is measuring nothing"
+        );
+        let after_refactor = seam_contract_from_sources(&adapter, &refactored)
+            .expect("the contract still computes after a refactor");
+        assert_eq!(
+            base.sha256, after_refactor.sha256,
+            "a behaviour-preserving refactor of {} invalidated the seam contract. At 12-14 \
+             published providers that is 12-14 live signed-in Windows runs for a renamed local.",
+            carry_receipt::SUBSTRATE_SOURCE
+        );
+
+        // (2) THE SEAM ITSELF. Each of these is something a provider can observe.
+        for (label, mutated) in [
+            (
+                "a parameter of Uia2Syscalls::set_value renamed",
+                substrate.replace(
+                    "        element: &Uia2Editable,\n        value: &str,\n        deadline: Uia2Deadline,\n    ) -> Result<bool, Uia2CallTimeout>;",
+                    "        element: &Uia2Editable,\n        carrier: &str,\n        deadline: Uia2Deadline,\n    ) -> Result<bool, Uia2CallTimeout>;",
+                ),
+            ),
+            (
+                "the return type of Uia2Syscalls::value_of changed",
+                substrate.replace(
+                    "    ) -> Result<Option<String>, Uia2CallTimeout>;",
+                    "    ) -> Result<Option<Box<str>>, Uia2CallTimeout>;",
+                ),
+            ),
+            (
+                "a field of Uia2Editable removed",
+                substrate.replace("    pub keyboard_focusable: bool,\n", ""),
+            ),
+        ] {
+            assert_ne!(
+                mutated, substrate,
+                "{label}: the mutant matched nothing, so it proves nothing"
+            );
+            let after = seam_contract_from_sources(&adapter, &mutated)
+                .expect("the contract computes after a seam change");
+            assert_ne!(
+                base.sha256, after.sha256,
+                "{label} did not move the seam contract. A receipt that never invalidates is worse \
+                 than one that over-invalidates."
+            );
+        }
+    }
+
+    /// **The blind spot, measured rather than claimed.**
+    ///
+    /// The seam binding sees declarations. A substrate edit that changes only the
+    /// *inside* of a function this adapter calls is invisible to it -- and the
+    /// settle ladder is the sharpest example available: `UIA2_SETTLE_LADDER_MS` is
+    /// walked by `uia2_settle_plan` inside `acquire_uia2_window`, which Telegram
+    /// calls, but Telegram never names the constant, so it is not in Telegram's
+    /// contract.
+    ///
+    /// This test exists so that boundary is a **recorded measurement with a
+    /// mutant behind it**, not a sentence in a doc comment. It asserts both
+    /// halves: the contract does not move, **and** the whole-file hash does, which
+    /// is what makes the receipt read `EarnedWithSubstrateDrift` and puts the
+    /// change in front of an operator instead of dropping it.
+    ///
+    /// If a future lane wants this class caught by the gate rather than reported
+    /// by it, the honest move is a behavioural pin on the ladder in
+    /// `native_a11y`'s own tests -- not widening the contract to the transitive
+    /// closure of every body, which would make extracting a helper function
+    /// invalidate 12-14 live proofs and reintroduce the trap this replaced.
+    #[test]
+    fn what_the_seam_binding_cannot_see_is_reported_as_drift_and_named_here() {
+        use crate::carry_seam_contract::{seam_contract_from_sources, sha256_hex};
+
+        let adapter = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/native_telegram_adapter.rs"),
+        )
+        .expect("the adapter is readable");
+        let substrate = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(carry_receipt::SUBSTRATE_SOURCE),
+        )
+        .expect("the substrate is readable");
+        let base = seam_contract_from_sources(&adapter, &substrate).expect("the contract computes");
+
+        for (label, mutated) in [(
+            "the settle ladder walked inside acquire_uia2_window, which Telegram never names",
+            substrate.replace(
+                "&[150, 300, 500, 1_000, 2_000, 5_000, 10_000]",
+                "&[150, 300, 500, 1_000, 2_000, 5_000, 20_000]",
+            ),
+        )] {
+            assert_ne!(
+                mutated, substrate,
+                "{label}: the mutant matched nothing, so it measures nothing"
+            );
+            let after =
+                seam_contract_from_sources(&adapter, &mutated).expect("the contract computes");
+            assert_eq!(
+                base.sha256, after.sha256,
+                "{label} DOES move the seam contract; this blind spot has closed and this test \
+                 should be promoted into the directional one above"
+            );
+            assert_ne!(
+                sha256_hex(substrate.as_bytes()),
+                sha256_hex(mutated.as_bytes()),
+                "{label} must at least move the whole-file hash, or the drift signal would not \
+                 report it either and the change really would be invisible"
+            );
+        }
+    }
+
     /// **The seam contract is not vacuous.** Computed against the real tree, for
     /// the one provider that has earned a live receipt.
     ///
@@ -3299,7 +3472,9 @@ pub(crate) mod tests {
                 FleetAction::MustRerun | FleetAction::RerunBeforePublishing => {
                     matches!(verdict, ReceiptVerdict::Stale(_))
                 }
-                FleetAction::ContractUnavailable => matches!(verdict, ReceiptVerdict::Invalid(_)),
+                FleetAction::ContractUnavailable | FleetAction::Unusable => {
+                    matches!(verdict, ReceiptVerdict::Invalid(_))
+                }
                 FleetAction::MustEarn
                 | FleetAction::DebtRecorded
                 | FleetAction::NoReceiptNotPublished => {
@@ -3330,6 +3505,10 @@ pub(crate) mod tests {
         RerunBeforePublishing,
         /// A receipt exists and its contract cannot be computed at all.
         ContractUnavailable,
+        /// A receipt exists and was never sound -- wrong schema, unparseable, or
+        /// otherwise rejected outright. Fatal wherever it is found, including at
+        /// `ComingSoon`.
+        Unusable,
         /// Published with no receipt and no recorded debt.
         MustEarn,
         /// Published with no receipt, against a recorded defect.
@@ -3382,6 +3561,30 @@ pub(crate) mod tests {
                         let recorded_seam = value["seam_contract_sha256"].as_str().unwrap_or("");
                         let recorded_substrate =
                             value["substrate_source_sha256"].as_str().unwrap_or("");
+                        if value["schema"].as_str() != Some(carry_receipt::RECEIPT_SCHEMA) {
+                            let superseded =
+                                value["schema"].as_str() == Some("osl-live-carry-receipt-v1");
+                            return FleetRow {
+                                id,
+                                published,
+                                support: manifest.adapter_support,
+                                seam,
+                                action: if superseded {
+                                    if published {
+                                        FleetAction::MustRerun
+                                    } else {
+                                        FleetAction::RerunBeforePublishing
+                                    }
+                                } else {
+                                    FleetAction::Unusable
+                                },
+                                detail: format!(
+                                    "schema is {:?}, expected {:?}",
+                                    value["schema"].as_str().unwrap_or("<missing>"),
+                                    carry_receipt::RECEIPT_SCHEMA
+                                ),
+                            };
+                        }
                         match carry_receipt::seam_contract(id) {
                             Err(why) => (FleetAction::ContractUnavailable, why),
                             Ok(contract) if recorded_seam != contract.sha256 => (
@@ -3929,6 +4132,21 @@ pub(crate) mod tests {
             };
             let string = |key: &str| value[key].as_str().unwrap_or_default().to_owned();
 
+            // A receipt written under the superseded v1 binding was *sound when it
+            // was written*; what changed is the rule, not the run. That is the
+            // definition of `Stale`, so it is reported as stale -- fatal for a
+            // published provider, tolerated at `ComingSoon` -- rather than as
+            // never-sound. The artifact of a real live run therefore stays in the
+            // tree as evidence, and still cannot publish anything.
+            if string("schema") == "osl-live-carry-receipt-v1" {
+                return ReceiptVerdict::Stale(format!(
+                    "this receipt was earned under {:?}, which bound the whole of \
+                     {SUBSTRATE_SOURCE} by content hash. That binding is superseded by \
+                     {RECEIPT_SCHEMA}'s seam-contract binding, so the run must be repeated before \
+                     the label can move. Re-run list: {FLEET_RERUN_COMMAND}",
+                    "osl-live-carry-receipt-v1"
+                ));
+            }
             if string("schema") != RECEIPT_SCHEMA {
                 bad!(
                     "schema is {:?}, expected {RECEIPT_SCHEMA:?}",
@@ -4096,6 +4314,7 @@ pub(crate) mod tests {
         pub(crate) fn rejection_cases() -> Vec<Mutation> {
             vec![
                 (|r| r.schema = "other".into(), "schema"),
+                (|r| r.schema = "osl-live-carry-receipt-v0".into(), "schema"),
                 (|r| r.provider = "whatsapp".into(), "provider"),
                 (
                     |r| r.adapter_source = "src/native_signal_adapter.rs".into(),
