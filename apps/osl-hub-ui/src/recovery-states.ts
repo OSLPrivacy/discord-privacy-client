@@ -27,7 +27,7 @@ export const RECOVERY_STATE_ROWS: readonly RecoveryStateRow[] = [
   {
     id: "password-recovery-capable",
     state: "Forgotten password with a recovery-capable marker and password recovery phrase",
-    recoverable: "A new main password; encrypted local state is re-keyed before it is opened.",
+    recoverable: "A new main password; the local store is re-keyed before it is opened.",
     lost: "Nothing caused by the password reset itself.",
   },
   {
@@ -58,7 +58,7 @@ export const RECOVERY_STATE_ROWS: readonly RecoveryStateRow[] = [
     id: "burn-credential",
     state: "Burn credential used",
     recoverable: "The identity only if its identity phrase was saved, and then only as keys.",
-    lost: "OSL's local account core, local history and protected state; it does not erase recipients' already opened messages or the user's original third-party account data.",
+    lost: "OSL's local account core, local history and local device state; it does not erase recipients' already opened messages or the user's original third-party account data.",
   },
   {
     id: "wrong-password-threshold",

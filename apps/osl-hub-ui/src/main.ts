@@ -3175,7 +3175,7 @@ async function runLegacyPhraseWrap(currentPassword: string): Promise<void> {
 }
 
 async function runRecoveryFreshStart(): Promise<void> {
-  const accepted = window.confirm("Start over? This permanently removes this device's OSL account, including your burn list and all encrypted local state. It cannot be undone.");
+  const accepted = window.confirm("Start over? This permanently removes this device's OSL account, including your burn list and everything OSL has stored on this device. It cannot be undone.");
   if (!accepted) return;
   try {
     await recoveryMigrationDependencies.freshStart();

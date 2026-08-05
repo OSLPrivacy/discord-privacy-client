@@ -16,15 +16,11 @@
       ],
       "extract": "app-claim-violations",
       "runsIn": ".github/workflows/ts-test.yml job claim-gates, and graded here by the quarantine-ratchet job of integration-gate.yml",
-      "why": "6 in-app copy claims outside docs/design/osl-public-claim-allowlist.md. This step used to be the FIRST step of every ts-test lane, so while it is red every other lane of that workflow aborted before it started -- which is exactly how the D-162 build gate was rendered inert. Hoisted into its own job by D-172 so it can be red without masking anything. The identity is file + which banned phrase; the line number and the quoted context both churn on unrelated edits and neither says anything the pair does not.",
-      "owner": "unassigned - surfaced by D-172, needs a claims lane",
+      "why": "LOWERED 6 -> 1 on fix/public-claim-gates. This step used to be the FIRST step of every ts-test lane, so while it is red every other lane of that workflow aborted before it started -- which is exactly how the D-162 build gate was rendered inert. Hoisted into its own job by D-172 so it can be red without masking anything. The identity is file + which banned phrase; the line number and the quoted context both churn on unrelated edits and neither says anything the pair does not. FIVE FINDINGS WERE FIXED IN THE COPY, NOT IN THE ALLOWLIST: the four at-rest ids were product-wide at-rest claims (\"encrypted local state\", \"protected state\") that A3 does not license -- A3 permits only \"Decrypted messages cached on your device are encrypted at rest\", and docs/design/osl-internal-build-checklist.md:248-260 records product-wide at-rest (A8) as explicitly unearned, \"test-proven-only, not product-wide at-rest proof\", with persistence outside crates/store unaudited. The README id was a forward-secrecy/post-quantum sentence that was not the A16 permitted wording; the README now carries A16 verbatim. Nothing was added to the allowlist. The ONE id left is a FALSE POSITIVE with a real gate defect behind it -- see \"whyRemaining\".",
+      "whyRemaining": "OPEN FOR THE OWNER, NOT A COPY DEFECT. The flagged text is a JSDoc comment (osl-chats-view.ts:270-275), and extractTypeScriptStrings deliberately skips comments. It is scanned only because the tokenizer has no regex-literal case: the regex /[&<>\"']/gu in escapeHtml (osl-chats-view.ts:219) is read as a double-quoted string, and every literal after it in the file is mis-parsed. 13 files under apps/osl-hub-ui/src contain a regex literal holding a quote character, so the same desync applies to each; it can hide real strings as easily as it can invent this one. The fix is in scripts/check-app-claims.mjs (recognise regex literals), which also pins a new claim-gate source SHA-256 in the allowlist header -- both are owner calls, so this lane changed neither. Do not close this by editing the comment: that hides the coverage hole and leaves the other 12 files desynced.",
+      "owner": "fix/public-claim-gates - 5 of 6 fixed in copy; the remaining id needs an owner ruling on the extractor",
       "ids": [
-        "apps/osl-hub-ui/src/osl-chats-view.ts: \"End-to-end encrypted\"",
-        "apps/osl-hub-ui/src/recovery-migration.ts: \"at-rest/local-protection overclaim\"",
-        "apps/osl-hub-ui/src/recovery-migration.ts: \"at-rest/local-protection overclaim\"  #2",
-        "apps/osl-hub-ui/src/recovery-states.ts: \"at-rest/local-protection overclaim\"",
-        "apps/osl-hub-ui/src/recovery-states.ts: \"at-rest/local-protection overclaim\"  #2",
-        "README.md: \"ratchet claim not verbatim in the allowlist\""
+        "apps/osl-hub-ui/src/osl-chats-view.ts: \"End-to-end encrypted\""
       ]
     },
     {
