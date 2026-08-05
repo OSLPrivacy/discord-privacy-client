@@ -531,6 +531,7 @@ describe("D2 release source set derives from the deploy config", () => {
     const roots = readReleaseRoots(PROJECT_ROOT);
     expect(roots.main).toBe("src/index.ts");
     expect(roots.roots).toEqual(["migrations", "src"]);
+    expect(roots.migrationDirs).toEqual(["migrations"]);
 
     const scratch = mkdtempSync(join(tmpdir(), "d2-roots-"));
     mkdirSync(join(scratch, "worker"));
@@ -542,6 +543,7 @@ describe("D2 release source set derives from the deploy config", () => {
     expect(readReleaseRoots(scratch)).toEqual({
       main: "worker/entry.ts",
       roots: ["db", "worker"],
+      migrationDirs: ["db"],
     });
     rmSync(scratch, { recursive: true, force: true });
   });

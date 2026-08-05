@@ -165,13 +165,65 @@ export const D2_PROBE_FORMAT =
  * `scripts/d2-test-closure.ts`, invoked from `npm test` by way of
  * `package.json`, which IS pinned here. See the long note on
  * `D2PropertyTestSuite` for the full argument and its cost.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * MOVED AGAIN 2026-08-05 (D-280), from
+ * 4c3d3e969420093a2b46022991793a30d183fef81c79e68cf73946282d43ac6c, on
+ * `fix/d280-migration-0016-gap`. A SMALL, ONE-FILE MOVE, and the ledger says so
+ * rather than asking anyone to take it on trust.
+ *
+ * THE SET DID NOT CHANGE. 50 files before, 50 after, 0 added and 0 removed —
+ * this branch adds NO file to `migrations/` and none to `src/`. That matters
+ * more than usual here: D-280 is a gap in the migration numbering, and the one
+ * fix that would have been easy — a placeholder `0016` — is precisely the one
+ * that must not be made, because it is a migration name a deployed store has
+ * NOT applied. Adding it would manufacture the drift the defect is about.
+ *
+ * TWO-STAGE LEDGER, both stages recomputed:
+ *
+ *   L1  4c3d3e96…  the derived set over HEAD content, i.e. the whole branch
+ *                  reverted. REPRODUCES THE PREVIOUS PIN BYTE-FOR-BYTE, which
+ *                  is the anchor: no other pinned file's content had drifted.
+ *   L2  fc5659bd…  the same 50 names over this branch's content.
+ *
+ *   Delta L1→L2 is content in EXACTLY ONE FILE — machine-checked by comparing
+ *   every one of the 50 against `git show HEAD:` and finding one mismatch:
+ *
+ *     scripts/d2-release-source-manifest.ts   9,151 → 19,607 bytes, +10,456.
+ *       +219 lines / 10,533 bytes, −2 lines / 77 bytes; 10,533 − 77 = 10,456,
+ *       which is the file-size delta exactly, so no byte is unaccounted for.
+ *       Of the added bytes: 4,232 are the doc comment arguing the design,
+ *       1,319 are the single recorded skip and its evidence, 4,972 are the
+ *       executable rule (`MIGRATION_FILENAME`, `pad`,
+ *       `assertMigrationSequenceContiguous`, and its call from
+ *       `deriveReleaseSourceFiles`), 10 are blank lines. The 2 removed lines
+ *       are `return { main, roots };` and
+ *       `const { roots } = readReleaseRoots(projectRoot);` — both replaced in
+ *       place to carry `migrationDirs` through, nothing deleted outright.
+ *
+ * WHY THE RULE LIVES IN A PINNED FILE AT ALL, since that is what forced this
+ * move: the contiguity check could have gone in `scripts/d2-contract-gate.ts`,
+ * which is unpinned, and this digest would not have moved. That was rejected.
+ * An unpinned gate is one deletable file away from silence, and D-280 exists
+ * because nothing was watching the sequence. Putting the rule inside
+ * `deriveReleaseSourceFiles` means a gapped sequence cannot produce a manifest
+ * at all — so the digest, the contract gate and every test that derives the set
+ * all refuse — and removing the rule or its call moves this digest and turns
+ * the contract red. The re-anchor is the price of the rule being unremovable.
+ *
+ * The recorded skip for `migrations/0016` is a deliberate, argued exception and
+ * NOT an allowlist: it fails if the number ever appears on disk, fails if it
+ * falls outside the sequence actually present, and fails without a substantive
+ * reason. See `MIGRATION_SEQUENCE_SKIPS` for the git evidence behind it and for
+ * why renumbering 0017 was refused — what a live store applied cannot be
+ * determined from this repository, only from that database's `d1_migrations`.
  */
 export const D2_RELEASE_COMMIT =
   "5a2bad492dec2d90094d2c4a797124366d7dea32";
 export const D2_RELEASE_TREE =
   "18149f3dbb14bae687cea33a56f624171958c8cd";
 export const D2_RELEASE_SOURCE_SHA256 =
-  "4c3d3e969420093a2b46022991793a30d183fef81c79e68cf73946282d43ac6c";
+  "fc5659bd985dce5884338509e08925a82d06ac7e6ca1c3315df4d686a5b60204";
 export const D2_MIGRATION_0010_SHA256 =
   "a545f989172c32c8f5f5c78754b4eda2f045778643cbb86c9eb81f22be2f6636";
 export const D2_DATABASE_ID = "be3d31f1-f6b4-4d6e-8ede-74514950b9e2";

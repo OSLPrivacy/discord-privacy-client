@@ -64,15 +64,91 @@ export const RELEASE_CONFIG_FILES = [
  */
 export const RELEASE_SOURCE_FILE_FLOOR = 45;
 
+/**
+ * The name shape wrangler applies. `wrangler d1 migrations apply` runs EVERY
+ * file in `migrations_dir` in name order and records the NAME of each one it
+ * ran in the database's own `d1_migrations` table. Both halves matter here: a
+ * file whose name does not carry a number still gets applied, and a number
+ * that is missing from the tree may still be sitting in a store's applied list.
+ */
+const MIGRATION_FILENAME = /^(\d{4})_[a-z0-9]+(?:_[a-z0-9]+)*\.sql$/;
+
+/**
+ * A recorded, deliberate hole in the sequence.
+ *
+ * D-280 asks whether a skip should be expressible at all, and the answer is
+ * yes — but only as the most expensive edit in this project, and never as
+ * silence. The reasoning, because the opposite choice is the obvious one:
+ *
+ *   * **The alternatives for a gap that already exists are worse.** Renumbering
+ *     the migrations above it rewrites names a deployed store may already have
+ *     recorded as applied, and no repository can tell you whether it did. A
+ *     placeholder no-op migration is worse still — it is a name the store
+ *     certainly has NOT applied, so it manufactures exactly the drift this
+ *     check exists to detect. A gate whose only remedy is an unsafe act is a
+ *     gate that gets deleted, and a deleted gate catches nothing.
+ *   * **The hatch is not cheap.** This file is inside
+ *     `D2_RELEASE_SOURCE_SHA256`, so adding an entry moves the release digest
+ *     and must be accounted for byte by byte in the re-anchor ledger. Recording
+ *     a skip therefore costs strictly more than closing the gap properly.
+ *   * **It cannot rot into an allowlist.** A skip for a number that EXISTS on
+ *     disk fails, a skip outside the observed range fails, and a skip without a
+ *     substantive reason fails. Entries cannot accumulate as decoration, cannot
+ *     pre-authorise a future gap, and cannot survive the gap being closed.
+ */
+export interface MigrationSequenceSkip {
+  /** Migrations directory, relative to the project root, POSIX separators. */
+  readonly dir: string;
+  /** The number that is deliberately absent. */
+  readonly number: number;
+  /** Why it is absent, and what was established. The gap records nothing. */
+  readonly reason: string;
+}
+
+/**
+ * A reason has to carry the finding, not a shrug. `""`, `"n/a"` and `"skipped"`
+ * are the failure D-280 is about, written down.
+ */
+export const MIGRATION_SKIP_REASON_MIN_CHARS = 80;
+
+export const MIGRATION_SEQUENCE_SKIPS: readonly MigrationSequenceSkip[] = [
+  {
+    dir: "migrations",
+    number: 16,
+    reason:
+      "D-280. 0016 WAS written and is NOT a numbering slip: commit d0f47c6c "
+      + '"T2-40 reserve single-fetch blobs before serving", 2026-08-02, added '
+      + "migrations/0016_blob_fetch_reservations.sql on the LOCAL branch ch3. "
+      + "ch3 was never pushed to any remote and d0f47c6c is an ancestor of "
+      + "neither this branch nor origin/main. Its child commit T2-41 numbered "
+      + "itself 0017 on top of it and was cherry-picked into the integration "
+      + "line ALONE (cba9fc41f, parent 230ae1bb, committed 90 minutes later), "
+      + "so the number was consumed by a commit that never arrived. The 0016 "
+      + "columns (single_fetch, reserved_until on blob_capability_index) are "
+      + "named by no file in this tree and its endpoint blob-reserve.ts is "
+      + "absent too, so the tree is internally consistent. WHAT A DEPLOYED "
+      + "STORE APPLIED IS NOT DETERMINABLE FROM THIS REPOSITORY: it needs that "
+      + "database's d1_migrations table. The number therefore stays burned. "
+      + "Renumbering 0017 would rewrite a name a store may already hold as "
+      + "applied; a placeholder 0016 would be a name it certainly does not.",
+  },
+];
+
 export interface ReleaseRoots {
   /** Worker entry point, relative to the project root, POSIX separators. */
   main: string;
   /** Directories walked whole, relative to the project root. */
   roots: string[];
+  /** The subset of `roots` that wrangler applies to D1, in declared order. */
+  migrationDirs: string[];
 }
 
 function fail(message: string): never {
   throw new Error(`D2 release source manifest: ${message}`);
+}
+
+function pad(value: number): string {
+  return String(value).padStart(4, "0");
 }
 
 function tomlStrings(toml: string, key: string): string[] {
@@ -105,7 +181,142 @@ export function readReleaseRoots(projectRoot: string): ReleaseRoots {
       fail(`release root ${root} is not a directory`);
     }
   }
-  return { main, roots };
+  return { main, roots, migrationDirs };
+}
+
+/**
+ * D-280. Refuse a migrations directory whose numbering is not contiguous.
+ *
+ * Migrations are applied IN ORDER and the store records the names it ran, so a
+ * gap is never cosmetic. It means one of exactly two things, and from inside a
+ * repository you cannot tell which:
+ *
+ *   * a migration was written and later dropped WITHOUT renumbering, in which
+ *     case a store that already ran it holds columns this tree does not
+ *     describe — schema drift with no record of itself; or
+ *   * the number was simply skipped, in which case nothing anywhere says so and
+ *     the next person to notice re-investigates from scratch.
+ *
+ * Both happened here at once and neither was caught, because nothing asserted
+ * contiguity: 0016 was written on a branch that never merged, and 0017, which
+ * had numbered itself on top of it, was cherry-picked in alone. It surfaced
+ * three days later as a side observation by a lane deriving a release-pin file
+ * list for an unrelated reason. That is the failure mode this closes — a gap
+ * now fails at the moment it is introduced, naming the number.
+ *
+ * NOT covered here, deliberately: an EMPTY migrations directory has no numbers
+ * and therefore no gaps. Losing the whole directory is what
+ * `RELEASE_SOURCE_FILE_FLOOR` is for, and the two are kept separate so neither
+ * can be satisfied by the other's evidence.
+ */
+export function assertMigrationSequenceContiguous(
+  projectRoot: string,
+  migrationDirs: readonly string[],
+  // Defaulted, not injected at the call site: production always gets the pinned
+  // table, and a test can still starve the skip rules with a table of its own
+  // to prove they refuse rather than merely exist.
+  recordedSkips: readonly MigrationSequenceSkip[] = MIGRATION_SEQUENCE_SKIPS,
+): void {
+  const seenSkips = new Set<string>();
+  for (const skip of recordedSkips) {
+    const key = `${skip.dir}/${pad(skip.number)}`;
+    if (seenSkips.has(key)) fail(`${key} is recorded as skipped twice`);
+    seenSkips.add(key);
+    if (!Number.isInteger(skip.number) || skip.number < 1) {
+      fail(`recorded skip ${key} is not a migration number`);
+    }
+    if (skip.reason.trim().length < MIGRATION_SKIP_REASON_MIN_CHARS) {
+      fail(
+        `recorded skip ${key} gives no reason worth reading `
+        + `(${skip.reason.trim().length} characters, minimum `
+        + `${MIGRATION_SKIP_REASON_MIN_CHARS}). A gap that is admitted without `
+        + "the finding behind it is the defect, written down",
+      );
+    }
+  }
+
+  for (const dir of migrationDirs) {
+    const byNumber = new Map<number, string>();
+    const names = readdirSync(join(projectRoot, dir), { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort();
+    for (const name of names) {
+      const match = MIGRATION_FILENAME.exec(name);
+      if (match === null) {
+        fail(
+          `${dir}/${name} is not a migration name. wrangler applies EVERY file `
+          + "in `migrations_dir` in name order, so anything outside "
+          + "NNNN_lower_snake_case.sql either ships as an unnumbered migration "
+          + "or hides a gap from this check",
+        );
+      }
+      const number = Number(match[1]);
+      const existing = byNumber.get(number);
+      if (existing !== undefined) {
+        fail(
+          `${dir} holds two migrations numbered ${match[1]}: ${existing} and `
+          + `${name}. Which one a store recorded as applied is then decided by `
+          + "name order rather than by intent, and applying both to a store "
+          + "that ran only one is not the same operation twice",
+        );
+      }
+      byNumber.set(number, name);
+    }
+    if (byNumber.size === 0) continue;
+
+    const numbers = [...byNumber.keys()].sort((a, b) => a - b);
+    const first = numbers[0]!;
+    const last = numbers[numbers.length - 1]!;
+    if (first !== 1) {
+      fail(
+        `${dir} starts at ${pad(first)}, not 0001. The first migration builds `
+        + "the schema every later one alters; a sequence that starts above 1 "
+        + "cannot be applied to an empty database",
+      );
+    }
+
+    const skips = new Map(
+      recordedSkips
+        .filter((skip) => skip.dir === dir)
+        .map((skip) => [skip.number, skip] as const),
+    );
+    for (const [number] of skips) {
+      const present = byNumber.get(number);
+      if (present !== undefined) {
+        fail(
+          `${dir}/${present} exists, but ${pad(number)} is still recorded as a `
+          + "deliberate skip. A skip that outlives its gap is an exception "
+          + "nobody is reading — delete the entry",
+        );
+      }
+      if (number < first || number > last) {
+        fail(
+          `${dir} records a skip for ${pad(number)}, which is outside the `
+          + `sequence it holds (${pad(first)}-${pad(last)}). A skip may record `
+          + "a gap that exists; it may not pre-authorise one",
+        );
+      }
+    }
+
+    for (let number = first; number <= last; number += 1) {
+      if (byNumber.has(number) || skips.has(number)) continue;
+      const below = byNumber.get(Math.max(...numbers.filter((n) => n < number)));
+      const above = byNumber.get(Math.min(...numbers.filter((n) => n > number)));
+      fail(
+        `${dir} is not contiguous: ${pad(number)} is missing between ${below} `
+        + `and ${above}. Migrations are applied in order and a store records `
+        + "the NAMES it applied, so this is either a migration that was "
+        + "written and dropped without renumbering — which a deployed store "
+        + "may already have run, leaving a schema this tree does not describe "
+        + "— or a number skipped with nothing recording it. Do NOT close it "
+        + "with a placeholder migration: that is a name no store has applied, "
+        + "and it manufactures the drift this check exists to catch. Establish "
+        + "from history which happened, then either restore the file or record "
+        + "it in MIGRATION_SEQUENCE_SKIPS with the evidence",
+      );
+    }
+  }
 }
 
 function walk(projectRoot: string, relative: string, out: string[]): string[] {
@@ -126,7 +337,7 @@ function walk(projectRoot: string, relative: string, out: string[]): string[] {
  * further away from being read.
  */
 export function deriveReleaseSourceFiles(projectRoot: string): string[] {
-  const { roots } = readReleaseRoots(projectRoot);
+  const { roots, migrationDirs } = readReleaseRoots(projectRoot);
   const walked: string[] = [];
   for (const root of roots) walk(projectRoot, root, walked);
   const files = [...new Set([...walked, ...RELEASE_CONFIG_FILES])].sort();
@@ -136,6 +347,12 @@ export function deriveReleaseSourceFiles(projectRoot: string): string[] {
       + `${RELEASE_SOURCE_FILE_FLOOR}; the walk found less source than exists`,
     );
   }
+  // D-280. Deliberately here rather than at a call site: the release digest
+  // cannot be computed over a gapped sequence at all, so every consumer of the
+  // derived set enforces it and there is no single call to delete. Both the
+  // rule and this invocation live in a file that is inside the digest, so
+  // removing either moves D2_RELEASE_SOURCE_SHA256 and the contract goes red.
+  assertMigrationSequenceContiguous(projectRoot, migrationDirs);
   return files;
 }
 
