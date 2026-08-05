@@ -72,12 +72,10 @@ export async function saveFirstRunOnboardingPreferences(selection: {
     throw new Error("First-run protection preset was refused");
   }
 
-  let inherited = false;
   let sendMode: FirstRunOrdinarySendMode;
   let acknowledged = false;
 
   if (selection.sendBehavior === "inherited") {
-    inherited = true;
     sendMode = firstRunPresetSendDefaults[selection.protectionPreset];
   } else {
     sendMode = selection.sendBehavior.mode;

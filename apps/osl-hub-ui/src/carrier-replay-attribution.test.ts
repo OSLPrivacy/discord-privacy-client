@@ -261,7 +261,7 @@ function detectAttributionGate(
         "window_generation",
       ].join(","),
     nativeProducerUsesProviderOwnedIdentity:
-      selfProvider.includes("msaa_client_from_window(target.window)")
+      selfProvider.includes("msaa_client_from_target(target)")
       && selfProvider.includes("msaa_object_belongs_to_target(&root, target, process_is_trusted)")
       && adapterSource.includes(
         "fn discord_identity_from_native_avatar_value(value: &str) -> Option<&str>",
