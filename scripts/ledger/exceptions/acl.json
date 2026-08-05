@@ -1,18 +1,12 @@
 {
   "note": "ACL ledger dead-issuer ratchet. Adding an entry here is an admission that the issuer does not ship in a production entry.  2026-08-04: three registered-but-granted-nowhere commands added after D-159 gave ledger 3 that direction. Each is DEAD (zero reachable callers), which is what this list records. A LIVE break -- a reachable caller invoking a command that does not exist -- is NEVER excepted; see D-137.",
-  "highWaterMark": 18,
+  "highWaterMark": 15,
   "entries": [
     {
       "id": "dead-issuer:claim_hub_username:apps/osl-hub-ui/src/adapters.ts:936",
       "class": "accepted",
       "reason": "claim_hub_username is in an exported adapter function that no production entry imports; this issuer does not ship.",
       "citation": "apps/osl-hub-ui/src/adapters.ts:936"
-    },
-    {
-      "id": "dead-issuer:execute_discord_guided_deletion:apps/osl-hub-ui/src/adapters.ts:1435",
-      "class": "accepted",
-      "reason": "execute_discord_guided_deletion is in an exported guided-deletion function that no production entry imports; this issuer does not ship.",
-      "citation": "apps/osl-hub-ui/src/adapters.ts:1435"
     },
     {
       "id": "dead-issuer:host_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:69",
@@ -25,18 +19,6 @@
       "class": "accepted",
       "reason": "join_osl_lan_room is in an exported LAN collaboration function that no production entry imports; this issuer does not ship.",
       "citation": "apps/osl-hub-ui/src/osl-collab.ts:70"
-    },
-    {
-      "id": "dead-issuer:preview_discord_guided_deletion:apps/osl-hub-ui/src/adapters.ts:1417",
-      "class": "accepted",
-      "reason": "preview_discord_guided_deletion is in an exported guided-deletion function that no production entry imports; this issuer does not ship.",
-      "citation": "apps/osl-hub-ui/src/adapters.ts:1417"
-    },
-    {
-      "id": "dead-issuer:scan_discord_own_messages_for_deletion:apps/osl-hub-ui/src/adapters.ts:1404",
-      "class": "accepted",
-      "reason": "scan_discord_own_messages_for_deletion is in an exported guided-deletion function that no production entry imports; this issuer does not ship.",
-      "citation": "apps/osl-hub-ui/src/adapters.ts:1404"
     },
     {
       "id": "dead-issuer:stop_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:72",
