@@ -122,11 +122,11 @@ function rosterControls(markup: string): RosterControl[] {
   return found;
 }
 
-function scopePair(markup: string, storageKey: string): { approve?: RosterControl; revoke?: RosterControl } {
+function scopePair(markup: string, storageKey: string): { approveControl?: RosterControl; revokeControl?: RosterControl } {
   const forScope = rosterControls(markup).filter((control) => control.scopeKey === storageKey);
   return {
-    approve: forScope.find((control) => control.revokesPersonId === null && control.glyph === "+"),
-    revoke: forScope.find((control) => control.revokesPersonId !== null && control.glyph === "−"),
+    approveControl: forScope.find((control) => control.revokesPersonId === null && control.glyph === "+"),
+    revokeControl: forScope.find((control) => control.revokesPersonId !== null && control.glyph === "−"),
   };
 }
 
@@ -221,10 +221,10 @@ describe("whitelist roster", () => {
     for (const active of [true, false]) {
       for (const busy of [true, false]) {
         for (const activeScopeApproved of [true, false]) {
-          const approve = approvedScopeControls({ active, busy, activeScopeApproved }).approve;
-          expect(approve, `active=${active} busy=${busy} approved=${activeScopeApproved}`)
+          const approveControl = approvedScopeControls({ active, busy, activeScopeApproved }).approveControl;
+          expect(approveControl, `active=${active} busy=${busy} approved=${activeScopeApproved}`)
             .toBeDefined();
-          expect(approve?.disabled, `active=${active} busy=${busy} approved=${activeScopeApproved}`)
+          expect(approveControl?.disabled, `active=${active} busy=${busy} approved=${activeScopeApproved}`)
             .toBe(true);
         }
       }
@@ -234,13 +234,13 @@ describe("whitelist roster", () => {
   it("offers revoke for an approved scope only behind the live context, and never mid-write", () => {
     // The enabled case FIRST: without it every assertion below passes for the
     // trivial reason that the roster disables everything unconditionally.
-    expect(approvedScopeControls({ active: true, busy: false }).revoke?.disabled).toBe(false);
-    expect(approvedScopeControls({ active: false, busy: false }).revoke?.disabled).toBe(true);
-    expect(approvedScopeControls({ active: true, busy: true }).revoke?.disabled).toBe(true);
-    expect(approvedScopeControls({ active: false, busy: true }).revoke?.disabled).toBe(true);
+    expect(approvedScopeControls({ active: true, busy: false }).revokeControl?.disabled).toBe(false);
+    expect(approvedScopeControls({ active: false, busy: false }).revokeControl?.disabled).toBe(true);
+    expect(approvedScopeControls({ active: true, busy: true }).revokeControl?.disabled).toBe(true);
+    expect(approvedScopeControls({ active: false, busy: true }).revokeControl?.disabled).toBe(true);
     // The control that is offered must name the person it revokes for and the
     // scope it revokes -- an enabled button carrying neither revokes nothing.
-    const live = approvedScopeControls({ active: true, busy: false }).revoke;
+    const live = approvedScopeControls({ active: true, busy: false }).revokeControl;
     expect(live?.revokesPersonId).toBe(PERSON_ID);
     expect(live?.scopeKey).toBe(APPROVED_SCOPE.storageKey);
   });
@@ -248,14 +248,21 @@ describe("whitelist roster", () => {
   it("offers neither control on a scope whose reach was taken back", () => {
     for (const active of [true, false]) {
       for (const busy of [true, false]) {
-        const { approve, revoke } = narrowedScopeControls({ active, busy });
-        expect(approve, `active=${active} busy=${busy}`).toBeDefined();
-        expect(revoke, `active=${active} busy=${busy}`).toBeDefined();
+        const { approveControl, revokeControl } = narrowedScopeControls({ active, busy });
+        expect(approveControl, `active=${active} busy=${busy}`).toBeDefined();
+        expect(revokeControl, `active=${active} busy=${busy}`).toBeDefined();
         // A scope taken back is not approved, so it can be neither re-approved
         // from the roster nor revoked again -- in the live context too, which
         // is the only state in which the approved row's revoke is enabled.
-        expect(approve?.disabled, `approve active=${active} busy=${busy}`).toBe(true);
-        expect(revoke?.disabled, `revoke active=${active} busy=${busy}`).toBe(true);
+        expect(approveControl?.disabled, `approveControl active=${active} busy=${busy}`).toBe(true);
+        // NOTE: this message deliberately says `revokeControl`, not `revoke`.
+        // Ledger 10 attributes an assertion to a source-text-bound identifier
+        // when that identifier's NAME appears anywhere in the expression --
+        // including inside a string literal. `const revoke = body(...)` lower
+        // in this file therefore made a message reading "revoke active=..."
+        // count as a source-text pin, moving the census by one. Same family as
+        // D-270/D-271: the shared tokenizer does not blank string contents.
+        expect(revokeControl?.disabled, `revokeControl active=${active} busy=${busy}`).toBe(true);
       }
     }
   });
