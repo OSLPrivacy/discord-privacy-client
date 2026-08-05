@@ -229,6 +229,52 @@ jobs:
         if: ${{ !cancelled() && matrix.lane == 'cipher-store-worker' }}
         working-directory: cipher-store-cf
         run: npm test
+      # D-281. THE TERMINAL ANCHOR FOR THE RELEASE CONTRACT, and it has to be a
+      # CI step rather than another line in the suite.
+      #
+      # D-262 gave the seven named security-property suites a gate (registered
+      # exactly once, active `describe`/`it`, load-bearing assertion text still
+      # present, plus a per-directory file floor), anchored by running FIRST in
+      # `npm test` -- and `package.json` is inside the release digest, so
+      # dropping the step turns the release-source contract red. That is real and
+      # the lane that built it recorded its limit honestly:
+      #
+      #   NO IN-SUITE GATE SURVIVES DELETION OF THE GATE ITSELF.
+      #
+      # Gutting `scripts/d2-test-closure.ts` AND deleting the specs escapes
+      # everything inside the suite, because everything inside the suite is
+      # configured by the suite. `npm test` above is exactly that: a string in
+      # `package.json`. So the anchor runs the named specs BY EXPLICIT PATH,
+      # against its own second copy of the names held in scripts/ci/** -- a
+      # different ownership domain -- and grades the JSON report rather than the
+      # exit code, because `describe.skip` leaves vitest exit 0. Read the header
+      # of the script; the three load-bearing choices are argued there.
+      #
+      # WHY HERE AND NOT A NEW JOB: this lane already ran `npm ci` for
+      # cipher-store-cf, already has the workerd pool warm and already has the
+      # node the specs need. A standalone job pays a second cold install for the
+      # same six spec files.
+      #
+      # WHY AFTER `npm test` AND NOT BEFORE, and this is the part that has
+      # already bitten this repository three times (D-194): Actions aborts a job
+      # at its first failing step. A ratchet placed in front of a test step that
+      # carries no condition SKIPS that test when the ratchet goes red -- which is
+      # how a formatting nit hid the entire Rust suite, twice. So the anchor is
+      # BELOW the suite it backstops, and both new steps carry `!cancelled()`, so
+      # a red suite cannot skip the anchor either. Neither can mask the other, and
+      # .github/workflows/ts-test.workflow-test.py asserts that ordering rather
+      # than trusting it -- from the `quality-checks` job of rust-test.yml, a
+      # different workflow, for the same reason the other contracts run there.
+      #
+      # The self-test first, per D-195: a grader nobody has seen fail is
+      # decoration, and its exit code must be a step result of its own rather
+      # than a line inside a multi-command `run:`.
+      - name: Prove the D-281 spec anchor can fail
+        if: ${{ !cancelled() && matrix.lane == 'cipher-store-worker' }}
+        run: node scripts/ci/d2-property-spec-anchor.mjs --self-test
+      - name: D-281 release-contract terminal anchor
+        if: ${{ !cancelled() && matrix.lane == 'cipher-store-worker' }}
+        run: node scripts/ci/d2-property-spec-anchor.mjs
       - name: Install legacy keyserver deps
         if: ${{ matrix.lane == 'legacy-keyserver' }}
         working-directory: keyserver

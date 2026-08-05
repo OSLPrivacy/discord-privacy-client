@@ -57,7 +57,23 @@ jobs:
           toolchain: '1.97.1'
           components: rustfmt
       - run: cargo fmt --all -- --check
-      # D-268. THE LINE ABOVE DOES NOT SEE THE HUB. `apps/osl-hub` is `exclude`d
+      # D-284, the residue. `--all` above resolves to the workspace MEMBERS, so
+      # it is silent about EVERY path in `[workspace] exclude`, not just the hub.
+      # There are three: `apps/osl-hub` (covered by the ratchet below),
+      # `src-tauri` and `services/crypto-watcher`. The last one was in no fmt
+      # gate at all and nobody had ever measured it; it is exit 0, so covering it
+      # costs nothing and closes the hole before it fills up.
+      #
+      # `src-tauri` is deliberately NOT wired, and that decision is recorded with
+      # its measured cost in scripts/test_root_cargo_ci_contract.py rather than
+      # left implicit: it is the legacy shell, it ships nothing, and it carries
+      # exactly one hunk (an `assert!` reflow at src-tauri/src/main.rs:3496). The
+      # census in that file FAILS if a fourth exclusion is added and neither
+      # covered here nor recorded there -- which is how this stops recurring.
+      - name: cargo fmt, services/crypto-watcher
+        if: ${{ !cancelled() }}
+        run: cargo fmt --manifest-path services/crypto-watcher/Cargo.toml --all -- --check
+      # D-268. THE ROOT LINE ABOVE DOES NOT SEE THE HUB. `apps/osl-hub` is `exclude`d
       # from the root workspace (Cargo.toml:31), so `--all` resolves to the
       # workspace members and stops: `cargo fmt --all -- --check` was exit 0 at
       # the root while the same command run inside `apps/osl-hub` was exit 1 with
@@ -367,3 +383,48 @@ jobs:
       - name: Integration-branch gating contract
         if: ${{ !cancelled() }}
         run: python3 .github/workflows/integration-branch-gating.test.py
+      # D-283. `scripts/test_root_cargo_ci_contract.py` -- the file whose ENTIRE
+      # purpose is asserting the root Cargo/CI contract -- was run by NO workflow
+      # for its whole life. `grep -rn test_root_cargo_ci_contract .github/`
+      # returned nothing. It is D-160's shape applied to the grader: a check that
+      # cannot fail because it never runs, and the fourth instance of that exact
+      # pattern found in a single day (D-172's unpushed branch, D-252's unlinted
+      # hub, D-233's browser gates with no browser, and this).
+      #
+      # Running it for the first time found it RED at three assertions, all
+      # stale: D-172 moved `cargo fmt` and `cargo clippy` out of the `test` job
+      # and this file still demanded them inside it, and `rust-version` went
+      # three-component while the toolchain check appended a fourth. None of the
+      # three was relaxed -- see the header of the file. It also grew the D-284
+      # exclusion census, which is what found that `services/crypto-watcher` was
+      # in no fmt gate.
+      #
+      # It runs HERE, in the job that already owns the other two workflow
+      # contracts, for the reason stated above them: a contract enforced only by
+      # the thing it constrains is not enforced. It grades rust-test.yml's `test`
+      # and `fmt` jobs, and it is not one of them.
+      - name: Root Cargo/CI contract
+        if: ${{ !cancelled() }}
+        run: python3 scripts/test_root_cargo_ci_contract.py
+      # D-283 / D-267. The second half of the same finding. `hub-bin-check.mjs`
+      # exists because `cargo check --bins` WITHOUT `--features desktop` compiles
+      # no binary and exits 0 -- a mutation lane's mutant "passed" because
+      # nothing was built. `--audit` is the standing guard that no such vacuous
+      # invocation is checked back into the tree, it needs no cargo and no
+      # toolchain, and it is exit 0 on this tree (43 tracked files mentioning the
+      # hub manifest, 1 undetermined: mutants.sh:19 takes its target selection
+      # from "$@"). Verified before wiring rather than taken on the
+      # recommendation.
+      - name: Hub binary invocation audit
+        if: ${{ !cancelled() }}
+        run: node scripts/ci/hub-bin-check.mjs --audit
+      # D-281. The TS-side contract, enforced from a workflow that is not the one
+      # it grades -- same rule as the two contracts above. It asserts that
+      # ts-test.yml's cipher-store lane still carries the release-contract
+      # terminal anchor, that the anchor's self-test still runs before it, and
+      # that neither the anchor nor the suite it stands beside can mask the
+      # other. If the anchor steps are deleted to silence them, THIS step is what
+      # goes red, from a different workflow and a different job.
+      - name: TypeScript workflow contract
+        if: ${{ !cancelled() }}
+        run: python3 .github/workflows/ts-test.workflow-test.py
