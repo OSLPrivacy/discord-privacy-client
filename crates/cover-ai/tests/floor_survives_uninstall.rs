@@ -1,18 +1,12 @@
 //! Regression test for D44's optional-component floor.
 //!
-//! This remains standalone until `cover-ai` gains a Cargo manifest. Run it with:
-//!
-//! ```text
-//! rustc --edition=2021 --test crates/cover-ai/tests/floor_survives_uninstall.rs -o /tmp/floor_survives_uninstall
-//! /tmp/floor_survives_uninstall --nocapture
-//! ```
+//! `cover-ai` has a Cargo manifest now, so this links the shipping crates
+//! rather than `#[path]`-including private second copies of them.
 
-#[path = "../../stego/src/bigram.rs"]
-mod bigram;
-#[path = "../src/fallback.rs"]
-mod fallback;
-
-use fallback::{select_carrier, CarrierCapabilities, CarrierSource, UserVisibleTransition};
+use cover_ai::fallback::{
+    select_carrier, CarrierCapabilities, CarrierSource, UserVisibleTransition,
+};
+use stego::bigram;
 
 #[test]
 fn no_optional_components_still_produces_a_round_trippable_word_bank_carrier() {

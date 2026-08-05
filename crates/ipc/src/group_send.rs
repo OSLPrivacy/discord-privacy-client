@@ -82,7 +82,7 @@ pub(crate) fn encrypt_v5_send(
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned");
-        g.remove(&scope_key).unwrap_or_else(SenderKeyState::new)
+        g.remove(&scope_key).unwrap_or_default()
     };
 
     // Rotation/redistribution must track the ACTUAL recipient set —
@@ -395,12 +395,10 @@ fn send_skdm_via_v3_bundle(
     .map_err(|e| format!("OSL: v=5 SKDM bundle: encrypt_v3: {e}"))
 }
 
-/// Phase 9-A2: symmetric DM conversation_id for the DR session
-/// context. Each side derives the same string by sorting the two
-/// discord_ids — without this, alice's `Scope::dm(bob).storage_key()
-/// = "dm:bob"` and bob's `Scope::dm(alice).storage_key() = "dm:alice"`
-/// would mismatch on the DR's canonical AD.
-
+/// Auto-recovery: an inbound recovery request was dropped by a guard
+/// (stale / replayed / throttled / no corroborating local symptom).
+/// Control sentinel; boot.js suppresses render. Distinct from
+/// "applied" so logs can tell a no-op from an action.
 pub const OSL_RESULT_RECOVERY_IGNORED: &str = "__OSL_CONTROL_RECOVERY_IGNORED__";
 
 /// Auto-recovery inbound handler for `MSG_TYPE_SKDM_REQUEST` (0x06):
@@ -647,32 +645,6 @@ pub(crate) fn apply_skdm_request_recv(
     Ok(format!("{OSL_RESULT_SKDM_REREQUEST_PREFIX}{wire}"))
 }
 
-/// Auto-recovery inbound handler for `MSG_TYPE_SESSION_RESET` (0x07):
-/// the sender says our shared v=4 ratchet is desynced and they have
-/// dropped their side. Honor it when it passes the
-/// staleness/replay/honor-throttle guards.
-///
-/// Act-on-symptom DOWNGRADE (one-directional-desync fix): a
-/// SESSION_RESET only reaches this function after it has been
-/// successfully `wire_v2`-decrypted — i.e. it was PQ-hybrid wrapped to
-/// our identity using the peer's identity secret. A third party who
-/// can merely post into the channel cannot forge one that decrypts, so
-/// the original "could be spammed by anyone" threat is already closed
-/// by that authentication for SESSION_RESET specifically. Requiring an
-/// *additional* local decrypt failure before honoring it broke the
-/// common real case: a one-directional ratchet desync (peer→us fails,
-/// us→peer still works) leaves the side that must reset with no local
-/// symptom, so the reset was ignored forever and the session never
-/// healed without two console commands. We now honor an authenticated,
-/// non-replayed, non-throttled reset regardless of corroboration; the
-/// symptom is still recorded and logged (`corroborated`) for forensics
-/// but is no longer a gate. Residual risk: a peer holding valid keys
-/// can induce at most one (idempotent, cheap) re-handshake per
-/// `RECOVERY_MIN_INTERVAL_SECS` — a throttled self-inflicted nuisance,
-/// not a third-party DoS, no secret exposure, no MITM gain. On honor,
-/// drop our `ratchet_state` for the peer so the next v=4 send
-/// re-handshakes.
-
 /// Phase 9-A3: install or rotate a peer's `ReceiverChain` for the
 /// scope named in the SKDM payload. Persists `sender_key_state.json`
 /// after mutation. Returns the sentinel string so the dispatcher
@@ -682,7 +654,7 @@ pub(crate) fn apply_skdm_recv(
     sender_discord_id: &str,
     payload_bytes: &[u8],
 ) -> Result<String, String> {
-    use crypto::sender_keys::{PhysicalDeviceId, SenderKeyState};
+    use crypto::sender_keys::PhysicalDeviceId;
     let payload = crate::control_messages::deserialize_sender_key_distribution(payload_bytes)
         .map_err(|e| format!("OSL: SKDM: deserialize: {e}"))?;
 
@@ -702,9 +674,7 @@ pub(crate) fn apply_skdm_recv(
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned");
-        let live = g
-            .entry(scope_key.clone())
-            .or_insert_with(SenderKeyState::new);
+        let live = g.entry(scope_key.clone()).or_default();
         let peer_bytes = sender_discord_id.as_bytes().to_vec();
         let physical_device_id = PhysicalDeviceId::from_bytes(payload.physical_device_id)
             .map_err(|e| format!("OSL: SKDM: physical_device_id binding invalid or absent: {e}"))?;
@@ -886,7 +856,7 @@ mod tests {
             x25519_pub: peer.x25519_public,
             mlkem_pub: crypto::ml_kem_768::EncapsulationKey::from_bytes(&peer.mlkem_public_bytes),
         };
-        let peers = vec![(peer_did, recipient)];
+        let peers = [(peer_did, recipient)];
         let peer_refs: Vec<&(String, crate::wire_v2::RecipientV3)> = peers.iter().collect();
 
         {
@@ -924,9 +894,11 @@ mod tests {
         // proves the controller's `check_for_rotation` result controls the
         // real encrypt path, rather than merely being constructed alongside
         // the legacy rotation logic.
-        let mut config = runtime::RotationConfig::default();
-        config.message_count_trigger = 1;
-        config.time_trigger = Duration::from_secs(24 * 60 * 60);
+        let config = runtime::RotationConfig {
+            message_count_trigger: 1,
+            time_trigger: Duration::from_secs(24 * 60 * 60),
+            ..Default::default()
+        };
         let mut threshold_one =
             runtime::RotationController::new(Box::new(runtime::SystemClock), config);
         threshold_one.note_message_sent();

@@ -141,7 +141,7 @@ fn liam_decrypts_consecutive_own_messages() {
     // Three messages back-to-back, all liam-as-sender bounced
     // through Discord. The user reported message 1 succeeding
     // then 2+ failing — this is the regression test for that.
-    for (plaintext, cover) in plaintexts.iter().zip(covers.into_iter()) {
+    for (plaintext, cover) in plaintexts.iter().zip(covers) {
         let recovered = cmd_osl_decrypt_message(
             &state,
             "channel".to_string(),
@@ -258,7 +258,7 @@ fn cache_remains_valid_across_consecutive_decrypts() {
         .as_bytes()
         .to_vec();
 
-    for (plaintext, cover) in plaintexts.iter().zip(covers.into_iter()) {
+    for (plaintext, cover) in plaintexts.iter().zip(covers) {
         let recovered = cmd_osl_decrypt_message(
             &state,
             "ch".to_string(),

@@ -16,4 +16,10 @@ pub mod progress;
 pub mod scorer;
 pub mod warm_model;
 
+// Gated with its only consumer, `local_model`. Selecting from raw llama.cpp
+// logits has no meaning without the runtime that produces them, so without the
+// feature this module is dead code rather than something worth compiling.
+// `tests/local_model_logits.rs` includes the file directly via `#[path]`, so it
+// keeps covering this logic on a default (feature-off) `cargo test`.
+#[cfg(feature = "local-model")]
 mod logit_selection;

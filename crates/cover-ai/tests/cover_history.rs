@@ -1,5 +1,17 @@
 //! Regression tests for the cover-only, AEAD-backed context store.
 
+// Unlike this crate's other tests, this one cannot link `cover_ai::cover_history`
+// through the crate: it asserts on `sealed_for_test`, which is `#[cfg(test)]`
+// and crate-private, so the module has to be compiled into this test binary.
+//
+// That is also why the allow is needed, and why it belongs here rather than on
+// the shipping methods. Included this way the module is *private* to this test,
+// so `dead_code` judges its `pub` surface by what this one file happens to call
+// and reports the rest -- `burn_scope`, `clear` -- as dead. They are ordinary
+// public API of `cover-ai`, and the lib build correctly does not flag them; the
+// include is what makes them look dead. Keeping the allow on the include leaves
+// `src/cover_history.rs` free of test-driven annotations.
+#[allow(dead_code)]
 #[path = "../src/cover_history.rs"]
 mod cover_history;
 

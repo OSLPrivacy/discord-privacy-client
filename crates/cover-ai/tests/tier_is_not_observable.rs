@@ -1,13 +1,9 @@
 //! Regression test for tier privacy in the visible carrier.
 //!
-//! Run with:
-//! ```text
-//! rustc --edition=2021 --test crates/cover-ai/tests/tier_is_not_observable.rs -o /tmp/tier_is_not_observable
-//! /tmp/tier_is_not_observable
-//! ```
+//! Links the shipping `stego::bigram` rather than `#[path]`-including a private
+//! second copy of it.
 
-#[path = "../../stego/src/bigram.rs"]
-mod bigram;
+use stego::bigram;
 
 #[derive(Clone, Copy)]
 enum Tier {

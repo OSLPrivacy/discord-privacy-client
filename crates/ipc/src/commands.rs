@@ -5572,6 +5572,11 @@ mod ratchet_policy_decision_tests {
     }
 }
 
+/// Phase 9-A2: symmetric DM conversation_id for the DR session
+/// context. Each side derives the same string by sorting the two
+/// discord_ids — without this, alice's `Scope::dm(bob).storage_key()
+/// = "dm:bob"` and bob's `Scope::dm(alice).storage_key() = "dm:alice"`
+/// would mismatch on the DR's canonical AD.
 fn dm_conversation_id(self_did: &str, peer_did: &str) -> Vec<u8> {
     let (a, b) = if self_did <= peer_did {
         (self_did, peer_did)
@@ -6625,8 +6630,6 @@ pub const OSL_RESULT_LEGACY_HANDSHAKE_IGNORED: &str = "__OSL_CONTROL_LEGACY_HAND
 /// `|` and uses the JSON to call `osl_open_attachment` against the
 /// CDN-fetched blob.
 pub const OSL_RESULT_ATTACHMENT_PREFIX: &str = "__OSL_CONTROL_ATTACHMENT__|";
-
-const RN_SESSION_DIR_NAME: &str = "rn_sessions";
 
 struct InboundOpened {
     msg_type: u8,
@@ -7944,10 +7947,31 @@ pub const OSL_RESULT_SKDM_REREQUEST_PREFIX: &str = "__OSL_CONTROL_SKDM_REREQUEST
 /// Control sentinel; boot.js suppresses render (no user content).
 pub const OSL_RESULT_SESSION_RESET_APPLIED: &str = "__OSL_CONTROL_SESSION_RESET_APPLIED__";
 
-/// Auto-recovery: an inbound recovery request was dropped by a guard
-/// (stale / replayed / throttled / no corroborating local symptom).
-/// Control sentinel; boot.js suppresses render. Distinct from
-/// "applied" so logs can tell a no-op from an action.
+/// Auto-recovery inbound handler for `MSG_TYPE_SESSION_RESET` (0x07):
+/// the sender says our shared v=4 ratchet is desynced and they have
+/// dropped their side. Honor it when it passes the
+/// staleness/replay/honor-throttle guards.
+///
+/// Act-on-symptom DOWNGRADE (one-directional-desync fix): a
+/// SESSION_RESET only reaches this function after it has been
+/// successfully `wire_v2`-decrypted — i.e. it was PQ-hybrid wrapped to
+/// our identity using the peer's identity secret. A third party who
+/// can merely post into the channel cannot forge one that decrypts, so
+/// the original "could be spammed by anyone" threat is already closed
+/// by that authentication for SESSION_RESET specifically. Requiring an
+/// *additional* local decrypt failure before honoring it broke the
+/// common real case: a one-directional ratchet desync (peer→us fails,
+/// us→peer still works) leaves the side that must reset with no local
+/// symptom, so the reset was ignored forever and the session never
+/// healed without two console commands. We now honor an authenticated,
+/// non-replayed, non-throttled reset regardless of corroboration; the
+/// symptom is still recorded and logged (`corroborated`) for forensics
+/// but is no longer a gate. Residual risk: a peer holding valid keys
+/// can induce at most one (idempotent, cheap) re-handshake per
+/// `RECOVERY_MIN_INTERVAL_SECS` — a throttled self-inflicted nuisance,
+/// not a third-party DoS, no secret exposure, no MITM gain. On honor,
+/// drop our `ratchet_state` for the peer so the next v=4 send
+/// re-handshakes.
 fn apply_session_reset_recv(
     state: &AppState,
     sender_discord_id: &str,

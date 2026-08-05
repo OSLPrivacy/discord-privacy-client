@@ -40,9 +40,9 @@ impl ManifestRefresh {
     /// loaded manifest from remaining usable if the app wakes after it has
     /// exceeded its 24-hour validity window.
     pub fn tick(&mut self, now_unix_seconds: u64) -> &ManifestState {
-        let refresh_due = self.last_refresh_unix_seconds.map_or(true, |last| {
-            now_unix_seconds.saturating_sub(last) >= HOURLY_REFRESH_SECONDS
-        });
+        let refresh_due = self
+            .last_refresh_unix_seconds
+            .is_none_or(|last| now_unix_seconds.saturating_sub(last) >= HOURLY_REFRESH_SECONDS);
         if refresh_due {
             self.refresh(now_unix_seconds)
         } else {
