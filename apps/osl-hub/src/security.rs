@@ -1993,6 +1993,7 @@ pub fn record_peer_prose_blob(
     security: &HubSecurityState,
     scope_input: ScopeInput,
     blob_id: String,
+    burn_capability: Option<String>,
 ) -> Result<(), String> {
     let file_key = require_unlocked()?;
     // The bridge Worker deployed today assigns 64-bit ids (16 hex chars).
@@ -2006,6 +2007,14 @@ pub fn record_peer_prose_blob(
     {
         return Err("OSL remote message identifier is invalid".to_owned());
     }
+    // D-232. The credential is what makes the id burnable; recording a
+    // malformed one would put an object in the ledger that the walk can only
+    // ever fail on. Refuse at the door instead.
+    if let Some(capability) = burn_capability.as_deref() {
+        if !canonical_lower_hex(capability, 32) {
+            return Err("OSL remote message burn capability is invalid".to_owned());
+        }
+    }
     let scope: Scope = scope_input
         .try_into()
         .map_err(|_| "OSL manual peer scope is invalid".to_owned())?;
@@ -2015,6 +2024,7 @@ pub fn record_peer_prose_blob(
         &dir.join("scope_blobs.json"),
         scope,
         blob_id,
+        burn_capability,
         &file_key,
     )
 }
@@ -2024,6 +2034,7 @@ fn record_peer_prose_blob_at_path(
     path: &Path,
     scope: Scope,
     blob_id: String,
+    burn_capability: Option<String>,
     file_key: &[u8; 32],
 ) -> Result<(), String> {
     let _transition = security
@@ -2031,7 +2042,14 @@ fn record_peer_prose_blob_at_path(
         .lock()
         .map_err(|_| "OSL security state is unavailable".to_owned())?;
     let mut blobs = load_scope_blobs_strict_with_key(path, file_key)?;
-    ipc::scope_blobs_file::record_blob(&mut blobs, scope.storage_key(), blob_id);
+    ipc::scope_blobs_file::record_blob_with_capability(
+        &mut blobs,
+        scope.storage_key(),
+        ipc::scope_blobs_file::RecordedBlob {
+            blob_id,
+            burn_capability,
+        },
+    );
     write_scope_blobs_with_key(path, &blobs, file_key)
 }
 
@@ -2555,26 +2573,21 @@ pub fn burn_scope(
         return Err("OSL burned-scope ledger could not be persisted".to_owned());
     }
 
-    let blob_ids = ipc::scope_blobs_file::take_blobs(&mut blobs_file, &scope.storage_key());
+    let recorded_blobs =
+        ipc::scope_blobs_file::take_blobs_for_burn(&mut blobs_file, &scope.storage_key());
     // Burn authority is this device's, not the conversation's. Without it no
     // remote object can be destroyed, but every other unilateral local step
     // above still stands, so the ids are retained for a later attempt rather
     // than failing the burn.
     let send_key = crate::broker::prose_send_key(core).ok();
-    let mut failed_blob_ids = Vec::new();
-    let mut remote_blobs_deleted = 0usize;
-    for blob_id in blob_ids {
-        let burned = send_key.as_ref().is_some_and(|send_key| {
-            ipc::prose_token::prose_token_burn_id(&dir, send_key, &blob_id).is_ok()
-        });
-        if burned {
-            remote_blobs_deleted += 1;
-        } else {
-            failed_blob_ids.push(blob_id);
-        }
-    }
-    for blob_id in &failed_blob_ids {
-        ipc::scope_blobs_file::record_blob(&mut blobs_file, scope.storage_key(), blob_id.clone());
+    let (remote_blobs_deleted, failed_blob_ids) =
+        burn_recorded_prose_blobs(&dir, None, send_key.as_ref().map(|key| key.as_slice()), recorded_blobs);
+    for recorded in &failed_blob_ids {
+        ipc::scope_blobs_file::record_blob_with_capability(
+            &mut blobs_file,
+            scope.storage_key(),
+            recorded.clone(),
+        );
     }
     write_scope_blobs(&blobs_path, &blobs_file)?;
     let remote_blob_deletions_failed = failed_blob_ids.len();
@@ -2667,7 +2680,7 @@ pub fn burn_manual_peer_scope(
     let mut attachments = load_attachment_burn_ledger_with_key(&attachments_path, &file_key)?;
     let whitelist_entries_removed =
         usize::from(prefs.manual_approved_scopes.contains(&storage_key));
-    let blob_ids = revoke_manual_scope_state(&mut prefs, &mut ttl, &mut blobs, &storage_key);
+    let recorded_blobs = revoke_manual_scope_state(&mut prefs, &mut ttl, &mut blobs, &storage_key);
     write_encrypted_json(&prefs_path, &prefs)?;
     write_encrypted_json(&ttl_path, &ttl)?;
     remove_peer_replay_scope_at_path(&replay_path, &storage_key, &file_key)
@@ -2684,20 +2697,14 @@ pub fn burn_manual_peer_scope(
     // send key, so a missing identity leaves remote objects counted as
     // undeleted instead of aborting the local revocation.
     let send_key = crate::broker::prose_send_key(core).ok();
-    let mut failed_blob_ids = Vec::new();
-    let mut remote_blobs_deleted = 0usize;
-    for blob_id in blob_ids {
-        let burned = send_key.as_ref().is_some_and(|send_key| {
-            ipc::prose_token::prose_token_burn_id(&dir, send_key, &blob_id).is_ok()
-        });
-        if burned {
-            remote_blobs_deleted = remote_blobs_deleted.saturating_add(1);
-        } else {
-            failed_blob_ids.push(blob_id);
-        }
-    }
-    for blob_id in &failed_blob_ids {
-        ipc::scope_blobs_file::record_blob(&mut blobs, storage_key.clone(), blob_id.clone());
+    let (remote_blobs_deleted, failed_blob_ids) =
+        burn_recorded_prose_blobs(&dir, None, send_key.as_ref().map(|key| key.as_slice()), recorded_blobs);
+    for recorded in &failed_blob_ids {
+        ipc::scope_blobs_file::record_blob_with_capability(
+            &mut blobs,
+            storage_key.clone(),
+            recorded.clone(),
+        );
     }
     write_scope_blobs(&blobs_path, &blobs)?;
     let attachment_entries = take_attachment_burn_entries(&mut attachments, &storage_key);
@@ -2774,12 +2781,80 @@ pub fn burn_manual_peer_scope(
     })
 }
 
+/// Walk the recorded uploads for one scope and destroy what can be destroyed,
+/// returning `(deleted, still_undeleted)`.
+///
+/// **D-232.** Both burn walks used to call `prose_token_burn_id`, which speaks
+/// only the destination capability protocol: a 32-hex client-derived id plus a
+/// manage capability recomputed from `send_key`. The shipping send path speaks
+/// the deployed bridge protocol and records the store's own 16-hex id, so every
+/// recorded id was refused by the 32-hex parser before any request was made.
+/// `remote_blobs_deleted` was therefore always 0 for every message the product
+/// creates — the panic button and the app+account burn destroyed nothing.
+///
+/// Two properties this function exists to hold, both of which the old inline
+/// loops violated:
+///
+/// 1. **Burn speaks the protocol the object was uploaded under.** Dispatch is
+///    `prose_token_burn_recorded`'s, on the recorded object, not a width test
+///    written here.
+/// 2. **An object that cannot be destroyed is never counted as destroyed.**
+///    Every non-`Ok` outcome — no send key, no recorded credential, a refusal
+///    from the store — lands in the returned failure list, which the callers
+///    re-record and surface as `remote_blob_deletions_failed`, forcing
+///    `remote_cleanup_complete` to false. There is no path here that increments
+///    the deleted count without a successful DELETE behind it.
+fn burn_recorded_prose_blobs(
+    dir: &Path,
+    store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
+    send_key: Option<&[u8]>,
+    recorded_blobs: Vec<ipc::scope_blobs_file::RecordedBlob>,
+) -> (usize, Vec<ipc::scope_blobs_file::RecordedBlob>) {
+    let mut remote_blobs_deleted = 0usize;
+    let mut failed_blob_ids = Vec::new();
+    for recorded in recorded_blobs {
+        let outcome = match send_key {
+            // Without this device's identity nothing remote can be destroyed.
+            // That is a failure to report, never a blob to forget.
+            None => Err(()),
+            Some(send_key) => {
+                let capability = recorded.burn_capability.as_deref();
+                let result = match store_client {
+                    Some(client) => ipc::prose_token::prose_token_burn_recorded_with_client(
+                        client,
+                        send_key,
+                        &recorded.blob_id,
+                        capability,
+                    ),
+                    None => ipc::prose_token::prose_token_burn_recorded(
+                        dir,
+                        send_key,
+                        &recorded.blob_id,
+                        capability,
+                    ),
+                };
+                result.map_err(|error| {
+                    tracing::warn!(
+                        error = %error,
+                        "OSL: a recorded cipher-store object could not be destroyed"
+                    );
+                })
+            }
+        };
+        match outcome {
+            Ok(()) => remote_blobs_deleted = remote_blobs_deleted.saturating_add(1),
+            Err(()) => failed_blob_ids.push(recorded),
+        }
+    }
+    (remote_blobs_deleted, failed_blob_ids)
+}
+
 fn revoke_manual_scope_state(
     prefs: &mut SecurityPreferences,
     ttl: &mut ipc::scope_ttl_file::ScopeTtlFile,
     blobs: &mut ipc::scope_blobs_file::ScopeBlobsFile,
     storage_key: &str,
-) -> Vec<String> {
+) -> Vec<ipc::scope_blobs_file::RecordedBlob> {
     prefs.version = 2;
     prefs.manual_approved_scopes.remove(storage_key);
     // The attribution outlives nothing: the grant it described is gone, and a
@@ -2790,7 +2865,7 @@ fn revoke_manual_scope_state(
         .decrypt_display_by_scope
         .insert(storage_key.to_owned(), false);
     ttl.entries.remove(storage_key);
-    ipc::scope_blobs_file::take_blobs(blobs, storage_key)
+    ipc::scope_blobs_file::take_blobs_for_burn(blobs, storage_key)
 }
 
 // ---- Bilateral burn ----------------------------------------------------
@@ -6582,7 +6657,10 @@ key"
                 &mut blobs,
                 &indexed_manual.storage_key,
             ),
-            ["0011223344556677"]
+            [ipc::scope_blobs_file::RecordedBlob {
+                blob_id: "0011223344556677".to_owned(),
+                burn_capability: None,
+            }]
         );
         assert!(!manual_scope_preference_approved(&prefs, &discord_a));
         assert!(manual_scope_preference_approved(&prefs, &telegram_a));
@@ -6644,6 +6722,81 @@ key"
         );
     }
 
+    /// D-232. The walk that the panic button and the app+account burn both run
+    /// must never report a deletion it did not perform.
+    ///
+    /// This is the exact bug, stated as a gate: before the fix every recorded
+    /// id was refused locally by a 32-hex parser, `remote_blobs_deleted` was
+    /// always 0, and the walk carried on as though it had done its job. The
+    /// counts below are the ones that reach `remote_cleanup_complete` and the
+    /// user, so an object that cannot be destroyed has to land in the failure
+    /// list and stay in the ledger for a later attempt.
+    ///
+    /// Every case here decides before any request leaves the machine, which is
+    /// why it needs no network. That is deliberate: this test's job is the
+    /// accounting, and `crates/ipc/tests/d232_burn_walk_live.rs` proves against
+    /// the real store that a burn with a credential genuinely destroys.
+    #[test]
+    fn the_burn_walk_never_counts_an_object_it_could_not_destroy() {
+        let dir = std::env::temp_dir();
+        let send_key = [0x22u8; 32];
+        let bridge_id = "c882e13e918656da".to_owned();
+        let capability = "e120fe7bb3c76b186459a18d115a8885".to_owned();
+
+        // A real uploaded object whose credential was never recorded — the
+        // pre-D-232 ledger row. Undeletable, and required to say so.
+        let (deleted, failed) = burn_recorded_prose_blobs(
+            &dir,
+            None,
+            Some(&send_key),
+            vec![ipc::scope_blobs_file::RecordedBlob {
+                blob_id: bridge_id.clone(),
+                burn_capability: None,
+            }],
+        );
+        assert_eq!(deleted, 0, "a blob with no burn credential was counted as destroyed");
+        assert_eq!(failed.len(), 1, "an undeletable blob must be retained for a later attempt");
+        assert_eq!(failed[0].blob_id, bridge_id);
+
+        // No device identity: nothing remote can be destroyed, and the objects
+        // must be kept rather than forgotten.
+        let (deleted, failed) = burn_recorded_prose_blobs(
+            &dir,
+            None,
+            None,
+            vec![ipc::scope_blobs_file::RecordedBlob {
+                blob_id: bridge_id.clone(),
+                burn_capability: Some(capability.clone()),
+            }],
+        );
+        assert_eq!(deleted, 0, "a burn without a send key was counted as destroyed");
+        assert_eq!(failed.len(), 1);
+        assert_eq!(
+            failed[0].burn_capability.as_deref(),
+            Some(capability.as_str()),
+            "the credential must be retained with the id, or the retry is doomed too"
+        );
+
+        // A retained failure must go back into the ledger complete — id AND
+        // credential. Re-recording the bare id would quietly convert a
+        // retryable failure into a permanently undeletable object.
+        let mut ledger = ipc::scope_blobs_file::ScopeBlobsFile::default();
+        for recorded in &failed {
+            ipc::scope_blobs_file::record_blob_with_capability(
+                &mut ledger,
+                "dm:test".to_owned(),
+                recorded.clone(),
+            );
+        }
+        assert_eq!(
+            ipc::scope_blobs_file::take_blobs_for_burn(&mut ledger, "dm:test"),
+            vec![ipc::scope_blobs_file::RecordedBlob {
+                blob_id: bridge_id,
+                burn_capability: Some(capability),
+            }]
+        );
+    }
+
     #[test]
     fn hub_ttl_accepts_only_the_four_presented_lifetimes() {
         for accepted in [3_600, 86_400, 259_200, 604_800] {
@@ -6693,11 +6846,17 @@ key"
             server_id: None,
             channel_id: Some("manual-dm-shared".to_owned()),
         };
+        // D-232: the burn credential is persisted beside the id, so a burn that
+        // happens long after the send can still authenticate. The second row is
+        // deliberately credential-less — that is the pre-D-232 shape, and it
+        // must survive the round trip as `None` rather than being invented.
+        const RECORDED_CAPABILITY: &str = "e120fe7bb3c76b186459a18d115a8885";
         record_peer_prose_blob_at_path(
             &security,
             &path,
             scope.clone(),
             "0011223344556677".to_owned(),
+            Some(RECORDED_CAPABILITY.to_owned()),
             &file_key,
         )
         .unwrap();
@@ -6706,20 +6865,35 @@ key"
             &path,
             scope.clone(),
             "8899aabbccddeeff".to_owned(),
+            None,
             &file_key,
         )
         .unwrap();
         let on_disk = std::fs::read(&path).unwrap();
         assert!(ipc::main_password::has_enc_magic(&on_disk));
+        // The credential is a delete authority, so it must never be readable
+        // from the file the way an unencrypted ledger would leave it.
+        assert!(!String::from_utf8_lossy(&on_disk).contains(RECORDED_CAPABILITY));
         let ledger = load_scope_blobs_strict_with_key(&path, &file_key).unwrap();
         assert_eq!(
             ipc::scope_blobs_file::count_for(&ledger, &scope.storage_key()),
             2
         );
         let mut burned = ledger;
+        let drained =
+            ipc::scope_blobs_file::take_blobs_for_burn(&mut burned, &scope.storage_key());
         assert_eq!(
-            ipc::scope_blobs_file::take_blobs(&mut burned, &scope.storage_key()).len(),
-            2
+            drained,
+            vec![
+                ipc::scope_blobs_file::RecordedBlob {
+                    blob_id: "0011223344556677".to_owned(),
+                    burn_capability: Some(RECORDED_CAPABILITY.to_owned()),
+                },
+                ipc::scope_blobs_file::RecordedBlob {
+                    blob_id: "8899aabbccddeeff".to_owned(),
+                    burn_capability: None,
+                },
+            ]
         );
         write_scope_blobs_with_key(&path, &burned, &file_key).unwrap();
         let cleared = load_scope_blobs_strict_with_key(&path, &file_key).unwrap();

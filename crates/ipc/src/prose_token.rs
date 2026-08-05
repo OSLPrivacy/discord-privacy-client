@@ -113,7 +113,13 @@ const BRIDGE_FETCH_INFO: &[u8] = b"osl/bridge/b0-01/fetch-token/v1";
 
 /// Width of the id the deployed Worker assigns: 8 bytes, rendered as the
 /// 16 hex chars `CipherStoreClient::upload` validates.
-const BRIDGE_ID_BYTES: usize = 8;
+///
+/// Public because consumers of a recovered pointer must validate the width the
+/// send path actually produces rather than restating one of their own. D-232
+/// was exactly that drift: `apps/osl-hub/src/broker.rs` hard-coded the
+/// destination Worker's 32-hex width and silently discarded every row this
+/// bridge produced.
+pub const BRIDGE_ID_BYTES: usize = 8;
 
 /// Whatever the id leaves over in the carrier becomes secret seed material.
 /// 96 bits, freshly drawn per message, and it never crosses the network —
@@ -198,6 +204,16 @@ pub enum ProseTokenError {
     CipherStore(#[from] CipherStoreError),
     #[error("blob id was not 32 hex chars: {0}")]
     BadIdHex(String),
+    /// D-232. The object was uploaded under the bridge protocol, whose only
+    /// delete authority is the fetch token chosen before upload, and no such
+    /// token was recorded beside the id. The object CANNOT be destroyed by this
+    /// client. Distinct from every transport error on purpose: a caller must be
+    /// able to tell "the network refused" from "we never kept the key to this",
+    /// and must never be able to mistake either for success.
+    #[error("no burn capability was recorded for blob {0}, so it cannot be destroyed")]
+    MissingBurnCapability(String),
+    #[error("recorded burn capability was malformed")]
+    BadBurnCapability,
     #[error("a secret conversation detection key is required")]
     MissingDetectionKey,
     #[error("pointer capability derivation failed")]
@@ -383,9 +399,38 @@ fn hex_lower(bytes: &[u8]) -> String {
 pub struct ProseTokenSendOutput {
     /// Natural-English cover text to post to Discord.
     pub cover_text: String,
-    /// 32-hex-char client-derived blob ID. Caller stashes for burn / lookup.
+    /// The blob ID the store answers to. Caller stashes for burn / lookup.
     /// It is not the pointer: the pointer never leaves the carrier.
+    ///
+    /// Its width names the protocol that produced it: [`BRIDGE_ID_BYTES`] * 2
+    /// hex under the deployed bridge, where the *server* assigns it, and
+    /// `CAPABILITY_BYTES` * 2 under the destination capability Worker, where
+    /// the client derives it from `P`. Consumers must accept the width their
+    /// own send path produces rather than restating one — see D-232.
     pub blob_id: String,
+    /// The credential this object can later be **destroyed** with, hex-encoded,
+    /// or `None` when the burn authority is recomputable without it.
+    ///
+    /// D-232. Under the bridge the delete authority is the fetch token, and it
+    /// is derived from a `seed` drawn freshly per message and never stored
+    /// anywhere else — so a sender that drops this value keeps an id it cannot
+    /// authenticate for, and its own burn can never delete. Verified live
+    /// against the deployed Worker on 2026-08-04:
+    ///
+    /// ```text
+    /// DELETE /v1/blob/<id>  x-osl-manage-cap: <cap>   -> 401 fetch_token_required
+    /// DELETE /v1/blob/<id>  x-osl-fetch-token: <tok>  -> 204
+    /// DELETE /v1/blob/<id>  x-osl-fetch-token: <bad>  -> 403 fetch_token_mismatch
+    /// ```
+    ///
+    /// So burn is NOT blocked on deploying the capability Worker; it is blocked
+    /// on the sender retaining this. The caller MUST persist it beside the id.
+    ///
+    /// Under the destination protocol this is `None`: the manage capability is
+    /// derived from the sender-private `send_key` and the id, so nothing has to
+    /// be kept. That asymmetry is the point — it is why this is an `Option` and
+    /// not a required field that Phase 2 would have to fill with a dummy.
+    pub burn_capability: Option<String>,
     /// Unix-epoch seconds when the server will delete the blob.
     pub expires_at: i64,
 }
@@ -492,6 +537,10 @@ pub fn prose_token_send_with_client(
     Ok(ProseTokenSendOutput {
         cover_text,
         blob_id: uploaded.id_hex,
+        // D-232. The bridge's delete authority IS this token, and `seed` is
+        // gone the moment this function returns. Handing it back is what makes
+        // the sender's own burn possible at all.
+        burn_capability: Some(hex_lower(&fetch_token)),
         expires_at: uploaded.expires_at,
     })
 }
@@ -640,6 +689,88 @@ pub fn prose_token_burn_id_with_client(
     Ok(())
 }
 
+/// Parse a recorded bridge burn capability: the hex of a [`FETCH_TOKEN_BYTES`]
+/// token. Deliberately strict and deliberately separate from
+/// [`blob_id_hex_to_bytes`] — an id is not a credential and the two must never
+/// be interchangeable by accident.
+fn burn_capability_hex_to_bytes(
+    capability_hex: &str,
+) -> Result<[u8; FETCH_TOKEN_BYTES], ProseTokenError> {
+    if capability_hex.len() != FETCH_TOKEN_BYTES * 2
+        || !capability_hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ProseTokenError::BadBurnCapability);
+    }
+    let mut bytes = [0u8; FETCH_TOKEN_BYTES];
+    for (index, slot) in bytes.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&capability_hex[index * 2..index * 2 + 2], 16)
+            .map_err(|_| ProseTokenError::BadBurnCapability)?;
+    }
+    Ok(bytes)
+}
+
+/// Burn one blob the way the send path that created it can actually be
+/// authenticated for.
+///
+/// **D-232.** This exists because burn was speaking a different protocol from
+/// send. `prose_token_burn_id` presents a manage capability derived from the
+/// sender's `send_key` and a 32-hex client-derived id — the *destination*
+/// capability protocol. The deployed Worker implements the *bridge* protocol:
+/// it assigns its own 8-byte id and its DELETE accepts only the fetch token
+/// (`401 fetch_token_required` for a manage cap, `204` for the right token —
+/// measured live 2026-08-04). So every id the shipping send path recorded was
+/// refused locally by the 32-hex parser before a packet was sent, and the
+/// hub's panic burn and scope burn destroyed nothing while counting zero.
+///
+/// The dispatch is on the recorded object's own protocol, never on a width
+/// allowlist: a destination-width id burns with the derived manage capability
+/// exactly as before, and a bridge-width id burns with the capability the
+/// sender persisted at send time.
+///
+/// **This never silently succeeds.** A recorded object with no usable
+/// credential returns [`ProseTokenError::MissingBurnCapability`] rather than
+/// `Ok`, so a burn that cannot delete is counted as a failure and reported as
+/// one. That is the whole point: the defect was not that burn failed, it was
+/// that it failed quietly while the walk reported completion.
+pub fn prose_token_burn_recorded_with_client(
+    client: &CipherStoreClient,
+    send_key: &[u8],
+    blob_id: &str,
+    burn_capability: Option<&str>,
+) -> Result<(), ProseTokenError> {
+    // Destination protocol: the id is client-derived, so the manage capability
+    // is recomputable and nothing needed to be kept.
+    if blob_id.len() == CAPABILITY_BYTES * 2 {
+        return prose_token_burn_id_with_client(client, send_key, blob_id);
+    }
+    // Bridge protocol: the store assigned the id, and the only credential its
+    // DELETE honours is the fetch token the sender chose before uploading.
+    if blob_id.len() == BRIDGE_ID_BYTES * 2 {
+        let _ = bridge_id_from_hex(blob_id)?;
+        let capability = burn_capability.ok_or_else(|| {
+            ProseTokenError::MissingBurnCapability(blob_id.to_string())
+        })?;
+        let token = burn_capability_hex_to_bytes(capability)?;
+        client.delete(blob_id, &token)?;
+        return Ok(());
+    }
+    Err(ProseTokenError::BadIdHex(blob_id.to_string()))
+}
+
+/// Same dispatch, resolving the store client from `config_dir`.
+pub fn prose_token_burn_recorded(
+    config_dir: &std::path::Path,
+    send_key: &[u8],
+    blob_id: &str,
+    burn_capability: Option<&str>,
+) -> Result<(), ProseTokenError> {
+    let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir)?;
+    let client = CipherStoreClient::new(base_url)?;
+    prose_token_burn_recorded_with_client(&client, send_key, blob_id, burn_capability)
+}
+
 #[cfg(test)]
 mod tests {
     // BRIDGE (B0-01): the pointer-capability tests below still pin the
@@ -664,6 +795,82 @@ mod tests {
         hk.expand(PROSE_TOKEN_MAC_HKDF_INFO, &mut key)
             .expect("HKDF expand to 32 bytes is infallible");
         Ok(key)
+    }
+
+    /// D-232. The burn dispatch must refuse, loudly and by a distinguishable
+    /// error, every recorded object it has no way to destroy. All three cases
+    /// below decide before any request is made, which is why this test needs no
+    /// network: the point is that they decide at all rather than returning
+    /// `Ok`. The deletion that *does* happen is proven live in
+    /// `tests/d232_burn_walk_live.rs` — a local test could only ever prove the
+    /// refusals.
+    #[test]
+    fn a_recorded_object_that_cannot_be_destroyed_is_never_reported_destroyed() {
+        // Never contacted: every assertion below fails before any request.
+        let client = CipherStoreClient::new("http://127.0.0.1:1").expect("unrouted test client");
+        let send_key = [0x22u8; 32];
+        let bridge_id = "c882e13e918656da";
+        let capability = "e120fe7bb3c76b186459a18d115a8885";
+        assert_eq!(bridge_id.len(), BRIDGE_ID_BYTES * 2);
+        assert_eq!(capability.len(), FETCH_TOKEN_BYTES * 2);
+
+        // The exact pre-D-232 row: a real uploaded object whose delete
+        // credential was thrown away. It cannot be destroyed, and saying so is
+        // the whole contract.
+        match prose_token_burn_recorded_with_client(&client, &send_key, bridge_id, None) {
+            Err(ProseTokenError::MissingBurnCapability(id)) => assert_eq!(id, bridge_id),
+            other => panic!("a credential-less bridge row must report that it cannot burn: {other:?}"),
+        }
+
+        // A malformed credential is not a credential.
+        for bad in ["", "abc", "E120FE7BB3C76B186459A18D115A8885", "zz20fe7bb3c76b186459a18d115a888"]
+        {
+            assert!(
+                matches!(
+                    prose_token_burn_recorded_with_client(&client, &send_key, bridge_id, Some(bad)),
+                    Err(ProseTokenError::BadBurnCapability)
+                ),
+                "a malformed burn capability must be refused: {bad:?}"
+            );
+        }
+
+        // An id of neither protocol's width is still a hard refusal, so
+        // dispatching on width never became "try something and hope".
+        for bad in ["", "c882e13e918656d", "c882e13e918656dab", "0707070707070707070707070707070"]
+        {
+            assert!(
+                matches!(
+                    prose_token_burn_recorded_with_client(
+                        &client,
+                        &send_key,
+                        bad,
+                        Some(capability)
+                    ),
+                    Err(ProseTokenError::BadIdHex(_))
+                ),
+                "an id of no known store protocol must be refused: {bad:?}"
+            );
+        }
+    }
+
+    /// The bridge send must hand back the credential its own protocol needs to
+    /// delete, because `seed` is unrecoverable once the send returns. This is
+    /// a structural pin on the send output, not on the network.
+    #[test]
+    fn the_bridge_send_yields_a_usable_burn_capability_for_the_id_it_returns() {
+        let seed = [0x5au8; BRIDGE_SEED_BYTES];
+        let token = bridge_fetch_token(&seed);
+        let capability = hex_lower(&token);
+        assert_eq!(capability.len(), FETCH_TOKEN_BYTES * 2);
+        // It must survive the round trip the ledger puts it through.
+        assert_eq!(
+            burn_capability_hex_to_bytes(&capability).expect("recorded capability parses"),
+            token
+        );
+        // And it must be the seed's own derivation, not a constant: two seeds,
+        // two credentials.
+        let other = bridge_fetch_token(&[0x5bu8; BRIDGE_SEED_BYTES]);
+        assert_ne!(token, other);
     }
 
     #[test]

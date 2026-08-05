@@ -1946,14 +1946,30 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
     // "prepare" reads as client-side, while this call is the UPLOAD, so the
     // investigation looked past the server interaction that had actually failed.
     .map_err(|error| format!("OSL could not prepare the encrypted copy text ({error})"))?;
-    if security::record_peer_prose_blob(security_state, scope.clone(), uploaded.blob_id.clone())
-        .is_err()
+    if security::record_peer_prose_blob(
+        security_state,
+        scope.clone(),
+        uploaded.blob_id.clone(),
+        uploaded.burn_capability.clone(),
+    )
+    .is_err()
     {
         // Same route for the rollback as for the upload it destroys.
-        if burn_uploaded_prose_blob(&dir, Some(store_client), &send_key, &uploaded.blob_id).is_err()
+        if burn_uploaded_prose_blob(
+            &dir,
+            Some(store_client),
+            &send_key,
+            &uploaded.blob_id,
+            uploaded.burn_capability.as_deref(),
+        )
+        .is_err()
         {
-            let _ =
-                security::record_peer_prose_blob(security_state, scope, uploaded.blob_id.clone());
+            let _ = security::record_peer_prose_blob(
+                security_state,
+                scope,
+                uploaded.blob_id.clone(),
+                uploaded.burn_capability.clone(),
+            );
         }
         return Err("OSL could not save the encrypted message safely".to_owned());
     }
@@ -1995,17 +2011,30 @@ fn prepare_peer_prose_text_inner(
 /// is `None` the upload was unrouted too, and the direct helper is reached
 /// through the same process-wide interlock the upload passed -- so a Tor
 /// choice that arrived in between refuses here instead of leaking a DELETE.
+/// D-232: the rollback DELETE is a burn like any other, so it must present the
+/// credential the protocol that uploaded the object actually accepts. It used
+/// to present a manage capability the deployed Worker answers 401 to, which
+/// meant a failed ledger write left a live object behind every time.
 fn burn_uploaded_prose_blob(
     config_dir: &std::path::Path,
     store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
     send_key: &[u8],
     blob_id: &str,
+    burn_capability: Option<&str>,
 ) -> Result<(), ipc::prose_token::ProseTokenError> {
     match store_client {
-        Some(client) => {
-            ipc::prose_token::prose_token_burn_id_with_client(client, send_key, blob_id)
-        }
-        None => ipc::prose_token::prose_token_burn_id(config_dir, send_key, blob_id),
+        Some(client) => ipc::prose_token::prose_token_burn_recorded_with_client(
+            client,
+            send_key,
+            blob_id,
+            burn_capability,
+        ),
+        None => ipc::prose_token::prose_token_burn_recorded(
+            config_dir,
+            send_key,
+            blob_id,
+            burn_capability,
+        ),
     }
 }
 
@@ -2114,6 +2143,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
         security_state,
         manual.scope.clone(),
         uploaded.blob_id.clone(),
+        uploaded.burn_capability.clone(),
     )
     .is_err()
     {
@@ -2122,7 +2152,15 @@ fn prepare_peer_prose_text_inner_with_chunk(
         // that upload to this device's real address -- a correlation the
         // upload itself never produced. Hand the burn the client the upload
         // used; a route that had none is still the same route.
-        if burn_uploaded_prose_blob(&dir, store_client, &send_key, &uploaded.blob_id).is_err() {
+        if burn_uploaded_prose_blob(
+            &dir,
+            store_client,
+            &send_key,
+            &uploaded.blob_id,
+            uploaded.burn_capability.as_deref(),
+        )
+        .is_err()
+        {
             // A transient primary-ledger failure must not become an
             // untracked remote blob if the authenticated DELETE also fails.
             // Retry the encrypted recoverable ledger before returning failure.
@@ -2130,6 +2168,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
                 security_state,
                 manual.scope.clone(),
                 uploaded.blob_id.clone(),
+                uploaded.burn_capability.clone(),
             );
         }
         return Err("OSL could not save the encrypted message safely".to_owned());
@@ -3636,10 +3675,19 @@ fn bind_authenticated_native_row(
         ),
         _ => return None,
     };
-    // 128-bit client-derived cipher-store id. It was 16 hex chars while the
-    // store assigned ids itself; the pointer migration made it the 32-hex
-    // value both ends derive from `P`.
-    if !canonical_hex(&authenticated.blob_id, 32)
+    // The cipher-store id, at whichever width the protocol that produced it
+    // assigns. D-232: this used to require 32 hex on the grounds that "the
+    // pointer migration made it the 32-hex value both ends derive from `P`" —
+    // but the B0-01 bridge reverted to the deployed Worker's server-assigned
+    // 8-byte id, so `prose_token_recv*` hands this 16 hex on every real
+    // message and this check discarded the sender attribution of every row
+    // Discord ever delivered. Unconditionally: not a fallback, not a warning.
+    //
+    // Both widths are named by `ipc::prose_token` rather than restated here,
+    // because restating one is precisely how the drift happened. This stays a
+    // strict canonical-hex check at an exact width — an id of any other shape,
+    // including one hex short, is still refused.
+    if !is_canonical_store_blob_id(&authenticated.blob_id)
         || !canonical_hex(&authenticated.ciphertext_sha256, 64)
         || !bounded_attribution_id(&authenticated.payload.message_id)
     {
@@ -5781,6 +5829,20 @@ fn decode_typed_manual_wire(wire: &str, message_type: u8) -> Result<Vec<u8>, ()>
         return Err(());
     }
     Ok(bundle)
+}
+
+/// A cipher-store blob id, at one of the two widths the store protocols
+/// actually assign — never a free-form hex string.
+///
+/// D-232. The two widths are the two protocols: the deployed bridge Worker
+/// assigns [`ipc::prose_token::BRIDGE_ID_BYTES`], and the destination
+/// capability Worker takes a client-derived
+/// [`ipc::cipher_store_client::FETCH_TOKEN_BYTES`]-wide id. Both are sourced
+/// from the crate that produces them, so a consumer can no longer drift away
+/// from what the send path emits the way this one did.
+fn is_canonical_store_blob_id(value: &str) -> bool {
+    canonical_hex(value, ipc::prose_token::BRIDGE_ID_BYTES * 2)
+        || canonical_hex(value, ipc::cipher_store_client::FETCH_TOKEN_BYTES * 2)
 }
 
 fn canonical_hex(value: &str, length: usize) -> bool {
@@ -15726,6 +15788,92 @@ ok i will weekend again with you",
             self_settings_runtime_id: vec![42, 902],
             peer_avatar_runtime_id: vec![42, 903],
             peer_header_runtime_id: vec![42, 904],
+        }
+    }
+
+    /// D-232. `bind_authenticated_native_row` is the only constructor for row
+    /// attribution on the Discord receive leg, and it required a 32-hex blob
+    /// id — the width the *undeployed* capability Worker will assign. The
+    /// deployed Worker assigns its own 8-byte id, so `prose_token_recv*`
+    /// returns 16 hex (`BRIDGE_ID_BYTES`), and every bridge-era row therefore
+    /// lost its sender attribution unconditionally. Not a fallback, not a
+    /// degraded mode: `None`, on every single received message.
+    ///
+    /// The assertion is about attribution surviving a well-formed receive, not
+    /// about a number, so it stays honest whichever width the protocol settles
+    /// on. `an_ill_formed_blob_id_still_refuses_row_attribution` below is its
+    /// paired floor: this must never become "accept anything".
+    #[test]
+    fn a_blob_id_the_shipping_send_path_produces_still_binds_row_attribution() {
+        // Exactly what a live bridge send records — captured from the deployed
+        // store at ciphers.oslprivacy.com, which answers `POST /v1/blob` with
+        // `{"id":"<16 hex>"}`.
+        const BRIDGE_ERA_BLOB_ID: &str = "c882e13e918656da";
+        assert_eq!(
+            BRIDGE_ERA_BLOB_ID.len(),
+            ipc::prose_token::BRIDGE_ID_BYTES * 2,
+            "the fixture must be the width the shipping send path actually returns"
+        );
+        let evidence = bridge_era_evidence(
+            crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount,
+        );
+        let mut authenticated = matrix_authenticated(
+            PeerWireOrientation::PeerToSelf,
+            "payload-bridge-era",
+            "bridge-era plaintext",
+            'b',
+        );
+        authenticated.blob_id = BRIDGE_ERA_BLOB_ID.to_owned();
+
+        let joined = bind_authenticated_native_row(&evidence, authenticated);
+
+        let (_, _, attribution) = joined.expect(
+            "a row whose pointer the shipping send path produced must keep its sender attribution",
+        );
+        assert_eq!(attribution.blob_id, BRIDGE_ERA_BLOB_ID);
+    }
+
+    /// The floor for the test above: widening the accepted id must not become
+    /// "accept anything". Nothing here is a width the send path can emit.
+    #[test]
+    fn an_ill_formed_blob_id_still_refuses_row_attribution() {
+        for bad in [
+            "",
+            "c882e13e918656d",    // 15 — one short of the bridge width
+            "c882e13e918656dab",  // 17 — one over
+            "C882E13E918656DA",   // not the canonical lowercase the store indexes
+            "c882e13e918656dz",   // not hex
+            "zzzzzzzzzzzzzzzz",
+        ] {
+            let evidence = bridge_era_evidence(
+                crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount,
+            );
+            let mut authenticated = matrix_authenticated(
+                PeerWireOrientation::PeerToSelf,
+                "payload-bridge-era",
+                "bridge-era plaintext",
+                'b',
+            );
+            authenticated.blob_id = bad.to_owned();
+            assert!(
+                bind_authenticated_native_row(&evidence, authenticated).is_none(),
+                "an ill-formed blob id must not produce row attribution: {bad:?}"
+            );
+        }
+    }
+
+    fn bridge_era_evidence(
+        poster: crate::native_discord_adapter::NativeDiscordRowPoster,
+    ) -> crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
+        crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
+            discord_message_id: "111111111111111111".to_owned(),
+            poster_identity_sha256: "a".repeat(64),
+            poster,
+            native_locator_sha256: "b".repeat(64),
+            carrier_sha256: "c".repeat(64),
+            scope_binding_sha256: "d".repeat(64),
+            window_generation: 7,
+            row_index: 0,
         }
     }
 
