@@ -683,6 +683,14 @@ OSL uses one signed per-user Windows installer, a Start-menu/Desktop entry and a
 - Native-app installers are a separate explicit user action. OSL invokes only reviewed fixed package identifiers and never executes a user-provided path or shell command.
 - Release CI verifies the Authenticode publisher and exact artifact hash after build and after download; updater-key signatures do not substitute for Windows publisher signing.
 
+**Status 2026-08-04 — this section is a requirement, not a description of the shipping build.** The
+installer is **not** Authenticode-signed and release CI verifies **no** Authenticode publisher: neither
+`certificateThumbprint` nor `signCommand` appears in `apps/osl-hub/tauri.conf.json`, and no workflow
+invokes `signtool`. What is signed today is the **updater payload**, with a minisign key
+(`apps/osl-hub/tauri.conf.json:52`) — which this same bullet correctly says is not a substitute. Read
+"one signed per-user Windows installer" above as signed by that updater key only. Windows publisher
+signing is deferred by owner decision D63; see `docs/release/code-signing-decision.md`.
+
 ## Activity and receipts
 
 Activity is a human-readable proof surface, not a developer log.
