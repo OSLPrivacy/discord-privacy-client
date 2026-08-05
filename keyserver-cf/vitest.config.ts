@@ -4,10 +4,22 @@ import {
   readD1Migrations,
 } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+import { assertProjectMigrationSequences } from "./scripts/migration-sequence.js";
 
 export default defineConfig({
   plugins: [
     cloudflareTest(async () => {
+      // D-287. Deliberately HERE, and before `readD1Migrations`, rather than in
+      // a spec of its own: `readD1Migrations` is the thing that turns this
+      // directory into the schema every Worker test runs against, and it sorts
+      // by NAME exactly as `wrangler d1 migrations apply` does. So a directory
+      // holding an unrecorded gap or an unrecorded duplicate cannot produce a
+      // migration set at all, and the whole worker suite refuses together —
+      // there is no single spec to skip and no single assertion to delete
+      // without 500+ tests going red in the same run. `scripts/
+      // migration-sequence.test.ts` proves the rule's properties; this call is
+      // what makes it unavoidable.
+      assertProjectMigrationSequences(__dirname);
       const migrationsPath = path.join(__dirname, "migrations");
       const migrations = await readD1Migrations(migrationsPath);
       return {
