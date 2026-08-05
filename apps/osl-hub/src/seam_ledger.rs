@@ -191,11 +191,14 @@ fn row_from(fleet: &FleetRow) -> SeamRow {
         provider: provider_slug(fleet.id),
         declared: seam_slug(fleet.seam),
         published: fleet.published,
-        support: if fleet.published {
-            format!("{:?}", fleet.support)
-        } else {
-            "ComingSoon".to_owned()
-        },
+        // The PUBLIC CLAIM, not the adapter profile's internal support level and
+        // not the word "ComingSoon" stamped on everything unpublished. That
+        // stamp was this ledger's own copy of the collapse `PLAN.md` r4-5 names:
+        // it printed the same label for a provider never built, one built and
+        // never proven, and one measured and refused.
+        support: crate::claim_state::public_claim(crate::native_apps::claim_surface(fleet.id))
+            .slug()
+            .to_owned(),
         receipt_present,
         receipt_sound,
         seam_drifted,
@@ -213,13 +216,18 @@ pub(crate) fn render(rows: &[SeamRow]) -> String {
     let mut out = String::from(
         "\nLEDGER 9 -- THE SEAM LEDGER: adapters declared vs adapters with a live carry receipt\n\
          ------------------------------------------------------------------------------------\n  \
-         provider   support        declared seam          recpt sound drift  verdict\n",
+         provider   claim          pub   declared seam          recpt sound drift  verdict\n",
     );
     for row in rows {
         out.push_str(&format!(
-            "  {:<10} {:<13} {:<22} {:<5} {:<5} {:<6} {}\n",
+            "  {:<10} {:<14} {:<5} {:<22} {:<5} {:<5} {:<6} {}\n",
             row.provider,
+            // The PUBLIC CLAIM and whether the adapter is PUBLISHED are two
+            // different facts, and the row states both. They used to be one
+            // column, which is why an unpublished provider printed the word
+            // "ComingSoon" whatever its evidence said.
             row.support,
+            if row.published { "yes" } else { "no" },
             row.declared,
             if row.receipt_present { "yes" } else { "NO" },
             if row.receipt_sound { "yes" } else { "NO" },

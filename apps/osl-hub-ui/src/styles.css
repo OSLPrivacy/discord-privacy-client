@@ -3564,6 +3564,38 @@ code {
 .setting-line small { display: block; }
 .setting-line small { max-width: 520px; margin-top: 3px; color: var(--muted); }
 
+/* THE CLAIM STATE. Every connected app ships the sentence that says what OSL
+   has and has not proven there, next to the label it justifies. The row grows
+   to fit it rather than clipping it: a reason that does not fit is a reason
+   nobody reads, and the whole point of the claim state is that the label never
+   travels alone. */
+.setting-line.native-claim-line {
+  align-items: flex-start;
+  padding: 12px 0;
+}
+
+.native-claim-note {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 620px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.carrier-receipt-census {
+  max-width: 620px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .account-settings-list,
 .sidebar-order-list {
   margin-top: 14px;
