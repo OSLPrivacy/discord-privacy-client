@@ -369,6 +369,10 @@ describe("bundled preview security boundary", () => {
       // no keyserver, no shell, nothing written outside the in-process capture
       // state. It commits and reports the EFFECTIVE protection, not the
       // requested one, so an enforcement that failed cannot render as success.
+      // Its blast radius is a display-protection preference for one
+      // already-bound peer, and is not in the same class as the Scrub deletion
+      // grants further down: the worst outcome here is that a window is not
+      // protected and the UI says so, not that data is destroyed.
       "allow-set-osl-chat-capture-preference",
       // Discord QA-shell headless-testing hooks. Their Rust command handlers
       // are compiled only under the `discord-qa-shell` Cargo feature, which is
