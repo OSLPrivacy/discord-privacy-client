@@ -359,6 +359,21 @@ describe("bundled preview security boundary", () => {
       "allow-activate-native-manual-peer-context",
       "allow-activate-osl-chat-context",
       "allow-close-osl-chat-context",
+      // Landed by 2e4d8598d for a command the capture-gate lane shipped dead,
+      // and it missed THIS lockfile the same way db312820f below did.
+      // `set_osl_chat_capture_preference` (apps/osl-hub/src/main.rs:5670) is
+      // local and enforces its own caller check in the handler as well as here:
+      // it returns Err unless `caller.label() == "main"`. It then resolves the
+      // person through an EXISTING manual peer binding (the renderer cannot mint
+      // one) and toggles Windows capture protection on that window. No socket,
+      // no keyserver, no shell, nothing written outside the in-process capture
+      // state. It commits and reports the EFFECTIVE protection, not the
+      // requested one, so an enforcement that failed cannot render as success.
+      // Its blast radius is a display-protection preference for one
+      // already-bound peer, and is not in the same class as the Scrub deletion
+      // grants further down: the worst outcome here is that a window is not
+      // protected and the UI says so, not that data is destroyed.
+      "allow-set-osl-chat-capture-preference",
       // Discord QA-shell headless-testing hooks. Their Rust command handlers
       // are compiled only under the `discord-qa-shell` Cargo feature, which is
       // NOT in the default feature set (see apps/osl-hub/Cargo.toml) — the
@@ -382,6 +397,97 @@ describe("bundled preview security boundary", () => {
       "allow-open-hosted-session-scan",
       "allow-request-hosted-session-scan",
       "allow-request-hosted-session-scan-command",
+      // Scrub guided deletion, 2026-08-04 (db312820f). That commit registered
+      // three commands and granted all three in capabilities/hub.json without
+      // adding one line here. Two are recorded below. The third,
+      // `allow-execute-discord-guided-deletion`, is REFUSED -- see the block
+      // after them. Do not add it to make this test green.
+      //
+      // `scan_discord_own_messages_for_deletion` (apps/osl-hub/src/main.rs:786)
+      // is read-only and takes NO renderer argument at all -- no account,
+      // handle, credential, profile, path, URL, conversation, row or selector.
+      // It requires an unlocked active OSL identity and an active native overlay
+      // context whose `service_id` is "discord"
+      // (`checked_host_for_hosted_session_scan`, main.rs:675), refuses if the
+      // window generation moved during the walk, and re-proves the overlay
+      // context afterwards (`checked_hosted_session_scan_flow`,
+      // hub_command_surface.rs:131). What it returns is content-free: per row a
+      // pixel height, two ordinals and a UTF-8 LENGTH -- never row text, never a
+      // conversation name. Recording a scan CLEARS any stored preview
+      // (`record_scan`, hub_command_surface.rs:200), so calling it can only
+      // narrow a pending deletion authority, never widen one. Its body is
+      // identical to the already-granted `request_hosted_session_scan_command`.
+      // Read its NAME sceptically rather than trusting it: "own messages" is a
+      // display-name PREFIX match on the row's rendered accessible line
+      // (`row_is_authored_by_operator`, native_discord_adapter.rs:7419), not a
+      // provider author identity -- see the refusal block. The scan itself is
+      // read-only whichever rows it lists, which is why it is granted and the
+      // executor is not.
+      "allow-scan-discord-own-messages-for-deletion",
+      // `preview_discord_guided_deletion` (main.rs:799) deletes nothing and
+      // reaches nothing outside this process. The renderer supplies only
+      // ordinals into the native-held scan; it cannot supply a row, a name, a
+      // path or a digest, and it cannot mint a scan. Pro entitlement is answered
+      // by native code (`ipc::tier_gate::is_paid_equivalent`), never by the
+      // renderer. `build_preview` (guided_deletion.rs:375) fails closed on a
+      // truncated walk, an empty / oversized / duplicated selection, an ordinal
+      // absent from this scan's candidates, and any row not flagged as the
+      // operator's. Its output is a content-free digest over scope hash,
+      // generation and per-row shape/ordinal/length. The one power it does hold
+      // is that it is the ONLY producer of the preview an executor could later
+      // confirm -- which is why the executor's own grant is the one that carries
+      // the blast radius, and is withheld.
+      "allow-preview-discord-guided-deletion",
+      // DELIBERATELY NOT GRANTED: "allow-execute-discord-guided-deletion".
+      // capabilities/hub.json currently grants it, so this test is RED on
+      // exactly that one element. That is the intended state, not an oversight,
+      // and the fix is to remove it from hub.json or to close the gap below --
+      // NOT to paste the string in here.
+      //
+      // `execute_discord_guided_deletion` (main.rs:811) is the only irreversible
+      // action in this list. It drives Discord's own delete affordance against
+      // real messages on Discord's servers; nothing in OSL or anywhere else can
+      // undo it, which is why `DeletionPreview.irreversible` is a hardcoded
+      // `true`. Its scaffolding is genuinely strong: a plan cannot be minted by
+      // the renderer, `confirm_preview` requires a preview that only native code
+      // could have built, the preview's scope hash and generation must still
+      // equal the live native ones, the digest is recomputed natively and the
+      // echoed one must match, the preview is consumed on confirm so a
+      // confirmation cannot be replayed, `require_same_overlay_context` runs
+      // twice, `execute_guided_deletion` rechecks the scope hash, and every
+      // rung of `execute_row` is observation-gated.
+      //
+      // None of that establishes the one claim the grant's name makes, which is
+      // that it can only destroy the OPERATOR'S OWN messages. All three
+      // ownership checks -- `deletion_scan_from_rows` (adapter:7504),
+      // `build_preview` (guided_deletion.rs:402) and `execute_row`
+      // (guided_deletion.rs:929) -- read the SAME `authored_by_operator` bool,
+      // and that bool is produced once, by `row_is_authored_by_operator`
+      // (adapter:7419), as `line.strip_prefix(operator_name)` on the row's
+      // rendered accessible text. A display name is attacker-chosen: another
+      // participant who sets theirs to the operator's makes their rows
+      // candidates. The module names Discord's own menu as the second gate, and
+      // for an ordinary member it holds -- but an operator with Manage Messages
+      // IS offered Delete on other people's messages, and this route is not
+      // DM-only (the scope binding carries a group/server scope). The usual
+      // backstop, "the operator reads the exact plan before confirming", cannot
+      // catch it either: the preview is content-free by design, so an
+      // impersonator's row and the operator's own are a height, an ordinal and a
+      // length apart on screen.
+      //
+      // The fix is already sitting on the rows being read.
+      // `VisibleMessageRow.attribution` (adapter:6133) carries provider-proven
+      // `NativeDiscordRowAttributionEvidence` with `poster: SelfAccount |
+      // PeerAccount`, derived from Discord's own message id and identity, and
+      // explicitly not constructible by the renderer.
+      // `deletion_scan_from_rows` ignores it. Gate candidacy on
+      // `attribution.poster == SelfAccount` (and refuse a row with no
+      // attribution) and this grant becomes writable.
+      //
+      // Today every input rung of `HostDeletionSurface` is a stub returning
+      // false / NotObserved (adapter:7766-7809), so every row comes back `Held`
+      // and nothing is deleted at all. That is a pending measurement, not a
+      // security property, and it is NOT the reason to grant or withhold this.
       "allow-close-service-host",
       "allow-set-local-protected-sheet-open",
       // Stores the explicitly chosen route locally before onboarding proceeds;
