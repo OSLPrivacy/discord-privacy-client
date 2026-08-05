@@ -24,7 +24,9 @@ use osl_privacy_hub::browser_profile_scan::{
     BrowserProfileScanReceipt, BrowserProfileScanState,
 };
 use osl_privacy_hub::build_integrity::{check_current, BuildIntegrity};
-use osl_privacy_hub::chat_capture_protection::ChatCaptureProtectionState;
+use osl_privacy_hub::chat_capture_protection::{
+    ChatCaptureProtectionState, ConsentTransition, EffectiveCaptureProtection,
+};
 use osl_privacy_hub::cleanup::{self, HubFullCleanupResult};
 use osl_privacy_hub::components;
 use osl_privacy_hub::core_bridge::{
@@ -5474,6 +5476,31 @@ struct ManualPeerContextLease {
     scope_approved: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatCaptureProtectionDto {
+    local_opt_in: bool,
+    peer_opt_in: bool,
+    effective: &'static str,
+    effective_changed: Option<&'static str>,
+}
+
+fn capture_effective_label(value: EffectiveCaptureProtection) -> &'static str {
+    match value {
+        EffectiveCaptureProtection::Off => "off",
+        EffectiveCaptureProtection::On => "on",
+    }
+}
+
+fn chat_capture_protection_dto(transition: ConsentTransition) -> ChatCaptureProtectionDto {
+    ChatCaptureProtectionDto {
+        local_opt_in: transition.state.local_opt_in,
+        peer_opt_in: transition.state.peer_opt_in,
+        effective: capture_effective_label(transition.state.effective),
+        effective_changed: transition.effective_changed.map(capture_effective_label),
+    }
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn activate_local_loopback_context(
@@ -5637,6 +5664,37 @@ async fn activate_osl_chat_context(
         peer_osl_user_id: activated.peer_osl_user_id,
         scope_approved,
     })
+}
+
+#[tauri::command]
+async fn set_osl_chat_capture_preference(
+    caller: tauri::WebviewWindow,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    capture_protection: State<'_, ChatCaptureProtectionState>,
+    person_id: String,
+    local_opt_in: bool,
+) -> Result<ChatCaptureProtectionDto, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may change OSL Chat capture protection".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let binding = security::manual_peer_binding(&core, person_id)?;
+    let transition =
+        capture_protection.local_preference_transition(&binding.person_id, local_opt_in);
+    let enforced = match transition.effective_changed {
+        Some(EffectiveCaptureProtection::On) => {
+            screenshot::apply_to_window(&caller, active_osl_capture_protection()).is_ok()
+                && runtime::capture_protection_is_enforced()
+        }
+        Some(EffectiveCaptureProtection::Off) => {
+            screenshot::apply_to_window(&caller, runtime::ScreenshotProtection::Off).is_ok()
+        }
+        None => true,
+    };
+    let committed =
+        capture_protection.commit_transition_if_enforced(&binding.person_id, transition, enforced);
+    Ok(chat_capture_protection_dto(committed))
 }
 
 #[tauri::command]

@@ -10,9 +10,10 @@
 //! - **Windows**: real implementation — wraps
 //!   `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)` /
 //!   `WDA_NONE`.
-//! - **Non-Windows**: no-op stub so the rest of the binary compiles
-//!   on Linux / macOS dev environments. v1 alpha targets Windows
-//!   only; macOS / Linux compositor exclusions are deferred.
+//! - **Non-Windows**: `Off` is a no-op, but `On` fails closed because
+//!   there is no platform primitive that can prove capture exclusion.
+//!   v1 alpha targets Windows only; macOS / Linux compositor exclusions
+//!   are deferred.
 //!
 //! The longer function name remains for API compatibility with the Tauri
 //! glue. It deliberately does not call the API on child or foreign HWNDs:
@@ -35,8 +36,8 @@
 //! ## Errors
 //!
 //! Returns [`ScreenshotError::Win32`] with the GetLastError code on
-//! Windows-side failure of the parent call. Non-Windows always
-//! returns `Ok(())`.
+//! Windows-side failure of the parent call. Non-Windows returns `Ok(())`
+//! only for `Off`; requesting `On` returns an unsupported-platform error.
 
 use thiserror::Error;
 
@@ -53,6 +54,8 @@ pub enum ScreenshotProtection {
 pub enum ScreenshotError {
     #[error("SetWindowDisplayAffinity failed: {0}")]
     Win32(String),
+    #[error("capture protection failed: {0}")]
+    CaptureProtection(#[from] crate::screenshot_gate::CaptureProtectionError),
 }
 
 pub type Result<T> = core::result::Result<T, ScreenshotError>;
@@ -75,6 +78,10 @@ mod imp {
     }
 
     pub(super) fn apply(hwnd_isize: isize, protection: ScreenshotProtection) -> Result<()> {
+        if protection == ScreenshotProtection::On {
+            return crate::screenshot_gate::verify_capture_protection(hwnd_isize)
+                .map_err(ScreenshotError::from);
+        }
         // windows = "0.56.0": `HWND` is `pub struct HWND(pub isize);`
         // — wrap the raw isize directly. Earlier `*mut c_void` casts
         // here were a holdover from a different windows-rs version.
@@ -108,25 +115,27 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
-    use super::{Result, ScreenshotProtection};
+    use super::{Result, ScreenshotError, ScreenshotProtection};
+    use crate::screenshot_gate::CaptureProtectionError;
 
-    /// Non-Windows no-op. Always succeeds.
-    pub(super) fn apply(_hwnd: isize, _protection: ScreenshotProtection) -> Result<()> {
-        Ok(())
+    /// Non-Windows can explicitly disable protection, but cannot prove it.
+    pub(super) fn apply(_hwnd: isize, protection: ScreenshotProtection) -> Result<()> {
+        match protection {
+            ScreenshotProtection::Off => Ok(()),
+            ScreenshotProtection::On => Err(ScreenshotError::CaptureProtection(
+                CaptureProtectionError::UnsupportedPlatform,
+            )),
+        }
     }
 
-    /// Non-Windows no-op. Always succeeds.
-    pub(super) fn apply_with_children(
-        _hwnd: isize,
-        _protection: ScreenshotProtection,
-    ) -> Result<()> {
-        Ok(())
+    /// Non-Windows can explicitly disable protection, but cannot prove it.
+    pub(super) fn apply_with_children(hwnd: isize, protection: ScreenshotProtection) -> Result<()> {
+        apply(hwnd, protection)
     }
 }
 
 /// Apply the chosen `protection` to the window with the given raw
-/// HWND value. On non-Windows targets this is a no-op that returns
-/// `Ok(())` so cross-platform callers don't need their own cfg-gates.
+/// HWND value. On non-Windows targets, `Off` succeeds and `On` fails closed.
 pub fn apply_to_hwnd(hwnd_isize: isize, protection: ScreenshotProtection) -> Result<()> {
     imp::apply(hwnd_isize, protection)
 }
@@ -134,11 +143,11 @@ pub fn apply_to_hwnd(hwnd_isize: isize, protection: ScreenshotProtection) -> Res
 /// Whether this build actually enforces capture resistance.
 ///
 /// `apply_to_hwnd` returning `Ok(())` is **not** evidence that anything was
-/// protected: off Windows the implementation is a no-op stub that always
-/// succeeds. Callers that put a claim about capture resistance in front of a
-/// user must gate that claim on this, not on the `Ok(())`. Off Windows the
-/// honest answer is "no capture protection exists here", and a UI that says
-/// otherwise is making a false public claim.
+/// protected: explicit disable paths can succeed even when no capture
+/// protection primitive exists. Callers that put a claim about capture
+/// resistance in front of a user must gate that claim on this, not on `Ok(())`.
+/// Off Windows the honest answer is "no capture protection exists here", and a
+/// UI that says otherwise is making a false public claim.
 pub const fn capture_protection_is_enforced() -> bool {
     cfg!(windows)
 }
@@ -148,7 +157,7 @@ pub const fn capture_protection_is_enforced() -> bool {
 /// `protection` to the supplied OSL-owned top-level window and does not
 /// attempt unsupported child or cross-process calls.
 ///
-/// On non-Windows targets this is a no-op stub returning `Ok(())`.
+/// On non-Windows targets, `Off` succeeds and `On` fails closed.
 pub fn apply_to_hwnd_and_children(
     hwnd_isize: isize,
     protection: ScreenshotProtection,
@@ -167,9 +176,10 @@ mod capture_enforcement_tests {
     /// must not be the same signal.
     #[test]
     fn a_successful_request_is_not_evidence_that_protection_is_enforced() {
-        assert!(apply_to_hwnd(0, ScreenshotProtection::On).is_ok());
+        assert!(apply_to_hwnd(0, ScreenshotProtection::Off).is_ok());
         assert_eq!(capture_protection_is_enforced(), cfg!(windows));
         if !cfg!(windows) {
+            assert!(apply_to_hwnd(0, ScreenshotProtection::On).is_err());
             assert!(
                 !capture_protection_is_enforced(),
                 "off Windows there is no display-affinity primitive at all, so no surface may claim capture resistance"

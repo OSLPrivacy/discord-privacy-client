@@ -123,6 +123,64 @@ impl ChatCaptureProtectionState {
             .entry(conversation_id.to_owned())
             .or_insert_with(CaptureConsent::new)
     }
+
+    pub fn local_preference_transition(
+        &self,
+        conversation_id: &str,
+        local_opt_in: bool,
+    ) -> ConsentTransition {
+        self.ensure_conversation(conversation_id)
+            .with_local_preference(local_opt_in)
+    }
+
+    pub fn peer_preference_transition(
+        &self,
+        conversation_id: &str,
+        peer_opt_in: bool,
+    ) -> ConsentTransition {
+        self.ensure_conversation(conversation_id)
+            .with_peer_preference(peer_opt_in)
+    }
+
+    pub fn commit_transition_if_enforced(
+        &self,
+        conversation_id: &str,
+        transition: ConsentTransition,
+        enforced: bool,
+    ) -> ConsentTransition {
+        let mut conversations = self
+            .conversations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let current = *conversations
+            .entry(conversation_id.to_owned())
+            .or_insert_with(CaptureConsent::new);
+        let committed = current.commit_if_enforced(transition, enforced);
+        *conversations
+            .get_mut(conversation_id)
+            .expect("conversation was inserted above") = committed.state;
+        committed
+    }
+
+    pub fn apply_local_preference(
+        &self,
+        conversation_id: &str,
+        local_opt_in: bool,
+        enforced: bool,
+    ) -> ConsentTransition {
+        let transition = self.local_preference_transition(conversation_id, local_opt_in);
+        self.commit_transition_if_enforced(conversation_id, transition, enforced)
+    }
+
+    pub fn apply_peer_preference(
+        &self,
+        conversation_id: &str,
+        peer_opt_in: bool,
+        enforced: bool,
+    ) -> ConsentTransition {
+        let transition = self.peer_preference_transition(conversation_id, peer_opt_in);
+        self.commit_transition_if_enforced(conversation_id, transition, enforced)
+    }
 }
 
 #[cfg(test)]
@@ -136,5 +194,50 @@ mod state_tests {
         assert!(!consent.local_opt_in);
         assert!(!consent.peer_opt_in);
         assert_eq!(consent.effective, EffectiveCaptureProtection::Off);
+    }
+
+    #[test]
+    fn shipping_state_commits_only_matching_two_party_transitions() {
+        let state = ChatCaptureProtectionState::default();
+
+        let local_only = state.apply_local_preference("person-a", true, true);
+        assert_eq!(local_only.effective_changed, None);
+        assert!(local_only.state.local_opt_in);
+        assert!(!local_only.state.peer_opt_in);
+        assert_eq!(local_only.state.effective, EffectiveCaptureProtection::Off);
+
+        let peer_match = state.apply_peer_preference("person-a", true, true);
+        assert_eq!(
+            peer_match.effective_changed,
+            Some(EffectiveCaptureProtection::On)
+        );
+        assert_eq!(peer_match.state.effective, EffectiveCaptureProtection::On);
+
+        let local_mismatch = state.apply_local_preference("person-a", false, true);
+        assert_eq!(local_mismatch.effective_changed, None);
+        assert_eq!(
+            local_mismatch.state.effective,
+            EffectiveCaptureProtection::On
+        );
+
+        let peer_match_off = state.apply_peer_preference("person-a", false, true);
+        assert_eq!(
+            peer_match_off.effective_changed,
+            Some(EffectiveCaptureProtection::Off)
+        );
+        assert_eq!(peer_match_off.state.effective, EffectiveCaptureProtection::Off);
+    }
+
+    #[test]
+    fn shipping_state_rolls_back_effective_changes_when_platform_enforcement_fails() {
+        let state = ChatCaptureProtectionState::default();
+        state.apply_local_preference("person-a", true, true);
+
+        let failed = state.apply_peer_preference("person-a", true, false);
+        assert_eq!(failed.effective_changed, None);
+        assert_eq!(failed.state, state.ensure_conversation("person-a"));
+        assert!(failed.state.local_opt_in);
+        assert!(!failed.state.peer_opt_in);
+        assert_eq!(failed.state.effective, EffectiveCaptureProtection::Off);
     }
 }

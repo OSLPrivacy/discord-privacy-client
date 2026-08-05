@@ -33,12 +33,9 @@ pub fn apply_to_window(
 #[cfg(not(windows))]
 pub fn apply_to_window(
     _window: &tauri::WebviewWindow,
-    _protection: ScreenshotProtection,
+    protection: ScreenshotProtection,
 ) -> IpcResult<()> {
-    // Non-Windows: runtime::apply_to_hwnd_and_children is a no-op; we
-    // still call through it for symmetry, even though we don't have
-    // an HWND.
-    runtime::apply_to_hwnd_and_children(0, _protection).map_err(|e| IpcError::Crypto(e.to_string()))
+    runtime::apply_to_hwnd_and_children(0, protection).map_err(|e| IpcError::Crypto(e.to_string()))
 }
 
 /// Apply `protection` to the top-level window containing `webview`.
@@ -66,7 +63,7 @@ pub fn apply_to_webview(
 #[cfg(not(windows))]
 pub fn apply_to_webview(
     _webview: &tauri::Webview,
-    _protection: ScreenshotProtection,
+    protection: ScreenshotProtection,
 ) -> IpcResult<()> {
-    runtime::apply_to_hwnd_and_children(0, _protection).map_err(|e| IpcError::Crypto(e.to_string()))
+    runtime::apply_to_hwnd_and_children(0, protection).map_err(|e| IpcError::Crypto(e.to_string()))
 }
