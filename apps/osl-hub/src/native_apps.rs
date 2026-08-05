@@ -3746,7 +3746,8 @@ pub(crate) mod tests {
             let mut drifted = carry_receipt::sample_sound_receipt();
             mutate(&mut drifted);
             let drifted_json = drifted.to_json();
-            let (action, detail) = classify_fleet_row(id, seam, false, None, Some(drifted_json.as_str()));
+            let (action, detail) =
+                classify_fleet_row(id, seam, false, None, Some(drifted_json.as_str()));
             assert_eq!(action, FleetAction::SubstrateDrift, "{detail}");
             assert!(crate::seam_ledger::classify(action, false, seam).1);
         }
@@ -3801,7 +3802,10 @@ pub(crate) mod tests {
             );
 
             let (present, sound, _, violation) = crate::seam_ledger::classify(action, false, seam);
-            assert!(present, "the receipt is on disk in this scenario ({phrase})");
+            assert!(
+                present,
+                "the receipt is on disk in this scenario ({phrase})"
+            );
             assert!(
                 !sound,
                 "ledger 9 prints `sound yes` for a receipt rated {verdict:?} ({phrase})"
@@ -3929,7 +3933,8 @@ pub(crate) mod tests {
                     .map(|(_, defect)| *defect);
                 let raw = std::fs::read_to_string(carry_receipt::receipt_path(id)).ok();
 
-                let (action, detail) = classify_fleet_row(id, seam, published, debt, raw.as_deref());
+                let (action, detail) =
+                    classify_fleet_row(id, seam, published, debt, raw.as_deref());
 
                 FleetRow {
                     id,
@@ -4398,6 +4403,77 @@ pub(crate) mod tests {
             )
         }
 
+        /// **D-244 — the two live runs, named, because ONE OF THEM CANNOT EARN A
+        /// RECEIPT AND TWO LANES LOST TIME REDISCOVERING THAT.**
+        ///
+        /// A carrier surface has exactly two shapes of live run, and on Discord
+        /// they are mutually exclusive by construction:
+        ///
+        /// * **Run A — [`LiveRun::PlacementProbe`].** The landing-oracle probe,
+        ///   borrowing the shipping write primitive
+        ///   (`native_discord_adapter::shipping_type_text`) with `send_enter` out
+        ///   of reach. Nothing is committed and nothing appears in anyone's chat.
+        ///   **This is the only run that can earn a [`LiveCarryReceipt`].**
+        /// * **Run B — [`LiveRun::ShippingSend`].** The shipping path,
+        ///   `native_discord_adapter`'s `place()`, which ends in `send_enter` and
+        ///   whose two success returns both report `enter_sent: true`. It posts.
+        ///   It produces the keystone's screenshots and the peer decode. **It
+        ///   earns no receipt and must not be made to claim one.**
+        ///
+        /// **Why a type and not the comment that was here before.** Two lanes
+        /// re-derived this split from source, a day apart, because the only thing
+        /// naming it was prose. The runs are now named where they are used:
+        /// [`LiveCarryReceipt::live_run`] answers *which run* rather than *a
+        /// boolean*, [`LiveCarryReceipt::write`] refuses a receipt Run B is
+        /// claiming before any artifact reaches disk, and
+        /// `a_run_that_can_commit_the_message_cannot_author_a_receipt` refuses to
+        /// let a file hold both a receipt and a verb that commits a message.
+        ///
+        /// **This does not weaken `verify_receipt`.** The serialized field is
+        /// still `enter_sent`, still `false` for Run A, and the verifier's
+        /// `enter_sent == false` clause is untouched. Two independent refusals now
+        /// stand between Run B and a receipt: this one at authorship, that one at
+        /// verification. Neither subsumes the other.
+        ///
+        /// The receipt's field stays a plain `bool` on purpose: a provider's
+        /// receipt is bound to its adapter's source hash, so retyping the field
+        /// would have edited `native_telegram_adapter.rs` and invalidated an
+        /// **earned** Telegram receipt. Re-earning a live proof to make a
+        /// refactor land is exactly backwards.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub(crate) enum LiveRun {
+            /// Run A. No Enter. Nothing posted. Proves **placement**.
+            PlacementProbe,
+            /// Run B. Presses Enter. Posts. Proves **carry end to end**, and
+            /// earns **no** receipt.
+            ShippingSend,
+        }
+
+        impl LiveRun {
+            /// What this run reports into the receipt's `enter_sent` field.
+            pub(crate) const fn enter_sent(self) -> bool {
+                match self {
+                    LiveRun::PlacementProbe => false,
+                    LiveRun::ShippingSend => true,
+                }
+            }
+
+            /// Whether a run of this shape may author a [`LiveCarryReceipt`] at
+            /// all. Only Run A may.
+            pub(crate) const fn earns_a_receipt(self) -> bool {
+                !self.enter_sent()
+            }
+
+            /// The name the plan and the tasklogs use, so a refusal names the run
+            /// the operator was actually driving.
+            pub(crate) const fn label(self) -> &'static str {
+                match self {
+                    LiveRun::PlacementProbe => "Run A (the oracle placement probe, no Enter)",
+                    LiveRun::ShippingSend => "Run B (the shipping send, which posts)",
+                }
+            }
+        }
+
         /// Everything a receipt states. Every field is something only a live run
         /// can observe, or a binding that makes a stale receipt detectable.
         #[derive(Clone, Debug)]
@@ -4428,6 +4504,10 @@ pub(crate) mod tests {
             pub payload_sha256: String,
             pub readback_sha256: String,
             pub recovered_sha256: String,
+            /// **Which of D-244's two runs authored this, in one byte.** Read it
+            /// through [`LiveCarryReceipt::live_run`], which names the run rather
+            /// than answering a boolean, and never author one without going
+            /// through [`LiveCarryReceipt::write`] — it refuses Run B.
             pub enter_sent: bool,
             pub composer_empty_after_clear: bool,
             pub recorded_utc: String,
@@ -4460,7 +4540,45 @@ pub(crate) mod tests {
                     + "\n"
             }
 
+            /// **The D-244 authorship gate.** A run that commits the message has
+            /// no receipt to write, and this refuses before any artifact reaches
+            /// disk — one refusal earlier, and by a different mechanism, than
+            /// `verify_receipt`'s `enter_sent == false` clause.
+            ///
+            /// Kept separate on purpose. The verifier reads *bytes* and can only
+            /// speak after a file exists; this reads the *run* and stops a Run B
+            /// artifact from existing at all. Neither subsumes the other, and
+            /// weakening either is weakening the proof.
+            pub(crate) fn refuse_unless_the_run_can_earn_one(&self) {
+                assert!(
+                    self.live_run().earns_a_receipt(),
+                    "D-244: {} cannot author a LiveCarryReceipt. A receipt is a PLACEMENT proof -- \
+                     it means `proven without touching anyone's chat`, which is exactly what \
+                     `enter_sent == false` records. A run that pressed Enter might have been \
+                     carried by the provider itself rather than by placement, so it earns the \
+                     screenshots and the peer decode and NOTHING ELSE. The keystone is two runs; \
+                     do not try to make it one.",
+                    self.live_run().label()
+                );
+            }
+
+            /// **Which of D-244's two runs this receipt is claiming**, named
+            /// rather than answered as a boolean.
+            ///
+            /// A receipt does not carry a run label of its own — it carries the
+            /// one observable that distinguishes the runs, and this is the
+            /// mapping. Anything that decides *about* a run reads this, so the
+            /// decision is made in one place and reads as the question it is.
+            pub(crate) fn live_run(&self) -> LiveRun {
+                if self.enter_sent {
+                    LiveRun::ShippingSend
+                } else {
+                    LiveRun::PlacementProbe
+                }
+            }
+
             pub(crate) fn write(&self, id: NativeAppId) {
+                self.refuse_unless_the_run_can_earn_one();
                 let path = receipt_path(id);
                 std::fs::create_dir_all(path.parent().expect("receipt has a parent"))
                     .expect("receipt directory is creatable");
@@ -4534,8 +4652,7 @@ pub(crate) mod tests {
             // receipt earned through one mechanism cannot be presented as evidence
             // for another.
             let claimed = seam_slug(seam);
-            let value: serde_json::Value =
-                serde_json::from_str(json).expect("already parsed once");
+            let value: serde_json::Value = serde_json::from_str(json).expect("already parsed once");
             if value["seam"].as_str() == Some(claimed) {
                 verdict
             } else {
@@ -4738,7 +4855,7 @@ pub(crate) mod tests {
                 payload_sha256: payload.clone(),
                 readback_sha256: sha256_hex(b"sample readback"),
                 recovered_sha256: payload,
-                enter_sent: false,
+                enter_sent: LiveRun::PlacementProbe.enter_sent(),
                 composer_empty_after_clear: true,
                 recorded_utc: "2026-08-04T00:00:00Z".to_owned(),
             }
@@ -4793,7 +4910,15 @@ pub(crate) mod tests {
                 (|r| r.recovered_sha256 = String::new(), "recovered payload"),
                 (|r| r.readback_sha256 = String::new(), "readback hash"),
                 (|r| r.byte_exact = false, "byte_exact"),
-                (|r| r.enter_sent = true, "enter_sent"),
+                // D-244: this mutation is literally *"claim Run B produced a
+                // receipt"*, and it is written that way so it reads as one. The
+                // verifier must reject the bytes on the `enter_sent == false`
+                // clause -- independently of, and after, the authorship gate that
+                // stops such a receipt reaching disk at all.
+                (
+                    |r| r.enter_sent = LiveRun::ShippingSend.enter_sent(),
+                    "enter_sent",
+                ),
                 (
                     |r| r.composer_empty_after_clear = false,
                     "composer_empty_after_clear",
@@ -4818,6 +4943,231 @@ pub(crate) mod tests {
                 "has changed since this receipt was earned",
             )]
         }
+    }
+
+    /// **D-244 — every file allowed to author a `LiveCarryReceipt`, and it is a
+    /// closed list on purpose.**
+    ///
+    /// A receipt is a **Run A** artifact. Adding a new author is therefore a
+    /// decision about which run a surface's live probe is, not a detail — so the
+    /// scan below requires this list to match the source *exactly*. A lane that
+    /// writes a fourth author gets a red test naming D-244 before it gets a
+    /// receipt, which is the whole point: the previous guard was a comment, and a
+    /// comment is what two lanes walked past.
+    ///
+    /// `native_apps.rs` is deliberately absent. It **defines** both runs and has
+    /// to be able to name [`carry_receipt::LiveRun::ShippingSend`] in order to
+    /// prove the refusals; it authors no live artifact.
+    const RECEIPT_AUTHORS: &[&str] = &[
+        "src/native_telegram_adapter.rs",
+        "src/landing_oracle/live_telegram.rs",
+        "src/landing_oracle/live_whatsapp.rs",
+    ];
+
+    /// Verbs that COMMIT a message. A file holding one of these is driving
+    /// **Run B**, and Run B earns no receipt.
+    ///
+    /// Matched call-shaped (`name(`) so the prose in `live_telegram.rs`'s module
+    /// header — which explains this very split — is not mistaken for a call.
+    const COMMIT_VERBS: &[&str] = &[
+        "send_enter(",
+        "place_carrier(",
+        "send_native_discord_overlay_carrier(",
+    ];
+
+    /// Every `.rs` under `apps/osl-hub/src`, with line comments removed so prose
+    /// about a verb is never read as a use of it.
+    ///
+    /// Truncating each line at its first `//` can in principle cut a string
+    /// literal short. That direction is safe here: it can only ever *hide* text
+    /// from the scan on a line that already contained a comment marker, and the
+    /// exact-list assertion below fails closed if an author disappears.
+    fn hub_sources_without_comments() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<(String, String)>) {
+            let entries = std::fs::read_dir(dir).expect("hub source tree is readable");
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, root, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let text = std::fs::read_to_string(&path).expect("hub source is readable");
+                    let stripped: String = text
+                        .lines()
+                        .map(|line| match line.find("//") {
+                            Some(at) => &line[..at],
+                            None => line,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let relative = path
+                        .strip_prefix(root)
+                        .expect("hub source is under the crate")
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    out.push((relative, stripped));
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut out = Vec::new();
+        walk(&root.join("src"), root, &mut out);
+        out
+    }
+
+    /// **D-244 — A RUN THAT CAN COMMIT THE MESSAGE CANNOT AUTHOR A RECEIPT, and
+    /// the separation is checked rather than described.**
+    ///
+    /// The keystone asked one live run for an artifact no single run can produce:
+    /// clauses that require a post need `enter_sent == true`, and
+    /// [`carry_receipt::verify_receipt`] rejects any receipt whose `enter_sent`
+    /// is not `false`. Two lanes rediscovered that from the inside because the
+    /// only thing separating the runs was prose.
+    ///
+    /// So: a file that authors a receipt must state `enter_sent: false` outright
+    /// at every construction site, must never be able to write `enter_sent:
+    /// true` there, and must hold **no verb that commits a message**. Wire the
+    /// shipping send into a receipt author and this goes red, naming the defect,
+    /// before anything reaches a live chat.
+    #[test]
+    fn a_run_that_can_commit_the_message_cannot_author_a_receipt() {
+        let sources = hub_sources_without_comments();
+        assert!(
+            sources.len() > 20,
+            "the source scan found {} files, which is too few to be reading the hub tree",
+            sources.len()
+        );
+
+        let mut authors: Vec<String> = sources
+            .iter()
+            .filter(|(name, text)| {
+                name != "src/native_apps.rs" && text.contains("LiveCarryReceipt {")
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        authors.sort();
+        let mut expected: Vec<String> = RECEIPT_AUTHORS.iter().map(|s| (*s).to_owned()).collect();
+        expected.sort();
+        assert_eq!(
+            authors, expected,
+            "the set of files that construct a LiveCarryReceipt changed. A receipt is a Run A \
+             artifact (D-244): decide which run the new surface's live probe is, then record it in \
+             RECEIPT_AUTHORS. Do not widen this list to make a red test pass."
+        );
+
+        for (name, text) in &sources {
+            if !authors.iter().any(|author| author == name) {
+                continue;
+            }
+            // Scoped to the receipt literals themselves. A file may well hold
+            // other receipt types with their own `enter_sent` -- the Telegram
+            // adapter's placement receipt does -- and those are not this gate's
+            // business.
+            let literals: Vec<&str> = text
+                .split("LiveCarryReceipt {")
+                .skip(1)
+                .map(|tail| &tail[..tail.find("};").expect("a receipt literal is terminated")])
+                .collect();
+            assert!(!literals.is_empty());
+            for literal in literals {
+                assert!(
+                    literal.contains("enter_sent: false"),
+                    "{name} builds a LiveCarryReceipt without writing `enter_sent: false` as a \
+                     literal. D-244: a receipt is a Run A artifact, and whether the run committed \
+                     must be a fact the author states outright -- never a value it computes, which \
+                     is how a Run B outcome would reach the field."
+                );
+                assert!(
+                    !literal.contains("enter_sent: true"),
+                    "{name} builds a LiveCarryReceipt claiming `enter_sent: true`. Run B posts, so \
+                     it can never earn a receipt -- see D-244. Split the run; do not merge the \
+                     artifact."
+                );
+            }
+            for verb in COMMIT_VERBS {
+                assert!(
+                    !text.contains(verb),
+                    "{name} authors a receipt and can reach `{verb}`, which COMMITS the message. A \
+                     receipt means `proven without touching anyone's chat`; a run that committed \
+                     might have been carried by the provider rather than by placement. D-244: two \
+                     runs, two artifacts."
+                );
+            }
+        }
+    }
+
+    /// The negative half of the gate above: the verbs it forbids must actually
+    /// exist in the tree, or it is checking for nothing.
+    ///
+    /// A gate that cannot fail is decoration. If `send_enter(` is renamed and
+    /// this is not updated, the separation check silently stops separating
+    /// anything — so the rename has to come through here.
+    ///
+    /// **`native_apps.rs` is excluded, and that exclusion is the whole test.**
+    /// [`COMMIT_VERBS`] lives in this file, so every verb is trivially "present"
+    /// in it as its own string literal. Scanning this file too made the check
+    /// self-satisfying: renaming `send_enter(` to a verb that exists nowhere
+    /// still passed, measured. It is the file *being asked about* that has to be
+    /// left out.
+    #[test]
+    fn the_commit_verbs_the_receipt_gate_forbids_are_real() {
+        let sources = hub_sources_without_comments();
+        for verb in COMMIT_VERBS {
+            let holders: Vec<&str> = sources
+                .iter()
+                .filter(|(name, text)| name != "src/native_apps.rs" && text.contains(verb))
+                .map(|(name, _)| name.as_str())
+                .collect();
+            assert!(
+                !holders.is_empty(),
+                "no file in the hub calls `{verb}`, so forbidding it in a receipt author proves \
+                 nothing. Either the verb was renamed -- update COMMIT_VERBS -- or the gate has \
+                 quietly become decoration."
+            );
+        }
+    }
+
+    /// **D-244 — the two runs disagree about `enter_sent` BY CONSTRUCTION, and
+    /// that is the whole reason the keystone is two runs.**
+    #[test]
+    fn only_the_placement_probe_run_can_earn_a_receipt() {
+        use carry_receipt::LiveRun;
+
+        assert!(!LiveRun::PlacementProbe.enter_sent());
+        assert!(LiveRun::ShippingSend.enter_sent());
+        assert!(LiveRun::PlacementProbe.earns_a_receipt());
+        assert!(
+            !LiveRun::ShippingSend.earns_a_receipt(),
+            "Run B posts. A receipt requires enter_sent == false. They cannot be the same run."
+        );
+    }
+
+    /// **D-244 mutation (b) — claiming Run B produced a receipt is REFUSED at
+    /// authorship**, before any artifact reaches disk, and independently of
+    /// `verify_receipt`.
+    #[test]
+    #[should_panic(expected = "cannot author a LiveCarryReceipt")]
+    fn a_receipt_claimed_for_the_shipping_send_run_is_refused_before_it_is_written() {
+        let mut receipt = carry_receipt::sample_sound_receipt();
+        receipt.enter_sent = carry_receipt::LiveRun::ShippingSend.enter_sent();
+        assert_eq!(receipt.live_run(), carry_receipt::LiveRun::ShippingSend);
+        receipt.refuse_unless_the_run_can_earn_one();
+    }
+
+    /// The control for the refusal above: the same receipt, authored by Run A,
+    /// passes the authorship gate. Without this the `should_panic` test could be
+    /// passing on any panic at all.
+    #[test]
+    fn a_receipt_authored_by_the_placement_probe_run_passes_the_authorship_gate() {
+        let receipt = carry_receipt::sample_sound_receipt();
+        assert_eq!(receipt.live_run(), carry_receipt::LiveRun::PlacementProbe);
+        receipt.refuse_unless_the_run_can_earn_one();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&receipt.to_json())
+                .expect("a receipt serialises")["enter_sent"],
+            serde_json::json!(false),
+            "Run A's receipt must still serialise enter_sent: false -- the verifier's clause is \
+             untouched and is what reads this byte."
+        );
     }
 
     #[test]
