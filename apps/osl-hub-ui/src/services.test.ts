@@ -401,9 +401,30 @@ describe("native app catalog agrees with the Rust support decision", () => {
    * NAME, which is precisely how "Telegram is already proven" survived as a
    * stale claim in the plan for weeks.
    */
-  it("claims a live carry receipt if and only if a usable one exists", async () => {
+  it("claims a live carry receipt if and only if a current-schema one exists", async () => {
     const receiptsDir = new URL("../../osl-hub/carry-receipts/", import.meta.url);
-    const usableReceipt = (id: string): boolean => {
+    // D-240: THIS IS A WEAKER PREDICATE THAN THE VERIFIER, AND IT IS NAMED FOR
+    // WHAT IT MEASURES.
+    //
+    // It used to be called `usableReceipt` and its failures said "usable". It
+    // reads ONE field. `verify_receipt` reads eighteen -- the seam-contract
+    // binding, the adapter hash, byte_exact, enter_sent, the recovered payload,
+    // the element count. A receipt with `byte_exact: false` still has
+    // `"schema": "osl-live-carry-receipt-v2"`, so this function calls it present
+    // and current while the Rust gate rates the same bytes `Invalid`. That gap
+    // IS D-240, one layer out, and the honest fix here is to stop borrowing the
+    // verifier's word for it rather than to grow a second verifier in
+    // TypeScript -- a second answer to the one question the receipt exists to
+    // answer is exactly what went wrong.
+    //
+    // SOUNDNESS IS DECIDED IN RUST AND NOWHERE ELSE:
+    // `claim_state::tests::the_carrier_receipt_census_is_computed_and_states_the_truth`
+    // and `native_apps::tests::no_native_app_is_published_above_coming_soon_...`
+    // both go red on a receipt this function would still let through. What THIS
+    // test owns is the frontend contract: the catalogue may not claim a receipt
+    // that is not on disk in the current schema, and may not fail to report one
+    // that is.
+    const receiptFileIsCurrentSchema = (id: string): boolean => {
       try {
         const raw = readFileSync(new URL(`${id}.json`, receiptsDir), "utf8");
         return JSON.parse(raw).schema === "osl-live-carry-receipt-v2";
@@ -414,11 +435,11 @@ describe("native app catalog agrees with the Rust support decision", () => {
 
     const catalog = await loadNativeApps();
     for (const app of catalog) {
-      const earned = usableReceipt(app.id);
+      const earned = receiptFileIsCurrentSchema(app.id);
       expect(
         app.carrierEvidence === "provenLiveWithReceipt",
         earned
-          ? `${app.id} has a usable receipt on disk but the catalogue does not report it`
+          ? `${app.id} has a current-schema receipt on disk but the catalogue does not report it`
           : `${app.id} claims a receipt that does not exist`,
       ).toBe(earned);
       // A receipt is EVIDENCE FOR a label, not permission to move one: an

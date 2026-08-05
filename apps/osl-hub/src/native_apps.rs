@@ -3622,11 +3622,20 @@ pub(crate) mod tests {
     ///   --exact --nocapture native_apps::tests::carry_receipt_fleet_rerun_report
     /// ```
     ///
-    /// It is not a report that cannot fail. Its classification is computed from
-    /// the receipt JSON and a freshly extracted contract, and is then required to
-    /// agree with `verify_receipt`'s independent verdict for every provider -- so
-    /// a report that stopped looking, or a verifier that stopped refusing, is a
-    /// failure and not a quiet blank line.
+    /// It is not a report that cannot fail. It covers every declared app, and
+    /// every row's action is re-derived here from `verify_receipt` over the real
+    /// tree, so a report that stopped looking is a failure and not a quiet blank
+    /// line.
+    ///
+    /// **What this check is and is not, stated honestly (D-240).** Since the
+    /// report's verdict is now *derived* from the verifier rather than computed
+    /// beside it, this loop is a WIRING check: it proves the derivation is still
+    /// wired and that the verdict-to-action map is faithful, not that two
+    /// independent readings agree. It was the "independent" version that lied --
+    /// the second route asked a weaker question. The teeth that actually refuse
+    /// a lying report are in
+    /// [`the_fleet_report_cannot_call_a_receipt_ok_that_the_verifier_refuses`],
+    /// which drives receipt bytes the tree does not contain.
     #[test]
     fn carry_receipt_fleet_rerun_report() {
         use carry_receipt::ReceiptVerdict;
@@ -3666,6 +3675,169 @@ pub(crate) mod tests {
                 row.id, row.action
             );
         }
+    }
+
+    /// One row's rendered line from the real operator-facing report, so the
+    /// assertions below read the SENTENCE A HUMAN READS rather than the enum
+    /// behind it. D-240 was a defect in the sentence.
+    fn rendered_row(id: NativeAppId, seam: CarrySeam, action: FleetAction, detail: &str) -> String {
+        render_fleet_report(&[FleetRow {
+            id,
+            published: false,
+            support: SupportLevel::ComingSoon,
+            seam,
+            action,
+            detail: detail.to_owned(),
+        }])
+    }
+
+    /// The action column of a rendered fleet-report line, by position rather
+    /// than by substring, so "does the table say Ok" cannot be answered by a
+    /// word that happened to appear in the detail text.
+    fn rendered_action_word(rendered: &str) -> String {
+        rendered
+            .lines()
+            .find(|line| line.starts_with("  telegram"))
+            .unwrap_or_else(|| panic!("no provider row in the rendered report:\n{rendered}"))
+            .split_whitespace()
+            .nth(3)
+            .expect("the rendered row has an action column")
+            .to_owned()
+    }
+
+    /// **D-240, THE REGRESSION.** The fleet report may not print `Ok` for a
+    /// receipt the verifier refuses -- and may not buy that by refusing
+    /// everything.
+    ///
+    /// Driven over receipt BYTES, not over the tree: every rejection the
+    /// verifier knows is pushed through the real classifier and the real
+    /// renderer, and the assertion is on the printed action column. Before the
+    /// fix, `byte_exact: false` alone printed
+    /// `telegram ... Ok  seam 06a86bda0d0b over 43 declarations` while
+    /// `verify_receipt` on the same bytes said `Invalid`.
+    ///
+    /// The three positive cases are what stops the fix being "make everything
+    /// fail": a sound receipt still prints `Ok`, a substrate-drifted one still
+    /// prints `SubstrateDrift` and still counts as sound, and a superseded v1
+    /// receipt still prints as a re-run rather than as never-sound.
+    #[test]
+    fn the_fleet_report_cannot_call_a_receipt_ok_that_the_verifier_refuses() {
+        let id = NativeAppId::Telegram;
+        let seam = carry_seam(id);
+
+        // POSITIVE 1: a receipt that is sound for the tree as it stands prints Ok.
+        let sound_json = carry_receipt::sample_sound_receipt().to_json();
+        let (action, detail) = classify_fleet_row(id, seam, false, None, Some(sound_json.as_str()));
+        assert_eq!(
+            action,
+            FleetAction::Ok,
+            "a sound receipt must still print Ok, or the report was fixed by making it useless: \
+             {detail}"
+        );
+        let rendered = rendered_row(id, seam, action, &detail);
+        assert_eq!(rendered_action_word(&rendered), "Ok", "\n{rendered}");
+        assert!(
+            crate::seam_ledger::classify(action, false, seam).1,
+            "ledger 9 must still read a sound receipt as sound"
+        );
+
+        // POSITIVE 2: substrate drift is earned, reported, and NOT fatal.
+        for (mutate, _) in carry_receipt::substrate_drift_cases() {
+            let mut drifted = carry_receipt::sample_sound_receipt();
+            mutate(&mut drifted);
+            let drifted_json = drifted.to_json();
+            let (action, detail) = classify_fleet_row(id, seam, false, None, Some(drifted_json.as_str()));
+            assert_eq!(action, FleetAction::SubstrateDrift, "{detail}");
+            assert!(crate::seam_ledger::classify(action, false, seam).1);
+        }
+
+        // POSITIVE 3: a superseded v1 receipt is a re-run, not a never-sound
+        // receipt, and whether it is urgent depends on publication.
+        let mut v1 = carry_receipt::sample_sound_receipt();
+        v1.schema = "osl-live-carry-receipt-v1".to_owned();
+        let v1 = v1.to_json();
+        assert_eq!(
+            classify_fleet_row(id, seam, true, None, Some(v1.as_str())).0,
+            FleetAction::MustRerun
+        );
+        assert_eq!(
+            classify_fleet_row(id, seam, false, None, Some(v1.as_str())).0,
+            FleetAction::RerunBeforePublishing
+        );
+
+        // THE DEFECT ITSELF: every way a receipt can be wrong, read off the
+        // table a human reads.
+        let mut checked = 0usize;
+        for (mutate, phrase) in carry_receipt::rejection_cases() {
+            let mut broken = carry_receipt::sample_sound_receipt();
+            mutate(&mut broken);
+            let json = broken.to_json();
+
+            let verdict = carry_receipt::verify_receipt_text(id, seam, &json);
+            assert!(
+                !verdict.is_earned(),
+                "the mutation for {phrase:?} did not change anything the verifier refuses; a \
+                 mutant that mutates nothing proves nothing"
+            );
+
+            let (action, detail) = classify_fleet_row(id, seam, false, None, Some(json.as_str()));
+            assert!(
+                !matches!(action, FleetAction::Ok | FleetAction::SubstrateDrift),
+                "the fleet report calls a receipt the verifier rates {verdict:?} {action:?}. This \
+                 is D-240: the gate refuses and the report says it passed. ({phrase})"
+            );
+
+            let rendered = rendered_row(id, seam, action, &detail);
+            let word = rendered_action_word(&rendered);
+            assert_ne!(
+                word, "Ok",
+                "the rendered fleet report prints Ok for a receipt rated {verdict:?} \
+                 ({phrase}):\n{rendered}"
+            );
+            assert_eq!(
+                word,
+                format!("{action:?}"),
+                "the report printed a different action from the one it decided:\n{rendered}"
+            );
+
+            let (present, sound, _, violation) = crate::seam_ledger::classify(action, false, seam);
+            assert!(present, "the receipt is on disk in this scenario ({phrase})");
+            assert!(
+                !sound,
+                "ledger 9 prints `sound yes` for a receipt rated {verdict:?} ({phrase})"
+            );
+            assert!(
+                violation.is_some(),
+                "ledger 9 records no violation for a receipt rated {verdict:?} ({phrase})"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 20,
+            "only {checked} rejection case(s) reached the report; the case table shrank"
+        );
+
+        // And the absent-receipt branches still say the three different things
+        // they mean, so "no receipt" cannot be printed as a proof either.
+        assert!(matches!(
+            classify_fleet_row(id, seam, false, None, None).0,
+            FleetAction::NoReceiptNotPublished
+        ));
+        assert!(matches!(
+            classify_fleet_row(id, seam, true, None, None).0,
+            FleetAction::MustEarn
+        ));
+        assert!(matches!(
+            classify_fleet_row(id, seam, true, Some("D-203"), None).0,
+            FleetAction::DebtRecorded
+        ));
+
+        // Non-JSON on disk is the fatal class, never a blank row.
+        let (action, _) = classify_fleet_row(id, seam, false, None, Some("not json"));
+        assert!(matches!(
+            action,
+            FleetAction::Unusable | FleetAction::ContractUnavailable
+        ));
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3714,9 +3886,36 @@ pub(crate) mod tests {
         NATIVE_APPS.iter().map(|manifest| manifest.id).collect()
     }
 
-    /// Classify every provider **without** going through `verify_receipt`, so the
-    /// cross-check above compares two independent routes rather than a value with
-    /// itself.
+    /// **D-240. The report's verdict is DERIVED from the verifier -- it is not a
+    /// second opinion about the same bytes.**
+    ///
+    /// This function used to classify every provider *without* going through
+    /// `verify_receipt`, on the theory that two independent routes make the
+    /// cross-check meaningful. They do -- but only if the two routes ask the
+    /// same question. They did not. This one read three fields (`schema`,
+    /// `seam_contract_sha256`, `substrate_source_sha256`); the verifier reads
+    /// eighteen. So the report was a strictly WEAKER predicate wearing the
+    /// verifier's name, and a receipt with `byte_exact: false` on disk printed
+    ///
+    /// ```text
+    ///   telegram   ComingSoon   uia2_substrate   Ok   seam 06a86bda0d0b over 43 declarations
+    /// ```
+    ///
+    /// while `verify_receipt` rated the same bytes `Invalid`. The gate was
+    /// right and the sentence a human reads was wrong, which is worse than a
+    /// wrong gate: the sentence is what gets quoted into a tasklog. The lane
+    /// that found it nearly mis-reported its own mutation proof.
+    ///
+    /// So the classification is now a **total map from `ReceiptVerdict`**, and
+    /// this function decides only the three things the verdict genuinely does
+    /// not know: whether the provider is published, whether a missing receipt is
+    /// recorded as debt, and which words to print. `detail` now carries the
+    /// verifier's own reason, so the report says *why* instead of only *what*.
+    ///
+    /// The teeth moved with it, they were not removed: see
+    /// [`the_fleet_report_cannot_call_a_receipt_ok_that_the_verifier_refuses`],
+    /// which drives real receipt bytes through this classifier and reads the
+    /// rendered table.
     pub(crate) fn fleet_report() -> Vec<FleetRow> {
         NATIVE_APPS
             .iter()
@@ -3726,94 +3925,11 @@ pub(crate) mod tests {
                 let published = manifest.adapter_support != SupportLevel::ComingSoon;
                 let debt = PUBLISHED_WITHOUT_A_LIVE_RECEIPT
                     .iter()
-                    .find(|(other, _)| *other == id);
+                    .find(|(other, _)| *other == id)
+                    .map(|(_, defect)| *defect);
                 let raw = std::fs::read_to_string(carry_receipt::receipt_path(id)).ok();
 
-                let (action, detail) = match raw {
-                    None => match (published, debt) {
-                        (true, Some((_, defect))) => (
-                            FleetAction::DebtRecorded,
-                            format!("published on no live receipt, against {defect}"),
-                        ),
-                        (true, None) => (
-                            FleetAction::MustEarn,
-                            "published with no receipt and no recorded debt".to_owned(),
-                        ),
-                        (false, _) => (
-                            FleetAction::NoReceiptNotPublished,
-                            "not published; no receipt earned yet".to_owned(),
-                        ),
-                    },
-                    Some(text) => {
-                        let value: serde_json::Value =
-                            serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-                        let recorded_seam = value["seam_contract_sha256"].as_str().unwrap_or("");
-                        let recorded_substrate =
-                            value["substrate_source_sha256"].as_str().unwrap_or("");
-                        if value["schema"].as_str() != Some(carry_receipt::RECEIPT_SCHEMA) {
-                            let superseded =
-                                value["schema"].as_str() == Some("osl-live-carry-receipt-v1");
-                            return FleetRow {
-                                id,
-                                published,
-                                support: manifest.adapter_support,
-                                seam,
-                                action: if superseded {
-                                    if published {
-                                        FleetAction::MustRerun
-                                    } else {
-                                        FleetAction::RerunBeforePublishing
-                                    }
-                                } else {
-                                    FleetAction::Unusable
-                                },
-                                detail: format!(
-                                    "schema is {:?}, expected {:?}",
-                                    value["schema"].as_str().unwrap_or("<missing>"),
-                                    carry_receipt::RECEIPT_SCHEMA
-                                ),
-                            };
-                        }
-                        match carry_receipt::seam_contract(id) {
-                            Err(why) => (FleetAction::ContractUnavailable, why),
-                            Ok(contract) if recorded_seam != contract.sha256 => (
-                                if published {
-                                    FleetAction::MustRerun
-                                } else {
-                                    FleetAction::RerunBeforePublishing
-                                },
-                                format!(
-                                    "seam moved: receipt {} vs tree {} over {} declarations",
-                                    short(recorded_seam),
-                                    short(&contract.sha256),
-                                    contract.items.len()
-                                ),
-                            ),
-                            Ok(contract)
-                                if recorded_substrate
-                                    != carry_receipt::source_sha256(
-                                        carry_receipt::SUBSTRATE_SOURCE,
-                                    ) =>
-                            {
-                                (
-                                    FleetAction::SubstrateDrift,
-                                    format!(
-                                        "substrate file edited, {} declarations unchanged",
-                                        contract.items.len()
-                                    ),
-                                )
-                            }
-                            Ok(contract) => (
-                                FleetAction::Ok,
-                                format!(
-                                    "seam {} over {} declarations",
-                                    short(&contract.sha256),
-                                    contract.items.len()
-                                ),
-                            ),
-                        }
-                    }
-                };
+                let (action, detail) = classify_fleet_row(id, seam, published, debt, raw.as_deref());
 
                 FleetRow {
                     id,
@@ -3825,6 +3941,90 @@ pub(crate) mod tests {
                 }
             })
             .collect()
+    }
+
+    /// **The whole classification, over bytes rather than over the tree.**
+    ///
+    /// Pure with respect to the receipt: hand it the receipt text and it answers
+    /// exactly what the fleet report and Ledger 9 will print. That is what lets
+    /// the D-240 regression test drive a tampered receipt through the *real*
+    /// report without writing a tampered file into the tree -- and what makes
+    /// "the report agrees with the verifier" a property of the code rather than
+    /// a hope checked once per provider that happens to exist today.
+    pub(crate) fn classify_fleet_row(
+        id: NativeAppId,
+        seam: CarrySeam,
+        published: bool,
+        debt: Option<&str>,
+        raw: Option<&str>,
+    ) -> (FleetAction, String) {
+        use carry_receipt::ReceiptVerdict;
+
+        let Some(text) = raw else {
+            return match (published, debt) {
+                (true, Some(defect)) => (
+                    FleetAction::DebtRecorded,
+                    format!("published on no live receipt, against {defect}"),
+                ),
+                (true, None) => (
+                    FleetAction::MustEarn,
+                    "published with no receipt and no recorded debt".to_owned(),
+                ),
+                (false, _) => (
+                    FleetAction::NoReceiptNotPublished,
+                    "not published; no receipt earned yet".to_owned(),
+                ),
+            };
+        };
+
+        // ONE derivation. Everything below chooses a label for a verdict it did
+        // not compute; nothing below can turn a refusal into a pass.
+        match carry_receipt::verify_receipt_text(id, seam, text) {
+            ReceiptVerdict::Earned => (
+                FleetAction::Ok,
+                match carry_receipt::seam_contract(id) {
+                    Ok(contract) => format!(
+                        "seam {} over {} declarations",
+                        short(&contract.sha256),
+                        contract.items.len()
+                    ),
+                    // Unreachable: `Earned` already required this contract to
+                    // compute. Reported rather than unwrapped, because a report
+                    // that panics is a report nobody reads.
+                    Err(why) => format!("earned, but the seam contract no longer computes: {why}"),
+                },
+            ),
+            ReceiptVerdict::EarnedWithSubstrateDrift(note) => (FleetAction::SubstrateDrift, note),
+            ReceiptVerdict::Stale(why) => (
+                if published {
+                    FleetAction::MustRerun
+                } else {
+                    FleetAction::RerunBeforePublishing
+                },
+                why,
+            ),
+            // `ContractUnavailable` and `Unusable` are the same fatal class to
+            // `seam_ledger::classify`; the split exists only so the operator can
+            // tell "this receipt was never sound" from "this tree cannot even
+            // compute the seam". Choosing between two labels for an already-fatal
+            // verdict cannot make anything pass.
+            ReceiptVerdict::Invalid(why) => (
+                if carry_receipt::seam_contract(id).is_err() {
+                    FleetAction::ContractUnavailable
+                } else {
+                    FleetAction::Unusable
+                },
+                why,
+            ),
+            // `verify_receipt_text` is handed bytes, so it cannot answer
+            // `Absent`. If it ever does, the receipt is on disk and unreadable to
+            // the verifier, which is the fatal class -- never the quiet
+            // "no receipt here" row.
+            ReceiptVerdict::Absent => (
+                FleetAction::Unusable,
+                "the verifier reported no receipt for bytes that are on disk".to_owned(),
+            ),
+        }
     }
 
     fn short(hash: &str) -> String {
@@ -4305,7 +4505,28 @@ pub(crate) mod tests {
             let Ok(bytes) = std::fs::read(receipt_path(id)) else {
                 return ReceiptVerdict::Absent;
             };
-            let verdict = verify_receipt_bytes(id, &String::from_utf8_lossy(&bytes));
+            verify_receipt_text(id, seam, &String::from_utf8_lossy(&bytes))
+        }
+
+        /// **The whole verdict, over bytes** -- [`verify_receipt_bytes`] plus the
+        /// seam-map check [`verify_receipt`] used to apply on its own.
+        ///
+        /// Split out for **D-240**. The operator-facing fleet report used to
+        /// classify a receipt from its own reading of three fields, which is a
+        /// weaker predicate than this one, so a receipt with `byte_exact: false`
+        /// printed `Ok` in the table while the gate rated it `Invalid`. There is
+        /// now exactly one derivation and both callers go through it: the report
+        /// cannot be more forgiving than the gate, because it is no longer
+        /// deciding anything.
+        ///
+        /// Never returns [`ReceiptVerdict::Absent`] -- it is handed bytes, so the
+        /// receipt is by definition present.
+        pub(crate) fn verify_receipt_text(
+            id: NativeAppId,
+            seam: CarrySeam,
+            json: &str,
+        ) -> ReceiptVerdict {
+            let verdict = verify_receipt_bytes(id, json);
             if !verdict.is_earned() {
                 return verdict;
             }
@@ -4314,7 +4535,7 @@ pub(crate) mod tests {
             // for another.
             let claimed = seam_slug(seam);
             let value: serde_json::Value =
-                serde_json::from_slice(&bytes).expect("already parsed once");
+                serde_json::from_str(json).expect("already parsed once");
             if value["seam"].as_str() == Some(claimed) {
                 verdict
             } else {

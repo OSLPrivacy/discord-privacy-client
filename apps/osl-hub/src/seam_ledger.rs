@@ -27,9 +27,19 @@
 //! calls `native_apps::tests::fleet_report()` -- the same rows the fleet re-run
 //! job prints -- and classifies them. A second extractor would be a second
 //! answer to the one question the receipt exists to answer, and the two would
-//! drift. [`the_seam_ledger_and_the_receipt_verifier_cannot_disagree`] makes the
-//! non-duplication load-bearing: every row is re-derived through
-//! `verify_receipt`, which is an independent route, and a disagreement fails.
+//! drift.
+//!
+//! **D-240 corrected what that non-duplication actually was.** `fleet_report`
+//! used to compute its own verdict from three receipt fields while the verifier
+//! read eighteen, and this table printed the weaker answer under the stronger
+//! one's name: with `byte_exact: false` on disk it printed
+//! `telegram ... yes  yes  no  -- clean` for a receipt `verify_receipt` rated
+//! `Invalid`. The gate was right; the row a human reads was wrong. `fleet_report`
+//! now DERIVES its verdict from `verify_receipt`, so there is one derivation and
+//! this ledger renders it. [`the_seam_ledger_and_the_receipt_verifier_cannot_disagree`]
+//! is now a wiring check over the real tree, and the teeth are in
+//! [`the_seam_ledger_table_cannot_say_sound_yes_for_a_refused_receipt`], which
+//! drives receipt bytes this tree does not contain.
 //!
 //! # The ratchet -- both directions
 //!
@@ -559,10 +569,20 @@ mod tests {
         );
     }
 
-    /// The non-duplication, made load-bearing. This ledger classifies rows the
-    /// fleet report computed **without** going through `verify_receipt`; here
-    /// the two routes are compared. A ledger that agreed with itself would
-    /// prove nothing.
+    /// The ledger and the verifier, compared over the real tree.
+    ///
+    /// **What this is, after D-240.** It used to be described as comparing two
+    /// independent routes. It was -- and the second route was the one that lied,
+    /// because it asked a WEAKER question than the verifier and still printed the
+    /// verifier's answer. `fleet_report` now derives its verdict from
+    /// `verify_receipt`, so this test is a WIRING check: it proves the ledger is
+    /// still reading the derived verdict and has not grown a reading of its own.
+    /// Said plainly rather than left overstated, because "this check is stronger
+    /// than it is" is the same class of defect as the one it now guards.
+    ///
+    /// The teeth are in
+    /// [`the_seam_ledger_table_cannot_say_sound_yes_for_a_refused_receipt`],
+    /// which drives receipt bytes this tree does not contain.
     #[test]
     fn the_seam_ledger_and_the_receipt_verifier_cannot_disagree() {
         let rows = seam_ledger();
@@ -571,6 +591,96 @@ mod tests {
             problems.is_empty(),
             "the seam ledger and the receipt verifier disagree:\n{}",
             problems.join("\n")
+        );
+    }
+
+    /// **D-240, LEDGER 9's HALF.** With `byte_exact: false` on disk, this table
+    /// printed
+    ///
+    /// ```text
+    ///   telegram   comingSoon   yes  uia2_substrate   yes   yes   no   -- clean
+    /// ```
+    ///
+    /// for a receipt `verify_receipt` rated `Invalid`. `sound yes` and
+    /// `-- clean` are the two words an operator reads to decide a surface has a
+    /// proof, and both were wrong while the gate was right.
+    ///
+    /// Driven over receipt BYTES through the real classifier and the real
+    /// renderer, so it cannot be satisfied by the tree happening to hold a
+    /// receipt of one shape today.
+    #[test]
+    fn the_seam_ledger_table_cannot_say_sound_yes_for_a_refused_receipt() {
+        use crate::native_apps::tests::carry_receipt;
+        use crate::native_apps::tests::classify_fleet_row;
+        use crate::native_apps::NativeAppId;
+        use adapter_profile::SupportLevel;
+
+        let id = NativeAppId::Telegram;
+        let seam = crate::native_apps::tests::carry_seam(id);
+
+        let row_for = |json: &str| -> SeamRow {
+            let (action, detail) = classify_fleet_row(id, seam, false, None, Some(json));
+            row_from(&FleetRow {
+                id,
+                published: false,
+                support: SupportLevel::ComingSoon,
+                seam,
+                action,
+                detail,
+            })
+        };
+
+        // The direction that must not be lost: a sound receipt still reads sound
+        // and still prints `-- clean`.
+        let sound = row_for(&carry_receipt::sample_sound_receipt().to_json());
+        assert!(sound.receipt_present && sound.receipt_sound);
+        assert!(sound.violation.is_none());
+        let table = render(&[sound]);
+        assert!(
+            table.contains("-- clean"),
+            "a sound receipt must still read clean:\n{table}"
+        );
+
+        let mut checked = 0usize;
+        for (mutate, phrase) in carry_receipt::rejection_cases() {
+            let mut broken = carry_receipt::sample_sound_receipt();
+            mutate(&mut broken);
+            let json = broken.to_json();
+            assert!(
+                !carry_receipt::verify_receipt_text(id, seam, &json).is_earned(),
+                "the mutation for {phrase:?} changed nothing the verifier refuses"
+            );
+
+            let row = row_for(&json);
+            assert!(
+                !row.receipt_sound,
+                "ledger 9 reads a receipt the verifier refuses as sound ({phrase}): {}",
+                row.detail
+            );
+            assert!(
+                row.violation.is_some(),
+                "ledger 9 records no violation for a refused receipt ({phrase})"
+            );
+            assert!(
+                row.id().is_some(),
+                "a refused receipt must produce a ratchet id ({phrase})"
+            );
+
+            let table = render(&[row]);
+            assert!(
+                !table.contains("-- clean"),
+                "ledger 9's table prints `-- clean` for a receipt the verifier refuses \
+                 ({phrase}):\n{table}"
+            );
+            assert!(
+                table.contains("PUBLISHED WITHOUT A SOUND RECEIPT: none"),
+                "this row is unpublished, so the published-summary must stay empty:\n{table}"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 20,
+            "only {checked} rejection case(s) reached ledger 9's table"
         );
     }
 
