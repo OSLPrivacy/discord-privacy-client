@@ -83,6 +83,15 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
   // avoids ever persisting the bearer capability in D1 or object metadata.
   // It happens only after the row is ours, so a caller who named someone
   // else's id never reaches `putByDigest` and cannot overwrite its bytes.
+  //
+  // Winning the row is NOT the whole guard, because the object key is not the
+  // id: a caller may hold a genuinely fresh id and still name another blob's
+  // fetch digest (D-264). `putByDigest` is therefore conditional on absence,
+  // like the attachment direct upload. A refused write is deliberately not
+  // reported and does not roll the row back -- both would be new answers about
+  // an object this caller was never told about, which is exactly the D-255
+  // signal one key space over. The refusal is the property; the response is
+  // unchanged.
   const payloads = new R2PayloadStore(env.PAYLOADS);
   try {
     await payloads.putByDigest(headers.fetchDigest, body.bytes);

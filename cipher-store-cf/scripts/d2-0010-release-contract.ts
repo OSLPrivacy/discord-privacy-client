@@ -99,13 +99,79 @@ export const D2_PROBE_FORMAT =
  * with its own fix individually reverted. Neither is a pinned file: see D-258,
  * `D2_RELEASE_SOURCE_FILES` is a static 31-entry list and no test file, and no
  * migration past 0010, is inside it.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * MOVED AGAIN 2026-08-05 (D-258/D-262/D-264), from
+ * aada7c5013d81f6fd304d13f59d4bf0bb5dff5b81663d76b299e7214e19247e0, on
+ * `fix/w33-pin-hygiene-and-leftovers`. THE MEMBERSHIP RULE CHANGED, which is
+ * why this move is large; the ledger below separates that from content so the
+ * two are never confused with each other.
+ *
+ * `D2_RELEASE_SOURCE_FILES` is gone. The set is now derived by
+ * `scripts/d2-release-source-manifest.ts` from the file that decides what
+ * deploys — `wrangler.toml`'s `main` and `migrations_dir` — walked whole, plus
+ * four release-config files. That deriver is itself in the pinned set, so the
+ * rule lives inside the digest it produces. See D-258: the old list was short
+ * by ten source files and seven migrations, and being short was silent.
+ *
+ * FOUR-STAGE LEDGER, every stage recomputed rather than argued:
+ *
+ *   L1  aada7c50…  the 31 old names over HEAD content.
+ *                  Reproduces the previous pin EXACTLY, which is the anchor:
+ *                  no previously-pinned file's content had drifted.
+ *   L2  a0c36f44…  the derived names over HEAD content, minus the one pinned
+ *                  file this branch creates (49 files).
+ *                  Delta L1→L2 is SET EXPANSION ONLY: 18 files added, 0
+ *                  removed, 0 content bytes changed. The 18 are migrations
+ *                  0011-0015 and 0017, and src/endpoints/{attachment-reserve,
+ *                  blob-request-profile,ohttp-keyconfig,receipt}.ts,
+ *                  src/lib/{burn-policy,capability,delivery-tag,padme,
+ *                  payload-store,storage-grant,ttl}.ts,
+ *                  src/realtime/connection.ts — every one of them shipping
+ *                  code that the static list never covered.
+ *   L3  42b457df…  L2 plus scripts/d2-release-source-manifest.ts (9,151 bytes,
+ *                  new in this branch), giving the 50-file set.
+ *   L4  4c3d3e96…  L3 with this branch's working content. Delta L3→L4 is
+ *                  content in exactly three files:
+ *
+ *     src/lib/payload-store.ts   +1,688 bytes. D-264: `putByDigest` now writes
+ *                                under `onlyIf: { etagDoesNotMatch: "*" }`.
+ *                                The whole code delta is three lines replacing
+ *                                one; the rest is the interface doc recording
+ *                                why the refusal is silent and why "the caller
+ *                                already knew the digest" was not accepted.
+ *     src/endpoints/blob.ts      +565 bytes, COMMENT ONLY. `git diff -U0`
+ *                                over both files yields exactly one non-comment
+ *                                hunk, and it is the `onlyIf` above.
+ *     package.json               +96 bytes, +2/-1 lines: a `verify:contracts`
+ *                                script, and `test` now runs
+ *                                `node scripts/d2-contract-gate.ts` first.
+ *                                That step is what anchors the D-262 test
+ *                                gate outside the suite it guards.
+ *
+ *   Machine-checked, not asserted: recomputing L4's manifest with HEAD's
+ *   versions of those three files substituted back reproduces L3 BYTE-EXACTLY
+ *   (42b457df…). Every byte of the move is therefore attributed, and no
+ *   unexplained content is being blessed. This branch forks directly off
+ *   `integrate/first-usable` HEAD with no merges, so there is no merge content
+ *   to account for.
+ *
+ * D-262 ruling, recorded here because a future re-anchor will ask: the tests
+ * are still NOT in this digest, deliberately. Pinning them byte-exactly would
+ * make re-anchoring routine — the one operation that must stay rare enough to
+ * be read — and byte-exactness is the wrong instrument for "was this test
+ * deleted, skipped or gutted" anyway. Test integrity is enforced structurally
+ * by `D2_PROPERTY_TEST_SUITES` and a per-directory test-file floor in
+ * `scripts/d2-test-closure.ts`, invoked from `npm test` by way of
+ * `package.json`, which IS pinned here. See the long note on
+ * `D2PropertyTestSuite` for the full argument and its cost.
  */
 export const D2_RELEASE_COMMIT =
   "5a2bad492dec2d90094d2c4a797124366d7dea32";
 export const D2_RELEASE_TREE =
   "18149f3dbb14bae687cea33a56f624171958c8cd";
 export const D2_RELEASE_SOURCE_SHA256 =
-  "aada7c5013d81f6fd304d13f59d4bf0bb5dff5b81663d76b299e7214e19247e0";
+  "4c3d3e969420093a2b46022991793a30d183fef81c79e68cf73946282d43ac6c";
 export const D2_MIGRATION_0010_SHA256 =
   "a545f989172c32c8f5f5c78754b4eda2f045778643cbb86c9eb81f22be2f6636";
 export const D2_DATABASE_ID = "be3d31f1-f6b4-4d6e-8ede-74514950b9e2";
@@ -117,39 +183,17 @@ export const D2_CYCLE_MARKER = "[attachment-sweep-cycle] complete";
 export const D2_RECOVERY_MARKER =
   "osl.cipher-store.continuous-predecessor-recovery.v1";
 
-export const D2_RELEASE_SOURCE_FILES = [
-  "migrations/0001_init.sql",
-  "migrations/0002_fetch_token.sql",
-  "migrations/0003_r2_attachments.sql",
-  "migrations/0004_attachment_capability_digests_and_quota.sql",
-  "migrations/0005_view_once_links.sql",
-  "migrations/0006_session_budget_and_atomic_rate_counters.sql",
-  "migrations/0007_link_grant_consumption.sql",
-  "migrations/0008_attachment_sweep_claims.sql",
-  "migrations/0009_predecessor_completing_adoption.sql",
-  "migrations/0010_continuous_predecessor_recovery.sql",
-  "package-lock.json",
-  "package.json",
-  "src/endpoints/attachment.ts",
-  "src/endpoints/blob.ts",
-  "src/endpoints/healthz.ts",
-  "src/endpoints/link.ts",
-  "src/env.ts",
-  "src/index.ts",
-  "src/lib/attachment-limits.ts",
-  "src/lib/attachment-sweep-claims.ts",
-  "src/lib/blob-limits.ts",
-  "src/lib/d2-proof-contract.d.ts",
-  "src/lib/d2-proof-contract.js",
-  "src/lib/digest.ts",
-  "src/lib/http.ts",
-  "src/lib/id.ts",
-  "src/lib/landing.ts",
-  "src/lib/link-grant.ts",
-  "src/lib/rate-limit.ts",
-  "src/lib/sweep.ts",
-  "wrangler.toml",
-] as const;
+/**
+ * D-258. The pinned set is NOT declared here any more. It is derived by
+ * `deriveReleaseSourceFiles` in `scripts/d2-release-source-manifest.ts` from
+ * wrangler.toml's `main` and `migrations_dir`, and that deriver is itself
+ * inside the digest below. A list a human keeps is only ever wrong by being
+ * short, and short is the failure that does not announce itself.
+ *
+ * This file cannot be in its own manifest — a digest over its own declaration
+ * has no fixpoint — which is exactly why the RULE lives in the pinned deriver
+ * and only the VALUE lives here.
+ */
 
 export const D2_REQUIRED_MIGRATIONS = [
   "0001_init.sql",
