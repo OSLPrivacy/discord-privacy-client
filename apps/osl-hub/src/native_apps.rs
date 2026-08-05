@@ -3746,7 +3746,8 @@ pub(crate) mod tests {
             let mut drifted = carry_receipt::sample_sound_receipt();
             mutate(&mut drifted);
             let drifted_json = drifted.to_json();
-            let (action, detail) = classify_fleet_row(id, seam, false, None, Some(drifted_json.as_str()));
+            let (action, detail) =
+                classify_fleet_row(id, seam, false, None, Some(drifted_json.as_str()));
             assert_eq!(action, FleetAction::SubstrateDrift, "{detail}");
             assert!(crate::seam_ledger::classify(action, false, seam).1);
         }
@@ -3801,7 +3802,10 @@ pub(crate) mod tests {
             );
 
             let (present, sound, _, violation) = crate::seam_ledger::classify(action, false, seam);
-            assert!(present, "the receipt is on disk in this scenario ({phrase})");
+            assert!(
+                present,
+                "the receipt is on disk in this scenario ({phrase})"
+            );
             assert!(
                 !sound,
                 "ledger 9 prints `sound yes` for a receipt rated {verdict:?} ({phrase})"
@@ -3929,7 +3933,8 @@ pub(crate) mod tests {
                     .map(|(_, defect)| *defect);
                 let raw = std::fs::read_to_string(carry_receipt::receipt_path(id)).ok();
 
-                let (action, detail) = classify_fleet_row(id, seam, published, debt, raw.as_deref());
+                let (action, detail) =
+                    classify_fleet_row(id, seam, published, debt, raw.as_deref());
 
                 FleetRow {
                     id,
@@ -4647,8 +4652,7 @@ pub(crate) mod tests {
             // receipt earned through one mechanism cannot be presented as evidence
             // for another.
             let claimed = seam_slug(seam);
-            let value: serde_json::Value =
-                serde_json::from_str(json).expect("already parsed once");
+            let value: serde_json::Value = serde_json::from_str(json).expect("already parsed once");
             if value["seam"].as_str() == Some(claimed) {
                 verdict
             } else {
