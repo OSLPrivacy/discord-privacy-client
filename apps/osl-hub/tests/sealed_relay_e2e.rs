@@ -471,20 +471,38 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                     {
                         json_response(400, json!({ "error": "invalid_padding" }))
                     } else {
+                        // D-263. This arm used to answer a taken id with
+                        // `409 blob_id_collision`. D-255 removed that from the
+                        // real Worker -- it was an unauthenticated existence
+                        // oracle -- and the double kept it, which is the D-257
+                        // pattern: a stand-in that has drifted from the thing
+                        // it stands in for is eventually read as evidence
+                        // about it.
+                        //
+                        // What the shipping route does now
+                        // (`cipher-store-cf/src/endpoints/blob.ts`): admission
+                        // is one `INSERT .. SELECT .. WHERE NOT EXISTS`, so a
+                        // taken id changes no row, and the refusal is answered
+                        // with exactly the `201 {"id", "expires_at"}` an
+                        // unused id gets -- both values echoed from the
+                        // request, neither read from the stored row. First
+                        // writer keeps the row, and the caller cannot tell the
+                        // two cases apart.
+                        //
+                        // `or_insert` IS the `NOT EXISTS` predicate: a second
+                        // upload naming a taken id must not replace what is
+                        // stored. The status below is not written down here --
+                        // it is read out of the route by
+                        // `shipping_upload_refusal_status`, and asserted
+                        // against this fixture by
+                        // `blob_upload_double_answers_a_taken_id_like_the_shipping_route`.
                         let mut state = state.lock().unwrap();
-                        if state.blobs.contains_key(&blob_id) {
-                            json_response(409, json!({ "error": "blob_id_collision" }))
-                        } else {
-                            state.blobs.insert(
-                                blob_id.clone(),
-                                BlobRow {
-                                    bytes: body,
-                                    fetch_digest,
-                                    manage_digest,
-                                },
-                            );
-                            json_response(201, json!({ "id": blob_id, "expires_at": now + 3600 }))
-                        }
+                        state.blobs.entry(blob_id.clone()).or_insert(BlobRow {
+                            bytes: body,
+                            fetch_digest,
+                            manage_digest,
+                        });
+                        json_response(201, json!({ "id": blob_id, "expires_at": now + 3600 }))
                     }
                 }
                 _ => json_response(400, json!({ "error": "bad_blob_metadata" })),
@@ -1140,4 +1158,338 @@ pub fn osl_chat_queues_a_relay_notice_the_key_server_never_accepted() {
     assert!(opened.messages[0].person_to_person_e2ee);
 
     drop(relay);
+}
+
+// =========================================================================
+// D-263 — keeping the blob-upload double honest about the route it doubles.
+//
+// The mock above answered a taken blob id with `409 blob_id_collision` long
+// after D-255 removed that response from the real Worker for being an
+// unauthenticated existence oracle. Nothing asserted on it, which is why the
+// drift survived: an unasserted double is a claim nobody ever grades.
+//
+// So it is graded here, and the expectation is DERIVED rather than written
+// down a second time. A second hand-written copy of the route's behaviour is
+// the drift this repository keeps paying for (D-241, D-266, the duplicate
+// cover-history), and it is what this defect IS. The two halves below:
+//
+//   1. `shipping_upload_refusal_status` reads the refusal branch out of
+//      `cipher-store-cf/src/endpoints/blob.ts` -- the file that ships -- and
+//      returns the status it answers with. Nothing in this file states what
+//      that status is.
+//   2. the executing test drives the fixture through a real socket and
+//      asserts it answers a taken id with THAT status, byte-identically to an
+//      unused id, and leaves the stored row alone.
+//
+// Change the real Worker's answer and (1) changes with it, so (2) goes red
+// against the fixture. That is the coupling; a cross-language shared
+// definition the Worker itself reads was not available -- `cipher-store-cf/**`
+// is another lane's file this session, and a "shared" definition only one side
+// reads is a third copy, not a contract.
+//
+// This scans the WORKER's source, never this file's own text (D-285): the
+// strings being searched for are declared here, and a checker shown its own
+// declaration always finds what it is looking for.
+
+/// The shipping blob route, comments stripped.
+///
+/// Stripping matters: `blob.ts` explains the D-255 removal in a comment that
+/// names `409 blob_id_collision`, so a raw scan would find the very string
+/// whose absence is the property.
+fn shipping_blob_route_source() -> String {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cipher-store-cf/src/endpoints/blob.ts");
+    let source = fs::read_to_string(&path).unwrap_or_else(|why| {
+        panic!("the shipping blob route must be readable at {path:?}: {why}")
+    });
+    assert!(
+        source.contains("async function insertBlobRow(") && source.len() > 2_000,
+        "read {} bytes from {path:?} -- this is not the shipping blob route",
+        source.len()
+    );
+    strip_ts_comments(&source)
+}
+
+/// Remove `//` line comments and `/* */` block comments, respecting string
+/// literals so a `//` inside a SQL string is not treated as a comment.
+fn strip_ts_comments(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out = String::with_capacity(source.len());
+    let mut index = 0usize;
+    let mut quote: Option<u8> = None;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match quote {
+            Some(open) => {
+                out.push(byte as char);
+                if byte == b'\\' && index + 1 < bytes.len() {
+                    out.push(bytes[index + 1] as char);
+                    index += 2;
+                    continue;
+                }
+                if byte == open {
+                    quote = None;
+                }
+                index += 1;
+            }
+            None if byte == b'"' || byte == b'\'' || byte == b'`' => {
+                quote = Some(byte);
+                out.push(byte as char);
+                index += 1;
+            }
+            None if byte == b'/' && bytes.get(index + 1) == Some(&b'/') => {
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            None if byte == b'/' && bytes.get(index + 1) == Some(&b'*') => {
+                index += 2;
+                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                {
+                    index += 1;
+                }
+                index = (index + 2).min(bytes.len());
+            }
+            None => {
+                out.push(byte as char);
+                index += 1;
+            }
+        }
+    }
+    out
+}
+
+/// The status the shipping route answers an upload whose id was already taken
+/// with, read out of the route's refusal branch.
+///
+/// The branch is `if (!admitted) { .. }`: nothing was written, and the route
+/// decides what to say without consulting the id. Its only other exit is the
+/// capacity refusal, which is a fact about the store rather than about this
+/// blob, so it is identified by its own error code and excluded.
+fn shipping_upload_refusal_status() -> u16 {
+    let source = shipping_blob_route_source();
+    let opener = "if (!admitted) {";
+    let start = source
+        .find(opener)
+        .expect("the shipping route must decide what to answer an unadmitted upload")
+        + opener.len();
+    let mut depth = 1usize;
+    let mut end = start;
+    for (offset, byte) in source[start..].bytes().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + offset;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(end > start, "the refusal branch is unterminated");
+    let branch = &source[start..end];
+
+    let mut statuses = Vec::new();
+    for line in branch.lines() {
+        let line = line.trim();
+        if !line.starts_with("return ") {
+            continue;
+        }
+        if line.contains("storage_capacity") {
+            // The store is full: true of every upload whatever id it names.
+            continue;
+        }
+        // `json(body, status)` and `error(status, code, message)` are the two
+        // shapes this route answers in; read whichever it used rather than
+        // assuming the one it happens to use today.
+        let status = if let Some(rest) = line.strip_prefix("return error(") {
+            rest.split(',')
+                .next()
+                .and_then(|head| head.trim().parse::<u16>().ok())
+        } else {
+            line.rsplit(',')
+                .next()
+                .and_then(|tail| tail.trim().trim_end_matches([')', ';']).parse::<u16>().ok())
+        }
+        .unwrap_or_else(|| panic!("cannot read the status this refusal answers with: {line}"));
+        statuses.push((status, line.to_owned()));
+    }
+    assert_eq!(
+        statuses.len(),
+        1,
+        "the refusal branch must have exactly one id-independent answer, found {statuses:?}"
+    );
+    let (status, line) = statuses.into_iter().next().unwrap();
+    assert!(
+        line.contains("headers.blobId") && line.contains("expiresAt"),
+        "the refusal must echo the caller's own id and window, not the stored row: {line}"
+    );
+    status
+}
+
+/// One raw HTTP exchange against the fixture, so the double is graded through
+/// the same socket the client uses rather than by calling its handler.
+fn fixture_request(
+    base_url: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> (u16, Vec<u8>) {
+    let address = base_url.trim_start_matches("http://");
+    let mut stream = TcpStream::connect(address).expect("connect to the relay fixture");
+    let mut request = format!("{method} {path} HTTP/1.1\r\nhost: {address}\r\n");
+    for (name, value) in headers {
+        request.push_str(&format!("{name}: {value}\r\n"));
+    }
+    request.push_str(&format!("content-length: {}\r\n\r\n", body.len()));
+    let mut wire = request.into_bytes();
+    wire.extend_from_slice(body);
+    stream.write_all(&wire).expect("write the fixture request");
+    stream.flush().expect("flush the fixture request");
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .expect("read the fixture response");
+    let split = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("the fixture answers with framed headers");
+    let head = String::from_utf8_lossy(&response[..split]).into_owned();
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .expect("the fixture answers with a status line");
+    (status, response[split + 4..].to_vec())
+}
+
+fn upload_headers(blob_id: &str, fetch_cap: &str) -> Vec<(String, String)> {
+    vec![
+        ("x-osl-blob-id".to_owned(), blob_id.to_owned()),
+        ("x-osl-fetch-digest".to_owned(), sha256_hex(fetch_cap)),
+        ("x-osl-ack-digest".to_owned(), sha256_hex("ack-cap")),
+        ("x-osl-manage-digest".to_owned(), sha256_hex("manage-cap")),
+        ("x-osl-delivery-tag".to_owned(), "9".repeat(32)),
+        ("x-osl-object-class".to_owned(), "single-ack".to_owned()),
+        ("x-osl-ttl-seconds".to_owned(), "3600".to_owned()),
+    ]
+}
+
+#[test]
+fn blob_upload_double_answers_a_taken_id_like_the_shipping_route() {
+    // Derived from the route, not restated here. If the Worker starts
+    // answering a taken id differently, this value moves and the fixture --
+    // which does not know about it -- goes red.
+    let refusal_status = shipping_upload_refusal_status();
+
+    let relay = RelayServer::start();
+    let base = relay.base_url();
+
+    let taken_id = "a".repeat(32);
+    let unused_id = "b".repeat(32);
+    let first_body =
+        ipc::transport_padding::pad_transport_object(b"first-writer-payload".to_vec()).unwrap();
+    let second_body =
+        ipc::transport_padding::pad_transport_object(b"second-writer-payload".to_vec()).unwrap();
+
+    let post = |id: &str, cap: &str, body: &[u8]| {
+        let owned = upload_headers(id, cap);
+        let borrowed: Vec<(&str, &str)> = owned
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        fixture_request(&base, "POST", "/v1/blob", &borrowed, body)
+    };
+
+    // The gate must be reachable: an unused id is admitted, so nothing below
+    // can pass for the trivial reason that every upload was refused.
+    let (first_status, first_response) = post(&taken_id, "fetch-cap-one", &first_body);
+    assert_eq!(first_status, 201, "an unused id must be admitted");
+
+    // The same id again, with different bytes and a different fetch
+    // capability: the answer may not differ from the one an unused id gets.
+    let (second_status, second_response) = post(&taken_id, "fetch-cap-two", &second_body);
+    let (control_status, control_response) = post(&unused_id, "fetch-cap-three", &second_body);
+
+    assert_eq!(
+        second_status, refusal_status,
+        "a taken id must be answered with the status the shipping route answers"
+    );
+    assert_eq!(
+        second_status, control_status,
+        "a taken id and an unused id must be indistinguishable by status"
+    );
+
+    let mask = |bytes: &[u8], id: &str| {
+        String::from_utf8_lossy(bytes)
+            .replace(id, "<caller-supplied-id>")
+            .replace(&sha256_hex("fetch-cap-two"), "<caller-supplied-digest>")
+            .replace(&sha256_hex("fetch-cap-three"), "<caller-supplied-digest>")
+    };
+    assert_eq!(
+        mask(&second_response, &taken_id),
+        mask(&control_response, &unused_id),
+        "the two answers must differ only in what the caller itself supplied"
+    );
+    assert!(
+        mask(&first_response, &taken_id).contains("expires_at"),
+        "the admitted answer carries the caller's own window"
+    );
+
+    // First writer keeps the row: the second upload replaced neither the
+    // stored bytes nor the capability digests it would be fetched under.
+    let fetch = |id: &str, cap: &str| {
+        fixture_request(
+            &base,
+            "GET",
+            &format!("/v1/blob/{id}"),
+            &[("x-osl-fetch-cap", cap)],
+            b"",
+        )
+    };
+    let (kept_status, kept_bytes) = fetch(&taken_id, "fetch-cap-one");
+    assert_eq!(
+        kept_status, 200,
+        "the first writer's capability still fetches"
+    );
+    assert_eq!(
+        kept_bytes, first_body,
+        "the second upload must not replace the stored payload"
+    );
+    let (usurper_status, _) = fetch(&taken_id, "fetch-cap-two");
+    assert_eq!(
+        usurper_status, 403,
+        "the second upload must not take over the row's fetch capability"
+    );
+
+    drop(relay);
+}
+
+#[test]
+fn the_shipping_upload_route_has_no_existence_oracle_for_the_double_to_copy() {
+    let source = shipping_blob_route_source();
+
+    // Comment-stripping is doing real work here, and it is asserted rather
+    // than assumed: the route's prose DOES name the removed response.
+    let raw = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cipher-store-cf/src/endpoints/blob.ts"),
+    )
+    .expect("the shipping blob route is readable");
+    assert!(
+        raw.contains("blob_id_collision") && !source.contains("blob_id_collision"),
+        "the scan must read the route's code, not its explanation of a removal"
+    );
+
+    assert!(
+        !source.contains("409"),
+        "the shipping upload route answers no 409, so the double must not either"
+    );
+    assert_eq!(
+        shipping_upload_refusal_status(),
+        201,
+        "a taken id is answered exactly as an unused one is"
+    );
 }
