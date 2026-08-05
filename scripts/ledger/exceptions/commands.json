@@ -42,7 +42,7 @@
       "class": "accepted",
       "status": "dead-client",
       "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
-      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+      "citation": "plan-repo/plan-test/briefs/L-CMD.md:29"
     },
     {
       "id": "discard_unreferenced_osl_asset",
@@ -98,28 +98,28 @@
       "class": "accepted",
       "status": "dead-client",
       "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
-      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+      "citation": "plan-repo/plan-test/briefs/L-CMD.md:29"
     },
     {
       "id": "list_osl_notes",
       "class": "accepted",
       "status": "dead-client",
       "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
-      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+      "citation": "plan-repo/plan-test/briefs/L-CMD.md:29"
     },
     {
       "id": "list_osl_saved_searches",
       "class": "accepted",
       "status": "dead-client",
       "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
-      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+      "citation": "plan-repo/plan-test/briefs/L-CMD.md:29"
     },
     {
       "id": "permanently_delete_osl_note",
       "class": "accepted",
       "status": "dead-client",
       "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
-      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+      "citation": "plan-repo/plan-test/briefs/L-CMD.md:29"
     },
     {
       "id": "read_osl_asset_chunk",
@@ -154,7 +154,7 @@
       "class": "accepted",
       "status": "dead-client",
       "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
-      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+      "citation": "plan-repo/plan-test/briefs/L-CMD.md:29"
     },
     {
       "id": "run_osl_plugin_command",
@@ -168,14 +168,14 @@
       "class": "accepted",
       "status": "dead-client",
       "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
-      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+      "citation": "plan-repo/plan-test/briefs/L-CMD.md:29"
     },
     {
       "id": "save_osl_saved_search",
       "class": "accepted",
       "status": "dead-client",
       "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
-      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+      "citation": "plan-repo/plan-test/briefs/L-CMD.md:29"
     },
     {
       "id": "scrub_imap_delete",
@@ -238,7 +238,7 @@
       "class": "accepted",
       "status": "dead-client",
       "reason": "DEAD: D109, reconfirmed by the 2026-08-03 scope ruling, says Notes/Creative is the ONE excluded feature; apps/osl-hub-ui/src/osl-notes.ts does not ship.",
-      "citation": "/home/liamw/osl-plan/plan-test/briefs/L-CMD.md:29"
+      "citation": "plan-repo/plan-test/briefs/L-CMD.md:29"
     },
     {
       "id": "unresolved-invoke:apps/osl-hub-ui/src/scrub-imap-ipc.ts:55",

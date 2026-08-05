@@ -1923,7 +1923,7 @@ impl KeyServerClient {
         let sig_q = urlencode_query_value(&STANDARD.encode(sig.as_bytes()));
         // This URL is retained in Cloudflare zone HTTP request data for a
         // proxied zone. Before changing its path or query identity fields, see
-        // /home/liamw/osl-plan/CLOUDFLARE-LOG-EXPOSURE.md.
+        // plan-repo/CLOUDFLARE-LOG-EXPOSURE.md.
         let path = format!(
             "/v1/control-inbox/{}?ts={}&sig={}&sender={}",
             urlencode_segment(&identity.user_id),

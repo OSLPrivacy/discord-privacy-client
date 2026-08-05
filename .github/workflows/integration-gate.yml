@@ -350,7 +350,24 @@ jobs:
   # required -- without it a failed dependency SKIPS this job and a skipped
   # required check is not a red one.
   integration-gate:
-    name: integration gate
+    # D-232. This `name:` is not cosmetic -- it is the STRING BRANCH PROTECTION
+    # MATCHES. Measured on 2026-08-05:
+    #   gh api repos/.../branches/integrate%2Ffirst-usable/protection/required_status_checks
+    #     -> {"contexts":["Integration Gate"],"checks":[{"context":"Integration Gate","app_id":null}]}
+    # and the only check run this job has ever produced, on every one of the
+    # runs of this workflow, is named `integration gate`. Those two strings are
+    # not equal, and GitHub compares them exactly, so the required context
+    # `Integration Gate` was never reported by anything: the base branch would
+    # have stayed BLOCKED on "Expected -- waiting for status to be reported"
+    # even with every gate below it green. A required check nothing can satisfy
+    # is the mirror image of a gate that cannot fail, and it is just as bad --
+    # it makes the gate's verdict irrelevant to the merge either way.
+    # Renamed to match the protection rule exactly. `needs:` elsewhere refers to
+    # the job ID `integration-gate`, not this display name, so nothing else
+    # moves. The alternative fix is to change the protection rule to
+    # `integration gate`; only one of the two is needed and this is the half
+    # that lives in the repository.
+    name: Integration Gate
     runs-on: ubuntu-latest
     if: ${{ always() }}
     needs:

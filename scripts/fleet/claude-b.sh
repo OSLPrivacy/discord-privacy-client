@@ -2,8 +2,8 @@
 # Dispatch one headless prompt through the second Claude account.
 set -euo pipefail
 
-readonly OAUTH_ENV="${CLAUDE_B_OAUTH_ENV:-/home/liamw/.claude-b/oauth.env}"
-readonly CLAUDE_B_CONFIG_DIR='/home/liamw/.claude-b'
+readonly OAUTH_ENV="${CLAUDE_B_OAUTH_ENV:-$HOME/.claude-b/oauth.env}"
+readonly CLAUDE_B_CONFIG_DIR="$HOME/.claude-b"
 readonly CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 
 usage() {
@@ -43,7 +43,7 @@ self_test() {
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
     '[[ "$#" -eq 2 && "$1" == "-p" && "$2" == "ACCOUNT2-SELF-TEST" ]]' \
-    '[[ "${CLAUDE_CONFIG_DIR:-}" == "/home/liamw/.claude-b" ]]' \
+    "[[ \"\${CLAUDE_CONFIG_DIR:-}\" == \"$HOME/.claude-b\" ]]" \
     '[[ "${CLAUDE_CODE_OAUTH_TOKEN:-}" == "self-test-second-account-token" ]]' \
     '[[ -z "${ANTHROPIC_API_KEY+x}" ]]' >"$fake_claude"
   chmod +x "$fake_claude"

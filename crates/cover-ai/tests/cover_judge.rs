@@ -148,7 +148,7 @@
 //! cargo test -p cover-ai --test cover_judge -- --nocapture --test-threads=1
 //!
 //! # the B0-06 model-written row, from the covers that lane dumped:
-//! OSL_COVER_DUMP=/home/liamw/osl-plan/plan-test/runlogs/b006-model-covers.txt \
+//! OSL_COVER_DUMP=plan-repo/plan-test/runlogs/b006-model-covers.txt \
 //!   cargo test -p cover-ai --test cover_judge -- --nocapture --test-threads=1
 //! ```
 

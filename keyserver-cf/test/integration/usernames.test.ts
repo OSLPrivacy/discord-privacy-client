@@ -189,7 +189,7 @@ describe("username directory", () => {
   // validate-don't-transform, whose names can fold together under a skeleton
   // index. The full spec, the migration hazard, and the deploy precondition
   // this revert creates are recorded in the plan registry, which lives OUTSIDE
-  // this repo: /home/liamw/osl-plan/plan-test/DEFECTS.md, entries D-162 and
+  // this repo: plan-repo/plan-test/DEFECTS.md, entries D-162 and
   // D-162b. (Do not go looking for a DEFECTS.md in the repo; there isn't one.)
   it.skip("[D-162 PARKED] rejects a UTS #39 skeleton collision", async () => {
     const first = userId();

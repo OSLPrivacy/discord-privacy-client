@@ -28,7 +28,7 @@ globs = ["src/lib/unicode-identifier/dist/*.wasm"]
 
 # Disables Workers Logs for this Worker. It does not disable Cloudflare zone
 # HTTP request data, Analytics, or zone Logpush; proxied request URLs can still
-# be retained there. See /home/liamw/osl-plan/CLOUDFLARE-LOG-EXPOSURE.md.
+# be retained there. See plan-repo/CLOUDFLARE-LOG-EXPOSURE.md.
 [observability]
 enabled = false
 

@@ -8,7 +8,11 @@ import tempfile
 import unittest
 
 os.environ["OSL_RUNS_DIR"] = tempfile.mkdtemp(prefix="rt26-")
-SOURCE = pathlib.Path("/home/liamw/osl-plan/task_report.py")
+# The plan repo is deliberately outside this product worktree, so its
+# location is an operator fact. OSL_PLAN names it; the default is the
+# conventional sibling checkout.
+PLAN_ROOT = pathlib.Path(os.environ.get("OSL_PLAN", pathlib.Path.home() / "osl-plan"))
+SOURCE = PLAN_ROOT / "task_report.py"
 SPEC = importlib.util.spec_from_file_location("task_report_rt26", SOURCE)
 report = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(report)
