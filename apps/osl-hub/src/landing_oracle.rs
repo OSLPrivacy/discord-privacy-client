@@ -564,6 +564,74 @@ pub struct LandingProof {
     pub commit_key_not_sent: &'static str,
 }
 
+/// The composer is empty, proven through the same read-only channels as a
+/// landing proof.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComposerEmptyProof {
+    pub provider_name: &'static str,
+    pub write_channel: WriteChannel,
+    pub judged_by: Vec<JudgeChannel>,
+    pub window: WindowIdentity,
+    /// The rendered document, containing only this provider's measured empty
+    /// sentinel characters.
+    pub document: String,
+    pub leaves: Vec<String>,
+    pub nodes_visited: usize,
+    pub corroborating_document: Option<String>,
+    pub ink_before: Ink,
+    pub ink_after: Ink,
+    pub ink_delta: u32,
+    /// Read and reported, never counted as a judge.
+    pub disowned_value_property: Option<String>,
+    pub disowned_value_property_claims_empty: bool,
+    pub submit_shaped_calls: usize,
+    pub commit_key_not_sent: &'static str,
+}
+
+/// Why the oracle could not prove an empty composer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ComposerEmptyRefusal {
+    Landing(LandingRefusal),
+    NotEmpty {
+        document: String,
+    },
+    CorroboratingChannelNotEmpty {
+        channel: JudgeChannel,
+        document: String,
+    },
+    NoInk,
+    StillInked {
+        document: String,
+        ink_before: Ink,
+        ink_after: Ink,
+        allowed_delta: u32,
+    },
+}
+
+impl ComposerEmptyRefusal {
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Landing(refusal) => refusal.name(),
+            Self::NotEmpty { .. } => "NotEmpty",
+            Self::CorroboratingChannelNotEmpty { .. } => "CorroboratingChannelNotEmpty",
+            Self::NoInk => "NoInk",
+            Self::StillInked { .. } => "StillInked",
+        }
+    }
+}
+
+impl From<LandingRefusal> for ComposerEmptyRefusal {
+    fn from(refusal: LandingRefusal) -> Self {
+        Self::Landing(refusal)
+    }
+}
+
+impl From<JudgeTimeout> for ComposerEmptyRefusal {
+    fn from(timeout: JudgeTimeout) -> Self {
+        Self::Landing(LandingRefusal::JudgeTimedOut(timeout))
+    }
+}
+
 /// Why the bound window is not the window the carrier was supposed to land in.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WrongWindowReason {
@@ -762,7 +830,10 @@ pub fn judge_landing(
     // 2 — is this even the right window? Read fresh; never trusted from the
     // binding. D-211: `DiscordPTB` resolves where a plan named `Discord`.
     let window = judge.window_identity(bound.hwnd, deadline)?;
-    if !window.process_name.eq_ignore_ascii_case(profile.process_name) {
+    if !window
+        .process_name
+        .eq_ignore_ascii_case(profile.process_name)
+    {
         return Err(LandingRefusal::WrongWindow(
             WrongWindowReason::BoundProcessMismatch {
                 expected: profile.process_name,
@@ -928,6 +999,139 @@ pub fn judge_landing(
         ink_delta,
         disowned_value_property: disowned.clone(),
         disowned_value_property_disagrees: disowned.as_deref() != Some(expected),
+        submit_shaped_calls,
+        commit_key_not_sent: profile.commit_key,
+    })
+}
+
+/// Prove the bound composer is empty through the landing oracle's read-only
+/// document channels and its empty-composer ink baseline.
+///
+/// This is the clear/reclaim counterpart to [`judge_landing`]. It deliberately
+/// does not ask for an empty `expected` string, because an empty string is not a
+/// carrier and cannot reuse the landing verdict without making "nothing placed"
+/// and "cleared" indistinguishable.
+pub fn judge_empty_composer(
+    judge: &dyn LandingJudgeSyscalls,
+    profile: &LandingProfile,
+    bound: &BoundComposer,
+    baseline: LandingBaseline,
+) -> Result<ComposerEmptyProof, ComposerEmptyRefusal> {
+    check_independence(profile)?;
+
+    let deadline = JudgeDeadline::from_profile(profile);
+    let submit_baseline = judge.submit_shaped_calls();
+    if submit_baseline > 0 {
+        return Err(LandingRefusal::SubmitShaped {
+            calls: submit_baseline,
+        }
+        .into());
+    }
+
+    let window = judge.window_identity(bound.hwnd, deadline)?;
+    if !window
+        .process_name
+        .eq_ignore_ascii_case(profile.process_name)
+    {
+        return Err(
+            LandingRefusal::WrongWindow(WrongWindowReason::BoundProcessMismatch {
+                expected: profile.process_name,
+                found: window.process_name,
+            })
+            .into(),
+        );
+    }
+    if window.process_id != bound.process_id {
+        return Err(
+            LandingRefusal::WrongWindow(WrongWindowReason::BoundProcessIdMismatch {
+                expected: bound.process_id,
+                found: window.process_id,
+            })
+            .into(),
+        );
+    }
+
+    let uia = judge
+        .rendered_document_uia(bound, profile.walk, profile.leaf_join, deadline)?
+        .ok_or(LandingRefusal::NoRenderedDocument)?;
+    if uia.nodes_visited >= profile.walk.max_nodes || uia.depth_reached >= profile.walk.max_depth {
+        return Err(LandingRefusal::JudgeWalkTooLarge {
+            nodes_visited: uia.nodes_visited,
+            max_nodes: profile.walk.max_nodes,
+            depth_reached: uia.depth_reached,
+            max_depth: profile.walk.max_depth,
+        }
+        .into());
+    }
+    let document = uia.text.clone();
+    if !is_empty_document(&document, profile.empty_document_chars) {
+        return Err(ComposerEmptyRefusal::NotEmpty { document });
+    }
+
+    let mut corroborating = None;
+    for channel in profile.judges {
+        let answer = match channel {
+            JudgeChannel::RenderedDocumentTextPattern => {
+                judge.rendered_document_text_pattern(bound, profile.walk, deadline)?
+            }
+            JudgeChannel::RenderedDocumentMsaa => {
+                judge.rendered_document_msaa(bound, profile.walk, profile.leaf_join, deadline)?
+            }
+            JudgeChannel::RenderedDocumentUia | JudgeChannel::ComposerInk => continue,
+            JudgeChannel::ComposerValueProperty => unreachable!("checked by check_independence"),
+        };
+        let Some(answer) = answer else {
+            return Err(LandingRefusal::CorroboratingChannelSilent { channel: *channel }.into());
+        };
+        if !is_empty_document(&answer.text, profile.empty_document_chars) {
+            return Err(ComposerEmptyRefusal::CorroboratingChannelNotEmpty {
+                channel: *channel,
+                document: answer.text,
+            });
+        }
+        corroborating = Some(answer.text);
+    }
+
+    let disowned = judge.disowned_value_property(bound, deadline)?;
+    let disowned_claims_empty = disowned
+        .as_deref()
+        .is_some_and(|value| is_empty_document(value, profile.empty_document_chars));
+
+    let ink_after = judge
+        .composer_ink(bound, deadline)?
+        .ok_or(ComposerEmptyRefusal::NoInk)?;
+    let ink_delta = ink_after.inked.saturating_sub(baseline.empty_ink.inked);
+    if profile.judges.contains(&JudgeChannel::ComposerInk) && ink_delta >= profile.min_ink_delta {
+        return Err(ComposerEmptyRefusal::StillInked {
+            document,
+            ink_before: baseline.empty_ink,
+            ink_after,
+            allowed_delta: profile.min_ink_delta.saturating_sub(1),
+        });
+    }
+
+    let submit_shaped_calls = judge.submit_shaped_calls();
+    if submit_shaped_calls > submit_baseline {
+        return Err(LandingRefusal::SubmitShaped {
+            calls: submit_shaped_calls,
+        }
+        .into());
+    }
+
+    Ok(ComposerEmptyProof {
+        provider_name: profile.provider_name,
+        write_channel: profile.write_channel,
+        judged_by: profile.judges.to_vec(),
+        window,
+        document,
+        leaves: uia.leaves,
+        nodes_visited: uia.nodes_visited,
+        corroborating_document: corroborating,
+        ink_before: baseline.empty_ink,
+        ink_after,
+        ink_delta,
+        disowned_value_property: disowned,
+        disowned_value_property_claims_empty: disowned_claims_empty,
         submit_shaped_calls,
         commit_key_not_sent: profile.commit_key,
     })

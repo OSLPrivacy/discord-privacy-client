@@ -192,6 +192,10 @@ fn judge(fake: &FakeJudge) -> Result<LandingProof, LandingRefusal> {
     judge_landing(fake, &DISCORD, &bound(), CARRIER, baseline(), &[])
 }
 
+fn judge_empty(fake: &FakeJudge) -> Result<ComposerEmptyProof, ComposerEmptyRefusal> {
+    judge_empty_composer(fake, &DISCORD, &bound(), baseline())
+}
+
 // ---------------------------------------------------------------------------
 // The sound case, asserted FIRST. A gate that has only ever been shown
 // refusing is as useless as one that has only ever been shown passing.
@@ -242,6 +246,34 @@ fn nothing_placed_is_refused_by_name() {
     assert!(!disowned_value_property_claims_landed);
 }
 
+#[test]
+fn an_empty_composer_is_proven_by_document_leaves_and_ink() {
+    let fake = FakeJudge {
+        uia: Some(leaves(&["\u{feff}", "\n"], "")),
+        text_pattern: Some(leaves(&["\u{feff}", "\n"], "")),
+        ink: Some(inked(empty_ink().inked + DISCORD.min_ink_delta - 1)),
+        value_property: Some(String::new()),
+        ..FakeJudge::default()
+    };
+    let proof = judge_empty(&fake).expect("the empty document and empty-baseline ink must pass");
+    assert_eq!(proof.document, "\u{feff}\n");
+    assert_eq!(proof.ink_delta, DISCORD.min_ink_delta - 1);
+    assert_eq!(proof.judged_by, DISCORD.judges);
+}
+
+#[test]
+fn accepted_input_without_an_empty_document_is_not_a_clear_proof() {
+    let fake = FakeJudge {
+        uia: Some(document(CARRIER)),
+        text_pattern: Some(document(CARRIER)),
+        ink: Some(inked(1_400)),
+        value_property: Some(CARRIER.to_owned()),
+        ..FakeJudge::default()
+    };
+    let refusal = judge_empty(&fake).expect_err("a non-empty document must not be called clear");
+    assert_eq!(refusal.name(), "NotEmpty");
+}
+
 /// **D-205, reproduced as a refusal instead of inherited as a belief.**
 ///
 /// `SetValue` moved the accessibility value; Slate's document did not move.
@@ -283,6 +315,43 @@ fn the_value_property_claiming_a_landing_does_not_produce_one() {
         disowned_value_property_claims_landed,
         "the refusal must carry the fact that the disowned channel disagreed"
     );
+}
+
+#[test]
+fn the_value_property_claiming_empty_does_not_prove_a_clear() {
+    let fake = FakeJudge {
+        uia: Some(document(CARRIER)),
+        text_pattern: Some(document(CARRIER)),
+        ink: Some(inked(1_400)),
+        value_property: Some(String::new()),
+        ..FakeJudge::default()
+    };
+
+    let old_verdict = fake
+        .value_property
+        .as_deref()
+        .is_some_and(|value| value.is_empty());
+    assert!(
+        old_verdict,
+        "the fixture must reproduce the disowned-channel clear mutant"
+    );
+
+    let refusal = judge_empty(&fake).expect_err("the value property must never prove a clear");
+    assert_eq!(refusal.name(), "NotEmpty");
+}
+
+#[test]
+fn an_empty_document_with_carrier_ink_is_not_a_clear_proof() {
+    let fake = FakeJudge {
+        uia: Some(leaves(&["\u{feff}", "\n"], "")),
+        text_pattern: Some(leaves(&["\u{feff}", "\n"], "")),
+        ink: Some(inked(empty_ink().inked + DISCORD.min_ink_delta)),
+        value_property: Some(String::new()),
+        ..FakeJudge::default()
+    };
+
+    let refusal = judge_empty(&fake).expect_err("empty leaves without empty ink are not enough");
+    assert_eq!(refusal.name(), "StillInked");
 }
 
 // ---------------------------------------------------------------------------
@@ -471,7 +540,11 @@ fn a_profile_that_judges_by_the_writing_channel_is_refused_before_any_call() {
     // before it is consulted.
     struct Exploding;
     impl LandingJudgeSyscalls for Exploding {
-        fn window_identity(&self, _: isize, _: JudgeDeadline) -> Result<WindowIdentity, JudgeTimeout> {
+        fn window_identity(
+            &self,
+            _: isize,
+            _: JudgeDeadline,
+        ) -> Result<WindowIdentity, JudgeTimeout> {
             panic!("the oracle must refuse before it touches the provider");
         }
         fn rendered_document_uia(
@@ -519,8 +592,15 @@ fn a_profile_that_judges_by_the_writing_channel_is_refused_before_any_call() {
         }
     }
 
-    let refusal = judge_landing(&Exploding, &SELF_JUDGING, &bound(), CARRIER, baseline(), &[])
-        .expect_err("a self-judging profile must be refused");
+    let refusal = judge_landing(
+        &Exploding,
+        &SELF_JUDGING,
+        &bound(),
+        CARRIER,
+        baseline(),
+        &[],
+    )
+    .expect_err("a self-judging profile must be refused");
     assert_eq!(refusal.name(), "JudgedByTheWritingChannel");
 }
 
@@ -556,7 +636,9 @@ fn every_shipped_profile_judges_independently() {
             check_independence(profile)
                 .unwrap_or_else(|refusal| panic!("{provider:?}: {refusal:?}"));
             assert!(
-                !profile.judges.contains(&JudgeChannel::ComposerValueProperty),
+                !profile
+                    .judges
+                    .contains(&JudgeChannel::ComposerValueProperty),
                 "{provider:?} judges through the disowned channel"
             );
         }

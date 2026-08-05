@@ -210,23 +210,21 @@ fn walk_leaves_uia(
             }
             out.nodes_visited += 1;
         }
-        Some(mut child) => {
-            loop {
-                out.nodes_visited += 1;
-                if out.nodes_visited >= caps.max_nodes {
-                    out.hit_cap = true;
-                    return;
-                }
-                walk_leaves_uia(walker, &child, caps, depth + 1, out);
-                if out.hit_cap {
-                    return;
-                }
-                match unsafe { walker.GetNextSiblingElement(&child) } {
-                    Ok(next) => child = next,
-                    Err(_) => break,
-                }
+        Some(mut child) => loop {
+            out.nodes_visited += 1;
+            if out.nodes_visited >= caps.max_nodes {
+                out.hit_cap = true;
+                return;
             }
-        }
+            walk_leaves_uia(walker, &child, caps, depth + 1, out);
+            if out.hit_cap {
+                return;
+            }
+            match unsafe { walker.GetNextSiblingElement(&child) } {
+                Ok(next) => child = next,
+                Err(_) => break,
+            }
+        },
     }
 }
 
@@ -283,8 +281,8 @@ fn msaa_children(container: &IAccessible, limit: usize) -> Option<Vec<MsaaNode>>
         variants
             .into_iter()
             .map(|variant| {
-                if let Ok(object) =
-                    IDispatch::try_from(&variant).and_then(|dispatch| dispatch.cast::<IAccessible>())
+                if let Ok(object) = IDispatch::try_from(&variant)
+                    .and_then(|dispatch| dispatch.cast::<IAccessible>())
                 {
                     return MsaaNode {
                         reader: object,
@@ -437,7 +435,9 @@ fn ink_in_rect(rect: Rect) -> Option<Ink> {
         // does not split the background across dozens of buckets.
         let mut histogram = std::collections::HashMap::<u32, u32>::new();
         for pixel in &buffer {
-            let key = ((pixel >> 3) & 0x1f) | (((pixel >> 11) & 0x1f) << 5) | (((pixel >> 19) & 0x1f) << 10);
+            let key = ((pixel >> 3) & 0x1f)
+                | (((pixel >> 11) & 0x1f) << 5)
+                | (((pixel >> 19) & 0x1f) << 10);
             *histogram.entry(key).or_default() += 1;
         }
         let modal = histogram
@@ -454,7 +454,10 @@ fn ink_in_rect(rect: Rect) -> Option<Ink> {
             let b = (pixel & 0xff) as i32;
             let g = ((pixel >> 8) & 0xff) as i32;
             let r = ((pixel >> 16) & 0xff) as i32;
-            let distance = (b - modal_b).abs().max((g - modal_g).abs()).max((r - modal_r).abs());
+            let distance = (b - modal_b)
+                .abs()
+                .max((g - modal_g).abs())
+                .max((r - modal_r).abs());
             if distance > INK_THRESHOLD {
                 inked += 1;
             }
