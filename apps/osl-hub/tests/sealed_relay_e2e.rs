@@ -35,7 +35,6 @@ struct InboxRow {
 
 #[derive(Clone)]
 struct BlobRow {
-    bytes: Vec<u8>,
     fetch_digest: String,
     manage_digest: String,
 }
@@ -62,6 +61,16 @@ struct RelayState {
     inbox: Vec<InboxRow>,
     posted: Vec<InboxRow>,
     blobs: BTreeMap<String, BlobRow>,
+    /// Ciphertext, keyed by the **caller-supplied** fetch digest rather than by
+    /// blob id -- the shipping Worker's two key spaces, kept apart here as they
+    /// are there (`blob_capability_index` in D1 by id, R2 by
+    /// `SHA-256(fetch_cap)`). D-264 exists only because they are different key
+    /// spaces: a caller holding a genuinely fresh id it owns still names any
+    /// digest it likes, so winning the row is not what protects the bytes.
+    /// Collapsing them into `BlobRow`, as this fixture used to, makes that
+    /// defect unrepresentable and the double silently stronger than the thing
+    /// it doubles.
+    payloads: BTreeMap<String, Vec<u8>>,
     wrapped_keys: BTreeMap<String, WrappedKeyRow>,
     /// Public Ed25519 identity keys this relay has been told about, keyed by
     /// user id. Only these identities get a sender-filter capability-floor
@@ -430,19 +439,33 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                     state.blobs.insert(
                         id.clone(),
                         BlobRow {
-                            bytes: body,
                             // Legacy has ONE credential: the same token authorises fetch and
                             // delete. That is D-117, and the fixture must reproduce it rather
                             // than quietly model the safer capability split.
                             fetch_digest: digest.clone(),
-                            manage_digest: digest,
+                            manage_digest: digest.clone(),
                         },
                     );
+                    state.payloads.entry(digest).or_insert(body);
                     json_response(201, json!({ "id": id, "expires_at": now + 3600 }))
                 }
             }
         }
-        ("POST", "/v1/blob") => {
+        // D-292. This arm used to be served on `POST`, and the fixture had no
+        // `PUT` arm at all -- so the double answered a request the shipping
+        // Worker refuses (`POST /v1/blob` falls through to `notFound()`, pinned
+        // at 404 by `cipher-store-cf/test/routes-and-healthz.test.ts`) and
+        // refused the one it serves. The verb below is NOT taken on trust: it
+        // is graded against `shipping_blob_upload_method`, which reads the
+        // branch reaching the upload handler out of
+        // `cipher-store-cf/src/index.ts`. Accepting both verbs would be the
+        // same defect restated, so this arm admits one and the other falls
+        // through to `not_found` exactly as it does on the Worker.
+        //
+        // The legacy arm above stays on `POST` deliberately: it models the
+        // protocol the LIVE store was measured serving (D-144), which is an
+        // older deployment of a different route, not this Worker's source.
+        ("PUT", "/v1/blob") => {
             let blob_id = canonical_hex_header(headers.get("x-osl-blob-id"), 32);
             let fetch_digest = canonical_hex_header(headers.get("x-osl-fetch-digest"), 64);
             let ack_digest = canonical_hex_header(headers.get("x-osl-ack-digest"), 64);
@@ -498,10 +521,21 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                         // `blob_upload_double_answers_a_taken_id_like_the_shipping_route`.
                         let mut state = state.lock().unwrap();
                         state.blobs.entry(blob_id.clone()).or_insert(BlobRow {
-                            bytes: body,
-                            fetch_digest,
+                            fetch_digest: fetch_digest.clone(),
                             manage_digest,
                         });
+                        // D-264. The payload is written under the caller's own
+                        // fetch digest, in a key space the id does not govern,
+                        // and the write is conditional on absence -- the
+                        // `onlyIf: { etagDoesNotMatch: "*" }` the shipping
+                        // route puts with (`blob.ts`, "conditional on absence,
+                        // like the attachment direct upload"). The refusal is
+                        // SILENT: not reported and not rolled back, because
+                        // either answer would be a new signal about an object
+                        // this caller was never told about -- D-255 one key
+                        // space over. So `or_insert`, and the response below is
+                        // unchanged either way.
+                        state.payloads.entry(fetch_digest).or_insert(body);
                         json_response(201, json!({ "id": blob_id, "expires_at": now + 3600 }))
                     }
                 }
@@ -517,7 +551,14 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                 .map(|cap| sha256_hex(cap));
             match state.blobs.get(id) {
                 Some(blob) if presented.as_deref() == Some(blob.fetch_digest.as_str()) => {
-                    bytes_response(200, "application/octet-stream", blob.bytes.clone())
+                    // The row names the R2 key; the bytes come from the digest
+                    // key space, never from the row.
+                    match state.payloads.get(&blob.fetch_digest) {
+                        Some(bytes) => {
+                            bytes_response(200, "application/octet-stream", bytes.clone())
+                        }
+                        None => json_response(404, json!({ "error": "not_found" })),
+                    }
                 }
                 Some(_) => json_response(403, json!({ "error": "fetch_cap_mismatch" })),
                 None => json_response(404, json!({ "error": "not_found" })),
@@ -535,7 +576,12 @@ fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
                 .get(id)
                 .is_none_or(|blob| presented.as_deref() == Some(blob.manage_digest.as_str()));
             if allowed {
-                state.blobs.remove(id);
+                // `blob.ts` burns the object by the digest recorded on the ROW
+                // it just removed -- never by one the caller named, which would
+                // let a fresh id delete another blob's bytes.
+                if let Some(row) = state.blobs.remove(id) {
+                    state.payloads.remove(&row.fetch_digest);
+                }
                 bytes_response(204, "application/octet-stream", Vec::new())
             } else {
                 json_response(403, json!({ "error": "manage_cap_mismatch" }))
@@ -1329,6 +1375,196 @@ fn shipping_upload_refusal_status() -> u16 {
     status
 }
 
+// ---------------------------------------------------------------------------
+// D-292: the METHOD the double serves capability upload on.
+//
+// Same drift class as D-263, one field over. The double served the upload on
+// `POST`; the shipping Worker routes it on `PUT` and nothing else, and the
+// double had no `PUT` arm at all -- so it answered a request the Worker
+// refuses and refused the one the Worker serves. `cipher_store_client.rs:628`
+// records the same mistake being made in the shipping client, and
+// `cipher-store-cf/test/routes-and-healthz.test.ts` pins `POST /v1/blob` at
+// `404` against the real Worker.
+//
+// The method is DERIVED, on the D-263 pattern: `shipping_blob_upload_method`
+// reads `cipher-store-cf/src/index.ts`, finds the branch that reaches the
+// upload handler, and returns the verb that branch admits. **Nothing in this
+// file states what that verb is** -- the fixture's own match arm below is the
+// double's implementation, which is the thing being graded, not the oracle
+// grading it. A double that read the verb out of the Worker at request time
+// would not be a double: it could never disagree with the Worker, so it could
+// never show that it had drifted. Drift needs two independent statements and a
+// comparison between them; this is the comparison.
+//
+// Every scan here reads the WORKER's source, never this file's own text
+// (D-285), and that is asserted rather than asserted-by-comment: this file
+// declares synthetic routers of its own, so a reader shown its own text finds
+// routes -- and the shipping derivation must not find those.
+// ---------------------------------------------------------------------------
+
+/// The shipping Worker's routing table, comments stripped.
+///
+/// Stripping is load-bearing twice over. The entry point opens with a prose
+/// restatement of its own routes (`///   <VERB>    /v1/blob ...`), which is a
+/// second hand-written copy inside the Worker and can go stale exactly as this
+/// fixture did; and a route that has been commented out is not a route. Both
+/// are asserted in `the_upload_method_derivation_reads_the_worker_not_itself`.
+fn shipping_router_source() -> String {
+    strip_ts_comments(&shipping_router_raw())
+}
+
+fn shipping_router_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cipher-store-cf/src/index.ts")
+}
+
+fn shipping_router_raw() -> String {
+    let path = shipping_router_path();
+    let source = fs::read_to_string(&path).unwrap_or_else(|why| {
+        panic!("the shipping Worker entry point must be readable at {path:?}: {why}")
+    });
+    assert!(
+        source.contains("export default {")
+            && source.contains("return notFound();")
+            && source.len() > 8_000,
+        "read {} bytes from {path:?} -- this is not the shipping Worker entry point",
+        source.len()
+    );
+    source
+}
+
+/// Index of the delimiter that closes the one already open at `start`.
+fn matching_delimiter(source: &str, start: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 1usize;
+    for (offset, byte) in source[start..].bytes().enumerate() {
+        if byte == open {
+            depth += 1;
+        } else if byte == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(start + offset);
+            }
+        }
+    }
+    None
+}
+
+/// Every string literal that follows `marker` in `haystack`.
+fn quoted_after(haystack: &str, marker: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(hit) = haystack[cursor..].find(marker) {
+        let from = cursor + hit + marker.len();
+        cursor = from;
+        match haystack[from..].find('"') {
+            Some(end) => found.push(haystack[from..from + end].to_owned()),
+            None => break,
+        }
+    }
+    found
+}
+
+/// Every routing branch that reaches the blob upload handler, as
+/// `(path it matches, methods it admits)`.
+///
+/// Anchored on the **handler**, not on a path spelling: a branch is a candidate
+/// because its body calls the upload handler, and only then is its condition
+/// read for the path and the verbs. Pure in its input, so it can be starved on
+/// synthetic routers -- it must return what it was shown and never a verb it
+/// knows.
+fn blob_upload_routes_in(router: &str) -> Vec<(String, Vec<String>)> {
+    const OPENER: &str = "if (";
+    const HANDLER: &str = "handleUpload(";
+    let mut routes = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(hit) = router[cursor..].find(OPENER) {
+        let condition_start = cursor + hit + OPENER.len();
+        cursor = condition_start;
+        let Some(condition_end) = matching_delimiter(router, condition_start, b'(', b')') else {
+            continue;
+        };
+        let condition = &router[condition_start..condition_end];
+        if !condition.contains("path === \"") {
+            continue;
+        }
+        // The branch must open a block: `) {`. Anything else (`) return x;`)
+        // is a guard clause, not a route.
+        let Some(gap) = router[condition_end + 1..].find('{') else {
+            continue;
+        };
+        if !router[condition_end + 1..condition_end + 1 + gap]
+            .trim()
+            .is_empty()
+        {
+            continue;
+        }
+        let body_start = condition_end + gap + 2;
+        let Some(body_end) = matching_delimiter(router, body_start, b'{', b'}') else {
+            continue;
+        };
+        if !router[body_start..body_end].contains(HANDLER) {
+            continue;
+        }
+        let mut paths = quoted_after(condition, "path === \"");
+        assert_eq!(
+            paths.len(),
+            1,
+            "an upload branch must constrain exactly one path: {condition}"
+        );
+        routes.push((
+            paths.remove(0),
+            quoted_after(condition, "request.method === \""),
+        ));
+    }
+    routes
+}
+
+/// The one HTTP method the shipping router admits on the capability upload.
+fn shipping_blob_upload_method() -> String {
+    let branches = blob_upload_routes_in(&shipping_router_source());
+    assert_eq!(
+        branches.len(),
+        1,
+        "the shipping router must reach the upload handler from exactly one branch, found {branches:?}"
+    );
+    let (path, mut methods) = branches.into_iter().next().unwrap();
+    assert_eq!(
+        path, "/v1/blob",
+        "the capability upload branch must be the one on /v1/blob"
+    );
+    assert_eq!(
+        methods.len(),
+        1,
+        "the upload branch must admit exactly one method, found {methods:?} -- \
+         a branch admitting none accepts every verb and a double cannot mirror that"
+    );
+    methods.remove(0)
+}
+
+/// The expression the shipping upload route keys the payload object under,
+/// read out of the route's own `putByDigest` call.
+///
+/// This is what makes D-264 a defect at all: the key is a header the CALLER
+/// supplies and is not the blob id, so winning the row is not what protects
+/// the bytes. Derived rather than assumed, so that a Worker which re-keyed R2
+/// by the id would make the test below stop claiming to model something the
+/// route still permits.
+fn shipping_payload_key_expression() -> String {
+    let source = shipping_blob_route_source();
+    const CALL: &str = "putByDigest(";
+    // The route explains this write in prose that also names the call, so the
+    // stripped source is the only one worth counting.
+    assert_eq!(
+        source.matches(CALL).count(),
+        1,
+        "the shipping upload route must have exactly one payload write"
+    );
+    let start = source.find(CALL).expect("the route writes the payload") + CALL.len();
+    let end = source[start..]
+        .find(',')
+        .expect("putByDigest takes a key and the bytes");
+    source[start..start + end].trim().to_owned()
+}
+
 /// One raw HTTP exchange against the fixture, so the double is graded through
 /// the same socket the client uses rather than by calling its handler.
 fn fixture_request(
@@ -1384,6 +1620,10 @@ fn blob_upload_double_answers_a_taken_id_like_the_shipping_route() {
     // answering a taken id differently, this value moves and the fixture --
     // which does not know about it -- goes red.
     let refusal_status = shipping_upload_refusal_status();
+    // D-292: and on the method the shipping router admits, not one this file
+    // chose. Grading the double on a verb the Worker refuses would make every
+    // conclusion below a conclusion about a Worker that does not exist.
+    let method = shipping_blob_upload_method();
 
     let relay = RelayServer::start();
     let base = relay.base_url();
@@ -1395,24 +1635,24 @@ fn blob_upload_double_answers_a_taken_id_like_the_shipping_route() {
     let second_body =
         ipc::transport_padding::pad_transport_object(b"second-writer-payload".to_vec()).unwrap();
 
-    let post = |id: &str, cap: &str, body: &[u8]| {
+    let upload = |id: &str, cap: &str, body: &[u8]| {
         let owned = upload_headers(id, cap);
         let borrowed: Vec<(&str, &str)> = owned
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect();
-        fixture_request(&base, "POST", "/v1/blob", &borrowed, body)
+        fixture_request(&base, &method, "/v1/blob", &borrowed, body)
     };
 
     // The gate must be reachable: an unused id is admitted, so nothing below
     // can pass for the trivial reason that every upload was refused.
-    let (first_status, first_response) = post(&taken_id, "fetch-cap-one", &first_body);
+    let (first_status, first_response) = upload(&taken_id, "fetch-cap-one", &first_body);
     assert_eq!(first_status, 201, "an unused id must be admitted");
 
     // The same id again, with different bytes and a different fetch
     // capability: the answer may not differ from the one an unused id gets.
-    let (second_status, second_response) = post(&taken_id, "fetch-cap-two", &second_body);
-    let (control_status, control_response) = post(&unused_id, "fetch-cap-three", &second_body);
+    let (second_status, second_response) = upload(&taken_id, "fetch-cap-two", &second_body);
+    let (control_status, control_response) = upload(&unused_id, "fetch-cap-three", &second_body);
 
     assert_eq!(
         second_status, refusal_status,
@@ -1491,5 +1731,256 @@ fn the_shipping_upload_route_has_no_existence_oracle_for_the_double_to_copy() {
         shipping_upload_refusal_status(),
         201,
         "a taken id is answered exactly as an unused one is"
+    );
+}
+
+/// D-292. The double must serve the capability upload on the verb the shipping
+/// router admits, and must refuse the verbs it does not.
+///
+/// Both halves matter. Serving only the right verb is not enough if every
+/// other verb is served too -- that is the drift restated, since the double
+/// would still answer a request the Worker refuses.
+#[test]
+fn the_double_serves_capability_upload_on_the_method_the_shipping_router_admits() {
+    let admitted = shipping_blob_upload_method();
+
+    let relay = RelayServer::start();
+    let base = relay.base_url();
+    let body = ipc::transport_padding::pad_transport_object(b"upload-body".to_vec()).unwrap();
+
+    // The fixture's own answer for a route it does not have, read off the
+    // fixture instead of written down here.
+    let (not_found, _) = fixture_request(&base, "GET", "/v1/no-such-route", &[], b"");
+
+    let upload = |method: &str, id: &str| {
+        let owned = upload_headers(id, "fetch-cap");
+        let borrowed: Vec<(&str, &str)> = owned
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        fixture_request(&base, method, "/v1/blob", &borrowed, &body).0
+    };
+
+    // Positive control first: the admitted verb is genuinely served, so
+    // nothing below can pass because the double refuses everything.
+    assert_eq!(
+        upload(&admitted, &"a".repeat(32)),
+        201,
+        "the double must serve the capability upload on the verb the shipping router admits"
+    );
+
+    // `HEAD` is left out on purpose: this fixture answers it with a body, and
+    // that is a separate defect from the one being fixed here.
+    for refused in ["POST", "PATCH", "GET", "DELETE", "OPTIONS", "BREW"] {
+        if refused == admitted {
+            continue;
+        }
+        let status = upload(refused, &sha256_hex(refused)[..32]);
+        assert_ne!(
+            status, 201,
+            "{refused} /v1/blob is not routed by the shipping Worker, so the double must not \
+             answer it like an upload"
+        );
+        assert_eq!(
+            status, not_found,
+            "{refused} /v1/blob must fall through to the same answer as any unrouted request"
+        );
+    }
+
+    // ... and it really did store something under the admitted verb, so the
+    // positive control above is not a bare status either.
+    let (fetched, bytes) = fixture_request(
+        &base,
+        "GET",
+        &format!("/v1/blob/{}", "a".repeat(32)),
+        &[("x-osl-fetch-cap", "fetch-cap")],
+        b"",
+    );
+    assert_eq!(fetched, 200, "the admitted upload stored a fetchable row");
+    assert_eq!(bytes, body, "and stored the bytes it was given");
+
+    drop(relay);
+}
+
+/// D-264, the half the previous pass could not express.
+///
+/// `or_insert` on the row already reproduced "a taken id leaves the row it
+/// collided with as it found it". The other half is a caller with a genuinely
+/// **fresh** id naming someone else's fetch digest -- reachable only because
+/// the payload key space is not the id space, which is why the fixture now has
+/// two of them.
+#[test]
+fn a_fresh_id_naming_another_blobs_fetch_digest_cannot_replace_its_payload() {
+    let method = shipping_blob_upload_method();
+    let key = shipping_payload_key_expression();
+    assert!(
+        key.starts_with("headers."),
+        "the payload key must come from the caller's own headers for this attack to exist: {key}"
+    );
+    assert_ne!(
+        key, "headers.blobId",
+        "if the route keyed the payload by the id it just won, there would be nothing to model"
+    );
+
+    let relay = RelayServer::start();
+    let base = relay.base_url();
+    let victim_body =
+        ipc::transport_padding::pad_transport_object(b"victim-ciphertext".to_vec()).unwrap();
+    let attacker_body =
+        ipc::transport_padding::pad_transport_object(b"attacker-ciphertext".to_vec()).unwrap();
+    assert_ne!(
+        victim_body, attacker_body,
+        "the two payloads must be distinguishable or nothing below means anything"
+    );
+
+    let upload = |id: &str, cap: &str, body: &[u8]| {
+        let owned = upload_headers(id, cap);
+        let borrowed: Vec<(&str, &str)> = owned
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        fixture_request(&base, &method, "/v1/blob", &borrowed, body).0
+    };
+    let fetch = |id: &str, cap: &str| {
+        fixture_request(
+            &base,
+            "GET",
+            &format!("/v1/blob/{id}"),
+            &[("x-osl-fetch-cap", cap)],
+            b"",
+        )
+    };
+
+    let victim_id = "c".repeat(32);
+    let attacker_id = "d".repeat(32);
+    let free_id = "e".repeat(32);
+
+    assert_eq!(upload(&victim_id, "victim-fetch-cap", &victim_body), 201);
+
+    // A genuinely unused id -- so D1 admission is demonstrably not what stops
+    // this -- naming the victim's fetch digest. The row IS written and the
+    // answer IS the ordinary admitted one: the refusal is silent.
+    assert_eq!(
+        upload(&attacker_id, "victim-fetch-cap", &attacker_body),
+        201,
+        "the attacker's fresh id is admitted, so winning the row is not the guard"
+    );
+
+    assert_eq!(
+        fetch(&victim_id, "victim-fetch-cap"),
+        (200, victim_body.clone()),
+        "the victim's ciphertext must survive an upload under a fresh id naming its digest"
+    );
+    assert_eq!(
+        fetch(&attacker_id, "victim-fetch-cap"),
+        (200, victim_body.clone()),
+        "the attacker's own row resolves to the bytes already under that key, not to its own"
+    );
+
+    // Starve the gate: a free key still receives the caller's bytes, so
+    // "nothing was overwritten" cannot pass by refusing every write.
+    assert_eq!(upload(&free_id, "free-fetch-cap", &attacker_body), 201);
+    assert_eq!(
+        fetch(&free_id, "free-fetch-cap"),
+        (200, attacker_body.clone()),
+        "an unused payload key must accept the caller's bytes"
+    );
+
+    drop(relay);
+}
+
+/// D-285 closure for the method derivation: a checker that reads the file
+/// declaring what it checks always finds what it is looking for.
+///
+/// This file declares synthetic routers a few lines below. They exist so the
+/// reader can be starved and inverted in-suite rather than only under a
+/// mutation run -- and their presence is what makes the last assertion here a
+/// real one: a derivation pointed at this file WOULD find routes.
+#[test]
+fn the_upload_method_derivation_reads_the_worker_not_itself() {
+    // 1. The reader returns what it was shown, not a verb it knows.
+    const DECOY: &str = r#"if (path === "/v1/blob" && request.method === "TRAP-VERB") { return handleUpload(request, env); }"#;
+    assert_eq!(
+        blob_upload_routes_in(DECOY),
+        vec![("/v1/blob".to_owned(), vec!["TRAP-VERB".to_owned()])],
+        "the reader must report the verb in front of it"
+    );
+
+    // 2. It cannot manufacture a route that is not there: a router that never
+    //    reaches the upload handler yields nothing, so an empty result is a
+    //    failure of the derivation rather than a passing answer.
+    assert!(
+        blob_upload_routes_in(r#"if (path === "/v1/healthz") { return handleHealthz(env); }"#)
+            .is_empty(),
+        "a router with no upload branch must yield no upload route"
+    );
+    assert!(
+        blob_upload_routes_in("").is_empty(),
+        "an empty router must yield no upload route"
+    );
+
+    // 3. A guard clause is not a route: `if (...) return x;` opens no block,
+    //    and the next block along must not be read as its body.
+    assert!(
+        blob_upload_routes_in(
+            "if (path === \"/v1/blob\") return notFound();\nif (ok) { return handleUpload(r, e); }"
+        )
+        .is_empty(),
+        "a conditional with no block must not adopt the following block"
+    );
+
+    // 4. A commented-out route is not a route -- and this is what stripping
+    //    has to remove, demonstrated in both directions rather than assumed.
+    const COMMENTED: &str = concat!(
+        "// if (path === \"/v1/blob\" && request.method === \"BREW\") { return handleUpload(r, e); }\n",
+        "if (path === \"/v1/blob\" && request.method === \"TRAP-VERB\") { return handleUpload(r, e); }\n",
+    );
+    assert!(
+        blob_upload_routes_in(COMMENTED)
+            .iter()
+            .any(|(_, methods)| methods.contains(&"BREW".to_owned())),
+        "unstripped, the commented-out route IS visible -- which is the reason for stripping"
+    );
+    assert_eq!(
+        blob_upload_routes_in(&strip_ts_comments(COMMENTED)),
+        vec![("/v1/blob".to_owned(), vec!["TRAP-VERB".to_owned()])],
+        "stripped, only the live route survives"
+    );
+
+    // 5. The Worker's own prose routing table is a second hand-written copy
+    //    inside the Worker, and is stripped before anything is read. Asserted
+    //    without naming a verb, so this assertion cannot become the answer.
+    let raw = shipping_router_raw();
+    let prose = raw
+        .lines()
+        .find(|line| line.trim_start().starts_with("///") && line.contains("/v1/blob"))
+        .expect("the entry point restates its routes in prose")
+        .trim()
+        .to_owned();
+    assert!(
+        !shipping_router_source().contains(&prose),
+        "the prose routing table must be stripped before the router is read: {prose}"
+    );
+
+    // 6. D-285 itself. Point the reader at this very file and it finds the
+    //    synthetic routes declared above -- so the derivation is only worth
+    //    anything because it is pointed somewhere else, and what it finds
+    //    there is not among them.
+    let own =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/sealed_relay_e2e.rs"))
+            .expect("this test file must be readable");
+    let self_read: Vec<String> = blob_upload_routes_in(&own)
+        .into_iter()
+        .flat_map(|(_, methods)| methods)
+        .collect();
+    assert!(
+        self_read.contains(&"TRAP-VERB".to_owned()),
+        "a reader satisfied by this file's own declarations would find TRAP-VERB"
+    );
+    let shipping = shipping_blob_upload_method();
+    assert!(
+        !self_read.contains(&shipping),
+        "this file must not state the verb the derivation is supposed to discover, \
+         and the derivation must not be reading this file: found {self_read:?}"
     );
 }
