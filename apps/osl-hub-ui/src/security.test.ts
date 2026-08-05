@@ -1152,8 +1152,20 @@ describe("bundled preview security boundary", () => {
         localRowsShredded: commandProduction.includes(
           "store.wipe_wrapped_keys_in_scope(",
         ),
+        // D-232 re-pointed this. It used to pin `prose_token_burn_id(`, which
+        // spoke a DIFFERENT PROTOCOL from the send path: it rejected the very
+        // ids the send path had just produced ("blob id was not 32 hex chars"),
+        // so `remote_blobs_deleted` was ALWAYS 0 and no packet ever left. Burn
+        // destroyed nothing while this pin read as green.
+        //
+        // Making burn actually delete therefore BROKE this assertion -- the pin
+        // was demanding the presence of the broken call. It now names the
+        // function that really performs the delete. The EXECUTING proof is the
+        // Rust test `the_burn_walk_destroys_a_blob_the_ordinary_send_path_created`,
+        // which re-reads the object from the live store; this pin only guards
+        // that the wiring stays reachable from `security.rs`.
         remoteBlobDeleteAttempted: securityProduction.includes(
-          "ipc::prose_token::prose_token_burn_id(",
+          "ipc::prose_token::prose_token_burn_recorded",
         ),
       };
     };
@@ -1257,9 +1269,18 @@ describe("bundled preview security boundary", () => {
     expect(
       classifyBurnPath(
         main,
+        // Must mutate the SAME symbol the detector reads, or this starvation
+        // proof silently becomes a no-op: `replaceAll` of a string that is no
+        // longer in the source changes nothing, the fact stays true, and the
+        // check that this gate CAN fail stops proving anything. Moved with the
+        // detector when D-232 re-pointed burn to `prose_token_burn_recorded`.
+        // The replacement must NOT contain the searched substring. Appending
+        // "_removed" leaves `prose_token_burn_recorded` intact as a PREFIX, so
+        // the detector's `.includes()` still matches, the fact stays true, and
+        // the mutation proves nothing while appearing to run.
         security.replaceAll(
-          "ipc::prose_token::prose_token_burn_id(",
-          "ipc::prose_token::prose_token_burn_id_removed(",
+          "ipc::prose_token::prose_token_burn_recorded",
+          "ipc::prose_token::REMOVED_burn_call",
         ),
         commands,
       ).remoteBlobDeleteAttempted,
