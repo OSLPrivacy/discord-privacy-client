@@ -136,7 +136,10 @@ fn focus_reaches_the_composer(acquired: &Uia2Acquired, composer: &Uia2Editable) 
     let judge = LandingJudgeWin32;
     if let Ok(Some(ink)) = judge.composer_ink(&bound, JudgeDeadline::from_profile(&DISCORD)) {
         let clicked = click_composer(ink.rect);
-        eprintln!("oracle: focus gate: clicked the composer rect {:?} -> {clicked}", ink.rect);
+        eprintln!(
+            "oracle: focus gate: clicked the composer rect {:?} -> {clicked}",
+            ink.rect
+        );
     } else {
         eprintln!("oracle: FOCUS GATE REFUSED -- no composer rectangle to click; nothing was sent");
         return false;
@@ -179,8 +182,13 @@ fn press_virtual_key(virtual_key: u16) -> bool {
         },
     };
     let inputs = [make(0), make(KEYEVENTF_KEYUP)];
-    (unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) })
-        == inputs.len() as u32
+    (unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            size_of::<INPUT>() as i32,
+        )
+    }) == inputs.len() as u32
 }
 
 /// `VK_BACK` and `VK_DELETE`.
@@ -265,8 +273,13 @@ fn click_composer(rect: super::Rect) -> bool {
         make(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK),
         make(MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK),
     ];
-    let sent = (unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32) })
-        == inputs.len() as u32;
+    let sent = (unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            size_of::<INPUT>() as i32,
+        )
+    }) == inputs.len() as u32;
     std::thread::sleep(std::time::Duration::from_millis(200));
     if saved {
         unsafe { SetCursorPos(restore.x, restore.y) };
@@ -423,7 +436,12 @@ fn clear(
         // thread's queue. It is NOT a claim that the composer is empty, and
         // treating it as one is how a stage inherits the previous stage's text.
         let document = judge
-            .rendered_document_uia(&bound, profile.walk, profile.leaf_join, JudgeDeadline::from_profile(profile))
+            .rendered_document_uia(
+                &bound,
+                profile.walk,
+                profile.leaf_join,
+                JudgeDeadline::from_profile(profile),
+            )
             .ok()
             .flatten()
             .map(|document| document.text)
@@ -528,7 +546,10 @@ fn which_half_of_the_shipping_reclaim_reaches_discord() {
         );
         std::thread::sleep(std::time::Duration::from_millis(400));
         let document = read(&format!("after delete key {index}"));
-        if document.chars().all(|c| profile.empty_document_chars.contains(&c)) {
+        if document
+            .chars()
+            .all(|c| profile.empty_document_chars.contains(&c))
+        {
             eprintln!("oracle: reclaim probe: delete key {index} EMPTIED the composer");
             return;
         }
@@ -625,7 +646,11 @@ fn calibrate_the_landing_oracle() {
         "oracle: stage 1: post-clear document = {post_clear:?}, canonical_empty={canonical_empty} \
          -- a byte-exact landing is only reachable from the canonical empty"
     );
-    let landing_verdict = if canonical_empty { "LANDED" } else { "Rewrapped" };
+    let landing_verdict = if canonical_empty {
+        "LANDED"
+    } else {
+        "Rewrapped"
+    };
     let empty_ink = judge
         .composer_ink(&bound, deadline)
         .ok()
@@ -640,7 +665,12 @@ fn calibrate_the_landing_oracle() {
     // --- stage 2: REFUSAL — nothing placed ----------------------------------
     let verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
     report("stage 2 (REFUSAL: nothing placed)", &verdict);
-    record(&mut outcomes, "an empty composer must be refused by name", "NothingPlaced", &verdict);
+    record(
+        &mut outcomes,
+        "an empty composer must be refused by name",
+        "NothingPlaced",
+        &verdict,
+    );
 
     // --- stage 3: place by the SHIPPING write channel, and confirm ----------
     assert!(
@@ -652,7 +682,12 @@ fn calibrate_the_landing_oracle() {
     settle(&profile);
     let verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
     report("stage 3 (LANDED)", &verdict);
-    record(&mut outcomes, "stage 3 the shipping write channel reaches the rendered document", landing_verdict, &verdict);
+    record(
+        &mut outcomes,
+        "stage 3 the shipping write channel reaches the rendered document",
+        landing_verdict,
+        &verdict,
+    );
     if let Ok(landed) = &verdict {
         assert_eq!(landed.document, carrier);
     }
@@ -671,7 +706,12 @@ fn calibrate_the_landing_oracle() {
     clear("stage 4", &acquired, &composer, &judge, &profile);
     let verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
     report("stage 4 (cleared)", &verdict);
-    record(&mut outcomes, "a cleared composer must be refused by name", "NothingPlaced", &verdict);
+    record(
+        &mut outcomes,
+        "a cleared composer must be refused by name",
+        "NothingPlaced",
+        &verdict,
+    );
 
     // --- stage 5: REFUSAL — a truncated carrier -----------------------------
     let cut = carrier
@@ -682,11 +722,19 @@ fn calibrate_the_landing_oracle() {
     let truncated = &carrier[..cut];
     assert!(focus_reaches_the_composer(&acquired, &composer));
     let typed = crate::native_discord_adapter::shipping_type_text(truncated);
-    eprintln!("oracle: stage 5: typed a {} char prefix -> {typed}", truncated.chars().count());
+    eprintln!(
+        "oracle: stage 5: typed a {} char prefix -> {typed}",
+        truncated.chars().count()
+    );
     settle(&profile);
     let verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
     report("stage 5 (REFUSAL: truncated)", &verdict);
-    record(&mut outcomes, "a dropped chunk must be refused by name", "Truncated", &verdict);
+    record(
+        &mut outcomes,
+        "a dropped chunk must be refused by name",
+        "Truncated",
+        &verdict,
+    );
     clear("stage 5", &acquired, &composer, &judge, &profile);
 
     // --- stage 6: REFUSAL — a carrier the composer re-wrapped ---------------
@@ -699,9 +747,21 @@ fn calibrate_the_landing_oracle() {
     let b = crate::native_discord_adapter::shipping_type_text(truncated);
     eprintln!("oracle: stage 6: typed two blocks separated by Shift+Enter -> {a}/{brk}/{b}");
     settle(&profile);
-    let verdict = judge_landing(&judge, &profile, &bound, &wrapped_expectation, baseline, &[]);
+    let verdict = judge_landing(
+        &judge,
+        &profile,
+        &bound,
+        &wrapped_expectation,
+        baseline,
+        &[],
+    );
     report("stage 6 (REFUSAL: re-wrapped)", &verdict);
-    record(&mut outcomes, "a document the composer re-encoded must be refused by name", "Rewrapped", &verdict);
+    record(
+        &mut outcomes,
+        "a document the composer re-encoded must be refused by name",
+        "Rewrapped",
+        &verdict,
+    );
     clear("stage 6", &acquired, &composer, &judge, &profile);
 
     // --- stage 7: REFUSAL — the wrong window --------------------------------
@@ -731,7 +791,12 @@ fn calibrate_the_landing_oracle() {
                 std::slice::from_ref(&bound),
             );
             report("stage 7 (REFUSAL: wrong window)", &verdict);
-            record(&mut outcomes, "a carrier that landed in another window must be refused by name", "WrongWindow", &verdict);
+            record(
+                &mut outcomes,
+                "a carrier that landed in another window must be refused by name",
+                "WrongWindow",
+                &verdict,
+            );
         }
         None => {
             // The second instance is not usable on this host (it is at a login
@@ -747,7 +812,10 @@ fn calibrate_the_landing_oracle() {
             );
             let expecting_other = calibration_profile(other);
             let verdict = judge_landing(&judge, &expecting_other, &bound, &carrier, baseline, &[]);
-            report("stage 7 (REFUSAL: wrong window, by live process identity)", &verdict);
+            report(
+                "stage 7 (REFUSAL: wrong window, by live process identity)",
+                &verdict,
+            );
             record(
                 &mut outcomes,
                 "stage 7 wrong window",
@@ -764,7 +832,12 @@ fn calibrate_the_landing_oracle() {
     // and reported a landing that was never on screen.
     let host = crate::native_a11y::win32::Uia2Win32Host::desktop();
     let before_set = judge
-        .rendered_document_uia(&bound, profile.walk, profile.leaf_join, JudgeDeadline::from_profile(&profile))
+        .rendered_document_uia(
+            &bound,
+            profile.walk,
+            profile.leaf_join,
+            JudgeDeadline::from_profile(&profile),
+        )
         .ok()
         .flatten()
         .map(|document| document.text)
@@ -804,7 +877,10 @@ fn calibrate_the_landing_oracle() {
 
     // --- the composer must be empty, and nothing must have been sent --------
     let final_verdict = judge_landing(&judge, &profile, &bound, &carrier, baseline, &[]);
-    report("final (asking whether the CARRIER is still there)", &final_verdict);
+    report(
+        "final (asking whether the CARRIER is still there)",
+        &final_verdict,
+    );
     record(
         &mut outcomes,
         "the probe must never leave the carrier in a real person's composer",
@@ -815,7 +891,9 @@ fn calibrate_the_landing_oracle() {
         },
         &final_verdict,
     );
-    eprintln!("oracle: no Enter was sent at any point -- send_enter is not reachable from this file");
+    eprintln!(
+        "oracle: no Enter was sent at any point -- send_enter is not reachable from this file"
+    );
 
     eprintln!("oracle: ===== tally (stage: expected|got) =====");
     for (stage, result) in &outcomes {
@@ -828,5 +906,8 @@ fn calibrate_the_landing_oracle() {
             expected != got
         })
         .collect();
-    assert!(wrong.is_empty(), "stages that did not answer as required: {wrong:?}");
+    assert!(
+        wrong.is_empty(),
+        "stages that did not answer as required: {wrong:?}"
+    );
 }

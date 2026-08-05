@@ -14288,6 +14288,7 @@ mod windows {
                 &before,
                 &before.binding,
                 &draft,
+                None,
                 &mut protected_foreground,
             );
             if let Some(stage) = carrier_reclaim_stage(reclaim) {
@@ -16773,7 +16774,17 @@ mod windows {
                     // the caller still holds the authoritative string, and
                     // anything that is not derived from it never reaches here.
                     let cleared = CARRIER_RECLAIM_DELETE_KEYS.iter().any(|(scan, flags)| {
-                        send_select_all_then_delete(*scan, *flags) && composer_empty(&held.element)
+                        matches!(
+                            send_select_all_then_delete(
+                                *scan,
+                                *flags,
+                                target,
+                                &held.element,
+                                expected,
+                                None,
+                            ),
+                            SelectAllDeleteOutcome::Cleared
+                        )
                     });
                     cleared && type_composer_text_steps(expected_text)
                 }
@@ -16812,6 +16823,87 @@ mod windows {
         false
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum SelectAllDeleteOutcome {
+        InputRejected,
+        AcceptedUnverified,
+        Cleared,
+    }
+
+    fn discord_landing_profile(
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+    ) -> crate::landing_oracle::LandingProfile {
+        crate::landing_oracle::LandingProfile {
+            process_name: target.app_process_name,
+            ..crate::landing_oracle::DISCORD
+        }
+    }
+
+    fn landing_bound_composer(
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+        element: &IUIAutomationElement,
+        expected: &ComposerBinding,
+    ) -> crate::landing_oracle::BoundComposer {
+        let pattern =
+            unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
+                .ok();
+        crate::landing_oracle::BoundComposer {
+            hwnd: target.window,
+            route: crate::native_a11y::Uia2TreeRoute::MsaaBridge,
+            process_id: target.process_id,
+            composer: crate::native_a11y::Uia2Editable {
+                runtime_id: expected.runtime_id.clone(),
+                name: unsafe { element.CurrentName() }
+                    .ok()
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                value_pattern: pattern.is_some(),
+                enabled: unsafe { element.CurrentIsEnabled() }
+                    .map(|value| value.as_bool())
+                    .unwrap_or(false),
+                keyboard_focusable: unsafe { element.CurrentIsKeyboardFocusable() }
+                    .map(|value| value.as_bool())
+                    .unwrap_or(false),
+                read_only: pattern
+                    .and_then(|pattern| unsafe { pattern.CurrentIsReadOnly() }.ok())
+                    .map(|value| value.as_bool())
+                    .unwrap_or(true),
+            },
+        }
+    }
+
+    fn composer_empty_ink_baseline(
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+        held: &LocatedComposer,
+        expected: &ComposerBinding,
+    ) -> Option<crate::landing_oracle::LandingBaseline> {
+        use crate::landing_oracle::LandingJudgeSyscalls as _;
+
+        let profile = discord_landing_profile(target);
+        let bound = landing_bound_composer(target, &held.element, expected);
+        let judge = crate::landing_oracle::win32::LandingJudgeWin32;
+        judge
+            .composer_ink(
+                &bound,
+                crate::landing_oracle::JudgeDeadline::from_profile(&profile),
+            )
+            .ok()
+            .flatten()
+            .map(|empty_ink| crate::landing_oracle::LandingBaseline { empty_ink })
+    }
+
+    fn composer_clear_verified_by_oracle(
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+        element: &IUIAutomationElement,
+        expected: &ComposerBinding,
+        baseline: crate::landing_oracle::LandingBaseline,
+    ) -> bool {
+        let profile = discord_landing_profile(target);
+        let bound = landing_bound_composer(target, element, expected);
+        let judge = crate::landing_oracle::win32::LandingJudgeWin32;
+        crate::landing_oracle::judge_empty_composer(&judge, &profile, &bound, baseline).is_ok()
+    }
+
     /// Take back exactly what OSL typed, using the same real-input mechanism that
     /// typed it: select the whole composer, then delete the selection.
     ///
@@ -16819,7 +16911,7 @@ mod windows {
     /// delete itself is rejected, so a failed reclaim can never leave Control
     /// latched on the user's desktop -- the same discipline `send_shift_enter`
     /// uses for Shift.
-    fn send_select_all_then_delete(delete_scan: u16, delete_flags: u32) -> bool {
+    fn send_select_all_then_delete_inputs(delete_scan: u16, delete_flags: u32) -> bool {
         let control_down = send_inputs(&[keyboard_input(
             DISCORD_CONTROL_SCAN_CODE,
             KEYEVENTF_SCANCODE,
@@ -16840,6 +16932,32 @@ mod windows {
             keyboard_input(delete_scan, delete_flags),
             keyboard_input(delete_scan, delete_flags | KEYEVENTF_KEYUP),
         ])
+    }
+
+    /// Select all, delete, then prove the composer really cleared. `SendInput`
+    /// accepting the events is only [`SelectAllDeleteOutcome::AcceptedUnverified`].
+    fn send_select_all_then_delete(
+        delete_scan: u16,
+        delete_flags: u32,
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+        element: &IUIAutomationElement,
+        expected: &ComposerBinding,
+        baseline: Option<crate::landing_oracle::LandingBaseline>,
+    ) -> SelectAllDeleteOutcome {
+        if !send_select_all_then_delete_inputs(delete_scan, delete_flags) {
+            return SelectAllDeleteOutcome::InputRejected;
+        }
+        std::thread::sleep(Duration::from_millis(
+            crate::landing_oracle::DISCORD.settle_ms,
+        ));
+        let Some(baseline) = baseline else {
+            return SelectAllDeleteOutcome::AcceptedUnverified;
+        };
+        if composer_clear_verified_by_oracle(target, element, expected, baseline) {
+            SelectAllDeleteOutcome::Cleared
+        } else {
+            SelectAllDeleteOutcome::AcceptedUnverified
+        }
     }
 
     /// Ctrl+A alone: exactly the first half of `send_select_all_then_delete`,
@@ -16878,7 +16996,7 @@ mod windows {
         let Some((scan, flags)) = CARRIER_RECLAIM_DELETE_KEYS.get(index) else {
             return false;
         };
-        send_select_all_then_delete(*scan, *flags)
+        send_select_all_then_delete_inputs(*scan, *flags)
     }
 
     /// The delete keys the reclaim tries, in order: the grey extended `Delete`
@@ -17192,6 +17310,7 @@ mod windows {
         held: &LocatedComposer,
         expected: &ComposerBinding,
         exact_text: &str,
+        empty_baseline: Option<crate::landing_oracle::LandingBaseline>,
         protected_foreground: &mut ProtectedForegroundRestore,
     ) -> CarrierReclaimOutcome {
         let deadline = Instant::now() + Duration::from_millis(CARRIER_RECLAIM_DEADLINE_MS);
@@ -17297,16 +17416,17 @@ mod windows {
             {
                 return CarrierReclaimOutcome::Refused;
             }
-            if send_select_all_then_delete(delete_scan, delete_flags)
-                && reclaimed_composer_holds_exact_text(
+            if matches!(
+                send_select_all_then_delete(
+                    delete_scan,
+                    delete_flags,
                     target,
                     &held.element,
                     expected,
-                    process_is_trusted,
-                    deadline,
-                    "",
-                )
-            {
+                    empty_baseline,
+                ),
+                SelectAllDeleteOutcome::Cleared
+            ) {
                 return CarrierReclaimOutcome::Cleared;
             }
             if Instant::now() >= deadline {
@@ -17337,6 +17457,7 @@ mod windows {
             held,
             expected,
             draft,
+            None,
             &mut protected_foreground,
         );
         qa_place_stage(draft_clear_stage(outcome));
@@ -17559,6 +17680,7 @@ mod windows {
         /// Exactly what OSL typed. Empty until `arm`, which is what makes an
         /// un-armed guard a no-op.
         carrier: String,
+        empty_baseline: Option<crate::landing_oracle::LandingBaseline>,
         /// Whether this failure also drops the calibration. When it does, the
         /// protected session that was holding the operator's suspended draft is
         /// over, so the draft is typed back rather than stranded in OSL's memory --
@@ -17584,6 +17706,7 @@ mod windows {
                 held,
                 expected,
                 carrier: String::new(),
+                empty_baseline: composer_empty_ink_baseline(target, &held, &expected),
                 drops_calibration: false,
                 armed: false,
             }
@@ -17644,6 +17767,7 @@ mod windows {
                 &self.held,
                 &self.expected,
                 &carrier,
+                self.empty_baseline,
                 &mut protected_foreground,
             );
             if let Some(stage) = carrier_reclaim_stage(reclaim) {
@@ -23160,6 +23284,31 @@ mod tests {
         assert!(clear.contains("place_carrier_reclaim_text_not_ours"));
         assert!(clear.contains("foreground_input_reaches_target("));
         assert!(clear.contains("CarrierReclaimOutcome::Refused"));
+        assert!(clear.contains("SelectAllDeleteOutcome::Cleared"));
+        assert!(clear.contains("empty_baseline"));
+        let select_delete = nested_function_body(source, "fn send_select_all_then_delete(");
+        assert!(
+            select_delete.contains("SelectAllDeleteOutcome::AcceptedUnverified"),
+            "accepted SendInput must have a named non-clear outcome"
+        );
+        assert!(
+            !select_delete.contains("return SelectAllDeleteOutcome::Cleared;"),
+            "accepted SendInput must never return Cleared before the oracle proof"
+        );
+        assert!(
+            select_delete.contains("composer_clear_verified_by_oracle("),
+            "the helper must verify the rendered document and ink before saying cleared"
+        );
+        let oracle_clear = nested_function_body(source, "fn composer_clear_verified_by_oracle(");
+        assert!(
+            oracle_clear.contains("judge_empty_composer("),
+            "the delete helper must use the landing oracle, not the value property"
+        );
+        assert!(
+            !select_delete.contains("composer_empty(")
+                && !select_delete.contains("reclaimed_composer_holds_exact_text("),
+            "the clear proof must not fall back to the adapter's accessibility value path"
+        );
         // The full write-time proof is that identity plus focus, so the write still
         // refuses to type into an unfocused composer.
         let write_target = nested_function_body(source, "fn carrier_write_target_is_current(");
