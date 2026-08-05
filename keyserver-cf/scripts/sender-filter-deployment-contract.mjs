@@ -54,17 +54,44 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
     //   d3597486b D-259 injectable cron price fetcher           +690/-42
     //
     // WHAT THIS DIGEST DOES AND DOES NOT SAY: it records what the source IS,
-    // not that it was security-reviewed. One change here alters what is
-    // checked before a caller may send, and it is NOT endorsed by this
-    // re-anchor -- 169b2bebb (empty commit body) inserted the two
-    // /v1/space-events routes ABOVE `const method`, i.e. ahead of both ingress
-    // gates: POST /v1/space-events therefore skips the mutation-ingress rate
-    // limit AND `bufferRequestBody(MAX_MUTATION_BODY_BYTES)`, and
-    // GET /v1/space-events/:tag (a destructive drain) skips the public-GET
-    // rate limit. Tracked as D-260. Moving those two lines below
-    // `const method` will change this digest again, by design.
+    // not that it was security-reviewed. The D-239 re-anchor explicitly did
+    // NOT endorse 169b2bebb, which (with an empty commit body) had inserted
+    // the two /v1/space-events routes ABOVE `const method`, ahead of both
+    // ingress gates. It said that moving them below would change this digest
+    // again, by design. That is what the re-anchor below is.
+    //
+    // D-260 re-anchor. Previous digest 902396dcd7c134ea... reproduced exactly
+    // at the D-239 anchor commit (23490 bytes) and is superseded ONLY by the
+    // D-260 fix. One change, in one lane; the ledger closes exactly
+    // (+1568/-293 = +1275 = 24765-23490), attributed line by line:
+    //
+    //   comment, 3 blocks recording why the routes may not be
+    //   hoisted again and that the drain is destructive     +1317/-0
+    //   code: the 3 hoisted lines deleted from the top of
+    //   `dispatch`                                             +0/-293
+    //   code: the same 2 routes re-registered inside the
+    //   existing GET and POST route tables, where the
+    //   per-method guards (`request.method === "GET" &&`,
+    //   `"POST" &&`) are redundant and therefore dropped     +251/-0
+    //
+    // Net code is -42 bytes: the routes MOVED, they did not grow, and no
+    // route was added or removed. `git diff` for this file is confined to
+    // those three hunks.
+    //
+    // WHAT CHANGED IN BEHAVIOUR, deliberately: POST /v1/space-events is now
+    // behind the mutation-ingress limit and `bufferRequestBody(
+    // MAX_MUTATION_BODY_BYTES)`, and GET /v1/space-events/:tag -- a
+    // DESTRUCTIVE drain that DELETEs every row it returns -- is now behind the
+    // public-GET ingress limit. Nothing else about the lane changed; the
+    // enqueue/consuming-drain behaviour is held by
+    // test/integration/d260-space-events-ingress.test.ts.
+    //
+    // STILL OPEN, and NOT decided by this digest: whether a destructive
+    // operation may remain a GET at all. The method is frozen by
+    // `03-CONTRACTS/spaces.md` (T21-C1), outside this closure, so changing it
+    // is an owner decision, not a keyserver one. See the D-260 tasklog.
     sha256:
-      "902396dcd7c134eaafe9f1b6c2964a01900f14b144ddfdd9180b65e10713851f",
+      "51d639d02c6f585cb54acae60bb9353c8bd6f5f1d57d8ebb6f643577b29404bf",
   }),
   "keyserver-cf/src/endpoints/register.ts": Object.freeze({
     role: "shipping-canonical-identity-registration-caller",

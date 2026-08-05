@@ -293,9 +293,15 @@ async function dispatch(
 ): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
-  const spaceEventTag = matchParam(path, /^\/v1\/space-events\/([^/]+)$/);
-  if (request.method === "GET" && spaceEventTag) return await handleSpaceEventDrain(spaceEventTag, env);
-  if (request.method === "POST" && path === "/v1/space-events") return await handleSpaceEventPost(request, env);
+  // D-260: the two /v1/space-events routes used to be dispatched HERE, above
+  // `const method`, i.e. ahead of every gate below. Nothing about the lane
+  // required that placement -- 169b2bebb simply inserted them at the first
+  // line where `path` is in scope -- but the effect was that the POST skipped
+  // both the mutation-ingress limit and `bufferRequestBody`, and the drain
+  // (which DELETEs every row it returns) skipped the public-GET limit. They
+  // are now registered in the ordinary per-method route tables below, so they
+  // are gated exactly like every sibling route. Do not hoist a route above
+  // this line.
   const method = request.method;
 
   if (method === "GET" && !PUBLIC_GET_INGRESS_EXEMPT_PATHS.has(path)) {
@@ -357,6 +363,14 @@ async function dispatch(
     if (pubkeysUserId !== null) return await handlePubkeys(env, pubkeysUserId);
     const devicesUserId = matchParam(path, /^\/v1\/devices\/([^/]+)$/);
     if (devicesUserId !== null) return await handleDevices(env, devicesUserId);
+    // D-260: this drain is DESTRUCTIVE -- it deletes every row it returns --
+    // and is unauthenticated, so the public-GET ingress limit above is the
+    // only thing that cost-bounds probing the 32-byte tag space. Whether a
+    // destructive operation may remain a GET at all is a protocol question
+    // owned by `03-CONTRACTS/spaces.md`, which freezes the method; see the
+    // D-260 tasklog. It must never again sit above that limit.
+    const spaceEventTag = matchParam(path, /^\/v1\/space-events\/([^/]+)$/);
+    if (spaceEventTag !== null) return await handleSpaceEventDrain(spaceEventTag, env);
     const wrappedContentId = matchParam(path, /^\/v1\/wrapped-keys\/([^/]+)$/);
     if (wrappedContentId !== null) {
       return await handleWrappedKeysGet(request, env, wrappedContentId);
@@ -425,6 +439,11 @@ async function dispatch(
     if (path === "/v1/internal/sender-filter-rollout-root/advance") {
       return await handleSenderFilterRolloutRootAdvance(request, env);
     }
+    // D-260: reached only after the mutation-ingress limit and
+    // `bufferRequestBody(MAX_MUTATION_BODY_BYTES)`, so the handler's own
+    // 64 KiB ciphertext cap is no longer the first bound on what gets read
+    // and JSON.parsed.
+    if (path === "/v1/space-events") return await handleSpaceEventPost(request, env);
     if (path === "/v1/control-inbox") return await handleControlInboxPost(request, env);
     if (path === "/v1/usernames/claim") return await handleUsernameClaim(request, env);
     if (path === "/v1/usernames/lookup") return await handleUsernameLookup(request, env);
