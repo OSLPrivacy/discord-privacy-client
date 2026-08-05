@@ -1,5 +1,40 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { homeAppsFromServices, type LinkedService, type ServiceId } from "./services";
+
+// D-251: `src/main.ts` is ~10k lines, and importing it costs seconds. This file
+// used to do that inside the body of its one `it()`, where vitest's default
+// 5,000 ms `testTimeout` applies, so most of that test's budget went on module
+// loading and a busy machine turned the file red with
+// `Test timed out in 5000ms` -- without ever reaching an assertion.
+//
+// The module is now loaded ONCE, in a hook that carries its own budget, and the
+// test reads it synchronously. That is safe here and was checked, not assumed:
+// the only test in this file drives the state it renders from through pure
+// exported helpers, and the stubbed `localStorage` is emptied before each test
+// -- which is exactly the state a fresh import would have seen.
+const localStore = new Map<string, string>();
+let ui: typeof import("./main");
+
+beforeAll(async () => {
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => localStore.get(key) ?? null,
+    setItem: (key: string, value: string) => { localStore.set(key, value); },
+    removeItem: (key: string) => { localStore.delete(key); },
+    clear: () => { localStore.clear(); },
+  });
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
+  vi.resetModules();
+  ui = await import("./main");
+}, 300_000);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  localStore.clear();
+});
 
 const launchServices: LinkedService[] = [
   ["discord", "Discord"],
@@ -20,22 +55,8 @@ const launchServices: LinkedService[] = [
 }));
 
 describe("L1 Protect reachability", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("renders Protect in the service header for every launchable home app", async () => {
-    const store = new Map<string, string>();
-    vi.stubGlobal("localStorage", {
-      getItem: (key: string) => store.get(key) ?? null,
-      setItem: (key: string, value: string) => { store.set(key, value); },
-      removeItem: (key: string) => { store.delete(key); },
-      clear: () => { store.clear(); },
-    });
-    vi.stubGlobal("requestAnimationFrame", () => 1);
-    vi.stubGlobal("cancelAnimationFrame", () => undefined);
-    vi.resetModules();
-    const { __oslHubUiTest } = await import("./main");
+  it("renders Protect in the service header for every launchable home app", () => {
+    const { __oslHubUiTest } = ui;
     const apps = homeAppsFromServices(launchServices)
       .filter((app) => app.visibility === "launch" && app.launchState === "available");
 

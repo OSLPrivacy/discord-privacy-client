@@ -1,26 +1,43 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-async function loadUi() {
-  vi.resetModules();
-  const store = new Map<string, string>();
+// D-251: `src/main.ts` is ~10k lines, and importing it costs seconds. This file
+// used to do that inside the body of every `it()`, where vitest's default
+// 5,000 ms `testTimeout` applies, so most of each test's budget went on module
+// loading and a busy machine turned the file red with
+// `Test timed out in 5000ms` -- without ever reaching an assertion.
+//
+// The module is now loaded ONCE, in a hook that carries its own budget, and the
+// tests read it synchronously. That is safe here and was checked, not assumed:
+// each test drives the state it renders from through `__oslHubUiTest.reset(...)`
+// or calls pure exported helpers, and the stubbed `localStorage` is emptied
+// before each test -- which is exactly the state a fresh import would have seen.
+const localStore = new Map<string, string>();
+let ui: typeof import("./main");
+
+beforeAll(async () => {
   vi.stubGlobal("localStorage", {
-    getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => { store.set(key, value); },
-    removeItem: (key: string) => { store.delete(key); },
-    clear: () => { store.clear(); },
+    getItem: (key: string) => localStore.get(key) ?? null,
+    setItem: (key: string, value: string) => { localStore.set(key, value); },
+    removeItem: (key: string) => { localStore.delete(key); },
+    clear: () => { localStore.clear(); },
   });
   vi.stubGlobal("requestAnimationFrame", () => 1);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
-  return import("./main");
-}
+  vi.resetModules();
+  ui = await import("./main");
+}, 300_000);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  localStore.clear();
+});
 
 describe("OSL Mail aliases", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("renders Stage B aliases and relay after client protection", async () => {
-    const { __oslHubUiTest, oslMailStageAContent, oslMailStageBContent } = await loadUi();
+  it("renders Stage B aliases and relay after client protection", () => {
+    const { __oslHubUiTest, oslMailStageAContent, oslMailStageBContent } = ui;
     __oslHubUiTest.reset({ route: "inbox" });
 
     const stageA = oslMailStageAContent();

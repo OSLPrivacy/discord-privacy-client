@@ -1,5 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+
+// D-251: every `it()` below deliberately re-loads `./main` with its own
+// selectors / storage / stubs, so the import CANNOT be hoisted into a single
+// `beforeAll` without destroying what the tests check. `src/main.ts` is ~10k
+// lines and one load costs ~2.5 s cold, which left almost nothing of vitest's
+// default 5,000 ms budget for the behaviour under test: on a busy machine these
+// tests died with `Test timed out in 5000ms` before reaching an assertion.
+// The budget below covers MODULE LOADING, not the behaviour -- no assertion
+// depends on it, and every assertion is unchanged.
+const MODULE_RELOAD_BUDGET_MS = 30_000;
+
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
@@ -105,7 +116,7 @@ describe("AutoScrub unattended run production wiring", () => {
     expect(markup).toContain("2 open runs");
     expect(markup).toContain("LOCAL REVIEW");
     expect(markup).toContain("Only selected items can be prepared; every batch still needs confirmation.");
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 });
 
 

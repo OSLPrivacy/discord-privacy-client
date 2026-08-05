@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
 vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
@@ -16,20 +16,37 @@ vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: mocks.getCurrentWin
  */
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 
-async function loadUi() {
-  vi.resetModules();
-  const store = new Map<string, string>();
+// D-251: `src/main.ts` is ~10k lines, and importing it costs seconds. This file
+// used to do that inside the body of the one `it()` that needs the UI, where
+// vitest's default 5,000 ms `testTimeout` applies, so a busy machine could turn
+// the file red with `Test timed out in 5000ms` -- without ever reaching an
+// assertion. The module is now loaded ONCE, in a hook that carries its own
+// budget, and the test reads it synchronously. The old
+// `afterEach(() => vi.unstubAllGlobals())` is now an `afterAll`.
+const localStore = new Map<string, string>();
+let ui: typeof import("./main");
+
+beforeAll(async () => {
   vi.stubGlobal("localStorage", {
-    getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => { store.set(key, value); },
-    removeItem: (key: string) => { store.delete(key); },
+    getItem: (key: string) => localStore.get(key) ?? null,
+    setItem: (key: string, value: string) => { localStore.set(key, value); },
+    removeItem: (key: string) => { localStore.delete(key); },
   });
   vi.stubGlobal("document", { querySelector: vi.fn(() => null), createElement: vi.fn(() => ({})), documentElement: { classList: { add: vi.fn() }, dataset: {} }, addEventListener: vi.fn(), visibilityState: "visible" });
   vi.stubGlobal("window", { addEventListener: vi.fn(), matchMedia: vi.fn(() => ({ matches: false, addEventListener: vi.fn() })), setTimeout, confirm: vi.fn(() => false) });
   vi.stubGlobal("requestAnimationFrame", () => 1);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
-  return import("./main");
-}
+  vi.resetModules();
+  ui = await import("./main");
+}, 300_000);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  localStore.clear();
+});
 
 function rule(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -39,9 +56,6 @@ function rule(selector: string): string {
 }
 
 describe("browser consent grid", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
   it("lets the row's text column shrink inside its own grid track", () => {
     // A flex item's min-width is `auto`, i.e. its min-content width. Without
     // this the <span> refused to shrink below the longest browser-and-profile
@@ -113,8 +127,8 @@ describe("browser consent grid", () => {
     expect(rule(".browser-detected-item")).toMatch(/padding:\s*10px 12px/u);
   });
 
-  it("renders one individually selectable consent row for every detected browser area", async () => {
-    const { __oslHubUiTest } = await loadUi();
+  it("renders one individually selectable consent row for every detected browser area", () => {
+    const { __oslHubUiTest } = ui;
     __oslHubUiTest.reset();
     __oslHubUiTest.setBrowserProfilesForTest([
       { browserId: "chrome", profile: "Default", displayName: "Personal" },

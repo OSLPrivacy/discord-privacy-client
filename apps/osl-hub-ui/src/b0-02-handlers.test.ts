@@ -1,6 +1,17 @@
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+
+// D-251: every `it()` below deliberately re-loads `./main` with its own
+// selectors / storage / stubs, so the import CANNOT be hoisted into a single
+// `beforeAll` without destroying what the tests check. `src/main.ts` is ~10k
+// lines and one load costs ~2.5 s cold, which left almost nothing of vitest's
+// default 5,000 ms budget for the behaviour under test: on a busy machine these
+// tests died with `Test timed out in 5000ms` before reaching an assertion.
+// The budget below covers MODULE LOADING, not the behaviour -- no assertion
+// depends on it, and every assertion is unchanged.
+const MODULE_RELOAD_BUDGET_MS = 30_000;
+
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
 const mainSource = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
@@ -114,7 +125,7 @@ describe("B0-02 handler bindings", () => {
     const restarted = await loadUi({}, storage);
     restarted.__oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "privacy" });
     expect(restarted.__oslHubUiTest.snapshot().protectionPreset).toBe("maximum");
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("moves Inbox tabs from decorative markup to filtered panel state", async () => {
     const filters = {
@@ -150,7 +161,7 @@ describe("B0-02 handler bindings", () => {
     expect(allHtml).toContain('id="inbox-connected-heading"');
     expect(allHtml).toContain('id="inbox-requests-heading"');
     expect(mocks.invoke).not.toHaveBeenCalled();
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("persists the OSL Mail notifications checkbox locally", async () => {
     const storage = memoryStorage();
@@ -168,7 +179,7 @@ describe("B0-02 handler bindings", () => {
     const restarted = await loadUi({}, storage);
     restarted.__oslHubUiTest.reset({ route: "osl-mail" });
     expect(restarted.__oslHubUiTest.snapshot().oslMailNotifications).toBe(false);
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("binds Connections Mullvad install and Privacy Change preset controls", async () => {
     const changePreset = new FakeElement();
@@ -190,5 +201,5 @@ describe("B0-02 handler bindings", () => {
     expect(__oslHubUiTest.snapshot()).toMatchObject({ route: "onboarding", onboardingRoute: "privacy" });
     expect(mainSource).toContain('#install-mullvad-from-connections');
     expect(mainSource).toContain('runMullvadSetupAction("install", "connections")');
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 });

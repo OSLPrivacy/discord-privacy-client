@@ -14,6 +14,17 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+
+// D-251: every `it()` below deliberately re-loads `./main` with its own
+// selectors / storage / stubs, so the import CANNOT be hoisted into a single
+// `beforeAll` without destroying what the tests check. `src/main.ts` is ~10k
+// lines and one load costs ~2.5 s cold, which left almost nothing of vitest's
+// default 5,000 ms budget for the behaviour under test: on a busy machine these
+// tests died with `Test timed out in 5000ms` before reaching an assertion.
+// The budget below covers MODULE LOADING, not the behaviour -- no assertion
+// depends on it, and every assertion is unchanged.
+const MODULE_RELOAD_BUDGET_MS = 30_000;
+
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
 vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
 vi.mock("./logos", () => ({ browserLogo: (id: string) => `<span>${id}</span>`, providerLogo: (id: string) => `<span>${id}</span>`, serviceLogo: (id: string) => `<span>${id}</span>` }));
@@ -154,7 +165,7 @@ describe("D-190 -- Choose apps must never swallow Continue", () => {
     // ...and Continue must then proceed. Before the fix it returns false here
     // and the click is a no-op, so this never happens.
     expect(commands()).toContain("save_onboarding_preferences");
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("says why it cannot continue, and offers a way out, when the catalog probe fails", async () => {
     const storage = memoryStorage({ "osl-selected-apps-v1": JSON.stringify(["discord"]) });
@@ -183,7 +194,7 @@ describe("D-190 -- Choose apps must never swallow Continue", () => {
     // ...and the escape the reporter could only find by de-selecting a tile they
     // never selected is now a labelled control.
     expect(markup).toContain('id="continue-without-apps"');
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("the escape hatch completes onboarding and drops the native selection", async () => {
     const storage = memoryStorage({ "osl-selected-apps-v1": JSON.stringify(["discord"]) });
@@ -214,5 +225,5 @@ describe("D-190 -- Choose apps must never swallow Continue", () => {
 
     expect(commands()).toContain("save_onboarding_preferences");
     expect(JSON.parse(storage.getItem("osl-selected-apps-v1") ?? "[]")).not.toContain("discord");
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 });

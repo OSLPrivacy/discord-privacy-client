@@ -1,6 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LinkedService } from "./services";
 
+
+// D-251: every `it()` below deliberately re-loads `./main` with its own
+// selectors / storage / stubs, so the import CANNOT be hoisted into a single
+// `beforeAll` without destroying what the tests check. `src/main.ts` is ~10k
+// lines and one load costs ~2.5 s cold, which left almost nothing of vitest's
+// default 5,000 ms budget for the behaviour under test: on a busy machine these
+// tests died with `Test timed out in 5000ms` before reaching an assertion.
+// The budget below covers MODULE LOADING, not the behaviour -- no assertion
+// depends on it, and every assertion is unchanged.
+const MODULE_RELOAD_BUDGET_MS = 30_000;
+
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 
@@ -76,11 +87,11 @@ describe("T3-A4 hostless local protection", () => {
 
   it("opens and activates from the active native service account without an embedded host", async () => {
     await opensHostlessLocalProtection(signal, "signal", "signal-account");
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("uses the selected browser-launcher provider account without an embedded host", async () => {
     await opensHostlessLocalProtection(email, "gmail", "gmail-account");
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("makes Manual prepare avoid clipboard while Clipboard copies and Double is consent-gated", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -145,5 +156,5 @@ describe("T3-A4 hostless local protection", () => {
     await __oslHubUiTest.prepareLocalProtectedDraft("double secret");
     expect(confirm).toHaveBeenCalledTimes(1);
     expect(writeText).toHaveBeenCalledTimes(1);
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 });

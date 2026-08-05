@@ -1,6 +1,17 @@
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+
+// D-251: every `it()` below deliberately re-loads `./main` with its own
+// selectors / storage / stubs, so the import CANNOT be hoisted into a single
+// `beforeAll` without destroying what the tests check. `src/main.ts` is ~10k
+// lines and one load costs ~2.5 s cold, which left almost nothing of vitest's
+// default 5,000 ms budget for the behaviour under test: on a busy machine these
+// tests died with `Test timed out in 5000ms` before reaching an assertion.
+// The budget below covers MODULE LOADING, not the behaviour -- no assertion
+// depends on it, and every assertion is unchanged.
+const MODULE_RELOAD_BUDGET_MS = 30_000;
+
 // L-ATTR. Ledger 1 reported `data-account-recovery-phrase`
 // (account-recovery.ts:106), `data-account-recovery-password`
 // (account-recovery.ts:103), `data-recovery-add-phrase-wrap` and
@@ -115,7 +126,7 @@ describe("L-ATTR account recovery bindings", () => {
     expect(markup).toContain("data-account-recovery-password");
     expect(markup).toContain("Choose a new password");
     expect(mocks.invoke).not.toHaveBeenCalled();
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("sets the recovered password through the token the phrase step returned", async () => {
     const phraseForm = new FakeForm({ recoveryPhrase: "correct horse battery staple" });
@@ -140,7 +151,7 @@ describe("L-ATTR account recovery bindings", () => {
     expect(__oslHubUiTest.accountRecoverySnapshot().step).toBe("complete");
     expect(__oslHubUiTest.renderOnboardingRoute("account-recovery")).toContain("Your password was reset");
     expect(mocks.invoke).not.toHaveBeenCalled();
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("refuses a mismatched confirmation without calling the back end", async () => {
     const phraseForm = new FakeForm({ recoveryPhrase: "correct horse battery staple" });
@@ -163,7 +174,7 @@ describe("L-ATTR account recovery bindings", () => {
     expect(setPassword).not.toHaveBeenCalled();
     expect(__oslHubUiTest.accountRecoverySnapshot()).toMatchObject({ step: "password", error: "The new passwords do not match." });
     expect(__oslHubUiTest.renderOnboardingRoute("account-recovery")).toContain("The new passwords do not match.");
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("shows the lockout count a rejected phrase returns instead of staying silent", async () => {
     const phraseForm = new FakeForm({ recoveryPhrase: "wrong words" });
@@ -179,7 +190,7 @@ describe("L-ATTR account recovery bindings", () => {
 
     expect(__oslHubUiTest.accountRecoverySnapshot()).toMatchObject({ step: "phrase" });
     expect(__oslHubUiTest.renderOnboardingRoute("account-recovery")).toContain("3 recovery phrase attempts recorded. Try again in 60 seconds.");
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("renders the legacy migration screen for a legacy-marker refusal and repairs the marker", async () => {
     const phraseForm = new FakeForm({ recoveryPhrase: "correct horse battery staple" });
@@ -211,7 +222,7 @@ describe("L-ATTR account recovery bindings", () => {
     expect(freshStart).not.toHaveBeenCalled();
     // Repaired: the phrase alone works again, so the migration screen is gone.
     expect(__oslHubUiTest.accountRecoverySnapshot()).toMatchObject({ migration: null, step: "phrase" });
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("takes the fresh-start path only after the destructive confirmation is accepted", async () => {
     const freshStartButton = new FakeForm();
@@ -242,7 +253,7 @@ describe("L-ATTR account recovery bindings", () => {
     expect(acceptedFreshStart).toHaveBeenCalledTimes(1);
     expect(second.__oslHubUiTest.accountRecoverySnapshot().migration).toBe("fresh-start");
     expect(second.__oslHubUiTest.renderOnboardingRoute("account-recovery")).toContain("Start over");
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("starts every visit to recovery at the phrase step with no inherited token", async () => {
     const phraseForm = new FakeForm({ recoveryPhrase: "correct horse battery staple" });
@@ -259,7 +270,7 @@ describe("L-ATTR account recovery bindings", () => {
     __oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "account-recovery" });
     expect(__oslHubUiTest.accountRecoverySnapshot()).toMatchObject({ step: "phrase", migration: null });
     expect(mainSource).toContain('if (onboardingRoute === "account-recovery") resetAccountRecovery();');
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("keeps the shipping build free of a password-recovery IPC command", async () => {
     // The forms are bound, but nothing behind them exists yet: no Tauri command
@@ -278,7 +289,7 @@ describe("L-ATTR account recovery bindings", () => {
       error: "We could not verify that recovery phrase. No password was changed.",
     });
     expect(__oslHubUiTest.renderOnboardingRoute("account-recovery")).toContain("We could not verify that recovery phrase.");
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 });
 
 describe("L-ATTR dead markup and dead listeners", () => {

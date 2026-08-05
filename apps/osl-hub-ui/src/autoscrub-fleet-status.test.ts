@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -53,23 +53,43 @@ const fleetStatus = {
   }],
 } as const;
 
-async function loadUi() {
-  vi.resetModules();
-  const store = new Map<string, string>();
+// D-251: `src/main.ts` is ~10k lines, and importing it costs seconds. This file
+// used to do that inside the body of the one `it()` that needs the UI, where
+// vitest's default 5,000 ms `testTimeout` applies, so a busy machine could turn
+// the file red with `Test timed out in 5000ms` -- without ever reaching an
+// assertion. The module is now loaded ONCE, in a hook that carries its own
+// budget, and the test reads it synchronously. That is safe here and was
+// checked, not assumed: the test drives the state it renders from through
+// `__oslHubUiTest.reset(...)`, and the stubbed `localStorage` is emptied before
+// each test -- which is exactly the state a fresh import would have seen. The
+// old `beforeEach(() => vi.unstubAllGlobals())` is now an `afterAll`; its other
+// per-test mock resets are unrelated to the hoisted globals and stay as they were.
+const localStore = new Map<string, string>();
+let ui: typeof import("./main");
+
+beforeAll(async () => {
   vi.stubGlobal("localStorage", {
-    getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => { store.set(key, value); },
-    removeItem: (key: string) => { store.delete(key); },
-    clear: () => { store.clear(); },
+    getItem: (key: string) => localStore.get(key) ?? null,
+    setItem: (key: string, value: string) => { localStore.set(key, value); },
+    removeItem: (key: string) => { localStore.delete(key); },
+    clear: () => { localStore.clear(); },
   });
   vi.stubGlobal("requestAnimationFrame", () => 1);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
-  return import("./main");
-}
+  vi.resetModules();
+  ui = await import("./main");
+}, 300_000);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  localStore.clear();
+});
 
 describe("AutoScrub fleet status renderer contract", () => {
   beforeEach(() => {
-    vi.unstubAllGlobals();
     mocks.invoke.mockReset();
     mocks.isTauriRuntime.mockReturnValue(true);
   });
@@ -81,8 +101,8 @@ describe("AutoScrub fleet status renderer contract", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("get_autoscrub_run_fl");
   });
 
-  it("renders a loaded fleet status in the AutoScrub controls", async () => {
-    const { __oslHubUiTest } = await loadUi();
+  it("renders a loaded fleet status in the AutoScrub controls", () => {
+    const { __oslHubUiTest } = ui;
     __oslHubUiTest.reset({ route: "settings", autoScrubFleetStatus: fleetStatus });
 
     const markup = __oslHubUiTest.renderSettingsSection("scrub");
