@@ -139,6 +139,29 @@ name = "osl_privacy_hub"
 [[bin]]
 name = "osl-privacy-hub"
 path = "src/main.rs"
+# KEEP THIS. `src/main.rs` uses `tauri`, `tauri-plugin-*`, `runtime` and `tokio`,
+# all of which are OPTIONAL dependencies enabled only by `desktop`. Without the
+# gate the binary cannot compile at all with default features, and the
+# `--features core --lib` / `--features core --test windows_identity_lifecycle`
+# jobs -- which exist so the core models and persistence can be tested on hosts
+# with no GTK/WebKit development packages -- would have to build a native webview
+# to run. That is what `required-features` is for and it stays.
+#
+# D-267 is its cost, and it is paid elsewhere, not by deleting this line:
+# `cargo check --bins` WITHOUT `--features desktop` matches no target, prints
+# `warning: target filter `bins` specified, but no targets matched; this is a
+# no-op`, and EXITS 0 -- measured at exit 0 on this tree with `compile_error!()`
+# injected into src/main.rs. Every hub-binary check must therefore go through
+# `node scripts/ci/hub-bin-check.mjs`, which reads cargo's own record of what it
+# compiled and refuses to report success unless this target is in it.
+#
+# A second `[[bin]]` holding a `compile_error!` guard was designed and rejected:
+# tauri-cli 2.11.1 finds the app binary via `binaries.iter().find(|x| x.main())`
+# where `is_main` is `file_name == package.name || file_name == default_run`.
+# This package is `osl-hub` and this binary is `osl-privacy-hub`, so the release
+# resolves it only through the single-binary fallback; a second binary breaks
+# `tauri build` outright, and every bin whose required-features are satisfied is
+# also copied into the bundle. See scripts/ci/hub-bin-check.mjs.
 required-features = ["desktop"]
 
 # ThinLTO preserves cross-crate release optimisation without the 20–30 GB
@@ -154,7 +177,9 @@ opt-level = 3
 
 # Keep this preview crate isolated from the production workspace until its
 # architecture and security boundaries have been reviewed. This also lets it
-# be checked with `cargo check --manifest-path apps/osl-hub/Cargo.toml`
-# without editing the repository's root workspace manifest.
+# be checked with `cargo check --manifest-path apps/osl-hub/Cargo.toml
+# --features desktop` without editing the repository's root workspace manifest.
+# The feature is not decoration here: WITHOUT it that command checks the library
+# and silently skips the `[[bin]]` above, and still exits 0 (D-267).
 [workspace]
 resolver = "2"
