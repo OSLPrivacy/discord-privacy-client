@@ -90,7 +90,7 @@ import {
   handleSenderFilterRolloutRootProvision,
 } from "./endpoints/sender-filter-rollout-root.js";
 import { handleUpdateManifest } from "./endpoints/update-manifest.js";
-import { handleSpaceEventDrain, handleSpaceEventPost } from "./endpoints/space-events.js";
+import { handleSpaceEventAck, handleSpaceEventDrain, handleSpaceEventPost } from "./endpoints/space-events.js";
 import {
   handleWrappedKeysDelete,
   handleWrappedKeysGet,
@@ -108,6 +108,7 @@ import {
   sweepDeliveredPaymentAlerts,
 } from "./lib/payment-alert-outbox.js";
 import { sweepExpiredControlInboxRows } from "./lib/control-inbox-sweep.js";
+import { sweepExpiredSpaceEvents } from "./lib/space-event-sweep.js";
 
 const MAX_MUTATION_BODY_BYTES = 1024 * 1024;
 const PUBLIC_GET_INGRESS_MAX_PER_MINUTE = 1200;
@@ -268,6 +269,29 @@ export default {
     } catch {
       console.error("[cron] control_inbox sweep failed");
     }
+    // D-274: retention for the ciphertext-only Space lane. `expires_at` was a
+    // read filter only -- the drain skipped expired rows and nothing ever
+    // deleted them, so the table grew without bound while holding ciphertext
+    // no reader could see. This is the only thing that removes a row that was
+    // never acknowledged, so it is also the backstop for D-273's lease.
+    //
+    // It reports what it could NOT remove. Reaching the per-run bound is not
+    // "done", and a sweep that quietly stops at its bound reads exactly like
+    // one that finished.
+    try {
+      const swept = await sweepExpiredSpaceEvents(env.DB);
+      if (swept.deleted > 0) {
+        console.log(`[cron] space event sweep deleted ${swept.deleted} expired row(s)`);
+      }
+      if (swept.boundReached) {
+        console.error(
+          `[cron] space event sweep hit its per-run bound: ${swept.remaining} ` +
+          `expired row(s) NOT removed`,
+        );
+      }
+    } catch {
+      console.error("[cron] space event sweep failed");
+    }
     // View-once link-grant bookkeeping. Spent request receipts expire on
     // their own clock; quota rows are dropped once their UTC day is over,
     // so the table holds at most today's active identities and never
@@ -363,12 +387,19 @@ async function dispatch(
     if (pubkeysUserId !== null) return await handlePubkeys(env, pubkeysUserId);
     const devicesUserId = matchParam(path, /^\/v1\/devices\/([^/]+)$/);
     if (devicesUserId !== null) return await handleDevices(env, devicesUserId);
-    // D-260: this drain is DESTRUCTIVE -- it deletes every row it returns --
-    // and is unauthenticated, so the public-GET ingress limit above is the
-    // only thing that cost-bounds probing the 32-byte tag space. Whether a
-    // destructive operation may remain a GET at all is a protocol question
-    // owned by `03-CONTRACTS/spaces.md`, which freezes the method; see the
-    // D-260 tasklog. It must never again sit above that limit.
+    // D-260: this drain is unauthenticated, so the public-GET ingress limit
+    // above is the only thing that cost-bounds probing the 32-byte tag space.
+    // Whether it may remain a GET at all is a protocol question owned by
+    // `03-CONTRACTS/spaces.md`, which freezes the method; see the D-260
+    // tasklog. It must never again sit above that limit.
+    //
+    // D-273: it is no longer DESTRUCTIVE. It used to DELETE every row it
+    // returned, before the response was serialized, so a dropped response
+    // destroyed the only copy of a membership event -- exactly what owner
+    // decision D15 forbids and what the wrapped-key lane was already fixed
+    // for. It now leases what it returns, and POST /v1/space-events/ack below
+    // is what actually deletes. Still gated here, unchanged: a lease is a
+    // write, and probing the tag space must stay cost-bounded.
     const spaceEventTag = matchParam(path, /^\/v1\/space-events\/([^/]+)$/);
     if (spaceEventTag !== null) return await handleSpaceEventDrain(spaceEventTag, env);
     const wrappedContentId = matchParam(path, /^\/v1\/wrapped-keys\/([^/]+)$/);
@@ -444,6 +475,10 @@ async function dispatch(
     // 64 KiB ciphertext cap is no longer the first bound on what gets read
     // and JSON.parsed.
     if (path === "/v1/space-events") return await handleSpaceEventPost(request, env);
+    // D-273: the acknowledgement half of D15 for the Space lane. A NEW route --
+    // T21-C1's frozen `POST /v1/space-events` and `GET /v1/space-events/:tag`
+    // are both unchanged. The tag is in the body, not the path (D81).
+    if (path === "/v1/space-events/ack") return await handleSpaceEventAck(request, env);
     if (path === "/v1/control-inbox") return await handleControlInboxPost(request, env);
     if (path === "/v1/usernames/claim") return await handleUsernameClaim(request, env);
     if (path === "/v1/usernames/lookup") return await handleUsernameLookup(request, env);
