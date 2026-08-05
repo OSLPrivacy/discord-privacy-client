@@ -389,6 +389,15 @@ let activeHomeAppId: HomeAppId | null = null;
 let appLaunchPendingId: HomeAppId | null = null;
 let nativeApps: NativeApp[] = [];
 let nativeCatalogBusy = false;
+/**
+ * Why the last "Choose apps" Continue refused, or null if it did not refuse.
+ *
+ * D-190. A refusal used to exist only as a toast, which is gone in 2.5s and
+ * carries no way out; the reporter clicked Continue ~25 times and the panel never
+ * changed. This keeps the refusal on the panel until the state that caused it
+ * changes, and `chooseAppsOnboardingContent` renders an explicit escape beside it.
+ */
+let nativeCatalogRefusal: string | null = null;
 let mullvadStatus: MullvadStatus = {
   availability: "unavailable",
   integrationState: "unavailable",
@@ -746,6 +755,13 @@ const bootCoreDeadlineMs = 4_000;
 const bootPreferenceDeadlineMs = 1_500;
 const bootSupportDeadlineMs = 2_000;
 const nativeCatalogDecisionDeadlineMs = 8_000;
+/**
+ * D-190. The two things Continue is allowed to do on "Choose apps" are proceed,
+ * or say why it cannot. These are the "why". They stay on the panel, unlike the
+ * toast beside them, and they ship with the escape that clears them.
+ */
+const nativeCatalogFailedRefusal = "OSL could not check your Windows apps, so it cannot finish setting up the Windows apps you picked. Nothing has been changed.";
+const nativeCatalogCheckingRefusal = "OSL is still checking your Windows apps.";
 
 type OnboardingBranch = {
   detected: boolean;
@@ -1970,7 +1986,31 @@ function chooseAppsOnboardingContent(): string {
   const continueLabel = nativeCatalogBusy
     ? defaultContinueLabel
     : selectedOnboardingApps.size > 0 ? defaultContinueLabel : "Skip apps";
-  return `<h1 id="route-heading" tabindex="-1">Choose apps</h1><p class="compact-lead onboarding-centered-copy">Pick available apps for Home, or skip this for now. Nothing opens during setup.</p><section class="onboarding-app-section"><h2>Connected</h2>${choices(connected, "Connected apps")}</section><section class="onboarding-app-section"><h2>Seen in your browser history</h2>${choices(browserHistory, "Apps seen in your browser history")}</section><section class="onboarding-app-section"><h2>Other apps</h2>${choices(other, "Other apps")}</section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button" ${nativeCatalogBusy ? "disabled" : ""}>${continueLabel}</button></div>`;
+  // D-190: the last step of first-run setup is not allowed to have a live
+  // Continue that does nothing. If the catalog probe refused, the reason stays
+  // here, and the way past it is a labelled button rather than the undiscoverable
+  // trick of de-selecting a tile the user did not select.
+  const refusal = nativeCatalogRefusal
+    ? `<p class="form-status" id="app-choice-refusal" role="alert">${escapeHtml(nativeCatalogRefusal)}</p><button class="browser-import-skip" id="continue-without-apps" type="button">Continue without Windows apps</button>`
+    : "";
+  return `<h1 id="route-heading" tabindex="-1">Choose apps</h1><p class="compact-lead onboarding-centered-copy">Pick available apps for Home, or skip this for now. Nothing opens during setup.</p><section class="onboarding-app-section"><h2>Connected</h2>${choices(connected, "Connected apps")}</section><section class="onboarding-app-section"><h2>Seen in your browser history</h2>${choices(browserHistory, "Apps seen in your browser history")}</section><section class="onboarding-app-section"><h2>Other apps</h2>${choices(other, "Other apps")}</section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-app-choice" type="button" ${nativeCatalogBusy ? "disabled" : ""}>${continueLabel}</button>${refusal}</div>`;
+}
+
+/**
+ * D-190. Leave "Choose apps" without the Windows apps OSL could not verify.
+ *
+ * Drops only the native selections -- the ones the failed probe makes
+ * unresolvable -- keeps every other pick, and says what it dropped. Onboarding
+ * always ends; a step that cannot be finished is not a step.
+ */
+async function continueWithoutNativeApps(): Promise<void> {
+  const dropped = [...selectedOnboardingApps].filter((appId) => supportedNativeAppIds.has(appId as NativeAppId));
+  for (const appId of dropped) selectedOnboardingApps.delete(appId);
+  hasExplicitOnboardingAppSelection = true;
+  nativeCatalogRefusal = null;
+  persistCombinedHomeChoices();
+  if (dropped.length) showToast("Continued without the Windows apps OSL could not check. Add them later in Settings → Apps.");
+  await completeOnboarding();
 }
 
 async function enterCombinedAppChoice(): Promise<void> {
@@ -1999,11 +2039,25 @@ function hasSelectedNativeAppChoice(): boolean {
   return [...selectedOnboardingApps].some((appId) => supportedNativeAppIds.has(appId as NativeAppId));
 }
 
+/**
+ * Did the Windows catalog probe answer for every app this build can act on?
+ *
+ * D-190. This asks about COVERAGE, not equality. The earlier form also required
+ * `catalog.length === supportedNativeAppIds.size`, which was true only while the
+ * two sets happened to be the same size. `f02104ac0` narrowed
+ * `supportedNativeAppIds` to `{discord}` -- correctly, Discord is the only carrier
+ * this build enables -- while `list_native_apps` kept returning all five rows of
+ * `NATIVE_APPS` (`apps/osl-hub/src/native_apps.rs:434-547`). From that commit on
+ * the predicate was false for EVERY real catalog, so `ensureNativeCatalogForAppChoice`
+ * refused forever and Continue became a no-op whenever a native app was selected.
+ *
+ * The fail-closed intent is preserved: a truncated catalog that is missing Discord
+ * is still rejected. Only "and nothing else" is dropped, because the backend
+ * legitimately reports apps the frontend does not act on.
+ */
 function isCompleteNativeCatalog(catalog: NativeApp[]): boolean {
   const ids = new Set(catalog.map((app) => app.id));
-  return catalog.length === supportedNativeAppIds.size
-    && ids.size === supportedNativeAppIds.size
-    && [...supportedNativeAppIds].every((appId) => ids.has(appId));
+  return [...supportedNativeAppIds].every((appId) => ids.has(appId));
 }
 
 function hasSelectedInstalledNativeApps(): boolean {
@@ -2047,19 +2101,31 @@ function advanceOnboardingConnection(appId: HomeAppId | null): void {
 }
 
 async function ensureNativeCatalogForAppChoice(): Promise<boolean> {
-  if (!hasSelectedNativeAppChoice()) return true;
-  if (nativeCatalogBusy) return false;
+  if (!hasSelectedNativeAppChoice()) {
+    nativeCatalogRefusal = null;
+    return true;
+  }
+  // D-190: a second click while the first probe is still running is the one path
+  // out of here that says nothing at all, so it says something now.
+  if (nativeCatalogBusy) {
+    nativeCatalogRefusal = nativeCatalogCheckingRefusal;
+    return false;
+  }
   nativeCatalogBusy = true;
+  nativeCatalogRefusal = null;
   renderNow();
   try {
     const catalog = await withNativeDeadline(loadNativeApps(), "Check Windows apps", nativeCatalogDecisionDeadlineMs);
     if (!isCompleteNativeCatalog(catalog)) {
+      nativeCatalogRefusal = nativeCatalogFailedRefusal;
       showToast("Couldn’t check Windows apps. Try again.");
       return false;
     }
     nativeApps = catalog;
+    nativeCatalogRefusal = null;
     return true;
   } catch {
+    nativeCatalogRefusal = nativeCatalogFailedRefusal;
     showToast("Couldn’t check Windows apps. Try again.");
     return false;
   } finally {
@@ -2874,9 +2940,18 @@ function bindOnboarding(): void {
     render();
   }));
   document.querySelector<HTMLButtonElement>("#continue-app-choice")?.addEventListener("click", async () => {
-    if (!await ensureNativeCatalogForAppChoice()) return;
+    // D-190: `ensureNativeCatalogForAppChoice` sets `nativeCatalogRefusal` on every
+    // false it returns, and the panel renders it, so this early return is now a
+    // visible refusal with an escape rather than a silent no-op.
+    if (!await ensureNativeCatalogForAppChoice()) {
+      render();
+      return;
+    }
     persistCombinedHomeChoices();
     await completeOnboarding();
+  });
+  document.querySelector<HTMLButtonElement>("#continue-without-apps")?.addEventListener("click", () => {
+    void continueWithoutNativeApps();
   });
   // The tour's Back is the only Back on this step, so at the first sub-step it
   // has to leave the route rather than sit there disabled: back out of a replay
@@ -9801,6 +9876,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   privacyProtectionReviewOpen = false;
   activityAttentionReviewOpen = false;
   peoplePrimaryActionFocus = null;
+  nativeCatalogRefusal = null;
   protectionPreset = patch.protectionPreset ?? loadProtectionPreset();
   inboxFilter = patch.inboxFilter ?? "all";
   resetAccountRecovery();
@@ -9962,6 +10038,16 @@ export const __oslHubUiTest = {
    * the credential path can be driven end to end rather than string-matched. */
   bindUnlockForm(): void {
     bindPasswordForm();
+  },
+  /**
+   * The real "Choose apps" panel, which `tutorialContent()` returns verbatim once
+   * the tour runs out of steps. Exposed for D-190: the refusal and its escape have
+   * to be observable on the panel, not merely present in the source.
+   */
+  renderChooseAppsForTest(): string {
+    route = "onboarding";
+    onboardingRoute = "tutorial";
+    return chooseAppsOnboardingContent();
   },
   renderOnboardingSendModes(sendMode: SendMode = "manual"): string {
     route = "onboarding";
