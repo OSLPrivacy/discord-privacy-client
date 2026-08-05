@@ -206,6 +206,8 @@ describe("D-190 -- Choose apps must never swallow Continue", () => {
     continueButton.dispatch("click");
     await settle();
     expect(commands()).not.toContain("save_onboarding_preferences");
+    // The control has to be on the panel, not merely bound to something.
+    expect(ui.__oslHubUiTest.renderChooseAppsForTest()).toContain('id="continue-without-apps"');
 
     escapeButton.dispatch("click");
     await settle();
