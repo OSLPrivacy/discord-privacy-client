@@ -48,6 +48,10 @@ pub mod burn_journal_bridge;
 #[cfg(feature = "core")]
 pub mod burn_server;
 pub mod carrier_placement;
+/// What a live carry receipt is bound to. Not behind a feature: the publication
+/// gate that reads it must exist in every build that can compile the native
+/// adapters.
+pub mod carry_seam_contract;
 pub mod cloud_autoscrub_authority;
 pub mod cloud_autoscrub_consent;
 pub mod cloud_autoscrub_envelope;

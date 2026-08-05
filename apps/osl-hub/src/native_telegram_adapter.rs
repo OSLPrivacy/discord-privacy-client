@@ -1317,12 +1317,21 @@ pub(crate) mod tests {
         );
 
         use crate::native_apps::tests::carry_receipt as receipt_io;
+        // The seam this adapter consumes, extracted from the two sources at the
+        // moment of the live run. Bound instead of the substrate file's bytes so a
+        // behaviour-preserving refactor of the shared substrate does not demand a
+        // live signed-in Windows run per published provider -- see
+        // `crate::carry_seam_contract`.
+        let contract = receipt_io::seam_contract(crate::native_apps::NativeAppId::Telegram)
+            .expect("the Telegram seam contract computes against the tree being proven");
         let receipt = receipt_io::LiveCarryReceipt {
             schema: receipt_io::RECEIPT_SCHEMA.to_owned(),
             provider: "telegram".to_owned(),
             seam: "uia2_substrate".to_owned(),
             adapter_source: "src/native_telegram_adapter.rs".to_owned(),
             adapter_source_sha256: receipt_io::source_sha256("src/native_telegram_adapter.rs"),
+            seam_contract_sha256: contract.sha256.clone(),
+            seam_contract_items: contract.items.len(),
             substrate_source_sha256: receipt_io::source_sha256(receipt_io::SUBSTRATE_SOURCE),
             client_process: TELEGRAM_DESKTOP_PROCESS_NAME.to_owned(),
             element_count: elements,
@@ -1352,6 +1361,11 @@ pub(crate) mod tests {
         eprintln!(
             "telegram-carry: receipt written to {}",
             receipt_io::receipt_path(crate::native_apps::NativeAppId::Telegram).display()
+        );
+        eprintln!(
+            "telegram-carry: seam contract {} over {} declarations",
+            contract.sha256,
+            contract.items.len()
         );
     }
 
