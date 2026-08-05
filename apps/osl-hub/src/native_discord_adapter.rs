@@ -8157,6 +8157,26 @@ pub(crate) fn snapshot_claimed_window(
 /// **It cannot commit.** There is no Enter in it. `send_enter` is a different
 /// function, guarded by its own foreground proof, and it is not reachable from
 /// here.
+///
+/// # This is RUN A's primitive (D-244)
+///
+/// The keystone is **two** runs, and this is the write the first one borrows:
+///
+/// * **Run A — the oracle placement probe.** Drives this function, never a
+///   commit verb. Nothing is posted. **Earns
+///   `apps/osl-hub/carry-receipts/discord.json`**, because
+///   `native_apps::tests::carry_receipt::verify_receipt` requires
+///   `enter_sent == false` and only a run that never committed can record that.
+/// * **Run B — [`windows::place`].** Ends in `send_enter`; both of its success
+///   returns report `enter_sent: true`. Posts. Produces the keystone's
+///   screenshots and the peer decode. **Earns no receipt and must not claim
+///   one.**
+///
+/// The split is not advice. `native_apps::tests` refuses a receipt authored by
+/// `LiveRun::ShippingSend` and refuses any receipt-authoring file that can
+/// reach a commit verb, and
+/// `shipping_place_commits_the_message_so_it_is_run_b_and_earns_no_receipt`
+/// re-derives the whole thing from this module's source on every run.
 #[cfg(target_os = "windows")]
 pub(crate) fn shipping_type_text(text: &str) -> bool {
     let units: Vec<u16> = text.encode_utf16().collect();
@@ -18134,6 +18154,24 @@ mod windows {
         }
     }
 
+    /// **RUN B (D-244). This function POSTS, and it earns NO carry receipt.**
+    ///
+    /// `place` ends in `send_enter`, and both of its success returns report
+    /// `enter_sent: true`. `native_apps::tests::carry_receipt::verify_receipt`
+    /// rejects any receipt whose `enter_sent` is not `false` — so **a run that
+    /// goes through here can never produce a `LiveCarryReceipt`, and a run that
+    /// produces one never came through here.**
+    ///
+    /// That is not a bug in either mechanism. The receipt is a *placement* proof
+    /// by construction: `enter_sent == false` is precisely what makes it mean
+    /// *"proven without touching anyone's chat"*. This is a *send*. The keystone
+    /// therefore needs **two** runs — this one for the post, the peer decode and
+    /// the three screenshots, and the oracle probe borrowing
+    /// [`super::shipping_type_text`] for the receipt.
+    ///
+    /// **Do not relax `verify_receipt` to merge them.** It is the clause that
+    /// stops a receipt being claimed for a run whose carry might have been done
+    /// by Discord rather than by placement.
     pub(super) fn place(
         state: &NativeDiscordComposerState,
         target: crate::native_window_host::NativeDiscordAccessibilityTarget,
@@ -23288,6 +23326,107 @@ mod tests {
         // The header walk keeps the stricter bridge it was measured with.
         let header = nested_function_body(source, "fn matching_visible_msaa_header_count(");
         assert!(header.contains("exact_msaa_process_element("));
+    }
+
+    /// **D-244 — `place()` IS Run B, DERIVED from its own source, and Run B can
+    /// never earn a `LiveCarryReceipt`.**
+    ///
+    /// This does not restate the ruling; it re-derives it every run. `place`
+    /// contains `send_enter`, so it commits; both of its success returns
+    /// therefore report `enter_sent: true`; and
+    /// `native_apps::tests::carry_receipt::verify_receipt` rejects any receipt
+    /// whose `enter_sent` is not `false`. The keystone's post-requiring clauses
+    /// need this run, and this run cannot hand back a receipt — so the keystone
+    /// is **two** runs.
+    ///
+    /// If a future edit takes `send_enter` out of `place`, or gives it a success
+    /// return that does not commit, this goes red and the split has to be
+    /// re-decided at source rather than assumed.
+    #[test]
+    fn shipping_place_commits_the_message_so_it_is_run_b_and_earns_no_receipt() {
+        use crate::native_apps::tests::carry_receipt::LiveRun;
+
+        let source = adapter_source();
+        let place = nested_function_body(source, "pub(super) fn place(");
+        assert!(
+            place.contains("send_enter("),
+            "place() no longer commits the message. D-244's split exists BECAUSE it does -- \
+             re-derive the ruling before relying on it."
+        );
+
+        let literals: Vec<&str> = place
+            .split("DiscordCarrierReceipt {")
+            .skip(1)
+            .map(|tail| {
+                let end = tail
+                    .find('}')
+                    .expect("every DiscordCarrierReceipt literal is terminated");
+                &tail[..end]
+            })
+            .collect();
+        assert!(
+            literals.len() >= 5,
+            "place() returns {} receipts, which is too few to be reading the whole function",
+            literals.len()
+        );
+        let successes: Vec<&&str> = literals
+            .iter()
+            .filter(|literal| literal.contains("DiscordCarrierStatus::Sent"))
+            .collect();
+        assert_eq!(
+            successes.len(),
+            2,
+            "place() is expected to have exactly two success returns -- the accessibility Send \
+             action and the Enter key. Both are Run B."
+        );
+        for literal in &successes {
+            assert!(
+                literal.contains("enter_sent: true"),
+                "a success return of place() does not report enter_sent: true. If a shipping \
+                 placement can now succeed WITHOUT committing, D-244's two-run split has to be \
+                 re-derived -- do not quietly let that path claim a receipt."
+            );
+        }
+
+        // The half of the derivation that EXECUTES rather than reading source:
+        // `Sent` is *defined* as `placed && enter_sent`, so a Discord send that
+        // succeeded always reports `enter_sent: true` -- which is precisely what
+        // `verify_receipt` refuses.
+        assert_eq!(
+            DiscordCarrierStatus::Sent.protected_send_outcome(true, false),
+            DiscordProtectedSendOutcome::NotSent,
+            "a Discord send cannot be Sent without Enter, so no successful send is Run A"
+        );
+        assert_eq!(
+            DiscordCarrierStatus::Sent.protected_send_outcome(true, true),
+            DiscordProtectedSendOutcome::Sent
+        );
+        assert!(
+            !LiveRun::ShippingSend.earns_a_receipt(),
+            "Run B posts, and a receipt requires enter_sent == false"
+        );
+
+        // Run A's primitive, on the same surface: the shipping write with no
+        // commit verb anywhere near it. This is what the oracle probe borrows,
+        // and it is why Run A can exist at all.
+        let probe_start = source
+            .find("pub(crate) fn shipping_type_text(")
+            .expect("the Run A write primitive is present");
+        let probe_tail = &source[probe_start..];
+        let probe = &probe_tail[..probe_tail
+            .find("\n}\n")
+            .expect("the Run A write primitive is terminated")];
+        assert!(
+            !probe.contains("send_enter"),
+            "shipping_type_text can reach a commit verb, so Run A would post too and NEITHER run \
+             could earn a receipt"
+        );
+        assert!(
+            probe.contains("send_unicode_chunk"),
+            "shipping_type_text must still be the real shipping write, or Run A proves nothing \
+             about the shipping path"
+        );
+        assert!(LiveRun::PlacementProbe.earns_a_receipt());
     }
 
     /// Every placement stamps the diagnostic contract it was compiled with, before
