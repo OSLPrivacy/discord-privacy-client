@@ -1,0 +1,10 @@
+{
+  "schema": "osl-receipt-debt-baseline-v1",
+  "purpose": "Providers published above ComingSoon with no live carry receipt. This is a recorded debt, not an exemption. It may only ever SHRINK: lowering `ceiling` is the act that records a debt as paid. Growth requires editing this file, PUBLISHED_WITHOUT_A_LIVE_RECEIPT and RECEIPT_DEBT_CEILING together, each with the defect id that justifies it.",
+  "ceiling": 1,
+  "count": 1,
+  "ids": ["discord"],
+  "defects": {
+    "discord": "D-203"
+  }
+}

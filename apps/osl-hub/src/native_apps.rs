@@ -2947,6 +2947,49 @@ pub(crate) mod tests {
     const PUBLISHED_WITHOUT_A_LIVE_RECEIPT: &[(NativeAppId, &str)] =
         &[(NativeAppId::Discord, "D-203")];
 
+    /// **The shrink obligation.** D-203's own correction: *"That exemption must
+    /// shrink, not persist, and it must not become the place future
+    /// contradictions are parked."*
+    ///
+    /// The debt is size-locked in **three** places that must agree --  this
+    /// constant, the list above, and `carry-receipts/debt-baseline.json` --  so
+    /// adding a name is a three-file edit that no diff can hide, and each entry
+    /// must carry a defect id in both the code and the baseline. Shrinking is a
+    /// three-file edit too, and that is deliberate: this number may only ever be
+    /// **lowered**, and lowering it is the act that records the debt as paid.
+    ///
+    /// Stated plainly rather than overclaimed: nothing in the compiler can stop
+    /// someone editing all three. What the lock buys is that growth cannot happen
+    /// *quietly*, and the current list is printed in every failure this gate can
+    /// produce.
+    const RECEIPT_DEBT_CEILING: usize = 1;
+
+    /// The one command an operator runs when the seam changes.
+    const FLEET_RERUN_COMMAND: &str =
+        "cargo test --manifest-path apps/osl-hub/Cargo.toml --lib -- \
+                                       --exact --nocapture \
+                                       native_apps::tests::carry_receipt_fleet_rerun_report";
+
+    /// The recorded debt, rendered for a human. Appended to every failure this
+    /// gate can produce, so the by-name exemption list is never invisible in the
+    /// output that matters.
+    fn receipt_debt_summary() -> String {
+        let mut out = format!(
+            "PUBLISHED_WITHOUT_A_LIVE_RECEIPT ({} of a ceiling of {RECEIPT_DEBT_CEILING}):",
+            PUBLISHED_WITHOUT_A_LIVE_RECEIPT.len()
+        );
+        if PUBLISHED_WITHOUT_A_LIVE_RECEIPT.is_empty() {
+            out.push_str(" empty -- every published provider has earned a live receipt.");
+            return out;
+        }
+        for (id, defect) in PUBLISHED_WITHOUT_A_LIVE_RECEIPT {
+            out.push_str(&format!(
+                "\n  - {id:?} published on no live receipt, against {defect}"
+            ));
+        }
+        out
+    }
+
     /// **The publication gate.**
     ///
     /// A native app may not be published above `ComingSoon` without a live carry
@@ -2972,9 +3015,10 @@ pub(crate) mod tests {
                 if let ReceiptVerdict::Invalid(why) = verdict {
                     panic!(
                         "{:?} is still ComingSoon, but the receipt at {} was never sound: {why}. \
-                         Delete it or re-earn it -- do not leave a broken proof in the tree.",
+                         Delete it or re-earn it -- do not leave a broken proof in the tree.\n{}",
                         manifest.id,
-                        receipt_path(manifest.id).display()
+                        receipt_path(manifest.id).display(),
+                        receipt_debt_summary()
                     );
                 }
                 continue;
@@ -2985,15 +3029,21 @@ pub(crate) mod tests {
                 assert!(
                     matches!(verdict, ReceiptVerdict::Absent),
                     "{:?} is recorded in PUBLISHED_WITHOUT_A_LIVE_RECEIPT against {defect}, but a \
-                     receipt now exists. Remove it from that list -- a recorded debt that has been \
-                     paid must not stay recorded, or the list stops meaning anything.",
-                    manifest.id
+                     receipt now exists. Remove it from that list AND lower \
+                     RECEIPT_DEBT_CEILING and debt-baseline.json -- a recorded debt that has been \
+                     paid must not stay recorded, or the list stops meaning anything.\n{}",
+                    manifest.id,
+                    receipt_debt_summary()
                 );
                 continue;
             }
 
             match verdict {
                 ReceiptVerdict::Earned => {}
+                ReceiptVerdict::EarnedWithSubstrateDrift(note) => eprintln!(
+                    "carry-receipt: {:?} is earned, with substrate drift -- {note}",
+                    manifest.id
+                ),
                 ReceiptVerdict::Absent => panic!(
                     "{:?} is published as {:?}, not ComingSoon, and there is no live carry receipt \
                      at {}. A provider may not be shown to a user as supported until its adapter \
@@ -3001,18 +3051,23 @@ pub(crate) mod tests {
                      cargo test --manifest-path apps/osl-hub/Cargo.toml --lib \
                      --target x86_64-pc-windows-gnu --no-run\n  \
                      <exe> --ignored --test-threads=1 --nocapture \
-                     native_telegram_adapter::tests::carry_real_cover_text_through_live_telegram",
+                     native_telegram_adapter::tests::carry_real_cover_text_through_live_telegram\n{}",
                     manifest.id,
                     manifest.adapter_support,
-                    receipt_path(manifest.id).display()
+                    receipt_path(manifest.id).display(),
+                    receipt_debt_summary()
                 ),
                 ReceiptVerdict::Stale(why) => panic!(
-                    "{:?} is published as {:?} but its live carry receipt is stale: {why}",
-                    manifest.id, manifest.adapter_support
+                    "{:?} is published as {:?} but its live carry receipt is stale: {why}\n{}",
+                    manifest.id,
+                    manifest.adapter_support,
+                    receipt_debt_summary()
                 ),
                 ReceiptVerdict::Invalid(why) => panic!(
-                    "{:?} is published as {:?} but its live carry receipt is not usable: {why}",
-                    manifest.id, manifest.adapter_support
+                    "{:?} is published as {:?} but its live carry receipt is not usable: {why}\n{}",
+                    manifest.id,
+                    manifest.adapter_support,
+                    receipt_debt_summary()
                 ),
             }
         }
@@ -3022,10 +3077,105 @@ pub(crate) mod tests {
             .map(|(id, _)| *id)
             .collect();
         assert_eq!(
-            debts_seen, recorded,
+            debts_seen,
+            recorded,
             "PUBLISHED_WITHOUT_A_LIVE_RECEIPT must name exactly the published apps that have no \
              receipt. An entry that no longer applies is a stale exemption; one that has been \
-             added is a provider published on nothing."
+             added is a provider published on nothing.\n{}",
+            receipt_debt_summary()
+        );
+    }
+
+    /// **The shrink obligation, mechanically.** The by-name debt list may lose
+    /// members freely; it may not gain one without three files agreeing and a
+    /// defect id in two of them.
+    #[test]
+    fn the_receipt_debt_is_size_locked_and_every_entry_names_a_defect() {
+        let baseline: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("carry-receipts/debt-baseline.json"),
+            )
+            .expect("carry-receipts/debt-baseline.json is readable"),
+        )
+        .expect("the debt baseline parses");
+
+        assert_eq!(
+            baseline["schema"].as_str(),
+            Some("osl-receipt-debt-baseline-v1"),
+            "the debt baseline schema changed"
+        );
+
+        // The baseline's own shape, per the plan's one-schema-for-every-ratchet
+        // rule: `ids` is required and `count` must equal its length, so a count
+        // can never be pinned while the set moves underneath it.
+        let ids: Vec<String> = baseline["ids"]
+            .as_array()
+            .expect("the baseline names its ids")
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .expect("every baseline id is a string")
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(
+            baseline["count"].as_u64(),
+            Some(ids.len() as u64),
+            "the debt baseline pins a count that does not match its own id list"
+        );
+
+        let mut code_ids: Vec<String> = PUBLISHED_WITHOUT_A_LIVE_RECEIPT
+            .iter()
+            .map(|(id, _)| carry_receipt::provider_slug(*id).to_owned())
+            .collect();
+        let mut sorted_ids = ids.clone();
+        code_ids.sort();
+        sorted_ids.sort();
+        assert_eq!(
+            code_ids,
+            sorted_ids,
+            "PUBLISHED_WITHOUT_A_LIVE_RECEIPT and carry-receipts/debt-baseline.json disagree about \
+             who is published on nothing.\n{}",
+            receipt_debt_summary()
+        );
+        assert_eq!(
+            code_ids.len(),
+            {
+                let mut deduped = code_ids.clone();
+                deduped.dedup();
+                deduped.len()
+            },
+            "a provider is recorded in the debt list twice"
+        );
+
+        for (id, defect) in PUBLISHED_WITHOUT_A_LIVE_RECEIPT {
+            let slug = carry_receipt::provider_slug(*id);
+            assert!(
+                defect.starts_with("D-") && defect[2..].chars().all(|c| c.is_ascii_digit()),
+                "{id:?} is exempted against {defect:?}, which is not a recorded defect id. An \
+                 entry may only be added with the defect that justifies it."
+            );
+            assert_eq!(
+                baseline["defects"][slug].as_str(),
+                Some(*defect),
+                "{id:?} is exempted against {defect:?} in code, and the baseline disagrees. A debt \
+                 must be recorded in both places or in neither."
+            );
+        }
+
+        assert_eq!(
+            baseline["ceiling"].as_u64(),
+            Some(RECEIPT_DEBT_CEILING as u64),
+            "the debt ceiling in code and in the baseline disagree"
+        );
+        assert_eq!(
+            PUBLISHED_WITHOUT_A_LIVE_RECEIPT.len(),
+            RECEIPT_DEBT_CEILING,
+            "the debt list and its ceiling must track exactly, so growth needs a deliberate bump \
+             and a shrink forces the ceiling DOWN. This number may only ever be lowered.\n{}",
+            receipt_debt_summary()
         );
     }
 
@@ -3055,6 +3205,566 @@ pub(crate) mod tests {
                 other => panic!("a receipt mutated to break {expect:?} was accepted: {other:?}"),
             }
         }
+    }
+
+    /// The v1 spec that changed meaning instead of disappearing: a substrate file
+    /// that has moved while every declaration this adapter consumes has not is
+    /// **drift** -- earned, reported, not fatal. Asserted exactly, so it can be
+    /// neither a silent `Earned` nor a `Stale`.
+    #[test]
+    fn a_moved_substrate_with_an_unmoved_seam_is_drift_and_says_so() {
+        use carry_receipt::{verify_receipt_bytes, ReceiptVerdict};
+
+        for (mutate, expect) in carry_receipt::substrate_drift_cases() {
+            let mut drifted = carry_receipt::sample_sound_receipt();
+            mutate(&mut drifted);
+            match verify_receipt_bytes(NativeAppId::Telegram, &drifted.to_json()) {
+                ReceiptVerdict::EarnedWithSubstrateDrift(note) => assert!(
+                    note.contains(expect),
+                    "expected a drift note mentioning {expect:?}, got {note:?}"
+                ),
+                other => panic!(
+                    "a substrate file hash that moved while the seam did not must be reported as \
+                     drift, not as {other:?}"
+                ),
+            }
+        }
+    }
+
+    /// A v1 receipt is `Stale`, not `Invalid` and never `Earned`: the run was
+    /// sound, the binding rule changed under it. Asserted exactly in all three
+    /// directions so the superseded schema cannot become a quiet pass.
+    #[test]
+    fn a_receipt_earned_under_the_superseded_v1_binding_is_stale() {
+        use carry_receipt::{verify_receipt_bytes, ReceiptVerdict};
+
+        let mut v1 = carry_receipt::sample_sound_receipt();
+        v1.schema = "osl-live-carry-receipt-v1".to_owned();
+        match verify_receipt_bytes(NativeAppId::Telegram, &v1.to_json()) {
+            ReceiptVerdict::Stale(why) => assert!(
+                why.contains("superseded") && why.contains("seam-contract binding"),
+                "{why}"
+            ),
+            other => panic!("a v1 receipt must be stale, not {other:?}"),
+        }
+    }
+
+    /// **The two directions, on the real sources.**
+    ///
+    /// The fixtures in `carry_seam_contract` prove the extraction rules; this
+    /// proves the property that matters on `native_a11y.rs` and
+    /// `native_telegram_adapter.rs` as they actually stand, so an extractor that
+    /// happens to work on a 50-line fixture and not on a 4,500-line substrate is
+    /// a failure here.
+    ///
+    /// Each mutant is required to change the source it is applied to, so a
+    /// `replace` that stopped matching is a failure and not a silent pass.
+    #[test]
+    fn the_real_substrate_survives_a_refactor_and_not_a_seam_change() {
+        use crate::carry_seam_contract::seam_contract_from_sources;
+
+        let adapter_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/native_telegram_adapter.rs");
+        let substrate_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(carry_receipt::SUBSTRATE_SOURCE);
+        let adapter = std::fs::read_to_string(adapter_path).expect("the adapter is readable");
+        let substrate = std::fs::read_to_string(substrate_path).expect("the substrate is readable");
+
+        let base = seam_contract_from_sources(&adapter, &substrate)
+            .expect("the real Telegram seam contract computes");
+
+        // (1) BEHAVIOUR-PRESERVING. A comment, a renamed local, a reflowed
+        // signature. `uia2_settle_plan`'s body is the substrate's own poll ladder
+        // walk -- exactly the kind of code the placement-primitive work rewrites.
+        let refactored = substrate
+            .replace(
+                "    let mut plan = Vec::new();\n    let mut spent = 0u64;\n    let mut rung = 0usize;",
+                "    // A comment added by a refactor that changes nothing observable.\n    \
+                 let mut waits = Vec::new();\n    let mut elapsed = 0u64;\n    let mut step_index = 0usize;",
+            )
+            .replace("while spent < budget_ms {", "while elapsed < budget_ms {")
+            .replace(
+                "UIA2_SETTLE_LADDER_MS[rung.min(UIA2_SETTLE_LADDER_MS.len() - 1)]",
+                "UIA2_SETTLE_LADDER_MS[step_index.min(UIA2_SETTLE_LADDER_MS.len() - 1)]",
+            )
+            .replace("let step = step.min(budget_ms - spent);", "let step = step.min(budget_ms - elapsed);")
+            .replace("        spent += step;\n        plan.push(step);\n        rung += 1;", "        elapsed += step;\n        waits.push(step);\n        step_index += 1;")
+            .replace("    plan\n}", "    waits\n}")
+            .replace(
+                "pub fn uia2_settle_plan(budget_ms: u64) -> Vec<u64> {",
+                "pub fn uia2_settle_plan(\n    budget_ms: u64,\n) -> Vec<u64> {",
+            );
+        assert_ne!(
+            refactored, substrate,
+            "the refactor mutant matched nothing; it is measuring nothing"
+        );
+        let after_refactor = seam_contract_from_sources(&adapter, &refactored)
+            .expect("the contract still computes after a refactor");
+        assert_eq!(
+            base.sha256,
+            after_refactor.sha256,
+            "a behaviour-preserving refactor of {} invalidated the seam contract. At 12-14 \
+             published providers that is 12-14 live signed-in Windows runs for a renamed local.",
+            carry_receipt::SUBSTRATE_SOURCE
+        );
+
+        // (2) THE SEAM ITSELF. Each of these is something a provider can observe.
+        for (label, mutated) in [
+            (
+                "a parameter of Uia2Syscalls::set_value renamed",
+                substrate.replace(
+                    "        element: &Uia2Editable,\n        value: &str,\n        deadline: Uia2Deadline,\n    ) -> Result<bool, Uia2CallTimeout>;",
+                    "        element: &Uia2Editable,\n        carrier: &str,\n        deadline: Uia2Deadline,\n    ) -> Result<bool, Uia2CallTimeout>;",
+                ),
+            ),
+            (
+                "the return type of Uia2Syscalls::value_of changed",
+                substrate.replace(
+                    "    ) -> Result<Option<String>, Uia2CallTimeout>;",
+                    "    ) -> Result<Option<Box<str>>, Uia2CallTimeout>;",
+                ),
+            ),
+            (
+                "a field of Uia2Editable removed",
+                substrate.replace("    pub keyboard_focusable: bool,\n", ""),
+            ),
+        ] {
+            assert_ne!(
+                mutated, substrate,
+                "{label}: the mutant matched nothing, so it proves nothing"
+            );
+            let after = seam_contract_from_sources(&adapter, &mutated)
+                .expect("the contract computes after a seam change");
+            assert_ne!(
+                base.sha256, after.sha256,
+                "{label} did not move the seam contract. A receipt that never invalidates is worse \
+                 than one that over-invalidates."
+            );
+        }
+    }
+
+    /// **The blind spot, measured rather than claimed.**
+    ///
+    /// The seam binding sees declarations. A substrate edit that changes only the
+    /// *inside* of a function this adapter calls is invisible to it -- and the
+    /// settle ladder is the sharpest example available: `UIA2_SETTLE_LADDER_MS` is
+    /// walked by `uia2_settle_plan` inside `acquire_uia2_window`, which Telegram
+    /// calls, but Telegram never names the constant, so it is not in Telegram's
+    /// contract.
+    ///
+    /// This test exists so that boundary is a **recorded measurement with a
+    /// mutant behind it**, not a sentence in a doc comment. It asserts both
+    /// halves: the contract does not move, **and** the whole-file hash does, which
+    /// is what makes the receipt read `EarnedWithSubstrateDrift` and puts the
+    /// change in front of an operator instead of dropping it.
+    ///
+    /// If a future lane wants this class caught by the gate rather than reported
+    /// by it, the honest move is a behavioural pin on the ladder in
+    /// `native_a11y`'s own tests -- not widening the contract to the transitive
+    /// closure of every body, which would make extracting a helper function
+    /// invalidate 12-14 live proofs and reintroduce the trap this replaced.
+    #[test]
+    fn what_the_seam_binding_cannot_see_is_reported_as_drift_and_named_here() {
+        use crate::carry_seam_contract::{seam_contract_from_sources, sha256_hex};
+
+        let adapter = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/native_telegram_adapter.rs"),
+        )
+        .expect("the adapter is readable");
+        let substrate = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(carry_receipt::SUBSTRATE_SOURCE),
+        )
+        .expect("the substrate is readable");
+        let base = seam_contract_from_sources(&adapter, &substrate).expect("the contract computes");
+
+        for (label, mutated) in [(
+            "the settle ladder walked inside acquire_uia2_window, which Telegram never names",
+            substrate.replace(
+                "&[150, 300, 500, 1_000, 2_000, 5_000, 10_000]",
+                "&[150, 300, 500, 1_000, 2_000, 5_000, 20_000]",
+            ),
+        )] {
+            assert_ne!(
+                mutated, substrate,
+                "{label}: the mutant matched nothing, so it measures nothing"
+            );
+            let after =
+                seam_contract_from_sources(&adapter, &mutated).expect("the contract computes");
+            assert_eq!(
+                base.sha256, after.sha256,
+                "{label} DOES move the seam contract; this blind spot has closed and this test \
+                 should be promoted into the directional one above"
+            );
+            assert_ne!(
+                sha256_hex(substrate.as_bytes()),
+                sha256_hex(mutated.as_bytes()),
+                "{label} must at least move the whole-file hash, or the drift signal would not \
+                 report it either and the change really would be invisible"
+            );
+        }
+    }
+
+    /// **The seam contract is not vacuous.** Computed against the real tree, for
+    /// the one provider that has earned a live receipt.
+    ///
+    /// The anchors below are declaration names, not behaviour claims: they are a
+    /// floor that fails loudly if the extractor stops resolving the substrate,
+    /// which would otherwise show up as "every receipt suddenly agrees".
+    #[test]
+    fn the_telegram_seam_contract_binds_the_substrate_the_adapter_actually_uses() {
+        let contract = carry_receipt::seam_contract(NativeAppId::Telegram)
+            .expect("the Telegram seam contract computes");
+        assert!(
+            contract.items.len() >= crate::carry_seam_contract::SEAM_CONTRACT_MIN_ITEMS,
+            "the Telegram seam resolved only {} declarations",
+            contract.items.len()
+        );
+        for anchor in [
+            "trait Uia2Syscalls",
+            "fn set_value",
+            "fn value_of",
+            "fn place_uia2_carrier",
+            "fn clear_uia2_composer",
+            "struct Uia2Editable",
+        ] {
+            assert!(
+                contract.rendered.contains(anchor),
+                "the Telegram seam contract does not contain {anchor:?}; the extractor is \
+                 measuring less than the adapter consumes"
+            );
+        }
+        assert!(
+            !contract.rendered.contains("let mut plan = Vec::new();"),
+            "a function body reached the seam contract, so a renamed local would invalidate every \
+             receipt -- which is the trap this rebinding exists to remove"
+        );
+    }
+
+    /// **The fleet re-run job.** One command that lists exactly which providers
+    /// must be re-proven, instead of discovering it provider by provider:
+    ///
+    /// ```text
+    /// cargo test --manifest-path apps/osl-hub/Cargo.toml --lib -- \
+    ///   --exact --nocapture native_apps::tests::carry_receipt_fleet_rerun_report
+    /// ```
+    ///
+    /// It is not a report that cannot fail. Its classification is computed from
+    /// the receipt JSON and a freshly extracted contract, and is then required to
+    /// agree with `verify_receipt`'s independent verdict for every provider -- so
+    /// a report that stopped looking, or a verifier that stopped refusing, is a
+    /// failure and not a quiet blank line.
+    #[test]
+    fn carry_receipt_fleet_rerun_report() {
+        use carry_receipt::ReceiptVerdict;
+
+        let rows = fleet_report();
+        eprintln!("{}", render_fleet_report(&rows));
+
+        assert_eq!(
+            rows.len(),
+            NATIVE_APPS.len(),
+            "the fleet report does not cover every native app"
+        );
+
+        for row in &rows {
+            let verdict = carry_receipt::verify_receipt(row.id, carry_seam(row.id));
+            let agrees = match row.action {
+                FleetAction::Ok => matches!(verdict, ReceiptVerdict::Earned),
+                FleetAction::SubstrateDrift => {
+                    matches!(verdict, ReceiptVerdict::EarnedWithSubstrateDrift(_))
+                }
+                FleetAction::MustRerun | FleetAction::RerunBeforePublishing => {
+                    matches!(verdict, ReceiptVerdict::Stale(_))
+                }
+                FleetAction::ContractUnavailable | FleetAction::Unusable => {
+                    matches!(verdict, ReceiptVerdict::Invalid(_))
+                }
+                FleetAction::MustEarn
+                | FleetAction::DebtRecorded
+                | FleetAction::NoReceiptNotPublished => {
+                    matches!(verdict, ReceiptVerdict::Absent)
+                }
+            };
+            assert!(
+                agrees,
+                "the fleet report calls {:?} {:?}, but the gate's own verifier says {verdict:?}. \
+                 The report and the gate must not be able to disagree about who has to re-run.",
+                row.id, row.action
+            );
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum FleetAction {
+        /// Earned, seam unchanged, substrate file unchanged.
+        Ok,
+        /// Earned, seam unchanged, `native_a11y.rs` edited. Not fatal; read the
+        /// note before assuming the behaviour behind the declarations held.
+        SubstrateDrift,
+        /// Published, and the seam it was proven against has changed. **This is
+        /// the re-run list.**
+        MustRerun,
+        /// Same, but the provider is still `ComingSoon`, so it costs nothing
+        /// today and everything on the day it is published.
+        RerunBeforePublishing,
+        /// A receipt exists and its contract cannot be computed at all.
+        ContractUnavailable,
+        /// A receipt exists and was never sound -- wrong schema, unparseable, or
+        /// otherwise rejected outright. Fatal wherever it is found, including at
+        /// `ComingSoon`.
+        Unusable,
+        /// Published with no receipt and no recorded debt.
+        MustEarn,
+        /// Published with no receipt, against a recorded defect.
+        DebtRecorded,
+        NoReceiptNotPublished,
+    }
+
+    pub(crate) struct FleetRow {
+        pub id: NativeAppId,
+        pub published: bool,
+        pub support: SupportLevel,
+        pub seam: CarrySeam,
+        pub action: FleetAction,
+        pub detail: String,
+    }
+
+    /// Classify every provider **without** going through `verify_receipt`, so the
+    /// cross-check above compares two independent routes rather than a value with
+    /// itself.
+    pub(crate) fn fleet_report() -> Vec<FleetRow> {
+        NATIVE_APPS
+            .iter()
+            .map(|manifest| {
+                let id = manifest.id;
+                let seam = carry_seam(id);
+                let published = manifest.adapter_support != SupportLevel::ComingSoon;
+                let debt = PUBLISHED_WITHOUT_A_LIVE_RECEIPT
+                    .iter()
+                    .find(|(other, _)| *other == id);
+                let raw = std::fs::read_to_string(carry_receipt::receipt_path(id)).ok();
+
+                let (action, detail) = match raw {
+                    None => match (published, debt) {
+                        (true, Some((_, defect))) => (
+                            FleetAction::DebtRecorded,
+                            format!("published on no live receipt, against {defect}"),
+                        ),
+                        (true, None) => (
+                            FleetAction::MustEarn,
+                            "published with no receipt and no recorded debt".to_owned(),
+                        ),
+                        (false, _) => (
+                            FleetAction::NoReceiptNotPublished,
+                            "not published; no receipt earned yet".to_owned(),
+                        ),
+                    },
+                    Some(text) => {
+                        let value: serde_json::Value =
+                            serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+                        let recorded_seam = value["seam_contract_sha256"].as_str().unwrap_or("");
+                        let recorded_substrate =
+                            value["substrate_source_sha256"].as_str().unwrap_or("");
+                        if value["schema"].as_str() != Some(carry_receipt::RECEIPT_SCHEMA) {
+                            let superseded =
+                                value["schema"].as_str() == Some("osl-live-carry-receipt-v1");
+                            return FleetRow {
+                                id,
+                                published,
+                                support: manifest.adapter_support,
+                                seam,
+                                action: if superseded {
+                                    if published {
+                                        FleetAction::MustRerun
+                                    } else {
+                                        FleetAction::RerunBeforePublishing
+                                    }
+                                } else {
+                                    FleetAction::Unusable
+                                },
+                                detail: format!(
+                                    "schema is {:?}, expected {:?}",
+                                    value["schema"].as_str().unwrap_or("<missing>"),
+                                    carry_receipt::RECEIPT_SCHEMA
+                                ),
+                            };
+                        }
+                        match carry_receipt::seam_contract(id) {
+                            Err(why) => (FleetAction::ContractUnavailable, why),
+                            Ok(contract) if recorded_seam != contract.sha256 => (
+                                if published {
+                                    FleetAction::MustRerun
+                                } else {
+                                    FleetAction::RerunBeforePublishing
+                                },
+                                format!(
+                                    "seam moved: receipt {} vs tree {} over {} declarations",
+                                    short(recorded_seam),
+                                    short(&contract.sha256),
+                                    contract.items.len()
+                                ),
+                            ),
+                            Ok(contract)
+                                if recorded_substrate
+                                    != carry_receipt::source_sha256(
+                                        carry_receipt::SUBSTRATE_SOURCE,
+                                    ) =>
+                            {
+                                (
+                                    FleetAction::SubstrateDrift,
+                                    format!(
+                                        "substrate file edited, {} declarations unchanged",
+                                        contract.items.len()
+                                    ),
+                                )
+                            }
+                            Ok(contract) => (
+                                FleetAction::Ok,
+                                format!(
+                                    "seam {} over {} declarations",
+                                    short(&contract.sha256),
+                                    contract.items.len()
+                                ),
+                            ),
+                        }
+                    }
+                };
+
+                FleetRow {
+                    id,
+                    published,
+                    support: manifest.adapter_support,
+                    seam,
+                    action,
+                    detail,
+                }
+            })
+            .collect()
+    }
+
+    fn short(hash: &str) -> String {
+        hash.chars().take(12).collect()
+    }
+
+    pub(crate) fn render_fleet_report(rows: &[FleetRow]) -> String {
+        let mut out = String::from(
+            "\nCARRY RECEIPT FLEET -- what must be re-proven against a live client\n\
+             ------------------------------------------------------------------\n",
+        );
+        for row in rows {
+            out.push_str(&format!(
+                "  {:<10} {:<14} {:<22} {:<22} {}\n",
+                carry_receipt::provider_slug(row.id),
+                if row.published {
+                    format!("{:?}", row.support)
+                } else {
+                    "ComingSoon".to_owned()
+                },
+                carry_receipt::seam_slug(row.seam),
+                format!("{:?}", row.action),
+                row.detail
+            ));
+        }
+        let must: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.action == FleetAction::MustRerun)
+            .map(|row| carry_receipt::provider_slug(row.id))
+            .collect();
+        let later: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.action == FleetAction::RerunBeforePublishing)
+            .map(|row| carry_receipt::provider_slug(row.id))
+            .collect();
+        out.push_str(&format!(
+            "\nMUST RE-RUN NOW (published, seam changed): {}\n",
+            if must.is_empty() {
+                "none".to_owned()
+            } else {
+                must.join(", ")
+            }
+        ));
+        out.push_str(&format!(
+            "RE-RUN BEFORE PUBLISHING (ComingSoon, seam changed): {}\n",
+            if later.is_empty() {
+                "none".to_owned()
+            } else {
+                later.join(", ")
+            }
+        ));
+        out.push_str(&format!("{}\n", receipt_debt_summary()));
+        out
+    }
+
+    /// **One-time v1 -> v2 migration, and it cannot mint a receipt.**
+    ///
+    /// A v2 receipt records the seam contract the live run was measured against.
+    /// For a receipt already in the tree that value is *recoverable* rather than
+    /// invented -- but only if the run's own bindings still hold exactly: the
+    /// adapter and the whole substrate file must hash to what the receipt already
+    /// records, which means the tree has not moved since the run, which means the
+    /// contract extracted now is the contract that run would have written.
+    ///
+    /// Every one of those conditions is a refusal, and the function reads an
+    /// existing receipt rather than creating one, so it cannot be used to
+    /// manufacture a proof for a provider that has never been driven. `#[ignore]`
+    /// because it writes to the tree.
+    #[test]
+    #[ignore = "writes a receipt file; run deliberately, once, per receipt"]
+    fn migrate_a_v1_receipt_to_the_seam_binding() {
+        let id = std::env::var("OSL_MIGRATE_RECEIPT").unwrap_or_else(|_| "telegram".to_owned());
+        let id = NATIVE_APPS
+            .iter()
+            .map(|manifest| manifest.id)
+            .find(|candidate| carry_receipt::provider_slug(*candidate) == id)
+            .unwrap_or_else(|| panic!("OSL_MIGRATE_RECEIPT={id} is not a native app"));
+
+        let path = carry_receipt::receipt_path(id);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!(
+                "there is no receipt at {} to migrate ({error}). This migration reads an existing \
+                 live proof; it cannot create one.",
+                path.display()
+            )
+        });
+        let mut value: serde_json::Value =
+            serde_json::from_str(&text).expect("the receipt to migrate parses");
+
+        assert_eq!(
+            value["schema"].as_str(),
+            Some("osl-live-carry-receipt-v1"),
+            "only a v1 receipt can be migrated"
+        );
+        let adapter = carry_receipt::adapter_source(id).expect("the provider has an adapter");
+        assert_eq!(
+            value["adapter_source_sha256"].as_str(),
+            Some(carry_receipt::source_sha256(adapter).as_str()),
+            "the adapter has changed since this receipt was earned, so the seam it was measured \
+             against is not recoverable. Re-run the live carry instead."
+        );
+        assert_eq!(
+            value["substrate_source_sha256"].as_str(),
+            Some(carry_receipt::source_sha256(carry_receipt::SUBSTRATE_SOURCE).as_str()),
+            "the substrate has changed since this receipt was earned, so the seam it was measured \
+             against is not recoverable. Re-run the live carry instead."
+        );
+
+        let contract =
+            carry_receipt::seam_contract(id).expect("the seam contract computes for this tree");
+        value["schema"] = serde_json::Value::String(carry_receipt::RECEIPT_SCHEMA.to_owned());
+        value["seam_contract_sha256"] = serde_json::Value::String(contract.sha256.clone());
+        value["seam_contract_items"] = serde_json::Value::from(contract.items.len());
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&value).expect("the migrated receipt serialises") + "\n",
+        )
+        .expect("the receipt is writable");
+        eprintln!(
+            "migrated {} to {} -- seam contract {} over {} declarations",
+            path.display(),
+            carry_receipt::RECEIPT_SCHEMA,
+            contract.sha256,
+            contract.items.len()
+        );
     }
 
     /// The seam map is exhaustive by construction; assert it is also *populated*,
@@ -3195,11 +3905,19 @@ pub(crate) mod tests {
     /// invalidates every receipt earned before the edit -- which is the property
     /// that stops a proof from being a thing you register once.
     pub(crate) mod carry_receipt {
-        use super::{CarrySeam, NativeAppId};
-        use sha2::{Digest, Sha256};
+        use super::{CarrySeam, NativeAppId, FLEET_RERUN_COMMAND};
         use std::path::{Path, PathBuf};
 
-        pub(crate) const RECEIPT_SCHEMA: &str = "osl-live-carry-receipt-v1";
+        /// **v2 rebinds the substrate half of the receipt.** v1 bound a receipt to
+        /// `native_a11y.rs`'s bytes, so one edit to the shared substrate
+        /// invalidated every provider's proof at once and demanded a live signed-in
+        /// Windows run per published provider before any merge. At the owner's
+        /// ruled surface list -- Discord, Signal, WhatsApp, Telegram and ~10 email
+        /// surfaces -- that made the substrate unrefactorable. v2 binds to the
+        /// **seam contract** instead (`crate::carry_seam_contract`), keeps the
+        /// whole-file hash as a *drift* signal, and is a hard schema break so no
+        /// v1 receipt can be read under v2 rules.
+        pub(crate) const RECEIPT_SCHEMA: &str = "osl-live-carry-receipt-v2";
 
         pub(crate) fn provider_slug(id: NativeAppId) -> &'static str {
             match id {
@@ -3224,10 +3942,32 @@ pub(crate) mod tests {
             }
         }
 
-        pub(crate) const SUBSTRATE_SOURCE: &str = "src/native_a11y.rs";
+        pub(crate) const SUBSTRATE_SOURCE: &str = crate::carry_seam_contract::SUBSTRATE_SOURCE;
 
         fn crate_path(relative: &str) -> PathBuf {
             Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+        }
+
+        /// The seam this provider's adapter actually consumes, read out of the two
+        /// sources rather than declared anywhere.
+        ///
+        /// An `Err` here is a **refusal**: the gate reports `Invalid`, which is
+        /// fatal wherever it is found. A contract that cannot be computed must
+        /// never read as a contract that matches.
+        pub(crate) fn seam_contract(
+            id: NativeAppId,
+        ) -> Result<crate::carry_seam_contract::SeamContract, String> {
+            let Some(adapter) = adapter_source(id) else {
+                return Err(format!(
+                    "{id:?} has no adapter module, so it consumes no seam and can hold no receipt"
+                ));
+            };
+            let adapter_src = std::fs::read_to_string(crate_path(adapter))
+                .map_err(|error| format!("{adapter} is unreadable: {error}"))?;
+            let substrate_src = std::fs::read_to_string(crate_path(SUBSTRATE_SOURCE))
+                .map_err(|error| format!("{SUBSTRATE_SOURCE} is unreadable: {error}"))?;
+            crate::carry_seam_contract::seam_contract_from_sources(&adapter_src, &substrate_src)
+                .map_err(|error| format!("{adapter} against {SUBSTRATE_SOURCE}: {error}"))
         }
 
         pub(crate) fn receipt_path(id: NativeAppId) -> PathBuf {
@@ -3235,13 +3975,7 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
-            let mut hasher = Sha256::new();
-            hasher.update(bytes);
-            hasher
-                .finalize()
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect()
+            crate::carry_seam_contract::sha256_hex(bytes)
         }
 
         pub(crate) fn source_sha256(relative: &str) -> String {
@@ -3260,6 +3994,18 @@ pub(crate) mod tests {
             pub seam: String,
             pub adapter_source: String,
             pub adapter_source_sha256: String,
+            /// **The substrate binding.** Hash of the declarations this adapter
+            /// consumes from `native_a11y.rs`, not of the file. A mismatch is
+            /// `Stale`.
+            pub seam_contract_sha256: String,
+            /// How many declarations that contract held when the receipt was
+            /// earned. Recorded so a contract that silently collapsed to nothing
+            /// is visible in the artifact itself, not only in the code that
+            /// computes it.
+            pub seam_contract_items: usize,
+            /// Kept from v1 and still recorded: the whole substrate file's hash.
+            /// A mismatch is **drift**, not staleness -- see
+            /// `EarnedWithSubstrateDrift`.
             pub substrate_source_sha256: String,
             pub client_process: String,
             pub element_count: usize,
@@ -3282,6 +4028,8 @@ pub(crate) mod tests {
                     "seam": self.seam,
                     "adapter_source": self.adapter_source,
                     "adapter_source_sha256": self.adapter_source_sha256,
+                    "seam_contract_sha256": self.seam_contract_sha256,
+                    "seam_contract_items": self.seam_contract_items,
                     "substrate_source_sha256": self.substrate_source_sha256,
                     "client_process": self.client_process,
                     "element_count": self.element_count,
@@ -3310,39 +4058,57 @@ pub(crate) mod tests {
         #[derive(Debug)]
         pub(crate) enum ReceiptVerdict {
             Earned,
+            /// Earned, every declaration this adapter consumes is unchanged, and
+            /// `native_a11y.rs` has nonetheless been edited since. **Not fatal, and
+            /// not silent.** This is the residual the seam binding cannot close: a
+            /// substrate change that alters *behaviour* behind an unchanged
+            /// declaration is invisible to a declaration hash. It is carried as its
+            /// own verdict so it is printed by the fleet report and by every gate
+            /// failure rather than being folded into `Earned`.
+            EarnedWithSubstrateDrift(String),
             Absent,
-            /// Sound when it was written, but the adapter or substrate has changed
-            /// since. Fatal for a published provider -- it must be re-earned before
-            /// the label moves -- and tolerated for one still at `ComingSoon`, so a
-            /// neighbouring lane editing the substrate does not turn every branch
-            /// red over a proof nobody is relying on yet.
+            /// Sound when it was written, but the adapter or the **seam contract**
+            /// has changed since. Fatal for a published provider -- it must be
+            /// re-earned before the label moves -- and tolerated for one still at
+            /// `ComingSoon`, so a neighbouring lane does not turn every branch red
+            /// over a proof nobody is relying on yet.
             Stale(String),
             /// Never sound. Fatal wherever it is found.
             Invalid(String),
+        }
+
+        impl ReceiptVerdict {
+            /// Whether this verdict lets a provider be published. Drift does; it is
+            /// reported, not fatal.
+            pub(crate) fn is_earned(&self) -> bool {
+                matches!(
+                    self,
+                    ReceiptVerdict::Earned | ReceiptVerdict::EarnedWithSubstrateDrift(_)
+                )
+            }
         }
 
         pub(crate) fn verify_receipt(id: NativeAppId, seam: CarrySeam) -> ReceiptVerdict {
             let Ok(bytes) = std::fs::read(receipt_path(id)) else {
                 return ReceiptVerdict::Absent;
             };
-            match verify_receipt_bytes(id, &String::from_utf8_lossy(&bytes)) {
-                ReceiptVerdict::Earned => {
-                    // The seam the receipt claims must be the seam the map declares,
-                    // so a receipt earned through one mechanism cannot be presented
-                    // as evidence for another.
-                    let claimed = seam_slug(seam);
-                    let value: serde_json::Value =
-                        serde_json::from_slice(&bytes).expect("already parsed once");
-                    if value["seam"].as_str() == Some(claimed) {
-                        ReceiptVerdict::Earned
-                    } else {
-                        ReceiptVerdict::Invalid(format!(
-                            "seam mismatch: receipt says {:?}, the seam map says {claimed:?}",
-                            value["seam"].as_str().unwrap_or("<missing>")
-                        ))
-                    }
-                }
-                other => other,
+            let verdict = verify_receipt_bytes(id, &String::from_utf8_lossy(&bytes));
+            if !verdict.is_earned() {
+                return verdict;
+            }
+            // The seam the receipt claims must be the seam the map declares, so a
+            // receipt earned through one mechanism cannot be presented as evidence
+            // for another.
+            let claimed = seam_slug(seam);
+            let value: serde_json::Value =
+                serde_json::from_slice(&bytes).expect("already parsed once");
+            if value["seam"].as_str() == Some(claimed) {
+                verdict
+            } else {
+                ReceiptVerdict::Invalid(format!(
+                    "seam mismatch: receipt says {:?}, the seam map says {claimed:?}",
+                    value["seam"].as_str().unwrap_or("<missing>")
+                ))
             }
         }
 
@@ -3370,6 +4136,21 @@ pub(crate) mod tests {
             };
             let string = |key: &str| value[key].as_str().unwrap_or_default().to_owned();
 
+            // A receipt written under the superseded v1 binding was *sound when it
+            // was written*; what changed is the rule, not the run. That is the
+            // definition of `Stale`, so it is reported as stale -- fatal for a
+            // published provider, tolerated at `ComingSoon` -- rather than as
+            // never-sound. The artifact of a real live run therefore stays in the
+            // tree as evidence, and still cannot publish anything.
+            if string("schema") == "osl-live-carry-receipt-v1" {
+                return ReceiptVerdict::Stale(format!(
+                    "this receipt was earned under {:?}, which bound the whole of \
+                     {SUBSTRATE_SOURCE} by content hash. That binding is superseded by \
+                     {RECEIPT_SCHEMA}'s seam-contract binding, so the run must be repeated before \
+                     the label can move. Re-run list: {FLEET_RERUN_COMMAND}",
+                    "osl-live-carry-receipt-v1"
+                ));
+            }
             if string("schema") != RECEIPT_SCHEMA {
                 bad!(
                     "schema is {:?}, expected {RECEIPT_SCHEMA:?}",
@@ -3396,20 +4177,52 @@ pub(crate) mod tests {
                     string("adapter_source")
                 )
             }
-            // THE STALENESS BINDING. Edit the adapter or the substrate and every
-            // receipt earned before the edit stops counting. Deliberately checked
-            // AFTER the never-sound cases above, so a malformed receipt is reported
-            // as malformed rather than as merely out of date.
+            if string("substrate_source_sha256").is_empty() {
+                bad!(
+                    "substrate_source_sha256 is missing, so nothing records which {SUBSTRATE_SOURCE} \
+                     the run was measured against"
+                )
+            }
+            if string("seam_contract_sha256").is_empty() {
+                bad!("seam_contract_sha256 is missing, so nothing binds the receipt to the seam")
+            }
+            let recorded_items = value["seam_contract_items"].as_u64().unwrap_or_default() as usize;
+            if recorded_items < crate::carry_seam_contract::SEAM_CONTRACT_MIN_ITEMS {
+                bad!(
+                    "seam contract items is {recorded_items}, below the floor of {}; a receipt that \
+                     records a collapsed contract is a receipt bound to nothing",
+                    crate::carry_seam_contract::SEAM_CONTRACT_MIN_ITEMS
+                )
+            }
+
+            // THE STALENESS BINDING. Deliberately checked AFTER the never-sound
+            // cases above, so a malformed receipt is reported as malformed rather
+            // than as merely out of date.
+            //
+            // The adapter is bound by content: it is the thing being proven, so
+            // any edit to it must cost its own proof. The substrate is bound by
+            // its SEAM CONTRACT -- the declarations this adapter consumes -- so a
+            // behaviour-preserving refactor of the shared substrate does not
+            // invalidate 12-14 providers' proofs at once, while a change to a
+            // signature, a return type, a parameter, a variant, a field or a
+            // measured constant still does.
             if string("adapter_source_sha256") != source_sha256(adapter) {
                 return ReceiptVerdict::Stale(format!(
                     "adapter source hash does not match {adapter}; the adapter changed since this \
                      receipt was earned, so re-run the live carry"
                 ));
             }
-            if string("substrate_source_sha256") != source_sha256(SUBSTRATE_SOURCE) {
+            let contract = match seam_contract(id) {
+                Ok(contract) => contract,
+                // A contract that cannot be computed is a refusal, never a pass.
+                Err(why) => bad!("the seam contract could not be computed: {why}"),
+            };
+            if string("seam_contract_sha256") != contract.sha256 {
                 return ReceiptVerdict::Stale(format!(
-                    "substrate source hash does not match {SUBSTRATE_SOURCE}; the shared substrate \
-                     changed since this receipt was earned, so re-run the live carry"
+                    "seam contract hash does not match the {} declarations {adapter} consumes from \
+                     {SUBSTRATE_SOURCE}; the seam changed since this receipt was earned, so re-run \
+                     the live carry. Re-run list: {FLEET_RERUN_COMMAND}",
+                    contract.items.len()
                 ));
             }
 
@@ -3451,6 +4264,20 @@ pub(crate) mod tests {
                 bad!("recorded_utc is missing")
             }
 
+            // Last, and deliberately not fatal: the substrate file has moved but
+            // no declaration this adapter consumes has. That is the case the whole
+            // rebinding exists to tolerate -- and also the one case the seam
+            // binding cannot see through, so it is reported rather than dropped.
+            if string("substrate_source_sha256") != source_sha256(SUBSTRATE_SOURCE) {
+                return ReceiptVerdict::EarnedWithSubstrateDrift(format!(
+                    "{SUBSTRATE_SOURCE} has changed since this receipt was earned, but none of the \
+                     {} declarations {adapter} consumes moved. Behaviour behind an unchanged \
+                     declaration is NOT covered by the seam binding: if the edit changed what the \
+                     substrate does, re-run the live carry anyway.",
+                    contract.items.len()
+                ));
+            }
+
             ReceiptVerdict::Earned
         }
 
@@ -3458,12 +4285,16 @@ pub(crate) mod tests {
         /// rejection cases below each break exactly one thing.
         pub(crate) fn sample_sound_receipt() -> LiveCarryReceipt {
             let payload = sha256_hex(b"sample payload");
+            let contract = seam_contract(NativeAppId::Telegram)
+                .expect("the Telegram seam contract computes against the tree as it stands");
             LiveCarryReceipt {
                 schema: RECEIPT_SCHEMA.to_owned(),
                 provider: "telegram".to_owned(),
                 seam: "uia2_substrate".to_owned(),
                 adapter_source: "src/native_telegram_adapter.rs".to_owned(),
                 adapter_source_sha256: source_sha256("src/native_telegram_adapter.rs"),
+                seam_contract_sha256: contract.sha256,
+                seam_contract_items: contract.items.len(),
                 substrate_source_sha256: source_sha256(SUBSTRATE_SOURCE),
                 client_process: "Telegram".to_owned(),
                 element_count: 877,
@@ -3487,6 +4318,7 @@ pub(crate) mod tests {
         pub(crate) fn rejection_cases() -> Vec<Mutation> {
             vec![
                 (|r| r.schema = "other".into(), "schema"),
+                (|r| r.schema = "osl-live-carry-receipt-v0".into(), "schema"),
                 (|r| r.provider = "whatsapp".into(), "provider"),
                 (
                     |r| r.adapter_source = "src/native_signal_adapter.rs".into(),
@@ -3496,9 +4328,32 @@ pub(crate) mod tests {
                     |r| r.adapter_source_sha256 = "0".repeat(64),
                     "adapter source hash",
                 ),
+                // D-206 recorded a mutation here that set the substrate file hash
+                // to zeros and required a REJECTION. That spec is not removed --
+                // it is re-recorded, with its meaning corrected, in
+                // [`substrate_drift_cases`]: under the v2 seam binding a moved
+                // substrate file whose declarations are unchanged is *drift*, an
+                // explicit non-fatal verdict, not staleness. What must still be
+                // rejected outright is a receipt that records no substrate at all.
                 (
-                    |r| r.substrate_source_sha256 = "0".repeat(64),
-                    "substrate source hash",
+                    |r| r.substrate_source_sha256 = String::new(),
+                    "substrate_source_sha256 is missing",
+                ),
+                (
+                    |r| r.seam_contract_sha256 = "0".repeat(64),
+                    "seam contract hash",
+                ),
+                (
+                    |r| r.seam_contract_sha256 = String::new(),
+                    "seam_contract_sha256 is missing",
+                ),
+                (|r| r.seam_contract_items = 0, "seam contract items"),
+                (
+                    |r| {
+                        r.seam_contract_items =
+                            crate::carry_seam_contract::SEAM_CONTRACT_MIN_ITEMS - 1
+                    },
+                    "seam contract items",
                 ),
                 (|r| r.recovered_sha256 = "0".repeat(64), "recovered payload"),
                 (|r| r.recovered_sha256 = String::new(), "recovered payload"),
@@ -3515,6 +4370,19 @@ pub(crate) mod tests {
                 (|r| r.client_process = String::new(), "client_process"),
                 (|r| r.recorded_utc = String::new(), "recorded_utc"),
             ]
+        }
+
+        /// Mutations that must produce [`ReceiptVerdict::EarnedWithSubstrateDrift`]
+        /// -- earned, reported, and **not** fatal.
+        ///
+        /// This is the v1 spec that changed meaning rather than disappearing. It
+        /// is asserted just as strictly as a rejection: the verdict must be drift
+        /// exactly, so neither a silent `Earned` nor a `Stale` can hide here.
+        pub(crate) fn substrate_drift_cases() -> Vec<Mutation> {
+            vec![(
+                |r| r.substrate_source_sha256 = "0".repeat(64),
+                "has changed since this receipt was earned",
+            )]
         }
     }
 
