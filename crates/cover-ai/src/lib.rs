@@ -4,6 +4,16 @@ pub mod candidates;
 pub mod capability_probe;
 pub mod cold_start;
 pub mod context;
+// T13-C5 added `cover_history.rs` without this line, so for its first four days
+// the module was not part of the crate at all: the only thing that compiled it
+// was a `#[path]` recompile in `tests/cover_history.rs`, which built a private
+// second copy inside that one test binary. That is why a reachability sweep read
+// it as "a complete second cover-history implementation used only by its own
+// test" (D-252) -- it was dead because it had never been declared, not because
+// `apps/osl-hub/src/pro_context_cover.rs` replaced it. The two are not rivals:
+// the hub owns the shipping Discord-overlay store, and this is the crate-side
+// T13-C5 store that T13-C6 (`cold_start`) is specified to draw on.
+pub mod cover_history;
 pub mod fallback;
 // Gated with its runtime: this module is the only consumer of llama-cpp-2, and
 // compiling it without the feature would fail on the missing crate rather than
