@@ -388,15 +388,37 @@ impl KeyringSealer {
     /// [`Self::new_namespaced`]. Takes the same lock as construction so a
     /// purge can never land between a concurrent create and its read-back.
     pub fn purge_keyring_entry_namespaced(namespace: &str) -> Result<()> {
+        Self::purge_keyring_entry_namespaced_reporting(namespace).map(|_| ())
+    }
+
+    /// [`Self::purge_keyring_entry_namespaced`] that distinguishes deleting a
+    /// credential from finding none to delete.
+    ///
+    /// A burn report that calls both outcomes "removed" claims destruction of
+    /// an object that was never there — the same overstatement D-254 found in
+    /// `cleanup.rs`'s `removed_targets`. `Ok(())` is still the fail-closed
+    /// answer for callers that only need "the credential is not there now";
+    /// this variant exists for the ones that report to a user.
+    pub fn purge_keyring_entry_namespaced_reporting(
+        namespace: &str,
+    ) -> Result<KeyringPurgeOutcome> {
         let user = keyring_user(namespace);
         let _entry_guard = KEYRING_ENTRY_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match keyring::Entry::new(KEYRING_SERVICE, &user).and_then(|e| e.delete_credential()) {
-            Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
+            Ok(_) => Ok(KeyringPurgeOutcome::Purged),
+            Err(keyring::Error::NoEntry) => Ok(KeyringPurgeOutcome::NoEntryNothingToPurge),
             Err(e) => Err(SealerError::Keyring(format!("delete_credential: {e}"))),
         }
     }
+}
+
+/// Did a keyring purge destroy a credential, or was there none to destroy?
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyringPurgeOutcome {
+    Purged,
+    NoEntryNothingToPurge,
 }
 
 impl Sealer for KeyringSealer {
