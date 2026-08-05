@@ -481,5 +481,149 @@ class HubLintBaselinesAreRatchetsTest(unittest.TestCase):
         self.assertNotIn("[lints]", manifest)
 
 
+ROOT_CARGO_CONTRACT = "scripts/test_root_cargo_ci_contract.py"
+HUB_BIN_AUDIT = "scripts/ci/hub-bin-check.mjs --audit"
+TS_WORKFLOW_CONTRACT = ".github/workflows/ts-test.workflow-test.py"
+
+
+def quality_check_steps() -> list[dict]:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    return workflow["jobs"]["quality-checks"].get("steps", [])
+
+
+class GuardsThatNoJobRanTest(unittest.TestCase):
+    """D-283. The fourth instance of one pattern in a single day.
+
+    `scripts/test_root_cargo_ci_contract.py` -- the file whose entire purpose is
+    asserting the root Cargo/CI contract -- was executed by nothing at all.
+    `grep -rn test_root_cargo_ci_contract .github/` returned no hit. That is
+    D-160's shape ("verify_all.sh existed and no loop ever ran it") applied to
+    the grader, and it sat alongside the unpushed branch (D-172), the unlinted
+    hub (D-252) and the browser gates with no browser (D-233). BEING A GATE DOES
+    NOT MAKE SOMETHING RUN.
+
+    Running it for the first time found it RED at three stale assertions. So
+    these tests assert the wiring, not the file's contents: the file grades
+    itself.
+    """
+
+    def runs(self) -> list[str]:
+        return [str(step.get("run", "")) for step in quality_check_steps()]
+
+    def test_some_job_runs_the_root_cargo_ci_contract(self) -> None:
+        self.assertTrue(
+            any(ROOT_CARGO_CONTRACT in run for run in self.runs()),
+            f"no step runs `{ROOT_CARGO_CONTRACT}`. It spent its entire life "
+            "asserting the CI contract with nothing executing it (D-283).",
+        )
+
+    def test_some_job_runs_the_hub_binary_invocation_audit(self) -> None:
+        # D-267: `cargo check --bins` without `--features desktop` compiles no
+        # binary and exits 0, so a mutant "passed" because nothing was built.
+        # `--audit` is the standing refusal of that invocation, it needs no
+        # cargo, and it was exit 0 when it was wired.
+        self.assertTrue(
+            any(HUB_BIN_AUDIT in run for run in self.runs()),
+            f"no step runs `node {HUB_BIN_AUDIT}`",
+        )
+
+    def test_some_job_runs_the_typescript_workflow_contract(self) -> None:
+        # D-281's terminal anchor is two steps of ts-test.yml, and two steps of
+        # YAML are one delete away. This is what notices.
+        self.assertTrue(
+            any(TS_WORKFLOW_CONTRACT in run for run in self.runs()),
+            f"no step runs `{TS_WORKFLOW_CONTRACT}`",
+        )
+
+    def test_the_contract_files_exist(self) -> None:
+        for relative in (ROOT_CARGO_CONTRACT, TS_WORKFLOW_CONTRACT, "scripts/ci/hub-bin-check.mjs"):
+            self.assertTrue((REPO_ROOT / relative).is_file(), f"{relative} is wired and missing")
+
+
+class NoQualityCheckCanMaskAnotherTest(unittest.TestCase):
+    """D-194, and this is the assertion, not the hope.
+
+    Actions aborts a job at its first failing step. `quality-checks` now holds
+    FIVE independent contracts in one job, and the newest three were appended
+    below three that are green today -- which is precisely the condition every
+    prior instance of this defect started from. `boot.js parses` going red would
+    otherwise blank all five.
+
+    The rule enforced here is stronger than "the new steps have a condition":
+    EVERY step of the job below the first must carry `!cancelled()`, so adding a
+    sixth contract without one fails this test rather than silently inheriting
+    the masking.
+    """
+
+    def test_every_step_below_the_first_survives_a_red_step_above_it(self) -> None:
+        steps = [step for step in quality_check_steps() if "run" in step]
+        offenders = [
+            step.get("name", str(step.get("run", ""))[:60])
+            for step in steps[1:]
+            if "!cancelled()" not in str(step.get("if", ""))
+        ]
+        self.assertEqual(
+            offenders,
+            [],
+            "steps a red step above them would report as `skipped`, which is "
+            f"neither a pass nor a failure: {offenders}",
+        )
+
+    def test_the_new_guards_run_after_the_ones_that_were_already_there(self) -> None:
+        # Ordering, pinned. The three appended contracts must stay BELOW the two
+        # that predate them: those two were the job's reason to exist, and a new
+        # red guard in front of them would skip them -- which is exactly how the
+        # hub lint ratchet nearly skipped `Test the OSL Privacy desktop binary`
+        # when it was recommended as "the step after the frontend build".
+        runs = [str(step.get("run", "")) for step in quality_check_steps()]
+
+        def index_of(fragment: str) -> int:
+            for position, run in enumerate(runs):
+                if fragment in run:
+                    return position
+            raise AssertionError(f"no step runs `{fragment}`")
+
+        incumbent = max(
+            index_of("rust-test.workflow-test.py"),
+            index_of("integration-branch-gating.test.py"),
+        )
+        for fragment in (ROOT_CARGO_CONTRACT, HUB_BIN_AUDIT, TS_WORKFLOW_CONTRACT):
+            self.assertGreater(index_of(fragment), incumbent, fragment)
+
+    def test_the_audit_step_needs_no_cargo(self) -> None:
+        # `quality-checks` installs node and python and no Rust toolchain. A
+        # cargo command here is not a stricter gate, it is a broken one.
+        for step in quality_check_steps():
+            self.assertNotIn("cargo ", str(step.get("run", "")))
+
+
+class ExcludedPackagesAreNotSilentlyUnformattedTest(unittest.TestCase):
+    """D-284. `cargo fmt --all` at the root reaches workspace MEMBERS only.
+
+    The hub half is closed by the ratchet (see HubFmtGateHasAnOwnerTest above);
+    this is the part that was still open. There are THREE excluded packages, not
+    one, and `services/crypto-watcher` was in no fmt gate on any platform and had
+    never been measured. It is exit 0, so it is wired.
+
+    The census that makes this non-recurring lives in
+    scripts/test_root_cargo_ci_contract.py -- which, before D-283, ran nowhere.
+    """
+
+    def test_the_crypto_watcher_fmt_check_runs(self) -> None:
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        runs = [str(s.get("run", "")) for j in workflow["jobs"].values() for s in j.get("steps", [])]
+        self.assertTrue(
+            any("services/crypto-watcher/Cargo.toml" in run and "cargo fmt" in run for run in runs),
+            "services/crypto-watcher is workspace-excluded and reached by no fmt gate",
+        )
+
+    def test_the_exclusion_census_still_grades_every_exclusion(self) -> None:
+        source = (REPO_ROOT / ROOT_CARGO_CONTRACT).read_text(encoding="utf-8")
+        self.assertIn("_assert_no_excluded_package_is_silently_unformatted", source)
+        # The escape hatch must stay a recorded, frozen set rather than growing
+        # into an exception file nobody reads.
+        self.assertIn("FMT_UNCOVERED_EXCLUSIONS", source)
+
+
 if __name__ == "__main__":
     unittest.main()
