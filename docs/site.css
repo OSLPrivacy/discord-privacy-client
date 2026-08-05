@@ -1,0 +1,75 @@
+/* Layout for the public documentation pages listed in
+   data/public-surface-manifest.json: docs/compare.html, docs/download.html and
+   docs/faq.html. Before this file those pages carried no stylesheet at all and
+   rendered entirely from user-agent defaults.
+
+   This is an external, same-origin stylesheet on purpose. The shipped policy is
+   `style-src 'self'`, which silently drops a runtime-injected <style> element
+   and every `style=` attribute -- a navigation once shipped unstyled for
+   exactly that reason. Keep every rule below in this file. Do not move any of
+   it into a <style> block, a `style=` attribute, or JavaScript. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0 auto;
+  padding: 1rem;
+  max-width: 44rem;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  line-height: 1.6;
+
+  /* The rule that closes the horizontal-overflow findings, and the only one of
+     these that is load bearing.
+
+     `overflow-wrap` defaults to `normal`, so a single long word is unbreakable.
+     At a 160px layout viewport -- 320px at 200% zoom, which is what the
+     accessibility matrix audits -- one bold heading word measured 178px to
+     217px against a content box of about 130px ("messengers" on compare,
+     "Download" on download, "Frequently" on faq), painted past the content edge
+     and widened documentElement.scrollWidth. `break-word` breaks such a word at
+     the point it would overflow its line box, so the text stays inside the
+     content box whatever the installed fonts measure. That is what makes the
+     fix hold on a font stack other than the one it was written on.
+
+     This property is inherited, so headings, paragraphs, list items, links and
+     inline <code> file paths are all covered by this one declaration. */
+  overflow-wrap: break-word;
+}
+
+/* Headings are the widest text on these pages. The user agent sizes h1 at a
+   fixed 2em and h2 at 1.5em regardless of viewport; scale them down on narrow
+   viewports so wrapping is a fallback rather than the normal case. */
+h1 {
+  font-size: clamp(1.375rem, 5.5vw, 2rem);
+  line-height: 1.2;
+}
+
+h2 {
+  font-size: clamp(1.125rem, 4vw, 1.5rem);
+  line-height: 1.25;
+}
+
+img,
+svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Content that is genuinely wider than the viewport -- preformatted blocks, and
+   anything wrapped in .scroll-x such as a wide table or diagram -- scrolls
+   inside its own box. `auto`, never `hidden`: the overflow is reachable, it
+   just stops widening the page. The page body itself must never scroll
+   horizontally. */
+pre,
+.scroll-x {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+table {
+  max-width: 100%;
+}
