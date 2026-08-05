@@ -413,6 +413,30 @@ pub struct LandingProfile {
     /// The channels this profile judges through, in order. Checked against
     /// [`judges_independently`] before any cross-process call.
     pub judges: &'static [JudgeChannel],
+    /// **The primary document channel** — the one whose answer *is* the
+    /// document a verdict is formed from. Every other declared document channel
+    /// corroborates it and must agree.
+    ///
+    /// This was hard-wired to [`JudgeChannel::RenderedDocumentUia`] until
+    /// 2026-08-05, which encoded a **Chromium** assumption in a
+    /// provider-agnostic instrument: `walk_leaves_uia` reads a leaf's
+    /// `CurrentName`, because that is where Chromium publishes a static text
+    /// node's content. **Qt does not publish there at all.** Measured live on
+    /// Telegram: the composer's leaf walk answered `None` with the field empty
+    /// *and* `None` with 32 characters in it, while the TextPattern range
+    /// tracked the document exactly and the ink moved 203 → 924 → 169. A
+    /// hard-wired channel therefore did not mean "judge the document"; it meant
+    /// "judge the document *if the provider is Chromium*", and answered
+    /// [`LandingRefusal::NoRenderedDocument`] to every Qt surface forever.
+    ///
+    /// **This widens nothing.** The primary is held to strictly more than a
+    /// corroborator is: [`check_independence`] requires it to be a document
+    /// channel, to be independent of the write channel by
+    /// [`judges_independently`], **and** to be declared in `judges` — so it
+    /// cannot be smuggled past the same table every corroborator passes. No
+    /// verdict path, threshold or equality test changes, and `Landed` still
+    /// requires byte-exact equality with no normalisation reachable.
+    pub document_channel: JudgeChannel,
     /// What this provider's *empty* composer publishes. Discord's is
     /// `"\u{feff}\n"` — a zero-width no-break space and a newline — and
     /// `char::is_whitespace` is false for `U+FEFF`, so `str::trim` leaves it
@@ -468,6 +492,10 @@ pub static DISCORD: LandingProfile = LandingProfile {
         JudgeChannel::RenderedDocumentTextPattern,
         JudgeChannel::ComposerInk,
     ],
+    // Unchanged behaviour, now stated instead of hard-wired: Chromium
+    // publishes a static text node's content in the leaf's name, so the leaf
+    // walk is the document here and the TextPattern range corroborates it.
+    document_channel: JudgeChannel::RenderedDocumentUia,
     empty_document_chars: &['\u{feff}', '\n', '\r', ' ', '\t'],
     leaf_join: "",
     // Measured at D-205: the one writable editable on Discord's plan is named
@@ -554,6 +582,10 @@ pub static WHATSAPP: LandingProfile = LandingProfile {
         JudgeChannel::RenderedDocumentTextPattern,
         JudgeChannel::ComposerInk,
     ],
+    // Unchanged behaviour, now stated instead of hard-wired. WhatsApp is
+    // Chromium too: its leaf walk reads the document and the TextPattern range
+    // corroborates it, and the pair is what refused the value-set at D-234.
+    document_channel: JudgeChannel::RenderedDocumentUia,
     // Measured, and NARROWER than Discord's. WhatsApp's empty composer
     // publishes exactly `"\n"` through both document channels -- the
     // `<p><br></p>` an empty `contenteditable` block holds -- with no
@@ -604,19 +636,153 @@ pub static WHATSAPP: LandingProfile = LandingProfile {
     normalisations: &[],
 };
 
+/// Telegram — the first **non-Chromium** surface the oracle has been pointed
+/// at, and the one that showed the instrument's primary channel was
+/// Chromium-shaped.
+///
+/// **Every field below was measured on the owner's live, signed-in host on
+/// 2026-08-05, through this module's own judges**, by
+/// `landing_oracle::live_telegram::report_what_the_landing_oracle_can_see_on_telegram`
+/// (which wrote nothing at all) and
+/// `::prove_the_clear_path_before_any_composer_placement` (which wrote only
+/// into the chat-list search box, never a conversation).
+///
+/// ```text
+/// bound hwnd=0x500f0 outer=0x500f0 pid=8032 route=UiaNative elements=719-720 woke=false settled_ms=0
+/// composer name="Write a message..."   (the one writable element the matcher admits)
+/// J1 UIA leaves = None    <- with the field EMPTY *and* with 32 characters in it
+/// J2 TextPattern = ""     <- tracks the document exactly
+/// J2b MSAA       = None
+/// J3 ink rect=[792,915 481x28] sampled=13468 inked=422 (empty, on screen)
+/// D  value property = Some("")
+/// search box canary: ink 203 -> 924 -> 169, J2 "" -> sentinel -> "", residue 0
+/// ```
+///
+/// # Why the primary document channel is the TextPattern range here
+///
+/// **J1 is structurally blind on Qt, and that was measured rather than
+/// assumed.** `walk_leaves_uia` reads a leaf's `CurrentName` because that is
+/// where *Chromium* publishes a static text node's content. Telegram's composer
+/// answered `None` from that walk while empty **and** `None` while holding a
+/// 32-character sentinel, in the same acquisition, seconds apart. A channel
+/// that cannot tell those two states apart is not a document channel on this
+/// surface, so it is **not declared** — the same rule that kept MSAA out of
+/// WhatsApp's profile.
+///
+/// # Why this is still an independent judgement
+///
+/// The write is `IValueProvider::SetValue`; the judges are
+/// `ITextProvider::DocumentRange().GetText()` and **GDI pixels**. The
+/// independence table already ruled `(ValueSet, RenderedDocumentTextPattern)`
+/// independent — that pairing is what refused WhatsApp's value-set at D-234,
+/// where the property moved and the TextPattern range did not. And the ink is
+/// downstream of the compositor and of nothing else: it is the channel no
+/// accessibility shadow can reach.
+///
+/// **The honest weakness, stated rather than hidden:** Telegram publishes
+/// exactly **one** document channel, so unlike Discord and WhatsApp there is no
+/// second document channel here and `JudgingChannelsDisagree` cannot fire on
+/// this surface. The ink is the corroborator. MSAA is deliberately not enlisted
+/// to fill the gap: on Qt a childless composer's MSAA leaf read collapses to
+/// `accValue`, which is the disowned value property under another name, and a
+/// corroborator that is secretly the writing channel is exactly what this module
+/// exists to prevent.
+pub static TELEGRAM: LandingProfile = LandingProfile {
+    provider: NativeAppId::Telegram,
+    provider_name: "Telegram",
+    // `Qt51519QWindowIcon` IS the UIA root — `DirectOuterWindow`, no renderer
+    // child, no sibling. `window_identity` on the bound hwnd answers
+    // `process_name: "Telegram"`, measured.
+    process_name: crate::native_telegram_adapter::TELEGRAM_DESKTOP_PROCESS_NAME,
+    // The shipping placement path for this surface:
+    // `native_telegram_adapter::place_through_substrate` → `place_uia2_carrier`
+    // → `SetValue`. There is no `SendInput` anywhere on it, and no send verb in
+    // the module or in the `Uia2Syscalls` seam it drives.
+    write_channel: WriteChannel::ValueSet,
+    judges: &[
+        JudgeChannel::RenderedDocumentTextPattern,
+        JudgeChannel::ComposerInk,
+    ],
+    document_channel: JudgeChannel::RenderedDocumentTextPattern,
+    // **The narrowest empty-state claim available.** Telegram's empty composer
+    // publishes the EMPTY STRING through the TextPattern range — no `U+FEFF`,
+    // no `"\n"`, nothing. An empty character list means only `""` itself reads
+    // as empty, so there is no sentinel a residue could hide inside.
+    empty_document_chars: &[],
+    // The TextPattern range answers as one leaf, so nothing is ever joined.
+    // Declared rather than omitted so a later channel change cannot inherit a
+    // silent default.
+    leaf_join: "",
+    matcher: crate::native_telegram_adapter::TELEGRAM_COMPOSER_MATCHER,
+    // Measured `woke=false` on every acquisition. Qt publishes its UIA tree
+    // eagerly and `TELEGRAM_UIA2_WINDOW_PLAN` is `Uia2WakePolicy::None`;
+    // sending Chromium's handshake here would be a call to an object that does
+    // not want it.
+    wake: false,
+    // The convergence window actually observed, not a guess at one. In the
+    // search-box canary the sentinel was visible in the TextPattern range AND
+    // in the ink 600 ms after the write, and `SetValue("")` had returned the
+    // ink below its empty figure 600 ms later. An upper bound that was observed
+    // to hold, which is the only honest kind of settle. (The substrate's
+    // `settled_ms=0` is about *tree population*, a different question.)
+    settle_ms: 600,
+    // `max_nodes` bounds two things on this profile, and the second is the
+    // load-bearing one: `rendered_document_text_pattern` passes it to
+    // `ITextRange::GetText` as the maximum character count. Telegram's own
+    // shipping bound on a carrier is `TELEGRAM_LIVE_CARRIER_MAX_BYTES` = 4096,
+    // so anything smaller would silently truncate a carrier the shipping path
+    // is willing to place and the oracle would refuse `Truncated` for a
+    // document that had in fact landed whole. 256 — Chromium's figure, where
+    // the walk is over *nodes* — is smaller than a single real cover text
+    // (measured: 276 bytes), which is why this number is Telegram's and not
+    // inherited. No UIA leaf walk runs on this profile at all, so this is not a
+    // relaxed walk bound.
+    walk: WalkCaps {
+        max_nodes: crate::native_telegram_adapter::TELEGRAM_LIVE_CARRIER_MAX_BYTES,
+        max_depth: 8,
+    },
+    judge_timeout_ms: 5_000,
+    // On Telegram the newline IS the send: `uia2_carrier_carries_submit`
+    // refuses a carrier containing one before it reaches a live composer.
+    commit_key: "Enter",
+    // Measured live 2026-08-05 on this host's DPI, and deliberately measured on
+    // an element that is NOT the one this profile judges: a 32-character
+    // sentinel placed into Telegram's chat-list search field moved that
+    // rectangle's ink from 203 to 924 inked pixels of 6xxx sampled — a delta of
+    // 721, **22.53 pixels per character** — and `SetValue("")` returned it to
+    // 169, below the empty baseline, so residue was 0. 112 is five characters'
+    // worth by the same rule Discord's 48 and WhatsApp's 38 were set by.
+    // Deriving it from the search box rather than from the composer's own
+    // landing is what keeps it from being fitted to the result it later gates.
+    //
+    // **Measured, and unlike the other two surfaces it matters: on Telegram a
+    // SHORT placement inks LESS than an empty composer.** The empty composer's
+    // 422 inked pixels are the placeholder glyphs `Write a message...`; placing
+    // the two-character canary `"ok"` took the same rectangle to 103. So an ink
+    // *increase* over the empty baseline is only evidence for a carrier long
+    // enough to out-ink the placeholder, and this floor is honest for a real
+    // cover text (hundreds of characters, and the rectangle grows as it wraps)
+    // while correctly refusing `NotOnScreen` for a two-character canary. The
+    // canary's landing is therefore established by the document channel and its
+    // *clear* by `judge_empty_composer`; its ink verdict is reported and never
+    // asserted. This is a property of the surface, not a threshold that was
+    // tuned until something passed.
+    min_ink_delta: 112,
+    // **None, and that is a measurement too.** The search-box canary's
+    // TextPattern range returned the sentinel byte-for-byte, with no re-wrapping
+    // of any kind. Nothing is declared that has not been seen, so any mismatch
+    // on this surface is `ForeignText` and not a re-encoding this profile
+    // quietly excuses.
+    normalisations: &[],
+};
+
 /// The profile table. **Exhaustive** — a new provider cannot compile without a
 /// decision, and the decision for an unmeasured provider must name the
 /// measurement that is missing.
 pub const fn landing_profile(provider: NativeAppId) -> ProfileLookup {
     match provider {
         NativeAppId::Discord => ProfileLookup::Measured(&DISCORD),
-        NativeAppId::Telegram => ProfileLookup::Unmeasured {
-            provider,
-            missing: "Telegram is a Qt composer on the UiaNative route with no Chromium AX \
-                      subtree; its empty-document publication, its leaf join and its ink \
-                      baseline have never been read. Its substrate numbers (no wake, settles \
-                      at 0 ms) are NOT Discord's and Discord's are not its.",
-        },
+        NativeAppId::Telegram => ProfileLookup::Measured(&TELEGRAM),
         NativeAppId::Signal => ProfileLookup::Unmeasured {
             provider,
             missing: "Signal's adapter BANS synthesized input by design and counts it as \
@@ -830,6 +996,15 @@ pub enum LandingRefusal {
     /// The backend observed a submit-shaped interaction. Nothing further runs
     /// and no verdict is issued.
     SubmitShaped { calls: usize },
+    /// The profile's **primary document channel** is not one a document can be
+    /// read from, or is not declared in `judges`. Structural, and checked
+    /// alongside [`Self::JudgedByTheWritingChannel`] before any cross-process
+    /// call: a primary that skipped the independence table would be the whole
+    /// point of that table, undone.
+    InvalidDocumentChannel {
+        channel: JudgeChannel,
+        why: &'static str,
+    },
 }
 
 impl LandingRefusal {
@@ -852,6 +1027,7 @@ impl LandingRefusal {
             Self::JudgeWalkTooLarge { .. } => "JudgeWalkTooLarge",
             Self::JudgeTimedOut(_) => "JudgeTimedOut",
             Self::SubmitShaped { .. } => "SubmitShaped",
+            Self::InvalidDocumentChannel { .. } => "InvalidDocumentChannel",
         }
     }
 }
@@ -893,7 +1069,96 @@ pub fn check_independence(profile: &LandingProfile) -> Result<(), LandingRefusal
             judge: JudgeChannel::ComposerValueProperty,
         });
     }
+    // The primary document channel is held to strictly MORE than a corroborator
+    // is: it must be a channel a document can be read from, it must survive the
+    // independence table above, and it must be declared in `judges` so it can
+    // never be the one channel that skipped it.
+    if !is_document_channel(profile.document_channel) {
+        return Err(LandingRefusal::InvalidDocumentChannel {
+            channel: profile.document_channel,
+            why: "the primary document channel must be a channel that publishes a document; ink \
+                  and the value property are not documents",
+        });
+    }
+    if !judges_independently(profile.write_channel, profile.document_channel) {
+        return Err(LandingRefusal::JudgedByTheWritingChannel {
+            write: profile.write_channel,
+            judge: profile.document_channel,
+        });
+    }
+    if !profile.judges.contains(&profile.document_channel) {
+        return Err(LandingRefusal::InvalidDocumentChannel {
+            channel: profile.document_channel,
+            why: "the primary document channel must also be declared in `judges`, so it is held \
+                  to exactly the same independence table as every corroborator",
+        });
+    }
     Ok(())
+}
+
+/// Whether a channel publishes a *document* at all.
+///
+/// Ink is a count of pixels and the value property is the disowned channel;
+/// neither can be a primary. Exhaustive, so a new channel cannot compile
+/// without a decision.
+pub const fn is_document_channel(judge: JudgeChannel) -> bool {
+    match judge {
+        JudgeChannel::RenderedDocumentUia
+        | JudgeChannel::RenderedDocumentTextPattern
+        | JudgeChannel::RenderedDocumentMsaa => true,
+        JudgeChannel::ComposerInk | JudgeChannel::ComposerValueProperty => false,
+    }
+}
+
+/// Read the profile's primary document channel.
+///
+/// The dispatch a hard-wired `rendered_document_uia` call used to hide. Every
+/// arm passes the same bounds the corroborator loop passes, so the primary is
+/// not privileged in any way except that its answer is the one compared.
+fn read_primary_document(
+    judge: &dyn LandingJudgeSyscalls,
+    profile: &LandingProfile,
+    bound: &BoundComposer,
+    deadline: JudgeDeadline,
+) -> Result<Option<RenderedDocument>, JudgeTimeout> {
+    match profile.document_channel {
+        JudgeChannel::RenderedDocumentUia => {
+            judge.rendered_document_uia(bound, profile.walk, profile.leaf_join, deadline)
+        }
+        JudgeChannel::RenderedDocumentTextPattern => {
+            judge.rendered_document_text_pattern(bound, profile.walk, deadline)
+        }
+        JudgeChannel::RenderedDocumentMsaa => {
+            judge.rendered_document_msaa(bound, profile.walk, profile.leaf_join, deadline)
+        }
+        JudgeChannel::ComposerInk | JudgeChannel::ComposerValueProperty => {
+            unreachable!("checked by check_independence")
+        }
+    }
+}
+
+/// Read one declared corroborating channel.
+fn read_corroborating_document(
+    judge: &dyn LandingJudgeSyscalls,
+    profile: &LandingProfile,
+    bound: &BoundComposer,
+    channel: JudgeChannel,
+    deadline: JudgeDeadline,
+) -> Result<Option<RenderedDocument>, JudgeTimeout> {
+    match channel {
+        JudgeChannel::RenderedDocumentUia => {
+            judge.rendered_document_uia(bound, profile.walk, profile.leaf_join, deadline)
+        }
+        JudgeChannel::RenderedDocumentTextPattern => {
+            judge.rendered_document_text_pattern(bound, profile.walk, deadline)
+        }
+        JudgeChannel::RenderedDocumentMsaa => {
+            judge.rendered_document_msaa(bound, profile.walk, profile.leaf_join, deadline)
+        }
+        JudgeChannel::ComposerInk | JudgeChannel::ComposerValueProperty => {
+            unreachable!("skipped by the caller")
+        }
+    }
 }
 
 /// **The oracle.** Did `expected` land, byte for byte, in `bound`'s composer?
@@ -948,9 +1213,8 @@ pub fn judge_landing(
         ));
     }
 
-    // 3 — J1, the rendered document.
-    let uia = judge
-        .rendered_document_uia(bound, profile.walk, profile.leaf_join, deadline)?
+    // 3 — the primary document channel.
+    let uia = read_primary_document(judge, profile, bound, deadline)?
         .ok_or(LandingRefusal::NoRenderedDocument)?;
     if uia.nodes_visited >= profile.walk.max_nodes || uia.depth_reached >= profile.walk.max_depth {
         return Err(LandingRefusal::JudgeWalkTooLarge {
@@ -969,16 +1233,10 @@ pub fn judge_landing(
     // has to work or the profile has to stop naming it.
     let mut corroborating = None;
     for channel in profile.judges {
-        let answer = match channel {
-            JudgeChannel::RenderedDocumentTextPattern => {
-                judge.rendered_document_text_pattern(bound, profile.walk, deadline)?
-            }
-            JudgeChannel::RenderedDocumentMsaa => {
-                judge.rendered_document_msaa(bound, profile.walk, profile.leaf_join, deadline)?
-            }
-            JudgeChannel::RenderedDocumentUia | JudgeChannel::ComposerInk => continue,
-            JudgeChannel::ComposerValueProperty => unreachable!("checked by check_independence"),
-        };
+        if *channel == profile.document_channel || *channel == JudgeChannel::ComposerInk {
+            continue;
+        }
+        let answer = read_corroborating_document(judge, profile, bound, *channel, deadline)?;
         let Some(answer) = answer else {
             return Err(LandingRefusal::CorroboratingChannelSilent { channel: *channel });
         };
@@ -1149,8 +1407,7 @@ pub fn judge_empty_composer(
         );
     }
 
-    let uia = judge
-        .rendered_document_uia(bound, profile.walk, profile.leaf_join, deadline)?
+    let uia = read_primary_document(judge, profile, bound, deadline)?
         .ok_or(LandingRefusal::NoRenderedDocument)?;
     if uia.nodes_visited >= profile.walk.max_nodes || uia.depth_reached >= profile.walk.max_depth {
         return Err(LandingRefusal::JudgeWalkTooLarge {
@@ -1168,16 +1425,10 @@ pub fn judge_empty_composer(
 
     let mut corroborating = None;
     for channel in profile.judges {
-        let answer = match channel {
-            JudgeChannel::RenderedDocumentTextPattern => {
-                judge.rendered_document_text_pattern(bound, profile.walk, deadline)?
-            }
-            JudgeChannel::RenderedDocumentMsaa => {
-                judge.rendered_document_msaa(bound, profile.walk, profile.leaf_join, deadline)?
-            }
-            JudgeChannel::RenderedDocumentUia | JudgeChannel::ComposerInk => continue,
-            JudgeChannel::ComposerValueProperty => unreachable!("checked by check_independence"),
-        };
+        if *channel == profile.document_channel || *channel == JudgeChannel::ComposerInk {
+            continue;
+        }
+        let answer = read_corroborating_document(judge, profile, bound, *channel, deadline)?;
         let Some(answer) = answer else {
             return Err(LandingRefusal::CorroboratingChannelSilent { channel: *channel }.into());
         };
@@ -1247,6 +1498,9 @@ mod live;
 
 #[cfg(all(test, target_os = "windows"))]
 mod live_whatsapp;
+
+#[cfg(all(test, target_os = "windows"))]
+mod live_telegram;
 
 #[cfg(test)]
 mod tests;
