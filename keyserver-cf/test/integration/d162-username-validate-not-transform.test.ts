@@ -124,21 +124,44 @@ describe("D-162 username endpoints validate and never transform", () => {
     // The row is returned byte-for-byte as claimed: no display/identity split.
     expect(await hit.json()).toMatchObject({ found: true, username: "d162_alice" });
 
-    // A confusable-adjacent but grammatically legal handle is a DIFFERENT
-    // identity under the shipping semantics, and a second user may CLAIM it.
-    // Under T5-K2's skeleton index this claim was a 409 -- the parked
-    // `rejects a UTS #39 skeleton collision` spec in usernames.test.ts is
-    // exactly this case. Asserting the claim succeeds is what makes this
-    // discriminating: a bare `found: false` lookup of an unclaimed name passes
-    // under every implementation that does not crash, T5-K2 included.
+    // ── CHANGED BY D-248, and the change is a contract decision, not a fix
+    // to make a suite pass. ─────────────────────────────────────────────────
+    // This block used to assert that a second user MAY claim `d162_a1ice`,
+    // with the note that "under T5-K2's skeleton index this claim was a 409".
+    // The skeleton index is now live: migration 0038 creates
+    // `CREATE UNIQUE INDEX idx_username_directory_skeleton` and contract 0100
+    // makes the column mandatory, so the skeleton is a UNIQUENESS CONSTRAINT
+    // and `a1ice`/`alice` cannot both exist. D-162 and D-248 are not in
+    // conflict once separated: D-162 is about the READ path never folding one
+    // spelling onto another, D-248 is about the WRITE path never letting two
+    // foldable spellings coexist.
+    //
+    // The discrimination the old assertion bought is kept, in two pieces.
     const other = userId();
     const otherPair = await registerTestUser(SELF, other);
-    expect((await claim("d162_a1ice", other, otherPair)).status).toBe(200);
+    expect((await claim("d162_a1ice", other, otherPair)).status).toBe(409);
 
-    const distinct = await lookup("d162_a1ice");
-    expect(distinct.status).toBe(200);
-    expect(await distinct.json()).toMatchObject({ found: true, username: "d162_a1ice" });
-    // ...and the original is untouched by it.
+    // (1) The refusal must not become a resolution. A server that folded the
+    // spelling would answer this lookup with `d162_alice`'s row; the
+    // read path must simply not know the name.
+    const folded = await lookup("d162_a1ice");
+    expect(folded.status).toBe(200);
+    expect(await folded.json()).toMatchObject({ found: false, username: null });
+    // ...and the original is untouched by any of it.
+    expect(await (await lookup("d162_alice")).json()).toMatchObject({
+      found: true, username: "d162_alice",
+    });
+
+    // (2) Two handles that are NOT confusable still both claim and still
+    // resolve byte-exactly and separately, so this spec still fails against an
+    // implementation that answers `found: false` for everything or that
+    // collapses distinct rows.
+    const third = userId();
+    const thirdPair = await registerTestUser(SELF, third);
+    expect((await claim("d162_bravo", third, thirdPair)).status).toBe(200);
+    expect(await (await lookup("d162_bravo")).json()).toMatchObject({
+      found: true, username: "d162_bravo",
+    });
     expect(await (await lookup("d162_alice")).json()).toMatchObject({
       found: true, username: "d162_alice",
     });

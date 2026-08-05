@@ -17,7 +17,7 @@ of the two Worker bundles.
 
 | File | Was | Is |
 |---|---|---|
-| `migrations/0038_username_identity_hardening.sql` | columns + index + tombstones + 2 triggers, one step | **expand only**: nullable columns, backfill, index, tombstone table, retire trigger, retired-name rejection gated to the skeleton writer |
+| `migrations/0038_username_identity_hardening.sql` | columns + index + tombstones + 2 triggers, one step | **expand only**: nullable columns, `display_username` backfill, index, tombstone table, retire trigger, retired-name rejection gated to the skeleton writer. **D-248:** the skeleton half of the backfill is gone — it fabricated `skeleton = username`; see step 2 |
 | `migrations/0038_account_ownership_binding_account_unique.sql` | column + index + replacement insert guard | **expand only**: column + index |
 | `migrations-contract/0100_username_identity_contract.sql` | — | **new**: guards, then mandatory skeleton/display, mandatory tombstone skeleton, unconditional retired-name ABORT |
 | `migrations-contract/0101_account_ownership_binding_contract.sql` | — | **new**: guard, then the replacement insert guard, verbatim |
@@ -142,22 +142,51 @@ candidate Worker is deployed.
 
 ### Step 2 · BACKFILL — repeatable, no schema change
 
+**Corrected by D-248.** This step used to be one SQL statement:
+`SET username_skeleton = COALESCE(username_skeleton, username)`. That writes the
+**raw name** into the skeleton column, which makes `idx_username_directory_skeleton`
+decorative — a skeleton equal to the raw name cannot collide with anything the
+raw name did not already collide with on the primary key. The comment justifying
+it ("the ASCII-only grammar, for which the normalized spelling is also the
+skeleton") is false even for pure ASCII: `michael` skeletons to `rnichael`,
+`paypa1` and `paypal` both to `paypal`, `supp0rt` and `support` both to
+`support`. A UTS #39 skeleton cannot be computed in SQLite, so it is no longer
+attempted there.
+
 ```sh
-npx wrangler d1 execute osl-keyserver-prod --remote --command \
- "UPDATE username_directory
-     SET username_skeleton = COALESCE(username_skeleton, username),
-         display_username  = COALESCE(display_username, username)
-   WHERE username_skeleton IS NULL OR display_username IS NULL"
+cd keyserver-cf
+npx wrangler d1 execute osl-keyserver-prod --remote --json --command \
+  "SELECT username, username_skeleton, display_username FROM username_directory" > /tmp/d248-directory.json
+npx wrangler d1 execute osl-keyserver-prod --remote --json --command \
+  "SELECT username, skeleton FROM username_tombstones" > /tmp/d248-tombstones.json
+node scripts/backfill-username-skeletons.mjs \
+  --directory /tmp/d248-directory.json --tombstones /tmp/d248-tombstones.json \
+  --out /tmp/d248-backfill.sql
+# exit 0 -> apply it;  exit 3 -> it REFUSED, read the printed collision set
+npx wrangler d1 execute osl-keyserver-prod --remote --file /tmp/d248-backfill.sql
 ```
 
-This is the same statement the expand migration already ran; it is repeated as a
-separate step because the deployed Worker keeps writing NULL-skeleton rows for as
-long as it is serving. Run it, and run it again immediately before step 5.
+The generated file is a list of absolute `UPDATE ... SET username_skeleton = '<computed>'`
+statements, so re-running it is a no-op. The expand migration still fills
+`display_username` itself; only the skeleton needs the artifact.
+
+**It can refuse, and a refusal is an owner decision, not a retry.** Two live
+rows can fold to the same skeleton once it is computed correctly. The tool exits
+**3**, prints every colliding group, and emits nothing — because a UNIQUE index
+cannot hold both and quietly dropping one is the impersonation this column
+exists to prevent.
+
+**Run it again immediately before step 5**, because the deployed Worker keeps
+writing NULL-skeleton rows for as long as it is serving.
 
 **Stop here and production works:** it touches only rows the deployed Worker
-wrote and sets them to the value the original migration's own backfill defined
-(`skeleton = username`). Expected effect today: **0 rows** — the directory is
-empty.
+wrote, and a NULL skeleton is not a constraint violation during the expand
+window (SQLite treats NULLs as distinct in a UNIQUE index). Expected effect
+today: **0 rows** — the directory is empty (measured 2026-08-04).
+
+**Order matters and is not optional.** This step must complete before step 3.
+Until a legacy row has a real skeleton, its confusables are unconstrained, and
+the consuming Worker writing correct skeletons beside it does not fix that.
 
 ### Step 3 · DEPLOY the consuming Worker
 

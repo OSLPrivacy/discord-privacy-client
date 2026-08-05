@@ -52,13 +52,29 @@
 ALTER TABLE username_directory ADD COLUMN username_skeleton TEXT;
 ALTER TABLE username_directory ADD COLUMN display_username TEXT;
 
--- Rows predating the identity-hardening writer used the ASCII-only grammar,
--- for which the normalized spelling is also the skeleton and display value.
--- Repeatable: this exact statement is the backfill step of the runbook.
+-- D-248 CORRECTION.  This statement used to also set
+--   username_skeleton = COALESCE(username_skeleton, username)
+-- under the claim that "rows predating the identity-hardening writer used the
+-- ASCII-only grammar, for which the normalized spelling is also the skeleton".
+-- THAT CLAIM IS FALSE, and measurably so on pure ASCII: the pinned UTS #39
+-- artifact folds `michael` to `rnichael`, `paypa1` to `paypal` and `supp0rt` to
+-- `support`.  Writing the raw name into the skeleton column makes the unique
+-- index below decorative — a skeleton equal to the raw name can never collide
+-- with anything the raw name did not already collide with on the primary key.
+--
+-- A UTS #39 skeleton cannot be computed in SQLite, so this file does not
+-- pretend to.  Legacy rows keep a NULL skeleton — which is safe here, because
+-- SQLite treats NULLs as distinct in a UNIQUE index and the columns are
+-- nullable for exactly the length of the expand window — and the backfill is
+-- performed by `scripts/backfill-username-skeletons.mjs`, which computes each
+-- skeleton with the same artifact the Worker uses and REFUSES, printing the
+-- whole set, if two live rows fold together.  `migrations-contract/0100`'s
+-- guard is what stops the contract half landing before that has been done.
+--
+-- display_username is not derived and is filled here as before.
 UPDATE username_directory
-   SET username_skeleton = COALESCE(username_skeleton, username),
-       display_username  = COALESCE(display_username, username)
- WHERE username_skeleton IS NULL OR display_username IS NULL;
+   SET display_username = COALESCE(display_username, username)
+ WHERE display_username IS NULL;
 
 CREATE UNIQUE INDEX idx_username_directory_skeleton
   ON username_directory(username_skeleton);
