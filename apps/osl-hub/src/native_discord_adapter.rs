@@ -17698,6 +17698,15 @@ mod windows {
             held: LocatedComposer,
             expected: ComposerBinding,
         ) -> Self {
+            // Taken BEFORE the struct literal, not inside it: struct fields are
+            // evaluated in written order, so `held` and `expected` were already
+            // moved by the time the baseline expression borrowed them and this
+            // function did not compile for `--target x86_64-pc-windows-gnu` at
+            // all (two E0382s). Neither is `Copy`, and the module is behind
+            // `#[cfg(target_os = "windows")]`, so a Linux build never saw it.
+            // Behaviour is unchanged: the same call, the same arguments, one
+            // statement earlier.
+            let empty_baseline = composer_empty_ink_baseline(target, &held, &expected);
             Self {
                 state,
                 target,
@@ -17706,7 +17715,7 @@ mod windows {
                 held,
                 expected,
                 carrier: String::new(),
-                empty_baseline: composer_empty_ink_baseline(target, &held, &expected),
+                empty_baseline,
                 drops_calibration: false,
                 armed: false,
             }

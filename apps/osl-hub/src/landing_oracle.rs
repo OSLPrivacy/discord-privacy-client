@@ -501,6 +501,109 @@ pub static DISCORD: LandingProfile = LandingProfile {
     ],
 };
 
+/// WhatsApp — the first surface whose placement doctrine is `SetValue` rather
+/// than synthesized keystrokes, and therefore the first where the disowned
+/// channel is the one the write moves.
+///
+/// **Every field below was measured on the owner's live, signed-in host on
+/// 2026-08-05, through this module's own judges**, and the run that took them
+/// wrote nothing into the conversation composer:
+/// `landing_oracle::live_whatsapp::report_what_the_landing_oracle_can_see_on_whatsapp`
+/// and `::prove_the_clear_path_before_any_composer_placement`.
+///
+/// ```text
+/// bound pid=15312 route=UiaNative elements=79 woke=true settled_ms=0
+/// composer name="Type a message to <peer>"
+/// J1 UIA leaves=["\n"] text="\n" nodes=3 depth=2      <- empty state
+/// J2 TextPattern text="\n"                            <- agrees with J1
+/// J2b MSAA = Ok(None)                                 <- silent, so NOT declared
+/// J3 ink rect=813x24 sampled=19512 inked=646          <- placeholder + icons
+/// D  value property = Some("\n")
+/// ```
+pub static WHATSAPP: LandingProfile = LandingProfile {
+    provider: NativeAppId::Whatsapp,
+    provider_name: "WhatsApp",
+    // **The bound window is the WebView2 renderer, not the shell.** WhatsApp is
+    // a `SiblingChromiumRenderer`: `WhatsApp.Root.exe` owns no accessibility
+    // tree, and the composer lives in an `msedgewebview2.exe` process that is
+    // its child. Measured: `window_identity` on the bound hwnd answers
+    // `process_name: "msedgewebview2"`, so that is what this field must hold or
+    // every judgement would refuse with `BoundProcessMismatch`.
+    //
+    // On its own this is a WEAKER identity check than Discord's, because this
+    // machine runs a second WebView2 for Windows Search. It is not on its own:
+    // the acquisition that produces the binding requires the renderer's process
+    // to be parented by the WhatsApp shell
+    // (`native_whatsapp_adapter::WHATSAPP_UIA2_WINDOW_PLAN`, and
+    // `native_a11y`'s `largest_visible_webview2_is_the_decoy_not_whatsapp`
+    // pins the failure this prevents). The oracle adds the image name and the
+    // live process id on top of that, re-read at judging time.
+    process_name: "msedgewebview2",
+    // D-227 CORRECTED: the composer is a `contenteditable` that exposes a
+    // WRITABLE `ValuePattern` anyway, so this surface needs no synthesized
+    // input and no repeal of Signal's ban on it.
+    write_channel: WriteChannel::ValueSet,
+    // MSAA is deliberately absent. `rendered_document_msaa` answered `Ok(None)`
+    // on every live read here, exactly as it does on Discord: Chromium's
+    // `LegacyIAccessible` bridge yields no leaves. A profile that named it
+    // would earn `CorroboratingChannelSilent` on every judgement, which is the
+    // right refusal for a corroborator that cannot corroborate -- so it is not
+    // named.
+    judges: &[
+        JudgeChannel::RenderedDocumentUia,
+        JudgeChannel::RenderedDocumentTextPattern,
+        JudgeChannel::ComposerInk,
+    ],
+    // Measured, and NARROWER than Discord's. WhatsApp's empty composer
+    // publishes exactly `"\n"` through both document channels -- the
+    // `<p><br></p>` an empty `contenteditable` block holds -- with no
+    // `U+FEFF` sentinel anywhere. Nothing else is listed: an empty-character
+    // set is the strength of every "provably empty" claim this profile can
+    // make, and widening it is how a clear that left residue would pass.
+    empty_document_chars: &['\n'],
+    leaf_join: "",
+    matcher: crate::native_whatsapp_adapter::WHATSAPP_COMPOSER_MATCHER,
+    // `woke=true` on every acquisition; the tree is not served before the
+    // handshake. D-226: the activation is sticky for the life of the process,
+    // and the reads above were taken warm.
+    wake: true,
+    // The convergence window actually measured, not a guess at one. In the
+    // search-box canary a value-set was visible in the rendered document AND in
+    // the ink 600 ms later, and a `SetValue("")` had restored the ink to its
+    // exact empty figure 600 ms later. It is an upper bound that was observed
+    // to hold, which is the only honest kind of settle.
+    settle_ms: 600,
+    // Bounds, not measurements. The composer's own subtree walks to 3 nodes at
+    // depth 2 when empty, so these are two orders of magnitude of headroom and
+    // a walk that reaches them is a refusal.
+    walk: WalkCaps {
+        max_nodes: 256,
+        max_depth: 8,
+    },
+    judge_timeout_ms: 5_000,
+    // On WhatsApp the newline IS the send: `uia2_carrier_carries_submit`
+    // refuses a carrier containing one before it reaches a live composer.
+    commit_key: "Enter",
+    // Measured live 2026-08-05 on this host's DPI, and deliberately measured on
+    // an element that is NOT the one this profile judges: a 32-character
+    // sentinel placed into WhatsApp's chat-list search field moved that
+    // rectangle's ink from 902 to 1143 inked pixels of 6111 sampled -- a delta
+    // of 241, **7.53 pixels per character** -- and `SetValue("")` returned it to
+    // 902 exactly. 38 is five characters' worth by the same rule Discord's 48
+    // was set by: high enough that a repaint cannot clear it, low enough that a
+    // short carrier still passes. Deriving it from the search box rather than
+    // from the composer's own landing is what keeps it from being fitted to the
+    // result it later judges.
+    min_ink_delta: 38,
+    // **None, and that is a measurement too.** Discord's Slate drops hard
+    // breaks from its leaves and keeps a `U+FEFF`; WhatsApp's composer was
+    // observed doing neither -- its empty document publishes the `"\n"`
+    // through both channels rather than swallowing it. Nothing is declared
+    // that has not been seen, so any mismatch on this surface is `ForeignText`
+    // and not a re-encoding this profile quietly excuses.
+    normalisations: &[],
+};
+
 /// The profile table. **Exhaustive** — a new provider cannot compile without a
 /// decision, and the decision for an unmeasured provider must name the
 /// measurement that is missing.
@@ -521,12 +624,7 @@ pub const fn landing_profile(provider: NativeAppId) -> ProfileLookup {
                       has never been read through the leaf channel. It settles at 1950 ms, \
                       not Discord's 250.",
         },
-        NativeAppId::Whatsapp => ProfileLookup::Unmeasured {
-            provider,
-            missing: "WhatsApp runs under WebView2 as a sibling renderer; its composer shape \
-                      is an open measurement (it may need no placement primitive at all) and \
-                      its renderer differs from Discord's at the same object id.",
-        },
+        NativeAppId::Whatsapp => ProfileLookup::Measured(&WHATSAPP),
         NativeAppId::Outlook => ProfileLookup::Unmeasured {
             provider,
             missing: "Outlook exists as a native desktop variant and a web surface; whether \
@@ -1146,6 +1244,9 @@ pub(crate) mod win32;
 
 #[cfg(all(test, target_os = "windows"))]
 mod live;
+
+#[cfg(all(test, target_os = "windows"))]
+mod live_whatsapp;
 
 #[cfg(test)]
 mod tests;

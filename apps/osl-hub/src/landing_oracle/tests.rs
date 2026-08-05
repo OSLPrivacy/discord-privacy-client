@@ -740,10 +740,13 @@ fn the_empty_expectation_is_refused() {
 
 #[test]
 fn an_unmeasured_provider_gets_no_neighbours_numbers() {
+    // WhatsApp left this list on 2026-08-05 by being measured, not by being
+    // excused: its profile is pinned field by field in
+    // `whatsapps_profile_records_what_was_measured_rather_than_what_is_usual`,
+    // and the run that took the figures wrote nothing into a conversation.
     for provider in [
         NativeAppId::Telegram,
         NativeAppId::Signal,
-        NativeAppId::Whatsapp,
         NativeAppId::Outlook,
     ] {
         let ProfileLookup::Unmeasured { missing, .. } = landing_profile(provider) else {
@@ -758,9 +761,11 @@ fn an_unmeasured_provider_gets_no_neighbours_numbers() {
 
 #[test]
 fn discord_is_the_only_measured_profile_today() {
-    // Discord is the only surface that carries. When a second one is measured
-    // this test is the place the claim is recorded -- not a place to widen
-    // quietly.
+    // Discord was the only surface that carried. WhatsApp is the second, and
+    // this test is the place that claim is recorded -- not a place to widen
+    // quietly. WhatsApp's profile was measured live on 2026-08-05 through this
+    // module's own judges (`live_whatsapp`), by a run that wrote nothing into
+    // the conversation composer to take it.
     let measured: Vec<_> = [
         NativeAppId::Discord,
         NativeAppId::Telegram,
@@ -771,7 +776,48 @@ fn discord_is_the_only_measured_profile_today() {
     .into_iter()
     .filter(|provider| matches!(landing_profile(*provider), ProfileLookup::Measured(_)))
     .collect();
-    assert_eq!(measured, vec![NativeAppId::Discord]);
+    assert_eq!(
+        measured,
+        vec![NativeAppId::Discord, NativeAppId::Whatsapp],
+        "exactly two surfaces have a measured landing profile; every other provider must still \
+         name the measurement it is missing"
+    );
+}
+
+/// WhatsApp's profile is a record of what was read on the owner's host, and
+/// each of these is a figure a later lane could otherwise quietly relax.
+#[test]
+fn whatsapps_profile_records_what_was_measured_rather_than_what_is_usual() {
+    assert_eq!(WHATSAPP.write_channel, WriteChannel::ValueSet);
+    assert!(
+        WHATSAPP.wake,
+        "WhatsApp's WebView2 renderer does not serve its tree before the handshake"
+    );
+    assert_eq!(WHATSAPP.commit_key, "Enter");
+    assert_eq!(
+        WHATSAPP.empty_document_chars,
+        &['\n'],
+        "WhatsApp's empty composer publishes exactly \"\\n\" through both document channels; \
+         widening this set weakens every 'provably empty' claim made after a clear"
+    );
+    assert!(
+        WHATSAPP.normalisations.is_empty(),
+        "no re-encoding has been measured on WhatsApp, so none may be declared -- a declared \
+         normalisation silences a channel disagreement and must cost a measurement"
+    );
+    assert!(
+        !WHATSAPP.judges.contains(&JudgeChannel::RenderedDocumentMsaa),
+        "Chromium's LegacyIAccessible bridge answered None on every live read here, so naming \
+         it would be a corroborator that cannot corroborate"
+    );
+    assert_eq!(
+        WHATSAPP.process_name, "msedgewebview2",
+        "the bound window is WhatsApp's WebView2 renderer, not its shell; the shell's parentage \
+         is enforced by the acquisition plan, not by this field"
+    );
+    // The measured ink rate was 7.53 px/char on this host. The floor is five
+    // characters' worth, by the same rule Discord's 48 was set by.
+    assert_eq!(WHATSAPP.min_ink_delta, 38);
 }
 
 #[test]
