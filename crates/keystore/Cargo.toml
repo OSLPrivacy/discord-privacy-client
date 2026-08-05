@@ -111,3 +111,11 @@ tempfile = "=3.13"
 # separate integration-test crate needs it listed here to call
 # `crypto::ed25519::verify`.
 crypto = { path = "../crypto" }
+# D5 regression: `blocking_http_is_runtime_safe.rs` must stand up a real Tokio
+# runtime to reproduce the "Cannot drop a runtime in a context where blocking
+# is not allowed" panic. Test-only — `keystore` itself stays runtime-agnostic
+# and takes no Tokio dependency.
+# Only the multi-thread scheduler is needed: the fault is triggered by
+# entering a runtime, not by any IO driver, so the IO/time features stay off
+# to keep the root workspace dependency tree small.
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread"] }

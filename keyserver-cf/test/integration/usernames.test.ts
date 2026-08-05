@@ -82,7 +82,7 @@ async function claim(
 }
 
 describe("username directory", () => {
-  it("claims and resolves the canonical username", async () => {
+  it("claims and resolves only an exact normalized username", async () => {
     const uid = userId();
     const pair = await registerTestUser(SELF, uid);
     const invite = await friendCode(uid, pair);
@@ -91,7 +91,7 @@ describe("username directory", () => {
     const found = await lookup("alice_01", "203.0.113.10");
     expect(found.status).toBe(200);
     expect(await found.json()).toMatchObject({ found: true, username: "alice_01", friend_code: invite });
-    expect(await looksUp("Alice_01", "203.0.113.11")).toBe(true);
+    expect((await lookup("Alice_01", "203.0.113.11")).status).toBe(400);
   });
 
   it("rejects unsigned, wrong-key, and mismatched-invite claims", async () => {
@@ -170,7 +170,44 @@ describe("username directory", () => {
     expect((await claim("renamed_user", two, pairTwo)).status).toBe(409);
   });
 
-  it("rejects a UTS #39 skeleton collision", async () => {
+  // ── PARKED SPEC — D-162. DO NOT DELETE. ──────────────────────────────────
+  // These two tests are the executable specification of T5-K2/T5-K3's
+  // canonical-username pipeline: a UTS #39 skeleton index that folds
+  // confusables, plus a tombstone that keeps a retired skeleton unavailable.
+  // They were written against `normalizeUsername()`, which commit db4172f7b
+  // imported but never defined — its sibling d161329b7 never reached this
+  // branch — so the Worker could not be bundled at all from 2026-08-02.
+  //
+  // db4172f7b is reverted here to restore the shipping validate-don't-transform
+  // endpoint. The SPEC is not reverted: it is parked, OPEN as D-162, and these
+  // two `it.skip` bodies are kept verbatim so the next implementer inherits the
+  // assertions rather than re-deriving them.
+  //
+  // ── D-248 UPDATE, 2026-08-04. Read this before assuming the skeleton half
+  // of the spec below is still unimplemented. ─────────────────────────────
+  // The SKELETON half IS now live and covered, by
+  // `test/integration/d248-confusable-username.test.ts`: the claim path
+  // computes a real UTS #39 skeleton from the pinned artifact, both bodies'
+  // assertions (a live collision is refused, and a retired skeleton stays
+  // refused after a rename) are asserted there against handles the shipping
+  // grammar accepts, and the other two writers of the column are covered too.
+  //
+  // These two stay SKIPPED because of the OTHER half only: their handles are
+  // `Michael`/`Michae1`, whose capital is refused with 400 by
+  // validate-don't-transform. Un-skipping them still needs a real
+  // `normalizeUsername()`, which still does not exist. Do not un-skip them by
+  // lowercasing the literals -- that would silently delete the transform half
+  // of the spec they are parked to preserve.
+  //
+  // THEY DO NOT RUN AND THEY PROVE NOTHING. Skipped tests are not coverage.
+  // Un-skip them only together with a real `normalizeUsername()` and a
+  // migration plan for the identities already registered under
+  // validate-don't-transform, whose names can fold together under a skeleton
+  // index. The full spec, the migration hazard, and the deploy precondition
+  // this revert creates are recorded in the plan registry, which lives OUTSIDE
+  // this repo: plan-repo/plan-test/DEFECTS.md, entries D-162 and
+  // D-162b. (Do not go looking for a DEFECTS.md in the repo; there isn't one.)
+  it.skip("[D-162 PARKED] rejects a UTS #39 skeleton collision", async () => {
     const first = userId();
     const second = userId();
     const firstPair = await registerTestUser(SELF, first);
@@ -181,7 +218,7 @@ describe("username directory", () => {
     expect((await claim("Michae1", second, secondPair)).status).toBe(409);
   });
 
-  it("does not reissue a retired skeleton after a rename", async () => {
+  it.skip("[D-162 PARKED] does not reissue a retired skeleton after a rename", async () => {
     const original = userId();
     const replacement = userId();
     const originalPair = await registerTestUser(SELF, original);
@@ -192,6 +229,7 @@ describe("username directory", () => {
     // rejects the skeleton rather than relying on the live unique index.
     expect((await claim("Michae1", replacement, replacementPair)).status).toBe(409);
   });
+  // ── end PARKED SPEC ──────────────────────────────────────────────────────
 
   it("removes a stale signed invite when the registered identity key rotates", async () => {
     const uid = userId();

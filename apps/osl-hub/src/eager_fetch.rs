@@ -49,7 +49,11 @@ pub struct EagerFetchDriver<T, S> {
 
 impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
     pub fn new(transport: T, store: S, burns: EncryptedBurnQueue) -> Self {
-        Self { transport, store, burns }
+        Self {
+            transport,
+            store,
+            burns,
+        }
     }
 
     /// Called by the authenticated pointer-arrival path, never by an open UI.
@@ -59,7 +63,8 @@ impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
         let ciphertext = crate::eager_fetch_retry::retry_reserved_fetch(|| {
             self.transport.fetch(&pointer.blob_id, &pointer.fetch_cap)
         })?;
-        self.store.decrypt_and_persist(&pointer.blob_id, &ciphertext)
+        self.store
+            .decrypt_and_persist(&pointer.blob_id, &ciphertext)
     }
 
     /// Local destruction is first.  Capacity is checked before destruction so
@@ -91,8 +96,11 @@ impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
     }
 }
 
+// `pending()` below is `pub` and returns `Vec<PendingBurn>`, so this type is
+// already part of the public surface; leaving it private only broke the
+// integration tests that consume that method.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct PendingBurn {
+pub struct PendingBurn {
     blob_id: String,
     manage_cap: Vec<u8>,
 }
@@ -113,16 +121,27 @@ pub struct EncryptedBurnQueue {
 
 impl EncryptedBurnQueue {
     pub fn new(path: impl Into<PathBuf>, key: [u8; 32]) -> Self {
-        Self { path: path.into(), key }
+        Self {
+            path: path.into(),
+            key,
+        }
     }
 
-    pub fn path(&self) -> &Path { &self.path }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 
     fn load(&self) -> Result<BurnQueueDocument, String> {
         let Some(sealed) = crate::atomic_file::read_recoverable_bounded(
-            &self.path, MAX_QUEUE_FILE_BYTES, "offline burn queue",
-        )? else {
-            return Ok(BurnQueueDocument { version: QUEUE_VERSION, pending: Vec::new() });
+            &self.path,
+            MAX_QUEUE_FILE_BYTES,
+            "offline burn queue",
+        )?
+        else {
+            return Ok(BurnQueueDocument {
+                version: QUEUE_VERSION,
+                pending: Vec::new(),
+            });
         };
         let bytes = ipc::main_password::decrypt_at_rest(&sealed, &self.key)
             .map_err(|_| "offline burn queue could not be decrypted".to_owned())?;
@@ -131,7 +150,11 @@ impl EncryptedBurnQueue {
         if document.version != QUEUE_VERSION || document.pending.len() > MAX_PENDING_BURNS {
             return Err("offline burn queue has an unsupported shape".to_owned());
         }
-        if document.pending.iter().any(|entry| entry.blob_id.is_empty() || entry.manage_cap.is_empty()) {
+        if document
+            .pending
+            .iter()
+            .any(|entry| entry.blob_id.is_empty() || entry.manage_cap.is_empty())
+        {
             return Err("offline burn queue has an invalid record".to_owned());
         }
         Ok(document)
@@ -145,11 +168,16 @@ impl EncryptedBurnQueue {
         crate::atomic_file::write_recoverable(&self.path, &sealed, "offline burn queue")
     }
 
-    pub fn pending(&self) -> Result<Vec<PendingBurn>, String> { Ok(self.load()?.pending) }
+    pub fn pending(&self) -> Result<Vec<PendingBurn>, String> {
+        Ok(self.load()?.pending)
+    }
 
     pub fn can_enqueue(&self, blob_id: &str) -> Result<bool, String> {
         let document = self.load()?;
-        Ok(document.pending.iter().any(|entry| entry.blob_id == blob_id)
+        Ok(document
+            .pending
+            .iter()
+            .any(|entry| entry.blob_id == blob_id)
             || document.pending.len() < MAX_PENDING_BURNS)
     }
 
@@ -158,7 +186,11 @@ impl EncryptedBurnQueue {
             return Err("offline burn record is invalid".to_owned());
         }
         let mut document = self.load()?;
-        if let Some(existing) = document.pending.iter_mut().find(|entry| entry.blob_id == blob_id) {
+        if let Some(existing) = document
+            .pending
+            .iter_mut()
+            .find(|entry| entry.blob_id == blob_id)
+        {
             // Replays are idempotent; preserve the original capability rather
             // than accepting a different one for the same live record.
             if existing.manage_cap != manage_cap {
@@ -169,7 +201,10 @@ impl EncryptedBurnQueue {
         if document.pending.len() >= MAX_PENDING_BURNS {
             return Err("offline burn queue is full; no live delete was evicted".to_owned());
         }
-        document.pending.push(PendingBurn { blob_id: blob_id.to_owned(), manage_cap: manage_cap.to_vec() });
+        document.pending.push(PendingBurn {
+            blob_id: blob_id.to_owned(),
+            manage_cap: manage_cap.to_vec(),
+        });
         self.save(&document)
     }
 

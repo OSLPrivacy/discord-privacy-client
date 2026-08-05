@@ -56,9 +56,16 @@ describe("privacy-minimal one-time Stripe Checkout", () => {
 
     const licenseInsert = batches[0]?.[1] as { sql: string; values: unknown[] };
     expect(licenseInsert.sql).toContain("grant_seconds");
+    // `e8519b681 B0-07a P-44: unlink redeemed licenses from payment ids` moved
+    // prepaid issuance off the PaymentIntent id: licenses.subscription_id is
+    // now `lic_<license_hash>`, so a license row carries no Stripe payment
+    // reference.  That commit updated test/integration/stripe-webhook.test.ts
+    // (which now pins `expect.stringMatching(/^lic_/)` and asserts the value is
+    // NOT the PaymentIntent id) but missed this unit test, and no CI run caught
+    // it (D-172).  Pinning the literal keeps the unlinking under test here.
     expect(licenseInsert.values).toEqual([
       "license-card-month",
-      "pi_card_month",
+      "lic_license-card-month",
       expect.any(Number),
       PREPAID_PRO_GRANT_SECONDS,
       null,
@@ -67,8 +74,13 @@ describe("privacy-minimal one-time Stripe Checkout", () => {
     // Redemption fields are deliberately absent from issuance: redeem is the
     // only operation allowed to start the month.
     expect(licenseInsert.sql).not.toContain("redeemed_at");
+    // Same two commits, same relation.  `0c232eba7 T16-B5 issue unredeemed
+    // prepaid card codes` changed the issued entitlement from ACTIVE to
+    // PENDING precisely so a paid checkout is not itself an entitlement — which
+    // is what this test's own name asserts ("never an active lifetime
+    // entitlement").  The stale "ACTIVE" here contradicted the title.
     expect(batches[0]?.[0]).toMatchObject({
-      values: ["pi_card_month", "ACTIVE", expect.any(Number), expect.any(Number)],
+      values: ["lic_license-card-month", "PENDING", expect.any(Number), expect.any(Number)],
     });
   });
   it("creates a payment session without subscription, email, or saved-payment fields", async () => {

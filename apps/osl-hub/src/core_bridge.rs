@@ -227,7 +227,14 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
             .map(|value| value.is_set)
             .unwrap_or(true)
     };
-    let unlocked = !password_gate_required || ipc::main_password::get_file_storage_key().is_some();
+    // D-207: NOT `get_file_storage_key().is_some()`. A device-bound fallback
+    // key minted behind the user's back put 32 bytes in that slot, made this
+    // read `true`, and painted a confident Home over a profile whose every
+    // encrypted file was unreadable -- with no way to reach the unlock screen,
+    // because the app believed it was already unlocked. A key only satisfies
+    // the gate when its authority is the one the gate demands.
+    let unlocked =
+        !password_gate_required || ipc::main_password::file_storage_key_satisfies_password_gate();
     // The original Discord command resolves the identity through a
     // Discord-snowflake row in peer_map.json. A native OSL Privacy identity is
     // deliberately service-neutral and has no such row, so use the loaded
@@ -258,6 +265,7 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
         classify_bootstrap_status(
             state.bootstrap_attempted,
             status.identity_loaded,
+            identity_blob_present(),
             // The disposable QA shell forces `password_gate_required` to
             // false above regardless of on-disk state, so it no longer means
             // "a password is set" there — it means "we don't use one". Treat
@@ -301,9 +309,25 @@ fn identity_storage_method(identity_loaded: bool) -> Option<String> {
     Some(on_disk.method)
 }
 
+/// Whether an `identity.json` exists on disk for the active account.
+///
+/// Deliberately a file-existence test and nothing cleverer. Its whole job is
+/// to separate two states that render identically today: a genuinely new
+/// install (no blob) and an install whose device sealing key is gone (a blob
+/// that will not open). Because it reads only presence, it is true for every
+/// profile that has ever created an identity -- including every profile
+/// installed before this change, which is the failure mode a fingerprint-based
+/// detector already had once (D-184).
+fn identity_blob_present() -> bool {
+    keystore::osl_config_dir()
+        .map(|dir| dir.join("identity.json").exists())
+        .unwrap_or(false)
+}
+
 fn classify_bootstrap_status(
     bootstrap_attempted: bool,
     identity_loaded: bool,
+    identity_blob_present: bool,
     password_set: bool,
     unlocked: bool,
     keyserver_initialised: bool,
@@ -312,6 +336,18 @@ fn classify_bootstrap_status(
 ) -> &'static str {
     if !bootstrap_attempted {
         "notAttempted"
+    } else if !identity_loaded && identity_blob_present {
+        // D-150's shape, and the one this must never be confused with. The
+        // identity is sealed by the DEVICE sealer, not by the password, so it
+        // loads before the gate; `identity.json` present but not loaded means
+        // the sealing key is gone and no password can bring it back
+        // (`bootstrap.rs` load_or_generate_identity returns (false, false) and
+        // only warns). Routing that to `setupRequired` shows a new-install
+        // screen over an account that still exists, and routing it to
+        // `passwordRequired` invites the user to type a password that cannot
+        // help. It gets its own status so the UI can say what is actually
+        // true: restore from the recovery phrase.
+        "identityKeyLost"
     } else if !identity_loaded || !password_set {
         // First-run Settings decides whether the missing local prerequisite is
         // identity creation/import or main-password setup. Keep this distinct
@@ -587,24 +623,55 @@ mod tests {
     #[test]
     fn setup_required_is_distinct_from_existing_password_gate() {
         assert_eq!(
-            classify_bootstrap_status(true, false, false, true, false, false, false),
+            classify_bootstrap_status(true, false, false, false, true, false, false, false),
             "setupRequired"
         );
         assert_eq!(
-            classify_bootstrap_status(true, true, false, true, true, false, true),
+            classify_bootstrap_status(true, true, true, false, true, true, false, true),
             "setupRequired"
         );
         assert_eq!(
-            classify_bootstrap_status(true, true, true, false, true, false, false),
+            classify_bootstrap_status(true, true, true, true, false, true, false, false),
             "passwordRequired"
         );
         assert_eq!(
-            classify_bootstrap_status(true, true, true, true, true, false, true),
+            classify_bootstrap_status(true, true, true, true, true, true, false, true),
             "failed"
         );
         assert_eq!(
-            classify_bootstrap_status(true, true, true, true, true, true, true),
+            classify_bootstrap_status(true, true, true, true, true, true, true, true),
             "ready"
+        );
+    }
+
+    /// D-207 mutant 4. A returning user who needs to type a password and a
+    /// user whose device key is gone see the SAME thing today, and only one of
+    /// them can be helped by typing anything. They must not be conflated.
+    #[test]
+    fn a_lost_device_key_is_not_the_unlock_screen_and_not_a_fresh_install() {
+        // Password set, identity blob on disk, blob will not open.
+        assert_eq!(
+            classify_bootstrap_status(true, false, true, true, false, false, false, false),
+            "identityKeyLost",
+            "an identity.json that exists but will not open must say the key is \
+             gone -- not ask for a password that cannot open it"
+        );
+        // Same, with no password configured: still the key, still not setup.
+        assert_eq!(
+            classify_bootstrap_status(true, false, true, false, true, false, false, false),
+            "identityKeyLost"
+        );
+        // Genuinely new install: no blob at all. Onboarding must still work.
+        assert_eq!(
+            classify_bootstrap_status(true, false, false, false, true, false, false, false),
+            "setupRequired",
+            "a first run has no identity.json and must not be routed to a locked door"
+        );
+        // The returning user this defect is about: blob loads, password unset
+        // in the process slot. That is the unlock screen, and nothing else.
+        assert_eq!(
+            classify_bootstrap_status(true, true, true, true, false, true, false, false),
+            "passwordRequired"
         );
     }
 

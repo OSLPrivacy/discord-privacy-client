@@ -255,7 +255,7 @@ describe("Discord QA draft recovery", () => {
       "carrier_post_mutation_binding_matches(&expected, &final_check.binding)",
     );
     expect(place.slice(finalCheck)).toContain(
-      "composer_holds_exact_text(&final_check.element, carrier)",
+      "composer_holds_exact_text(&final_check.element, carrier, target.app_process_name)",
     );
     expect(place.slice(finalCheck)).toContain(
       "exact_composer_holds_keyboard_focus(target.window, &final_check.element, &expected)",

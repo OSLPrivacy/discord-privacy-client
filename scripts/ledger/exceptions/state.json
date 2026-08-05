@@ -1,0 +1,5 @@
+{
+  "note": "State ledger B0-17 starts with no accepted exceptions. The expected D-114/D-108 baseline remains RED and must not be excepted.",
+  "highWaterMark": 0,
+  "entries": []
+}

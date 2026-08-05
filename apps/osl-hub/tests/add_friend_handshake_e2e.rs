@@ -2,7 +2,7 @@
 //! app: manual invite-code exchange in BOTH directions, safety-number
 //! verification on each side, and per-friend chat approval on each side.
 //!
-//! Companion document: `/home/liamw/osl-plan/ADD-FRIEND-PROCEDURE.md`. Every
+//! Companion document: `plan-repo/ADD-FRIEND-PROCEDURE.md`. Every
 //! numbered step in that document that is marked EXECUTED is executed here.
 //!
 //! What is driven, in the order the shipping commands drive it:
@@ -184,7 +184,10 @@ fn serve(mut stream: TcpStream, state: Arc<Mutex<StoreState>>) {
                 .expect("clock")
                 .as_secs() as i64
                 + ttl_seconds;
-            json_response(200, &json!({ "id": id_hex, "expires_at": expires_at }).to_string())
+            json_response(
+                200,
+                &json!({ "id": id_hex, "expires_at": expires_at }).to_string(),
+            )
         }
         ("GET", path) if path.starts_with("/v1/blob/") => {
             let id_hex = path.trim_start_matches("/v1/blob/").to_owned();
@@ -434,10 +437,8 @@ fn two_fresh_installs_reach_encrypted_messaging_only_after_a_symmetric_handshake
     );
 
     // Gate 1: an added-but-unverified friend cannot be opened at all.
-    let unverified = osl_privacy_hub::security::manual_peer_binding(
-        &alice.core,
-        bob_on_alice.person_id.clone(),
-    );
+    let unverified =
+        osl_privacy_hub::security::manual_peer_binding(&alice.core, bob_on_alice.person_id.clone());
     assert!(
         unverified.is_err(),
         "an unverified friend must not produce a messaging binding"
@@ -532,11 +533,9 @@ fn two_fresh_installs_reach_encrypted_messaging_only_after_a_symmetric_handshake
     // STEP 8 — open the chat, and prove the send is still refused until the
     // per-friend chat approval is given.
     // -----------------------------------------------------------------------
-    let binding = osl_privacy_hub::security::manual_peer_binding(
-        &alice.core,
-        bob_on_alice.person_id.clone(),
-    )
-    .expect("alice binds a messaging context to bob");
+    let binding =
+        osl_privacy_hub::security::manual_peer_binding(&alice.core, bob_on_alice.person_id.clone())
+            .expect("alice binds a messaging context to bob");
     assert_eq!(
         binding.peer_osl_user_id, bob.osl_user_id,
         "the binding must encrypt to the real peer identity"

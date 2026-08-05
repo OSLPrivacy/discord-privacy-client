@@ -97,7 +97,7 @@ fn write_preferences(path: &Path, preferences: &OnboardingPreferences) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{PlacementMode, SendMode};
+    use crate::models::{ForwardSecrecyMode, PlacementMode, SendMode};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -122,6 +122,7 @@ mod tests {
             show_plaintext_preview: false,
             window_capture_enabled: true,
             acknowledge_experimental_send_risk: true,
+            forward_secrecy_mode: ForwardSecrecyMode::default(),
         };
 
         state.save(expected.clone()).expect("save preferences");
@@ -170,6 +171,7 @@ mod tests {
             show_plaintext_preview: true,
             window_capture_enabled: true,
             acknowledge_experimental_send_risk: false,
+            forward_secrecy_mode: ForwardSecrecyMode::default(),
         };
 
         let saved = state.save(unsafe_preferences).expect("save preferences");
@@ -195,6 +197,7 @@ mod tests {
             show_plaintext_preview: false,
             window_capture_enabled: true,
             acknowledge_experimental_send_risk: false,
+            forward_secrecy_mode: ForwardSecrecyMode::default(),
         };
         state.save(expected.clone()).unwrap();
         fs::rename(&path, path.with_extension("bak")).unwrap();

@@ -18,8 +18,12 @@ const DBT_DEVICEARRIVAL: u32 = 0x8000;
 const DBT_DEVICEREMOVECOMPLETE: u32 = 0x8004;
 const DBT_DEVTYP_DEVICEINTERFACE: u32 = 0x0005;
 
-fn callbacks(removals: Arc<AtomicUsize>, identities: Arc<std::sync::Mutex<Vec<String>>>) -> UsbMonitorCallbacks {
-    let arrival: ArrivalCallback = Box::new(|| panic!("volume removal must not reach arrival callback"));
+fn callbacks(
+    removals: Arc<AtomicUsize>,
+    identities: Arc<std::sync::Mutex<Vec<String>>>,
+) -> UsbMonitorCallbacks {
+    let arrival: ArrivalCallback =
+        Box::new(|| panic!("volume removal must not reach arrival callback"));
     let removal: VolumeRemovalCallback = Box::new(move |device| {
         removals.fetch_add(1, Ordering::SeqCst);
         identities.lock().unwrap().push(device.as_str().to_owned());
@@ -46,7 +50,10 @@ fn safe_eject_notifies_the_removal_callback() {
     monitor.dispatch(complete_volume_removal(r"\\?\Volume{safe-eject}"));
 
     assert_eq!(removals.load(Ordering::SeqCst), 1);
-    assert_eq!(identities.lock().unwrap().as_slice(), [r"\\?\Volume{safe-eject}"]);
+    assert_eq!(
+        identities.lock().unwrap().as_slice(),
+        [r"\\?\Volume{safe-eject}"]
+    );
 }
 
 #[test]
@@ -60,7 +67,10 @@ fn surprise_yank_notifies_the_removal_callback() {
     monitor.dispatch(complete_volume_removal(r"\\?\Volume{surprise-yank}"));
 
     assert_eq!(removals.load(Ordering::SeqCst), 1);
-    assert_eq!(identities.lock().unwrap().as_slice(), [r"\\?\Volume{surprise-yank}"]);
+    assert_eq!(
+        identities.lock().unwrap().as_slice(),
+        [r"\\?\Volume{surprise-yank}"]
+    );
 }
 
 #[test]
@@ -106,5 +116,7 @@ fn start_and_stop_complete_within_a_bounded_timeout() {
     done_rx
         .recv_timeout(Duration::from_secs(30))
         .expect("UsbMonitor start + stop must not deadlock");
-    lifecycle.join().expect("monitor lifecycle thread must not panic");
+    lifecycle
+        .join()
+        .expect("monitor lifecycle thread must not panic");
 }

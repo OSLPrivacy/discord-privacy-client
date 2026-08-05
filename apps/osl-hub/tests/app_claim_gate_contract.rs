@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -138,42 +139,16 @@ fn scripts_check_app_claims_mjs() {
 
 #[test]
 fn success() {
-    let script = ts_test_success_script();
-    let required_checks = [
-        ("TEST_RESULT", "TypeScript workflow"),
-        ("SELECTOR_CHECK_RESULT", "Selector check"),
-        (
-            "TELEGRAM_REPORTING_BOT_RESULT",
-            "Telegram reporting bot script check",
-        ),
-        ("PUBLIC_AUDIT_RESULT", "Public audit"),
-    ];
+    let step = ts_test_success_step();
 
-    let all_green = run_ts_test_success_script(
-        &script,
-        required_checks
-            .iter()
-            .map(|(name, _label)| (*name, "success"))
-            .collect(),
-    );
+    let all_green =
+        run_ts_test_success_script(&step.script, required_check_env(&step.env_names, None));
     assert_success(&all_green, "ts-test success aggregator");
 
-    for (failed_name, failed_label) in required_checks {
+    for failed_check in &step.required_checks {
         let output = run_ts_test_success_script(
-            &script,
-            required_checks
-                .iter()
-                .map(|(name, _label)| {
-                    (
-                        *name,
-                        if *name == failed_name {
-                            "failure"
-                        } else {
-                            "success"
-                        },
-                    )
-                })
-                .collect(),
+            &step.script,
+            required_check_env(&step.env_names, Some(failed_check.env_name.as_str())),
         );
         assert_failure(
             &output,
@@ -181,24 +156,41 @@ fn success() {
             "must fail when a required upstream job is not green",
         );
         let combined = combined_output(&output);
-        let expected = format!("{failed_label} failed with result: failure");
+        let expected = format!("{} failed with result: failure", failed_check.label);
         assert!(
             combined.contains(&expected),
-            "ts-test success aggregator did not identify `{failed_label}` as failed\n{combined}"
+            "ts-test success aggregator did not identify `{}` as failed\n{combined}",
+            failed_check.label
         );
     }
 }
 
-fn ts_test_success_script() -> String {
+#[derive(Debug)]
+struct TsTestSuccessStep {
+    script: String,
+    env_names: Vec<String>,
+    required_checks: Vec<RequiredCheck>,
+}
+
+#[derive(Debug)]
+struct RequiredCheck {
+    env_name: String,
+    label: String,
+}
+
+fn ts_test_success_step() -> TsTestSuccessStep {
     let mut in_success_job = false;
     let mut in_success_step = false;
+    let mut in_env_block = false;
     let mut in_run_block = false;
+    let mut env_names = Vec::new();
     let mut script = String::new();
 
     for line in TS_TEST_WORKFLOW.lines() {
         if line.starts_with("  ") && !line.starts_with("    ") && line.ends_with(':') {
             in_success_job = line.trim() == "success:";
             in_success_step = false;
+            in_env_block = false;
             in_run_block = false;
             continue;
         }
@@ -207,6 +199,22 @@ fn ts_test_success_script() -> String {
         }
         if line.trim() == "- name: \"success'\"" {
             in_success_step = true;
+            continue;
+        }
+        if !in_success_step {
+            continue;
+        }
+        if in_env_block {
+            if let Some(env_line) = line.strip_prefix("          ") {
+                if let Some((name, _value)) = env_line.split_once(':') {
+                    env_names.push(name.trim().to_string());
+                    continue;
+                }
+            }
+            in_env_block = false;
+        }
+        if line.trim() == "env:" {
+            in_env_block = true;
             continue;
         }
         if in_success_step && line.trim() == "run: |" {
@@ -229,11 +237,91 @@ fn ts_test_success_script() -> String {
         !script.trim().is_empty(),
         "ts-test workflow must have one runnable success' step"
     );
-    script
+    assert!(
+        !env_names.is_empty(),
+        "ts-test workflow success' step must declare the required-check result env"
+    );
+    let required_checks = required_checks_from_script(&script);
+    assert!(
+        !required_checks.is_empty(),
+        "ts-test workflow success' step must run required checks from result env vars"
+    );
+    let declared_env = env_name_set(env_names.iter().map(String::as_str));
+    let undeclared_refs: Vec<&str> = required_checks
+        .iter()
+        .map(|check| check.env_name.as_str())
+        .filter(|env_name| !declared_env.contains(env_name))
+        .collect();
+    assert!(
+        undeclared_refs.is_empty(),
+        "ts-test workflow success' step must declare env var(s) referenced by run script: {}",
+        undeclared_refs.join(", ")
+    );
+
+    TsTestSuccessStep {
+        script,
+        env_names,
+        required_checks,
+    }
 }
 
-fn run_ts_test_success_script(script: &str, env: Vec<(&str, &str)>) -> Output {
+fn required_checks_from_script(script: &str) -> Vec<RequiredCheck> {
+    let mut checks = Vec::new();
+    for line in script.lines() {
+        let trimmed = line.trim().trim_end_matches('\\').trim();
+        let Some(quoted) = trimmed
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+        else {
+            continue;
+        };
+        let Some((label, env_name)) = quoted.rsplit_once("=$") else {
+            continue;
+        };
+        if env_name.ends_with("_RESULT")
+            && env_name
+                .chars()
+                .all(|ch| ch.is_ascii_uppercase() || ch == '_')
+        {
+            checks.push(RequiredCheck {
+                env_name: env_name.to_string(),
+                label: label.to_string(),
+            });
+        }
+    }
+    checks
+}
+
+fn required_check_env(env_names: &[String], failed_name: Option<&str>) -> Vec<(String, String)> {
+    env_names
+        .iter()
+        .map(|name| {
+            (
+                name.clone(),
+                if Some(name.as_str()) == failed_name {
+                    "failure"
+                } else {
+                    "success"
+                }
+                .to_string(),
+            )
+        })
+        .collect()
+}
+
+fn run_ts_test_success_script(script: &str, env: Vec<(String, String)>) -> Output {
     let repo = repo_root();
+    let provided_env = env_name_set(env.iter().map(|(name, _value)| name.as_str()));
+    let missing_env: Vec<&str> = shell_result_env_refs(script)
+        .into_iter()
+        .filter(|env_name| !provided_env.contains(env_name))
+        .collect();
+    assert!(
+        missing_env.is_empty(),
+        "ts-test success aggregator fixture must provide env var(s) referenced by extracted script: {}",
+        missing_env.join(", ")
+    );
+
     let script_path = repo.join("target").join(format!(
         "ts-test-success-{}-{}.sh",
         std::process::id(),
@@ -251,6 +339,20 @@ fn run_ts_test_success_script(script: &str, env: Vec<(&str, &str)>) -> Output {
         .expect("run ts-test success workflow script");
     let _ = fs::remove_file(script_path);
     output
+}
+
+fn shell_result_env_refs(script: &str) -> BTreeSet<&str> {
+    script
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'))
+        .filter_map(|word| word.strip_prefix('$'))
+        .filter(|word| {
+            word.ends_with("_RESULT") && word.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_')
+        })
+        .collect()
+}
+
+fn env_name_set<'a>(env_names: impl IntoIterator<Item = &'a str>) -> BTreeSet<&'a str> {
+    env_names.into_iter().collect()
 }
 
 fn monotonic_suffix() -> u64 {

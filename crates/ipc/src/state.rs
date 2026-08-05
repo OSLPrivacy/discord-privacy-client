@@ -274,13 +274,10 @@ pub struct AppState {
     /// fresh messages decrypt normally).
     pub burned_scopes: Mutex<crate::burned_scopes_file::BurnedScopesFile>,
 
-    /// Phase 9-A3: per-group sender-keys state, mirroring
-    /// `sender_key_state.json`. One row per group/server scope. The
-    /// send-side dispatcher consults this to decide v=5 vs v=3,
-    /// installs/rotates sender chains, and persists on every send.
-    /// The recv-side path consults it to recover the
-    /// per-(scope, sender) receiver chain.
-    pub sender_key_state: Mutex<crate::sender_key_state::SenderKeyStateFile>,
+    /// Live, session-only sender-key state, keyed by group/server scope.
+    /// Disk snapshots are deliberately lossy and are produced only at the
+    /// persistence boundary; command-boundary delivery must never reload one.
+    pub sender_key_state: Mutex<HashMap<String, crypto::sender_keys::SenderKeyState>>,
 
     /// Live rotation-policy state for each outbound sender-key scope. This is
     /// deliberately in-memory: the durable sender-chain record remains the
@@ -411,7 +408,7 @@ impl Default for AppState {
             recovery_token: Mutex::new(None),
             stealth_active: Mutex::new(false),
             burned_scopes: Mutex::new(crate::burned_scopes_file::BurnedScopesFile::default()),
-            sender_key_state: Mutex::new(crate::sender_key_state::SenderKeyStateFile::default()),
+            sender_key_state: Mutex::new(HashMap::new()),
             sender_key_rotation: Mutex::new(HashMap::new()),
             sender_keys_enabled: AtomicBool::new(true),
             channel_members: Mutex::new(HashMap::new()),
@@ -474,6 +471,64 @@ impl AppState {
             .map_err(|_| "OSL: duress engine failed to run".to_owned())
     }
 
+    // ------------------------------------------------------------------
+    // Poison-tolerant accessors for the three whole-value AppState slots.
+    //
+    // A panic anywhere in a frame that holds one of these guards poisons the
+    // mutex for the rest of the process. `lock().expect(...)` then turns that
+    // one recoverable panic into a *permanent* one on every later touch — and
+    // when the next toucher is a Tauri command invoked from the webview's
+    // FFI callback, unwinding out of an `extern "C"` frame is not allowed and
+    // the runtime aborts the whole process. That is how a single background
+    // panic became "crash to desktop": the panic itself was survivable, the
+    // `expect()` on the poisoned lock was not.
+    //
+    // Recovering via `into_inner()` is only sound where the guarded value
+    // cannot be observed half-updated. It is sound for these three because
+    // each is a `Mutex<Option<T>>` written exclusively by whole-value
+    // assignment (`*slot = Some(v)` / `= None` / `.take()`). There is no
+    // in-place, multi-step mutation of the guarded value, so no panic can
+    // interrupt one: whatever is behind a poisoned guard is either the
+    // complete previous value or the complete new one.
+    //
+    // The identity/prekey pair is written under both guards at once in
+    // `try_install_identity_with_prekey_state`, and the two assignments
+    // between the acquisitions are infallible moves, so the pair cannot be
+    // torn either.
+    //
+    // This deliberately does NOT extend to the aggregate slots — `peer_map`,
+    // `whitelist_state`, `sender_key_state`, `scope_membership`,
+    // `burned_scopes`, `message_store`. Those are mutated field-by-field and
+    // entry-by-entry under a held guard, so a panic mid-update can genuinely
+    // leave a half-applied ratchet advance or a partially rewritten
+    // whitelist. Silently continuing on that state in a privacy tool is worse
+    // than failing loudly, so those keep their `expect()`.
+
+    /// Loaded identity slot, recovering the value if a previous holder
+    /// panicked. See the note above for why this is sound.
+    pub fn identity_slot(&self) -> std::sync::MutexGuard<'_, Option<Identity>> {
+        self.identity
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Live prekey slot, recovering the value if a previous holder panicked.
+    pub fn prekey_state_slot(&self) -> std::sync::MutexGuard<'_, Option<keystore::PrekeyState>> {
+        self.prekey_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Installed keyserver-client slot, recovering the value if a previous
+    /// holder panicked. `KeyServerClient` is immutable once built (a base URL
+    /// plus an `Arc`-backed reqwest client), so a poisoned guard can only be
+    /// holding a fully constructed client or `None`.
+    pub fn keyserver_slot(&self) -> std::sync::MutexGuard<'_, Option<KeyServerClient>> {
+        self.keyserver
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Install an identity and construct its live prekey state in the
     /// same AppState transition. Callers that bypass this helper leave
     /// prekey-dependent production paths unavailable.
@@ -522,14 +577,14 @@ impl AppState {
         identity: Identity,
         prekeys: keystore::PrekeyState,
     ) -> Result<(), &'static str> {
-        let mut identity_slot = self
-            .identity
-            .lock()
-            .map_err(|_| "identity mutex poisoned")?;
-        let mut prekey_slot = self
-            .prekey_state
-            .lock()
-            .map_err(|_| "prekey_state mutex poisoned")?;
+        // Both guards are taken before either write, and both writes are
+        // infallible moves, so the identity/prekey pair cannot be observed
+        // torn. Refusing to install over a poisoned slot would strand the
+        // user: after one background panic every later account switch,
+        // import and unlock would fail permanently. Overwriting is the
+        // recovery, not a risk — see the note above `identity_slot`.
+        let mut identity_slot = self.identity_slot();
+        let mut prekey_slot = self.prekey_state_slot();
         *identity_slot = Some(identity);
         *prekey_slot = Some(prekeys);
         Ok(())
@@ -538,45 +593,30 @@ impl AppState {
     /// Recovered from 9c1894bb: a merge dropped this accessor from the impl block
     /// while every caller kept using it, so the crate stopped compiling.
     pub fn has_prekey_state(&self) -> bool {
-        self.prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned")
-            .is_some()
+        self.prekey_state_slot().is_some()
     }
 
     pub fn set_prekey_state(&self, prekeys: keystore::PrekeyState) {
-        *self
-            .prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned") = Some(prekeys);
+        *self.prekey_state_slot() = Some(prekeys);
     }
 
     pub fn clear_prekey_state(&self) {
-        *self
-            .prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned") = None;
+        *self.prekey_state_slot() = None;
     }
 
     /// Clear identity-owned live state. Account switches, imports, and burn
     /// resets must not leave a stale prekey pool associated with no identity.
     pub fn clear_identity(&self) {
-        *self.identity.lock().expect("identity mutex poisoned") = None;
+        *self.identity_slot() = None;
         self.clear_prekey_state();
     }
 
     pub fn has_identity(&self) -> bool {
-        self.identity
-            .lock()
-            .expect("identity mutex poisoned")
-            .is_some()
+        self.identity_slot().is_some()
     }
 
     pub fn has_keyserver(&self) -> bool {
-        self.keyserver
-            .lock()
-            .expect("keyserver mutex poisoned")
-            .is_some()
+        self.keyserver_slot().is_some()
     }
 
     pub fn set_cloud_registration_state(&self, state: CloudRegistrationState) {
@@ -603,6 +643,59 @@ impl AppState {
     }
 }
 
+/// The machine-global keyring purge, bound only in a non-test build.
+///
+/// D-142: `KeyringSealer::purge_keyring_entry()` deletes ONE machine-wide
+/// credential — `discord-privacy-client / identity-data-key.v1` — and that
+/// credential is the key every `identity.json` on the machine is sealed with
+/// (`crates/keystore/src/sealer.rs:236`). Deleting it is correct under duress:
+/// it is what makes the wipe unrecoverable. It is catastrophic anywhere else,
+/// because the next `select_best_sealer()` finds no entry, silently mints a
+/// fresh key, still reports `method_label() == "keyring"`, and every stored
+/// identity fails to open with a bare "AEAD operation failed".
+///
+/// Three `#[cfg(test)]` tests trip duress through this engine —
+/// `main_password::…::record_wrong_password_attempt_triggers_duress_at_threshold`,
+/// `…::tenth_wrong_password_attempt_triggers_duress` and
+/// `commands::…` at `commands.rs:14615`. Each gives itself a `tempdir`, so each
+/// looks isolated; none of them is, because this one handler reaches outside
+/// the temp dir into a machine-global credential store. Running the ipc unit
+/// tests therefore destroyed the developer's real identity, both e2e profiles
+/// and any other install on the box — which is exactly how D-142 presented: a
+/// profile that worked minutes earlier refusing to unlock, four times, because
+/// a parallel lane ran `cargo test` in between.
+///
+/// So under `cfg(test)` the engine binds a purge scoped to a namespace unique
+/// to this test process. The wipe step is still genuinely exercised (the
+/// namespaced entry is created and deleted for real, same code path); it just
+/// cannot reach the production credential. `AppState::new_with_production_duress_engine`
+/// stays a one-liner for tests, and no test has to remember to opt out — the
+/// pattern `state.rs`'s own `app_state_constructs_production_duress_engine`
+/// already applies by hand is now the default for every caller.
+///
+/// The shipping binary links the non-test build of this crate, so production
+/// duress still purges the real machine credential.
+fn production_keyring_purge() -> keystore::WipeFn {
+    #[cfg(not(test))]
+    {
+        Box::new(|| {
+            keystore::KeyringSealer::purge_keyring_entry()
+                .map_err(|error| keystore::DuressError::Sealer(error.to_string()))
+        })
+    }
+    #[cfg(test)]
+    {
+        let namespace = format!("ipc-test-duress-{}", std::process::id());
+        // Create it first so the purge below deletes something real rather
+        // than reporting a vacuous success.
+        let _ = keystore::KeyringSealer::new_namespaced(&namespace);
+        Box::new(move || {
+            keystore::KeyringSealer::purge_keyring_entry_namespaced(&namespace)
+                .map_err(|error| keystore::DuressError::Sealer(error.to_string()))
+        })
+    }
+}
+
 fn build_production_duress_engine_for_state(
     state: Arc<AppState>,
     config_dir: PathBuf,
@@ -610,10 +703,7 @@ fn build_production_duress_engine_for_state(
     build_production_duress_engine_for_state_with_keyring_purge(
         state,
         config_dir,
-        Box::new(|| {
-            keystore::KeyringSealer::purge_keyring_entry()
-                .map_err(|error| keystore::DuressError::Sealer(error.to_string()))
-        }),
+        production_keyring_purge(),
     )
 }
 
@@ -688,11 +778,11 @@ fn unregister_account_handler(state: Arc<AppState>) -> keystore::WipeFn {
 
 fn unregister_account_for_duress(state: &AppState) -> Result<(), keystore::DuressError> {
     let (user_id, signature_b64, timestamp_ms) = {
-        let guard = state.identity.lock().map_err(|_| {
-            keystore::DuressError::Handler(
-                "identity mutex poisoned during duress unregister".to_owned(),
-            )
-        })?;
+        // A duress wipe must not be blocked by an unrelated earlier panic:
+        // the identity behind a poisoned guard is complete (whole-value slot),
+        // and refusing here would mean the remote unregister silently stops
+        // happening for the rest of the process.
+        let guard = state.identity_slot();
         let identity = guard.as_ref().ok_or_else(|| {
             keystore::DuressError::Handler(
                 "identity authority missing for duress unregister".to_owned(),
@@ -711,20 +801,11 @@ fn unregister_account_for_duress(state: &AppState) -> Result<(), keystore::Dures
             timestamp_ms,
         )
     };
-    let client = state
-        .keyserver
-        .lock()
-        .map_err(|_| {
-            keystore::DuressError::Handler(
-                "keyserver mutex poisoned during duress unregister".to_owned(),
-            )
-        })?
-        .clone()
-        .ok_or_else(|| {
-            keystore::DuressError::Handler(
-                "keyserver authority missing for duress unregister".to_owned(),
-            )
-        })?;
+    let client = state.keyserver_slot().clone().ok_or_else(|| {
+        keystore::DuressError::Handler(
+            "keyserver authority missing for duress unregister".to_owned(),
+        )
+    })?;
     client
         .unregister_signed(&user_id, &signature_b64, timestamp_ms)
         .map_err(|_| keystore::DuressError::Handler("keyserver unregister failed".to_owned()))
@@ -780,6 +861,61 @@ mod tests {
         assert!(!state.rn_wire_in_enabled());
     }
 
+    /// D-142, the test-of-the-test for [`production_keyring_purge`].
+    ///
+    /// `AppState::new_with_production_duress_engine` is the one-liner three
+    /// unit tests in this crate use to trip a duress wipe, each inside its own
+    /// `tempdir`. The keyring purge step reaches OUTSIDE that tempdir into the
+    /// single machine-global credential every `identity.json` on the box is
+    /// sealed with, so tripping it here used to brick the developer's real
+    /// profile and both e2e profiles. That is how D-142 presented: an identity
+    /// that had completed a full two-party exchange refused to unlock minutes
+    /// later, because a parallel lane ran `cargo test` in between, and the only
+    /// symptom was `AEAD operation failed` — a fresh key had been silently
+    /// minted in place of the deleted one.
+    ///
+    /// The canary is sealed with the production sealer BEFORE the wipe and must
+    /// still open AFTER it. Delete the `#[cfg(test)]` arm of
+    /// `production_keyring_purge` and this fails with
+    /// `Sealer(Crypto(AeadFailure))`, which is the reproduction.
+    #[test]
+    fn tripping_duress_from_a_unit_test_leaves_the_machine_credential_alone() {
+        let _serial = crate::test_process_globals::serialize();
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = use_temp_config_dir(dir.path());
+
+        let canary = dir.path().join("canary-identity.json");
+        let identity = keystore::generate_identity("d142-duress-canary".to_owned());
+        keystore::save_identity(&canary, &identity, keystore::select_best_sealer().as_ref())
+            .expect("seal a canary under the production sealer");
+
+        std::fs::write(dir.path().join("identity.json"), b"identity").unwrap();
+        std::fs::write(dir.path().join("password_marker.json"), b"password").unwrap();
+        std::fs::write(dir.path().join("prekeys.json"), b"prekeys").unwrap();
+
+        let state = AppState::new_with_production_duress_engine(dir.path().to_path_buf());
+        let report = state
+            .execute_production_duress()
+            .expect("configured production duress engine runs to a report");
+
+        // Without this the assertion below could pass because the wipe never
+        // reached the keyring at all.
+        assert!(
+            report
+                .steps
+                .iter()
+                .any(|(step, outcome)| *step == keystore::WipeStep::KeyringPurge
+                    && *outcome == keystore::StepOutcome::Wiped),
+            "the keyring purge step must actually have run; got {:?}",
+            report.steps
+        );
+
+        keystore::load_identity(&canary, keystore::select_best_sealer().as_ref()).expect(
+            "a unit-test duress wipe purged the MACHINE-GLOBAL keyring credential, so every \
+             identity.json on this machine is now unopenable — see D-142",
+        );
+    }
+
     #[test]
     fn app_state_constructs_production_duress_engine() {
         let dir = tempfile::tempdir().unwrap();
@@ -811,9 +947,9 @@ mod tests {
                 .sender_key_state
                 .lock()
                 .expect("sender_key_state mutex poisoned");
-            sender_keys.states.insert(
+            sender_keys.insert(
                 "gc:state-test".to_owned(),
-                crypto::sender_keys::SenderKeyStateOnDisk::default(),
+                crypto::sender_keys::SenderKeyState::new(),
             );
         }
         std::fs::write(dir.path().join("identity.json"), b"identity").unwrap();
@@ -921,7 +1057,6 @@ mod tests {
                 .sender_key_state
                 .lock()
                 .expect("sender_key_state mutex poisoned")
-                .states
                 .is_empty(),
             "production duress engine must use the sender-key wipe handler"
         );
@@ -975,14 +1110,34 @@ pub(crate) fn default_rn_session_store() -> crate::wire_rn::RnSessionStore {
     })
 }
 
+/// The engine every `AppState::default()` carries, used as the fallback in
+/// [`crate::main_password::execute_gate_duress`] when no account-scoped
+/// production engine is installed.
+///
+/// D-142 second instance. `keystore::build_production_duress_engine` leaves
+/// `purge_keyring` **unwired** (`build_partial_duress_handlers`,
+/// `crates/keystore/src/duress.rs:445-449`), and an unwired handler does not
+/// mean "skip": `run_keyring_purge` (`duress.rs:686-698`) falls through to the
+/// machine-global `KeyringSealer::purge_keyring_entry()`. So every default
+/// `AppState` silently carried the power to delete the one credential every
+/// `identity.json` on the machine is sealed with, and any test that reached this
+/// engine bricked every OSL profile on the box — the same failure
+/// [`production_keyring_purge`] was introduced to stop one layer up.
+///
+/// Binding it explicitly changes nothing in production (the bound closure is the
+/// same call the fallback made) and routes the test build through the namespaced
+/// credential. The implicit fallback in `keystore` is left alone: narrowing it
+/// changes the duress guarantee for every other integration and is the owner's
+/// call, not this task's.
 fn default_production_duress_engine() -> keystore::DuressEngine {
     let config_dir = keystore::osl_config_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("osl-duress-unconfigured"));
     let password_dir = keystore::osl_base_dir().unwrap_or_else(|_| config_dir.clone());
-    keystore::build_production_duress_engine(keystore::ProductionDuressConfig::new(
-        config_dir,
-        password_dir,
-    ))
+    let config = keystore::ProductionDuressConfig::new(config_dir, password_dir);
+    let (paths, journal_path) = keystore::build_production_duress_paths(&config);
+    let mut handlers = keystore::build_production_duress_config_handlers(&config);
+    handlers.purge_keyring = Some(production_keyring_purge());
+    keystore::DuressEngine::new(journal_path, paths, handlers)
 }
 
 fn current_unix_seconds() -> u64 {
@@ -1029,11 +1184,7 @@ mod identity_authority_tests {
         state.install_identity(identity);
 
         assert!(state.has_identity());
-        assert!(state
-            .prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned")
-            .is_some());
+        assert!(state.prekey_state_slot().is_some());
     }
 
     #[test]
@@ -1046,18 +1197,13 @@ mod identity_authority_tests {
         state.install_identity_at(identity, installed_at);
 
         let stored_identity = state
-            .identity
-            .lock()
-            .expect("identity mutex poisoned")
+            .identity_slot()
             .as_ref()
             .expect("identity installed")
             .clone();
         assert_eq!(stored_identity.user_id, installed_identity.user_id);
 
-        let prekeys = state
-            .prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned");
+        let prekeys = state.prekey_state_slot();
         let prekeys = prekeys.as_ref().expect("live prekey state installed");
         assert_eq!(
             prekeys.current_spk.rotated_at_unix_seconds, installed_at,
@@ -1099,10 +1245,7 @@ mod identity_authority_tests {
 
         state.install_identity_with_prekey_state(identity, persisted);
 
-        let prekeys = state
-            .prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned");
+        let prekeys = state.prekey_state_slot();
         let prekeys = prekeys.as_ref().expect("prekey state installed");
         assert_eq!(prekeys.current_spk.rotated_at_unix_seconds, 42);
     }
@@ -1118,11 +1261,7 @@ mod identity_authority_tests {
         state.clear_identity();
 
         assert!(!state.has_identity());
-        assert!(state
-            .prekey_state
-            .lock()
-            .expect("prekey_state mutex poisoned")
-            .is_none());
+        assert!(state.prekey_state_slot().is_none());
     }
 
     #[test]

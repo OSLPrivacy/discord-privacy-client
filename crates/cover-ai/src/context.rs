@@ -28,6 +28,23 @@ impl PlaintextMessage {
 pub struct VisibleChannelCover(String);
 
 impl VisibleChannelCover {
+    // Dead in a non-test build, and deliberately so: this is the *only* way to
+    // mint a `VisibleChannelCover`, hence the only way to reach `AiContext` and
+    // AI carrier generation at all. The connected-app adapter that is supposed
+    // to call it -- after observing a completed carrier render -- does not exist
+    // yet, so today the sole caller is this module's own test.
+    //
+    // The two alternatives are both worse than the allow. Deleting it removes
+    // the capability boundary this module exists to express; widening it to
+    // `pub` destroys that boundary, because the whole security property is that
+    // only the adapter, never an arbitrary caller, can certify "this text really
+    // was rendered in the visible channel". So the lint is right that nothing
+    // calls it and wrong that it should therefore go.
+    //
+    // Not `#[expect]`: under `cfg(test)` the test below does call it, the lint
+    // correctly stays silent, and an `expect` would then fire
+    // `unfulfilled_lint_expectation` and fail `-D warnings` on the test target.
+    #[allow(dead_code)]
     pub(crate) fn from_observed_render(cover: String) -> Self {
         Self(cover)
     }

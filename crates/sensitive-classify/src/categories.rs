@@ -123,7 +123,10 @@ mod tests {
     fn credential_findings_stay_on_the_structured_text_warning_path() {
         let warning = warning_category_for(DetectorCategory::Credential);
         assert_eq!(warning, Some(WarningCategory::Credential));
-        assert_eq!(warning.unwrap().detector_family(), DetectorFamily::StructuredText);
+        assert_eq!(
+            warning.unwrap().detector_family(),
+            DetectorFamily::StructuredText
+        );
     }
 
     #[test]

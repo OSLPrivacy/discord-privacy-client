@@ -4,9 +4,7 @@
 //! short-lived pending authorization immediately before the native adapter is
 //! invoked, and keeps a single-flight lease until read-back verification ends.
 
-use crate::autoscrub_run::{
-    AutoScrubRunError, AutoScrubRunState, NativeEntitlement, RunStepInput,
-};
+use crate::autoscrub_run::{AutoScrubRunError, AutoScrubRunState, NativeEntitlement, RunStepInput};
 use crate::scrub_imap::{self, DeleteVerification, NativeImapAdapter, ScrubImapError};
 use std::fmt;
 use std::sync::Mutex;
@@ -85,7 +83,7 @@ pub fn execute_imap_step(
 mod tests {
     use super::*;
     use crate::autoscrub_run::{
-        DeleteCapabilityInput, OwnedAccountRegistry, OwnSessionProofInput, ReviewedBatchInput,
+        DeleteCapabilityInput, OwnSessionProofInput, OwnedAccountRegistry, ReviewedBatchInput,
         RunConsentBatchInput, RunConsentInput, RunManifestInput,
     };
     use crate::models::ServiceKind;
@@ -225,10 +223,18 @@ mod tests {
         };
         assert_eq!(
             execute_imap_step(
-                &bridge, &ledger, OWNER, NativeEntitlement::Confirmed, ACCOUNT, &unopened, 1,
+                &bridge,
+                &ledger,
+                OWNER,
+                NativeEntitlement::Confirmed,
+                ACCOUNT,
+                &unopened,
+                1,
                 &mut adapter,
             ),
-            Err(AutoScrubBridgeError::Authorization(AutoScrubRunError::NoRun))
+            Err(AutoScrubBridgeError::Authorization(
+                AutoScrubRunError::NoRun
+            ))
         );
 
         let opened = open(&ledger);

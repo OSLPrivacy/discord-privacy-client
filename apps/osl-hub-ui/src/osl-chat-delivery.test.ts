@@ -9,6 +9,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ManualPeerContext } from "./adapters";
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 
+
+// D-251: every `it()` below deliberately re-loads `./main` with its own
+// selectors / storage / stubs, so the import CANNOT be hoisted into a single
+// `beforeAll` without destroying what the tests check. `src/main.ts` is ~10k
+// lines and one load costs ~2.5 s cold, which left almost nothing of vitest's
+// default 5,000 ms budget for the behaviour under test: on a busy machine these
+// tests died with `Test timed out in 5000ms` before reaching an assertion.
+// The budget below covers MODULE LOADING, not the behaviour -- no assertion
+// depends on it, and every assertion is unchanged.
+const MODULE_RELOAD_BUDGET_MS = 30_000;
+
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
@@ -60,6 +71,7 @@ function batchWith(bodies: string[]): NativeDiscordOverlayOpenedBatch {
       contextVerified: true,
       personToPersonE2ee: true,
       viewOnceConsumed: false,
+      createdAt: 1_700_000_000 + index,
       expiresAt: 4_000_000_000,
     })),
     pendingViewOnce: [],
@@ -140,7 +152,7 @@ describe("OSL Chat delivery is not gated on the Home screen", () => {
       expect(__oslHubUiTest.oslChatConversation("p1").map((message) => message.body))
         .toContain("reply from a verified friend");
       expect(__oslHubUiTest.oslChatUnreadCount("p1")).toBe(1);
-    },
+    }, MODULE_RELOAD_BUDGET_MS,
   );
 
   it("keeps delivering to an unopened friend while the user reads a different screen", async () => {
@@ -154,7 +166,34 @@ describe("OSL Chat delivery is not gated on the Home screen", () => {
 
     expect(__oslHubUiTest.oslChatConversation("p1").map((message) => message.body)).toEqual(["first", "second"]);
     expect(__oslHubUiTest.oslChatUnreadCount("p1")).toBe(2);
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
+
+  it("backfills waiting messages on reopen through the durable history marker", async () => {
+    const { __oslHubUiTest } = await loadUi();
+    __oslHubUiTest.reset({ route: "settings", coreReady: true, hubPeople: verifiedFriends(1) });
+    mocks.openOslChatText.mockResolvedValue(batchWith(["first", "second", "third"]));
+    mocks.listOslChatHistory.mockResolvedValue([
+      { messageId: "peer-0003", senderOslUserId: "OSLUSER-p1", plaintext: "third", createdAt: 1_700_000_003, decryptedAt: 1_700_000_003 },
+      { messageId: "peer-0002", senderOslUserId: "OSLUSER-p1", plaintext: "second", createdAt: 1_700_000_002, decryptedAt: 1_700_000_002 },
+      { messageId: "peer-0001", senderOslUserId: "OSLUSER-p1", plaintext: "first", createdAt: 1_700_000_001, decryptedAt: 1_700_000_001 },
+    ]);
+
+    await __oslHubUiTest.deliverOslChats();
+
+    expect(__oslHubUiTest.oslChatConversation("p1").map((message) => message.body))
+      .toEqual(["first", "second", "third"]);
+    expect(__oslHubUiTest.oslChatConversation("p1").map((message) => message.messageId))
+      .toEqual(["peer-0001", "peer-0002", "peer-0003"]);
+    expect(__oslHubUiTest.oslChatUnreadCount("p1")).toBe(3);
+
+    mocks.openOslChatText.mockResolvedValue(batchWith([]));
+    await __oslHubUiTest.deliverOslChats();
+
+    expect(__oslHubUiTest.oslChatConversation("p1").map((message) => message.messageId))
+      .toEqual(["peer-0001", "peer-0002", "peer-0003"]);
+    expect(mocks.openOslChatText).toHaveBeenCalledTimes(2);
+    expect(mocks.listOslChatHistory).toHaveBeenCalledTimes(2);
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("re-drains the conversation the user has open instead of sitting idle", async () => {
     const { __oslHubUiTest } = await loadUi();
@@ -175,7 +214,7 @@ describe("OSL Chat delivery is not gated on the Home screen", () => {
     // The open conversation is drained through its own live context; the runtime
     // must not activate anybody else's and tear it down.
     expect(mocks.closeOslChatContext).not.toHaveBeenCalled();
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("reaches friend 33 — the roster is a rotating batch, not a silent cap", async () => {
     const { __oslHubUiTest } = await loadUi();
@@ -201,7 +240,7 @@ describe("OSL Chat delivery is not gated on the Home screen", () => {
         `${person.personId} should have received within two ticks`,
       ).toBeGreaterThan(0);
     }
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("still yields to a foreign protected context rather than clobbering it", async () => {
     const { __oslHubUiTest } = await loadUi();
@@ -216,7 +255,7 @@ describe("OSL Chat delivery is not gated on the Home screen", () => {
     __oslHubUiTest.setForeignProtectedContextForTest(null);
     await __oslHubUiTest.deliverOslChats();
     expect(__oslHubUiTest.oslChatConversation("p1").map((message) => message.body)).toEqual(["should not arrive"]);
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   // Retargeted from osl-chats-integration.test.ts, which used to assert the
   // literal `if (!context.scopeApproved) continue` against main.ts source.
@@ -237,7 +276,7 @@ describe("OSL Chat delivery is not gated on the Home screen", () => {
     expect(mocks.openOslChatText).toHaveBeenCalledTimes(1);
     expect(__oslHubUiTest.oslChatConversation("p1")).toHaveLength(0);
     expect(__oslHubUiTest.oslChatConversation("p2").map((message) => message.body)).toEqual(["message for p2"]);
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("never drains an unverified friend or one with a pending key change", async () => {
     const { __oslHubUiTest } = await loadUi();
@@ -257,7 +296,7 @@ describe("OSL Chat delivery is not gated on the Home screen", () => {
     expect(mocks.activateOslChatContext.mock.calls.map((call) => call[0] as string)).toEqual(["p1"]);
     expect(__oslHubUiTest.oslChatConversation("unverified")).toHaveLength(0);
     expect(__oslHubUiTest.oslChatConversation("rekeyed")).toHaveLength(0);
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("does not deliver before the identity is loaded", async () => {
     const { __oslHubUiTest } = await loadUi();
@@ -267,7 +306,7 @@ describe("OSL Chat delivery is not gated on the Home screen", () => {
     await __oslHubUiTest.deliverOslChats();
 
     expect(mocks.activateOslChatContext).not.toHaveBeenCalled();
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("applies capture resistance before any plaintext is drained", async () => {
     const { __oslHubUiTest } = await loadUi();
@@ -279,5 +318,5 @@ describe("OSL Chat delivery is not gated on the Home screen", () => {
 
     expect(mocks.openOslChatText).not.toHaveBeenCalled();
     expect(__oslHubUiTest.oslChatConversation("p1")).toHaveLength(0);
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 });

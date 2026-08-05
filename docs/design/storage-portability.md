@@ -6,7 +6,7 @@ the authorization, deletion, and unlinkability rules below. Cloudflare is an
 implementation tenant, not a protocol dependency.
 
 The authoritative protocol is
-[`storage.md`](/home/liamw/osl-plan/plan/03-CONTRACTS/storage.md), especially
+`plan/03-CONTRACTS/storage.md` in the private OSL plan repo, especially
 sections 1b, 2, and 3. This document turns those rules into a deployable
 custom-server boundary; it does not introduce alternate wire semantics.
 

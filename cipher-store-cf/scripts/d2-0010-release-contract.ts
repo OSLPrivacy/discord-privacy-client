@@ -22,12 +22,208 @@ export const D2_SIGNED_STATEMENT_FORMAT =
   "osl.cipher-store.d2-migration-0010-signed-statement.v1";
 export const D2_PROBE_FORMAT =
   "osl.cipher-store.d2-migration-0010-production-probe.v1";
+/**
+ * RE-ANCHORED 2026-08-05. The previous manifest digest
+ * (7888abf28374e3c4097addac8653422205d2ced15ed1892e37fc2de1f1024abd) was
+ * correct at D2_RELEASE_COMMIT and is now stale: 27 commits have landed
+ * against `D2_RELEASE_SOURCE_FILES` since. Verified before re-anchoring —
+ * every one of the 11 changed files traces to a named, task-numbered commit,
+ * and the blob.ts byte ledger closes exactly (+3597/-6025 = -2428):
+ *
+ *   package.json          6064a0bff  add `verify:worker-build` dry-run script
+ *   src/env.ts            f01faf29f  add PAYLOADS R2 binding
+ *   src/endpoints/healthz 539339355  advertise storage_ack_v1 capability
+ *   src/lib/id.ts         cc619a55e  server-generated 8-byte ids -> client
+ *                                    -derived 160-bit pointers (isBlobId)
+ *   src/lib/blob-limits   2ea9968c8  ADD isPadmeLength (net-additive gate)
+ *   src/lib/rate-limit    3fb1662cc  fetch budget 3600/hr -> 120/hr AND
+ *                                    fetch moved to MUTATION_BUCKETS
+ *                                    (fail-open -> fail-closed). Tightening.
+ *   src/lib/sweep.ts      34b2e589c  bound sweep to 798 D1 queries/invocation
+ *                         cc619a55e  sweep blob_capability_index + R2 payloads
+ *   src/index.ts          539339355/779a1a4da/d6b23e723/7a10fc03e
+ *                                    storage-grant gate before rate limit,
+ *                                    /ack route, PushConnection DO export
+ *   src/endpoints/attachment.ts
+ *                         cba9fc41f  T2-41 view-once fetch reservation
+ *   src/endpoints/blob.ts 10 commits (D81, t1-11..t1-18, t6-w4, T6-W7/W15)
+ *   wrangler.toml         e293a403c/4bc4a42af/f01faf29f/5a80653f5
+ *                                    PUSH_CONNECTION DO + PAYLOADS bucket;
+ *                                    observability blocks UNCHANGED, only an
+ *                                    overclaiming comment corrected.
+ *
+ * Three changes are real but were NOT described by their commit subjects, and
+ * are filed as defects rather than silently blessed by this re-anchor. This
+ * digest records what the source IS, not that it was security-reviewed:
+ *   - cc619a55e added an unauthenticated `409 blob_id_collision` existence
+ *     oracle on the upload route (blob.ts).
+ *   - cc619a55e split the atomic INSERT..SELECT..WHERE capacity gate — labelled
+ *     in-code as the fix for audit finding HIGH-2 — into a non-atomic
+ *     SELECT-then-INSERT (TOCTOU).
+ *   - dbcdfab12 removed the blob fetch-capability check outright with an empty
+ *     commit body; restored five commits later by 0132d223f. Present at HEAD.
+ *
+ * D2_RELEASE_COMMIT / D2_RELEASE_TREE deliberately still name the superseded
+ * v2 release. They anchor `verifyD2Migration0010ProductionRelease`, which is
+ * retired and always throws, and D2_TRUSTED_PRODUCERS is empty, so the triple
+ * authorizes nothing. Re-cutting them is an owner action at the next release.
+ *
+ * MOVED AGAIN 2026-08-05, from
+ * 98c4a8a0a4a8e7fb136800e86fd6c17452c4cae6000b850f9fa63df1ece46f86, to admit
+ * the fixes for the first two defects the re-anchor above filed rather than
+ * blessed. Justification is per file, and the drift is exactly one file:
+ *
+ *   src/endpoints/blob.ts  handleUpload only. D-255: the `409
+ *                          blob_id_collision` answer is gone -- a taken id and
+ *                          an unused one now get the same response, because an
+ *                          upload holds no authority over the id it names.
+ *                          D-256: the SELECT-then-INSERT is one
+ *                          INSERT..SELECT..WHERE again, with the COUNT/SUM
+ *                          predicates and a NOT EXISTS id check evaluated
+ *                          inside the write, which is the property the HIGH-2
+ *                          comment named. The R2 put moved after that write so
+ *                          a caller who named someone else's id cannot reach
+ *                          `putByDigest`.
+ *
+ *   (no other pinned file)  Verified, not assumed: recomputing the manifest
+ *                          with this branch's tree but `git show
+ *                          HEAD:cipher-store-cf/src/endpoints/blob.ts`
+ *                          substituted for the working copy reproduces
+ *                          98c4a8a0... exactly. Every byte of the move is
+ *                          attributable to the two fixes above.
+ *
+ * The two regression suites that hold the properties are
+ * `test/blob-upload-existence-oracle.test.ts` and
+ * `test/blob-capacity-atomic.test.ts`. Both were observed RED against the
+ * pre-fix source before the fix was written, and each was observed RED again
+ * with its own fix individually reverted. Neither is a pinned file: see D-258,
+ * `D2_RELEASE_SOURCE_FILES` is a static 31-entry list and no test file, and no
+ * migration past 0010, is inside it.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * MOVED AGAIN 2026-08-05 (D-258/D-262/D-264), from
+ * aada7c5013d81f6fd304d13f59d4bf0bb5dff5b81663d76b299e7214e19247e0, on
+ * `fix/w33-pin-hygiene-and-leftovers`. THE MEMBERSHIP RULE CHANGED, which is
+ * why this move is large; the ledger below separates that from content so the
+ * two are never confused with each other.
+ *
+ * `D2_RELEASE_SOURCE_FILES` is gone. The set is now derived by
+ * `scripts/d2-release-source-manifest.ts` from the file that decides what
+ * deploys — `wrangler.toml`'s `main` and `migrations_dir` — walked whole, plus
+ * four release-config files. That deriver is itself in the pinned set, so the
+ * rule lives inside the digest it produces. See D-258: the old list was short
+ * by ten source files and seven migrations, and being short was silent.
+ *
+ * FOUR-STAGE LEDGER, every stage recomputed rather than argued:
+ *
+ *   L1  aada7c50…  the 31 old names over HEAD content.
+ *                  Reproduces the previous pin EXACTLY, which is the anchor:
+ *                  no previously-pinned file's content had drifted.
+ *   L2  a0c36f44…  the derived names over HEAD content, minus the one pinned
+ *                  file this branch creates (49 files).
+ *                  Delta L1→L2 is SET EXPANSION ONLY: 18 files added, 0
+ *                  removed, 0 content bytes changed. The 18 are migrations
+ *                  0011-0015 and 0017, and src/endpoints/{attachment-reserve,
+ *                  blob-request-profile,ohttp-keyconfig,receipt}.ts,
+ *                  src/lib/{burn-policy,capability,delivery-tag,padme,
+ *                  payload-store,storage-grant,ttl}.ts,
+ *                  src/realtime/connection.ts — every one of them shipping
+ *                  code that the static list never covered.
+ *   L3  42b457df…  L2 plus scripts/d2-release-source-manifest.ts (9,151 bytes,
+ *                  new in this branch), giving the 50-file set.
+ *   L4  4c3d3e96…  L3 with this branch's working content. Delta L3→L4 is
+ *                  content in exactly three files:
+ *
+ *     src/lib/payload-store.ts   +1,688 bytes. D-264: `putByDigest` now writes
+ *                                under `onlyIf: { etagDoesNotMatch: "*" }`.
+ *                                The whole code delta is three lines replacing
+ *                                one; the rest is the interface doc recording
+ *                                why the refusal is silent and why "the caller
+ *                                already knew the digest" was not accepted.
+ *     src/endpoints/blob.ts      +565 bytes, COMMENT ONLY. `git diff -U0`
+ *                                over both files yields exactly one non-comment
+ *                                hunk, and it is the `onlyIf` above.
+ *     package.json               +96 bytes, +2/-1 lines: a `verify:contracts`
+ *                                script, and `test` now runs
+ *                                `node scripts/d2-contract-gate.ts` first.
+ *                                That step is what anchors the D-262 test
+ *                                gate outside the suite it guards.
+ *
+ *   Machine-checked, not asserted: recomputing L4's manifest with HEAD's
+ *   versions of those three files substituted back reproduces L3 BYTE-EXACTLY
+ *   (42b457df…). Every byte of the move is therefore attributed, and no
+ *   unexplained content is being blessed. This branch forks directly off
+ *   `integrate/first-usable` HEAD with no merges, so there is no merge content
+ *   to account for.
+ *
+ * D-262 ruling, recorded here because a future re-anchor will ask: the tests
+ * are still NOT in this digest, deliberately. Pinning them byte-exactly would
+ * make re-anchoring routine — the one operation that must stay rare enough to
+ * be read — and byte-exactness is the wrong instrument for "was this test
+ * deleted, skipped or gutted" anyway. Test integrity is enforced structurally
+ * by `D2_PROPERTY_TEST_SUITES` and a per-directory test-file floor in
+ * `scripts/d2-test-closure.ts`, invoked from `npm test` by way of
+ * `package.json`, which IS pinned here. See the long note on
+ * `D2PropertyTestSuite` for the full argument and its cost.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * MOVED AGAIN 2026-08-05 (D-280), from
+ * 4c3d3e969420093a2b46022991793a30d183fef81c79e68cf73946282d43ac6c, on
+ * `fix/d280-migration-0016-gap`. A SMALL, ONE-FILE MOVE, and the ledger says so
+ * rather than asking anyone to take it on trust.
+ *
+ * THE SET DID NOT CHANGE. 50 files before, 50 after, 0 added and 0 removed —
+ * this branch adds NO file to `migrations/` and none to `src/`. That matters
+ * more than usual here: D-280 is a gap in the migration numbering, and the one
+ * fix that would have been easy — a placeholder `0016` — is precisely the one
+ * that must not be made, because it is a migration name a deployed store has
+ * NOT applied. Adding it would manufacture the drift the defect is about.
+ *
+ * TWO-STAGE LEDGER, both stages recomputed:
+ *
+ *   L1  4c3d3e96…  the derived set over HEAD content, i.e. the whole branch
+ *                  reverted. REPRODUCES THE PREVIOUS PIN BYTE-FOR-BYTE, which
+ *                  is the anchor: no other pinned file's content had drifted.
+ *   L2  fc5659bd…  the same 50 names over this branch's content.
+ *
+ *   Delta L1→L2 is content in EXACTLY ONE FILE — machine-checked by comparing
+ *   every one of the 50 against `git show HEAD:` and finding one mismatch:
+ *
+ *     scripts/d2-release-source-manifest.ts   9,151 → 19,607 bytes, +10,456.
+ *       +219 lines / 10,533 bytes, −2 lines / 77 bytes; 10,533 − 77 = 10,456,
+ *       which is the file-size delta exactly, so no byte is unaccounted for.
+ *       Of the added bytes: 4,232 are the doc comment arguing the design,
+ *       1,319 are the single recorded skip and its evidence, 4,972 are the
+ *       executable rule (`MIGRATION_FILENAME`, `pad`,
+ *       `assertMigrationSequenceContiguous`, and its call from
+ *       `deriveReleaseSourceFiles`), 10 are blank lines. The 2 removed lines
+ *       are `return { main, roots };` and
+ *       `const { roots } = readReleaseRoots(projectRoot);` — both replaced in
+ *       place to carry `migrationDirs` through, nothing deleted outright.
+ *
+ * WHY THE RULE LIVES IN A PINNED FILE AT ALL, since that is what forced this
+ * move: the contiguity check could have gone in `scripts/d2-contract-gate.ts`,
+ * which is unpinned, and this digest would not have moved. That was rejected.
+ * An unpinned gate is one deletable file away from silence, and D-280 exists
+ * because nothing was watching the sequence. Putting the rule inside
+ * `deriveReleaseSourceFiles` means a gapped sequence cannot produce a manifest
+ * at all — so the digest, the contract gate and every test that derives the set
+ * all refuse — and removing the rule or its call moves this digest and turns
+ * the contract red. The re-anchor is the price of the rule being unremovable.
+ *
+ * The recorded skip for `migrations/0016` is a deliberate, argued exception and
+ * NOT an allowlist: it fails if the number ever appears on disk, fails if it
+ * falls outside the sequence actually present, and fails without a substantive
+ * reason. See `MIGRATION_SEQUENCE_SKIPS` for the git evidence behind it and for
+ * why renumbering 0017 was refused — what a live store applied cannot be
+ * determined from this repository, only from that database's `d1_migrations`.
+ */
 export const D2_RELEASE_COMMIT =
   "5a2bad492dec2d90094d2c4a797124366d7dea32";
 export const D2_RELEASE_TREE =
   "18149f3dbb14bae687cea33a56f624171958c8cd";
 export const D2_RELEASE_SOURCE_SHA256 =
-  "7888abf28374e3c4097addac8653422205d2ced15ed1892e37fc2de1f1024abd";
+  "fc5659bd985dce5884338509e08925a82d06ac7e6ca1c3315df4d686a5b60204";
 export const D2_MIGRATION_0010_SHA256 =
   "a545f989172c32c8f5f5c78754b4eda2f045778643cbb86c9eb81f22be2f6636";
 export const D2_DATABASE_ID = "be3d31f1-f6b4-4d6e-8ede-74514950b9e2";
@@ -39,39 +235,17 @@ export const D2_CYCLE_MARKER = "[attachment-sweep-cycle] complete";
 export const D2_RECOVERY_MARKER =
   "osl.cipher-store.continuous-predecessor-recovery.v1";
 
-export const D2_RELEASE_SOURCE_FILES = [
-  "migrations/0001_init.sql",
-  "migrations/0002_fetch_token.sql",
-  "migrations/0003_r2_attachments.sql",
-  "migrations/0004_attachment_capability_digests_and_quota.sql",
-  "migrations/0005_view_once_links.sql",
-  "migrations/0006_session_budget_and_atomic_rate_counters.sql",
-  "migrations/0007_link_grant_consumption.sql",
-  "migrations/0008_attachment_sweep_claims.sql",
-  "migrations/0009_predecessor_completing_adoption.sql",
-  "migrations/0010_continuous_predecessor_recovery.sql",
-  "package-lock.json",
-  "package.json",
-  "src/endpoints/attachment.ts",
-  "src/endpoints/blob.ts",
-  "src/endpoints/healthz.ts",
-  "src/endpoints/link.ts",
-  "src/env.ts",
-  "src/index.ts",
-  "src/lib/attachment-limits.ts",
-  "src/lib/attachment-sweep-claims.ts",
-  "src/lib/blob-limits.ts",
-  "src/lib/d2-proof-contract.d.ts",
-  "src/lib/d2-proof-contract.js",
-  "src/lib/digest.ts",
-  "src/lib/http.ts",
-  "src/lib/id.ts",
-  "src/lib/landing.ts",
-  "src/lib/link-grant.ts",
-  "src/lib/rate-limit.ts",
-  "src/lib/sweep.ts",
-  "wrangler.toml",
-] as const;
+/**
+ * D-258. The pinned set is NOT declared here any more. It is derived by
+ * `deriveReleaseSourceFiles` in `scripts/d2-release-source-manifest.ts` from
+ * wrangler.toml's `main` and `migrations_dir`, and that deriver is itself
+ * inside the digest below. A list a human keeps is only ever wrong by being
+ * short, and short is the failure that does not announce itself.
+ *
+ * This file cannot be in its own manifest — a digest over its own declaration
+ * has no fixpoint — which is exactly why the RULE lives in the pinned deriver
+ * and only the VALUE lives here.
+ */
 
 export const D2_REQUIRED_MIGRATIONS = [
   "0001_init.sql",

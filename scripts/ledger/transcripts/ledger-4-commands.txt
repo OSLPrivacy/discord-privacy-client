@@ -1,0 +1,228 @@
+$ tmp=$(mktemp -d /tmp/osl-ledger-commands.XXXXXX); rsync temp root; remove claim_hub_username from hub_tauri_commands registry
+$ node scripts/ledger/commands.mjs --root=$tmp
+LEDGER commands -- frontend invokes vs Rust command registry, ledger 4 of 7
+  frontend source files scanned: 154
+  distinct frontend commands invoked: 179
+  registered Rust commands: 207
+  invoke() calls with a non-literal command (not analysable): 11
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (47):
+    frontend-invoke-not-registered (36):
+      - append_osl_asset_chunk -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:34
+      - begin_osl_asset_upload -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:31
+      - cancel_osl_asset_upload -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:40
+      - claim_hub_username -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/adapters.ts:934
+      - configure_scrub_imap_account -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap.ts:40
+      - decode_osl_office_asset -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-formats.ts:19
+      - delete_osl_saved_search -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:55
+      - discard_unreferenced_osl_asset -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:48
+      - execute_discord_guided_deletion -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/adapters.ts:1433
+      - finish_osl_asset_upload -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:37
+      - get_scrub_imap_capability -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap.ts:41
+      - host_osl_lan_room -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-collab.ts:69
+      - inspect_osl_plugin_asset -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-plugin-runtime.ts:5
+      - join_osl_lan_room -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-collab.ts:70
+      - link_osl_asset_project -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:41
+      - list_osl_assets -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:25
+      - list_osl_assets_for_project -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:26
+      - list_osl_note_revisions -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:49
+      - list_osl_notes -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:41
+      - list_osl_saved_searches -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:53
+      - osl_mail_list_threads -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-mail-adapter.ts:226
+      - permanently_delete_osl_note -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:59
+      - preview_discord_guided_deletion -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/adapters.ts:1415
+      - read_osl_asset_chunk -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:53
+      - reauth_scrub_imap_account -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap.ts:46
+      - release_osl_asset_project -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:42
+      - release_osl_assets_for_project -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:45
+      - restore_osl_note_revision -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:50
+      - run_osl_plugin_command -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-plugin-runtime.ts:6
+      - save_osl_note -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:42
+      - save_osl_saved_search -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:54
+      - scan_discord_own_messages_for_deletion -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/adapters.ts:1402
+      - scrub_imap_delete -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap-ipc.ts:102
+      - scrub_imap_prepare_delete -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap-ipc.ts:89
+      - stop_osl_lan_room -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-collab.ts:72
+      - surface_adapter_paint_targets -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:124
+    unresolved-command-name (11):
+      - unresolved-invoke:apps/osl-hub-ui/src/core.ts:170 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:170
+      - unresolved-invoke:apps/osl-hub-ui/src/core.ts:224 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:224
+      - unresolved-invoke:apps/osl-hub-ui/src/core.ts:230 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:230
+      - unresolved-invoke:apps/osl-hub-ui/src/native-overlay-adapter.ts:78 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:78
+      - unresolved-invoke:apps/osl-hub-ui/src/osl-collab.ts:71 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-collab.ts:71
+      - unresolved-invoke:apps/osl-hub-ui/src/osl-mail-adapter.ts:214 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-mail-adapter.ts:214
+      - unresolved-invoke:apps/osl-hub-ui/src/osl-notes.ts:56 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-notes.ts:56
+      - unresolved-invoke:apps/osl-hub-ui/src/scrub-imap-ipc.ts:55 -- invoke() command is not a literal or known string constant: command: string
+          apps/osl-hub-ui/src/scrub-imap-ipc.ts:55
+      - unresolved-invoke:apps/osl-hub-ui/src/scrub-imap-ipc.ts:65 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/scrub-imap-ipc.ts:65
+      - unresolved-invoke:apps/osl-hub-ui/src/ui-behavior.ts:303 -- invoke() command is not a literal or known string constant: command: "remove_hub_friend"
+          apps/osl-hub-ui/src/ui-behavior.ts:303
+      - unresolved-invoke:apps/osl-hub-ui/src/whatsapp-qa-shell.ts:49 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/whatsapp-qa-shell.ts:49
+  RESULT: RED
+exit=1
+$ restore temp root and rerun
+$ node scripts/ledger/commands.mjs --root=$tmp
+LEDGER commands -- frontend invokes vs Rust command registry, ledger 4 of 7
+  frontend source files scanned: 154
+  distinct frontend commands invoked: 179
+  registered Rust commands: 208
+  invoke() calls with a non-literal command (not analysable): 11
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (46):
+    frontend-invoke-not-registered (35):
+      - append_osl_asset_chunk -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:34
+      - begin_osl_asset_upload -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:31
+      - cancel_osl_asset_upload -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:40
+      - configure_scrub_imap_account -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap.ts:40
+      - decode_osl_office_asset -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-formats.ts:19
+      - delete_osl_saved_search -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:55
+      - discard_unreferenced_osl_asset -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:48
+      - execute_discord_guided_deletion -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/adapters.ts:1433
+      - finish_osl_asset_upload -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:37
+      - get_scrub_imap_capability -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap.ts:41
+      - host_osl_lan_room -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-collab.ts:69
+      - inspect_osl_plugin_asset -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-plugin-runtime.ts:5
+      - join_osl_lan_room -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-collab.ts:70
+      - link_osl_asset_project -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:41
+      - list_osl_assets -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:25
+      - list_osl_assets_for_project -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:26
+      - list_osl_note_revisions -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:49
+      - list_osl_notes -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:41
+      - list_osl_saved_searches -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:53
+      - osl_mail_list_threads -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-mail-adapter.ts:226
+      - permanently_delete_osl_note -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:59
+      - preview_discord_guided_deletion -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/adapters.ts:1415
+      - read_osl_asset_chunk -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:53
+      - reauth_scrub_imap_account -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap.ts:46
+      - release_osl_asset_project -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:42
+      - release_osl_assets_for_project -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-assets.ts:45
+      - restore_osl_note_revision -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:50
+      - run_osl_plugin_command -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-plugin-runtime.ts:6
+      - save_osl_note -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:42
+      - save_osl_saved_search -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-notes.ts:54
+      - scan_discord_own_messages_for_deletion -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/adapters.ts:1402
+      - scrub_imap_delete -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap-ipc.ts:102
+      - scrub_imap_prepare_delete -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/scrub-imap-ipc.ts:89
+      - stop_osl_lan_room -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/osl-collab.ts:72
+      - surface_adapter_paint_targets -- frontend invokes this Tauri command but no Rust invoke_handler registry contains it
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:124
+    unresolved-command-name (11):
+      - unresolved-invoke:apps/osl-hub-ui/src/core.ts:170 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:170
+      - unresolved-invoke:apps/osl-hub-ui/src/core.ts:224 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:224
+      - unresolved-invoke:apps/osl-hub-ui/src/core.ts:230 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/core.ts:230
+      - unresolved-invoke:apps/osl-hub-ui/src/native-overlay-adapter.ts:78 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/native-overlay-adapter.ts:78
+      - unresolved-invoke:apps/osl-hub-ui/src/osl-collab.ts:71 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-collab.ts:71
+      - unresolved-invoke:apps/osl-hub-ui/src/osl-mail-adapter.ts:214 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-mail-adapter.ts:214
+      - unresolved-invoke:apps/osl-hub-ui/src/osl-notes.ts:56 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/osl-notes.ts:56
+      - unresolved-invoke:apps/osl-hub-ui/src/scrub-imap-ipc.ts:55 -- invoke() command is not a literal or known string constant: command: string
+          apps/osl-hub-ui/src/scrub-imap-ipc.ts:55
+      - unresolved-invoke:apps/osl-hub-ui/src/scrub-imap-ipc.ts:65 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/scrub-imap-ipc.ts:65
+      - unresolved-invoke:apps/osl-hub-ui/src/ui-behavior.ts:303 -- invoke() command is not a literal or known string constant: command: "remove_hub_friend"
+          apps/osl-hub-ui/src/ui-behavior.ts:303
+      - unresolved-invoke:apps/osl-hub-ui/src/whatsapp-qa-shell.ts:49 -- invoke() command is not a literal or known string constant: command
+          apps/osl-hub-ui/src/whatsapp-qa-shell.ts:49
+  RESULT: RED
+exit=1
+
+## Missing-input probe
+$ rm -rf /tmp/osl-ledger-missing-root-b0-08
+$ node scripts/ledger/commands.mjs --root=/tmp/osl-ledger-missing-root-b0-08
+LEDGER commands -- frontend invokes vs Rust command registry, ledger 4 of 7
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (3):
+    ledger-input-missing (3):
+      - missing-input:apps/osl-hub-ui/src/main.ts -- required ledger input is missing: apps/osl-hub-ui/src/main.ts
+          apps/osl-hub-ui/src/main.ts:1
+      - missing-input:apps/osl-hub/src/hub_command_surface.rs -- required ledger input is missing: apps/osl-hub/src/hub_command_surface.rs
+          apps/osl-hub/src/hub_command_surface.rs:1
+      - missing-input:apps/osl-hub/src/main.rs -- required ledger input is missing: apps/osl-hub/src/main.rs
+          apps/osl-hub/src/main.rs:1
+  RESULT: RED
+exit=1

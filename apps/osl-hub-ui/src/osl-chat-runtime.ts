@@ -40,6 +40,12 @@ export const OSL_CHAT_DELIVERY_INTERVAL_MS = 30_000;
 /** Retained history/timeline depth, matching the pre-extraction behaviour. */
 const OSL_CHAT_MESSAGE_RETENTION = 200;
 
+export function oslChatUnrecognizedWireRowsNotice(count: number): string {
+  const rows = count === 1 ? "1 protected message" : `${count.toLocaleString("en-US")} protected messages`;
+  const subjects = count === 1 ? "That row was" : "Those rows were";
+  return `OSL could not open ${rows}. ${subjects} undecryptable here or need a newer version of OSL.`;
+}
+
 export interface OslChatDeliveryPerson {
   personId: string;
   safetyNumberVerified: boolean;
@@ -159,9 +165,23 @@ export function oslChatHistoryMessages(
       direction: incoming ? "incoming" as const : "outgoing" as const,
       body: row.plaintext,
       state: incoming ? "received" as const : "sent" as const,
-      timestampLabel: formatTimestamp(row.decryptedAt),
+      timestampLabel: formatTimestamp(row.createdAt),
     };
   });
+}
+
+export function receivedOslChatBatchMessage(
+  localMessageId: string,
+  incoming: NativeDiscordOverlayOpenedBatch["messages"][number],
+  formatTimestamp: (epochSeconds: number) => string,
+): OslChatMessage {
+  return {
+    messageId: localMessageId,
+    direction: "incoming",
+    body: incoming.plaintext,
+    state: incoming.viewOnceConsumed ? "opened" : "received",
+    timestampLabel: formatTimestamp(incoming.createdAt),
+  };
 }
 
 /**
@@ -173,6 +193,26 @@ export function mergeOslChatTimeline(
   openedViewOnce: readonly OslChatMessage[],
 ): OslChatMessage[] {
   return [...durable, ...openedViewOnce].slice(-OSL_CHAT_MESSAGE_RETENTION);
+}
+
+function unrecognizedWireRowsBatch(count: number): NativeDiscordOverlayOpenedBatch {
+  return {
+    messages: [{
+      messageId: "peer-00000000000000000000000000000000",
+      plaintext: oslChatUnrecognizedWireRowsNotice(count),
+      contextVerified: true,
+      personToPersonE2ee: true,
+      viewOnceConsumed: false,
+      createdAt: 4_000_000_000,
+      expiresAt: 4_000_000_000,
+    }],
+    pendingViewOnce: [],
+    acknowledgments: [],
+    fetched: 1,
+    decryptDisplayEnabled: true,
+    deferredRows: 0,
+    unrecognizedWireRows: 0,
+  };
 }
 
 export function createOslChatDeliveryRuntime(
@@ -203,6 +243,9 @@ export function createOslChatDeliveryRuntime(
     if (!batch) return;
     if (host.openConversationId() !== personId) return;
     host.commitBatch(personId, batch, false);
+    if (batch.unrecognizedWireRows > 0) {
+      host.commitBatch(personId, unrecognizedWireRowsBatch(batch.unrecognizedWireRows), false);
+    }
   }
 
   async function drainRoster(): Promise<void> {
@@ -228,6 +271,9 @@ export function createOslChatDeliveryRuntime(
         if (batch) host.commitBatch(person.personId, batch, true);
         const history = await host.loadHistory();
         if (history) host.commitHistory(person.personId, history, context);
+        if (batch && batch.unrecognizedWireRows > 0) {
+          host.commitBatch(person.personId, unrecognizedWireRowsBatch(batch.unrecognizedWireRows), true);
+        }
       } finally {
         await host.closeContext();
       }

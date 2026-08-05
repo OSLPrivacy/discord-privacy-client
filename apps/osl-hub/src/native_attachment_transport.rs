@@ -18,9 +18,29 @@ use std::path::Path;
 #[cfg(windows)]
 use std::process::Command;
 use std::time::Duration;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 use zeroize::Zeroize;
+
+/// Build the attachment store client for whatever route this process is on.
+///
+/// `CipherStoreClient::new` is the unrouted constructor, so while Tor is
+/// selected it either adopts the authorized tunnel or refuses -- see
+/// `keystore::egress`. A refusal is reported in the interlock's own words so
+/// the user learns that Tor is down, not that "storage is unavailable".
+fn attachment_store_client(
+    config_root: &Path,
+) -> Result<ipc::cipher_store_client::CipherStoreClient, String> {
+    let base_url = ipc::cipher_store_client::resolve_cipher_store_base_url(config_root)
+        .map_err(|error| error.to_string())?;
+    ipc::cipher_store_client::CipherStoreClient::new(base_url).map_err(|error| match &error {
+        ipc::cipher_store_client::CipherStoreError::RouteUnavailable(message) => message.clone(),
+        ipc::cipher_store_client::CipherStoreError::ConfigOverrideRefused { .. } => {
+            error.to_string()
+        }
+        _ => "OSL attachment transport is unavailable".to_owned(),
+    })
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -145,14 +165,11 @@ fn select_encrypt_upload_deliver_inner(
         .path()
         .app_config_dir()
         .map_err(|_| "OSL attachment transport is unavailable".to_owned())?;
-    let client = ipc::cipher_store_client::CipherStoreClient::new(
-        ipc::cipher_store_client::resolve_cipher_store_base_url(&config_root),
-    )
-    .map_err(|_| "OSL attachment transport is unavailable".to_owned())?;
+    let client = attachment_store_client(&config_root)?;
     // Finish deletions an earlier rollback could not complete before adding
     // more remote ciphertext. Done before anything is staged locally so a
     // stuck outbox cannot also leave a sealed copy on this device.
-    retry_pending_deletions(&client)?;
+    report_deletion_drain(app, &retry_pending_deletions(&client)?);
     let plan = if overlay_context.is_some() {
         broker::begin_native_overlay_attachment(
             core,
@@ -374,9 +391,53 @@ fn delete_remote_ciphertext(
 /// rather than stalling an attachment behind a long-dead store.
 const MAX_DELETION_RETRIES_PER_PASS: usize = 8;
 
+/// The renderer event that carries [`peer_attachment_io::DeletionDrainReport::retained`].
+///
+/// D-135. `retained` is the only evidence OSL holds that a remote copy it
+/// promised to remove may still be on the relay, and this function used to end
+/// `.map(|_report| ())` -- computed correctly, then dropped, while the OSL Chat
+/// composer promised "Removed after it is opened".
+///
+/// This name is subscribed by the main webview: see
+/// `bindAttachmentDeletionEvents` in `apps/osl-hub-ui/src/main.ts`, which feeds
+/// `OslChatsViewModel.deletionUnconfirmed` and renders
+/// `.osl-chat-deletion-unconfirmed`. That listener is the whole reason this
+/// emit exists -- the previous `"osl://attachment-deletion-drain"` advisory was
+/// deleted rather than repaired because it went to `emit_to("main", ...)` and
+/// nothing anywhere subscribed to it. Do not add an emit here without checking
+/// that the listener is still there, and never point it at the overlay: the
+/// overlay runs under `native_discord_overlay::OVERLAY_LABEL`, so a `"main"`
+/// emit can never reach it.
+pub(crate) const ATTACHMENT_DELETION_UNCONFIRMED_EVENT: &str =
+    "osl://attachment-deletion-unconfirmed";
+
+/// Tell the renderer how many remote copies are still owed after a pass.
+///
+/// Deliberately reported on EVERY completed pass, including `retained == 0`:
+/// the count is a level, not an alarm, so a pass that finally succeeds has to
+/// be able to clear a warning an earlier pass raised. A pass that failed
+/// outright reports nothing at all, because a drain that could not run has not
+/// learned that nothing is owed.
+///
+/// `retained` is the only field crossing this boundary. `deleted` and
+/// `already_gone` are not sent: neither is a readback, so neither is evidence
+/// that anything is gone, and shipping them invites a surface that reads as a
+/// confirmed deletion.
+fn report_deletion_drain(app: &tauri::AppHandle, report: &peer_attachment_io::DeletionDrainReport) {
+    // Scoped like `native_attachment_jobs_bridge.rs:166`: `Emitter` is only in
+    // scope under `--features desktop`, and a module-level import compiles
+    // clean on default features while breaking the shipping build (D-146).
+    use tauri::Emitter;
+    let _ = app.emit_to(
+        "main",
+        ATTACHMENT_DELETION_UNCONFIRMED_EVENT,
+        serde_json::json!({ "retained": report.retained }),
+    );
+}
+
 pub(crate) fn retry_pending_deletions(
     client: &ipc::cipher_store_client::CipherStoreClient,
-) -> Result<(), String> {
+) -> Result<peer_attachment_io::DeletionDrainReport, String> {
     let mut attempted = 0usize;
     let mut transport_down = false;
     peer_attachment_io::drain_attachment_deletions(|pending| {
@@ -398,7 +459,6 @@ pub(crate) fn retry_pending_deletions(
             }
         }
     })
-    .map(|_report| ())
 }
 
 /// How often the background drain retries the deletion outbox.
@@ -421,17 +481,42 @@ pub(crate) fn retry_pending_deletions(
 ///   roughly one tick plus one retry pass.
 pub(crate) const DELETION_DRAIN_INTERVAL: Duration = Duration::from_secs(900);
 
-/// Renderer-visible advisory that OSL still owes a remote deletion.
-///
-/// Carries a fixed non-secret sentence only: never a filename, object id,
-/// capability token or path. Targeted at the trusted main webview by label, so
-/// it is never delivered into a service child view hosting remote content.
-const DELETION_DRAIN_NOTICE_EVENT: &str = "osl://attachment-deletion-drain";
-const DELETION_DRAIN_NOTICE_TARGET: &str = "main";
-
-/// Last advisory emitted, so a store that stays down does not emit the same
-/// sentence every tick. Cleared by a clean pass, so a later failure is reported.
-static LAST_DELETION_DRAIN_NOTICE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+// THE DRAIN NOW HAS A RENDERER CHANNEL, AND A LISTENER ON THE OTHER END OF IT.
+// D-135. Read this before touching `report_deletion_drain` above.
+//
+// An earlier `"osl://attachment-deletion-drain"` advisory was deleted, not
+// repaired, for two reasons that the replacement had to answer:
+//
+// * It was never renderer-visible. It went out as `emit_to("main", …)` and no
+//   webview in this repo subscribed to the name -- not `main.ts`, not
+//   `overlay.ts`. Ledger 5 reported it as emitted-but-never-listened; it was
+//   born dead. ANSWERED: the current event is subscribed by
+//   `bindAttachmentDeletionEvents` in `apps/osl-hub-ui/src/main.ts`, which is
+//   the `"main"` webview, and its value is rendered as
+//   `.osl-chat-deletion-unconfirmed` by `osl-chats-view.ts`. A listener in
+//   `overlay.ts` would still be wrong -- the overlay runs under
+//   `native_discord_overlay::OVERLAY_LABEL`, so a `"main"` emit can never reach
+//   it and the pair would read green while firing never.
+// * It did not report a still-owed deletion. The case it named -- the cipher
+//   store is down, so records stay in the outbox -- returns
+//   `DeletionAttempt::Retry`, which `drain_attachment_deletions` counts into
+//   `DeletionDrainReport::retained` and returns as `Ok`, and
+//   `retry_pending_deletions` then dropped that count with `.map(|_report| ())`.
+//   The advisory therefore fired only when the outbox SUBSYSTEM was broken and
+//   stayed silent in exactly the situation it claimed to announce. ANSWERED:
+//   the current event carries `retained` itself and fires on the `Ok` path, so
+//   it reports the case it names. The broken-subsystem strings keep reaching
+//   the operator the way they already did -- synchronously, in the same words,
+//   through the `?` on `retry_pending_deletions` at the head of the attachment
+//   send and open paths.
+//
+// WHAT THIS DOES NOT CLAIM. Nothing here reads the relay back, so `retained ==
+// 0` means "no record is owed in the outbox", never "the copy is confirmed
+// gone" -- master §7.5. `deleted` and `already_gone` are deliberately not sent
+// to the renderer for the same reason: neither is a readback, and shipping them
+// invites a surface that reads as a verified deletion. The UI copy this closes
+// (`osl-chats-view.ts`, the View once composer label) now states what OSL asks
+// the relay for, not what it achieved.
 
 fn deletion_drain_client(
     app: &tauri::AppHandle,
@@ -440,29 +525,7 @@ fn deletion_drain_client(
         .path()
         .app_config_dir()
         .map_err(|_| "OSL attachment transport is unavailable".to_owned())?;
-    ipc::cipher_store_client::CipherStoreClient::new(
-        ipc::cipher_store_client::resolve_cipher_store_base_url(&config_root),
-    )
-    .map_err(|_| "OSL attachment transport is unavailable".to_owned())
-}
-
-/// Surface a drain outcome without letting it reach the caller's result.
-fn report_deletion_drain(app: &tauri::AppHandle, outcome: Result<(), String>) {
-    let notice = outcome.err();
-    let Ok(mut last) = LAST_DELETION_DRAIN_NOTICE.lock() else {
-        return;
-    };
-    if *last == notice {
-        return;
-    }
-    *last = notice.clone();
-    if let Some(message) = notice {
-        let _ = app.emit_to(
-            DELETION_DRAIN_NOTICE_TARGET,
-            DELETION_DRAIN_NOTICE_EVENT,
-            message,
-        );
-    }
+    attachment_store_client(&config_root)
 }
 
 /// Run one drain pass off the caller's thread, and never in the caller's result.
@@ -483,7 +546,12 @@ pub(crate) fn drain_pending_deletions_detached(app: &tauri::AppHandle) {
             // `drain_attachment_deletions` reports an empty pass by design.
             retry_pending_deletions(&client)
         });
-        report_deletion_drain(&worker, outcome);
+        // The error is still dropped -- this pass must not become an unlock
+        // failure -- but the report no longer is. A failed pass reports
+        // nothing, so a dead store cannot be read as "nothing is owed".
+        if let Ok(report) = outcome {
+            report_deletion_drain(&worker, &report);
+        }
     });
 }
 
@@ -502,9 +570,11 @@ pub(crate) fn spawn_deletion_outbox_drain(app: tauri::AppHandle) {
         .name("osl-attachment-deletion-drain".to_owned())
         .spawn(move || loop {
             std::thread::sleep(DELETION_DRAIN_INTERVAL);
-            let outcome =
-                deletion_drain_client(&app).and_then(|client| retry_pending_deletions(&client));
-            report_deletion_drain(&app, outcome);
+            if let Ok(report) =
+                deletion_drain_client(&app).and_then(|client| retry_pending_deletions(&client))
+            {
+                report_deletion_drain(&app, &report);
+            }
         });
 }
 
@@ -600,14 +670,11 @@ fn open_pending_inner(
         .path()
         .app_config_dir()
         .map_err(|_| "OSL attachment transport is unavailable".to_owned())?;
-    let client = ipc::cipher_store_client::CipherStoreClient::new(
-        ipc::cipher_store_client::resolve_cipher_store_base_url(&config_root),
-    )
-    .map_err(|_| "OSL attachment transport is unavailable".to_owned())?;
+    let client = attachment_store_client(&config_root)?;
     // Retry outstanding deletions before consuming the pending record, so a
     // stuck outbox can never burn a replay slot for an attachment that then
     // fails to open.
-    retry_pending_deletions(&client)?;
+    report_deletion_drain(app, &retry_pending_deletions(&client)?);
     let plan = if overlay_context.is_some() {
         broker::take_native_overlay_attachment(core, security, broker_state, attachment_id)?
     } else {
@@ -680,7 +747,8 @@ fn open_pending_inner(
         // Decode and create the window while it is hidden. `prepare` applies
         // and reads back capture exclusion before returning; Drop closes the
         // hidden window and zeroizes its pixels on every later failure.
-        let viewer = super::native_image_viewer::prepare(app, opened)?;
+        let viewer =
+            super::native_image_viewer::prepare(app, opened, plan.display_duration_seconds)?;
         validate_surface(app, broker_state, overlay_context)?;
         require_active_pro(core)?;
         if overlay_context.is_some() {

@@ -12,9 +12,13 @@
 //! live source on disk and assert the structural invariant a TOCTOU fix
 //! depends on: the accepted capture-proof latch must appear, and still be
 //! checked, before every place that reads the recovery phrase out of
-//! memory. A future edit that removes or reorders that check breaks these
-//! assertions -- see `the_gate_check_detects_removal_and_reordering` for
-//! proof the check is not vacuous.
+//! memory. `recoveryContent()` now delegates phrase visibility to the
+//! `recovery-kit.ts` state machine so the owner can explicitly choose
+//! "show anyway" rather than losing the phrase forever; the copy handler
+//! remains directly gated on the capture-proof latch. A future edit that
+//! removes or reorders those checks breaks these assertions -- see
+//! `the_gate_check_detects_removal_and_reordering` for proof the check is not
+//! vacuous.
 //!
 //! A second, independent question is whether the "confirmation" the latch
 //! is built on is a real OS-level readback or just a request whose return
@@ -90,25 +94,55 @@ fn gate_precedes_every_secret_use(
 }
 
 const MAIN_TS: &str = "apps/osl-hub-ui/src/main.ts";
+const RECOVERY_KIT_TS: &str = "apps/osl-hub-ui/src/recovery-kit.ts";
 const UI_BEHAVIOR_TS: &str = "apps/osl-hub-ui/src/ui-behavior.ts";
 const SCREENSHOT_RS: &str = "crates/runtime/src/screenshot.rs";
 
 const CAPTURE_GATE: &str = "recoveryCaptureGate.canRender()";
+const RECOVERY_STATE_GATE: &str = "recoveryKitStateNow()";
+const VISIBLE_RECOVERY_SECRETS: &str = "visibleRecoverySecrets(state)";
+const RECOVERY_SECRET_MARKUP: &str = "recoveryKitSecretCardsMarkup(secrets";
 const IDENTITY_PHRASE: &str = "recoveryBundle.identityPhrase";
 const PASSWORD_PHRASE: &str = "recoveryBundle.passwordPhrase";
 
 /// `recoveryContent()` renders the onboarding "recovery" route. It must
-/// refuse to interpolate `recoveryBundle.identityPhrase` /
-/// `.passwordPhrase` into the returned HTML string -- the string that
-/// becomes painted pixels once assigned to `innerHTML` -- unless
-/// `recoveryCaptureGate.canRender()` (the accepted capture-proof latch) is
-/// already true.
+/// route all phrase visibility through the recovery-kit state machine before
+/// it renders secret cards. That state must include
+/// `recoveryCaptureGate.canRender()` as its live capture-proof input. The state
+/// machine may also admit the explicit acknowledged "show anyway" path; what
+/// this test rejects is direct rendering of the in-memory bundle without first
+/// going through that visibility decision.
 #[test]
 fn recovery_phrase_render_is_gated_behind_the_capture_proof_latch() {
     let source = read_source(MAIN_TS);
+    let state_block = slice_between(
+        &source,
+        "function recoveryKitStateNow(): RecoveryKitState {",
+        "\n}\n",
+    );
+    assert!(
+        state_block.contains("captureProven: recoveryCaptureGate.canRender()"),
+        "recoveryKitStateNow() must feed the live capture-proof latch into the recovery-kit state; block was:\n{state_block}"
+    );
+
+    let recovery_kit = read_source(RECOVERY_KIT_TS);
+    assert!(
+        recovery_kit.contains(r#"if (state.captureProven || state.shownWithoutProtection) return "kit";"#),
+        "recovery-kit visibility must depend on capture proof or the explicit show-anyway acknowledgement"
+    );
+    assert!(
+        recovery_kit
+            .contains("return recoveryKitView(state).secretsVisible ? state.secrets : null;"),
+        "visibleRecoverySecrets() must withhold secrets unless the recovery-kit view says they are visible"
+    );
+
     let block = slice_between(&source, "function recoveryContent(): string {", "\n}\n");
-    gate_precedes_every_secret_use(block, CAPTURE_GATE, &[IDENTITY_PHRASE, PASSWORD_PHRASE])
-        .expect("recoveryContent() must gate the recovery phrase behind the capture-proof latch");
+    gate_precedes_every_secret_use(
+        block,
+        RECOVERY_STATE_GATE,
+        &[VISIBLE_RECOVERY_SECRETS, RECOVERY_SECRET_MARKUP],
+    )
+    .expect("recoveryContent() must gate the recovery phrase behind the capture-proof latch");
 }
 
 /// The "Copy recovery kit" clipboard handler is a second path to the same

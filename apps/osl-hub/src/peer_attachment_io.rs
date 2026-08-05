@@ -470,6 +470,9 @@ pub enum TransportOutcome {
     MalformedResponse,
     LocalIo,
     Refused,
+    /// Tor is selected and its tunnel is unavailable. Nothing was sent, and
+    /// nothing fell back to a direct route.
+    RouteUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -490,6 +493,21 @@ pub fn classify_cipher_store_error(
         Raw::RateLimited => TransportOutcome::RateLimited,
         Raw::ParseError(_) => TransportOutcome::MalformedResponse,
         Raw::Io(_) => TransportOutcome::LocalIo,
+        Raw::RouteUnavailable(_) => TransportOutcome::RouteUnavailable,
+        Raw::ConfigOverrideRefused { .. } => TransportOutcome::Refused,
+        // B0-01 phase 2's storage grants. All three are the store refusing the
+        // credential we presented, which is exactly `CapabilityRejected` -- the
+        // same outcome as a 401/403 above, and deliberately NOT `Refused`: the
+        // caller retries a refusal and must not retry a bad credential.
+        //
+        // Enumerated rather than caught by a wildcard on purpose. This match is
+        // the only thing that made phase 2's three new variants visible at all:
+        // `crates/ipc` compiled and tested clean (480/0) because `apps/osl-hub`
+        // is EXCLUDED from the cargo workspace, so the lane could not see this.
+        // A `_ =>` arm here would silently swallow the next variant too.
+        Raw::GrantAudience { .. } | Raw::GrantExpired | Raw::GrantMalformed(_) => {
+            TransportOutcome::CapabilityRejected
+        }
         Raw::Status { status, .. } => match *status {
             401 | 403 => TransportOutcome::CapabilityRejected,
             404 | 410 => TransportOutcome::Gone,
@@ -540,6 +558,10 @@ pub fn describe_transport_outcome(outcome: TransportOutcome, phase: TransportPha
         }
         TransportOutcome::LocalIo => "OSL could not read the sealed copy on this device",
         TransportOutcome::Refused => "the encrypted attachment storage refused the request",
+        TransportOutcome::RouteUnavailable => {
+            "Tor is selected and its tunnel is unavailable, so OSL refused rather than \
+             using a direct connection"
+        }
     };
     format!("{subject}: {reason}.")
 }
@@ -667,6 +689,46 @@ fn load_deletion_outbox(path: &Path, key: &[u8; 32]) -> Result<DeletionOutbox, S
     Ok(outbox)
 }
 
+/// Serialises every read-modify-write of the deletion outbox — and NOTHING else.
+///
+/// D-149. The outbox is a single encrypted file that two unrelated code paths
+/// rewrite: `enqueue_attachment_deletion_at_path` (the send/rollback path, when
+/// an inline delete failed) and `drain_attachment_deletions_at_path` (the
+/// periodic tick at `main.rs:9246` and the password gate at `main.rs:1421`).
+/// Both were unlocked load-push-store cycles over the same bytes, so a deletion
+/// enqueued while a drain was in flight was erased by that drain's write-back —
+/// `Ok` returned, promise gone, remote view-once ciphertext orphaned for up to
+/// its full seven-day TTL with nothing owing it.
+///
+/// **This lock is never held across a network call.** The drain takes it to
+/// load, releases it for up to [`MAX_DELETION_RETRIES_PER_PASS`]
+/// (`native_attachment_transport.rs`) round trips, and takes it again only to
+/// reconcile and store. Holding it across the attempt closure was the obvious
+/// repair and is the wrong one: an enqueue arriving during a pass against a
+/// dead cipher store would block behind several socket timeouts, on the send
+/// path, which is exactly where a deletion promise must not be delayed or
+/// dropped.
+///
+/// A process-wide `Mutex` is the correct granularity because there is one OSL
+/// process per install — `tauri_plugin_single_instance` (`main.rs:9395`) — and
+/// one outbox per active account. It is deliberately NOT a file lock: nothing
+/// in this app takes one, and a stale lock file on a crash would wedge the one
+/// store that must never refuse a write. Two OSL processes sharing an account
+/// directory is not a supported configuration; the reconciliation below still
+/// reduces the damage window there from eight round trips to one encrypt-and-
+/// write, but it does not make it zero, and that limit is stated rather than
+/// papered over.
+///
+/// Poisoning is absorbed: a panic in an unrelated drain must not turn the
+/// deletion outbox into a permanently unwritable store.
+static DELETION_OUTBOX_WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_deletion_outbox() -> std::sync::MutexGuard<'static, ()> {
+    DELETION_OUTBOX_WRITER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn store_deletion_outbox(
     path: &Path,
     outbox: &DeletionOutbox,
@@ -687,6 +749,10 @@ fn store_deletion_outbox(
 /// Durably record one remote object OSL must delete. Called only after an
 /// inline delete failed, so a failed rollback can never leave ciphertext in
 /// remote storage for the full TTL without a retry owner.
+///
+/// The whole load-modify-store runs under [`DELETION_OUTBOX_WRITER`] (D-149).
+/// There is no I/O here beyond the outbox file itself, so the critical section
+/// is a read, a decrypt, an encrypt and an atomic write — never a round trip.
 pub fn enqueue_attachment_deletion_at_path(
     path: &Path,
     key: &[u8; 32],
@@ -703,6 +769,7 @@ pub fn enqueue_attachment_deletion_at_path(
     {
         return Err("OSL attachment deletion record is invalid".to_owned());
     }
+    let _writer = lock_deletion_outbox();
     let mut outbox = load_deletion_outbox(path, key)?;
     outbox.entries.retain(|entry| entry.expires_at > now);
     if let Some(existing) = outbox
@@ -735,6 +802,60 @@ pub fn enqueue_attachment_deletion_at_path(
 /// Retry every outstanding deletion. Records survive an unlimited number of
 /// failed attempts and leave only on confirmed deletion or after their server
 /// TTL has elapsed.
+///
+/// # The write-back is a reconciliation, not a clobber (D-149)
+///
+/// A pass has three phases and the middle one is the expensive one:
+///
+/// 1. **Load** under [`DELETION_OUTBOX_WRITER`], then release it.
+/// 2. **Attempt**, with the lock released — up to
+///    `MAX_DELETION_RETRIES_PER_PASS` network round trips against a store that
+///    may be dead. `enqueue_attachment_deletion_at_path` runs freely here; that
+///    is the entire point.
+/// 3. **Reconcile** under the lock: re-read whatever is on disk *now* and apply
+///    only what this pass actually learned to it. The snapshot from phase 1 is
+///    never written back as-is, because it is stale by construction.
+///
+/// The reconciliation rules, and the reason for each:
+///
+/// * A record whose object this pass saw **removed remotely** (`Deleted`, or
+///   `AlreadyGone` — the store answering that the object does not exist) is
+///   dropped from the on-disk list **by `object_id`**, even if it was
+///   re-enqueued during phase 2. `object_id` names the remote object, so a
+///   second promise to delete the same object is a promise about something the
+///   store has already confirmed gone. **This is the edge the previous lane
+///   refused to rule on, and this is the ruling:** the remote store's answer
+///   beats the local re-enqueue, because the alternative is to keep a record
+///   whose only possible future is one more round trip that returns `Gone`. The
+///   cost of being wrong is bounded and one-directional — if the store lied
+///   about the delete, OSL has *forgotten* an object it cannot see anyway; it
+///   has not deleted anything it should have kept, and nothing is reported as
+///   confirmed that was not (§7.5). The opposite ruling — keep it — would trade
+///   that for a permanent extra request per pass and a `retained` count that
+///   overstates what is owed, which is the D-135 surface lying in the noisy
+///   direction. Neither loses a promise; this one is quieter and equally safe.
+/// * A record this pass **retained** keeps whatever is on disk (a re-enqueue may
+///   have refreshed its fetch token or TTL and that is the fresher truth) and
+///   takes the higher of the two attempt counts, so a failed pass still costs an
+///   attempt and the count cannot be reset by a concurrent enqueue.
+/// * A record enqueued during phase 2 that this pass never saw is **left
+///   alone**. That is the defect this function had.
+/// * TTL expiry is re-applied to the reconciled list rather than trusted from
+///   the snapshot, so a record that was re-enqueued with a longer life is not
+///   retired on the strength of a stale `expires_at`.
+///
+/// If the re-read in phase 3 fails, the pass returns the error and writes
+/// **nothing**. Records this pass already deleted remotely stay in the outbox
+/// and are retried next pass, where the store answers `Gone` and they leave.
+/// That direction is deliberate: over-retrying a deleted object costs one
+/// request, losing a live promise orphans ciphertext.
+///
+/// `report.retained` is the number of records still owed **after** the
+/// write-back, which is what `native_attachment_transport::report_deletion_drain`
+/// documents it as and what D-135's `.osl-chat-deletion-unconfirmed` surface
+/// renders. In an uncontended pass that is exactly the number of `Retry`
+/// outcomes; under contention it also counts a deletion enqueued mid-pass,
+/// which is the honest answer and the one D-149 was silently zeroing.
 pub fn drain_attachment_deletions_at_path<F>(
     path: &Path,
     key: &[u8; 32],
@@ -744,14 +865,20 @@ pub fn drain_attachment_deletions_at_path<F>(
 where
     F: FnMut(&PendingDeletion) -> DeletionAttempt,
 {
-    let mut outbox = load_deletion_outbox(path, key)?;
-    let entries = std::mem::take(&mut outbox.entries);
+    let entries = {
+        let _writer = lock_deletion_outbox();
+        load_deletion_outbox(path, key)?.entries
+    };
     if entries.is_empty() {
         // Nothing owed, so do not create or rewrite the outbox on a routine pass.
         return Ok(DeletionDrainReport::default());
     }
+
     let mut report = DeletionDrainReport::default();
-    let mut retained: Vec<DeletionRecord> = Vec::new();
+    // Objects the store itself confirmed are gone, and the attempt counts this
+    // pass earned. Nothing else from the snapshot survives into the write-back.
+    let mut removed_remotely: Vec<String> = Vec::new();
+    let mut attempted_counts: Vec<(String, u32)> = Vec::new();
     for entry in entries {
         if entry.expires_at <= now {
             report.expired += 1;
@@ -766,24 +893,44 @@ where
             view_once: entry.view_once,
             attempts: entry.attempts,
         };
+        // The one call in this function that can touch the network. The outbox
+        // writer lock is NOT held here.
         match attempt(&pending) {
-            DeletionAttempt::Deleted => report.deleted += 1,
-            DeletionAttempt::AlreadyGone => report.already_gone += 1,
+            DeletionAttempt::Deleted => {
+                report.deleted += 1;
+                removed_remotely.push(entry.object_id.clone());
+            }
+            DeletionAttempt::AlreadyGone => {
+                report.already_gone += 1;
+                removed_remotely.push(entry.object_id.clone());
+            }
             DeletionAttempt::Retry => {
-                let mut kept = entry.clone();
-                kept.attempts = kept.attempts.saturating_add(1);
-                retained.push(kept);
-                report.retained += 1;
+                attempted_counts.push((entry.object_id.clone(), entry.attempts.saturating_add(1)));
             }
         }
     }
-    outbox.entries = retained;
+
+    let _writer = lock_deletion_outbox();
+    let mut outbox = load_deletion_outbox(path, key)?;
+    outbox
+        .entries
+        .retain(|entry| entry.expires_at > now && !removed_remotely.contains(&entry.object_id));
+    for entry in &mut outbox.entries {
+        if let Some((_, attempts)) = attempted_counts
+            .iter()
+            .find(|(object_id, _)| *object_id == entry.object_id)
+        {
+            entry.attempts = entry.attempts.max(*attempts);
+        }
+    }
+    report.retained = outbox.entries.len();
     outbox.version = 1;
     store_deletion_outbox(path, &outbox, key)?;
     Ok(report)
 }
 
 pub fn pending_attachment_deletions_at_path(path: &Path, key: &[u8; 32]) -> Result<usize, String> {
+    let _writer = lock_deletion_outbox();
     Ok(load_deletion_outbox(path, key)?.entries.len())
 }
 
@@ -1705,6 +1852,332 @@ mod tests {
             pending_attachment_deletions_at_path(&path, &key).unwrap(),
             0
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// D-134's "two overlapping drains" question, driven deterministically.
+    ///
+    /// `drain_attachment_deletions_at_path` used to be a read-modify-write with
+    /// no mutual exclusion of any kind: it loaded the outbox, spent up to
+    /// `MAX_DELETION_RETRIES_PER_PASS` *network round trips* inside `attempt`,
+    /// and then stored its own retained list back over whatever was on disk.
+    /// Anything enqueued during that window was erased by the write-back.
+    ///
+    /// The window is not theoretical. `enqueue_attachment_deletion` runs on the
+    /// send/rollback path while the detached tick drain (main.rs:9246) may be
+    /// mid-flight against a dead store. Losing that record orphans remote
+    /// view-once ciphertext for its full TTL with nothing owing it.
+    ///
+    /// Barrier-driven, so it is deterministic rather than a timing race.
+    ///
+    /// THIS TEST WAS COMMITTED RED AND `#[ignore]`d BY THE LANE THAT FOUND
+    /// D-149, with its assertion unrelaxed. **D-149 fixed it: the `#[ignore]`
+    /// is gone and the assertion is untouched.** It failed at
+    /// `integrate/first-usable` with `left: 0, right: 1` — the promise gone —
+    /// and it is green now because the write-back re-reads the outbox under
+    /// `DELETION_OUTBOX_WRITER` and applies only what the pass learned. Restore
+    /// the unconditional `outbox.entries = retained; store(...)` and this goes
+    /// straight back to `left: 0, right: 1`.
+    ///
+    /// It also gates the other half of the design. The barrier inside `attempt`
+    /// is only reachable if the enqueue on the main thread can complete while
+    /// the drain is parked mid-pass. **Hold the writer lock across the attempt
+    /// closure and this test does not fail — it hangs**, which is precisely the
+    /// blocked send path that repair was rejected for.
+    ///
+    /// ```text
+    /// cargo test --manifest-path apps/osl-hub/Cargo.toml --lib \
+    ///     -- --test-threads=1 a_deletion_enqueued
+    /// ```
+    #[test]
+    fn a_deletion_enqueued_during_a_drain_pass_survives_its_write_back() {
+        use std::sync::{Arc, Barrier};
+
+        let root = root("outbox-concurrent-enqueue");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("deletions.json");
+        let key = outbox_key();
+        let now = 4_000_000i64;
+
+        // One record already owed; the drain below will confirm it deleted.
+        enqueue_attachment_deletion_at_path(
+            &path,
+            &key,
+            &object_id(1),
+            &fetch_token_hex(1),
+            now + 3_600,
+            now,
+            true,
+        )
+        .unwrap();
+
+        let loaded = Arc::new(Barrier::new(2));
+        let enqueued = Arc::new(Barrier::new(2));
+        let drain_path = path.clone();
+        let drain_loaded = Arc::clone(&loaded);
+        let drain_enqueued = Arc::clone(&enqueued);
+        let drain = std::thread::spawn(move || {
+            drain_attachment_deletions_at_path(&drain_path, &key, now, |_| {
+                // The pass has loaded the outbox and is now "on the network".
+                drain_loaded.wait();
+                // Hold there until a second deletion has been recorded.
+                drain_enqueued.wait();
+                DeletionAttempt::Deleted
+            })
+            .unwrap()
+        });
+
+        loaded.wait();
+        // A send rolls back while the drain is in flight and records its promise.
+        enqueue_attachment_deletion_at_path(
+            &path,
+            &key,
+            &object_id(2),
+            &fetch_token_hex(2),
+            now + 3_600,
+            now,
+            true,
+        )
+        .unwrap();
+        enqueued.wait();
+
+        let report = drain.join().unwrap();
+        assert_eq!(report.deleted, 1);
+        assert_eq!(
+            pending_attachment_deletions_at_path(&path, &key).unwrap(),
+            1,
+            "a deletion promised while a drain was in flight must still be owed; \
+             erasing it orphans remote ciphertext for its full TTL"
+        );
+        // D-149 and D-135 are the same story from two ends: `retained` is the
+        // number this pass reports to `.osl-chat-deletion-unconfirmed`, and a
+        // pass that leaves a promise owed may not report zero owed. Before the
+        // fix this was 0 twice over -- no record and no warning.
+        assert_eq!(
+            report.retained, 1,
+            "the count D-135 renders must match what is actually still owed \
+             after the write-back, not just what this pass retried"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The other half of D-149's ruling: reconciliation must not become
+    /// resurrection.
+    ///
+    /// The write-back re-reads the outbox, so it can see records that were not
+    /// in its snapshot. It must not therefore hand back a record whose object
+    /// the cipher store confirmed gone during this very pass. The concrete case
+    /// is a rollback re-enqueueing the **same `object_id`** — with a refreshed
+    /// fetch token and a longer TTL, so it is a genuinely different record on
+    /// disk — while the drain is mid-flight deleting it.
+    ///
+    /// `object_id` names the remote object. Once the store answers `Deleted`
+    /// (or `AlreadyGone`), any promise about that object is already fulfilled,
+    /// and keeping the re-enqueued copy buys nothing but one more round trip
+    /// that returns `Gone`, plus a `retained` count that tells the D-135 surface
+    /// a copy is unconfirmed when the store said it is not there. So the remote
+    /// answer wins and the record leaves.
+    ///
+    /// The mutant: make the write-back drop only records it *saw*, by matching
+    /// the snapshot's `fetch_token` as well as its `object_id`. The re-enqueued
+    /// copy no longer matches, survives, and this test goes RED at 1 != 0.
+    #[test]
+    fn a_record_the_store_confirmed_gone_is_not_resurrected_by_a_mid_pass_enqueue() {
+        use std::sync::{Arc, Barrier};
+
+        let root = root("outbox-no-resurrection");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("deletions.json");
+        let key = outbox_key();
+        let now = 5_000_000i64;
+
+        enqueue_attachment_deletion_at_path(
+            &path,
+            &key,
+            &object_id(7),
+            &fetch_token_hex(7),
+            now + 3_600,
+            now,
+            true,
+        )
+        .unwrap();
+
+        let loaded = Arc::new(Barrier::new(2));
+        let enqueued = Arc::new(Barrier::new(2));
+        let drain_path = path.clone();
+        let drain_loaded = Arc::clone(&loaded);
+        let drain_enqueued = Arc::clone(&enqueued);
+        let drain = std::thread::spawn(move || {
+            drain_attachment_deletions_at_path(&drain_path, &key, now, |pending| {
+                assert_eq!(pending.object_id, object_id(7));
+                drain_loaded.wait();
+                drain_enqueued.wait();
+                // The store confirms the object is gone.
+                DeletionAttempt::Deleted
+            })
+            .unwrap()
+        });
+
+        loaded.wait();
+        // The same object promised again mid-pass, with a fresh token and a
+        // later expiry, so the on-disk record is not byte-identical to the one
+        // the drain is acting on.
+        enqueue_attachment_deletion_at_path(
+            &path,
+            &key,
+            &object_id(7),
+            &fetch_token_hex(8),
+            now + 7_200,
+            now,
+            true,
+        )
+        .unwrap();
+        enqueued.wait();
+
+        let report = drain.join().unwrap();
+        assert_eq!(report.deleted, 1);
+        assert_eq!(
+            pending_attachment_deletions_at_path(&path, &key).unwrap(),
+            0,
+            "the cipher store confirmed this object gone during the pass; \
+             re-reading the outbox at write-back must not hand the record back"
+        );
+        assert_eq!(
+            report.retained, 0,
+            "nothing is owed, so the D-135 surface must not be told a copy is \
+             unconfirmed"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A pass that cannot re-read the outbox at write-back writes NOTHING.
+    ///
+    /// The reconciliation needs a fresh read. If that read fails — the file was
+    /// replaced with something unopenable while the pass was on the network —
+    /// the alternative would be to fall back on the stale snapshot, which is
+    /// exactly the clobber D-149 is about. So the pass fails instead, and the
+    /// records it already deleted remotely stay in the outbox until the next
+    /// pass, where the store answers `Gone` and they leave.
+    ///
+    /// Over-retrying a deleted object costs one request. Losing a live promise
+    /// orphans view-once ciphertext for its TTL. The failure direction is
+    /// chosen, not accidental.
+    #[test]
+    fn a_write_back_that_cannot_re_read_the_outbox_refuses_rather_than_clobbers() {
+        let root = root("outbox-writeback-unreadable");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("deletions.json");
+        let key = outbox_key();
+        let now = 6_000_000i64;
+
+        enqueue_attachment_deletion_at_path(
+            &path,
+            &key,
+            &object_id(4),
+            &fetch_token_hex(4),
+            now + 3_600,
+            now,
+            true,
+        )
+        .unwrap();
+        let sealed = std::fs::read(&path).unwrap();
+
+        let outcome = drain_attachment_deletions_at_path(&path, &key, now, |_| {
+            // Mid-pass, the outbox on disk stops being an outbox.
+            std::fs::write(&path, b"not an encrypted outbox").unwrap();
+            DeletionAttempt::Deleted
+        });
+        assert!(
+            outcome.is_err(),
+            "a pass that cannot read the outbox back must report failure, not \
+             write its stale snapshot over whatever is there"
+        );
+
+        // The promise is recoverable: nothing was written, so restoring the file
+        // restores the record, and the next pass retries it.
+        std::fs::write(&path, &sealed).unwrap();
+        assert_eq!(
+            pending_attachment_deletions_at_path(&path, &key).unwrap(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// D-134's locked-session question, pinned.
+    ///
+    /// The outbox drain is the one attachment path that runs on a schedule
+    /// nobody asked for: `spawn_lifecycle_tick` (apps/osl-hub/src/main.rs:9097)
+    /// subsamples the lifecycle tick down to `DELETION_DRAIN_INTERVAL` and
+    /// calls `drain_pending_deletions_detached` at main.rs:9120. It therefore
+    /// meets a locked session routinely, and for the life of the process.
+    ///
+    /// So it must report an *empty pass*, never `session_lock::SESSION_LOCKED_ERROR`.
+    /// A background task that raises a refusal every interval forever is worse
+    /// than no task at all. It must also not reach the cipher store while
+    /// locked: a locked pass that still made a request would turn the tick into
+    /// a periodic beacon, which is exactly what `DELETION_DRAIN_INTERVAL`'s own
+    /// justification (native_attachment_transport.rs:419-437) promises it is not.
+    ///
+    /// The outbox must be **non-empty** for this to gate anything. With an empty
+    /// or absent outbox a locked pass and an unlocked pass are indistinguishable
+    /// — both return `Ok(default())` — so a test that only calls this with no
+    /// records cannot fail, and the first version of this test did not: it
+    /// survived the mutant. Owing a real deletion first is what makes the two
+    /// paths diverge.
+    #[test]
+    fn a_drain_pass_taken_while_locked_is_a_silent_no_op_not_a_refusal() {
+        const UNLOCKED_KEY: [u8; 32] = [0x5c; 32];
+
+        let root = root("outbox-locked-pass");
+        std::fs::create_dir_all(&root).unwrap();
+        let restore_dir = keystore::active_account_dir();
+        keystore::set_active_account_dir(Some(root.clone()));
+        let outbox = deletion_outbox_path().unwrap();
+
+        // OSL owes a real remote deletion, recorded while unlocked.
+        ipc::main_password::set_file_storage_key(Some(UNLOCKED_KEY));
+        let now = ipc::main_password::now_unix_secs_pub();
+        enqueue_attachment_deletion(&object_id(9), &fetch_token_hex(9), now + 3_600, true).unwrap();
+        assert_eq!(
+            pending_attachment_deletions_at_path(&outbox, &UNLOCKED_KEY).unwrap(),
+            1
+        );
+
+        // Then the session locks, and the tick fires anyway — it is on a clock,
+        // not on the user. This is the pass that must stay quiet.
+        ipc::main_password::set_file_storage_key(None);
+        let mut attempts = 0usize;
+        let report = drain_attachment_deletions(|_| {
+            attempts += 1;
+            DeletionAttempt::Deleted
+        })
+        .expect(
+            "a locked pass reports an empty drain, never an error: this runs every \
+             DELETION_DRAIN_INTERVAL for the life of the process, so an error here is \
+             a refusal loop",
+        );
+        assert_eq!(
+            attempts, 0,
+            "a locked pass must not reach the cipher store: the outbox is sealed with \
+             the file storage key, so there is nothing readable to retry"
+        );
+        assert_eq!(
+            report,
+            DeletionDrainReport::default(),
+            "a locked pass must not report work it did not do"
+        );
+
+        // And the promise must still be owed once OSL is unlocked again: the
+        // quiet pass may not consume, evict or corrupt what it could not read.
+        ipc::main_password::set_file_storage_key(Some(UNLOCKED_KEY));
+        assert_eq!(
+            pending_attachment_deletions_at_path(&outbox, &UNLOCKED_KEY).unwrap(),
+            1,
+            "a locked pass must leave the outbox exactly as it found it"
+        );
+
+        ipc::main_password::set_file_storage_key(None);
+        keystore::set_active_account_dir(restore_dir);
         let _ = std::fs::remove_dir_all(root);
     }
 

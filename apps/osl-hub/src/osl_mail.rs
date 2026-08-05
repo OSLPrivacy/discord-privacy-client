@@ -1,8 +1,10 @@
 //! T4-N2's signed OSL Mail provisioning bridge.
 //!
-//! The server deliberately has no status endpoint.  Availability comes from
-//! its public capability document; whether this identity has a mailbox is
-//! local state established only after a signed provision response succeeds.
+//! The server deliberately has no status endpoint. Server capability still
+//! gates the signed lab operations, but the user-facing Mail client is not
+//! available until the desktop bridge exists. Whether this identity has a
+//! mailbox is local state established only after a signed provision response
+//! succeeds.
 
 use crate::core_bridge::HubCoreState;
 use base64::{
@@ -17,6 +19,24 @@ use std::sync::Mutex;
 
 const MAIL_DOMAIN: &str = "oslprivacy.com";
 const RETENTION_SECONDS: u32 = 7 * 24 * 60 * 60;
+/// Whether the user-facing OSL Mail client may present as usable.
+///
+/// **Derived, not written.** This was the literal `false` that D-221 called out
+/// from the other side: it *"matches every authority but hides provision/send/
+/// burn, which do work against the deployed keyserver"*, while the `true` it
+/// replaced promised a mailbox that can never be read. *"The tile has no third
+/// state."*
+///
+/// One boolean still cannot hold three states, so it no longer tries to. It
+/// answers exactly one question — may OSL Mail present as working — and the
+/// answer comes from [`crate::claim_state`], where the full state IS
+/// expressible: `NoCarrierByConstruction` (first-party, no composer to bind,
+/// `PLAN.md` r5-2a) with `NotDeliverable` (no payload is uploaded and D-137
+/// deleted retrieval), which derives to `Planned` and ships the sentence saying
+/// what does and does not work.
+fn osl_mail_desktop_bridge_available() -> bool {
+    crate::claim_state::public_claim(crate::claim_state::Surface::OslMail).is_capability_claim()
+}
 
 #[derive(Default)]
 pub struct OslMailState {
@@ -159,35 +179,84 @@ pub fn send(
     subject: String,
     body: String,
 ) -> Result<OslMailSendReceipt, String> {
-    if !valid_osl_address(&recipient) || subject.as_bytes().len() > 512 || body.is_empty() || body.as_bytes().len() > 256 * 1024 {
+    if !valid_osl_address(&recipient)
+        || subject.as_bytes().len() > 512
+        || body.is_empty()
+        || body.as_bytes().len() > 256 * 1024
+    {
         return Err("OSL Mail message is invalid".to_owned());
     }
     let identity = active_identity(core)?;
-    let own_address = state.addresses.lock().map_err(|_| "OSL Mail state is unavailable".to_owned())?
-        .get(&identity.user_id).cloned().ok_or_else(|| "Provision OSL Mail before sending".to_owned())?;
+    let own_address = state
+        .addresses
+        .lock()
+        .map_err(|_| "OSL Mail state is unavailable".to_owned())?
+        .get(&identity.user_id)
+        .cloned()
+        .ok_or_else(|| "Provision OSL Mail before sending".to_owned())?;
     let base_url = mail_base_url()?;
     ensure_capabilities(&base_url)?;
 
     let pointer = pointer_envelope(&recipient, &subject, &body);
     let mut unsigned = Map::new();
-    unsigned.insert("recipient_address".to_owned(), Value::String(recipient.clone()));
-    unsigned.insert("opaque_thread_token".to_owned(), Value::String(URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(24))));
-    unsigned.insert("ciphertext_b64".to_owned(), Value::String(STANDARD.encode(pointer.as_bytes())));
-    unsigned.insert("envelope".to_owned(), serde_json::json!({ "version": 1, "pointer_only": true }));
-    unsigned.insert("recipient_key_fingerprint".to_owned(), Value::String(sha256_hex(recipient.as_bytes())));
+    unsigned.insert(
+        "recipient_address".to_owned(),
+        Value::String(recipient.clone()),
+    );
+    unsigned.insert(
+        "opaque_thread_token".to_owned(),
+        Value::String(URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(24))),
+    );
+    unsigned.insert(
+        "ciphertext_b64".to_owned(),
+        Value::String(STANDARD.encode(pointer.as_bytes())),
+    );
+    unsigned.insert(
+        "envelope".to_owned(),
+        serde_json::json!({ "version": 1, "pointer_only": true }),
+    );
+    unsigned.insert(
+        "recipient_key_fingerprint".to_owned(),
+        Value::String(sha256_hex(recipient.as_bytes())),
+    );
     unsigned.insert("timestamp_ms".to_owned(), Value::from(now_millis()?));
     unsigned.insert("request_id".to_owned(), Value::String(request_id()));
-    unsigned.insert("user_id".to_owned(), Value::String(identity.user_id.clone()));
+    unsigned.insert(
+        "user_id".to_owned(),
+        Value::String(identity.user_id.clone()),
+    );
     let message = signed_message("SEND-OSL", &unsigned)?;
-    unsigned.insert("signature_b64".to_owned(), Value::String(STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes())));
+    unsigned.insert(
+        "signature_b64".to_owned(),
+        Value::String(
+            STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes()),
+        ),
+    );
 
-    let response = http_client()?.post(format!("{base_url}/v1/mail/send/osl")).json(&unsigned).send()
+    let response = http_client()?
+        .post(format!("{base_url}/v1/mail/send/osl"))
+        .json(&unsigned)
+        .send()
         .map_err(|_| "OSL Mail send is unavailable".to_owned())?;
-    if !response.status().is_success() { return Err("OSL Mail send was refused".to_owned()); }
-    let sent: SendResponse = response.json().map_err(|_| "OSL Mail send response was malformed".to_owned())?;
-    if !sent.accepted || sent.message_id.is_empty() { return Err("OSL Mail send response was invalid".to_owned()); }
+    if !response.status().is_success() {
+        return Err("OSL Mail send was refused".to_owned());
+    }
+    let sent: SendResponse = response
+        .json()
+        .map_err(|_| "OSL Mail send response was malformed".to_owned())?;
+    if !sent.accepted || sent.message_id.is_empty() {
+        return Err("OSL Mail send response was invalid".to_owned());
+    }
     let accepted_at = now_millis()?;
-    Ok(OslMailSendReceipt { client_message_id: sent.message_id, accepted_at, recipient, transit: "oslE2ee", receipt_sha256: sha256_hex(format!("{own_address}\n{accepted_at}\n{}", unsigned["request_id"]).as_bytes()) })
+    Ok(OslMailSendReceipt {
+        client_message_id: sent.message_id,
+        accepted_at,
+        recipient,
+        transit: "oslE2ee",
+        receipt_sha256: sha256_hex(
+            format!("{own_address}\n{accepted_at}\n{}", unsigned["request_id"]).as_bytes(),
+        ),
+    })
 }
 
 /// Tombstone the server mailbox.  A successful receipt is emitted only after
@@ -202,25 +271,59 @@ pub fn burn(
         return Err("OSL Mail burn confirmation does not match the mailbox".to_owned());
     }
     let identity = active_identity(core)?;
-    let current = state.addresses.lock().map_err(|_| "OSL Mail state is unavailable".to_owned())?
-        .get(&identity.user_id).cloned().ok_or_else(|| "No provisioned OSL Mail mailbox to burn".to_owned())?;
-    if current != address { return Err("OSL Mail burn address is not the active mailbox".to_owned()); }
+    let current = state
+        .addresses
+        .lock()
+        .map_err(|_| "OSL Mail state is unavailable".to_owned())?
+        .get(&identity.user_id)
+        .cloned()
+        .ok_or_else(|| "No provisioned OSL Mail mailbox to burn".to_owned())?;
+    if current != address {
+        return Err("OSL Mail burn address is not the active mailbox".to_owned());
+    }
     let base_url = mail_base_url()?;
     ensure_capabilities(&base_url)?;
     let mut unsigned = Map::new();
     unsigned.insert("timestamp_ms".to_owned(), Value::from(now_millis()?));
     unsigned.insert("request_id".to_owned(), Value::String(request_id()));
-    unsigned.insert("user_id".to_owned(), Value::String(identity.user_id.clone()));
+    unsigned.insert(
+        "user_id".to_owned(),
+        Value::String(identity.user_id.clone()),
+    );
     let message = signed_message("BURN", &unsigned)?;
-    unsigned.insert("signature_b64".to_owned(), Value::String(STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes())));
-    let response = http_client()?.post(format!("{base_url}/v1/mail/burn")).json(&unsigned).send()
+    unsigned.insert(
+        "signature_b64".to_owned(),
+        Value::String(
+            STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes()),
+        ),
+    );
+    let response = http_client()?
+        .post(format!("{base_url}/v1/mail/burn"))
+        .json(&unsigned)
+        .send()
         .map_err(|_| "OSL Mail burn is unavailable".to_owned())?;
-    if !response.status().is_success() { return Err("OSL Mail burn was refused".to_owned()); }
-    let burned: BurnResponse = response.json().map_err(|_| "OSL Mail burn response was malformed".to_owned())?;
-    if !burned.address_tombstoned { return Err("OSL Mail burn was not confirmed by the server".to_owned()); }
-    state.addresses.lock().map_err(|_| "OSL Mail state is unavailable".to_owned())?.remove(&identity.user_id);
+    if !response.status().is_success() {
+        return Err("OSL Mail burn was refused".to_owned());
+    }
+    let burned: BurnResponse = response
+        .json()
+        .map_err(|_| "OSL Mail burn response was malformed".to_owned())?;
+    if !burned.address_tombstoned {
+        return Err("OSL Mail burn was not confirmed by the server".to_owned());
+    }
+    state
+        .addresses
+        .lock()
+        .map_err(|_| "OSL Mail state is unavailable".to_owned())?
+        .remove(&identity.user_id);
     let burned_at = now_millis()?;
-    Ok(OslMailBurnReceipt { address, burned_at, deleted_messages: burned.deleted, receipt_sha256: sha256_hex(format!("{burned_at}\n{}", unsigned["request_id"]).as_bytes()), mailbox_disabled: true })
+    Ok(OslMailBurnReceipt {
+        address,
+        burned_at,
+        deleted_messages: burned.deleted,
+        receipt_sha256: sha256_hex(format!("{burned_at}\n{}", unsigned["request_id"]).as_bytes()),
+        mailbox_disabled: true,
+    })
 }
 
 fn pointer_envelope(recipient: &str, subject: &str, body: &str) -> String {
@@ -232,15 +335,24 @@ fn pointer_envelope(recipient: &str, subject: &str, body: &str) -> String {
         "subject_sha256": sha256_hex(subject.as_bytes()),
         "body_sha256": sha256_hex(body.as_bytes()),
         "recipient_sha256": sha256_hex(recipient.as_bytes()),
-    }).to_string()
+    })
+    .to_string()
 }
 
-fn sha256_hex(bytes: &[u8]) -> String { format!("{:x}", Sha256::digest(bytes)) }
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
 
 fn valid_osl_address(address: &str) -> bool {
-    let Some((local, domain)) = address.split_once('@') else { return false; };
-    domain == MAIL_DOMAIN && !local.is_empty() && local.len() <= 32
-        && local.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-'))
+    let Some((local, domain)) = address.split_once('@') else {
+        return false;
+    };
+    domain == MAIL_DOMAIN
+        && !local.is_empty()
+        && local.len() <= 32
+        && local.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
 }
 
 fn active_identity(core: &HubCoreState) -> Result<keystore::Identity, String> {
@@ -259,11 +371,20 @@ fn mail_base_url() -> Result<String, String> {
 }
 
 fn http_client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|_| "OSL Mail network client is unavailable".to_owned())
+    // Mail is egress like every other path here. While Tor is selected this
+    // adopts the authorized tunnel or refuses; it never builds a direct
+    // client behind a UI that says Tor is on. See `keystore::egress`.
+    match keystore::egress::direct_client_decision() {
+        keystore::egress::DirectClientDecision::Adopt(client) => Ok(*client),
+        keystore::egress::DirectClientDecision::Refuse => {
+            Err(keystore::egress::TOR_UNAVAILABLE.to_owned())
+        }
+        keystore::egress::DirectClientDecision::Build => reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|_| "OSL Mail network client is unavailable".to_owned()),
+    }
 }
 
 fn ensure_capabilities(base_url: &str) -> Result<(), String> {
@@ -289,7 +410,7 @@ fn ensure_capabilities(base_url: &str) -> Result<(), String> {
 fn status_from_address(address: Option<String>) -> OslMailStatus {
     let provisioned = address.is_some();
     OslMailStatus {
-        available: true,
+        available: osl_mail_desktop_bridge_available(),
         provisioned,
         address,
         unread_count: 0,
@@ -355,7 +476,7 @@ fn canonical_json(value: &Value) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{pointer_envelope, signed_message, status_from_address};
+    use super::{pointer_envelope, signed_message, status_from_address, BurnResponse};
     use serde_json::{Map, Value};
 
     #[test]
@@ -363,12 +484,40 @@ mod tests {
         assert_eq!(
             status_from_address(None),
             super::OslMailStatus {
-                available: true,
+                available: false,
                 provisioned: false,
                 address: None,
                 unread_count: 0,
                 retention_seconds: 604_800,
             }
+        );
+    }
+
+    /// D-221. The flag is the claim state's answer, so OSL Mail cannot present
+    /// as usable while its own evidence row says nothing can be retrieved — and
+    /// the row carries the part a boolean never could: provisioning, send and
+    /// burn DO work against the deployed service.
+    #[test]
+    fn the_mail_client_availability_flag_is_the_claim_state_and_not_a_literal() {
+        use crate::claim_state::{
+            claim_of, public_claim, CarrierEvidence, DeliveryEvidence, PublicClaim, Surface,
+        };
+
+        assert_eq!(
+            super::osl_mail_desktop_bridge_available(),
+            public_claim(Surface::OslMail).is_capability_claim()
+        );
+        assert!(!super::osl_mail_desktop_bridge_available());
+
+        let row = claim_of(Surface::OslMail);
+        assert_eq!(row.carrier, CarrierEvidence::NoCarrierByConstruction);
+        assert_eq!(row.delivery, DeliveryEvidence::NotDeliverable);
+        assert_eq!(public_claim(Surface::OslMail), PublicClaim::Planned);
+        // The third state, stated rather than hidden behind `false`.
+        assert!(
+            row.reason.contains("burn") && row.reason.contains("cannot deliver"),
+            "the OSL Mail row must say what works AND what cannot: {}",
+            row.reason
         );
     }
 
@@ -395,7 +544,11 @@ mod tests {
 
     #[test]
     fn send_pointer_never_contains_the_composed_payload() {
-        let pointer = pointer_envelope("member@oslprivacy.com", "private subject", "payload must never transit");
+        let pointer = pointer_envelope(
+            "member@oslprivacy.com",
+            "private subject",
+            "payload must never transit",
+        );
         assert!(!pointer.contains("private subject"));
         assert!(!pointer.contains("payload must never transit"));
         assert!(pointer.contains("body_sha256"));
@@ -403,7 +556,13 @@ mod tests {
 
     #[test]
     fn burn_receipt_requires_the_server_tombstone() {
-        let response = BurnResponse { deleted: 3, address_tombstoned: false };
-        assert!(!response.address_tombstoned, "a receipt without deletion must be refused");
+        let response = BurnResponse {
+            deleted: 3,
+            address_tombstoned: false,
+        };
+        assert!(
+            !response.address_tombstoned,
+            "a receipt without deletion must be refused"
+        );
     }
 }

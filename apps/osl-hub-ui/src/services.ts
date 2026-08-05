@@ -1,13 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./preferences";
 
-export type ServiceId = "discord" | "telegram" | "instagram" | "snapchat" | "email" | "x" | "slack" | "linkedin" | "teams" | "messenger" | "signal" | "whatsapp";
+export type ServiceId = "discord" | "telegram" | "email" | "signal" | "whatsapp";
 export type ConnectionState = "demoLinked" | "notLinked";
-export type EmailProvider = "gmail" | "outlook" | "proton" | "tuta" | "fastmail" | "yahoo" | "zoho" | "aol" | "gmx" | "maildotcom" | "icloud";
+export type EmailProvider = "gmail" | "outlook" | "proton" | "tuta" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
 export type ServiceCategory = "consumer" | "enterprise";
 export type LaunchState = "available" | "comingSoon";
-export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud";
-export type HomeAppId = Exclude<ServiceId, "email" | "slack" | "linkedin" | "teams"> | OfferedEmailProvider | "slack" | "linkedin";
+export type OfferedEmailProvider = "gmail" | "outlook" | "proton" | "yahoo" | "aol" | "gmx" | "maildotcom" | "icloud" | "tuta";
+export type HomeAppId = Exclude<ServiceId, "email"> | OfferedEmailProvider;
 export type HomeAppVisibility = "launch" | "later";
 export type HomeAppSection = "social" | "email" | "later";
 export type NativeAppId = "discord" | "telegram" | "signal" | "whatsapp" | "outlook";
@@ -75,11 +75,60 @@ export interface ProtectedBrowserImportAction {
   manualFallback: string | null;
 }
 
+/**
+ * The public claim OSL makes about a connected app.
+ *
+ * Mirrors `apps/osl-hub/src/claim_state.rs` `PublicClaim`, which DERIVES this
+ * from what was measured. Two labels exist because two real states had none:
+ *
+ * - `experimental` — an adapter is wired and has never been proven against a
+ *   live provider. D-206 held Telegram at `comingSoon` for want of it.
+ * - `noClaim` — `osl-public-claim-allowlist.md` §E maps `open-security-finding`
+ *   and `unknown-recheck-required` to **no badge, no claim**. Both stand on
+ *   Discord at once (D-203), which is why all three old labels were false.
+ */
+export type NativeAppSupportStatus =
+  | "available"
+  | "beta"
+  | "experimental"
+  | "comingSoon"
+  | "externallyBlocked"
+  | "noClaim";
+
+/**
+ * What was measured about a connected app's carrier path. The badge alone
+ * cannot tell `measuredAndRefused` (D-234: tried against the live client, the
+ * write does not land) from `notBuilt` — they share a badge and are not the
+ * same state. Shipping only the badge is how those two collapse.
+ */
+export type NativeAppCarrierEvidence =
+  | "notBuilt"
+  | "builtNeverProvenLive"
+  | "measuredAndRefused"
+  | "externallyBlocked"
+  | "noCarrierByConstruction"
+  | "provenLiveWithReceipt";
+
+export type NativeAppDeliveryEvidence =
+  | "notDeliverable"
+  | "neverProvenLive"
+  | "provenLiveBothWays";
+
 export interface NativeApp {
   id: NativeAppId;
   displayName: string;
   availability: "installed" | "installable" | "unavailable";
-  supportStatus: "beta" | "comingSoon" | "externallyBlocked";
+  supportStatus: NativeAppSupportStatus;
+  /** Why the label is what it is. */
+  carrierEvidence: NativeAppCarrierEvidence;
+  deliveryEvidence: NativeAppDeliveryEvidence;
+  /** Governance conditions standing on the row, if any. */
+  claimBlockers: readonly string[];
+  /**
+   * The sentence shown to the user. One line, no promise. Never empty: a badge
+   * with no reason behind it is the collapse this contract exists to refuse.
+   */
+  claimNote: string;
   protectedMode: "assistOnly" | "unavailable";
   isolatedProfileAvailable: boolean;
   supportsOverlay: boolean;
@@ -284,21 +333,51 @@ export const AndroidSurface = {
   },
 };
 
-const serviceIds: readonly ServiceId[] = ["discord", "telegram", "instagram", "snapchat", "email", "x", "slack", "linkedin", "teams", "messenger", "signal", "whatsapp"];
+const serviceIds: readonly ServiceId[] = ["discord", "telegram", "email", "signal", "whatsapp"];
 const connectionStates: readonly ConnectionState[] = ["demoLinked", "notLinked"];
-const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "fastmail", "yahoo", "zoho", "aol", "gmx", "maildotcom", "icloud"];
+const emailProviders: readonly EmailProvider[] = ["gmail", "outlook", "proton", "tuta", "yahoo", "aol", "gmx", "maildotcom", "icloud"];
 const maxAccountsPerService = 10;
 const nativeAppIds: readonly NativeAppId[] = ["discord", "telegram", "signal", "whatsapp", "outlook"];
 const browserImportIds: readonly BrowserImportId[] = ["chrome", "edge", "firefox", "brave", "opera", "duckduckgo"];
 const firefoxServiceIds: readonly HomeAppId[] = [
-  "instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
 ];
+const nativeAppSupportStatuses: readonly NativeAppSupportStatus[] = [
+  "available", "beta", "experimental", "comingSoon", "externallyBlocked", "noClaim",
+];
+const nativeAppCarrierEvidence: readonly NativeAppCarrierEvidence[] = [
+  "notBuilt", "builtNeverProvenLive", "measuredAndRefused", "externallyBlocked",
+  "noCarrierByConstruction", "provenLiveWithReceipt",
+];
+const nativeAppDeliveryEvidence: readonly NativeAppDeliveryEvidence[] = [
+  "notDeliverable", "neverProvenLive", "provenLiveBothWays",
+];
+
+// The FALLBACK catalog, shown before the backend answers. Rust owns the claim
+// decision (`apps/osl-hub/src/claim_state.rs`); this list is only ever allowed
+// to agree with it, and `services.test.ts` reads the Rust source to check that.
+//
+// Every row is `noClaim` or `comingSoon` and every row carries its reason,
+// because no connected app has earned a live carry receipt -- `carry-receipts/`
+// does not exist as a directory (PLAN.md r5-6).
 const nativePreviewApps: readonly NativeApp[] = [
-  { id: "discord", displayName: "Discord", availability: "installable", supportStatus: "beta", protectedMode: "assistOnly", isolatedProfileAvailable: true, supportsOverlay: false },
-  { id: "telegram", displayName: "Telegram", availability: "installable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
-  { id: "signal", displayName: "Signal", availability: "installable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
-  { id: "whatsapp", displayName: "WhatsApp", availability: "installable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
-  { id: "outlook", displayName: "Outlook", availability: "unavailable", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
+  // D-203, and the reason this whole contract was rebuilt: `beta` overclaimed,
+  // `comingSoon` said Discord was planned when it is the one carrier the app
+  // enables, and `externallyBlocked` said a third party blocks us. Allowlist §E
+  // gives `open-security-finding` and `unknown-recheck-required` no badge and no
+  // claim, and both stand on this row.
+  { id: "discord", displayName: "Discord", availability: "installable", supportStatus: "noClaim", carrierEvidence: "builtNeverProvenLive", deliveryEvidence: "neverProvenLive", claimBlockers: ["open-security-finding", "unknown-recheck-required"], claimNote: "OSL has never carried a message through Discord and back in a recorded two-party run, and an open security finding stands on this surface. OSL makes no claim about it.", protectedMode: "assistOnly", isolatedProfileAvailable: true, supportsOverlay: false },
+  // D-206. The evidence supports `experimental` -- the label that did not exist
+  // -- and the support matrix still records Telegram as externally blocked.
+  // Those are different assertions, so allowlist rule 5's "conflicting" clause
+  // applies and the answer is no claim, with the disagreement named.
+  { id: "telegram", displayName: "Telegram", availability: "installable", supportStatus: "noClaim", carrierEvidence: "provenLiveWithReceipt", deliveryEvidence: "neverProvenLive", claimBlockers: [], claimNote: "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it -- the only surface that has. But OSL's own support matrix still records Telegram as externally blocked, which is a claim about Telegram rather than about us. Those disagree, so OSL makes no claim about it.", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
+  { id: "signal", displayName: "Signal", availability: "installable", supportStatus: "comingSoon", carrierEvidence: "builtNeverProvenLive", deliveryEvidence: "neverProvenLive", claimBlockers: ["send-input-generalisation"], claimNote: "A Signal adapter profile exists and has never been driven against the live client. Signal's adapter also refuses synthesised input by design, which is the only technique any surface has been shown to land by, so nothing is proven here.", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
+  // D-234. Measured against the live client and REFUSED -- not unfinished work.
+  // Same badge as Signal, different state, and the sentence is what keeps them
+  // apart.
+  { id: "whatsapp", displayName: "WhatsApp", availability: "installable", supportStatus: "comingSoon", carrierEvidence: "measuredAndRefused", deliveryEvidence: "neverProvenLive", claimBlockers: ["send-input-generalisation"], claimNote: "OSL measured WhatsApp's composer against the live client and the write did not land: the value reaches the accessibility layer and the message document stays empty. This is a refused technique, not unfinished work, so nothing is proven here.", protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
+  { id: "outlook", displayName: "Outlook", availability: "unavailable", supportStatus: "comingSoon", carrierEvidence: "notBuilt", deliveryEvidence: "notDeliverable", claimBlockers: [], claimNote: "No Outlook desktop carrier is wired. There is no adapter to prove and nothing is sent through Outlook today.", protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
 ];
 
 interface HomeAppDefinition {
@@ -313,38 +392,29 @@ interface HomeAppDefinition {
 
 const homeAppDefinitions: readonly HomeAppDefinition[] = [
   homeApp("discord", "Discord", "discord"),
-  homeApp("instagram", "Instagram", "instagram"),
-  homeApp("snapchat", "Snapchat", "snapchat"),
-  homeApp("x", "X", "x"),
-  homeApp("telegram", "Telegram", "telegram"),
-  homeApp("signal", "Signal", "signal"),
-  homeApp("whatsapp", "WhatsApp", "whatsapp"),
-  homeApp("messenger", "Messenger", "messenger"),
-  homeApp("gmail", "Gmail", "email", "gmail"),
-  homeApp("outlook", "Outlook", "email", "outlook"),
-  homeApp("proton", "Proton Mail", "email", "proton"),
-  homeApp("yahoo", "Yahoo Mail", "email", "yahoo"),
-  homeApp("aol", "AOL Mail", "email", "aol"),
-  homeApp("gmx", "GMX", "email", "gmx"),
-  homeApp("maildotcom", "Mail.com", "email", "maildotcom"),
-  homeApp("icloud", "iCloud Mail", "email", "icloud"),
-  homeApp("slack", "Slack", "slack", null, "later", "comingSoon"),
-  homeApp("linkedin", "LinkedIn messaging", "linkedin", null, "later", "comingSoon"),
+  // P-28/P-48 applies to every unsupported tile in the original app roster,
+  // not just the native-account setup branch. Keep the specs visible for
+  // roadmap signaling, but only Discord can present as a working integration.
+  homeApp("telegram", "Telegram", "telegram", null, "launch", "comingSoon"),
+  homeApp("signal", "Signal", "signal", null, "launch", "comingSoon"),
+  homeApp("whatsapp", "WhatsApp", "whatsapp", null, "launch", "comingSoon"),
+  homeApp("gmail", "Gmail", "email", "gmail", "launch", "comingSoon"),
+  homeApp("outlook", "Outlook", "email", "outlook", "launch", "comingSoon"),
+  homeApp("proton", "Proton Mail", "email", "proton", "launch", "comingSoon"),
+  homeApp("yahoo", "Yahoo Mail", "email", "yahoo", "launch", "comingSoon"),
+  homeApp("aol", "AOL Mail", "email", "aol", "launch", "comingSoon"),
+  homeApp("gmx", "GMX", "email", "gmx", "launch", "comingSoon"),
+  homeApp("maildotcom", "Mail.com", "email", "maildotcom", "launch", "comingSoon"),
+  homeApp("icloud", "iCloud Mail", "email", "icloud", "launch", "comingSoon"),
+  homeApp("tuta", "Tuta", "email", "tuta", "launch", "comingSoon"),
 ];
 
 const previewRegistry: unknown = [
   service("discord", "Discord", "DC", 0, "consumer", "available"),
   service("telegram", "Telegram", "TG", 1, "consumer", "available"),
-  service("instagram", "Instagram", "IG", 2, "consumer", "available"),
-  service("snapchat", "Snapchat", "SC", 3, "consumer", "available"),
-  service("email", "Email", "EM", 4, "consumer", "available"),
-  service("x", "X", "X", 5, "consumer", "available"),
-  service("messenger", "Facebook Messenger", "MS", 6, "consumer", "available"),
-  service("signal", "Signal", "SG", 7, "consumer", "available"),
-  service("whatsapp", "WhatsApp", "WA", 8, "consumer", "available"),
-  service("slack", "Slack", "SL", 9, "enterprise", "comingSoon"),
-  service("linkedin", "LinkedIn messaging", "LI", 10, "enterprise", "comingSoon"),
-  service("teams", "Microsoft Teams", "TM", 11, "enterprise", "comingSoon"),
+  service("email", "Email", "EM", 2, "consumer", "available"),
+  service("signal", "Signal", "SG", 3, "consumer", "available"),
+  service("whatsapp", "WhatsApp", "WA", 4, "consumer", "available"),
 ];
 
 export async function loadLinkedServices(): Promise<LinkedService[]> {
@@ -815,13 +885,33 @@ export function parseNativeApps(raw: unknown): NativeApp[] {
   if (!Array.isArray(raw) || raw.length > nativeAppIds.length) throw new Error("invalid native app catalog");
   const seen = new Set<NativeAppId>();
   return raw.map((candidate) => {
-    if (!isExactRecord(candidate, ["id", "displayName", "availability", "supportStatus", "protectedMode", "isolatedProfileAvailable", "supportsOverlay"])) throw new Error("invalid native app catalog");
+    if (!isExactRecord(candidate, ["id", "displayName", "availability", "supportStatus", "carrierEvidence", "deliveryEvidence", "claimBlockers", "claimNote", "protectedMode", "isolatedProfileAvailable", "supportsOverlay"])) throw new Error("invalid native app catalog");
     const id = candidate.id as NativeAppId;
     if (!nativeAppIds.includes(id) || seen.has(id) || !isDisplayString(candidate.displayName, 80)
       || !["installed", "installable", "unavailable"].includes(String(candidate.availability))
-      || !["beta", "comingSoon", "externallyBlocked"].includes(String(candidate.supportStatus))
+      || !nativeAppSupportStatuses.includes(String(candidate.supportStatus) as NativeAppSupportStatus)
+      || !nativeAppCarrierEvidence.includes(String(candidate.carrierEvidence) as NativeAppCarrierEvidence)
+      || !nativeAppDeliveryEvidence.includes(String(candidate.deliveryEvidence) as NativeAppDeliveryEvidence)
       || !["assistOnly", "unavailable"].includes(String(candidate.protectedMode))
       || typeof candidate.isolatedProfileAvailable !== "boolean" || typeof candidate.supportsOverlay !== "boolean") {
+      throw new Error("invalid native app catalog");
+    }
+    // A label with no reason behind it is refused at the boundary. This is the
+    // whole point of the claim state: `comingSoon` covers both "never built" and
+    // "measured against the live client and refused", and only the sentence
+    // tells a user which one they are looking at.
+    if (!isDisplayString(candidate.claimNote, 400)) throw new Error("invalid native app catalog");
+    if (!Array.isArray(candidate.claimBlockers)
+      || candidate.claimBlockers.length > 8
+      || !candidate.claimBlockers.every((blocker) => isDisplayString(blocker, 60))) {
+      throw new Error("invalid native app catalog");
+    }
+    // A capability claim requires a live carry receipt, and no connected app has
+    // one. The backend refuses this at the gate; the frontend refuses it again,
+    // because a compromised or drifted backend must not be able to promote a
+    // surface by sending a different string.
+    if ((candidate.supportStatus === "beta" || candidate.supportStatus === "available")
+      && candidate.carrierEvidence !== "provenLiveWithReceipt") {
       throw new Error("invalid native app catalog");
     }
     if (candidate.supportsOverlay) throw new Error("invalid native app catalog");
@@ -832,6 +922,10 @@ export function parseNativeApps(raw: unknown): NativeApp[] {
       displayName: candidate.displayName as string,
       availability: candidate.availability as NativeApp["availability"],
       supportStatus: candidate.supportStatus as NativeApp["supportStatus"],
+      carrierEvidence: candidate.carrierEvidence as NativeApp["carrierEvidence"],
+      deliveryEvidence: candidate.deliveryEvidence as NativeApp["deliveryEvidence"],
+      claimBlockers: [...candidate.claimBlockers as readonly string[]],
+      claimNote: candidate.claimNote as string,
       protectedMode: candidate.protectedMode as NativeApp["protectedMode"],
       isolatedProfileAvailable: candidate.isolatedProfileAvailable,
       supportsOverlay: candidate.supportsOverlay,
@@ -1089,7 +1183,11 @@ export function homeAppsFromServices(services: readonly LinkedService[]): HomeAp
     const service = definition.serviceId ? byId.get(definition.serviceId) : undefined;
     const accounts = service?.accounts.filter((account) => definition.provider === null || account.provider === definition.provider) ?? [];
     const accountCount = accounts.length;
+    const launchState = definition.defaultLaunchState === "available"
+      ? service?.launchState ?? definition.defaultLaunchState
+      : definition.defaultLaunchState;
     const setupEligible = definition.visibility === "launch"
+      && definition.defaultLaunchState === "available"
       && service?.launchState === "available"
       && service.accounts.length < maxAccountsPerService;
     return {
@@ -1099,7 +1197,7 @@ export function homeAppsFromServices(services: readonly LinkedService[]): HomeAp
       provider: definition.provider,
       visibility: definition.visibility,
       section: definition.section,
-      launchState: service?.launchState ?? definition.defaultLaunchState,
+      launchState,
       linked: accountCount > 0,
       accountCount,
       setupEligible,
@@ -1115,7 +1213,7 @@ export function configuredTopStripApps(
   catalog: readonly HomeAppCatalogEntry[],
   preferredOrder: readonly string[] = [],
 ): HomeAppCatalogEntry[] {
-  const configured = catalog.filter((app) => app.visibility === "launch" && app.accountCount > 0);
+  const configured = catalog.filter((app) => app.visibility === "launch" && app.launchState === "available" && app.accountCount > 0);
   const byId = new Map(configured.map((app) => [app.id, app]));
   const ordered: HomeAppCatalogEntry[] = [];
   for (const id of preferredOrder) {

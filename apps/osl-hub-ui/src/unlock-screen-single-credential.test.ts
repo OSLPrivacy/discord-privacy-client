@@ -17,6 +17,17 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+
+// D-251: every `it()` below deliberately re-loads `./main` with its own
+// selectors / storage / stubs, so the import CANNOT be hoisted into a single
+// `beforeAll` without destroying what the tests check. `src/main.ts` is ~10k
+// lines and one load costs ~2.5 s cold, which left almost nothing of vitest's
+// default 5,000 ms budget for the behaviour under test: on a busy machine these
+// tests died with `Test timed out in 5000ms` before reaching an assertion.
+// The budget below covers MODULE LOADING, not the behaviour -- no assertion
+// depends on it, and every assertion is unchanged.
+const MODULE_RELOAD_BUDGET_MS = 30_000;
+
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
 vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
 vi.mock("./logos", () => ({ browserLogo: (id: string) => `<span>${id}</span>`, providerLogo: (id: string) => `<span>${id}</span>`, serviceLogo: (id: string) => `<span>${id}</span>` }));
@@ -294,7 +305,7 @@ describe("D80 unlock screen renders one credential input", () => {
     expect(markup).not.toContain("data-duress-pin");
     // And no empty row left behind reserving space for it.
     expect(nodes.filter((node) => (node.attributes.class ?? "").includes("password-input-row"))).toHaveLength(1);
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("routes the unlock screen's forgot-password control to password recovery", async () => {
     const harness = buildUnlockHarness();
@@ -306,7 +317,7 @@ describe("D80 unlock screen renders one credential input", () => {
     expect(unlock).toContain('data-onboarding="account-recovery"');
     expect(recovery).toContain('data-account-recovery-phrase');
     expect(recovery).toContain("Forgot password?");
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("exposes nothing in the markup or the accessibility tree that names an alternate credential", async () => {
     const harness = buildUnlockHarness();
@@ -320,7 +331,7 @@ describe("D80 unlock screen renders one credential input", () => {
     expect(surface).toContain("Password");
 
     expect(advertisements(markup)).toEqual([]);
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("says nothing about an alternate credential when the entry is rejected", async () => {
     const harness = buildUnlockHarness();

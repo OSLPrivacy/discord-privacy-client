@@ -29,7 +29,8 @@ describe("offline capability status", () => {
 
   it("keeps local functionality distinct from unavailable relay work", () => {
     expect(offlineCapabilityStatus("receiveNewMessages", "offline").detail).toMatch(/already on this device remain readable/i);
-    expect(offlineCapabilityStatus("sendMessage", "offline").detail).toMatch(/compose and encrypt/i);
+    expect(offlineCapabilityStatus("sendMessage", "offline").detail).toMatch(/not queued/i);
+    expect(offlineCapabilityStatus("sendMessage", "offline").detail).not.toMatch(/compose and encrypt/i);
     expect(offlineCapabilityStatus("confirmBurnOnServer", "offline").detail).toMatch(/local copy can be removed now/i);
     expect(offlineCapabilityStatus("enforceExpiryOnServer", "offline").detail).toMatch(/local expiry can still run/i);
     expect(offlineCapabilityStatus("enforceViewOnceOnServer", "offline").detail).toMatch(/already on this device/i);

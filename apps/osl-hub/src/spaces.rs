@@ -419,7 +419,10 @@ impl Space {
             return Err(ChannelKeyDomainError::ChannelAlreadyHasKeyDomain);
         }
         let recipients: BTreeSet<_> = recipients.into_iter().collect();
-        if recipients.iter().any(|member| !self.members.contains_key(member)) {
+        if recipients
+            .iter()
+            .any(|member| !self.members.contains_key(member))
+        {
             return Err(ChannelKeyDomainError::UnknownSpaceMember);
         }
         self.channel_key_domains
@@ -498,9 +501,15 @@ mod tests {
         let failed = member(3);
         assert_eq!(
             admit_join_after_rotation(&mut space, failed, |_| Err("rotation unavailable".into())),
-            Err(JoinSpaceError::RotationFailed("rotation unavailable".into()))
+            Err(JoinSpaceError::RotationFailed(
+                "rotation unavailable".into()
+            ))
         );
-        assert_eq!(space.role_of(failed), None, "a failed rotation admits nobody");
+        assert_eq!(
+            space.role_of(failed),
+            None,
+            "a failed rotation admits nobody"
+        );
     }
 
     #[test]
@@ -514,15 +523,25 @@ mod tests {
         let public = SpaceChannelId::from_bytes([1; SpaceChannelId::LENGTH]);
         let private = SpaceChannelId::from_bytes([2; SpaceChannelId::LENGTH]);
 
-        space.create_channel_key_domain(public, [alice, bob, carol]).unwrap();
-        space.create_channel_key_domain(private, [alice, bob]).unwrap();
+        space
+            .create_channel_key_domain(public, [alice, bob, carol])
+            .unwrap();
+        space
+            .create_channel_key_domain(private, [alice, bob])
+            .unwrap();
 
         let public_domain = space.channel_key_domain(public).unwrap();
         let private_domain = space.channel_key_domain(private).unwrap();
         assert_ne!(public_domain.domain_id(), private_domain.domain_id());
         assert!(public_domain.admits(carol));
-        assert!(!private_domain.admits(carol), "a non-member of #private receives no key domain");
-        assert_eq!(private_domain.recipients().collect::<Vec<_>>(), vec![alice, bob]);
+        assert!(
+            !private_domain.admits(carol),
+            "a non-member of #private receives no key domain"
+        );
+        assert_eq!(
+            private_domain.recipients().collect::<Vec<_>>(),
+            vec![alice, bob]
+        );
     }
 
     #[test]

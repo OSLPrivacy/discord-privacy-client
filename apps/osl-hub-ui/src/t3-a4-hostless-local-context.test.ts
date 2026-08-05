@@ -1,6 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LinkedService } from "./services";
 
+
+// D-251: every `it()` below deliberately re-loads `./main` with its own
+// selectors / storage / stubs, so the import CANNOT be hoisted into a single
+// `beforeAll` without destroying what the tests check. `src/main.ts` is ~10k
+// lines and one load costs ~2.5 s cold, which left almost nothing of vitest's
+// default 5,000 ms budget for the behaviour under test: on a busy machine these
+// tests died with `Test timed out in 5000ms` before reaching an assertion.
+// The budget below covers MODULE LOADING, not the behaviour -- no assertion
+// depends on it, and every assertion is unchanged.
+const MODULE_RELOAD_BUDGET_MS = 30_000;
+
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 
@@ -71,14 +82,79 @@ describe("T3-A4 hostless local protection", () => {
       accountId,
       conversationId: expect.stringMatching(/^local-[a-f0-9]{32}$/u),
     });
-    expect(__oslHubUiTest.renderProtectedSheets()).toContain("Encrypt & copy");
+    expect(__oslHubUiTest.renderProtectedSheets()).toContain("Encrypt & prepare");
   }
 
   it("opens and activates from the active native service account without an embedded host", async () => {
     await opensHostlessLocalProtection(signal, "signal", "signal-account");
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("uses the selected browser-launcher provider account without an embedded host", async () => {
     await opensHostlessLocalProtection(email, "gmail", "gmail-account");
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
+
+  it("makes Manual prepare avoid clipboard while Clipboard copies and Double is consent-gated", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {}, confirm });
+    mocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "set_local_protected_sheet_open") return true;
+      if (command === "activate_local_loopback_context") {
+        const request = args as { serviceId: string; accountId: string; conversationId: string };
+        return { contextToken: "ctx-local-test", ...request };
+      }
+      if (command === "set_active_hub_context_security") {
+        const request = args as { ttlSeconds: number; decryptDisplayEnabled: boolean };
+        return { storageKey: "local-key", ttlSeconds: request.ttlSeconds, decryptDisplayEnabled: request.decryptDisplayEnabled };
+      }
+      if (command === "prepare_local_protected_text_with_policy") {
+        const request = args as { viewOnce: boolean };
+        return {
+          capsule: "OSL.LOCAL.CAPSULE",
+          localMessageId: "local-message-1",
+          protection: "local_protected_loopback",
+          personToPersonE2ee: false,
+          statePersisted: true,
+          viewOnce: request.viewOnce,
+        };
+      }
+      return null;
+    });
+
+    vi.resetModules();
+    const { __oslHubUiTest } = await import("./main");
+    __oslHubUiTest.reset({ services: [email], setup: { sendMode: "manual" } });
+    __oslHubUiTest.renderServiceHeader(email, "gmail");
+    await __oslHubUiTest.openLocalProtection();
+    await __oslHubUiTest.startLocalProtection("Rose");
+
+    await __oslHubUiTest.prepareLocalProtectedDraft("manual secret");
+    expect(writeText).not.toHaveBeenCalled();
+    expect(__oslHubUiTest.renderProtectedSheets()).toContain("OSL.LOCAL.CAPSULE");
+
+    __oslHubUiTest.reset({ services: [email], setup: { sendMode: "clipboard" } });
+    __oslHubUiTest.renderServiceHeader(email, "gmail");
+    await __oslHubUiTest.openLocalProtection();
+    await __oslHubUiTest.startLocalProtection("Rose");
+    await __oslHubUiTest.prepareLocalProtectedDraft("clipboard secret");
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenLastCalledWith("OSL.LOCAL.CAPSULE");
+
+    __oslHubUiTest.reset({ services: [email], setup: { sendMode: "double", acceptedRisk: false, acceptedRiskForMode: null } });
+    __oslHubUiTest.renderServiceHeader(email, "gmail");
+    await __oslHubUiTest.openLocalProtection();
+    await __oslHubUiTest.startLocalProtection("Rose");
+    await __oslHubUiTest.prepareLocalProtectedDraft("double secret");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(writeText).toHaveBeenCalledTimes(1);
+
+    __oslHubUiTest.reset({ services: [email], setup: { sendMode: "double", acceptedRisk: true, acceptedRiskForMode: "double" } });
+    __oslHubUiTest.renderServiceHeader(email, "gmail");
+    await __oslHubUiTest.openLocalProtection();
+    await __oslHubUiTest.startLocalProtection("Rose");
+    await __oslHubUiTest.prepareLocalProtectedDraft("double secret");
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenCalledTimes(1);
+  }, MODULE_RELOAD_BUDGET_MS);
 });

@@ -1,0 +1,96 @@
+{
+  "note": "ACL ledger dead-issuer ratchet. Adding an entry here is an admission that the issuer does not ship in a production entry.  2026-08-04: three registered-but-granted-nowhere commands added after D-159 gave ledger 3 that direction. Each is DEAD (zero reachable callers), which is what this list records. A LIVE break -- a reachable caller invoking a command that does not exist -- is NEVER excepted; see D-137.",
+  "highWaterMark": 15,
+  "entries": [
+    {
+      "id": "dead-issuer:claim_hub_username:apps/osl-hub-ui/src/adapters.ts:936",
+      "class": "accepted",
+      "reason": "claim_hub_username is in an exported adapter function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/adapters.ts:936"
+    },
+    {
+      "id": "dead-issuer:host_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:69",
+      "class": "accepted",
+      "reason": "host_osl_lan_room is in an exported LAN collaboration function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/osl-collab.ts:69"
+    },
+    {
+      "id": "dead-issuer:join_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:70",
+      "class": "accepted",
+      "reason": "join_osl_lan_room is in an exported LAN collaboration function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/osl-collab.ts:70"
+    },
+    {
+      "id": "dead-issuer:stop_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:72",
+      "class": "accepted",
+      "reason": "stop_osl_lan_room is in an exported LAN collaboration function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/osl-collab.ts:72"
+    },
+    {
+      "id": "dead-issuer:surface_adapter_commit:apps/osl-hub-ui/src/native-overlay-adapter.ts:119",
+      "class": "accepted",
+      "reason": "surface_adapter_commit is in the exported surface-adapter client factory that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/native-overlay-adapter.ts:119"
+    },
+    {
+      "id": "dead-issuer:surface_adapter_destination:apps/osl-hub-ui/src/native-overlay-adapter.ts:95",
+      "class": "accepted",
+      "reason": "surface_adapter_destination is in the exported surface-adapter client factory that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/native-overlay-adapter.ts:95"
+    },
+    {
+      "id": "dead-issuer:surface_adapter_paint_targets:apps/osl-hub-ui/src/native-overlay-adapter.ts:124",
+      "class": "accepted",
+      "reason": "surface_adapter_paint_targets is in the exported surface-adapter client factory that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/native-overlay-adapter.ts:124"
+    },
+    {
+      "id": "dead-issuer:surface_adapter_place:apps/osl-hub-ui/src/native-overlay-adapter.ts:111",
+      "class": "accepted",
+      "reason": "surface_adapter_place is in the exported surface-adapter client factory that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/native-overlay-adapter.ts:111"
+    },
+    {
+      "id": "dead-issuer:surface_adapter_prepare:apps/osl-hub-ui/src/native-overlay-adapter.ts:101",
+      "class": "accepted",
+      "reason": "surface_adapter_prepare is in the exported surface-adapter client factory that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/native-overlay-adapter.ts:101"
+    },
+    {
+      "id": "dead-issuer:surface_adapter_state:apps/osl-hub-ui/src/native-overlay-adapter.ts:92",
+      "class": "accepted",
+      "reason": "surface_adapter_state is in the exported surface-adapter client factory that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/native-overlay-adapter.ts:92"
+    },
+    {
+      "id": "dead-issuer:sync_hosted_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:71",
+      "class": "accepted",
+      "reason": "sync_hosted_osl_lan_room is in an exported LAN collaboration function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/osl-collab.ts:71"
+    },
+    {
+      "id": "dead-issuer:sync_joined_osl_lan_room:apps/osl-hub-ui/src/osl-collab.ts:71",
+      "class": "accepted",
+      "reason": "sync_joined_osl_lan_room is in an exported LAN collaboration function that no production entry imports; this issuer does not ship.",
+      "citation": "apps/osl-hub-ui/src/osl-collab.ts:71"
+    },
+    {
+      "id": "registered-but-granted-to-no-webview:claim_hub_username",
+      "class": "accepted",
+      "reason": "DEAD, not a live break. Registered on the IPC surface, granted nowhere, and its only caller is claimHubUsername in adapters.ts -- an exported function with ZERO importers outside its own module, already recorded in this file's dead-issuer set. R-002 RETRACTED 'claim_hub_username is a live break on the onboarding path' to LATENT, and this is that latent state measured from the other side. The ACL rejecting it is CORRECT while nothing reachable calls it; granting it would widen the main webview's authority for a feature that does not exist yet.",
+      "citation": "apps/osl-hub-ui/src/adapters.ts:936"
+    },
+    {
+      "id": "registered-but-granted-to-no-webview:get_osl_profile",
+      "class": "accepted",
+      "reason": "DEAD, not a live break. Registered, granted nowhere, and getOslProfile has ZERO importers outside its own module. Same class as claim_hub_username: the command ships, no reachable code calls it, and the grant is a deliberate act for whoever wires the feature.",
+      "citation": "apps/osl-hub-ui/src/osl-profile-adapter.ts:1"
+    },
+    {
+      "id": "registered-but-granted-to-no-webview:save_osl_profile",
+      "class": "accepted",
+      "reason": "DEAD, not a live break. Registered, granted nowhere, saveOslProfile has ZERO importers outside its own module. NEVER REMOVE A SPEC applies -- the command is not deleted, it is recorded as unreachable until something wires it.",
+      "citation": "apps/osl-hub-ui/src/osl-profile-adapter.ts:1"
+    }
+  ]
+}

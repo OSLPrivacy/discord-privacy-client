@@ -184,7 +184,7 @@ impl UsbMonitorCallbacks {
     pub fn dispatch(&self, event: UsbMonitorEvent) {
         match event {
             UsbMonitorEvent::CaptureArrival => (self.arrival)(),
-            UsbMonitorEvent::StorageDeviceArrived(_) => {},
+            UsbMonitorEvent::StorageDeviceArrived(_) => {}
             UsbMonitorEvent::StorageDeviceRemoved(device_id) => (self.volume_removal)(device_id),
         }
     }

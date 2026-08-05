@@ -1,9 +1,12 @@
 //! Regression test for the optional-cover degradation floor.
 
-#[path = "../src/fallback.rs"]
-mod fallback;
-
-use fallback::{select_carrier, CarrierCapabilities, CarrierSource, UserVisibleTransition};
+// Exercises the shipping `cover_ai::fallback`, not a `#[path]` recompile of it.
+// The include-a-copy form built the module a second time as a *private* module
+// of this test binary, which both hid the real crate from the test and made
+// clippy judge a public API type as if it were unexported.
+use cover_ai::fallback::{
+    select_carrier, CarrierCapabilities, CarrierSource, UserVisibleTransition,
+};
 
 #[test]
 fn missing_model_degrades_to_a_disclosed_word_bank_cover() {

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
 import { CYCLE_MARKER, NATURAL_CRON } from "../src/lib/d2-proof-contract.js";
@@ -12,6 +12,14 @@ export interface D2ClosureSources {
   proofContractTypesSource: string;
   linkGrantTestSource: string;
   issuerFixtureSource: string;
+  /** D-262: source of every file named in `D2_PROPERTY_TEST_SUITES`. */
+  propertyTestSources: Readonly<Record<string, string>>;
+  /** D-262: `*.test.ts` names per suite directory, for the deletion census. */
+  testFileCensus: Readonly<Record<string, readonly string[]>>;
+  /** D-262: the out-of-suite entry point that runs these contracts. */
+  contractGateSource: string;
+  /** D-262: pinned manifest whose `test` script must invoke that entry point. */
+  packageJson: string;
 }
 
 export interface D2ClosureFacts {
@@ -22,7 +30,180 @@ export interface D2ClosureFacts {
   cycleMarkerSemanticsPinned: true;
   canonicalIssuerPayloadPinned: true;
   standaloneCipherStoreTests: true;
+  /** Number of named security-property suites verified present and active. */
+  propertyTestSuites: number;
+  /** Observed `*.test.ts` count per directory; each is at or above its floor. */
+  testFiles: Record<string, number>;
+  /** `npm test` still runs both contracts from outside the suite. */
+  contractGateWired: true;
 }
+
+/** The exact prefix `package.json`'s `test` script must keep. */
+const REQUIRED_TEST_SCRIPT_PREFIX = "node scripts/d2-contract-gate.ts && ";
+
+/**
+ * D-262 — what the release digest deliberately does NOT do.
+ *
+ * `D2_RELEASE_SOURCE_SHA256` pins release source byte-exactly and covers no
+ * test file. That was filed as a defect because the two suites holding the
+ * D-255 existence-oracle and D-256 atomicity properties could be deleted
+ * without moving the digest by a bit. The fix is NOT to widen the digest over
+ * `test/**`:
+ *
+ *   * A byte-exact pin over tests re-anchors on every legitimate test edit —
+ *     a new case, a renamed helper, a clearer message. Re-anchoring is the one
+ *     operation in this repo that must stay rare enough to be read; making it
+ *     routine trains the reviewer to move the digest without reading it, which
+ *     is the exact defeat D-262 warns about. It would also weaken the source
+ *     pin, because "the digest moved" would stop meaning "shipped code
+ *     changed".
+ *   * Byte-exactness is the wrong instrument anyway. What must not happen to a
+ *     test is deletion, skipping, or gutting — properties of its STRUCTURE. A
+ *     hash cannot tell those apart from a typo fix; an AST can.
+ *
+ * So test integrity gets its own gate with its own failure mode, here, in the
+ * closure that already refuses a skipped suite and an emptied test body. Two
+ * layers, chosen for what each is bad at:
+ *
+ *   1. NAMED suites below: registered exactly once, `describe`/`it` and never
+ *      `.skip`/`.only`/`.todo`, with load-bearing assertion text still inside
+ *      the body. Adding a case costs nothing; deleting, renaming, skipping or
+ *      emptying one is red.
+ *   2. A per-directory `*.test.ts` FLOOR. The named list is a hand-written list
+ *      and therefore omission-shaped, exactly like the old pinned file list.
+ *      The floor catches what the list cannot know it is missing: deleting ANY
+ *      test file drops the count. It only ratchets, so adding tests never
+ *      re-pins anything.
+ *
+ * What this still costs, stated rather than implied: the floor is a number a
+ * human maintains, so a genuinely retired test needs it lowered by hand — a
+ * deliberate edit, which is the point. And no in-suite gate survives deletion
+ * of the gate itself; that is why `npm test` invokes this closure as its own
+ * step from `package.json`, which IS inside the release digest, so removing
+ * the step turns the release-source contract red.
+ */
+export interface D2PropertyTestSuite {
+  /** Path relative to the project root. */
+  file: string;
+  /** The defect or leak class whose property this suite holds. */
+  defect: string;
+  /** `describe` title; must be registered exactly once and never skipped. */
+  suite: string;
+  /**
+   * Titles that must exist as ACTIVE `it`s. A superset is allowed on purpose:
+   * adding a case must not be a re-pin, while removing or renaming one is red.
+   */
+  tests: readonly string[];
+  /** Assertion text that must still appear inside the suite body. */
+  assertions: readonly string[];
+}
+
+export const D2_PROPERTY_TEST_SUITES: readonly D2PropertyTestSuite[] = [
+  {
+    file: "test/blob-upload-existence-oracle.test.ts",
+    defect: "D-255",
+    suite: "D-255 blob upload is not an existence oracle",
+    tests: [
+      "answers a taken blob id exactly as it answers an unused one",
+      "leaves the row it collided with exactly as it found it",
+    ],
+    assertions: [
+      "expect(taken.status).toBe(unused.status)",
+      "expect(taken.headers).toEqual(unused.headers)",
+      "expect(taken.maskedBody).toBe(unused.maskedBody)",
+    ],
+  },
+  {
+    file: "test/blob-capacity-atomic.test.ts",
+    defect: "D-256",
+    suite: "D-256 the blob capacity gate admits atomically (HIGH-2)",
+    tests: [
+      "refuses the second of two uploads that race for the last byte",
+      "still admits the one upload the headroom genuinely allows",
+    ],
+    assertions: [
+      "expect(await storedBytes()).toBeLessThanOrEqual(MAX_LIVE_BLOB_BYTES)",
+      'expect(statuses.filter((status) => status === 503)).toHaveLength(1)',
+      'expect(statuses.filter((status) => status === 201)).toHaveLength(1)',
+    ],
+  },
+  {
+    file: "test/blob-payload-no-overwrite.test.ts",
+    defect: "D-264",
+    suite: "D-264 a caller-named payload key is written only when it is free",
+    tests: [
+      "refuses to replace an existing payload under a digest the caller supplied",
+      "still stores bytes under a digest no object occupies",
+    ],
+    assertions: [
+      "expect(new Uint8Array(await stored!.arrayBuffer())).toEqual(VICTIM_BYTES)",
+      "expect(attack.status).toBe(201)",
+    ],
+  },
+  {
+    file: "test/blob-capability.test.ts",
+    defect: "D-257",
+    suite: "R2 capability blob route",
+    tests: [
+      "stores payload bytes only in R2 and burns only with manage_cap",
+      "makes every GET failure the same 404",
+    ],
+    assertions: ['"x-osl-fetch-cap": fetchCap'],
+  },
+  {
+    file: "test/d81-fetch-carries-no-identity.test.ts",
+    defect: "D81",
+    suite: "D81 — a cipher-store fetch carries no identity",
+    tests: [
+      "serves a blob to a caller who presents the capability and nothing else",
+      "writes no blob access receipt or fetcher identity",
+      "refuses a capability presented in the URL instead of the header",
+    ],
+    assertions: [
+      'expect(rateCounters).not.toContain("198.51.100.")',
+      "expect(rateCounters).not.toContain(id)",
+    ],
+  },
+  {
+    file: "test/d81-fetch-carries-no-identity.test.ts",
+    defect: "D81/t1-15",
+    suite: "D81 — a retired legacy row is treated as absent",
+    tests: [
+      "does not serve a retired row to a caller holding only its id",
+      "answers a retired row exactly as it answers an id that was never stored",
+      "does not let an id-only caller destroy a retired row",
+      "rejects a tokenless upload, so no new capability-less index row can be created",
+    ],
+    assertions: [
+      "expect(legacy.status).toBe(absent.status)",
+      "expect(await legacy.text()).toBe(await absent.text())",
+    ],
+  },
+  {
+    file: "test/harness-strictness.test.ts",
+    defect: "instrument",
+    suite: "the R2 double refuses what production refuses",
+    tests: [
+      "rejects a put body with no known length",
+      "rejects a multipart part with no known length",
+      "still accepts a known-length body, so the guard is not simply refusing everything",
+      "honours onlyIf etagDoesNotMatch instead of silently overwriting",
+    ],
+    assertions: [
+      'onlyIf: { etagDoesNotMatch: "*" }',
+      "expect(second).toBeNull()",
+    ],
+  },
+];
+
+/**
+ * `*.test.ts` floors per suite directory. Ratchet-only: `>=`, so every added
+ * test file leaves them true and only a deletion is red.
+ */
+export const D2_TEST_FILE_FLOORS: Readonly<Record<string, number>> = {
+  test: 41,
+  "test-node": 14,
+};
 
 const REQUIRED_NATURAL_CRON = "*/5 * * * *";
 const REQUIRED_CYCLE_MARKER = "[attachment-sweep-cycle] complete";
@@ -412,9 +593,188 @@ function standaloneLinkGrantClosure(
   return true;
 }
 
+/**
+ * One named security-property suite: registered exactly once, never skipped,
+ * every named test active, and the load-bearing assertions still in the body.
+ *
+ * Unlike `scheduledSeamTests`, the test COUNT is not pinned — there the "two
+ * tests" is itself the property, here a superset is a legitimate improvement
+ * and must not cost a re-pin.
+ */
+function propertyTestSuite(
+  entry: D2PropertyTestSuite,
+  source: string | undefined,
+): void {
+  const label = `${entry.defect} property suite ${entry.file}`;
+  if (source === undefined || source.length === 0) {
+    fail(`${label} is missing or empty`);
+  }
+  const parsed = sourceFile(source, entry.file);
+  const calls = callsWithin(parsed);
+  const named = calls.filter((call) => stringArgument(call) === entry.suite);
+  const active = named.filter(
+    (call) => expressionName(call.expression) === "describe",
+  );
+  if (named.length !== 1 || active.length !== 1) {
+    fail(
+      `${label}: "${entry.suite}" must be registered exactly once as an active `
+      + "describe and may not be skipped",
+    );
+  }
+  const body = callbackBody(active[0]!, label);
+  const registered = callsWithin(body).filter((call) => {
+    const name = expressionName(call.expression);
+    return name === "it" || name === "test"
+      || name?.startsWith("it.") === true || name?.startsWith("test.") === true;
+  });
+  const inactive = registered
+    .filter((call) => {
+      const name = expressionName(call.expression);
+      return name !== "it" && name !== "test";
+    })
+    .map(stringArgument);
+  if (inactive.length > 0) {
+    fail(`${label} has skipped or focused tests: ${inactive.join(", ")}`);
+  }
+  const activeNames = new Set(registered.map(stringArgument));
+  for (const title of entry.tests) {
+    if (!activeNames.has(title)) {
+      fail(`${label} no longer registers an active test named "${title}"`);
+    }
+  }
+  const text = body.getText(parsed);
+  for (const assertion of entry.assertions) {
+    if (!text.includes(assertion)) {
+      fail(`${label} no longer asserts \`${assertion}\``);
+    }
+  }
+}
+
+function propertyTestClosure(
+  sources: Readonly<Record<string, string>>,
+): number {
+  if (D2_PROPERTY_TEST_SUITES.length === 0) {
+    fail("the property-suite list is empty, so this gate cannot fail");
+  }
+  for (const entry of D2_PROPERTY_TEST_SUITES) {
+    propertyTestSuite(entry, sources[entry.file]);
+  }
+  return D2_PROPERTY_TEST_SUITES.length;
+}
+
+/**
+ * The census the named list above cannot replace: a floor on `*.test.ts` per
+ * directory, so deleting a test file nobody thought to name is still red.
+ */
+function testFileCensus(
+  census: Readonly<Record<string, readonly string[]>>,
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const [directory, floor] of Object.entries(D2_TEST_FILE_FLOORS)) {
+    const files = census[directory];
+    if (files === undefined) fail(`no test census for ${directory}/`);
+    const observed = files.filter((name) => name.endsWith(".test.ts")).length;
+    if (observed < floor) {
+      fail(
+        `${directory}/ holds ${observed} *.test.ts files, below the recorded `
+        + `floor of ${floor}: a test file was removed`,
+      );
+    }
+    counts[directory] = observed;
+  }
+  return counts;
+}
+
+/**
+ * The gate that survives the suite. `package.json` is a pinned release file, so
+ * dropping the step below moves `D2_RELEASE_SOURCE_SHA256`; the AST checks stop
+ * the step from being kept as decoration over an emptied entry point.
+ */
+function contractGateBinding(packageJson: string, gateSource: string): true {
+  let scripts: Record<string, unknown>;
+  try {
+    scripts = (JSON.parse(packageJson) as { scripts?: Record<string, unknown> })
+      .scripts ?? {};
+  } catch {
+    return fail("package.json is not valid JSON");
+  }
+  const test = scripts.test;
+  if (typeof test !== "string" || !test.startsWith(REQUIRED_TEST_SCRIPT_PREFIX)) {
+    fail(
+      "package.json `test` must run the contract gate first: "
+      + `\`${REQUIRED_TEST_SCRIPT_PREFIX}...\``,
+    );
+  }
+  if (!test.includes("vitest run")) {
+    fail("package.json `test` no longer runs the suites it gates");
+  }
+
+  const parsed = sourceFile(gateSource, "scripts/d2-contract-gate.ts");
+  requireNamedImport(parsed, "./d2-test-closure.ts", [
+    "assertD2TestClosure",
+    "readD2ClosureSources",
+  ]);
+  requireNamedImport(parsed, "./d2-release-source-manifest.ts", [
+    "deriveReleaseSourceFiles",
+    "localModuleClosure",
+    "releaseSourceManifestSha256",
+  ]);
+  requireNamedImport(parsed, "./d2-0010-release-contract.ts", [
+    "D2_RELEASE_SOURCE_SHA256",
+  ]);
+  const invocations = callsWithin(parsed).filter(
+    (call) => expressionName(call.expression) === "assertD2TestClosure",
+  );
+  if (invocations.length !== 1) {
+    fail("the contract gate must invoke the test closure exactly once");
+  }
+  const argument = invocations[0]!.arguments[0];
+  if (
+    !argument
+    || !ts.isCallExpression(argument)
+    || expressionName(argument.expression) !== "readD2ClosureSources"
+  ) {
+    fail("the contract gate must run the closure over the current project");
+  }
+  for (const required of [
+    "releaseSourceManifestSha256(projectRoot, files)",
+    "observed !== D2_RELEASE_SOURCE_SHA256",
+  ]) {
+    if (!gateSource.includes(required)) {
+      fail(`the contract gate no longer checks the release digest: ${required}`);
+    }
+  }
+  return true;
+}
+
 export function readD2ClosureSources(projectRoot: string): D2ClosureSources {
   const read = (path: string) => readFileSync(join(projectRoot, path), "utf8");
+  const propertyTestSources: Record<string, string> = {};
+  for (const entry of D2_PROPERTY_TEST_SUITES) {
+    // Reading is the deletion signal for a named suite; the floor below covers
+    // the files nobody named. A raw ENOENT would be true but would not say
+    // WHICH property just stopped being held, so name it.
+    if (propertyTestSources[entry.file] === undefined) {
+      try {
+        propertyTestSources[entry.file] = read(entry.file);
+      } catch {
+        fail(
+          `${entry.defect} property suite ${entry.file} is gone: nothing now `
+          + `holds "${entry.suite}"`,
+        );
+      }
+    }
+  }
+  const testFileCensusSources: Record<string, string[]> = {};
+  for (const directory of Object.keys(D2_TEST_FILE_FLOORS)) {
+    testFileCensusSources[directory] = readdirSync(join(projectRoot, directory))
+      .sort();
+  }
   return {
+    propertyTestSources,
+    testFileCensus: testFileCensusSources,
+    contractGateSource: read("scripts/d2-contract-gate.ts"),
+    packageJson: read("package.json"),
     wranglerToml: read("wrangler.toml"),
     workerSource: read("src/index.ts"),
     scheduledTestSource: read("test/scheduled-sweep-proof.test.ts"),
@@ -439,7 +799,14 @@ export function assertD2TestClosure(sources: D2ClosureSources): D2ClosureFacts {
     sources.linkGrantTestSource,
     sources.issuerFixtureSource,
   );
+  const propertySuites = propertyTestClosure(sources.propertyTestSources);
+  const testFiles = testFileCensus(sources.testFileCensus);
+  const gateWired = contractGateBinding(
+    sources.packageJson,
+    sources.contractGateSource,
+  );
   return {
+    contractGateWired: gateWired,
     productionCron: cron,
     registeredScheduledSeamTests: registered,
     sweepCallBeforeMarker: ordered,
@@ -447,5 +814,7 @@ export function assertD2TestClosure(sources: D2ClosureSources): D2ClosureFacts {
     cycleMarkerSemanticsPinned: markerPinned,
     canonicalIssuerPayloadPinned: true,
     standaloneCipherStoreTests: standalone,
+    propertyTestSuites: propertySuites,
+    testFiles,
   };
 }

@@ -1,10 +1,10 @@
 use runtime::ScreenshotProtection;
 #[cfg(not(windows))]
-use runtime::{apply_to_hwnd, apply_to_hwnd_and_children};
+use runtime::{apply_to_hwnd, apply_to_hwnd_and_children, CaptureProtectionError, ScreenshotError};
 
 // On Linux / macOS, `apply_to_hwnd` and `apply_to_hwnd_and_children`
-// are no-op stubs. We exercise the no-op paths here to lock their
-// behaviour in across cfg permutations.
+// can only disable protection. Asking to enable it fails closed because no
+// compositor primitive can prove capture exclusion on these targets.
 //
 // Win32 behaviour is documented in `runtime::screenshot` and verified
 // by the user on a Windows host — there is no automated test for the
@@ -14,21 +14,30 @@ use runtime::{apply_to_hwnd, apply_to_hwnd_and_children};
 
 #[cfg(not(windows))]
 #[test]
-fn linux_macos_stub_is_a_noop_for_both_states() {
-    apply_to_hwnd(0, ScreenshotProtection::On).expect("no-op On");
+fn linux_macos_stub_disables_but_refuses_to_claim_protection() {
     apply_to_hwnd(0, ScreenshotProtection::Off).expect("no-op Off");
-    // Any HWND-shaped value is accepted on the stub.
-    apply_to_hwnd(0xDEADBEEF, ScreenshotProtection::On).expect("arbitrary hwnd");
     apply_to_hwnd(-1, ScreenshotProtection::Off).expect("negative hwnd value");
+    assert!(matches!(
+        apply_to_hwnd(0, ScreenshotProtection::On),
+        Err(ScreenshotError::CaptureProtection(
+            CaptureProtectionError::UnsupportedPlatform
+        ))
+    ));
+    assert!(apply_to_hwnd(0xDEADBEEF, ScreenshotProtection::On).is_err());
 }
 
 #[cfg(not(windows))]
 #[test]
-fn linux_macos_stub_with_children_is_a_noop_for_both_states() {
-    apply_to_hwnd_and_children(0, ScreenshotProtection::On).expect("no-op On");
+fn linux_macos_stub_with_children_disables_but_refuses_to_claim_protection() {
     apply_to_hwnd_and_children(0, ScreenshotProtection::Off).expect("no-op Off");
-    apply_to_hwnd_and_children(0xDEADBEEF, ScreenshotProtection::On).expect("arbitrary hwnd");
     apply_to_hwnd_and_children(-1, ScreenshotProtection::Off).expect("negative hwnd value");
+    assert!(matches!(
+        apply_to_hwnd_and_children(0, ScreenshotProtection::On),
+        Err(ScreenshotError::CaptureProtection(
+            CaptureProtectionError::UnsupportedPlatform
+        ))
+    ));
+    assert!(apply_to_hwnd_and_children(0xDEADBEEF, ScreenshotProtection::On).is_err());
 }
 
 #[test]

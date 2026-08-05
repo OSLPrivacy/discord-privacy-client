@@ -583,7 +583,7 @@ mod tests {
 
     fn message(text: &str) -> LocalMessageCandidate {
         LocalMessageCandidate {
-            service_id: "instagram".to_owned(),
+            service_id: "telegram".to_owned(),
             account_id: "qa-account".to_owned(),
             conversation_id: "conversation-1".to_owned(),
             message_locator: "opaque-message-1".to_owned(),

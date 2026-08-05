@@ -15,15 +15,19 @@
   --panel-3: #202020;
   --line: #2a2a2a;
   --line-soft: #202020;
+  --line-strong: var(--line);
   --text: #e8e8e8;
   --muted: #9aa0a6;
+  --text-muted: var(--muted);
   --subtle: #888;
   --brand: #06b6d4;
+  --cyan: var(--brand);
   --brand-hover: #0891b2;
   --brand-ink: #0a0a0a;
   --brand-wash: rgba(6, 182, 212, .1);
   --success: #49c58a;
   --warn: #f2b84b;
+  --warning: var(--warn);
   --danger: #ef626b;
   --scrollbar-thumb: #4d5968;
   --scrollbar-track: #141414;
@@ -1520,7 +1524,6 @@ code {
 }
 .browser-detected-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .browser-detected-item small { margin-top: 2px; color: var(--muted); font-size: 11px; }
-.browser-import-actions-primary { flex-direction: column; align-items: center; }
 /* Identical to .text-button, which is what every other onboarding step's
    secondary action ("Not now" on Stealth / Burn / Mullvad) already renders as.
    This one was grey while those were cyan, so the same affordance read as two
@@ -3561,6 +3564,38 @@ code {
 .setting-line small { display: block; }
 .setting-line small { max-width: 520px; margin-top: 3px; color: var(--muted); }
 
+/* THE CLAIM STATE. Every connected app ships the sentence that says what OSL
+   has and has not proven there, next to the label it justifies. The row grows
+   to fit it rather than clipping it: a reason that does not fit is a reason
+   nobody reads, and the whole point of the claim state is that the label never
+   travels alone. */
+.setting-line.native-claim-line {
+  align-items: flex-start;
+  padding: 12px 0;
+}
+
+.native-claim-note {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 620px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.carrier-receipt-census {
+  max-width: 620px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .account-settings-list,
 .sidebar-order-list {
   margin-top: 14px;
@@ -3741,6 +3776,19 @@ code {
 .update-status-card {
   margin-top: 16px;
   justify-content: flex-start;
+}
+
+.update-status-card[data-update-state="checking"] .dot,
+.update-status-card[data-update-state="up-to-date"] .dot,
+.update-status-card[data-update-state="available"] .dot,
+.update-status-card[data-update-state="installing"] .dot {
+  background: var(--brand);
+}
+
+.update-status-card[data-update-state="could-not-check"] .dot,
+.update-status-card[data-update-state="error"] .dot,
+.update-status-card[data-update-state="unavailable"] .dot {
+  background: var(--warn);
 }
 
 .update-notes {
@@ -4116,6 +4164,9 @@ code {
 .app-tile-copy small { display: block; }
 .app-tile-copy strong { overflow: hidden; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .app-tile-copy small { margin-top: 2px; color: var(--subtle); font-size: 11px; }
+.app-tile.app-unavailable { opacity: .42; }
+.app-tile.app-unavailable button { cursor: not-allowed; }
+.app-tile.app-unavailable .app-logo-plate { filter: grayscale(1); }
 .home-module.module-unavailable { opacity: .42; }
 .home-module.module-unavailable button { cursor: not-allowed; }
 
@@ -4396,6 +4447,24 @@ code {
 .scrub-pagination span { color: var(--muted); font-size: 11px; }
 .scrub-review-footer { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .scrub-review-footer span { color: var(--muted); font-size: 11px; }
+/* Scope fingerprint and grouped review rows.
+   These rules have to live in this sheet: the shipped CSP is `style-src 'self'`
+   (apps/osl-hub/tauri.conf.json), so a runtime <style> element and an inline
+   style= attribute are both dropped and the panel would ship unstyled. */
+.scrub-scope-fingerprint { margin: 0 0 10px; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: var(--radius); background: var(--panel); display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.scrub-scope-fingerprint-label { color: var(--subtle); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.scrub-scope-fingerprint-digest { font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace; font-size: 11px; color: var(--text); overflow-wrap: anywhere; }
+.scrub-scope-fingerprint > small { flex-basis: 100%; color: var(--subtle); font-size: 11px; line-height: 1.45; }
+.scrub-review-rows { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.scrub-review-rows > summary { color: var(--muted); font-size: 11px; font-weight: 700; cursor: pointer; }
+.scrub-review-row-list { margin: 10px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.scrub-review-row { padding: 9px 10px; border: 1px solid var(--line-soft); border-radius: var(--radius); background: var(--panel); }
+.scrub-review-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.scrub-review-row-head > strong { overflow-wrap: anywhere; font-size: 12px; }
+.scrub-review-row-count { flex: none; color: var(--brand); font-size: 11px; font-weight: 700; }
+.scrub-review-row-sample { margin: 7px 0 0; padding: 7px 9px; border-left: 2px solid var(--line); overflow-wrap: anywhere; background: var(--panel-2); color: var(--text); font-size: 11px; }
+.scrub-review-row-meta { margin-top: 6px; display: block; color: var(--subtle); font-size: 11px; overflow-wrap: anywhere; }
+.scrub-review-rows-note { margin: 10px 0 0; color: var(--subtle); font-size: 11px; line-height: 1.45; }
 .scrub-review-dialog {
   width: min(820px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
@@ -5170,6 +5239,7 @@ code {
   margin-top: 26px;
   padding-top: 16px;
   border-top: 1px solid var(--line);
+  flex-wrap: wrap;
   justify-content: center;
   gap: 12px;
 }
@@ -5180,6 +5250,22 @@ code {
   color: var(--muted);
 }
 .onboarding-actions .onboarding-back:hover:not(:disabled) { color: var(--text); }
+/* One order for the row on every step: Back, the primary action, then any
+   optional escape hatch on its own centred line beneath them. Back/skip used to
+   land somewhere different on four consecutive steps -- above the primary on
+   `browser`, inline beside it on `mullvad`, below a loose "Not now" on the two
+   password steps -- which is what made the spine read as separate screens
+   rather than one flow. Order lives here rather than in the markup so no step
+   can order itself differently, and it is in the sheet because the shipped CSP
+   is `style-src 'self'`. */
+.onboarding-actions .button.primary { order: 0; }
+.onboarding-actions .text-button,
+.onboarding-actions .browser-import-skip {
+  order: 1;
+  flex-basis: 100%;
+  margin-top: 2px;
+  text-align: center;
+}
 /* The nav row is the fallback footer for steps that render no Continue of
    their own (the Pro code form, the stealth/burn password forms), so Back sits
    in the same place on every step. */
@@ -5432,6 +5518,24 @@ code {
 .onboarding-app.selected { border: 1px solid var(--brand); background: var(--panel-2); }
 .onboarding-app .app-logo-plate { width: 54px; height: 54px; }
 .onboarding-app strong { font-size: 11px; }
+.onboarding-app.unavailable {
+  opacity: .42;
+  cursor: not-allowed;
+  filter: grayscale(1);
+}
+.onboarding-app.unavailable:hover {
+  background: transparent;
+  transform: none;
+}
+.onboarding-app small {
+  display: block;
+  margin-top: 2px;
+  color: var(--subtle);
+  /* 11px, matching .onboarding-app strong and .setup-status-row small. Was 10px,
+     which trips the typography guard against text below 11px -- a real
+     accessibility floor, not a style preference. */
+  font-size: 11px;
+}
 
 .password-input-row { position: relative; display: block; }
 .password-input-row input { padding-right: 52px; border-right: 1px solid var(--line); }
@@ -6025,6 +6129,16 @@ code {
   color: var(--brand);
   font-size: 12px;
   font-weight: 700;
+}
+.home-profile-dock > .in-dom-tooltip {
+  left: auto;
+  right: calc(100% + 10px);
+  top: 50%;
+  bottom: auto;
+  max-width: min(14rem, calc(100vw - 96px));
+  transform: translateY(-50%);
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 .home-profile-dock > strong { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 

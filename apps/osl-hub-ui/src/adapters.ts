@@ -97,6 +97,7 @@ export interface OslChatHistoryRow {
   messageId: string;
   senderOslUserId: string;
   plaintext: string;
+  createdAt: number;
   decryptedAt: number;
 }
 export interface PreparedHubAttachment {
@@ -530,6 +531,7 @@ export async function listOslChatHistory(): Promise<OslChatHistoryRow[] | null> 
         messageId: entry.discord_message_id as string,
         senderOslUserId: entry.sender_osl_user_id as string,
         plaintext: entry.plaintext as string,
+        createdAt: entry.decrypted_at as number,
         decryptedAt: entry.decrypted_at as number,
       };
     });
@@ -1360,6 +1362,8 @@ export interface GuidedDeletionRunAuthority {
   mode: "attended_delete_run_v1";
 }
 
+export type GuidedDeletionReceiptCategory = "verified_gone" | "still_present" | "unknown";
+
 export interface GuidedDeletionRowOutcome {
   scanOrdinal: number;
   textLen: number;
@@ -1368,6 +1372,8 @@ export interface GuidedDeletionRowOutcome {
   stage: string;
   requestPosted: boolean;
   rewalkProvedAbsent: boolean;
+  /** Native tri-state receipt category; never collapse this to a boolean. */
+  receiptCategory: GuidedDeletionReceiptCategory;
 }
 
 export interface GuidedDeletionReceipt {
@@ -1555,18 +1561,26 @@ function parseGuidedDeletionCandidate(raw: unknown): GuidedDeletionCandidate | n
 }
 
 function parseGuidedDeletionRowOutcome(raw: unknown): GuidedDeletionRowOutcome | null {
-  if (!isRecord(raw) || !exact(raw, ["scanOrdinal", "textLen", "state", "stage", "requestPosted", "rewalkProvedAbsent"])) return null;
+  if (!isRecord(raw) || !exact(raw, ["scanOrdinal", "textLen", "state", "stage", "requestPosted", "rewalkProvedAbsent", "receiptCategory"])) return null;
   if (!boundedCount(raw.scanOrdinal)
     || !boundedCount(raw.textLen)
     || !GUIDED_DELETION_STATES.includes(raw.state as GuidedDeletionState)
     || !safeId(raw.stage, 120)
     || typeof raw.requestPosted !== "boolean"
-    || typeof raw.rewalkProvedAbsent !== "boolean") return null;
+    || typeof raw.rewalkProvedAbsent !== "boolean"
+    || !["verified_gone", "still_present", "unknown"].includes(String(raw.receiptCategory))) return null;
   // THE narrowing. A verified row must carry both pieces of evidence, and no
   // other state may claim the re-walk proof at all.
   if (raw.state === "verified") {
     if (raw.rewalkProvedAbsent !== true || raw.requestPosted !== true) return null;
   } else if (raw.rewalkProvedAbsent !== false) return null;
+  const expectedCategory: GuidedDeletionReceiptCategory =
+    raw.state === "verified" && raw.requestPosted === true && raw.rewalkProvedAbsent === true
+      ? "verified_gone"
+      : raw.state === "failed" && raw.requestPosted === true && raw.rewalkProvedAbsent === false && raw.stage === "row_is_still_in_the_transcript"
+        ? "still_present"
+        : "unknown";
+  if (raw.receiptCategory !== expectedCategory) return null;
   return raw as unknown as GuidedDeletionRowOutcome;
 }
 

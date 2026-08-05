@@ -2,6 +2,22 @@ name: Website Evidence Tests
 
 on:
   push:
+    # D-172 decided NOT to add `integrate/**` here. Reasons, in order:
+    # (1) every check in this job is about the public WEBSITE, which deploys
+    #     from `main`; the integration branch is where the desktop app is
+    #     assembled and does not change what the site serves.
+    # (2) it is red today -- `node scripts/check-a11y.mjs` reports 6 blocking
+    #     horizontal-overflow findings on /docs/compare, /docs/download and
+    #     /docs/faq at 320px and 390px @200% zoom (measured 2026-08-04).
+    # Reason (2) alone would NOT be grounds to leave it off, so it is not left
+    # unwatched. D-193 correction: when this comment was written the a11y check
+    # was in quarantine.json's `notRatcheted` list, which meant it was excluded
+    # from the ratchet AND executed by nothing -- so "graded on every push"
+    # was not true of it. It is now a real entry: `node scripts/check-a11y.mjs`
+    # is RUN by the quarantine-ratchet job of integration-gate.yml on every push
+    # to integrate/**, and graded against the SET of page/width/zoom identities,
+    # recorded per environment because the pixel measurement depends on the
+    # installed font stack. A finding can go away. One cannot arrive.
     branches: [main]
   pull_request:
 
@@ -16,9 +32,42 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
+      # D-232. This step had NEVER reached its subject. `locateChrome()` in
+      # scripts/lib/cdp-harness.mjs searches exactly two places -- $OSL_CHROME
+      # and ~/.cache/ms-playwright/** -- and this workflow installs neither, so
+      # on every run it has ever had (30975222959, 30975718540, its only two)
+      # `node scripts/check-a11y.mjs` threw
+      #   "no Chrome/Chromium binary found; set OSL_CHROME to a local browser
+      #    binary"
+      # 0.2s in, at cdp-harness.mjs:29, and exited 1 before opening a single
+      # page. That is not the a11y matrix failing; that is the a11y matrix not
+      # running, and because Actions aborts a job at its first failing step the
+      # two steps below it -- the build-identity contract and the screenshot
+      # matrix -- had never executed either. Three checks, zero measurements,
+      # one red X that read as if the website had been audited.
+      #
+      # OSL_CHROME points at the browser the runner image already ships
+      # (ubuntu-24.04: Google Chrome, /usr/bin/google-chrome). This is the same
+      # line the quarantine-ratchet job of integration-gate.yml already carries
+      # for the same script and the same reason, and that job DOES measure the
+      # matrix -- 40 combinations, 2 blocking findings on this runner.
+      #
+      # NOTHING IS WEAKENED. The check is not skipped, softened or allowlisted:
+      # it now runs, and it is expected to be RED on the two pre-existing
+      # horizontal-overflow findings (/docs/compare and /docs/download at 320px
+      # @200% zoom). Those are real and they are graded by identity in
+      # scripts/ci/quarantine.json. A step that cannot reach its subject cannot
+      # fail for the right reason either, which is the whole defect here.
       - name: Check accessibility matrix
+        env:
+          OSL_CHROME: /usr/bin/google-chrome
         run: node scripts/check-a11y.mjs
+      # `!cancelled()` for the same reason integration-gate.yml uses it: while
+      # the a11y step is red, the two checks below it were reported `skipped`,
+      # and a skipped check is not a green one. They still fail the job.
       - name: Check build identity contract
+        if: ${{ !cancelled() }}
         run: node scripts/test-build-identity.mjs
       - name: Test deterministic website screenshot matrix controls
+        if: ${{ !cancelled() }}
         run: node --test scripts/screenshot-matrix.test.mjs

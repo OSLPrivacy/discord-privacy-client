@@ -18,6 +18,10 @@ export const DEPLOYMENT_EVIDENCE_CHALLENGE_FORMAT =
   "osl.keyserver.deployment-evidence-challenge.v3";
 export const DEPLOYMENT_EVIDENCE_DOMAIN =
   "OSL-KEYSERVER-DEPLOYMENT-EVIDENCE-v3\u0000";
+export const DEPLOYMENT_MIGRATION_DIRECTORIES = Object.freeze([
+  "migrations",
+  "migrations-contract",
+]);
 export const DEPLOYMENT_EVIDENCE_MAX_ACTION_MS = 15 * 60_000;
 export const DEPLOYMENT_EVIDENCE_MAX_AGE_MS = 120_000;
 export const DEPLOYMENT_EVIDENCE_CLOCK_SKEW_MS = 10_000;
@@ -320,19 +324,44 @@ function validateExpectedMigrations(value) {
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error("expected committed migration closure is empty");
   }
+  const seenPaths = new Set();
+  let previousOrder = null;
   return value.map((entryValue, index) => {
     const entry = requireObject(entryValue, "expected committed migration");
-    requireExactKeys(entry, ["name", "sha256"], "expected committed migration");
+    requireExactKeys(
+      entry,
+      ["name", "path", "sha256"],
+      "expected committed migration",
+    );
     if (
       typeof entry.name !== "string" ||
       !/^\d{4}_[a-z0-9_]+\.sql$/.test(entry.name)
     ) {
       throw new Error("expected committed migration name is invalid");
     }
+    const directory = DEPLOYMENT_MIGRATION_DIRECTORIES.find((candidate) =>
+      entry.path === `${candidate}/${entry.name}`,
+    );
+    if (!directory) {
+      throw new Error("expected committed migration path is invalid");
+    }
     requireSha256(entry.sha256, "expected committed migration digest");
-    if (index > 0 && value[index - 1].name >= entry.name) {
+    if (seenPaths.has(entry.path)) {
+      throw new Error("expected committed migration paths are duplicated");
+    }
+    seenPaths.add(entry.path);
+    const order = [
+      DEPLOYMENT_MIGRATION_DIRECTORIES.indexOf(directory),
+      entry.name,
+    ];
+    if (
+      index > 0 &&
+      (previousOrder[0] > order[0] ||
+        (previousOrder[0] === order[0] && previousOrder[1] >= order[1]))
+    ) {
       throw new Error("expected committed migrations are not strictly ordered");
     }
+    previousOrder = order;
     return entry;
   });
 }
@@ -348,16 +377,35 @@ function validateMigrations(value, expectedMigrations, artifact) {
     const entry = requireObject(entryValue, "producer migration entry");
     requireExactKeys(
       entry,
-      ["applied_order", "name", "sha256"],
+      ["applied_order", "name", "path", "sha256"],
       "producer migration entry",
     );
+    if (
+      typeof entry.name !== "string" ||
+      !/^\d{4}_[a-z0-9_]+\.sql$/.test(entry.name)
+    ) {
+      throw new Error("producer migration name is invalid");
+    }
+    if (
+      !DEPLOYMENT_MIGRATION_DIRECTORIES.some(
+        (directory) => entry.path === `${directory}/${entry.name}`,
+      )
+    ) {
+      throw new Error("producer migration path is invalid");
+    }
     const expected = expectedMigrations[index];
     if (
       entry.applied_order !== index + 1 ||
       entry.name !== expected.name ||
-      entry.sha256 !== expected.sha256
+      entry.sha256 !== expected.sha256 ||
+      (entry.path !== expected.path && entry.name !== expected.name)
     ) {
       throw new Error("producer migration order or digest mismatch");
+    }
+    if (entry.path !== expected.path) {
+      throw new Error(
+        `producer migration path mismatch: receipt ${entry.path} cannot admit ${expected.path}`,
+      );
     }
   });
   if (artifact === "B") {

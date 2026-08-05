@@ -1,0 +1,98 @@
+﻿HOST=osl-client-1 USER=osladmin
+SESSION=1
+--- C:\OSL ---
+in 1
+out 1
+shots 1
+addfriend.ps1 5305
+advance.ps1 4892
+advance2.ps1 4892
+af1.ps1 5305
+af2.ps1 5305
+af4.ps1 5305
+agent.ps1 13058
+approbe.ps1 2273
+cd1.ps1 1851
+chat.ps1 5260
+con1.ps1 2898
+con2.ps1 2898
+cx1.ps1 1851
+focuslib.ps1 2144
+health.ps1 263
+inv1.ps1 3657
+invite.ps1 3657
+invite2.ps1 3657
+invite3.ps1 3657
+inviteA.ps1 3657
+ksinv.ps1 2167
+mkid.ps1 3844
+mkid2.ps1 3844
+osl-privacy-hub.exe 50093933
+out$ACTION.log 0
+p1a.ps1 2190
+pf1.ps1 6544
+postA.ps1 5391
+probe.ps1 3349
+probe0.ps1 849
+puttest.txt 6
+rstA.ps1 3352
+run-in-session.ps1 462
+send2.ps1 4392
+sendA.ps1 5371
+sendC.ps1 6544
+shot.ps1 436
+shotlib.ps1 2943
+st1.ps1 1851
+st2.ps1 1851
+sw1.ps1 2981
+uiadump.ps1 3083
+uialib.ps1 5864
+unlock.ps1 3231
+vb1.ps1 5508
+vfresh.ps1 6219
+vfresh2.ps1 6219
+vm1adv.ps1 4892
+vm1mkid.ps1 3844
+vm1unlock.ps1 3364
+vm1unlock2.ps1 3364
+vosend.ps1 6413
+vpastrec.ps1 3387
+vpastrec2.ps1 3387
+webview2.exe 1691856
+WebView2Loader.dll 160320
+--- discord installs ---
+C:\Users\osladmin\AppData\Local\Discord ABSENT
+C:\Users\osladmin\AppData\Local\DiscordPTB ABSENT
+C:\Users\osladmin\AppData\Local\DiscordCanary ABSENT
+--- running procs ---
+msedge pid=1636 sess=1 title=Instagram
+msedge pid=3116 sess=1 title=
+msedge pid=3412 sess=1 title=
+msedge pid=4196 sess=1 title=
+msedge pid=4596 sess=1 title=
+msedge pid=6696 sess=1 title=
+msedge pid=6808 sess=1 title=
+msedge pid=6820 sess=1 title=
+msedgewebview2 pid=1064 sess=1 title=
+msedgewebview2 pid=1940 sess=1 title=
+msedgewebview2 pid=3076 sess=1 title=
+msedgewebview2 pid=3084 sess=1 title=
+msedgewebview2 pid=3924 sess=1 title=
+msedgewebview2 pid=4736 sess=1 title=
+msedgewebview2 pid=5692 sess=1 title=
+msedgewebview2 pid=7152 sess=1 title=
+osl-privacy-hub pid=2120 sess=1 title=OSL Privacy
+--- webview2 ---
+Microsoft Edge WebView2 Runtime 151.0.4129.59
+--- osl appdata ---
+C:\Users\osladmin\AppData\Roaming\com.oslprivacy.hub ABSENT
+C:\Users\osladmin\AppData\Roaming\OSL Privacy Hub ABSENT
+C:\Users\osladmin\AppData\Local\com.oslprivacy.hub ABSENT
+--- appdata roaming top ---
+Adobe
+Microsoft
+org.oslprivacy.hub
+--- disk ---
+C: used=14.7GB free=111.8GB
+--- screen ---
+SCREEN={X=0,Y=0,Width=1024,Height=768}

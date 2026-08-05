@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   OSL_CHAT_DELIVERY_STATES,
   OSL_CHAT_MAX_DRAFT_BYTES,
+  applyOslChatDraftToElement,
   oslChatDraftBytes,
   oslChatsViewMarkup,
   type OslChatFriend,
@@ -74,7 +76,7 @@ describe("OSL chats view", () => {
     }));
     expect(OSL_CHAT_DELIVERY_STATES).toEqual(["queued", "sent", "delivered", "received", "opened", "expired", "failed"]);
     const labels: Record<typeof OSL_CHAT_DELIVERY_STATES[number], string> = {
-      queued: "Queued — not sent",
+      queued: "Not sent",
       sent: "Sent",
       delivered: "Delivered",
       received: "Received",
@@ -99,8 +101,15 @@ describe("OSL chats view", () => {
   it("offers view-once with exact open-and-history semantics", () => {
     const markup = oslChatsViewMarkup(model({ viewOnce: true }));
     expect(markup).toContain('id="osl-chat-view-once"');
-    expect(markup).toContain("Removed after it is opened");
-    expect(markup).toContain("kept out of OSL history");
+    // D-135. This assertion used to be `toContain("Removed after it is
+    // opened")`, and that sentence was the defect: OSL asks for the sent copy
+    // to be deleted, learns nothing back, and counted the failures into
+    // `DeletionDrainReport::retained` where they were discarded. The local half
+    // of the promise is real and still pinned; the remote half is now stated as
+    // a request, and pinned as NOT a completion. Master 7.5.
+    expect(markup).toContain("Kept out of OSL history");
+    expect(markup).toContain("asks for the sent copy to be deleted");
+    expect(markup).not.toMatch(/\bRemoved after it is opened\b/u);
     expect(markup).toMatch(/id="osl-chat-view-once" type="checkbox" checked/u);
   });
 
@@ -162,5 +171,18 @@ describe("send button re-enablement while typing", () => {
     const markup = oslChatsViewMarkup(model({ draft: "hello" }));
     expect(markup).toContain('data-osl-chat-send-context="1"');
     expect(markup).not.toMatch(/class="osl-chat-send"[^>]*disabled/u);
+  });
+
+  it("send success clears the live textarea element through the draft source of truth", () => {
+    const textarea = { value: "message that was just sent" };
+    applyOslChatDraftToElement(textarea, "");
+    expect(textarea.value).toBe("");
+
+    const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+    const sendStart = main.indexOf("async function sendOslChat(event: SubmitEvent): Promise<void> {");
+    const resetStart = main.indexOf("function resetOslChatUiState", sendStart);
+    expect(sendStart).toBeGreaterThan(-1);
+    expect(resetStart).toBeGreaterThan(sendStart);
+    expect(main.slice(sendStart, resetStart)).toContain('setOslChatDraft("");');
   });
 });

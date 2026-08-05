@@ -14,6 +14,11 @@ description = "Set the session-only, per-conversation opt-in for optional AI car
 commands.allow = ["set_ai_carrier_preview_enabled"]
 
 [[permission]]
+identifier = "allow-build-integrity-status"
+description = "Read the already-computed startup build-integrity verdict; it copies a status value and performs no I/O, no network operation and no key access."
+commands.allow = ["build_integrity_status"]
+
+[[permission]]
 identifier = "allow-compose-scrub-erasure-request"
 description = "Compose a local GDPR/CCPA erasure request for the user to review and send themselves; it performs no network operation."
 commands.allow = ["compose_scrub_erasure_request"]
@@ -194,6 +199,11 @@ description = "Persist the explicit OSL network route before encrypted text can 
 commands.allow = ["set_tor_preference"]
 
 [[permission]]
+identifier = "allow-set-osl-chat-capture-preference"
+description = "Allow only the trusted main OSL window to set one verified peer's local OSL Chat capture-protection opt-in; the handler resolves the person through an existing manual peer binding and reports the enforced effective state rather than the requested one."
+commands.allow = ["set_osl_chat_capture_preference"]
+
+[[permission]]
 identifier = "allow-scan-local-privacy"
 description = "Scan bounded caller-provided visible message text in local process memory without persistence or network access."
 commands.allow = ["scan_local_privacy"]
@@ -227,16 +237,6 @@ commands.allow = ["append_scrub_index_chunk"]
 identifier = "allow-get-scrub-index-status"
 description = "Read bounded progress metadata for the active identity's encrypted local Scrub index."
 commands.allow = ["get_scrub_index_status"]
-
-[[permission]]
-identifier = "allow-pause-scrub-index"
-description = "Pause the exact active local Scrub import by its random identifier."
-commands.allow = ["pause_scrub_index"]
-
-[[permission]]
-identifier = "allow-resume-scrub-index"
-description = "Resume the exact active local Scrub import by its random identifier."
-commands.allow = ["resume_scrub_index"]
 
 [[permission]]
 identifier = "allow-cancel-scrub-index"
@@ -644,6 +644,21 @@ description = "Request one read-only scan of the exact checked native-hosted Dis
 commands.allow = ["request_hosted_session_scan_command"]
 
 [[permission]]
+identifier = "allow-scan-discord-own-messages-for-deletion"
+description = "Request one read-only native Discord guided-deletion scan and store its content-free row metadata as the only source from which a later exact preview may be built; accepts no account, handle, credential, profile, path, URL, conversation, row, deletion, navigation, or network authority."
+commands.allow = ["scan_discord_own_messages_for_deletion"]
+
+[[permission]]
+identifier = "allow-preview-discord-guided-deletion"
+description = "Build a Pro-gated, content-free, exact Discord guided-deletion preview only from the last native-held reviewed scan; refuses rows not present in that scan and performs no deletion."
+commands.allow = ["preview_discord_guided_deletion"]
+
+[[permission]]
+identifier = "allow-execute-discord-guided-deletion"
+description = "Confirm the last exact Discord guided-deletion preview against the current native-held scope, generation, and attended run authority, then execute only that confirmed plan and return its tri-state verification receipt."
+commands.allow = ["execute_discord_guided_deletion"]
+
+[[permission]]
 identifier = "allow-close-service-host"
 description = "Close the currently hosted service child webview."
 commands.allow = ["close_service_host"]
@@ -672,11 +687,6 @@ commands.allow = ["prepare_peer_prose_text"]
 identifier = "allow-open-peer-prose-text"
 description = "Open one bounded manually pasted peer ciphertext in the trusted local UI for the exact active manual peer context."
 commands.allow = ["open_peer_prose_text"]
-
-[[permission]]
-identifier = "allow-place-prepared-capsule"
-description = "After an explicit trusted-UI action, focus the exact active service surface and place a prepared capsule without sending it."
-commands.allow = ["place_prepared_capsule"]
 
 [[permission]]
 identifier = "allow-prepare-encrypted-text"
@@ -832,6 +842,11 @@ commands.allow = ["burn_active_hub_context"]
 identifier = "allow-get-hub-revocation-status"
 description = "Read whether the burn notices already queued for one canonical OSL scope key have been acknowledged by the peers who had access; reads no message content and changes nothing."
 commands.allow = ["get_hub_revocation_status"]
+
+[[permission]]
+identifier = "allow-get-osl-chat-local-state-key"
+description = "Hand the local UI an HKDF subkey, derived from the existing at-rest storage-key authority under its own info label, so OSL Chat's muted people, unread counts, preview visibility and message notifications are sealed in the webview store instead of sitting in localStorage. It never returns the file storage key itself and refuses while a main-password gate is locked."
+commands.allow = ["get_osl_chat_local_state_key"]
 
 [[permission]]
 identifier = "allow-add-hub-friend-by-username"

@@ -8,9 +8,22 @@ preview_urls = false
 # The username normalizer is compiled once from the pinned Rust UTS #39
 # implementation.  Treat the artifact as a Worker module, never as a URL or
 # text asset, so both deployment and Miniflare instantiate the same bytes.
+#
+# D-248: the glob used to be `src/lib/unicode-identifier/dist/*.wasm`, and it
+# never matched anything.  Wrangler matches a module rule against the IMPORT
+# SPECIFIER as written -- here `./dist/osl_uts39_wasm_bg.wasm`, from
+# `src/lib/unicode-identifier/runtime.ts` -- not against a repository-relative
+# path, so no `src/...` glob could ever match.  It went unnoticed because
+# nothing in the Worker imported the artifact until the confusable defence was
+# wired in; the first real import failed `verify:worker-build` outright with
+# "matched a module rule ... but was ignored because a previous rule with the
+# same type was not marked as fallthrough".  Naming the artifact file is
+# specifier-shape independent.  `fallthrough = false` is explicit so the
+# built-in `**/*.wasm` rule stays shadowed by this one, by choice.
 [[rules]]
 type = "CompiledWasm"
-globs = ["src/lib/unicode-identifier/dist/*.wasm"]
+globs = ["**/osl_uts39_wasm_bg.wasm"]
+fallthrough = false
 
 # Production secrets (set via `wrangler secret put`):
 #   OSL_KEYSERVER_ADMIN_TOKEN     — operator-only payment/admin bearer
@@ -28,7 +41,7 @@ globs = ["src/lib/unicode-identifier/dist/*.wasm"]
 
 # Disables Workers Logs for this Worker. It does not disable Cloudflare zone
 # HTTP request data, Analytics, or zone Logpush; proxied request URLs can still
-# be retained there. See /home/liamw/osl-plan/CLOUDFLARE-LOG-EXPOSURE.md.
+# be retained there. See plan-repo/CLOUDFLARE-LOG-EXPOSURE.md.
 [observability]
 enabled = false
 

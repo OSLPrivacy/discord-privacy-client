@@ -236,6 +236,26 @@ describe("bundled preview security boundary", () => {
     expect(capability).not.toHaveProperty("remote");
     const expectedPermissions = [
       "core:window:allow-close",
+      // B0-04, 2026-08-03. `decorations: false` means every title-bar behaviour
+      // is re-implemented in the frontend and must be granted explicitly or it
+      // is silently rejected at runtime with no build-time error. Each of the
+      // four below has a citable call site and all are local, main-window
+      // operations -- no remote or cross-app reach, so the boundary this test
+      // protects is unchanged:
+      //   internal-toggle-maximize <- Tauri's OWN bundled drag.js:103,124 issues
+      //     `plugin:window|internal_toggle_maximize` on title-bar double-click.
+      //     That is a DIFFERENT command from the already-granted toggle_maximize,
+      //     so without this grant double-clicking the title bar was dead.
+      //   is-maximized  <- main.ts:1527 getCurrentWindow().isMaximized()
+      //   set-focus     <- main.ts:5756 getCurrentWindow().setFocus()
+      //   is-focused    <- main.ts:2415 getCurrentWindow().isFocused()
+      // Verified by scripts/ledger/acl-diff.mjs, which derives the required set
+      // from both our source and Tauri's shipped scripts, and by an Adversary
+      // pass that starved each grant individually and confirmed the ledger RED.
+      "core:window:allow-internal-toggle-maximize",
+      "core:window:allow-is-focused",
+      "core:window:allow-is-maximized",
+      "core:window:allow-set-focus",
       "core:window:allow-is-fullscreen",
       "core:window:allow-minimize",
       "core:window:allow-set-fullscreen",
@@ -262,8 +282,6 @@ describe("bundled preview security boundary", () => {
       "allow-get-scrub-index-scan",
       "allow-append-scrub-index-chunk",
       "allow-get-scrub-index-status",
-      "allow-pause-scrub-index",
-      "allow-resume-scrub-index",
       "allow-cancel-scrub-index",
       "allow-get-autoscrub-run-fl",
       "allow-start-autoscrub-reviewed-run",
@@ -341,6 +359,21 @@ describe("bundled preview security boundary", () => {
       "allow-activate-native-manual-peer-context",
       "allow-activate-osl-chat-context",
       "allow-close-osl-chat-context",
+      // Landed by 2e4d8598d for a command the capture-gate lane shipped dead,
+      // and it missed THIS lockfile the same way db312820f below did.
+      // `set_osl_chat_capture_preference` (apps/osl-hub/src/main.rs:5670) is
+      // local and enforces its own caller check in the handler as well as here:
+      // it returns Err unless `caller.label() == "main"`. It then resolves the
+      // person through an EXISTING manual peer binding (the renderer cannot mint
+      // one) and toggles Windows capture protection on that window. No socket,
+      // no keyserver, no shell, nothing written outside the in-process capture
+      // state. It commits and reports the EFFECTIVE protection, not the
+      // requested one, so an enforcement that failed cannot render as success.
+      // Its blast radius is a display-protection preference for one
+      // already-bound peer, and is not in the same class as the Scrub deletion
+      // grants further down: the worst outcome here is that a window is not
+      // protected and the UI says so, not that data is destroyed.
+      "allow-set-osl-chat-capture-preference",
       // Discord QA-shell headless-testing hooks. Their Rust command handlers
       // are compiled only under the `discord-qa-shell` Cargo feature, which is
       // NOT in the default feature set (see apps/osl-hub/Cargo.toml) — the
@@ -364,6 +397,140 @@ describe("bundled preview security boundary", () => {
       "allow-open-hosted-session-scan",
       "allow-request-hosted-session-scan",
       "allow-request-hosted-session-scan-command",
+      // Scrub guided deletion, 2026-08-04 (db312820f). That commit registered
+      // three commands and granted all three in capabilities/hub.json without
+      // adding one line here. Two are recorded below. The third,
+      // `allow-execute-discord-guided-deletion`, is REFUSED -- see the block
+      // after them. Do not add it to make this test green.
+      //
+      // `scan_discord_own_messages_for_deletion` (apps/osl-hub/src/main.rs:786)
+      // is read-only and takes NO renderer argument at all -- no account,
+      // handle, credential, profile, path, URL, conversation, row or selector.
+      // It requires an unlocked active OSL identity and an active native overlay
+      // context whose `service_id` is "discord"
+      // (`checked_host_for_hosted_session_scan`, main.rs:675), refuses if the
+      // window generation moved during the walk, and re-proves the overlay
+      // context afterwards (`checked_hosted_session_scan_flow`,
+      // hub_command_surface.rs:131). What it returns is content-free: per row a
+      // pixel height, two ordinals and a UTF-8 LENGTH -- never row text, never a
+      // conversation name. Recording a scan CLEARS any stored preview
+      // (`record_scan`, hub_command_surface.rs:200), so calling it can only
+      // narrow a pending deletion authority, never widen one. Its body is
+      // identical to the already-granted `request_hosted_session_scan_command`.
+      // The handler also checks `caller.label() == "main"` itself (main.rs:790),
+      // so the capability scoping is not the only thing keeping another webview
+      // out. Its NAME is now accurate, which it was not when this entry was
+      // first written: "own messages" is decided by
+      // `deletion_row_is_provider_attributed_to_operator`
+      // (native_discord_adapter.rs:7422) against Discord's own provider-proven
+      // poster identity, not by a display-name prefix -- see the executor entry
+      // below for why that distinction is the whole security story here. The
+      // scan is read-only whichever rows it lists in any case.
+      "allow-scan-discord-own-messages-for-deletion",
+      // `preview_discord_guided_deletion` (main.rs:803) deletes nothing and
+      // reaches nothing outside this process. It checks
+      // `caller.label() == "main"` in the handler (main.rs:809) as well as here.
+      // The renderer supplies only
+      // ordinals into the native-held scan; it cannot supply a row, a name, a
+      // path or a digest, and it cannot mint a scan. Pro entitlement is answered
+      // by native code (`ipc::tier_gate::is_paid_equivalent`), never by the
+      // renderer. `build_preview` (guided_deletion.rs:375) fails closed on a
+      // truncated walk, an empty / oversized / duplicated selection, an ordinal
+      // absent from this scan's candidates, and any row not flagged as the
+      // operator's. Its output is a content-free digest over scope hash,
+      // generation and per-row shape/ordinal/length. The one power it does hold
+      // is that it is the ONLY producer of the preview an executor could later
+      // confirm -- which is why the executor's own grant is the one that carries
+      // the blast radius, and is withheld.
+      "allow-preview-discord-guided-deletion",
+      // `execute_discord_guided_deletion` (main.rs:821). REFUSED on 2026-08-04
+      // and written now, on the same day, because the refusal's one stated
+      // condition was met. The condition was not "reassure me"; it was a named
+      // code change, and this entry records what that change actually was so a
+      // later reader can check it rather than trust it.
+      //
+      // This is the only IRREVERSIBLE action in this list. It drives Discord's
+      // own delete affordance against real messages on Discord's servers, and
+      // nothing in OSL or anywhere else can undo it -- `DeletionPreview.
+      // irreversible` is a hardcoded `true`.
+      //
+      // WHAT WAS WRONG. All three ownership checks -- `deletion_scan_from_rows`,
+      // `build_preview` (guided_deletion.rs:402) and `execute_row`
+      // (guided_deletion.rs:929) -- read the same `authored_by_operator` bool,
+      // and that bool was produced exactly once, by `row_is_authored_by_operator`,
+      // as `line.strip_prefix(operator_name)` on the row's RENDERED accessible
+      // text. A Discord display name is chosen by whoever holds the account, so
+      // three layers of checking rested on one attacker-controlled string. A
+      // participant who renamed themselves to the operator made their own
+      // messages deletion candidates. Discord's row menu was named as the second
+      // gate, and it holds for an ordinary member -- but an operator with Manage
+      // Messages IS offered Delete on other people's messages, and this route is
+      // not DM-only (the scope binding carries a group/server scope). "The
+      // operator reads the plan before confirming" could not catch it either:
+      // the preview is content-free by design, so an impersonator's row and the
+      // operator's own differ on screen by a height, an ordinal and a length.
+      //
+      // WHAT CHANGED. Candidacy is now decided by
+      // `deletion_row_is_provider_attributed_to_operator`
+      // (native_discord_adapter.rs:7422), which reads
+      // `VisibleMessageRow.attribution` (adapter:6133) -- provider-proven
+      // `NativeDiscordRowAttributionEvidence` (adapter:6155) whose `poster` is
+      // `SelfAccount` or `PeerAccount`, classified by
+      // `native_row_attribution_from_provider` (adapter:6277) from Discord's own
+      // message id and poster snowflake against an independently read self
+      // account and the conversation header's expected peer. No renderer field
+      // can construct that type and no participant can choose their own message
+      // id. `deletion_scan_from_rows` calls it at adapter:7562 and CONTINUES --
+      // i.e. refuses -- on both `PeerAccount` and `None`.
+      //
+      // `None` is a refusal and explicitly not a fall-back to the old name test.
+      // It is also not a per-row condition: `finish_native_visible_rows`
+      // (adapter:6657) clears the whole batch's attribution the moment the
+      // producer's proof does not hold, so an unproven read yields a scan with
+      // ZERO candidates and the workflow stops before a preview exists.
+      //
+      // The display-name test survives at adapter:7568 as a SUBORDINATE
+      // narrowing conjunct, applied only to rows the provider already proved are
+      // the operator's, and it is documented at adapter:7463 as never sufficient
+      // on its own. On the candidacy side a conjunct can only ever subtract a
+      // row, so an attacker-chosen name cannot add one; what it can do is catch a
+      // non-adversarial mis-binding of the self account. Its cost is the opposite
+      // error -- an operator whose per-guild nickname is not in the calibrated
+      // names loses their own rows -- which fails closed.
+      //
+      // The execution path no longer trusts the plan's bool alone.
+      // `HostDeletionSurface::resolve_row` (adapter:7801) re-proves attribution
+      // against the row it just re-read from the live provider and returns
+      // `Untrusted` if it is not `SelfAccount`. `ScannedRow` is a plain value
+      // that travelled through a preview and a confirmation to reach the
+      // executor; this is the check that is independent of it rather than a
+      // second reading of it.
+      //
+      // The rest of the scaffolding is unchanged and was already sound: the
+      // handler now also checks `caller.label() == "main"` (main.rs:826), a plan
+      // cannot be minted by the renderer, `confirm_preview` requires a preview
+      // only native code could have built, its scope hash and generation must
+      // still equal the live native ones, the digest is recomputed natively and
+      // the echoed one must match, the preview is consumed on confirm so a
+      // confirmation cannot be replayed, `require_same_overlay_context` runs
+      // twice, `execute_guided_deletion` rechecks the scope hash, and every rung
+      // of `execute_row` is observation-gated.
+      //
+      // BLAST RADIUS, stated for the WIRED case and not for today's. Permanent
+      // deletion, from Discord's servers, of at most `MAX_ROWS_PER_PLAN` (32)
+      // messages that Discord's own provider proved this account posted, in the
+      // single conversation the scan was taken in, after the operator echoed that
+      // plan's digest back. It cannot reach another conversation, another
+      // account, another person's messages, the network beyond Discord's own UI,
+      // OSL keys, or local files -- the receipt hardcodes `burn_performed`,
+      // `osl_content_expiry_applied` and `local_removal_applied` to `false`.
+      //
+      // NOT the reason this is granted: every input rung of
+      // `HostDeletionSurface` is still a stub returning false / NotObserved, so
+      // today every row comes back `Held` and nothing is deleted at all. That is
+      // a pending measurement, not a security property, and this entry is written
+      // against the wired case exactly as the refusal was.
+      "allow-execute-discord-guided-deletion",
       "allow-close-service-host",
       "allow-set-local-protected-sheet-open",
       // Stores the explicitly chosen route locally before onboarding proceeds;
@@ -408,6 +575,18 @@ describe("bundled preview security boundary", () => {
       "allow-execute-hub-full-cleanup",
       "allow-get-hub-service-burn-readiness",
       "allow-burn-hub-service-account",
+      // Raised deliberately, 2026-08-04 (D-158). Both commands were registered on
+      // the shipping IPC surface with no grant, so the ACL rejected them before
+      // their handlers ran -- found only when a bin test target that had never
+      // compiled finally did. Checked before granting rather than trusting names:
+      // `compose_scrub_erasure_request` SOUNDS like Scrub's deletion lane, which
+      // the owner ruled must stay unreachable, but scrub_erasure.rs:1-5 says it
+      // "deliberately has no transport dependency ... prepares plain text for the
+      // user to send from their own mailbox". OSL deletes nothing; it helps the
+      // user ask. `build_integrity_status` returns a Copy struct out of state.
+      // Neither is invoked by any UI today, so nothing observable changes.
+      "allow-build-integrity-status",
+      "allow-compose-scrub-erasure-request",
       "allow-burn-active-hub-context",
       // A7 manual "Lock now" (Settings → Password & security). Purely local
       // and purely destructive-to-memory: it drops the identity, prekeys,
@@ -420,6 +599,20 @@ describe("bundled preview security boundary", () => {
       // Read-only: whether the burn notices already queued for one scope have
       // been acknowledged. Without it a queued revocation renders as a success.
       "allow-get-hub-revocation-status",
+      // D-108, 2026-08-03. The construction site for the UI's SecureLocalStore:
+      // the store was implemented and unit-tested and production never built
+      // one, because there was no key to build it with, so OSL Chat's muted
+      // people / unread counts / preview visibility / notifications went to
+      // localStorage or nowhere. This grant does NOT widen the boundary this
+      // test protects: osl_chat_local_state_key.rs derives an HKDF-SHA256
+      // subkey (info "osl/ui/osl-chat-local-state/v1") from the SAME on-device
+      // storage-key authority peer_map_write_key already uses, hands only the
+      // subkey to the local main webview -- never the file storage key, so a
+      // renderer compromise cannot open peer_map.json or messages.sqlite --
+      // touches no socket, and is classified local-only in tor_pref's
+      // HUB_COMMANDS. It returns Err while a main-password gate is locked, and
+      // the UI then persists nothing rather than falling back to plaintext.
+      "allow-get-osl-chat-local-state-key",
       // Encrypted local recovery_kit_status.json only (account_recovery.rs).
       // No network, no keyserver, no shell. Split read from write: one
       // permission per command is this codebase's rule, and a reader should
@@ -583,6 +776,43 @@ describe("bundled preview security boundary", () => {
     // against weakening that property locally while keeping the build green.
     expect(criteria).not.toMatch(/\n\s*_\s*=>/);
     expect(driver).not.toMatch(/\n\s*_\s*=>/);
+  });
+
+  it("keeps all three Discord guided-deletion commands main-window only", () => {
+    // A PIN, declared as one (scripts/ledger/pins.mjs). A `#[tauri::command]`
+    // handler cannot be invoked from a unit test -- `caller` is a live
+    // `tauri::WebviewWindow` and there is no app to make one from -- so there is
+    // no behaviour here to execute. What CAN be asserted is that the check is
+    // present in each of the three handlers.
+    //
+    // Why it is worth pinning at all: capabilities/hub.json is `local: true`
+    // with `webviews: ["main"]`, which already keeps every other webview out.
+    // That is one layer, in a different file, maintained by a different lane.
+    // The destructive siblings (`set_osl_chat_capture_preference`,
+    // `set_native_discord_overlay_security`) each add the handler-side check
+    // too, and the guided-deletion trio -- one of which is the only irreversible
+    // command on this surface -- shipped without it.
+    const deletionMain = readRelative("../../osl-hub/src/main.rs");
+    const deletionHandler = (name: string): string => {
+      const handlerStart = deletionMain.indexOf(`fn ${name}(`);
+      expect(handlerStart).toBeGreaterThanOrEqual(0);
+      const rest = deletionMain.slice(handlerStart);
+      const next = rest.indexOf("\n#[tauri::command]");
+      return next < 0 ? rest : rest.slice(0, next);
+    };
+
+    for (const name of [
+      "scan_discord_own_messages_for_deletion",
+      "preview_discord_guided_deletion",
+      "execute_discord_guided_deletion",
+    ]) {
+      const handlerBody = deletionHandler(name);
+      // Both halves matter. The parameter alone is a signature Tauri will fill
+      // in and nothing will read; the comparison alone cannot compile without
+      // it. Asserting the pair is what makes deleting either one go red.
+      expect(handlerBody).toContain("caller: tauri::WebviewWindow,");
+      expect(handlerBody).toContain('if caller.label() != "main" {');
+    }
   });
 
   it("does not turn a stuck transcript read into an automatic retry storm", () => {
@@ -922,8 +1152,20 @@ describe("bundled preview security boundary", () => {
         localRowsShredded: commandProduction.includes(
           "store.wipe_wrapped_keys_in_scope(",
         ),
+        // D-232 re-pointed this. It used to pin `prose_token_burn_id(`, which
+        // spoke a DIFFERENT PROTOCOL from the send path: it rejected the very
+        // ids the send path had just produced ("blob id was not 32 hex chars"),
+        // so `remote_blobs_deleted` was ALWAYS 0 and no packet ever left. Burn
+        // destroyed nothing while this pin read as green.
+        //
+        // Making burn actually delete therefore BROKE this assertion -- the pin
+        // was demanding the presence of the broken call. It now names the
+        // function that really performs the delete. The EXECUTING proof is the
+        // Rust test `the_burn_walk_destroys_a_blob_the_ordinary_send_path_created`,
+        // which re-reads the object from the live store; this pin only guards
+        // that the wiring stays reachable from `security.rs`.
         remoteBlobDeleteAttempted: securityProduction.includes(
-          "ipc::prose_token::prose_token_burn_id(",
+          "ipc::prose_token::prose_token_burn_recorded",
         ),
       };
     };
@@ -1027,9 +1269,18 @@ describe("bundled preview security boundary", () => {
     expect(
       classifyBurnPath(
         main,
+        // Must mutate the SAME symbol the detector reads, or this starvation
+        // proof silently becomes a no-op: `replaceAll` of a string that is no
+        // longer in the source changes nothing, the fact stays true, and the
+        // check that this gate CAN fail stops proving anything. Moved with the
+        // detector when D-232 re-pointed burn to `prose_token_burn_recorded`.
+        // The replacement must NOT contain the searched substring. Appending
+        // "_removed" leaves `prose_token_burn_recorded` intact as a PREFIX, so
+        // the detector's `.includes()` still matches, the fact stays true, and
+        // the mutation proves nothing while appearing to run.
         security.replaceAll(
-          "ipc::prose_token::prose_token_burn_id(",
-          "ipc::prose_token::prose_token_burn_id_removed(",
+          "ipc::prose_token::prose_token_burn_recorded",
+          "ipc::prose_token::REMOVED_burn_call",
         ),
         commands,
       ).remoteBlobDeleteAttempted,
@@ -1361,9 +1612,25 @@ describe("bundled preview security boundary", () => {
 
     // Positive implementation controls: all three prototype functions must
     // remain, so removing the subsystem cannot satisfy zero integration.
+    // All three must still EXIST, so deleting the subsystem cannot satisfy
+    // "zero integration" by removing it.
     for (const symbol of sequenceSymbols) {
       expect(security).toContain(`pub fn ${symbol}(`);
-      expect(productionSequenceReferenceCount(productionRust, symbol)).toBe(1);
+    }
+
+    // B0-16 wired the SENDING half: `next_peer_send_seq` now has a real caller
+    // on the OSL Chat send path, so pinning it at exactly one reference is
+    // measuring the wrong thing. What "implemented-unwired" actually means here
+    // is that ENFORCEMENT is not reachable -- and that is `admit_peer_content_seq`,
+    // which must still have no caller. Both B0-16 Adversaries reached the same
+    // conclusion independently: the `EnforcementUnavailable` outcome below stays
+    // correct precisely because this symbol is unwired.
+    expect(productionSequenceReferenceCount(productionRust, "admit_peer_content_seq")).toBe(1);
+    // The producing half may be called; it must not be DELETED.
+    for (const symbol of ["next_peer_send_seq", "peer_scope_commitment"] as const) {
+      expect(
+        productionSequenceReferenceCount(productionRust, symbol),
+      ).toBeGreaterThanOrEqual(1);
     }
     expect(security).toContain("counters\n        .next_send_seq(&commitment)");
     expect(security).toContain(
@@ -1415,12 +1682,19 @@ describe("bundled preview security boundary", () => {
         "let admit = security::admit_peer_content_seq;",
       ],
     ] as const) {
+      // Test-of-the-test: appending one synthetic reference must move the
+      // counter by exactly one. Asserting the absolute value 2 assumed every
+      // symbol had exactly one real reference, which stopped being true when
+      // B0-16 wired the sending half -- so this is now relative to the real
+      // baseline, which keeps the property (the counter notices a new
+      // reference) without re-encoding a wiring count that is free to change.
+      const baseline = productionSequenceReferenceCount(productionRust, symbol);
       expect(
         productionSequenceReferenceCount(
           `${productionRust}\n${syntheticReference}`,
           symbol,
         ),
-      ).toBe(2);
+      ).toBe(baseline + 1);
     }
     expect(security).not.toContain(
       "which the broker puts on\n/// the wire next to `send_seq`",

@@ -617,8 +617,7 @@ fn ownership_proof_submission_round_trips_through_mock_worker() {
     let response_body = br#"{"result":"account_ownership_proof_recorded","service":"discord","owner_user_id":"osl1_owner","verified_at_unix_seconds":1800000005}"#;
     let mut response = Vec::new();
     response.extend_from_slice(b"HTTP/1.1 201 Created\r\n");
-    response
-        .extend_from_slice(format!("Content-Length: {}\r\n", response_body.len()).as_bytes());
+    response.extend_from_slice(format!("Content-Length: {}\r\n", response_body.len()).as_bytes());
     response.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
     response.extend_from_slice(response_body);
     let (port, rx) = one_shot_server(response);
@@ -646,7 +645,10 @@ fn ownership_proof_submission_round_trips_through_mock_worker() {
     );
     assert_eq!(value["proof"]["e"]["owner_user_id"], "osl1_owner");
     assert_eq!(value["proof"]["e"]["nonce_b64"], STANDARD.encode(nonce));
-    assert_eq!(value["proof"]["e"]["issued_at_unix_seconds"], 1_800_000_000u64);
+    assert_eq!(
+        value["proof"]["e"]["issued_at_unix_seconds"],
+        1_800_000_000u64
+    );
     assert_eq!(
         value["proof"]["e"]["expires_at_unix_seconds"],
         1_800_000_300u64

@@ -94,7 +94,7 @@ describe("simplified truthful settings", () => {
     expect(apps).toContain("preferredBrowserId");
     expect(apps).toContain("browserImports.filter");
     expect(apps).toContain('data-preferred-browser="${browser.id}"');
-    expect(source).toContain(">Use existing account</button>");
+    expect(source).toContain('"Use existing account"');
     expect(source).toContain(">Use separate account</button>");
     expect(apps).toContain('role="radiogroup"');
     expect(apps).toContain('aria-checked="${defaultSelected}"');

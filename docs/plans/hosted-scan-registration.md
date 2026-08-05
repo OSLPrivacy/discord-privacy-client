@@ -69,13 +69,17 @@ permission.
 
 ## Registration Only
 
-When the two missing command wrappers exist and their exact source signatures
-are available, register exactly these command names and no deletion command:
+When the hosted scan and guided-deletion command wrappers exist and their exact
+source signatures are available, register exactly these command names:
 
 ```rust
 // apps/osl-hub/src/main.rs, inside tauri::generate_handler![ ... ]
 open_hosted_session_scan,
 request_hosted_session_scan,
+request_hosted_session_scan_command,
+scan_discord_own_messages_for_deletion,
+preview_discord_guided_deletion,
+execute_discord_guided_deletion,
 ```
 
 Place them near the existing local scan and Scrub entries, after
@@ -83,11 +87,13 @@ Place them near the existing local scan and Scrub entries, after
 command wrappers are defined beside a more specific hosted-session block.
 
 Do not register or route through any generic delete-capable port as part of this
-change. In particular, this scan registration must not add or require:
+change. Preview and execute are allowed only as the Discord guided-deletion
+step-4 producer/consumer: preview must be built from the last native-held scan,
+confirmation must echo the exact preview digest against the current native-held
+scope and generation, and receipts must stay tri-state. In particular, this
+registration must not add or require:
 
 - `execute_mass_cleanup_batch`
-- `preview_discord_guided_deletion`
-- `execute_discord_guided_deletion`
 - any command or verb named `DeleteOwnItem`
 
 ## Required ACL Entries
@@ -98,6 +104,10 @@ Add these exact permission identifiers to
 ```json
 "allow-open-hosted-session-scan",
 "allow-request-hosted-session-scan",
+"allow-request-hosted-session-scan-command",
+"allow-scan-discord-own-messages-for-deletion",
+"allow-preview-discord-guided-deletion",
+"allow-execute-discord-guided-deletion",
 ```
 
 Add these exact TOML entries to `apps/osl-hub/permissions/hub.toml`:
@@ -190,19 +200,27 @@ empty or permissive scan.
 
 ### Independent Review Pass f78
 
-Verdict: pass, provided the registration stays limited to
-`open_hosted_session_scan` and `request_hosted_session_scan` and the command
-wrappers keep the renderer out of owner, scope, generation, operator-name,
-credential, profile, row-selection, preview, confirmation, and deletion inputs.
+Verdict: pass, provided scan registration stays limited to
+`open_hosted_session_scan`, `request_hosted_session_scan`,
+`request_hosted_session_scan_command`, and
+`scan_discord_own_messages_for_deletion`, and guided deletion is limited to the
+exact step-4 pair `preview_discord_guided_deletion` and
+`execute_discord_guided_deletion`. The command wrappers keep the renderer out
+of owner, scope, generation, operator-name, credential, profile, delete
+mechanism, and verification inputs; row selection can only name ordinals from
+the last native-held reviewed scan, and confirmation can only echo that exact
+preview digest.
 
 The isolation boundary is acceptable because the only authority-bearing inputs
 listed above are native-held state or unavailable to the scan command. The
-renderer can request reachability only; it cannot name the account, hosted
-context, operator identity, row target, or deletion action. Missing identity
-unlock, active host, scope binding, attended operator binding, credential
-source, or delete authority therefore remains a refusal. It must not be mapped
-to an empty scan, best-effort scan, cached scan, local fixture, or permissive
-default.
+renderer can request reachability and a bounded reviewed ordinal selection
+only; it cannot name the account, hosted context, operator identity, provider
+credential, generic row target, deletion mechanism, or success result. Missing
+identity unlock, active host, scope binding, attended operator binding,
+credential source, exact reviewed scan row, exact digest confirmation, or delete
+authority therefore remains a refusal. It must not be mapped to an empty scan,
+best-effort scan, stale preview, cached permissive plan, local fixture, or
+boolean success.
 
 The authority bind is acceptable because the scan result remains content-free
 shape metadata: scope hash, generation, row counts, walk completeness, row
@@ -245,21 +263,30 @@ function handlerBlock(source: string): string {
 }
 
 describe("hosted-session scan registration", () => {
-  it("registers exactly the scan-only commands in Tauri", () => {
+  it("registers exactly the scan and guided-deletion commands in Tauri", () => {
     const handler = handlerBlock(nativeMain);
     expect(handler).toContain("open_hosted_session_scan,");
     expect(handler).toContain("request_hosted_session_scan,");
-    expect(handler).not.toContain("execute_discord_guided_deletion");
-    expect(handler).not.toContain("preview_discord_guided_deletion");
+    expect(handler).toContain("request_hosted_session_scan_command,");
+    expect(handler).toContain("scan_discord_own_messages_for_deletion,");
+    expect(handler).toContain("preview_discord_guided_deletion,");
+    expect(handler).toContain("execute_discord_guided_deletion,");
     expect(handler).not.toContain("DeleteOwnItem");
   });
 
-  it("grants only scan ACL entries", () => {
+  it("grants only scan and guided-deletion ACL entries", () => {
     expect(capability).toContain('"allow-open-hosted-session-scan"');
     expect(capability).toContain('"allow-request-hosted-session-scan"');
+    expect(capability).toContain('"allow-request-hosted-session-scan-command"');
+    expect(capability).toContain('"allow-scan-discord-own-messages-for-deletion"');
+    expect(capability).toContain('"allow-preview-discord-guided-deletion"');
+    expect(capability).toContain('"allow-execute-discord-guided-deletion"');
     expect(permissions).toContain('commands.allow = ["open_hosted_session_scan"]');
     expect(permissions).toContain('commands.allow = ["request_hosted_session_scan"]');
-    expect(permissions).not.toContain('commands.allow = ["execute_discord_guided_deletion"]');
+    expect(permissions).toContain('commands.allow = ["request_hosted_session_scan_command"]');
+    expect(permissions).toContain('commands.allow = ["scan_discord_own_messages_for_deletion"]');
+    expect(permissions).toContain('commands.allow = ["preview_discord_guided_deletion"]');
+    expect(permissions).toContain('commands.allow = ["execute_discord_guided_deletion"]');
     expect(permissions).not.toContain("DeleteOwnItem");
   });
 

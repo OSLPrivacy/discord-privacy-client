@@ -18,17 +18,20 @@ use crate::broker;
 use crate::browser_footprint::{self, FootprintObservation, NativeBrowserImportBinding};
 use crate::core_bridge::HubCoreState;
 use crate::discord_carrier_geometry::CarrierDecision;
-use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::identity_binding_verifier::{
     AccountRef, BindingScope, IdentityBindingVerifier, PinnedOwner,
 };
 use crate::models::ServiceKind;
 use crate::native_apps::BrowserImportId;
-use crate::native_discord_adapter::{DiscordCarrierLayout, NativeDiscordComposerState};
+use crate::native_discord_adapter::{
+    guided_deletion, DiscordCarrierLayout, NativeDiscordComposerState,
+};
+use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
 use serde::Deserialize;
 #[cfg(feature = "discord-qa-shell")]
 use serde::Serialize;
+use std::sync::Mutex;
 
 pub fn build_review_ui_identity_binding_verifier(
     core: &HubCoreState,
@@ -53,8 +56,9 @@ pub fn build_review_ui_identity_binding_verifier(
 pub fn compose_erasure_request_for_user(
     input: ErasureRequestInput,
 ) -> Result<ComposedErasureRequest, String> {
-    scrub_erasure::compose_erasure_request(&input)
-        .map_err(|_| "Complete provider, account identifier, and data categories are required".to_owned())
+    scrub_erasure::compose_erasure_request(&input).map_err(|_| {
+        "Complete provider, account identifier, and data categories are required".to_owned()
+    })
 }
 
 pub fn require_review_ui_identity_binding_from_verifier(
@@ -153,6 +157,112 @@ where
     }
     recheck(&checked)?;
     Ok(scan)
+}
+
+#[derive(Default)]
+struct DiscordGuidedDeletionPlanProducer {
+    scan: Option<guided_deletion::DeletionScan>,
+    preview: Option<guided_deletion::DeletionPreview>,
+}
+
+/// Native-held step-4 state for one Discord guided-deletion route.
+///
+/// The renderer may choose rows and echo a digest, but it never mints a
+/// confirmed plan. This producer stores the last reviewed native scan, builds a
+/// preview from that exact scan, and confirms only the last preview against the
+/// current native-held scope and generation.
+#[derive(Default)]
+pub struct DiscordGuidedDeletionPlanState {
+    inner: Mutex<DiscordGuidedDeletionPlanProducer>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuidedDeletionRunAuthorityInput {
+    pub run_id: String,
+    pub attended_action_id: String,
+    pub scope_binding_hash: String,
+    pub generation: u64,
+    pub plan_digest: String,
+    pub mode: String,
+}
+
+impl DiscordGuidedDeletionPlanState {
+    pub fn record_scan(
+        &self,
+        scan: guided_deletion::DeletionScan,
+    ) -> Result<guided_deletion::DeletionScan, String> {
+        let mut producer = self
+            .inner
+            .lock()
+            .map_err(|_| "Discord guided-deletion plan state is unavailable".to_owned())?;
+        producer.scan = Some(scan.clone());
+        producer.preview = None;
+        Ok(scan)
+    }
+
+    pub fn build_preview(
+        &self,
+        scan_ordinals: &[usize],
+        pro: bool,
+    ) -> Result<guided_deletion::DeletionPreview, String> {
+        let mut producer = self
+            .inner
+            .lock()
+            .map_err(|_| "Discord guided-deletion plan state is unavailable".to_owned())?;
+        let scan = producer
+            .scan
+            .as_ref()
+            .ok_or_else(|| "Run and review a Discord scan before previewing deletion".to_owned())?;
+        let preview = guided_deletion::build_preview(scan, scan_ordinals, pro)
+            .map_err(|refusal| refusal.reason().to_owned())?;
+        producer.preview = Some(preview.clone());
+        Ok(preview)
+    }
+
+    pub fn confirm_preview(
+        &self,
+        plan_digest: &str,
+        current_scope_binding_hash: &str,
+        current_generation: u64,
+        authority: GuidedDeletionRunAuthorityInput,
+    ) -> Result<guided_deletion::ConfirmedPlan, String> {
+        let mut producer = self
+            .inner
+            .lock()
+            .map_err(|_| "Discord guided-deletion plan state is unavailable".to_owned())?;
+        let preview = producer.preview.as_ref().ok_or_else(|| {
+            "Preview the exact Discord deletion plan before confirming it".to_owned()
+        })?;
+        let authority = guided_deletion_run_authority(authority, plan_digest)
+            .map_err(|refusal| refusal.reason().to_owned())?;
+        let confirmed = guided_deletion::confirm_preview(
+            preview,
+            plan_digest,
+            current_scope_binding_hash,
+            current_generation,
+            Some(authority),
+        )
+        .map_err(|refusal| refusal.reason().to_owned())?;
+        producer.preview = None;
+        Ok(confirmed)
+    }
+}
+
+fn guided_deletion_run_authority(
+    input: GuidedDeletionRunAuthorityInput,
+    expected_plan_digest: &str,
+) -> Result<guided_deletion::DeleteRunAuthority, guided_deletion::PlanRefusal> {
+    if input.mode != "attended_delete_run_v1" || input.plan_digest != expected_plan_digest {
+        return Err(guided_deletion::PlanRefusal::RunAuthorityStale);
+    }
+    guided_deletion::DeleteRunAuthority::attended(
+        input.run_id,
+        input.attended_action_id,
+        input.scope_binding_hash,
+        input.generation,
+        input.plan_digest,
+    )
 }
 
 pub struct NativeDiscordProductSendAuthority {
@@ -364,15 +474,8 @@ pub fn service_kind_id(kind: ServiceKind) -> &'static str {
         ServiceKind::Discord => "discord",
         ServiceKind::Telegram => "telegram",
         ServiceKind::WhatsApp => "whatsapp",
-        ServiceKind::Instagram => "instagram",
-        ServiceKind::Messenger => "messenger",
-        ServiceKind::Snapchat => "snapchat",
-        ServiceKind::X => "x",
         ServiceKind::Email => "email",
         ServiceKind::Signal => "signal",
-        ServiceKind::Slack => "slack",
-        ServiceKind::Linkedin => "linkedin",
-        ServiceKind::Teams => "teams",
     }
 }
 
@@ -401,8 +504,6 @@ macro_rules! hub_tauri_commands {
             get_scrub_index_scan,
             append_scrub_index_chunk,
             get_scrub_index_status,
-            pause_scrub_index,
-            resume_scrub_index,
             cancel_scrub_index,
             list_linked_services,
             get_core_readiness,
@@ -517,6 +618,9 @@ macro_rules! hub_tauri_commands {
             create_service_account,
             open_service_host,
             request_hosted_session_scan_command,
+            scan_discord_own_messages_for_deletion,
+            preview_discord_guided_deletion,
+            execute_discord_guided_deletion,
             close_service_host,
             set_local_protected_sheet_open,
             remove_service_account,
@@ -524,6 +628,7 @@ macro_rules! hub_tauri_commands {
             activate_manual_peer_context,
             activate_native_manual_peer_context,
             activate_osl_chat_context,
+            set_osl_chat_capture_preference,
             close_osl_chat_context,
             prepare_encrypted_text,
             decrypt_hub_capsule,
@@ -540,6 +645,7 @@ macro_rules! hub_tauri_commands {
             get_hub_username_status,
             add_hub_friend_by_username,
             get_osl_profile,
+            get_osl_chat_local_state_key,
             save_osl_profile,
             verify_hub_friend_safety_number,
             remove_hub_friend,
@@ -580,6 +686,120 @@ mod erasure_command_wiring_tests {
 
         assert!(request.body.contains("Account identifier: @river"));
         assert!(!request.body.contains("OSL"));
+    }
+}
+
+#[cfg(test)]
+mod discord_guided_deletion_plan_producer_tests {
+    use super::{DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput};
+    use crate::native_discord_adapter::guided_deletion::{
+        DeletionPreview, DeletionScan, RowShape, ScannedRow, WalkCompleteness,
+    };
+
+    fn row(scan_ordinal: usize) -> ScannedRow {
+        ScannedRow {
+            scan_ordinal,
+            shape_ordinal: 0,
+            shape: RowShape {
+                height_px: 44,
+                children: 0,
+            },
+            text_len: 12 + scan_ordinal,
+            authored_by_operator: true,
+        }
+    }
+
+    fn scan(rows: Vec<ScannedRow>) -> DeletionScan {
+        DeletionScan {
+            scope_binding_hash: "a".repeat(64),
+            generation: 7,
+            rows_seen: 8,
+            rows_unreadable: 0,
+            walk: WalkCompleteness::Complete,
+            candidates: rows,
+        }
+    }
+
+    fn authority(preview: &DeletionPreview) -> GuidedDeletionRunAuthorityInput {
+        GuidedDeletionRunAuthorityInput {
+            run_id: "run-7".to_owned(),
+            attended_action_id: "attended-action-7".to_owned(),
+            scope_binding_hash: preview.scope_binding_hash.clone(),
+            generation: preview.generation,
+            plan_digest: preview.plan_digest.clone(),
+            mode: "attended_delete_run_v1".to_owned(),
+        }
+    }
+
+    #[test]
+    fn mutant_scope_drift_after_digest_echo_requires_reconfirmation() {
+        let state = DiscordGuidedDeletionPlanState::default();
+        state
+            .record_scan(scan(vec![row(1), row(2)]))
+            .expect("scan is stored");
+        let confirmed_by_user = state
+            .build_preview(&[1], true)
+            .expect("first preview can be shown");
+        let changed_review_scope = state
+            .build_preview(&[2], true)
+            .expect("changing the reviewed row produces a new preview");
+        assert_ne!(
+            confirmed_by_user.plan_digest, changed_review_scope.plan_digest,
+            "the test fixture must exercise a real exact-plan change"
+        );
+
+        let refused = state.confirm_preview(
+            &confirmed_by_user.plan_digest,
+            &changed_review_scope.scope_binding_hash,
+            changed_review_scope.generation,
+            authority(&confirmed_by_user),
+        );
+        assert_eq!(
+            refused,
+            Err("confirmation_no_longer_matches_the_plan".to_owned()),
+            "a digest echoed for the old review scope must not confirm the new plan"
+        );
+    }
+
+    #[test]
+    fn mutant_unachievable_target_plan_is_refused() {
+        let state = DiscordGuidedDeletionPlanState::default();
+        state
+            .record_scan(scan(vec![row(1)]))
+            .expect("scan is stored");
+        assert_eq!(
+            state.build_preview(&[99], true),
+            Err("row_is_not_in_this_scan".to_owned()),
+            "a plan naming a row outside the reviewed native scan must refuse"
+        );
+    }
+
+    #[test]
+    fn producer_confirms_only_once_for_the_exact_native_scope() {
+        let state = DiscordGuidedDeletionPlanState::default();
+        state
+            .record_scan(scan(vec![row(1)]))
+            .expect("scan is stored");
+        let preview = state.build_preview(&[1], true).expect("preview");
+        let plan = state
+            .confirm_preview(
+                &preview.plan_digest,
+                &preview.scope_binding_hash,
+                preview.generation,
+                authority(&preview),
+            )
+            .expect("exact preview confirms");
+        assert_eq!(plan.preview().plan_digest, preview.plan_digest);
+        assert_eq!(
+            state.confirm_preview(
+                &preview.plan_digest,
+                &preview.scope_binding_hash,
+                preview.generation,
+                authority(&preview),
+            ),
+            Err("Preview the exact Discord deletion plan before confirming it".to_owned()),
+            "confirmation consumes the preview; a retry must preview and confirm again"
+        );
     }
 }
 
@@ -1381,16 +1601,46 @@ mod tauri_registration_surface_tests {
         );
     }
 
+    /// D-108 — the missing construction site for the UI's `SecureLocalStore`.
+    ///
+    /// The store is implemented and unit-tested in `secure-local-store.ts` and
+    /// production never built it, because there was no key to build it with.
+    /// The key command is that missing line, so it has to clear the same three
+    /// surfaces as every other reachable command: without the `hub.toml`
+    /// declaration and the `hub.json` grant the webview's `invoke` is rejected
+    /// by the ACL before the handler runs, and the UI would silently fall back
+    /// to "no store" — which is exactly the state the defect describes.
     #[test]
-    fn recovery_kit_status_commands_are_registered_and_granted() {
+    fn osl_chat_local_state_key_is_registered_and_granted() {
         let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "get_osl_chat_local_state_key",
+        );
         assert_each_registration_surface_is_required(
-            &handlers, &permissions, &capability,
-            &["get_hub_recovery_kit_unsaved", "set_hub_recovery_kit_unsaved"],
+            &handlers,
+            &permissions,
+            &capability,
+            &["get_osl_chat_local_state_key"],
         );
     }
 
     #[test]
+    fn recovery_kit_status_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "get_hub_recovery_kit_unsaved",
+                "set_hub_recovery_kit_unsaved",
+            ],
+        );
+    }
+
     #[test]
     fn component_lifecycle_commands_are_registered_and_acl_granted() {
         let (handlers, permissions, capability) = registration_inputs();
@@ -1402,6 +1652,13 @@ mod tauri_registration_surface_tests {
         );
     }
 
+    // D-252: this attribute was NOT here. `component_lifecycle_commands_...`
+    // above carried two `#[test]`s and this function carried none, so the
+    // `emit_active_session_reset` registration and ACL grant were asserted by a
+    // function the harness never called. `duplicate_macro_attributes` is the
+    // only gate that ever noticed, and it is in no CI job because the hub is
+    // excluded from the linted workspace.
+    #[test]
     fn session_reset_emitter_is_registered_and_granted() {
         let (handlers, permissions, capability) = network_registration_inputs();
         assert_registered_and_granted(
@@ -1778,10 +2035,13 @@ mod tauri_registration_surface_tests {
     #[test]
     fn hosted_session_scan_commands_are_registered() {
         let (handlers, permissions, capability) = registration_inputs();
-        const HOSTED_SESSION_SCAN_COMMANDS: [&str; 3] = [
+        const HOSTED_SESSION_SCAN_COMMANDS: [&str; 6] = [
             "open_hosted_session_scan",
             "request_hosted_session_scan",
             "request_hosted_session_scan_command",
+            "scan_discord_own_messages_for_deletion",
+            "preview_discord_guided_deletion",
+            "execute_discord_guided_deletion",
         ];
         let expected_permissions = HOSTED_SESSION_SCAN_COMMANDS
             .iter()
@@ -1816,12 +2076,7 @@ mod tauri_registration_surface_tests {
             &capability,
             &HOSTED_SESSION_SCAN_COMMANDS,
         );
-        for forbidden in [
-            "preview_discord_guided_deletion",
-            "request_hosted_session_scan_comman",
-            "execute_discord_guided_deletion",
-            "delete_own_item",
-        ] {
+        for forbidden in ["request_hosted_session_scan_comman", "delete_own_item"] {
             let forbidden_permission = command_permission(forbidden);
             assert!(
                 !handlers.contains(forbidden),
@@ -1837,9 +2092,7 @@ mod tauri_registration_surface_tests {
             );
         }
         for forbidden_permission in [
-            "allow-preview-discord-guided-deletion",
             "allow-request-hosted-session-scan-comman",
-            "allow-execute-discord-guided-deletion",
             "allow-delete-own-item",
         ] {
             assert!(

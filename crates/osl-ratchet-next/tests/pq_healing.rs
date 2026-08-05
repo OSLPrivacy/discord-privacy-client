@@ -96,12 +96,12 @@ fn pq_healing_survives_periodic_loss() {
             n += 1;
             let body = format!("a{i}").into_bytes();
             let w = alice.encrypt(0, &body, &mut rng).expect("encrypt");
-            if n % period != 0 {
+            if !n.is_multiple_of(period) {
                 assert_eq!(bob.decrypt(&w, &mut rng).expect("decrypt").plaintext, body);
             }
             let body = format!("b{i}").into_bytes();
             let w = bob.encrypt(0, &body, &mut rng).expect("encrypt");
-            if n % period != 0 {
+            if !n.is_multiple_of(period) {
                 assert_eq!(
                     alice.decrypt(&w, &mut rng).expect("decrypt").plaintext,
                     body

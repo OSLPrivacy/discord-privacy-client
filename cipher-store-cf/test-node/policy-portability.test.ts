@@ -31,11 +31,30 @@ describe("payload policy portability", () => {
     expect(isPadmeLength(1_024)).toBe(true);
     expect(isPadmeLength(1_001)).toBe(false);
 
-    for (const ttl of ["3600", "86400", "259200", "604800"]) {
-      const response = await handleUpload(uploadRequest(ttl, false), undefined as never);
+    // This loop used to run all four allowlisted TTLs through a
+    // metadata-less request and expect `bad_blob_metadata` from each. That was
+    // the pre-floor contract: commit c7eb15c42 ("T6-W7 enforce seven-day
+    // default TTL floor", Aug 2) landed DEFAULT_DELIVERY_TTL_FLOOR the day
+    // AFTER this gate was written (48425edd8, Aug 1) and did not update it, so
+    // 3600/86400/259200 now stop at `bad_ttl` in handleUpload before the
+    // metadata check is reached. Nobody saw it because this suite is the
+    // second half of `npm test` and the cipher-store lane never ran to it.
+    //
+    // The code is right and the assertion was stale. Split into the two claims
+    // handleUpload actually makes, so both are covered rather than one being
+    // asserted wrongly:
+    //   1. a default-mode-valid TTL with no metadata -> bad_blob_metadata
+    //   2. a TTL below the seven-day default floor -> bad_ttl, metadata or not
+    const missingMetadata = await handleUpload(uploadRequest("604800", false), undefined as never);
+    expect(missingMetadata.status).toBe(400);
+    await expect(missingMetadata.json()).resolves.toMatchObject({ error: "bad_blob_metadata" });
+
+    for (const belowFloor of ["3600", "86400", "259200"]) {
+      const response = await handleUpload(uploadRequest(belowFloor), undefined as never);
       expect(response.status).toBe(400);
-      await expect(response.json()).resolves.toMatchObject({ error: "bad_blob_metadata" });
+      await expect(response.json()).resolves.toMatchObject({ error: "bad_ttl" });
     }
+
     const unsupportedTtl = await handleUpload(uploadRequest("3601"), undefined as never);
     expect(unsupportedTtl.status).toBe(400);
     await expect(unsupportedTtl.json()).resolves.toMatchObject({ error: "bad_ttl" });
@@ -45,17 +64,44 @@ describe("payload policy portability", () => {
     expect(constantTimeEqualHex(digest, DIGEST)).toBe(false);
 
     const put = vi.fn();
-    const env = {
-      DB: {
-        prepare: vi.fn()
-          .mockReturnValueOnce({ bind: () => ({ first: async () => null }) })
-          .mockReturnValueOnce({ first: async () => ({ rows: MAX_LIVE_BLOB_ROWS, bytes: MAX_LIVE_BLOB_BYTES }) }),
-      },
-      PAYLOADS: { put },
-    };
-    const quotaExceeded = await handleUpload(uploadRequest("3600"), env as never);
+    // RESTATED 2026-08-05 for D-256. This double was ordered for the
+    // SELECT-then-INSERT that `cc619a55e` introduced: read the aggregate, then
+    // insert unconditionally. Restoring the atomic gate the HIGH-2 comment
+    // named puts the guarded write first, and a full pool now shows up as that
+    // write changing zero rows -- how real D1 reports a false INSERT..SELECT
+    // predicate (`test/d1-meta-changes-contract.test.ts`, case B). The claims
+    // asserted below -- 503 storage_capacity, and no R2 write on a refusal --
+    // are unchanged, with the statement shapes newly pinned.
+    const prepare = vi.fn()
+      .mockReturnValueOnce({
+        bind: () => ({ run: async () => ({ success: true, meta: { changes: 0 } }) }),
+      })
+      .mockReturnValueOnce({
+        first: async () => ({ rows: MAX_LIVE_BLOB_ROWS, bytes: MAX_LIVE_BLOB_BYTES }),
+      });
+    const env = { DB: { prepare }, PAYLOADS: { put } };
+    // Same stale TTL as the loop above, and this one matters more: with "3600"
+    // handleUpload refused at `bad_ttl` and returned 400 long before it counted
+    // capacity, so the storage-capacity refusal -- and `put` never being called
+    // once the pool is full -- has been asserted against a request that never
+    // reached either check since the floor landed.
+    const quotaExceeded = await handleUpload(uploadRequest("604800"), env as never);
     expect(quotaExceeded.status).toBe(503);
     await expect(quotaExceeded.json()).resolves.toMatchObject({ error: "storage_capacity" });
     expect(put).not.toHaveBeenCalled();
+
+    // Exactly two statements, and the write is the FIRST of them: a capacity
+    // read that ran before the write would be the TOCTOU gate again. The write
+    // must also carry all three guards, and the re-read that picks the refusal
+    // message must not mention the blob id, or the refusal itself would tell a
+    // caller whether the id it named was taken (D-255).
+    expect(prepare).toHaveBeenCalledTimes(2);
+    const [write, reread] = prepare.mock.calls.map(([sql]) => String(sql));
+    expect(write).toMatch(/^\s*INSERT INTO blob_capability_index/);
+    expect(write).toMatch(/WHERE\s+NOT\s+EXISTS/i);
+    expect(write).toMatch(/SELECT\s+COUNT\(\*\)\s+FROM\s+blob_capability_index/i);
+    expect(write).toMatch(/SUM\(size_bytes\)/i);
+    expect(reread).not.toMatch(/\bINSERT\b/i);
+    expect(reread).not.toMatch(/blob_id/i);
   });
 });

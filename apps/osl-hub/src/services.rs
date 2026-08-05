@@ -262,15 +262,8 @@ pub fn service_kind_from_id(service_id: &str) -> Option<ServiceKind> {
         "discord" => ServiceKind::Discord,
         "telegram" => ServiceKind::Telegram,
         "whatsapp" => ServiceKind::WhatsApp,
-        "instagram" => ServiceKind::Instagram,
-        "snapchat" => ServiceKind::Snapchat,
         "email" => ServiceKind::Email,
-        "x" => ServiceKind::X,
         "signal" => ServiceKind::Signal,
-        "slack" => ServiceKind::Slack,
-        "linkedin" => ServiceKind::Linkedin,
-        "teams" => ServiceKind::Teams,
-        "messenger" => ServiceKind::Messenger,
         _ => return None,
     })
 }
@@ -498,9 +491,9 @@ pub fn service_descriptor(id: ServiceKind) -> ServiceDescriptor {
         .expect("every ServiceKind has a descriptor")
 }
 
-fn service_descriptors() -> [ServiceDescriptor; 12] {
-    use ServiceCategory::{Consumer, Enterprise};
-    use ServiceLaunchState::{Available, ComingSoon};
+fn service_descriptors() -> [ServiceDescriptor; 5] {
+    use ServiceCategory::Consumer;
+    use ServiceLaunchState::Available;
     [
         descriptor(
             ServiceKind::Discord,
@@ -526,60 +519,11 @@ fn service_descriptors() -> [ServiceDescriptor; 12] {
             Consumer,
             Available,
         ),
-        descriptor(
-            ServiceKind::Instagram,
-            "Instagram",
-            "IG",
-            30,
-            Consumer,
-            Available,
-        ),
-        descriptor(
-            ServiceKind::Messenger,
-            "Facebook Messenger",
-            "MS",
-            40,
-            Consumer,
-            Available,
-        ),
-        descriptor(
-            ServiceKind::Snapchat,
-            "Snapchat",
-            "SC",
-            50,
-            Consumer,
-            Available,
-        ),
-        descriptor(ServiceKind::X, "X", "X", 60, Consumer, Available),
         descriptor(ServiceKind::Email, "Email", "EM", 70, Consumer, Available),
         // Signal has no first-party web messenger. The service is available
         // only through the separately spawned, OSL-owned native profile; the
         // web host remains disabled in `service_host`.
         descriptor(ServiceKind::Signal, "Signal", "SG", 80, Consumer, Available),
-        descriptor(
-            ServiceKind::Slack,
-            "Slack",
-            "SL",
-            90,
-            Enterprise,
-            ComingSoon,
-        ),
-        descriptor(
-            ServiceKind::Linkedin,
-            "LinkedIn messaging",
-            "LI",
-            95,
-            Enterprise,
-            ComingSoon,
-        ),
-        descriptor(
-            ServiceKind::Teams,
-            "Microsoft Teams",
-            "TM",
-            100,
-            Enterprise,
-            ComingSoon,
-        ),
     ]
 }
 
@@ -622,7 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn new_registry_has_twelve_services_and_no_fake_accounts() {
+    fn new_registry_has_ruled_services_and_no_fake_accounts() {
         // temporary_registry() flips the process-wide main-password test key
         // (crates/ipc/src/main_password.rs), which other modules' tests also
         // mutate; hold the crate-wide lock so a sibling test can't swap the
@@ -631,7 +575,7 @@ mod tests {
         let path = temporary_registry();
         let state = ServiceRegistryState::load(path.clone());
         let services = state.list_for_owner(OWNER_A).unwrap();
-        assert_eq!(services.len(), 12);
+        assert_eq!(services.len(), 5);
         assert!(services.iter().all(|service| service.accounts.is_empty()));
         let signal = services
             .iter()
@@ -688,7 +632,7 @@ mod tests {
             .create_for_owner(OWNER_A, ServiceKind::Discord, "Personal".to_string())
             .unwrap();
         assert!(!state
-            .remove_for_owner(OWNER_A, ServiceKind::Instagram, &account.id)
+            .remove_for_owner(OWNER_A, ServiceKind::Telegram, &account.id)
             .unwrap());
         assert!(state
             .require_owned(OWNER_A, ServiceKind::Discord, &account.id)
@@ -709,12 +653,20 @@ mod tests {
             service_kind_from_id("whatsapp"),
             Some(ServiceKind::WhatsApp)
         );
-        assert_eq!(service_kind_from_id("x"), Some(ServiceKind::X));
         assert_eq!(service_kind_from_id("signal"), Some(ServiceKind::Signal));
-        assert_eq!(
-            service_kind_from_id("linkedin"),
-            Some(ServiceKind::Linkedin)
-        );
+        // Superseded by the owner ruling on 2026-08-05: social and enterprise
+        // IDs are cut surfaces, not service aliases.
+        for cut in [
+            "instagram",
+            "snapchat",
+            "x",
+            "messenger",
+            "slack",
+            "linkedin",
+            "teams",
+        ] {
+            assert_eq!(service_kind_from_id(cut), None, "{cut}");
+        }
         assert_eq!(service_kind_from_id("Discord"), None);
         assert_eq!(service_kind_from_id("discord.com"), None);
         assert_eq!(service_kind_from_id("../discord"), None);
@@ -821,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn arbitrary_provider_binding_and_coming_soon_profiles_fail_closed() {
+    fn arbitrary_provider_binding_fails_closed() {
         // See new_registry_has_twelve_services_and_no_fake_accounts for why
         // this lock is needed.
         let _serial = crate::global_keystore_test_lock();
@@ -839,15 +791,6 @@ mod tests {
             .create_for_owner(OWNER_A, ServiceKind::Signal, "Signal".to_owned())
             .unwrap();
         assert_eq!(signal.label, "Signal");
-        for unavailable in [
-            ServiceKind::Slack,
-            ServiceKind::Linkedin,
-            ServiceKind::Teams,
-        ] {
-            assert!(state
-                .create_for_owner(OWNER_A, unavailable, "Unavailable".to_owned())
-                .is_err());
-        }
         assert!(state
             .list_for_owner(OWNER_A)
             .unwrap()

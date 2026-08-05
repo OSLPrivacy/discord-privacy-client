@@ -1,0 +1,234 @@
+{
+  "ledger": "integration-branch quarantine",
+  "note": "D-172, corrected by D-192/D-193. THIS IS A RATCHET, NOT AN EXCUSE. Every entry below is a check that is RED on integrate/first-usable today. None of them is fixed here and none of them is suppressed: each one still runs in full on every push to the integration branch, from the quarantine-ratchet job of integration-gate.yml, and its findings are printed verbatim. What this file adds is the only thing a permanently-red step cannot give you -- a state that can FAIL. Each entry pins the SET OF FINDING IDENTITIES. scripts/ci/quarantine-ratchet.mjs fails if an id appears that is not listed, if a listed id disappears without this file being lowered in the same change, and -- the case D-192 was opened for -- if BOTH happen at once at an unchanged count.",
+  "note-D-192": "The first version of this file pinned a COUNT and claimed, in this field, \"Identical policy to scripts/ledger/state-baseline.json\". That was false: scripts/ledger/all.mjs:28 reads \"same count, different ids -> FAIL. One was fixed and one introduced.\" The D-172 adversary deleted the fail-closed guard at keyserver-cf/src/lib/auth.ts:38 -- a real authorization bypass, since constantTimeTokenEqual encodes `expected` with TextEncoder and `Bearer undefined` therefore authenticates when the comp secret is unset -- paired it with one plausible tidy-up (first.redeemed_at -> first?.redeemed_at), and the count returned to 13. The gate printed \"still exactly 13, still quarantined\" and \"QUARANTINE RATCHET: HELD\" with the bypass in the tree. It now pins identities, so that pair fails as DRIFT. The parity claim above is now true.",
+  "note-D-192-part-2": "The vitest extractor read only the FAILED count, so a deleted, .skip-ped or uncollectable PASSING test was invisible and needed no compensating fix. Every vitest entry now also pins \"metrics\": the total number of tests collected, the total number of test FILES, and the number skipped. Breaking one import in a green cipher-store file -- the adversary's mutant -- moves tests 134 -> 133 and adds a \"file [ file ]\" id, and is now caught twice.",
+  "note-D-193": "Three checks used to sit in \"notRatcheted\": a11y-overflow, cipher-store-tests-worker (219 tests) and keyserver-tests-node. All three were excluded from the ratchet AND executed by nothing -- an allowlist by another name -- and the keyserver-tests-node entry additionally claimed, in writing, to run \"as its own step in the ts-test keyserver-worker lane\". No such step existed. All three are now entries here, run by the quarantine-ratchet job, and graded by identity. Where a count genuinely moves without the code moving, the moving identity is named in \"unstable\" with its measurement, and everything else in the bucket is graded.",
+  "measured": "scripts/ci/quarantine-ratchet.mjs on fix/d192-quarantine-pins-a-set, 2026-08-04, off integrate/first-usable at b2b54f967. Every id below was produced by the extractors in that file from the check's own output; the four vitest configs were run directly, because `npm test` cannot reach the second of each pair while the first is red.",
+  "provenance": "ts-test.yml, rust-test.yml and public-release-audit.yml last ran on main at 30658453352 / 30658453451 / 30658453416 on 2026-07-31, ALL GREEN. claims.yml, site-tests.yml and state-authority.yml do not exist on the default branch at all and have therefore never run anywhere. Every finding below is therefore red that arrived on integrate/first-usable AFTER 2026-07-31 and was never seen, because no workflow had ever run on that branch. That is D-172 itself, measured.",
+  "entries": [
+    {
+      "id": "app-claims",
+      "cwd": ".",
+      "cmd": [
+        "node",
+        "scripts/check-app-claims.mjs"
+      ],
+      "extract": "app-claim-violations",
+      "runsIn": ".github/workflows/ts-test.yml job claim-gates, and graded here by the quarantine-ratchet job of integration-gate.yml",
+      "why": "LOWERED 1 -> 0 on fix/limitation-exemption-policy. Kept at zero rather than deleted, on the public-release-audit precedent in this same file, so the check still runs on every push and any new claim violation is graded as a REGRESSION rather than as a check nobody runs. History: 6 -> 1 on fix/public-claim-gates (five findings fixed in the COPY, not the allowlist: four product-wide at-rest claims A3 does not license, and a README sentence that was not A16's permitted wording); identity swapped at 1 on fix/d242-claim-tokenizer when the tokenizer stopped mis-parsing regex literals; 1 -> 0 here. NOTHING WAS EVER ADDED TO THE ALLOWLIST ON ANY OF THE THREE.",
+      "whyRemaining": "EMPTY. The last id, scrub-coverage-view.ts \"Scrub capability overclaim\", was a FALSE POSITIVE from the second detector defect D-242 handed on, and it was closed by fixing the detector, not by widening an exemption and not by rewording the honest copy -- the string \"The provider did not attest that Scrub saw the whole account history\" is byte-identical to what it was. semanticScrubClaimSpans and semanticAtRestClaimSpans no longer decide exemption by matching surface phrasing; both now call one shared policy, limitationGovernsClaim, which asks whether the CLAIM SPAN lies inside the scope of an operator that withholds or narrows it. The two ad-hoc lists are GONE: the Scrub present-tense attachedLimitation list and the at-rest destructive-verb exemption were deleted outright, not extended. Closing this made the gate see MORE, and it immediately found two untrue strings the destructive exemption had been hiding (main.ts \"removes every local identity, decrypt key, cache, and preference\" and fresh-start.ts \"All local OSL identities, decrypt material, caches, and preferences were removed\"); both were verified against apps/osl-hub/src/cleanup.rs and are NOT SUPPORTED -- cleanup_targets() is a closed enumeration and the TPM/keyring key survives -- so both were fixed in the COPY. See D-249, D-243 and D-249a.",
+      "owner": "fix/limitation-exemption-policy - D-249 and D-243 closed by one shared structural policy; entry retained at zero so a regression is the only way it can be non-empty",
+      "ids": []
+    },
+    {
+      "id": "public-release-audit",
+      "cwd": ".",
+      "cmd": [
+        "python3",
+        "scripts/audit_public_release.py"
+      ],
+      "extract": "audit-dash-findings",
+      "runsIn": ".github/workflows/public-release-audit.yml is NOT enabled on integrate/**; this file is what grades it there, from the quarantine-ratchet job of integration-gate.yml",
+      "why": "D-232 TOOK THE WIN: this was 18 tracked files carrying a personal home path, and it is now ZERO -- `python3 scripts/audit_public_release.py` exits 0 across 2541 publishable files. The entry is deliberately KEPT at zero rather than deleted, so the check still runs on every push and any personal path that arrives is graded as a REGRESSION rather than as a check nobody runs (mutation-proved: one reintroduced path takes this entry to FAILED with the id named). scripts/verify-all.sh was previously argued to stay red because its comment records the hardcoded fallback checkout D-172 removed and 'that comment is the lesson'; the lesson is kept verbatim, with the one operator's absolute path replaced by 'one hardcoded personal checkout', which is what the lesson actually is. Do not quote absolute home paths here: this file is itself graded by that audit.",
+      "owner": "closed by D-232 CI triage; a regression is now the only way this entry can be non-empty",
+      "ids": []
+    },
+    {
+      "id": "keyserver-typecheck",
+      "cwd": "keyserver-cf",
+      "cmd": [
+        "npx",
+        "tsc",
+        "--noEmit"
+      ],
+      "extract": "tsc-errors",
+      "runsIn": ".github/workflows/ts-test.yml lane keyserver-worker, and graded here by the quarantine-ratchet job of integration-gate.yml",
+      "why": "13 pre-existing TypeScript errors. THIS IS THE ENTRY D-192 WAS PROVEN ON: with a count-only ratchet, deleting the fail-closed comp-token guard in src/lib/auth.ts (one new error) and fixing one of the five `first is possibly undefined` errors in test/integration/license-redeem-idempotency.test.ts (one fewer) returned the count to 13 and printed HELD. By identity that pair is a DRIFT and fails. It is also the step the D-162 build gate was originally placed BEHIND, so that gate could never execute; the bundle gate now lives in its own job (worker-bundles) and no longer depends on this being green. The identity is file + error code + a repeat number, NOT the message: run 30936689646 showed tsc truncating a long type string at a budget that counts the absolute paths embedded in it, so the same error reads differently under a long checkout path and reported a phantom DRIFT on a clean tree. The full message is printed verbatim on every run regardless.",
+      "owner": "unassigned - keyserver lane",
+      "ids": [
+        "src/endpoints/space-events.ts: TS18046",
+        "src/endpoints/telegram.ts: TS2739",
+        "src/lib/telegram.ts: TS2322",
+        "src/lib/unicode-identifier/spike-worker.ts: TS2578",
+        "src/lib/unicode-identifier/spike-worker.ts: TS2349",
+        "test/integration/license-redeem-idempotency.test.ts: TS18048",
+        "test/integration/license-redeem-idempotency.test.ts: TS18048  #2",
+        "test/integration/license-redeem-idempotency.test.ts: TS18048  #3",
+        "test/integration/license-redeem-idempotency.test.ts: TS18048  #4",
+        "test/integration/license-redeem-idempotency.test.ts: TS18048  #5",
+        "test/unit/ai-generate.test.ts: TS2352",
+        "test/unit/ai-generate.test.ts: TS2493",
+        "test/unit/ai-generate.test.ts: TS2493  #2"
+      ]
+    },
+    {
+      "id": "cipher-store-typecheck",
+      "cwd": "cipher-store-cf",
+      "cmd": [
+        "npx",
+        "tsc",
+        "--noEmit"
+      ],
+      "extract": "tsc-errors",
+      "runsIn": ".github/workflows/ts-test.yml lane cipher-store-worker, and graded here by the quarantine-ratchet job of integration-gate.yml",
+      "why": "7 pre-existing TypeScript errors. NOT previously recorded anywhere: the cipher-store steps sat after the keyserver typecheck in the same ts-test lane, so they had never run in CI at all. Split into their own lane by D-172. Same file + error code identity as the keyserver entry, for the same measured reason.",
+      "owner": "unassigned - surfaced by D-172",
+      "ids": [
+        "src/endpoints/attachment-reserve.ts: TS18047",
+        "test-node/deletion-durability-probe.test.ts: TS7016",
+        "test/d2-0010-release-local.test.ts: TS2345",
+        "test/padme.test.ts: TS2352",
+        "test/rate-limit.test.ts: TS2741",
+        "test/sweep-bounds.test.ts: TS2352",
+        "test/undelivered-floor.test.ts: TS2352"
+      ]
+    },
+    {
+      "id": "keyserver-tests-worker",
+      "cwd": "keyserver-cf",
+      "cmd": [
+        "npx",
+        "vitest",
+        "run"
+      ],
+      "extract": "vitest",
+      "runsIn": ".github/workflows/ts-test.yml lane keyserver-worker, and graded here by the quarantine-ratchet job of integration-gate.yml",
+      "why": "13 failing cases, 527 passing, 2 skipped: 10 in test/integration/mail.test.ts, plus pool-separation, telegram-route and stripe-checkout. Run as its OWN entry rather than through `npm test`, which is `vitest run && vitest run --config vitest.node.config.ts` -- the && means the node pass never runs while this one is red. That is the same masking pattern as the D-162 CI step, one layer further down, inside an npm script. \"metrics\" pins the shape of the suite so a passing test cannot vanish unobserved (D-192 part 2).",
+      "owner": "unassigned - keyserver lane",
+      "ids": [
+        "test/integration/mail.test.ts > OSL Mail Worker > m2 provisions OSL Mail addresses as immutable epochs",
+        "test/integration/mail.test.ts > OSL Mail Worker > provisions immutable epochs and permanently tombstones a rotated address",
+        "test/integration/mail.test.ts > OSL Mail Worker > requires recipient consent, retains ciphertext only, and deletes on acknowledgement",
+        "test/integration/mail.test.ts > OSL Mail Worker > m3 sends OSL-to-OSL Mail with recipient consent",
+        "test/integration/mail.test.ts > OSL Mail Worker > m9 qualifies OSL Mail end-to-end lifecycle",
+        "test/integration/mail.test.ts > OSL Mail Worker > refuses OSL-to-OSL delivery after recipient revokes sender consent",
+        "test/integration/mail.test.ts > OSL Mail Worker > refuses OSL-to-OSL delivery from a sender without an active mailbox even with consent",
+        "test/integration/mail.test.ts > OSL Mail Worker > burns the mailbox atomically and tombstones its address",
+        "test/integration/mail.test.ts > OSL Mail Worker > m4 envelope-encrypts external inbound mail without retaining plaintext",
+        "test/integration/mail.test.ts > OSL Mail Worker > rejects every non-OSL recipient on the internal E2EE route",
+        "test/integration/pool-separation.test.ts > retained archive / undelivered-store separation > exhausts archive eviction without a cipher-store D1 or R2 binding",
+        "test/integration/telegram-route.test.ts > Telegram operator webhook route > keeps /osl help and owner-binding refusals free of user-supplied text",
+        "test/unit/stripe-checkout.test.ts > privacy-minimal one-time Stripe Checkout > issues an unredeemed monthly code, never an active lifetime entitlement"
+      ],
+      "metrics": {
+        "tests": 542,
+        "files": 78,
+        "skipped": 2
+      }
+    },
+    {
+      "id": "cipher-store-tests-node",
+      "cwd": "cipher-store-cf",
+      "cmd": [
+        "npx",
+        "vitest",
+        "run",
+        "--config",
+        "vitest.node.config.ts"
+      ],
+      "extract": "vitest",
+      "runsIn": ".github/workflows/ts-test.yml lane cipher-store-worker, and graded here by the quarantine-ratchet job of integration-gate.yml",
+      "why": "4 failing cases in test-node/: d2-0010-release-contract, two in deletion-durability-probe, and policy-portability. Same short-circuit story as the keyserver pair. This is the bucket the D-192 part-2 mutant was proven on: renaming an import in test-node/ohttp-keyconfig.test.ts stopped that whole GREEN file loading, \"Tests 4 failed\" did not move, and the count-only ratchet printed HELD. The pinned metrics now catch it -- tests 134 -> 133 -- and the file-load failure appears as a new id as well.",
+      "owner": "unassigned - surfaced by D-172",
+      "ids": [
+        "test-node/d2-0010-release-contract.test.ts > D2 migration-0010 authoritative release contract > binds the exact recovery source and migration bytes",
+        "test-node/deletion-durability-probe.test.ts > deletion durability probe > passes only after direct R2 HEAD observes the ACK-deleted object as missing",
+        "test-node/deletion-durability-probe.test.ts > deletion durability probe > fails loudly when the direct R2 read still observes the deleted object",
+        "test-node/policy-portability.test.ts > payload policy portability > runs Padmé, TTL, capability, and quota policy under plain Node"
+      ],
+      "metrics": {
+        "tests": 134,
+        "files": 14,
+        "skipped": 0
+      }
+    },
+    {
+      "id": "cipher-store-tests-worker",
+      "cwd": "cipher-store-cf",
+      "cmd": [
+        "npx",
+        "vitest",
+        "run"
+      ],
+      "extract": "vitest",
+      "runsIn": "nothing, until D-193. Its only path was `npm test` (ts-test.yml lane cipher-store-worker), which sits BEHIND `npm run typecheck`, red at 7. It is now run and graded by the quarantine-ratchet job of integration-gate.yml.",
+      "why": "219 tests, 38 files, GREEN except for one intermittent. D-193: this bucket used to be in \"notRatcheted\", which meant 219 tests were excluded from the ratchet AND executed by nothing at all -- an allowlist by another name. The stated reason was flakiness, and the flakiness is real, but it is a reason to name the one unstable test, not to stop watching the other 218. The pinned metrics (219 tests, 38 files, 0 skipped) are unaffected by the flake and are what stop this bucket shrinking unobserved.",
+      "owner": "unassigned - cipher-store lane; surfaced by D-172, re-scoped by D-193",
+      "ids": [],
+      "metrics": {
+        "tests": 219,
+        "files": 38,
+        "skipped": 0
+      },
+      "unstable": [
+        {
+          "id": "test/attachment-sweep.test.ts > attachment quota and expiry sweep > retains marked legacy metadata when multipart abort fails",
+          "why": "Genuinely intermittent, measured five times on byte-identical cipher-store code: green on run 30929905893 and red on run 30930446967 in CI, and locally 1 failure in 3 consecutive runs on 2026-08-04 (fix/d192-quarantine-pins-a-set). It is the ONLY id in this bucket that is not graded, and that is a defect with an owner, not an accepted exception: while it is listed here nobody can tell a real regression in this one test from the flake. Fix the test and delete this block."
+        }
+      ]
+    },
+    {
+      "id": "keyserver-tests-node",
+      "cwd": "keyserver-cf",
+      "cmd": [
+        "npx",
+        "vitest",
+        "run",
+        "--config",
+        "vitest.node.config.ts",
+        "--passWithNoTests"
+      ],
+      "extract": "vitest",
+      "runsIn": "nothing, until D-193. `npm test` is `vitest run && vitest run --config vitest.node.config.ts` and the worker pass is red, so the && blocks it; ts-test.yml has never had a step for this config -- `grep vitest.node.config .github/workflows/ts-test.yml` returns nothing. It is now run and graded by the quarantine-ratchet job of integration-gate.yml.",
+      "why": "11 failing cases, 119 passing, in 18 files: sender-filter-deployment-admission (4), sender-filter-rollout-contract (2) and trusted-release-selection (5). D-193: the previous version of this entry claimed this config \"DOES now run in CI for the first time, as its own step in the ts-test keyserver-worker lane.\" That step did not exist. Eleven-to-twelve failing tests nobody had ever seen is the finding; the twelfth is named under \"unstable\" and everything else here is graded by identity.",
+      "owner": "unassigned - keyserver lane; surfaced by D-172, re-scoped by D-193",
+      "ids": [
+        "scripts/sender-filter-deployment-admission.test.ts > source-only signed sender-filter deployment admission > binds a nonempty exact migration, route, capability, and behavior closure",
+        "scripts/sender-filter-deployment-admission.test.ts > source-only signed sender-filter deployment admission > has a nonempty positive live fixture without authorizing source-only output",
+        "scripts/sender-filter-deployment-admission.test.ts > source-only signed sender-filter deployment admission > refuses missing source and exact-byte mismatches",
+        "scripts/sender-filter-deployment-admission.test.ts > source-only signed sender-filter deployment admission > requires one exact current commit and emits only a non-authorizing receipt",
+        "scripts/sender-filter-rollout-contract.test.ts > shipping sender-filter Worker/client rollout closure > semantically binds migration, Worker, client state, and broker call sites",
+        "scripts/sender-filter-rollout-contract.test.ts > shipping sender-filter Worker/client rollout closure > keeps producer trust and verifier storage internal and unprovisioned",
+        "scripts/trusted-release-selection.test.ts > trusted keyserver release selection > admits a nonempty exact commit/schema/route fixture but authorizes no action",
+        "scripts/trusted-release-selection.test.ts > trusted keyserver release selection > refuses missing fields and commit or artifact mismatches",
+        "scripts/trusted-release-selection.test.ts > trusted keyserver release selection > refuses stale evidence and absent or mismatched Artifact B schema",
+        "scripts/trusted-release-selection.test.ts > trusted keyserver release selection > refuses route or source payload mutation",
+        "scripts/trusted-release-selection.test.ts > trusted keyserver release selection > runs source/readiness admission and consumes only a signed producer receipt"
+      ],
+      "metrics": {
+        "tests": 130,
+        "files": 18,
+        "skipped": 0
+      },
+      "unstable": [
+        {
+          "id": "scripts/deployment-evidence-receipt.test.ts > deployment evidence receipt > admits nonempty exact Artifact B and Artifact A observation fixtures",
+          "why": "The twelfth failure, present on run 30931210322 and absent on runs 30931563092 and 30931210322's re-measure, and absent locally on 2026-08-04 -- all on unchanged keyserver code. It is the only id in this bucket that is not graded. That is an open defect with an owner, not an accepted exception: while it is listed here a real regression in this one test is indistinguishable from the flake. Note the literal test name recorded here was taken from the D-172 tasklog, not from a local run in which it failed; if the ratchet ever reports it as an ungraded id that never appears, correct the string rather than widening anything."
+        }
+      ]
+    },
+    {
+      "id": "a11y-overflow",
+      "cwd": ".",
+      "cmd": [
+        "node",
+        "scripts/check-a11y.mjs"
+      ],
+      "extract": "a11y-findings",
+      "runsIn": ".github/workflows/site-tests.yml is not enabled on integrate/** (see the reasons in that file); this is what runs and grades it there, from the quarantine-ratchet job of integration-gate.yml",
+      "why": "EMPTY IN BOTH ENVIRONMENTS -- the findings this entry quarantined are FIXED, not accepted. It stays because this is what RUNS node scripts/check-a11y.mjs on integrate/** (see \"runsIn\"); deleting the entry would stop the check, not graduate it. Both baselines are now [], so the ratchet is a floor at zero: any horizontal overflow, missing alt text, unnamed control or structural finding that arrives is an id the baseline does not contain, and \"introduced\" fails. \"combinations\" still pins the size of the audited matrix so a page silently leaving data/public-surface-manifest.json fails here.\n\nHistory. The findings were horizontal overflow on /docs/compare, /docs/download and /docs/faq at 320px and 390px @200% zoom. D-193: this used to be in \"notRatcheted\" -- excluded from the ratchet and executed by nothing. The identity deliberately drops the pixel amount, which is the part that varies with the font stack, and keeps page + width + zoom, which is the finding.\n\nCause: docs/compare.html, docs/download.html and docs/faq.html carried no stylesheet at all and rendered from user-agent defaults, where overflow-wrap is \"normal\" and a word is therefore unbreakable. At a 160px layout viewport (320px @200%) one bold heading word measured 178px-217px against a ~130px content box -- \"messengers\", \"Download\", \"Frequently\" -- and widened documentElement.scrollWidth. The a11y auditor listed no offending ELEMENT for any of the six rows because the overflowing box was a text run, not an element. Fix: docs/site.css, an external same-origin stylesheet (style-src 'self' drops inline styles, so it cannot be a <style> block or a style= attribute), whose load-bearing rule is overflow-wrap: break-word on body.",
+      "owner": "website lane; surfaced by D-172, re-scoped by D-193, fixed on fix/website-overflow-findings",
+      "whyEnvironmentDependent": "Kept for the schema and for the next finding: the pixel amount depends on the installed font stack, so each environment is graded against its own recorded set and an unrecorded environment is REFUSED, not waved through. Historically that mattered -- identical HTML measured 6 findings on WSL/Chromium and 2 on ubuntu-latest/google-chrome (runs 30928896726 and 30929905893) -- and it is why one pinned set would have been a false red on the other machine. It no longer splits the two sets, because the fix is not font-metric dependent: overflow-wrap: break-word breaks a word at the point it would leave its line box, whatever that word measures. Verified by re-measuring all three pages at 320px/390px, 100%/200%, under forced font families Times New Roman / DejaVu Sans / Liberation Serif at base sizes 16/24/32/48px -- 108 measurements, zero overflow. Both sets are therefore [] rather than one set being empty and the other not.",
+      "idsByEnvironment": {
+        "local": [],
+        "github-actions": []
+      },
+      "metrics": {
+        "combinations": 40
+      }
+    }
+  ],
+  "notRatcheted": [],
+  "note-notRatcheted": "Empty, and it must stay empty unless an entry here carries an \"executedBy\" naming the job that actually runs it. D-193: all three of the original entries were excluded from the ratchet AND executed by nothing, which is an allowlist by another name -- the one thing this project forbids outright. If a check truly cannot be ratcheted, it still has to RUN somewhere, and that somewhere has to be named and true."
+}

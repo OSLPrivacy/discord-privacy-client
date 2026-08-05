@@ -37,6 +37,7 @@ ipc = { path = "../../crates/ipc", optional = true }
 keystore = { path = "../../crates/keystore", optional = true }
 crypto = { path = "../../crates/crypto", optional = true }
 store = { path = "../../crates/store", optional = true }
+transport = { path = "../../crates/transport" }
 # The receipt state machine behind timed deletion and view-once expiry. Pure,
 # no I/O; `message_expiry` is the sealed-storage and scheduling shell around it.
 message-lifecycle = { path = "../../crates/message-lifecycle", optional = true }
@@ -49,6 +50,10 @@ stego = { path = "../../crates/stego" }
 sensitive-classify = { path = "../../crates/sensitive-classify" }
 sha2 = "=0.10.9"
 tracing = { version = "=0.1.44", optional = true }
+# D-142: this binary shipped with `tracing` events and no subscriber, so every
+# `tracing::error!` in the workspace was dropped by `NoSubscriber`. Same pin the
+# legacy src-tauri shell already resolves (src-tauri/Cargo.toml:41).
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter"], optional = true }
 bip39 = { version = "=2.2.2", default-features = false, features = ["std"], optional = true }
 # Attachment scanning is available outside `core` and decodes its bounded,
 # in-memory transport envelope directly, so this is not a core-only dependency.
@@ -70,7 +75,15 @@ rustls = { version = "=0.23.42", default-features = false, features = ["ring", "
 
 [dev-dependencies]
 tempfile = "=3.13"
+# `tests/osl_chat_eager_fetch.rs` builds a unique temp path with `Uuid::new_v4`.
+# This crate is excluded from the workspace, so the version is pinned explicitly
+# to the one already resolved in this crate's own lockfile.
+uuid = { version = "=1.24.0", features = ["v4"] }
 osl-ratchet-next = { path = "../../crates/osl-ratchet-next" }
+# `tests/first_run_identity_list_async.rs` reproduces the identity-list read on
+# the multi-thread runtime an `async` Tauri command body actually runs on.
+# Same pin as the optional `desktop` dependency above.
+tokio = { version = "=1.49.0", features = ["rt-multi-thread"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_WinTrust", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Com", "Win32_System_DataExchange", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
@@ -89,10 +102,12 @@ windows = { version = "=0.56.0", features = ["Win32_Foundation", "Win32_Graphics
 rfd = { version = "=0.16.0", default-features = false, features = ["gtk3"] }
 
 [features]
-# The WhatsApp protected surface is part of the shipped desktop product. Keep
-# the feature name for its QA audit hooks, but compile it in the standard binary.
+# The WhatsApp protected surface is part of the shipped desktop product, so it
+# is compiled into the standard binary and keeps its historical feature name.
+# Nothing that provisions a disposable QA account may be listed here: see
+# `whatsapp-qa-identity` below for the half that was split back out.
 default = ["core", "whatsapp-qa-shell"]
-core = ["dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:tracing"]
+core = ["dep:bip39", "dep:crypto", "dep:ipc", "dep:keystore", "dep:message-lifecycle", "dep:store", "dep:tracing", "dep:tracing-subscriber"]
 desktop = ["dep:runtime", "dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-updater", "dep:tokio", "core"]
 custom-protocol = ["tauri/custom-protocol"]
 # Disposable two-VM Discord testing only. This is deliberately a native build
@@ -101,6 +116,20 @@ custom-protocol = ["tauri/custom-protocol"]
 discord-qa-shell = []
 signal-qa-shell = []
 whatsapp-qa-shell = []
+# The disposable WhatsApp LAB IDENTITY. Never put this in `default`.
+#
+# `whatsapp-qa-shell` above is the shipped protected surface, and it stays in
+# the default set. This feature is the other half that used to ride along with
+# it: a startup hook that, on exactly the empty-profile case, creates a device
+# identity, installs a random machine password and zeroizes the 12-word
+# recovery phrase, plus the offer-file pairing exchange that only a paired lab
+# VM can complete. In a build a real user installs, that hook consumed the
+# first run: `identity.json` existed before the app drew a window, onboarding
+# skipped straight past account creation, and the recovery step reported "No
+# recovery secret is available" for an account whose phrase had already been
+# destroyed. Two-VM WhatsApp QA opts in explicitly:
+#   cargo build --features desktop,whatsapp-qa-identity
+whatsapp-qa-identity = ["whatsapp-qa-shell"]
 
 [lib]
 # The package is `osl-hub` so it can be selected with `cargo -p osl-hub`.
@@ -110,6 +139,29 @@ name = "osl_privacy_hub"
 [[bin]]
 name = "osl-privacy-hub"
 path = "src/main.rs"
+# KEEP THIS. `src/main.rs` uses `tauri`, `tauri-plugin-*`, `runtime` and `tokio`,
+# all of which are OPTIONAL dependencies enabled only by `desktop`. Without the
+# gate the binary cannot compile at all with default features, and the
+# `--features core --lib` / `--features core --test windows_identity_lifecycle`
+# jobs -- which exist so the core models and persistence can be tested on hosts
+# with no GTK/WebKit development packages -- would have to build a native webview
+# to run. That is what `required-features` is for and it stays.
+#
+# D-267 is its cost, and it is paid elsewhere, not by deleting this line:
+# `cargo check --bins` WITHOUT `--features desktop` matches no target, prints
+# `warning: target filter `bins` specified, but no targets matched; this is a
+# no-op`, and EXITS 0 -- measured at exit 0 on this tree with `compile_error!()`
+# injected into src/main.rs. Every hub-binary check must therefore go through
+# `node scripts/ci/hub-bin-check.mjs`, which reads cargo's own record of what it
+# compiled and refuses to report success unless this target is in it.
+#
+# A second `[[bin]]` holding a `compile_error!` guard was designed and rejected:
+# tauri-cli 2.11.1 finds the app binary via `binaries.iter().find(|x| x.main())`
+# where `is_main` is `file_name == package.name || file_name == default_run`.
+# This package is `osl-hub` and this binary is `osl-privacy-hub`, so the release
+# resolves it only through the single-binary fallback; a second binary breaks
+# `tauri build` outright, and every bin whose required-features are satisfied is
+# also copied into the bundle. See scripts/ci/hub-bin-check.mjs.
 required-features = ["desktop"]
 
 # ThinLTO preserves cross-crate release optimisation without the 20–30 GB
@@ -125,7 +177,9 @@ opt-level = 3
 
 # Keep this preview crate isolated from the production workspace until its
 # architecture and security boundaries have been reviewed. This also lets it
-# be checked with `cargo check --manifest-path apps/osl-hub/Cargo.toml`
-# without editing the repository's root workspace manifest.
+# be checked with `cargo check --manifest-path apps/osl-hub/Cargo.toml
+# --features desktop` without editing the repository's root workspace manifest.
+# The feature is not decoration here: WITHOUT it that command checks the library
+# and silently skips the `[[bin]]` above, and still exits 0 (D-267).
 [workspace]
 resolver = "2"

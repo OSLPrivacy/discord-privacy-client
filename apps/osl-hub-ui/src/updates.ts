@@ -7,6 +7,7 @@ export type UpdateStatus =
   | { state: "upToDate"; current: string }
   | { state: "available"; current: string; next: string; notes: string }
   | { state: "installing"; current: string; next: string; notes: string }
+  | { state: "couldNotCheck" }
   | { state: "error" };
 
 export function parseUpdateCheck(raw: unknown): UpdateStatus {
@@ -21,6 +22,7 @@ export function parseUpdateCheck(raw: unknown): UpdateStatus {
     && isVersion(raw.next)
     && isPlainText(raw.notes, 2_000)
   ) return { state: "available", current: raw.current, next: raw.next, notes: raw.notes };
+  if (raw.status === "could_not_check" && hasExactKeys(raw, ["status"])) return { state: "couldNotCheck" };
   if (raw.status === "error" && hasExactKeys(raw, ["status"])) return { state: "error" };
   return { state: "error" };
 }
@@ -28,7 +30,7 @@ export function parseUpdateCheck(raw: unknown): UpdateStatus {
 export async function checkHubForUpdates(): Promise<UpdateStatus> {
   if (!isTauriRuntime()) return { state: "unavailable" };
   try { return parseUpdateCheck(await invoke<unknown>("check_hub_for_updates")); }
-  catch { return { state: "unavailable" }; }
+  catch { return { state: "couldNotCheck" }; }
 }
 
 export async function installHubUpdate(expectedVersion: string): Promise<"noUpdate" | "error"> {

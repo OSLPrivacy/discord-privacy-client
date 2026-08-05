@@ -1,13 +1,9 @@
 //! Regression test for tier privacy in the visible carrier.
 //!
-//! Run with:
-//! ```text
-//! rustc --edition=2021 --test crates/cover-ai/tests/tier_is_not_observable.rs -o /tmp/tier_is_not_observable
-//! /tmp/tier_is_not_observable
-//! ```
+//! Links the shipping `stego::bigram` rather than `#[path]`-including a private
+//! second copy of it.
 
-#[path = "../../stego/src/bigram.rs"]
-mod bigram;
+use stego::bigram;
 
 #[derive(Clone, Copy)]
 enum Tier {
@@ -22,9 +18,7 @@ fn render_cover(_tier: Tier, payload: &[bool]) -> String {
 
 #[test]
 fn visible_carrier_bytes_do_not_reveal_the_subscription_tier() {
-    let payload: Vec<bool> = (0..96)
-        .map(|bit| bit % 3 == 0 || bit % 7 == 0)
-        .collect();
+    let payload: Vec<bool> = (0..96).map(|bit| bit % 3 == 0 || bit % 7 == 0).collect();
 
     let free_cover = render_cover(Tier::Free, &payload);
     let pro_cover = render_cover(Tier::Pro, &payload);

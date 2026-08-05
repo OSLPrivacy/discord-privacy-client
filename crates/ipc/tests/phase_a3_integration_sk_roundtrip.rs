@@ -218,10 +218,7 @@ fn deliver_skdm_synthetically(
     // Read sender's chain_id + rotation_root + physical-device binding.
     let (chain_id, root, physical_device_id) = {
         let g = sender_state.sender_key_state.lock().unwrap();
-        let dump =
-            crypto::sender_keys::SenderKeyState::try_from(g.states.get(scope_key).unwrap().clone())
-                .unwrap();
-        let s = dump.sender_chain().unwrap();
+        let s = g.get(scope_key).unwrap().sender_chain().unwrap();
         (
             s.current_chain_id(),
             s.rotation_root_bytes(),
@@ -230,8 +227,7 @@ fn deliver_skdm_synthetically(
     };
     // Install/rotate receiver on the peer's side.
     let mut g = receiver_state.sender_key_state.lock().unwrap();
-    let entry = g.states.entry(scope_key.to_string()).or_default();
-    let mut live = crypto::sender_keys::SenderKeyState::try_from(entry.clone()).unwrap();
+    let live = g.entry(scope_key.to_string()).or_default();
     let sender_bytes = sender_did.as_bytes().to_vec();
     if live
         .receiver_chain_for_physical_device(&sender_bytes, physical_device_id)
@@ -243,8 +239,6 @@ fn deliver_skdm_synthetically(
         live.install_receiver(sender_bytes, chain_id, &root, physical_device_id)
             .unwrap();
     }
-    *entry = crypto::sender_keys::SenderKeyStateOnDisk::from(&live);
-    g.version = 1;
 }
 
 fn decrypt_at(receiver_state: &AppState, sender_did: &str, wire: &str) -> Result<String, String> {
@@ -373,11 +367,11 @@ fn membership_change_triggers_rotation_on_next_send() {
     let _ = send_from(&alice, ALICE_DID, "m0");
     let pre_chain_id = {
         let g = alice.sender_key_state.lock().unwrap();
-        let dump = crypto::sender_keys::SenderKeyState::try_from(
-            g.states.get(&scope_key).unwrap().clone(),
-        )
-        .unwrap();
-        dump.sender_chain().unwrap().current_chain_id()
+        g.get(&scope_key)
+            .unwrap()
+            .sender_chain()
+            .unwrap()
+            .current_chain_id()
     };
     assert_eq!(pre_chain_id, 0);
 
@@ -408,11 +402,11 @@ fn membership_change_triggers_rotation_on_next_send() {
     );
     let post_chain_id = {
         let g = alice.sender_key_state.lock().unwrap();
-        let dump = crypto::sender_keys::SenderKeyState::try_from(
-            g.states.get(&scope_key).unwrap().clone(),
-        )
-        .unwrap();
-        dump.sender_chain().unwrap().current_chain_id()
+        g.get(&scope_key)
+            .unwrap()
+            .sender_chain()
+            .unwrap()
+            .current_chain_id()
     };
     assert!(
         post_chain_id > pre_chain_id,

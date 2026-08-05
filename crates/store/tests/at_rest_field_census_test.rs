@@ -294,7 +294,13 @@ fn schema_v8_field_census_and_raw_wal_plaintext_guards_are_nonvacuous() {
     assert_eq!(table_columns(&conn, "_meta"), ["key", "value"]);
     assert_eq!(
         table_columns(&conn, "message_device_acks"),
-        ["mid_bi", "device_bi", "ack_kind", "acknowledged_at", "destruct_reason"]
+        [
+            "mid_bi",
+            "device_bi",
+            "ack_kind",
+            "acknowledged_at",
+            "destruct_reason"
+        ]
     );
 
     let message_legacy_values: i64 = conn

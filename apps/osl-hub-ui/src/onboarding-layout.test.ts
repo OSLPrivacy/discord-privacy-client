@@ -180,6 +180,44 @@ describe("clean onboarding sign in", () => {
     expect(controls).not.toMatch(/border-bottom:/u);
   });
 
+  it("gives every setup step the same action row: Back, primary, then any skip beneath", () => {
+    // Back/skip landed somewhere different on four consecutive steps -- above
+    // the primary on `browser`, inline beside it on `mullvad`, below a loose
+    // "Not now" on the two password steps. Order is decided by the sheet so no
+    // step can order itself differently, and it is in the sheet because the
+    // shipped CSP (`style-src 'self'`) drops inline styles.
+    const css = declarations(styles);
+    expect(css).toMatch(/\.onboarding-actions \.onboarding-back \{[^}]*order: -1/u);
+    expect(css).toMatch(/\.onboarding-actions \.button\.primary \{[^}]*order: 0/u);
+    const skip = css.match(/\.onboarding-actions \.text-button,\s*\n\.onboarding-actions \.browser-import-skip \{([^}]*)\}/u)?.[1] ?? "";
+    expect(skip, "the skip-order rule should be a top-level rule").not.toBe("");
+    expect(skip).toContain("order: 1");
+    expect(skip).toContain("flex-basis: 100%");
+    expect(css).toMatch(/\.onboarding-actions \{[^}]*flex-wrap: wrap/u);
+    // `browser` stacked its whole row vertically, which put Back above the
+    // primary button on the one step before the tour.
+    expect(css).not.toContain("browser-import-actions-primary");
+    expect(source).not.toContain("browser-import-actions-primary");
+
+    // Steps that used to render their primary outside a shared action row.
+    const pro = functionSource("proSetupContent", "tutorialContent");
+    expect(pro).toMatch(/<div class="setup-footer onboarding-actions">[^]*?type="submit">Continue<\/button><button class="text-button" id="skip-pro-setup"/u);
+    const stealth = onboardingPasswordRoleContent({
+      role: "stealth",
+      configured: false,
+      passwordEyeIcon: () => "",
+      statusTag: () => "",
+    });
+    expect(stealth).toMatch(/<div class="setup-footer onboarding-actions"><button class="button primary" type="submit" form="setup-stealth-form"/u);
+    expect(stealth).toContain('data-onboarding-role-submit');
+    // The submit is no longer inside the form element, so the binding cannot
+    // find it by walking the form's own subtree.
+    expect(functionSource("bindOnboardingPasswordRole", "bindPasswordVisibility"))
+      .toContain('document.querySelector<HTMLButtonElement>("[data-onboarding-role-submit]")');
+    // Every step in the spine renders Back, `forward-secrecy` included.
+    expect(functionSource("renderOnboarding", "onboardingContent")).toContain('"forward-secrecy"');
+  });
+
   it("centres the stealth/burn 'Not now' escape hatch under its centred card", () => {
     // It is a <button>, so it is inline-block and pinned itself to the left
     // edge of the centred card above it on both password steps.
@@ -281,9 +319,20 @@ describe("fresh-account continuation", () => {
     const completeness = functionSource("isCompleteNativeCatalog", "hasSelectedInstalledNativeApps");
     const chooser = functionSource("ensureNativeCatalogForAppChoice", "selectedNativeAppIntent");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    expect(completeness).toContain("catalog.length === supportedNativeAppIds.size");
-    expect(completeness).toContain("ids.size === supportedNativeAppIds.size");
+    // D-190. This used to pin `catalog.length === supportedNativeAppIds.size` and
+    // `ids.size === supportedNativeAppIds.size`. Equality was an accident of the
+    // two sets being the same size the day it was written: once `f02104ac0`
+    // narrowed `supportedNativeAppIds` to `{discord}` while `list_native_apps` kept
+    // returning all five `NATIVE_APPS` rows, the predicate was false for EVERY real
+    // catalog and Continue became a no-op. Pinning the line kept this test green
+    // through the whole regression, because the line never changed.
+    //
+    // Coverage is the invariant that was actually wanted, and it is pinned both
+    // ways here. What the predicate DOES is proven by execution against the real
+    // backend catalog in `onboarding-app-choice-deadend.test.ts`.
     expect(completeness).toContain("every((appId) => ids.has(appId))");
+    expect(completeness).not.toContain("catalog.length === supportedNativeAppIds.size");
+    expect(completeness).not.toContain("ids.size === supportedNativeAppIds.size");
     expect(chooser).toContain("hasSelectedNativeAppChoice()");
     expect(chooser).not.toContain("nativeAppsReady");
     expect(chooser).toContain('withNativeDeadline(loadNativeApps(), "Check Windows apps", nativeCatalogDecisionDeadlineMs)');
@@ -292,12 +341,11 @@ describe("fresh-account continuation", () => {
     expect(binding).toMatch(/#continue-app-choice[\s\S]*?await ensureNativeCatalogForAppChoice\(\)[\s\S]*?persistCombinedHomeChoices\(\)/);
   });
 
-  it("shows every installed native app while requiring isolation support only for separate profiles", () => {
+  it("offers only supported native app choices while keeping unsupported helpers unreachable", () => {
     const installedChoice = functionSource("hasSelectedInstalledNativeApps", "hasSelectedMissingNativeApps");
     const nativeSelection = functionSource("selectedNativeAppIntent", "detectedAppsContent");
     const detected = functionSource("detectedAppsContent", "installMissingAppsContent");
     const discordChoices = functionSource("discordSessionModeChoices", "detectedAppsContent");
-    const telegramChoices = functionSource("telegramSessionModeChoices", "detectedAppsContent");
     expect(installedChoice).toContain('app.availability === "installed" && app.isolatedProfileAvailable');
     expect(nativeSelection).toContain('if (!nativeSessionModeConfirmed(nativeId)) return undefined;');
     expect(nativeSelection).toContain('if (existingNativeSessionRequested(appId)) return nativeId;');
@@ -309,29 +357,20 @@ describe("fresh-account continuation", () => {
     expect(detected).toContain('selectedNativeApps().filter((app) => app.availability === "installed")');
     expect(discordChoices).toContain('data-discord-session-mode="dedicated"');
     expect(discordChoices).toContain('data-discord-session-mode="existingSession"');
-    expect(discordChoices).toContain(">Use existing account</button>");
+    expect(discordChoices).toContain('"Use existing account"');
     expect(discordChoices).toContain(">Use separate account</button>");
     expect(discordChoices).toContain('role="group"');
     expect(discordChoices).not.toContain('role="radio"');
     expect(detected).toContain('nativeSessionModeSettingChoices("discord", "Discord")');
-    expect(telegramChoices).toContain('data-telegram-session-mode="existingSession"');
-    expect(telegramChoices).toContain('data-telegram-session-mode="dedicated"');
-    expect(telegramChoices).toContain(">Use existing account</button>");
-    expect(telegramChoices).toContain(">Use separate account</button>");
-    expect(detected).toContain('nativeSessionModeSettingChoices("telegram", "Telegram")');
-    expect(detected).toContain('nativeSessionModeSettingChoices("signal", "Signal")');
-    expect(detected).toContain('nativeSessionModeSettingChoices("whatsapp", "WhatsApp")');
-    expect(detected).toContain('nativeSessionModeSettingChoices("outlook", "Outlook")');
-    expect(source).toContain('data-signal-session-mode="existingSession"');
-    expect(source).toContain('data-signal-session-mode="dedicated"');
-    expect(source).toContain('aria-label="Open Signal"');
-    expect(source).toContain('data-whatsapp-session-mode="existingSession"');
-    expect(source).toContain('data-whatsapp-session-mode="dedicated"');
+    expect(detected).not.toContain('nativeSessionModeSettingChoices("telegram", "Telegram")');
+    expect(detected).not.toContain('nativeSessionModeSettingChoices("signal", "Signal")');
+    expect(detected).not.toContain('nativeSessionModeSettingChoices("whatsapp", "WhatsApp")');
+    expect(detected).not.toContain('nativeSessionModeSettingChoices("outlook", "Outlook")');
+    expect(functionSource("selectedNativeApps", "hasSelectedNativeAppChoice")).toContain("supportedNativeAppIds.has(app.id)");
     expect(source).toContain('if (supportedNativeAppIds.has(app.id as NativeAppId))');
     expect(source).toContain("A separate ${app.displayName} app account is unavailable");
-    expect(detected).toContain('nativeSessionModeSettingChoices("whatsapp", "WhatsApp")');
-    expect(source).toContain('appId === "whatsapp"');
-    expect(source).toMatch(/serviceGuideContent[\s\S]*?activeHomeAppId === "telegram"[\s\S]*?telegramSessionModeChoices\(\)/);
+    expect(functionSource("serviceGuideContent", "settingsContent")).toContain("supportedNativeAppIds.has(activeHomeAppId as NativeAppId)");
+    expect(functionSource("serviceGuideContent", "settingsContent")).not.toMatch(/activeHomeAppId === "telegram"[\s\S]*?telegramSessionModeChoices\(\)/);
     expect(source).not.toMatch(/const sessionChoices = onboardingServiceSetup[\s\S]*?\? ""/);
     expect(source).not.toContain("Uses your signed-in ${name} window without copying its session.");
     expect(source).not.toContain("${name} stays outside OSL capture protection.");
@@ -595,7 +634,7 @@ describe("fresh-account continuation", () => {
     expect(onboardingRender).toContain('id="onboarding-back"');
     expect(onboardingRender).not.toContain('id="skip-onboarding"');
     expect(onboardingRender).not.toContain("Skip · manual setup");
-    expect(onboardingRender).toContain('["pro", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"]');
+    expect(onboardingRender).toContain('["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"]');
     expect(onboardingRender).not.toContain('"scrub"].includes(onboardingRoute)');
     expect(binding).not.toContain('document.querySelector("#skip-onboarding")');
     expect(binding).toContain('document.querySelector("#onboarding-back")?.addEventListener("click"');
@@ -639,7 +678,8 @@ describe("fresh-account continuation", () => {
     const normalizer = functionSource("balancedFirstRunSetup", "completeSixStepOnboarding");
     const completion = functionSource("completeSixStepOnboarding", "completeOnboarding");
     const wrapper = functionSource("completeOnboarding", "bindPasswordForm");
-    expect(normalizer).toContain('state.sendMode === "manual" ? "clipboard" : state.sendMode');
+    expect(normalizer).toContain("const sendMode = state.sendMode");
+    expect(normalizer).not.toContain('state.sendMode === "manual" ? "clipboard" : state.sendMode');
     expect(normalizer).toContain('placementMode: "atomic"');
     expect(normalizer).toContain("needsRiskAcceptance(sendMode) && state.acceptedRisk && state.acceptedRiskForMode === sendMode");
     expect(completion).toContain("if (!canCompleteSetup(completedSetup)) throw new Error");

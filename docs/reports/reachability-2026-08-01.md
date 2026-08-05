@@ -7,6 +7,29 @@ Roots are `fn main`, every `#[tauri::command]`, and `hub_tauri_commands!` entrie
 - Root names: 291
 - Unreachable functions: 2844
 
+## Correction — 2026-08-05 (D-265)
+
+`record_cover` (`apps/osl-hub/src/pro_context_cover.rs:51`) and `cover_history` (`:104`) were filed
+under **"benign dead wrapper over live logic"**. There was no live logic underneath either of them:
+the module's only wired entry point was `burn_scope`, so the shipping burn destroyed a map nothing
+had ever written to. Both rows have been **moved to "wire (behaviour genuinely absent)"**, and the
+two bucket counts adjusted (`wire` 266 → 268, `benign dead wrapper` 405 → 403).
+
+**Why the generator put them there, so the next census is read with the right suspicion.**
+`scripts/reachability_census.py` classifies an unreachable public function as a "benign dead
+wrapper" when *any* name in its body resolves to a reachable function. Both of these call
+`scope_hash`, which is reachable — but only through `burn_scope`. Sharing a private helper with a
+live sibling is not the same as wrapping live behaviour, and here the heuristic turned the very
+symptom (a writer nothing calls, next to a burn that does) into a clean bill of health. **Treat
+"benign dead wrapper" as a hypothesis, not a verdict, whenever the "live logic" underneath is a
+helper rather than a call into a reachable feature.**
+
+Since this correction, D-265's fix wires `record_cover` from the shipping
+`prepare_native_discord_overlay_text` command, so at a future census it should be **reachable** and
+appear in no unreachable bucket at all. `cover_history` is still genuinely unwired: its specified
+consumer (T13-C5/C6 cover-conditioned generation) does not exist on any shipping path, so it stays
+under "wire".
+
 ## delete (2165)
 
 | function | location |
@@ -2177,7 +2200,7 @@ Roots are `fn main`, every `#[tauri::command]`, and `hub_tauri_commands!` entrie
 | `store_error` | `services/crypto-watcher/src/lib.rs:984` |
 | `read_decommissioned_flag` | `src-tauri/src/main.rs:1534` |
 
-## wire (behaviour genuinely absent) (266)
+## wire (behaviour genuinely absent) (268)
 
 | function | location |
 |---|---|
@@ -2259,6 +2282,8 @@ Roots are `fn main`, every `#[tauri::command]`, and `hub_tauri_commands!` entrie
 | `platform_sample` | `apps/osl-hub/src/owner_presence.rs:42` |
 | `account_state_files` | `apps/osl-hub/src/password_lifecycle.rs:36` |
 | `mime_type` | `apps/osl-hub/src/peer_attachment_io.rs:79` |
+| `cover_history` | `apps/osl-hub/src/pro_context_cover.rs:104` |
+| `record_cover` | `apps/osl-hub/src/pro_context_cover.rs:51` |
 | `context` | `apps/osl-hub/src/proprietary_module_boundary.rs:1086` |
 | `ciphertext_digest` | `apps/osl-hub/src/proprietary_module_boundary.rs:1094` |
 | `explicit_plaintext` | `apps/osl-hub/src/proprietary_module_boundary.rs:1098` |
@@ -2448,7 +2473,7 @@ Roots are `fn main`, every `#[tauri::command]`, and `hub_tauri_commands!` entrie
 | `is_mode0` | `crates/stego/src/mode0.rs:28` |
 | `wordlist` | `crates/stego/src/mode1_templates.rs:43` |
 
-## benign dead wrapper over live logic (405)
+## benign dead wrapper over live logic (403)
 
 | function | location |
 |---|---|
@@ -2624,8 +2649,6 @@ Roots are `fn main`, every `#[tauri::command]`, and `hub_tauri_commands!` entrie
 | `pending_attachment_deletions_at_path` | `apps/osl-hub/src/peer_attachment_io.rs:786` |
 | `place_unicode_capsule` | `apps/osl-hub/src/placement.rs:21` |
 | `validate_attachment_input_batch` | `apps/osl-hub/src/privacy_scan.rs:102` |
-| `cover_history` | `apps/osl-hub/src/pro_context_cover.rs:104` |
-| `record_cover` | `apps/osl-hub/src/pro_context_cover.rs:51` |
 | `with_explicit_plaintext` | `apps/osl-hub/src/proprietary_module_boundary.rs:1003` |
 | `native_recipe` | `apps/osl-hub/src/proprietary_module_boundary.rs:1021` |
 | `from_permissions` | `apps/osl-hub/src/proprietary_module_boundary.rs:832` |

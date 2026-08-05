@@ -51,7 +51,7 @@ describe("hosted session scan command handler", () => {
   const main = readRelative("../../osl-hub/src/main.rs");
   const surfaceModule = readRelative("../../osl-hub/src/hub_command_surface.rs");
 
-  it("registers and grants only the scan command", () => {
+  it("registers and grants the scan-to-confirm guided deletion commands", () => {
     const handler = [
       commandSurface(surfaceModule),
       literalInvokeHandlerLists(main),
@@ -62,12 +62,18 @@ describe("hosted session scan command handler", () => {
     };
 
     expect(handler).toContain("request_hosted_session_scan_command,");
+    expect(handler).toContain("scan_discord_own_messages_for_deletion,");
+    expect(handler).toContain("preview_discord_guided_deletion,");
+    expect(handler).toContain("execute_discord_guided_deletion,");
     expect(permissions).toContain('commands.allow = ["request_hosted_session_scan_command"]');
+    expect(permissions).toContain('commands.allow = ["scan_discord_own_messages_for_deletion"]');
+    expect(permissions).toContain('commands.allow = ["preview_discord_guided_deletion"]');
+    expect(permissions).toContain('commands.allow = ["execute_discord_guided_deletion"]');
     expect(capability.permissions).toContain("allow-request-hosted-session-scan-command");
-    expect(handler).not.toContain("preview_discord_guided_deletion,");
-    expect(handler).not.toContain("execute_discord_guided_deletion,");
-    expect(permissions).not.toContain('commands.allow = ["preview_discord_guided_deletion"]');
-    expect(permissions).not.toContain('commands.allow = ["execute_discord_guided_deletion"]');
+    expect(capability.permissions).toContain("allow-scan-discord-own-messages-for-deletion");
+    expect(capability.permissions).toContain("allow-preview-discord-guided-deletion");
+    expect(capability.permissions).toContain("allow-execute-discord-guided-deletion");
+    expect(handler).not.toContain("DeleteOwnItem");
   });
 
   it("routes the request handler through CheckedHost before scanning", () => {

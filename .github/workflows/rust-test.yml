@@ -6,10 +6,99 @@ concurrency:
 
 on:
   push:
-    branches: [main]
+    # D-172. This workflow owns the two most expensive truths in the repo -- the
+    # workspace suite and `hub-desktop-bin`, the only job that builds the app as
+    # it ships -- and until this line existed it asserted them about `main` only.
+    # D-146 was an integration head that could not build the shipping app at all
+    # while three suites were green; this job would have caught it on the push
+    # that broke it, and could not, because it never ran on that branch.
+    branches: [main, 'integrate/**']
   pull_request:
+  # D-195: the only trigger a commit message cannot suppress. `[skip ci]` in a
+  # commit subject cancels `push` and `pull_request` outright; see the ruling in
+  # integration-gate.yml. This makes a skipped run re-gradable by hand.
+  workflow_dispatch:
 
 jobs:
+  # D-172. Its own job, and that is the entire point -- see the comment where it
+  # used to live, in `test` below. A formatting check is the cheapest possible
+  # step and it was gating the most expensive truth in the repository.
+  # D-172, same reason as `fmt`. On run 30931561981, with fmt already moved out,
+  # `cargo clippy --workspace --all-targets -- -D warnings` was the next thing to
+  # fail as step 5 of `test` -- and `cargo test --workspace`, nextest and both
+  # apps/osl-hub `--features core` steps were reported `skipped` all over again.
+  # Two lints in a row had been standing in front of the entire Rust suite.
+  # Still required, still red, no longer in front of anything.
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: '1.97.1'
+          components: clippy
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          workspaces: . -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: '1.97.1'
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+      # D-284, the residue. `--all` above resolves to the workspace MEMBERS, so
+      # it is silent about EVERY path in `[workspace] exclude`, not just the hub.
+      # There are three: `apps/osl-hub` (covered by the ratchet below),
+      # `src-tauri` and `services/crypto-watcher`. The last one was in no fmt
+      # gate at all and nobody had ever measured it; it is exit 0, so covering it
+      # costs nothing and closes the hole before it fills up.
+      #
+      # `src-tauri` is deliberately NOT wired, and that decision is recorded with
+      # its measured cost in scripts/test_root_cargo_ci_contract.py rather than
+      # left implicit: it is the legacy shell, it ships nothing, and it carries
+      # exactly one hunk (an `assert!` reflow at src-tauri/src/main.rs:3496). The
+      # census in that file FAILS if a fourth exclusion is added and neither
+      # covered here nor recorded there -- which is how this stops recurring.
+      - name: cargo fmt, services/crypto-watcher
+        if: ${{ !cancelled() }}
+        run: cargo fmt --manifest-path services/crypto-watcher/Cargo.toml --all -- --check
+      # D-268. THE ROOT LINE ABOVE DOES NOT SEE THE HUB. `apps/osl-hub` is `exclude`d
+      # from the root workspace (Cargo.toml:31), so `--all` resolves to the
+      # workspace members and stops: `cargo fmt --all -- --check` was exit 0 at
+      # the root while the same command run inside `apps/osl-hub` was exit 1 with
+      # 50 diff hunks. Two independent gates -- this one and `clippy` above --
+      # both green, both looking away from the same 185,383 lines.
+      #
+      # 49 of those 50 hunks were formatted in the change that added this gate.
+      # The one that is left is `src/main.rs`, which another lane was editing at
+      # the time; it is recorded in scripts/ci/hub-fmt-baseline.json rather than
+      # fixed, and the ratchet fails if it grows, if it is fixed without the
+      # baseline being lowered in the same change, or if it moves to a different
+      # file at the same count.
+      #
+      # Two steps, not one, and the self-test first: D-195's rule. A grader that
+      # has never been shown to fail is decoration, and its exit code must be a
+      # step result of its own rather than a line inside a multi-command `run:`.
+      - name: Prove the hub lint ratchet can fail
+        if: ${{ !cancelled() }}
+        run: node scripts/ci/hub-lint-ratchet.mjs --self-test
+      # D-194: `!cancelled()`, so the root fmt check above -- which has been red
+      # on this branch before -- cannot go back to skipping the thing below it.
+      - name: apps/osl-hub fmt, ratcheted
+        if: ${{ !cancelled() }}
+        run: node scripts/ci/hub-lint-ratchet.mjs fmt
+
   test:
     name: test
     runs-on: windows-latest
@@ -32,25 +121,211 @@ jobs:
             . -> target
             apps/osl-hub -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # D-172: `cargo fmt --all -- --check` used to stand HERE, as step 5 of this
+      # job, and it is RED on integrate/first-usable -- 53 files, 138 hunks. So
+      # on the first run this workflow ever had on that branch (30930446508),
+      # clippy, `cargo test --workspace`, nextest and BOTH apps/osl-hub
+      # `--features core` steps were all reported `skipped`. Actions aborts a job
+      # at its first failing step, so a formatting nit was hiding the entire Rust
+      # test suite. It is now the `fmt` job below: still required, still red,
+      # and no longer standing in front of anything.
+      #
+      # D-194: MOVING THE MASKER WAS NOT ENOUGH, AND THIS IS THE INTERESTING PART.
+      # Hoisting fmt and clippy out promoted `cargo test --workspace` -- which is
+      # ITSELF red on this branch -- into first position, and on run 30932294581
+      # steps 6 to 9 were reported `skipped` all over again: nextest,
+      # `Test OSL Privacy core` and `Test OSL Privacy Windows identity lifecycle`.
+      # The last two run in exactly one other place, osl-hub-release.yml, which
+      # fires on `hub-v*` tags only, so on integrate/** they ran NOWHERE -- and
+      # they are in no quarantine entry either, so they were neither executed nor
+      # accounted for. That was the eighth instance of this one pattern found in
+      # a day, and the third time it was "fixed" by moving the red step.
+      #
+      # So the fix here is structural rather than another reordering: every step
+      # below carries `if: ${{ !cancelled() }}`, which makes a failed step above
+      # it stop being able to skip it. The job still goes red -- nothing is
+      # softened, there is no `continue-on-error` -- but the steps beneath a red
+      # one now produce a result instead of a blank.
+      #
+      # `!cancelled()` rather than `always()`: a cancelled run should stop, and a
+      # cancelled step is not a result anybody has (see the ts-test fail-fast
+      # comment). .github/workflows/integration-branch-gating.test.py asserts
+      # this, so removing it fails a different workflow.
       - run: cargo test --workspace
       # nextest runs each test in its own process for fast isolated feedback.
       # Keep cargo test above: its shared test-process shape can expose
       # process-global-state races that nextest structurally cannot.
       - name: Install cargo-nextest
+        if: ${{ !cancelled() }}
         uses: taiki-e/install-action@c93ccc03e00cd0e08e494f5fd058a6c55a6a1907 # v2.82.8
         with:
           tool: cargo-nextest
       - name: Run workspace tests with nextest
+        if: ${{ !cancelled() }}
         run: cargo nextest run --workspace --profile ci
       # The app is intentionally an isolated Cargo workspace, so root
       # --workspace checks do not cover it. Keep its core and Windows-only
       # restart lifecycle on the ordinary PR path as well as release CI.
+      # D-194: these are the two that ran nowhere on integrate/**.
       - name: Test OSL Privacy core
+        if: ${{ !cancelled() }}
         run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --lib
       - name: Test OSL Privacy Windows identity lifecycle
+        if: ${{ !cancelled() }}
         run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --test windows_identity_lifecycle
+
+  # D-152. The two steps above are `--features core --lib` plus one integration
+  # test, and `apps/osl-hub`'s `[[bin]]` is `required-features = ["desktop"]`
+  # (Cargo.toml:139-142). So neither of them compiles a single line of
+  # `src/main.rs`, `native_discord_overlay.rs`, `native_attachment_transport.rs`,
+  # `native_image_viewer.rs`, `native_whatsapp_overlay.rs` or `window_border.rs`
+  # -- and `apps/osl-hub` is outside the root workspace, so
+  # `cargo clippy --workspace -D warnings` never sees them either. The binary is
+  # where the app starts and it was the least gated code in the repository: its
+  # 116 tests did not compile on a pristine tree and had not for a long time.
+  # This job owns them.
+  #
+  # It is also the only job that builds the app as it ships. `tauri_build::build()`
+  # runs only under `desktop` (build.rs:27-29), and it is what validates
+  # `capabilities/*.json` against the command registry. D-146 was an integration
+  # branch that could not build the shipping app at all while the workspace suite
+  # (1997/0), the hub suite (1212/1) and the frontend suite (1604/0) were green,
+  # for exactly that reason.
+  #
+  # Windows, not Linux, because Windows is what ships: it compiles the
+  # `cfg(windows)` halves of the binary as well, which no other job does.
+  #
+  # If you are deleting this job, `quality-checks` below will fail and tell you
+  # what you are giving up. That is deliberate.
+  hub-desktop-bin:
+    name: OSL Privacy desktop binary
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/osl-hub-ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: '1.97.1'
+          # D-268. `clippy` is not in rustup's minimal profile, and this job is
+          # the only place the hub is ever linted -- see the ratchet steps at the
+          # bottom of this job.
+          components: clippy
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+        with:
+          workspaces: apps/osl-hub -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # `tauri.conf.json` sets frontendDist to `../osl-hub-ui/dist`, and
+      # `tauri_build::build()` reads it, so the renderer has to exist before
+      # cargo is invoked at all.
+      - name: Build the embedded frontend
+        working-directory: apps/osl-hub-ui
+        run: |
+          npm ci
+          npm run build
+      # --test-threads=1: `set_file_storage_key` is process-global.
+      - name: Test the OSL Privacy desktop binary
+        run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features desktop --bin osl-privacy-hub -- --test-threads=1
+      # D-268 / D-252. THE HUB LINT CENSUS, AND IT LIVES HERE FOR FOUR REASONS.
+      #
+      # `cargo clippy --workspace --all-targets -- -D warnings` (the `clippy` job
+      # at the top of this file) has never linted a line of `apps/osl-hub`: the
+      # package is `exclude`d from the root workspace and `-p osl-hub` does not
+      # even resolve. Three defects were found only because somebody ran the
+      # command by hand -- D-269 (an ACL proof that never ran, visible only to
+      # `duplicate_macro_attributes`), D-253 (a stale schema arm that would have
+      # skipped a migration, visible only to `unreachable_patterns`), and D-268
+      # itself (the `[[bin]]`'s 22,634 lines, in no census on any platform).
+      #
+      # WHY THIS JOB:
+      #   1. windows-latest. 71 of the 302 known src/ sites are Windows-only,
+      #      including both lints D-252 named, and 54 of the 55 Linux-only ones
+      #      are `dead_code` on items that are LIVE on Windows -- so an ubuntu
+      #      hub lint job would grade the wrong tree and push people to annotate
+      #      shipping code as dead. This is the Windows job.
+      #   2. It already builds the embedded frontend, which `tauri_build::build()`
+      #      requires under `desktop`, and `--features desktop` is REQUIRED here,
+      #      not optional: without it `tests/web_surface_a11y_spike.rs` does not
+      #      compile at all on Windows, and the 22,634-line binary is not built.
+      #   3. It already caches `apps/osl-hub -> target`. A standalone job would
+      #      duplicate the frontend build and pay a second cold cache.
+      #   4. It is the job whose stated purpose is "the only job that builds the
+      #      app as it ships" (D-152, above). The unlinted surface IS that app.
+      #
+      # WHY IT IS THE LAST STEP AND CARRIES `!cancelled()`: D-194. Every prior
+      # attempt at this in this repository put a cheap check in front of an
+      # expensive truth, and Actions aborts a job at its first failing step -- so
+      # a lint stood in front of the whole Rust suite, twice. This step is after
+      # the desktop binary test on purpose: a ratchet failure can never skip the
+      # test above it, and `!cancelled()` means a red test above cannot skip the
+      # ratchet either. Neither can mask the other.
+      #
+      # NOT `-- -D warnings`. 302 pre-existing sites; forcing it buys either a
+      # permanently red required job or ~300 `#[allow]`s, 54 of them false. The
+      # baseline in scripts/ci/hub-clippy-baseline.json is the mechanism for the
+      # debt, and it may only go down. Read the header of the script.
+      #
+      # `shell: bash` (D-195): the default shell on windows-latest is pwsh, whose
+      # wrapper surfaces only the LAST command's exit code. These steps are one
+      # command each, so it is belt and braces -- but the one job where D-195 was
+      # found was a windows job running a ratchet, and it is not worth relearning.
+      - name: Prove the hub lint ratchet can fail
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: node scripts/ci/hub-lint-ratchet.mjs --self-test
+      - name: apps/osl-hub clippy, ratcheted
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: node scripts/ci/hub-lint-ratchet.mjs clippy
+
+  # D-160. Until this job existed, `grep -rn "scripts/ledger" .github/workflows/`
+  # returned one comment and nothing else: eight Binding Ledgers, and the only
+  # thing that ran them was a human remembering to. That is the failure PLAN.md
+  # §9 already names -- "verify_all.sh existed and no loop ever ran it" --
+  # applied to the mechanism built to replace it. Everything the ledgers caught
+  # on 2026-08-03 (a branch that could not build the shipping app, two commands
+  # dead on the IPC surface, a prohibition guarded by a tautology) was caught
+  # because someone typed the command by hand.
+  #
+  # Ledgers 1-7 are green and any violation here fails the build. Ledger 8 is
+  # RED with 20, correctly -- D-092, D-108 and D-114 are open defects, not noise
+  # -- so it is ratcheted against scripts/ledger/state-baseline.json rather than
+  # gated at zero: a permanently-red CI trains everyone to ignore it, which is
+  # the same defeat in a different costume. The baseline fails on an increase AND
+  # on a decrease that did not lower the file in the same change. It is not an
+  # exception file; exceptions/*.json record things that do not ship, and every
+  # id in the baseline ships. See scripts/ledger/all.mjs for the full policy.
+  #
+  # ubuntu, not windows-latest: this is a node-only check and belongs with the
+  # other node checks. It runs rollup (ledger 7 asks the bundler for real module
+  # ids, which is why apps/osl-hub-ui dependencies are installed) and it invokes
+  # no cargo at all.
+  #
+  # If you are deleting this job, `quality-checks` below will fail and name it.
+  binding-ledgers:
+    name: Binding Ledgers
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/osl-hub-ui/package-lock.json
+      # Ledger 7 drives a real vite/rollup build to get `this.getModuleIds()`,
+      # and vite is a devDependency of apps/osl-hub-ui, not of the repo root.
+      - name: Install the renderer's dependencies
+        working-directory: apps/osl-hub-ui
+        run: npm ci
+      # --no-cache is mandatory. Without it, ledgers 1 and 7 refuse to report
+      # from a stale bundle cache and fail loudly instead of guessing. That
+      # refusal is correct behaviour -- do not "fix" it by dropping the flag.
+      - name: Run all eight Binding Ledgers
+        run: node scripts/ledger/all.mjs --no-cache
 
   quality-checks:
     runs-on: ubuntu-latest
@@ -68,8 +343,88 @@ jobs:
       # parse step in ~50ms per file.
       - name: boot.js parses
         run: node --check src-tauri/src/injection/boot.js
-      # 9-TD1.2: every #[tauri::command] needs all 5 artifacts. A
-      # missing TOML or capability grant makes the command silently
-      # unreachable from JS — we lost debug days to that pre-9-C1.
-      - name: Capability audit
-        run: python3 scripts/audit_capabilities.py
+      # D-159: the "Capability audit" step that stood here ran
+      # scripts/audit_capabilities.py, which audited src-tauri/** -- the
+      # legacy shell excluded from the workspace and built by no release
+      # job -- and printed "OK: 126 commands audited, all 5 artifacts
+      # present" while apps/osl-hub, the app that actually ships, held
+      # three commands registered on its IPC surface with no grant
+      # anywhere (D-158) and a permission whose command had been deleted
+      # (D-146, which broke the build twice in one day). A green line
+      # about code that does not ship is worse than no line. The
+      # five-artifact discipline now lives in scripts/ledger/acl-diff.mjs
+      # and scripts/ledger/commands.mjs, aimed at apps/osl-hub; see
+      # scripts/CAPABILITY_AUDIT.md for the artifact-to-enforcer map. D-159
+      # left one open item -- the ledgers were not a CI job -- and the
+      # `binding-ledgers` job above closes it.
+      # This file has held the rust-cache write policy since it was written and
+      # nothing has ever executed it. It now also holds D-152's contract that
+      # some job runs the shipping binary's test target, which is only worth
+      # anything if it runs from a DIFFERENT job than the one it guards -- delete
+      # `hub-desktop-bin` above and this step is what fails.
+      # D-194: `!cancelled()` on both contract steps. They are green today and
+      # `boot.js parses` is green today, but "green today" is what the whole
+      # masking pattern feeds on: a syntax error in boot.js would have skipped
+      # both policy gates below, and one of them is the only thing asserting
+      # that the integration branch is still gated at all.
+      - name: Rust workflow contract
+        if: ${{ !cancelled() }}
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 .github/workflows/rust-test.workflow-test.py
+      # D-172. A trigger is one line and one line is easy to lose in a merge.
+      # This asserts that the five workflows that gate `integrate/**` still do,
+      # that the five that deploy/publish/open-issues still do not, and that
+      # integration-gate.yml still contains all four shipping-artifact build
+      # gates as SEPARATE jobs. It runs from this job -- a different workflow
+      # from the one it mostly guards -- for the same reason the rust contract
+      # above does: a contract enforced only by the thing it constrains is not
+      # enforced.
+      - name: Integration-branch gating contract
+        if: ${{ !cancelled() }}
+        run: python3 .github/workflows/integration-branch-gating.test.py
+      # D-283. `scripts/test_root_cargo_ci_contract.py` -- the file whose ENTIRE
+      # purpose is asserting the root Cargo/CI contract -- was run by NO workflow
+      # for its whole life. `grep -rn test_root_cargo_ci_contract .github/`
+      # returned nothing. It is D-160's shape applied to the grader: a check that
+      # cannot fail because it never runs, and the fourth instance of that exact
+      # pattern found in a single day (D-172's unpushed branch, D-252's unlinted
+      # hub, D-233's browser gates with no browser, and this).
+      #
+      # Running it for the first time found it RED at three assertions, all
+      # stale: D-172 moved `cargo fmt` and `cargo clippy` out of the `test` job
+      # and this file still demanded them inside it, and `rust-version` went
+      # three-component while the toolchain check appended a fourth. None of the
+      # three was relaxed -- see the header of the file. It also grew the D-284
+      # exclusion census, which is what found that `services/crypto-watcher` was
+      # in no fmt gate.
+      #
+      # It runs HERE, in the job that already owns the other two workflow
+      # contracts, for the reason stated above them: a contract enforced only by
+      # the thing it constrains is not enforced. It grades rust-test.yml's `test`
+      # and `fmt` jobs, and it is not one of them.
+      - name: Root Cargo/CI contract
+        if: ${{ !cancelled() }}
+        run: python3 scripts/test_root_cargo_ci_contract.py
+      # D-283 / D-267. The second half of the same finding. `hub-bin-check.mjs`
+      # exists because `cargo check --bins` WITHOUT `--features desktop` compiles
+      # no binary and exits 0 -- a mutation lane's mutant "passed" because
+      # nothing was built. `--audit` is the standing guard that no such vacuous
+      # invocation is checked back into the tree, it needs no cargo and no
+      # toolchain, and it is exit 0 on this tree (43 tracked files mentioning the
+      # hub manifest, 1 undetermined: mutants.sh:19 takes its target selection
+      # from "$@"). Verified before wiring rather than taken on the
+      # recommendation.
+      - name: Hub binary invocation audit
+        if: ${{ !cancelled() }}
+        run: node scripts/ci/hub-bin-check.mjs --audit
+      # D-281. The TS-side contract, enforced from a workflow that is not the one
+      # it grades -- same rule as the two contracts above. It asserts that
+      # ts-test.yml's cipher-store lane still carries the release-contract
+      # terminal anchor, that the anchor's self-test still runs before it, and
+      # that neither the anchor nor the suite it stands beside can mask the
+      # other. If the anchor steps are deleted to silence them, THIS step is what
+      # goes red, from a different workflow and a different job.
+      - name: TypeScript workflow contract
+        if: ${{ !cancelled() }}
+        run: python3 .github/workflows/ts-test.workflow-test.py

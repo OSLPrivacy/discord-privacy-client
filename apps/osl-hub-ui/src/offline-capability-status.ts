@@ -37,7 +37,7 @@ const OFFLINE_STATUSES: Readonly<Record<OfflineUnavailableCapability, OfflineCap
   sendMessage: {
     available: false,
     title: "Sending needs a connection",
-    detail: "You can compose and encrypt a message now, but OSL cannot send it until it reconnects.",
+    detail: "OSL cannot encrypt or send a new message until it reconnects. Your draft stays in the composer; it is not queued.",
   },
   lookUpNewContactKey: {
     available: false,

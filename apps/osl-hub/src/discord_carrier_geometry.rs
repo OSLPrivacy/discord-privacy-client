@@ -412,8 +412,15 @@ mod tests {
     /// carrier never grows with the protected payload.  Two messages with
     /// radically different visible shapes therefore type the same number of
     /// characters into Discord.
+    ///
+    /// Renamed from `t1_t43_cover_length_is_independent_of_payload_size`, which
+    /// collided with the rewritten test further down this module. The collision
+    /// was a hard `error[E0428]`, so neither copy had compiled — and with them
+    /// the whole `osl-hub` lib test target — since the rewrite landed. This
+    /// half pins the cover to `FLAGTEXT`'s length, which the rewrite dropped,
+    /// so it is kept rather than deleted.
     #[test]
-    fn t1_t43_cover_length_is_independent_of_payload_size() {
+    fn t1_t43_pointer_cover_always_matches_the_flagtext_length() {
         let short = plain(&[1]);
         let long = plain(&[1; 12]);
         let short_cover = plan_carrier(input(&short)).cover_text().expect("short row");

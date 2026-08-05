@@ -885,38 +885,23 @@ impl KeyServerClient {
     /// (Mozilla CA bundle). No certificate pinning — that's a
     /// v1-stable feature.
     pub fn new(base_url: impl AsRef<str>) -> Result<Self> {
-        let url = base_url.as_ref();
-        let parsed = reqwest::Url::parse(url)
-            .map_err(|e| Error::Transport(format!("invalid base_url {url:?}: {e}")))?;
-
-        let no_ambient_authority = parsed.username().is_empty()
-            && parsed.password().is_none()
-            && parsed.query().is_none()
-            && parsed.fragment().is_none();
-        let production = no_ambient_authority
-            && parsed.scheme() == "https"
-            && parsed.host_str() == Some("keyserver.oslprivacy.com")
-            && parsed.port_or_known_default() == Some(443)
-            && parsed.path() == "/";
-        let debug_loopback = cfg!(debug_assertions)
-            && no_ambient_authority
-            && matches!(parsed.scheme(), "http" | "https")
-            && parsed
-                .host_str()
-                .and_then(|host| {
-                    host.trim_start_matches('[')
-                        .trim_end_matches(']')
-                        .parse::<std::net::IpAddr>()
-                        .ok()
-                })
-                .is_some_and(|ip| ip.is_loopback());
-        if !production && !debug_loopback {
-            return Err(Error::Transport(
-                "keyserver origin is not trusted for this build".to_string(),
-            ));
+        let base_url = validate_keyserver_base_url(base_url.as_ref())?;
+        // The route decision comes before the client exists. `new` is the
+        // "nobody routed me" constructor, so while Tor is selected it must
+        // never hand back a direct client: it adopts the authorized tunnel, or
+        // it refuses. See `crate::egress`.
+        match crate::egress::direct_client_decision() {
+            crate::egress::DirectClientDecision::Build => {}
+            crate::egress::DirectClientDecision::Adopt(client) => {
+                return Ok(KeyServerClient {
+                    base_url,
+                    client: *client,
+                });
+            }
+            crate::egress::DirectClientDecision::Refuse => {
+                return Err(Error::Transport(crate::egress::TOR_UNAVAILABLE.to_string()));
+            }
         }
-
-        let base_url = parsed.as_str().trim_end_matches('/').to_string();
         // `reqwest::blocking::Client::builder().build()` stands up a private
         // tokio runtime for the handshake and then drops it. Dropping a
         // runtime while another runtime's context is active aborts with
@@ -943,6 +928,19 @@ impl KeyServerClient {
         .join()
         .map_err(|_| Error::Transport("reqwest client build panicked".to_string()))?
         .map_err(|e| Error::Transport(format!("reqwest client build: {e}")))?;
+        Ok(KeyServerClient { base_url, client })
+    }
+
+    /// Build a keyserver client with an already configured HTTP transport.
+    ///
+    /// This preserves the same origin policy as [`Self::new`]. Only the route
+    /// implementation changes, which lets the hub install a SOCKS-only
+    /// reqwest client after its Tor fail-closed gate has authorized the send.
+    pub fn with_http_client(
+        base_url: impl AsRef<str>,
+        client: reqwest::blocking::Client,
+    ) -> Result<Self> {
+        let base_url = validate_keyserver_base_url(base_url.as_ref())?;
         Ok(KeyServerClient { base_url, client })
     }
 
@@ -973,7 +971,9 @@ impl KeyServerClient {
         friend_code: &str,
     ) -> Result<UsernameClaimResponse> {
         if !is_normalized_username(username) {
-            return Err(Error::Transport("username must already be normalized".into()));
+            return Err(Error::Transport(
+                "username must already be normalized".into(),
+            ));
         }
         let request_id = URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32));
         let timestamp_ms = unix_timestamp_ms();
@@ -984,9 +984,8 @@ impl KeyServerClient {
             &request_id,
             timestamp_ms,
         );
-        let signature_b64 = STANDARD.encode(
-            crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes(),
-        );
+        let signature_b64 =
+            STANDARD.encode(crypto::ed25519::sign(&identity.ed25519_secret, &message).as_bytes());
         let body = UsernameClaimRequest {
             username,
             user_id: &identity.user_id,
@@ -1009,7 +1008,9 @@ impl KeyServerClient {
     /// in a POST body so it is not retained in the request URI.
     pub fn lookup_username_friend_code(&self, username: &str) -> Result<Option<String>> {
         if !is_normalized_username(username) {
-            return Err(Error::Transport("username must already be normalized".into()));
+            return Err(Error::Transport(
+                "username must already be normalized".into(),
+            ));
         }
         let bytes = serde_json::to_vec(&serde_json::json!({ "username": username }))?;
         let response = self.send_request(
@@ -1785,28 +1786,36 @@ impl KeyServerClient {
                 "control-inbox sender filter is invalid".into(),
             ));
         }
-        // Deliberately NESTED, not a match on a (capability, floor) pair: the
-        // floor endpoint is only consulted once the server has claimed v1. A
-        // legacy server refuses here without being sent a floor request it may
-        // not implement -- issuing one would turn a clean "capability
-        // unavailable" refusal into an opaque transport error. Refusal is the
-        // outcome either way, so measuring first buys no safety.
-        // NOTE: keyserver-cf/scripts/sender-filter-rollout-contract.mjs
-        // (requireShippingClientDataflow) demands the flattened tuple shape and
-        // therefore fails against this function. That is a real, unresolved
-        // disagreement between the rollout contract and the shipping client --
-        // see broker.rs::audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain,
-        // which asserts a legacy refusal stops before any further request.
-        match self.probe_control_inbox_sender_filter_capability()? {
-            ControlInboxSenderFilterCapability::Version1 => {
-                match self.observe_sender_filter_capability_floor(identity)? {
-                    SenderFilterCapabilityFloor::Version1 => {
-                        self.get_control_inbox_from(identity, sender_id)
-                    }
-                }
-            }
-            ControlInboxSenderFilterCapability::Legacy => Err(Error::Transport(
-                "control-inbox sender-filter capability unavailable".into(),
+        // BOTH measurements are taken before either can decide, and neither is
+        // nested inside the other. `/v1/healthz` is an UNSIGNED claim; the
+        // `/v1/sender-filter-capability-floor/:user_id` observation is signed,
+        // identity-anchored and, per migration 0032, an immutable/undeletable D1
+        // record that the Worker genesis-inserts on first observation. There is
+        // no local floor (see keyserver-cf/SENDER_FILTER_ROLLOUT.md), so the
+        // signed authority is the ONLY way to learn that a floor exists.
+        //
+        // Gating the floor observation on the health claim would subordinate the
+        // authority to the claim: an active attacker who rewrites only the
+        // unsigned health body could keep the durable floor from ever being
+        // established, and `(Legacy, Version1)` -- a Worker that has a durable
+        // v1 floor yet claims legacy, i.e. a rollback -- would be
+        // indistinguishable from a Worker that never advertised the capability.
+        // That distinction is the contract's `capability-downgrade` verdict
+        // (sender-filter-rollout-contract.mjs::classifyCapability) and the
+        // documented "refuse: authority route absent" legacy-Worker cell of the
+        // version-skew matrix.
+        let capability = self.probe_control_inbox_sender_filter_capability()?;
+        let measured_floor = self.observe_sender_filter_capability_floor(identity)?;
+        match (capability, measured_floor) {
+            (
+                ControlInboxSenderFilterCapability::Version1,
+                SenderFilterCapabilityFloor::Version1,
+            ) => self.get_control_inbox_from(identity, sender_id),
+            (
+                ControlInboxSenderFilterCapability::Legacy,
+                SenderFilterCapabilityFloor::Version1,
+            ) => Err(Error::Transport(
+                "control-inbox sender-filter capability downgrade refused".into(),
             )),
         }
     }
@@ -1922,7 +1931,7 @@ impl KeyServerClient {
         let sig_q = urlencode_query_value(&STANDARD.encode(sig.as_bytes()));
         // This URL is retained in Cloudflare zone HTTP request data for a
         // proxied zone. Before changing its path or query identity fields, see
-        // /home/liamw/osl-plan/CLOUDFLARE-LOG-EXPOSURE.md.
+        // plan-repo/CLOUDFLARE-LOG-EXPOSURE.md.
         let path = format!(
             "/v1/control-inbox/{}?ts={}&sig={}&sender={}",
             urlencode_segment(&identity.user_id),
@@ -2060,17 +2069,27 @@ impl KeyServerClient {
             req = req.header("Content-Type", ctype).body(payload.to_vec());
         }
 
-        let response = req
-            .send()
-            .map_err(|e| Error::Transport(format!("send {method} {url}: {e}")))?;
-        let status = response.status().as_u16();
-        let body_bytes = response
-            .bytes()
-            .map_err(|e| Error::Transport(format!("read response body: {e}")))?
-            .to_vec();
-        Ok(HttpResponse {
-            status,
-            body: body_bytes,
+        // Send and drain the body on a thread with no Tokio context. Both
+        // halves go through `reqwest::blocking::wait::timeout`, whose
+        // debug-assertions `enter()` builds and drops a shell runtime; doing
+        // that on a Tokio worker (any `async fn` Tauri command) panics with
+        // "Cannot drop a runtime in a context where blocking is not allowed".
+        // See `crate::blocking_http`. The response body is fully materialised
+        // inside the hop on purpose — handing a `Response` back out would move
+        // the body read to the caller's thread and reopen the fault.
+        crate::blocking_http::off_async_context(move || {
+            let response = req
+                .send()
+                .map_err(|e| Error::Transport(format!("send {method} {url}: {e}")))?;
+            let status = response.status().as_u16();
+            let body_bytes = response
+                .bytes()
+                .map_err(|e| Error::Transport(format!("read response body: {e}")))?
+                .to_vec();
+            Ok(HttpResponse {
+                status,
+                body: body_bytes,
+            })
         })
     }
 }
@@ -2288,6 +2307,40 @@ struct ControlInboxDeleteBody<'a> {
     user_id: &'a str,
     timestamp_ms: i64,
     signature_b64: String,
+}
+
+fn validate_keyserver_base_url(url: &str) -> Result<String> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| Error::Transport(format!("invalid base_url {url:?}: {e}")))?;
+
+    let no_ambient_authority = parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.query().is_none()
+        && parsed.fragment().is_none();
+    let production = no_ambient_authority
+        && parsed.scheme() == "https"
+        && parsed.host_str() == Some("keyserver.oslprivacy.com")
+        && parsed.port_or_known_default() == Some(443)
+        && parsed.path() == "/";
+    let debug_loopback = cfg!(debug_assertions)
+        && no_ambient_authority
+        && matches!(parsed.scheme(), "http" | "https")
+        && parsed
+            .host_str()
+            .and_then(|host| {
+                host.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::IpAddr>()
+                    .ok()
+            })
+            .is_some_and(|ip| ip.is_loopback());
+    if !production && !debug_loopback {
+        return Err(Error::Transport(
+            "keyserver origin is not trusted for this build".to_string(),
+        ));
+    }
+
+    Ok(parsed.as_str().trim_end_matches('/').to_string())
 }
 
 #[cfg(test)]

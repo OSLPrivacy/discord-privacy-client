@@ -562,7 +562,7 @@ describe("trusted composer overlay", () => {
     // handle the renderer needs to paint it over the Discord row it belongs to:
     // an id, and the public cover of that row. Before this, an inbound message
     // was anonymous and could only be appended in key-server inbox order.
-    const opened = { messageId: "peer-fedcba98765432100123456789abcdef", coverPointer: "ordinary looking cover prose", plaintext: "first\n\nthird", contextVerified: true, personToPersonE2ee: true, viewOnceConsumed: true, expiresAt: 1_787_000_000 };
+    const opened = { messageId: "peer-fedcba98765432100123456789abcdef", coverPointer: "ordinary looking cover prose", plaintext: "first\n\nthird", contextVerified: true, personToPersonE2ee: true, viewOnceConsumed: true, createdAt: 1_786_996_400, expiresAt: 1_787_000_000 };
     const acknowledgment = { messageId: prepared.messageId, status: "opened", acknowledgedAt: 1_786_999_900 };
     expect(parseNativeDiscordOverlayState(state)).toEqual(state);
     expect(parseNativeDiscordOverlayPrepared(prepared)).toEqual(prepared);
@@ -661,6 +661,7 @@ describe("trusted composer overlay", () => {
     expect(parseNativeSurfaceCapture({ ...nativeSurface, messageText: "secret" })).toBeNull();
     expect(parseNativeDiscordOverlayPrepared({ ...prepared, deliveredToOslInbox: false })).toBeNull();
     expect(parseNativeDiscordOverlayOpened({ ...opened, plaintext: "🙂".repeat(262_145) })).toBeNull();
+    expect(parseNativeDiscordOverlayOpened({ ...opened, createdAt: 0 })).toBeNull();
     expect(parseNativeDiscordOverlayOpened({ ...opened, expiresAt: 0 })).toBeNull();
     expect(parseNativeDiscordOverlayAcknowledgment({ ...acknowledgment, status: "read" })).toBeNull();
     expect(parseNativeDiscordOverlayOpenedBatch({ messages: Array.from({ length: 65 }, () => opened), pendingViewOnce: [], acknowledgments: [], fetched: 64 })).toBeNull();

@@ -55,11 +55,11 @@ pub(crate) fn encrypt_v5_send(
     non_self_peers: &[&(String, crate::wire_v2::RecipientV3)],
     plaintext: &[u8],
 ) -> Result<EncryptWire, String> {
-    use crypto::sender_keys::{SenderContext, SenderKeyState, SenderKeyStateOnDisk};
+    use crypto::sender_keys::{SenderContext, SenderKeyState};
 
     let scope_key = scope.storage_key();
     let self_mlkem_pub_bytes: Vec<u8> = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         let identity = id_guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -75,20 +75,14 @@ pub(crate) fn encrypt_v5_send(
     // recipient (whitelist + lock tier) into `non_self_peers`, and the
     // SKDM only ever goes to that set.
 
-    // Load (or initialize) the per-scope SenderKeyState. We work on
-    // a clone to keep the lock window short; persist back after.
+    // Move the live, session-only state out while encrypting, then return it
+    // to the holder once all chain mutations are complete.
     let mut sks: SenderKeyState = {
-        let g = state
+        let mut g = state
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned");
-        match g.states.get(&scope_key) {
-            Some(disk) => disk
-                .clone()
-                .try_into()
-                .map_err(|e| format!("OSL: v=5 send: load sender_key_state: {e}"))?,
-            None => SenderKeyState::new(),
-        }
+        g.remove(&scope_key).unwrap_or_default()
     };
 
     // Rotation/redistribution must track the ACTUAL recipient set —
@@ -220,21 +214,6 @@ pub(crate) fn encrypt_v5_send(
         .expect("v=5 sender-key rotation controller installed before encryption")
         .note_message_sent();
 
-    // Persist updated state before any SKDM dispatch — if the SKDM
-    // wire goes out but persistence dies between send + crash, we'd
-    // be in a position where peers think we've installed and we
-    // don't.
-    {
-        let mut g = state
-            .sender_key_state
-            .lock()
-            .expect("sender_key_state mutex poisoned");
-        g.states
-            .insert(scope_key.clone(), SenderKeyStateOnDisk::from(&sks));
-        g.version = 1;
-    }
-    persist_sender_key_state_now(state);
-
     // Probe-3 Option-2 step 1: dispatch SKDMs as a SINGLE v=3-bundled
     // PQ-hybrid multi-recipient message instead of N separate v=4
     // ratcheted messages.
@@ -291,7 +270,7 @@ pub(crate) fn encrypt_v5_send(
         // self-slot decode hits apply_skdm_recv which is idempotent
         // for an already-installed receiver chain.
         let self_mlkem = {
-            let id_guard = state.identity.lock().expect("identity mutex poisoned");
+            let id_guard = state.identity_slot();
             id_guard
                 .as_ref()
                 .ok_or_else(|| "OSL: identity not loaded".to_string())?
@@ -351,6 +330,16 @@ pub(crate) fn encrypt_v5_send(
         }
     }
 
+    // Return the intact live state before serializing its lossy disk view.
+    {
+        let mut g = state
+            .sender_key_state
+            .lock()
+            .expect("sender_key_state mutex poisoned");
+        g.insert(scope_key.clone(), sks);
+    }
+    persist_sender_key_state_now(state);
+
     Ok(EncryptWire {
         content: wire,
         control_messages: skdm_wires,
@@ -406,12 +395,10 @@ fn send_skdm_via_v3_bundle(
     .map_err(|e| format!("OSL: v=5 SKDM bundle: encrypt_v3: {e}"))
 }
 
-/// Phase 9-A2: symmetric DM conversation_id for the DR session
-/// context. Each side derives the same string by sorting the two
-/// discord_ids — without this, alice's `Scope::dm(bob).storage_key()
-/// = "dm:bob"` and bob's `Scope::dm(alice).storage_key() = "dm:alice"`
-/// would mismatch on the DR's canonical AD.
-
+/// Auto-recovery: an inbound recovery request was dropped by a guard
+/// (stale / replayed / throttled / no corroborating local symptom).
+/// Control sentinel; boot.js suppresses render. Distinct from
+/// "applied" so logs can tell a no-op from an action.
 pub const OSL_RESULT_RECOVERY_IGNORED: &str = "__OSL_CONTROL_RECOVERY_IGNORED__";
 
 /// Auto-recovery inbound handler for `MSG_TYPE_SKDM_REQUEST` (0x06):
@@ -473,27 +460,22 @@ pub(crate) fn apply_skdm_request_recv(
     // benign no-op (the requester is asking the wrong peer, or the
     // scope was never keyed).
     let (chain_id, rotation_root, physical_device_id) = {
-        use crypto::sender_keys::SenderKeyState;
         let g = state
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned");
-        let Some(disk) = g.states.get(&scope_key) else {
+        let Some(live) = g.get(&scope_key) else {
             tracing::warn!(
                 requester = %crate::log_id::log_id(requester_discord_id),
                 scope = %crate::log_id::log_id(&scope_key),
                 reason = "no_sender_key_state",
-                known_scopes = g.states.len(),
+                known_scopes = g.len(),
                 "OSL: SKDM_REQUEST IGNORED — no sender_key_state for scope \
                  (we never sent a v=5 message here; nothing to redistribute)"
             );
             return Ok(OSL_RESULT_RECOVERY_IGNORED.to_string());
         };
-        let sks: SenderKeyState = disk
-            .clone()
-            .try_into()
-            .map_err(|e| format!("OSL: SKDM_REQUEST: load sender_key_state: {e}"))?;
-        match sks.sender_chain() {
+        match live.sender_chain() {
             Some(c) => (
                 c.current_chain_id(),
                 c.rotation_root_bytes(),
@@ -514,7 +496,7 @@ pub(crate) fn apply_skdm_request_recv(
 
     // Self identity material for the v=4 wrap.
     let (sender_sk, self_pk, self_mlkem_pub, self_discord_id) = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         let identity = id_guard
             .as_ref()
             .ok_or_else(|| "OSL: SKDM_REQUEST: identity not loaded".to_string())?;
@@ -663,32 +645,6 @@ pub(crate) fn apply_skdm_request_recv(
     Ok(format!("{OSL_RESULT_SKDM_REREQUEST_PREFIX}{wire}"))
 }
 
-/// Auto-recovery inbound handler for `MSG_TYPE_SESSION_RESET` (0x07):
-/// the sender says our shared v=4 ratchet is desynced and they have
-/// dropped their side. Honor it when it passes the
-/// staleness/replay/honor-throttle guards.
-///
-/// Act-on-symptom DOWNGRADE (one-directional-desync fix): a
-/// SESSION_RESET only reaches this function after it has been
-/// successfully `wire_v2`-decrypted — i.e. it was PQ-hybrid wrapped to
-/// our identity using the peer's identity secret. A third party who
-/// can merely post into the channel cannot forge one that decrypts, so
-/// the original "could be spammed by anyone" threat is already closed
-/// by that authentication for SESSION_RESET specifically. Requiring an
-/// *additional* local decrypt failure before honoring it broke the
-/// common real case: a one-directional ratchet desync (peer→us fails,
-/// us→peer still works) leaves the side that must reset with no local
-/// symptom, so the reset was ignored forever and the session never
-/// healed without two console commands. We now honor an authenticated,
-/// non-replayed, non-throttled reset regardless of corroboration; the
-/// symptom is still recorded and logged (`corroborated`) for forensics
-/// but is no longer a gate. Residual risk: a peer holding valid keys
-/// can induce at most one (idempotent, cheap) re-handshake per
-/// `RECOVERY_MIN_INTERVAL_SECS` — a throttled self-inflicted nuisance,
-/// not a third-party DoS, no secret exposure, no MITM gain. On honor,
-/// drop our `ratchet_state` for the peer so the next v=4 send
-/// re-handshakes.
-
 /// Phase 9-A3: install or rotate a peer's `ReceiverChain` for the
 /// scope named in the SKDM payload. Persists `sender_key_state.json`
 /// after mutation. Returns the sentinel string so the dispatcher
@@ -698,7 +654,7 @@ pub(crate) fn apply_skdm_recv(
     sender_discord_id: &str,
     payload_bytes: &[u8],
 ) -> Result<String, String> {
-    use crypto::sender_keys::{PhysicalDeviceId, SenderKeyState, SenderKeyStateOnDisk};
+    use crypto::sender_keys::PhysicalDeviceId;
     let payload = crate::control_messages::deserialize_sender_key_distribution(payload_bytes)
         .map_err(|e| format!("OSL: SKDM: deserialize: {e}"))?;
 
@@ -718,11 +674,7 @@ pub(crate) fn apply_skdm_recv(
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned");
-        let entry = g.states.entry(scope_key.clone()).or_default();
-        let mut live: SenderKeyState = entry
-            .clone()
-            .try_into()
-            .map_err(|e| format!("OSL: SKDM: load existing state: {e}"))?;
+        let live = g.entry(scope_key.clone()).or_default();
         let peer_bytes = sender_discord_id.as_bytes().to_vec();
         let physical_device_id = PhysicalDeviceId::from_bytes(payload.physical_device_id)
             .map_err(|e| format!("OSL: SKDM: physical_device_id binding invalid or absent: {e}"))?;
@@ -746,8 +698,6 @@ pub(crate) fn apply_skdm_recv(
             )
             .map_err(|e| format!("OSL: SKDM: install_receiver: {e}"))?;
         }
-        *entry = SenderKeyStateOnDisk::from(&live);
-        g.version = 1;
     }
     persist_sender_key_state_now(state);
     tracing::info!(
@@ -769,7 +719,7 @@ pub(crate) fn decrypt_v5_recv(
     content: String,
     scope_opt: Option<crate::scope::Scope>,
 ) -> Result<String, String> {
-    use crypto::sender_keys::{SenderContext, SenderKeyState, SenderKeyStateOnDisk};
+    use crypto::sender_keys::SenderContext;
 
     let parsed =
         crate::wire_v2::decrypt_v5(&content).map_err(|e| format!("OSL: v=5 decode: {e}"))?;
@@ -787,7 +737,7 @@ pub(crate) fn decrypt_v5_recv(
     //     not yet known — AD will then differ and AEAD fails with
     //     a clear error.
     let sender_mlkem_pub_bytes: Vec<u8> = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         let identity = id_guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -812,61 +762,42 @@ pub(crate) fn decrypt_v5_recv(
         session_version: crypto::sender_keys::SESSION_VERSION_V1,
     };
 
-    // Load the per-scope SenderKeyState. If absent → no SKDM has
-    // arrived yet → return a clear retry-worthy error.
-    let mut sks: SenderKeyState = {
-        let g = state
-            .sender_key_state
-            .lock()
-            .expect("sender_key_state mutex poisoned");
-        match g.states.get(&scope_key) {
-            Some(disk) => disk.clone().try_into().map_err(|e| {
-                format!(
-                    "OSL: v=5 decode: load sender_key_state for scope {scope_key}: {e}",
-                    scope_key = crate::log_id::log_id(&scope_key)
-                )
-            })?,
-            None => {
-                return Err(format!(
-                    "OSL: v=5 decode: no installed sender-key state for peer \
-                     {sender_discord_id} in scope {scope_key} — awaiting SKDM",
-                    sender_discord_id = crate::log_id::log_id(&sender_discord_id),
-                    scope_key = crate::log_id::log_id(&scope_key)
-                ));
-            }
-        }
-    };
-
+    // Mutate the live receiver state in place.  In particular, do not move it
+    // out of the map: a rejected ciphertext (including a pre-membership one)
+    // must not make the already-installed rotated chain disappear.
     let peer_bytes = sender_discord_id.as_bytes().to_vec();
-    if sks.receiver_chain(&peer_bytes).is_none() {
-        return Err(format!(
-            "OSL: v=5 decode: no installed sender-key state for peer \
-             {sender_discord_id} in scope {scope_key} — awaiting SKDM",
-            sender_discord_id = crate::log_id::log_id(&sender_discord_id),
-            scope_key = crate::log_id::log_id(&scope_key)
-        ));
-    }
-
     let em = crypto::sender_keys::EncryptedMessage {
         header_nonce: parsed.header_nonce,
         enc_header: parsed.enc_header,
         message_nonce: parsed.message_nonce,
         ciphertext: parsed.ciphertext,
     };
-    let plaintext_bytes = sks
-        .decrypt_from(&peer_bytes, &em, &ctx)
-        .map_err(|e| format!("OSL: v=5 decode: decrypt_from: {e}"))?;
-
-    // Persist updated state.
-    {
+    let plaintext_bytes = {
         let mut g = state
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned");
-        g.states
-            .insert(scope_key.clone(), SenderKeyStateOnDisk::from(&sks));
-        g.version = 1;
-    }
+        let sks = g.get_mut(&scope_key).ok_or_else(|| {
+            format!(
+                "OSL: v=5 decode: no installed sender-key state for peer \
+                 {sender_discord_id} in scope {scope_key} — awaiting SKDM",
+                sender_discord_id = crate::log_id::log_id(&sender_discord_id),
+                scope_key = crate::log_id::log_id(&scope_key)
+            )
+        })?;
+        if sks.receiver_chain(&peer_bytes).is_none() {
+            return Err(format!(
+                "OSL: v=5 decode: no installed sender-key state for peer \
+                 {sender_discord_id} in scope {scope_key} — awaiting SKDM",
+                sender_discord_id = crate::log_id::log_id(&sender_discord_id),
+                scope_key = crate::log_id::log_id(&scope_key)
+            ));
+        }
+        sks.decrypt_from(&peer_bytes, &em, &ctx)
+            .map_err(|e| format!("OSL: v=5 decode: decrypt_from: {e}"))?
+    };
+
+    // Persist any receiver advancement only after releasing the live-state lock.
     persist_sender_key_state_now(state);
 
     // 9-C1: permissive decrypt — no per-scope accept gate. The
@@ -885,7 +816,7 @@ fn verify_v5_sender_discord_binding(
     wire_sender_pub: &crypto::x25519::PublicKey,
 ) -> Result<(), String> {
     let self_expected = {
-        let id_guard = state.identity.lock().expect("identity mutex poisoned");
+        let id_guard = state.identity_slot();
         let identity = id_guard
             .as_ref()
             .ok_or_else(|| "OSL: identity not loaded".to_string())?;
@@ -925,11 +856,11 @@ mod tests {
             x25519_pub: peer.x25519_public,
             mlkem_pub: crypto::ml_kem_768::EncapsulationKey::from_bytes(&peer.mlkem_public_bytes),
         };
-        let peers = vec![(peer_did, recipient)];
+        let peers = [(peer_did, recipient)];
         let peer_refs: Vec<&(String, crate::wire_v2::RecipientV3)> = peers.iter().collect();
 
         {
-            let mut identity = state.identity.lock().expect("identity mutex poisoned");
+            let mut identity = state.identity_slot();
             *identity = Some(sender.clone());
         }
 
@@ -963,9 +894,11 @@ mod tests {
         // proves the controller's `check_for_rotation` result controls the
         // real encrypt path, rather than merely being constructed alongside
         // the legacy rotation logic.
-        let mut config = runtime::RotationConfig::default();
-        config.message_count_trigger = 1;
-        config.time_trigger = Duration::from_secs(24 * 60 * 60);
+        let config = runtime::RotationConfig {
+            message_count_trigger: 1,
+            time_trigger: Duration::from_secs(24 * 60 * 60),
+            ..Default::default()
+        };
         let mut threshold_one =
             runtime::RotationController::new(Box::new(runtime::SystemClock), config);
         threshold_one.note_message_sent();
@@ -987,18 +920,14 @@ mod tests {
         )
         .expect("threshold-triggered v5 send succeeds");
 
-        let sender_state: crypto::sender_keys::SenderKeyState = state
+        let sender_states = state
             .sender_key_state
             .lock()
-            .expect("sender_key_state mutex poisoned")
-            .states
-            .get(&scope.storage_key())
-            .expect("v5 sender state persists")
-            .clone()
-            .try_into()
-            .expect("persisted v5 sender state loads");
+            .expect("sender_key_state mutex poisoned");
         assert_eq!(
-            sender_state
+            sender_states
+                .get(&scope.storage_key())
+                .expect("v5 sender state persists")
                 .sender_chain()
                 .expect("sender chain exists")
                 .current_chain_id(),

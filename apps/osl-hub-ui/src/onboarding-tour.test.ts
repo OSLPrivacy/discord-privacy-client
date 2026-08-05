@@ -23,6 +23,20 @@ describe("first-launch protected messaging tour", () => {
     expect(entry).toContain('onboardingRoute = "tutorial"');
   });
 
+  it("renders one Back per tour step and lets it leave the route at step one", () => {
+    const tour = functionSource("tutorialContent", "chooseAppsOnboardingContent");
+    // The tour owns backward navigation on this route, so the global
+    // #onboarding-back must not also dock into its action row -- that shipped
+    // two identically labelled "Back" buttons on all five steps.
+    expect(tour).toContain("onboarding-step-back");
+    const dock = functionSource("dockOnboardingBackControl", "renderOnboarding");
+    expect(dock).toContain('primaryRow.querySelector(".onboarding-step-back")');
+    // Being the only Back, it cannot be inert on the first sub-step.
+    expect(tour).not.toContain('onboardingTourStep === 0 ? "disabled"');
+    const binding = source.slice(source.indexOf('#onboarding-tour-back'));
+    expect(binding.slice(0, 500)).toContain("previousSetupRoute(onboardingRoute)");
+  });
+
   it("can be replayed from Settings without re-running setup", () => {
     const about = functionSource("updateSettingsContent", "bindUpdateControls");
     const bindingStart = source.indexOf("function bindUpdateControls");

@@ -16,7 +16,8 @@
     "docs/prototypes/osl-chats-lab/styles.css",
     "docs/prototypes/osl-hub/README.md",
     "docs/prototypes/osl-hub/app.js",
-    "docs/prototypes/osl-hub/styles.css"
+    "docs/prototypes/osl-hub/styles.css",
+    "docs/site.css"
   ],
   "claim_channels": [
     "rendered-text",

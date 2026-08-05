@@ -19,11 +19,13 @@
 
 pub mod account_ownership_error;
 pub mod account_ownership_proof;
+pub mod blocking_http;
 pub mod burn;
 pub mod burn_alert;
 pub mod client;
 pub mod control_inbox;
 pub mod duress;
+pub mod egress;
 pub mod identity;
 pub mod identity_bundle;
 pub mod keystore_anchor;
@@ -100,9 +102,9 @@ pub use recipients::{
     osl_config_dir, set_active_account_dir, set_base_dir_override, RecipientError,
 };
 pub use sealer::{
-    evict_tpm_key, select_best_sealer, verify_sealer_round_trip, KeyringSealer, MemorySealer,
-    NoOpSealer, Sealer, SealerError, TpmSealer, METHOD_EPHEMERAL, METHOD_KEYRING, METHOD_MEMORY,
-    METHOD_NOOP, METHOD_TPM,
+    evict_tpm_key, select_best_sealer, verify_sealer_round_trip, KeyringPurgeOutcome,
+    KeyringSealer, MemorySealer, NoOpSealer, Sealer, SealerError, TpmEvictOutcome, TpmSealer,
+    METHOD_EPHEMERAL, METHOD_KEYRING, METHOD_MEMORY, METHOD_NOOP, METHOD_TPM,
 };
 pub use signed_get::{
     canonical_prekey_bundle_get_bytes, canonical_wrapped_key_get_bytes, sign_prekey_bundle_get,

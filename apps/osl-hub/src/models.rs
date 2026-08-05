@@ -282,8 +282,8 @@ mod tests {
     use super::{
         AndroidWorkspaceBoundary, AndroidWorkspaceExecution, AndroidWorkspacePolicy,
         AndroidWorkspaceRefusalReason, AndroidWorkspaceStartDecision,
-        AndroidWorkspaceStartEvidence, OnboardingPreferences, PlacementMode, SendMode, ServiceKind,
-        ServiceLaunchState,
+        AndroidWorkspaceStartEvidence, ForwardSecrecyMode, OnboardingPreferences, PlacementMode,
+        SendMode, ServiceKind, ServiceLaunchState,
     };
 
     #[test]
@@ -307,6 +307,13 @@ mod tests {
             "showPlaintextPreview": true,
             "windowCaptureEnabled": true,
             "acknowledgeExperimentalSendRisk": false,
+            // Added when `forward_secrecy_mode` joined OnboardingPreferences;
+            // this literal was never updated, and the name collision that kept
+            // the lib test target from compiling meant nobody saw it fail. The
+            // frontend agrees on both the key and this default:
+            // `apps/osl-hub-ui/src/preferences.ts` seeds
+            // `forwardSecrecyMode: "keepGroupDelivery"`.
+            "forwardSecrecyMode": "keepGroupDelivery",
         });
         assert_eq!(
             serde_json::to_value(OnboardingPreferences::default()).unwrap(),
@@ -361,6 +368,7 @@ mod tests {
             show_plaintext_preview: true,
             window_capture_enabled: true,
             acknowledge_experimental_send_risk: false,
+            forward_secrecy_mode: ForwardSecrecyMode::default(),
         }
         .fail_closed();
 
@@ -540,15 +548,8 @@ pub enum ServiceKind {
     Telegram,
     #[serde(rename = "whatsapp")]
     WhatsApp,
-    Instagram,
-    Snapchat,
     Email,
-    X,
     Signal,
-    Slack,
-    Linkedin,
-    Teams,
-    Messenger,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -558,9 +559,7 @@ pub enum EmailProvider {
     Outlook,
     Proton,
     Tuta,
-    Fastmail,
     Yahoo,
-    Zoho,
     Aol,
     Gmx,
     Maildotcom,

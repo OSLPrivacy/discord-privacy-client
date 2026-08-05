@@ -34,6 +34,12 @@ REQUIRED_TOP_LEVEL = {
     "id", "datum", "kind", "authority", "readers", "writers", "resets", "graphs",
     "lifecycle", "reuse", "conflicts", "paths",
 }
+# `github.event.before` is 40 zeros on a branch's first push.  Any all-zero sha
+# in a range means the range cannot resolve to a real base.
+ZERO_SHA = re.compile(r"\b0{7,40}\b")
+# Cap the refusal listing so an ungradable run stays a readable diagnosis and
+# does not turn into a wall of every stateful file in the repository.
+REFUSAL_SAMPLE = 20
 
 
 def load_records(path: Path) -> list[dict[str, Any]]:
@@ -112,6 +118,62 @@ def validate(records: list[dict[str, Any]], changed_paths: set[str] | None = Non
     return errors
 
 
+def declared_paths(records: list[dict[str, Any]]) -> set[str]:
+    """Every source path any record claims to implement."""
+    paths: set[str] = set()
+    for record in records:
+        value = record.get("paths")
+        if isinstance(value, list):
+            paths.update(path for path in value if nonempty(path))
+    return paths
+
+
+def degenerate_range(git_range: str | None) -> str:
+    """Say why `git_range` cannot grade anything, or "" when it can.
+
+    The workflow substitutes `github.event.before`, which is all zeros on a
+    branch's first push.  Treating that as "nothing to check" is what made this
+    gate pass vacuously, so every unusable shape is named here instead.
+    """
+    if git_range is None:
+        return "no --git-range was supplied, so no added line was compared against the registry"
+    text = git_range.strip()
+    if not text:
+        return "--git-range was empty, so no added line was compared against the registry"
+    if ZERO_SHA.search(text):
+        return (
+            f"--git-range {git_range!r} names an all-zero sha (unborn base / first push of a branch), "
+            "so no added line was compared against the registry"
+        )
+    return ""
+
+
+def tracked_stateful_files(root: Path) -> set[str]:
+    """Tracked files containing a stateful construct, by the same regex the gate grades with.
+
+    This is a *predicate*, not a second gate: it only answers "is there stateful
+    input this run failed to grade?" and supplies a bounded sample for the
+    refusal message.  It never fails an individual file.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=root, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    if result.returncode:
+        raise ValueError(f"cannot census tracked files: {result.stderr.strip()}")
+    hits: set[str] = set()
+    for name in result.stdout.split("\0"):
+        if not name:
+            continue
+        try:
+            text = (root / name).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if STATEFUL_CHANGE.search(text):
+            hits.add(name)
+    return hits
+
+
 def added_stateful_paths(git_range: str, root: Path) -> set[str]:
     result = subprocess.run(
         ["git", "diff", "--unified=0", git_range, "--"], cwd=root, text=True,
@@ -137,7 +199,17 @@ def main() -> int:
     args = parser.parse_args()
     try:
         records = load_records(args.registry)
-        changed = added_stateful_paths(args.git_range, args.root) if args.git_range else None
+        unusable = degenerate_range(args.git_range)
+        if unusable:
+            # D-247: refuse instead of reporting success on a run that compared
+            # nothing.  Bounded on purpose -- it only refuses when there IS
+            # stateful input it could not grade, and it names that input.
+            census = tracked_stateful_files(args.root)
+            if census:
+                return refuse(unusable, records, census)
+            # Genuinely nothing stateful in the tree: the registry-only check is
+            # the whole contract and passing it is a real result.
+        changed = added_stateful_paths(args.git_range, args.root) if not unusable else None
         errors = validate(records, changed)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"state-authority: {exc}", file=sys.stderr)
@@ -146,8 +218,57 @@ def main() -> int:
         print("state-authority check failed:", file=sys.stderr)
         print("\n".join(f"- {error}" for error in errors), file=sys.stderr)
         return 1
-    print(f"state-authority: {len(records)} record(s) validated")
+    if changed is None:
+        print(f"state-authority: {len(records)} record(s) validated; no stateful construct exists in the tree")
+    else:
+        if not declared_paths(records):
+            print(
+                "state-authority: WARNING -- the registry declares 0 paths. This range added no "
+                "stateful line, so there was nothing to grade against it, but no state authority "
+                "has ever been declared.",
+                file=sys.stderr,
+            )
+        print(
+            f"state-authority: {len(records)} record(s) validated; graded {args.git_range} "
+            f"({len(changed)} changed file(s) with added stateful lines)"
+        )
     return 0
+
+
+def refuse(unusable: str, records: list[dict[str, Any]], census: set[str]) -> int:
+    """Fail closed on an ungradable run, naming exactly what went ungraded."""
+    declared = declared_paths(records)
+    ungraded = sorted(census - declared)
+    print("state-authority: REFUSING -- this run could not grade anything.", file=sys.stderr)
+    print(f"- {unusable}", file=sys.stderr)
+    if not declared:
+        print(
+            f"- the registry declares 0 paths across {len(records)} record(s): no state authority "
+            "has ever been declared, so there is nothing for a change to be graded against",
+            file=sys.stderr,
+        )
+    print(
+        f"- {len(census)} tracked file(s) contain a stateful construct "
+        f"(storage write, worker creation, spawn, or SQL mutation); "
+        f"{len(ungraded)} of them are not covered by any registry path. None of them were graded.",
+        file=sys.stderr,
+    )
+    for path in ungraded[:REFUSAL_SAMPLE]:
+        print(f"    ungraded: {path}", file=sys.stderr)
+    if len(ungraded) > REFUSAL_SAMPLE:
+        print(f"    ... and {len(ungraded) - REFUSAL_SAMPLE} more (listing capped at {REFUSAL_SAMPLE})", file=sys.stderr)
+    print(
+        "This refusal clears as soon as the gate can grade again. Two independent remedies, "
+        "either of which is enough:\n"
+        "  1. Give it a real range: --git-range <base>...<head> with a resolvable base "
+        "(on a first push use the merge-base with the default branch, not github.event.before).\n"
+        "  2. Declare the state: add records to docs/engineering/state-authority-registry.md so "
+        "the stateful paths above are covered.\n"
+        "Do NOT satisfy this by narrowing STATEFUL_CHANGE or by adding a skip: that restores the "
+        "vacuous pass this refusal exists to remove.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 if __name__ == "__main__":

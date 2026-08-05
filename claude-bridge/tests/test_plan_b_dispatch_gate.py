@@ -4,10 +4,15 @@ The dispatcher is intentionally outside this product worktree; this test loads
 that authority directly rather than creating a disconnected copy.
 """
 import importlib.util
+import os
 import pathlib
 import unittest
 
-SOURCE = pathlib.Path("/home/liamw/osl-plan/dispatch1.py")
+# The plan repo is deliberately outside this product worktree, so its
+# location is an operator fact. OSL_PLAN names it; the default is the
+# conventional sibling checkout.
+PLAN_ROOT = pathlib.Path(os.environ.get("OSL_PLAN", pathlib.Path.home() / "osl-plan"))
+SOURCE = PLAN_ROOT / "dispatch1.py"
 SPEC = importlib.util.spec_from_file_location("dispatch1", SOURCE)
 dispatch = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(dispatch)

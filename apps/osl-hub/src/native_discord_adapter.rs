@@ -35,10 +35,10 @@ use crate::discord_carrier_geometry::{
     self, CarrierGeometryInput, CarrierPlan, FixedPaddingSize, LineMetrics, PrivacyPaddingMode,
     VisibleStructure,
 };
-#[cfg(any(target_os = "windows", test))]
-use crate::native_a11y::MsaaBridgeCallClass;
 #[cfg(test)]
 use crate::native_a11y::msaa_bridge_call_class;
+#[cfg(any(target_os = "windows", test))]
+use crate::native_a11y::MsaaBridgeCallClass;
 
 /// `Scan -> Preview -> Confirm -> Execute -> Verify -> Receipt` for deleting the
 /// operator's OWN messages from Discord through Discord's own UI.
@@ -48,6 +48,72 @@ use crate::native_a11y::msaa_bridge_call_class;
 /// tests belong to the same `native_discord_adapter` suite. It is NOT part of
 /// Burn -- see `docs/design/burn-contract.md:14`, which stays true.
 pub mod guided_deletion;
+
+/// How long Discord's accessibility tree is given to populate after the wake.
+///
+/// The same budget the recovery ladder already spends
+/// (`A11Y_ENABLE_RECOVERY_BUDGET`), stated in the plan so the substrate
+/// describes Discord's real timing rather than a plausible one.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) const DISCORD_UIA2_POLL_BUDGET_MS: u64 = 1_000;
+
+/// The deadline every cross-process call the substrate issues on Discord's
+/// behalf must answer inside. Cross-process accessibility has frozen both OSL
+/// and Discord on this machine; an unbounded call is a hang waiting to happen.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) const DISCORD_UIA2_CALL_TIMEOUT_MS: u64 = 1_500;
+
+/// Discord's measured UIA2 window plan.
+///
+/// Discord reaches its tree through Chromium's custom MSAA client object at the
+/// **outer** host window, and bridges that object into UI Automation. It does
+/// not bind the `Chrome_RenderWidgetHostHWND` child, which is the route A-00
+/// measured from PowerShell. Both reach a writable composer; only one of them
+/// is the mechanism that ships, and `Uia2TreeRoute::MsaaBridge` is what names
+/// the difference.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn discord_uia2_window_plan(
+    app_process_name: &'static str,
+) -> crate::native_a11y::Uia2WindowPlan {
+    crate::native_a11y::Uia2WindowPlan::chromium_outer_msaa_root(
+        "Discord",
+        app_process_name,
+        crate::native_a11y::ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
+        DISCORD_UIA2_POLL_BUDGET_MS,
+        DISCORD_UIA2_CALL_TIMEOUT_MS,
+    )
+}
+
+/// Which window Discord's accessibility wake is issued at.
+///
+/// This is Discord's whole consumption of the shared substrate, and it is
+/// deliberately only the shape decision. Discord keeps its own poll ladder and
+/// its own write path: the ladder is driven by composer candidates rather than
+/// by an element count, and the write path is Slate-aware, which
+/// `ValuePattern::SetValue` is not. Adopting either would change the timing or
+/// the mechanism of the one provider with a proven end-to-end path, and that
+/// is a regression, not a refactor.
+///
+/// When the substrate refuses, the caller sees exactly what it sees today when
+/// Chromium declines the handshake -- no accessibility tree -- and the existing
+/// recovery ladder handles it. No new failure shape is introduced.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn discord_uia2_wake_target_for_process(
+    app_process_name: &'static str,
+    host: &dyn crate::native_a11y::Uia2Syscalls,
+) -> Result<crate::native_a11y::Uia2ResolvedWindow, crate::native_a11y::Uia2AcquireError> {
+    crate::native_a11y::resolve_uia2_wake_target(discord_uia2_window_plan(app_process_name), host)
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn discord_uia2_wake_target(
+    host: &dyn crate::native_a11y::Uia2Syscalls,
+) -> Result<crate::native_a11y::Uia2ResolvedWindow, crate::native_a11y::Uia2AcquireError> {
+    discord_uia2_wake_target_for_process(
+        crate::native_window_host::dedicated_discord_process_name(),
+        host,
+    )
+}
 
 #[cfg(any(target_os = "windows", test, feature = "discord-qa-shell"))]
 const MAX_CARRIERS: usize = 32;
@@ -4912,6 +4978,11 @@ fn stable_hash(domain: &str, value: &str) -> String {
         .collect()
 }
 
+/// The deletion-plan scope hash used by Discord guided-deletion scans.
+pub fn guided_deletion_scope_binding_hash(scope_binding: &str) -> String {
+    stable_hash("osl-discord-scope", scope_binding)
+}
+
 /// Characters a Chromium contenteditable puts in its own accessible text without
 /// them being text the operator or OSL ever typed.
 ///
@@ -7330,21 +7401,65 @@ pub(crate) fn request_native_visible_row_qa_probe(
 /// Longest operator name prefix the ownership test will consider.
 const MAX_OPERATOR_NAME_BYTES: usize = 64;
 
-/// Whether one transcript row was written by the operator.
+/// Whether Discord's own provider proved the operator's account posted this row.
 ///
-/// Discord's rows begin with their author, so the row's own concatenated
-/// accessible line starts with the author's visible name. `operator_names` are
-/// the visible account labels OSL already confirmed with the operator at
-/// calibration; native code supplies them, never the renderer.
+/// THIS is the ownership authority for guided deletion, and it is the only one.
+/// `VisibleMessageRow::attribution` is emitted exclusively by the bounded native
+/// row read (`native_row_attribution_from_provider`), which classifies the
+/// provider-owned poster snowflake against the independently read self account
+/// and the conversation header's expected peer. No renderer field can construct
+/// it, and no participant can choose it: a Discord message id and its author id
+/// are Discord's, not the author's.
 ///
-/// A name must be followed by the end of the line or a non-alphanumeric
-/// boundary, so `Liam` never matches `Liamwerner`. Nothing is logged, hashed or
-/// kept: the answer is one boolean.
+/// `None` is a REFUSAL, never a fall-through. The producer clears attribution
+/// for a whole batch (`finish_native_visible_rows`) the moment its proof does
+/// not hold, so `None` means "this read could not prove who posted anything" --
+/// which is the state in which a deletion feature must do nothing at all.
 ///
-/// This is only the FIRST of two ownership gates. The second is Discord's own:
-/// its row menu offers no delete item for a message the account may not delete,
-/// and a row whose menu does not offer one becomes `Unsupported` rather than
-/// being attempted. Neither gate is sufficient alone; both are required.
+/// Contrast `row_is_authored_by_operator`, which reads a rendered display name.
+/// That input is chosen by whoever holds the account. It may narrow this answer;
+/// it may never stand in for it.
+pub fn deletion_row_is_provider_attributed_to_operator(row: &VisibleMessageRow) -> bool {
+    matches!(
+        row.attribution.as_ref().map(|evidence| evidence.poster),
+        Some(NativeDiscordRowPoster::SelfAccount)
+    )
+}
+
+/// Whether one transcript row's RENDERED LINE begins with a calibrated operator
+/// name.
+///
+/// # This is not an ownership proof
+///
+/// A Discord display name is chosen by the account that holds it, per guild and
+/// at will, so this function's entire input is attacker-controlled. A peer who
+/// renames themselves to the operator satisfies it exactly. It was once the sole
+/// ownership gate for guided deletion and that was the defect: three layers of
+/// checking all read one bool derived from this one spoofable string.
+///
+/// It survives only as a strictly SUBORDINATE narrowing conjunct, applied after
+/// `deletion_row_is_provider_attributed_to_operator` has already said yes.
+/// Being a conjunct on the candidacy side, an attacker-chosen name can only ever
+/// remove a row from the candidate set, never add one -- so it costs nothing in
+/// the direction that matters. What it buys is a non-adversarial cross-check:
+/// if the producer's self-account binding were ever wrong (a second signed-in
+/// account, a misread self-identity node), the rendered author would disagree
+/// and the row would be refused. Its cost is the opposite error -- an operator
+/// whose per-guild nickname is not in `operator_names` loses their own rows from
+/// the candidate list -- which fails closed, and is the correct direction for a
+/// permanent-deletion feature.
+///
+/// `operator_names` are the visible account labels OSL confirmed with the
+/// operator at calibration; native code supplies them, never the renderer. A
+/// name must be followed by the end of the line or a non-alphanumeric boundary,
+/// so `Liam` never matches `Liamwerner`. Nothing is logged, hashed or kept.
+///
+/// Downstream there is still Discord's own third gate: its row menu offers no
+/// delete item for a message the account may not delete, and a row whose menu
+/// does not offer one becomes `Unsupported` rather than being attempted. That
+/// gate does NOT hold for an operator with Manage Messages, who is offered
+/// Delete on other people's messages, which is why it was never sufficient
+/// either.
 pub fn row_is_authored_by_operator(line: &str, operator_names: &[String]) -> bool {
     let line = line.trim_start();
     operator_names.iter().any(|name| {
@@ -7409,6 +7524,16 @@ fn deletion_walk_completeness(
 }
 
 /// Build a scan from one bounded read. Owned rows only become candidates.
+///
+/// "Owned" means Discord's own provider proved the operator's account posted the
+/// row -- `deletion_row_is_provider_attributed_to_operator`. A row with no
+/// attribution is REFUSED, never name-matched as a fallback: the producer clears
+/// a whole batch's attribution when its proof does not hold, so an unattributed
+/// read yields a scan with no candidates and the workflow stops there.
+///
+/// The rendered-line name test is applied afterwards as a subordinate narrowing
+/// conjunct only. See `row_is_authored_by_operator` for why it is kept and why
+/// it can never be sufficient.
 pub fn deletion_scan_from_rows(
     rows: &[VisibleMessageRow],
     scope_binding: &str,
@@ -7430,6 +7555,16 @@ pub fn deletion_scan_from_rows(
         seen = seen.saturating_add(1);
         let shape_ordinal = heights.iter().filter(|other| **other == height).count();
         heights.push(height);
+        // THE ownership gate. Discord's own provider identity for the message,
+        // which no participant and no renderer can choose. `None` -- the reader
+        // could not prove who posted this row -- falls through to `continue`,
+        // which is a refusal and deliberately NOT a fall-back to the name test.
+        if !deletion_row_is_provider_attributed_to_operator(row) {
+            continue;
+        }
+        // Subordinate narrowing conjunct, never sufficient on its own. It runs
+        // only on rows the provider already proved are the operator's, so an
+        // attacker-chosen display name can only ever subtract a candidate here.
         if !row_is_authored_by_operator(&row.line, operator_names) {
             continue;
         }
@@ -7450,7 +7585,7 @@ pub fn deletion_scan_from_rows(
         });
     }
     guided_deletion::DeletionScan {
-        scope_binding_hash: stable_hash("osl-discord-scope", scope_binding),
+        scope_binding_hash: guided_deletion_scope_binding_hash(scope_binding),
         generation,
         rows_seen: seen,
         rows_unreadable: unreadable,
@@ -7494,6 +7629,46 @@ pub fn resolve_planned_deletion_row(
             (RowResolution::Resolved, Some(planned.scan_ordinal))
         }
         _ => (RowResolution::Ambiguous, None),
+    }
+}
+
+/// Re-prove a planned row against a fresh read AND re-prove that the row that
+/// read resolved to is still provably the operator's own.
+///
+/// This is the execution-time ownership gate, and it is deliberately separate
+/// from the one in `deletion_scan_from_rows`. `ScannedRow` is a plain `Copy`
+/// value: by the time the executor sees it, the claim "the operator wrote this"
+/// has travelled through a preview, a digest and a confirmation, and re-reading
+/// its own `authored_by_operator` bool would only re-read the scan's conclusion.
+/// This re-derives the answer from provider evidence that was read moments ago.
+///
+/// Ambiguity is judged FIRST, over every readable row, exactly as before. That
+/// ordering matters: a peer's row of the same shape and length must still make
+/// the resolution `Ambiguous`, so the attribution test may never be allowed to
+/// filter the transcript down to a single "clean" match and turn an ambiguous
+/// row into a confident one.
+///
+/// A resolved row that is no longer provably the operator's is `Untrusted`, not
+/// `Gone` and not `Unreadable`: it was read perfectly well: it simply cannot be
+/// shown to be theirs.
+pub fn resolve_owned_deletion_row(
+    rows: &[VisibleMessageRow],
+    planned: &guided_deletion::ScannedRow,
+) -> (guided_deletion::RowResolution, Option<usize>) {
+    let (resolution, index) = resolve_planned_deletion_row(rows, planned);
+    let Some(index) = index else {
+        return (resolution, None);
+    };
+    let resolved = rows
+        .iter()
+        .filter(|row| deletion_row_height(row).is_some())
+        .nth(index);
+    match resolved {
+        Some(row) if deletion_row_is_provider_attributed_to_operator(row) => {
+            (resolution, Some(index))
+        }
+        Some(_) => (guided_deletion::RowResolution::Untrusted, None),
+        None => (guided_deletion::RowResolution::Unreadable, None),
     }
 }
 
@@ -7641,10 +7816,12 @@ impl guided_deletion::DiscordDeletionSurface for HostDeletionSurface<'_> {
         let Ok(rows) = self.read() else {
             return guided_deletion::RowResolution::Untrusted;
         };
-        let (resolution, index) = resolve_planned_deletion_row(&rows, row);
+        // Ownership is re-proven here, against this fresh read's own provider
+        // evidence, not against the bool the plan carried in.
+        let (resolution, index) = resolve_owned_deletion_row(&rows, row);
         if let Some(index) = index {
             // The resolved row's own text is captured once, here, and used only
-            // to count. `resolve_planned_deletion_row` indexes the readable rows,
+            // to count. `resolve_owned_deletion_row` indexes the readable rows,
             // so the same filter has to be applied to get back to it.
             if let Some((resolved, height)) = rows
                 .iter()
@@ -7970,6 +8147,82 @@ pub(crate) fn snapshot_claimed_window(
     windows::snapshot(target, process_is_trusted)
 }
 
+/// The shipping carrier write primitive, exposed for the landing oracle's live
+/// calibration and for nothing else.
+///
+/// This is the exact function [`windows::place`] drives at `:18017`: real
+/// `SendInput` Unicode keystrokes through Slate's own input pipeline, which is
+/// why `ValuePattern.SetValue` is rejected at `:1557-1563`.
+///
+/// **It cannot commit.** There is no Enter in it. `send_enter` is a different
+/// function, guarded by its own foreground proof, and it is not reachable from
+/// here.
+///
+/// # This is RUN A's primitive (D-244)
+///
+/// The keystone is **two** runs, and this is the write the first one borrows:
+///
+/// * **Run A — the oracle placement probe.** Drives this function, never a
+///   commit verb. Nothing is posted. **Earns
+///   `apps/osl-hub/carry-receipts/discord.json`**, because
+///   `native_apps::tests::carry_receipt::verify_receipt` requires
+///   `enter_sent == false` and only a run that never committed can record that.
+/// * **Run B — [`windows::place`].** Ends in `send_enter`; both of its success
+///   returns report `enter_sent: true`. Posts. Produces the keystone's
+///   screenshots and the peer decode. **Earns no receipt and must not claim
+///   one.**
+///
+/// The split is not advice. `native_apps::tests` refuses a receipt authored by
+/// `LiveRun::ShippingSend` and refuses any receipt-authoring file that can
+/// reach a commit verb, and
+/// `shipping_place_commits_the_message_so_it_is_run_b_and_earns_no_receipt`
+/// re-derives the whole thing from this module's source on every run.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_type_text(text: &str) -> bool {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    windows::send_unicode_chunk(&units)
+}
+
+/// Discord's soft line break: Shift is pressed around a single Enter, which is
+/// how `carrier_input_steps` (`:1579`) maps every `\n`. **Never a bare Enter** —
+/// a bare Enter mid-carrier would send early.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_type_soft_break() -> bool {
+    windows::send_shift_enter()
+}
+
+/// How many delete encodings the shipping reclaim knows: the grey extended
+/// `Delete` first, then `Backspace`.
+#[cfg(target_os = "windows")]
+pub(crate) const SHIPPING_RECLAIM_KEY_COUNT: usize = 2;
+
+/// One round of the shipping reclaim: Ctrl+A, then the `index`-th key of
+/// `CARRIER_RECLAIM_DELETE_KEYS` (`:16761`).
+///
+/// Indexed rather than looped, because the answer here is only *"SendInput
+/// accepted the events"* — never *"the composer is empty"*. The shipping path
+/// re-reads the composer between rounds for exactly that reason, and so must
+/// any caller: a reclaim that reports success on a queued keystroke is how a
+/// stage inherits the previous stage's text.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_select_all_then_delete(index: usize) -> bool {
+    windows::select_all_then_delete_variant(index)
+}
+
+/// Ctrl+A alone, with no delete after it. Exposed so the landing oracle can
+/// tell a select-all that did not happen from a delete that did not happen --
+/// `send_select_all_then_delete` bundles them and answers one boolean for both.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_select_all() -> bool {
+    windows::select_all_only()
+}
+
+/// One delete keystroke by index, with no select-all before it.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_delete_key(index: usize) -> bool {
+    windows::delete_key_only(index)
+}
+
 #[cfg(target_os = "windows")]
 mod windows {
     use super::*;
@@ -7984,14 +8237,13 @@ mod windows {
         SafeArrayUnaccessData,
     };
     use ::windows::Win32::UI::Accessibility::{
-        AccessibleObjectFromPoint, CUIAutomation, IAccessible, IUIAutomation,
-        IUIAutomationElement, IUIAutomationInvokePattern, IUIAutomationTextPattern,
-        IUIAutomationTextPattern2, IUIAutomationTextRange, IUIAutomationTreeWalker,
-        IUIAutomationValuePattern, UIA_ButtonControlTypeId, UIA_DocumentControlTypeId,
-        UIA_EditControlTypeId, UIA_FontNameAttributeId, UIA_FontSizeAttributeId,
-        UIA_FontWeightAttributeId, UIA_ForegroundColorAttributeId, UIA_InvokePatternId,
-        UIA_TextControlTypeId, UIA_TextPattern2Id, UIA_TextPatternId, UIA_ValuePatternId,
-        SELFLAG_TAKEFOCUS,
+        AccessibleObjectFromPoint, CUIAutomation, IAccessible, IUIAutomation, IUIAutomationElement,
+        IUIAutomationInvokePattern, IUIAutomationTextPattern, IUIAutomationTextPattern2,
+        IUIAutomationTextRange, IUIAutomationTreeWalker, IUIAutomationValuePattern,
+        UIA_ButtonControlTypeId, UIA_DocumentControlTypeId, UIA_EditControlTypeId,
+        UIA_FontNameAttributeId, UIA_FontSizeAttributeId, UIA_FontWeightAttributeId,
+        UIA_ForegroundColorAttributeId, UIA_InvokePatternId, UIA_TextControlTypeId,
+        UIA_TextPattern2Id, UIA_TextPatternId, UIA_ValuePatternId, SELFLAG_TAKEFOCUS,
     };
     // Only the MSAA transcript walk needs to enumerate children or to re-prove
     // which window an `IAccessible` belongs to, and that walk is QA-shell only.
@@ -9510,7 +9762,7 @@ mod windows {
         // Taking the client object is also the documented way to switch Chromium's
         // tree on, and holding it for the whole descent keeps the reference-counted
         // tree from being torn down underneath the probes.
-        let client = msaa_client_from_window(target.window)?;
+        let client = msaa_client_from_target(target)?;
         let mut probes = 0usize;
         for point in carrier_row_probe_points(root_bounds, composer) {
             if probes >= MSAA_ROW_LIST_POINT_PROBES || Instant::now() >= deadline {
@@ -9776,7 +10028,7 @@ mod windows {
         process_is_trusted: &dyn Fn(u32) -> bool,
         deadline: Instant,
     ) -> Option<NativeDiscordSelfProviderIdentity> {
-        let root = msaa_client_from_window(target.window)?;
+        let root = msaa_client_from_target(target)?;
         if !msaa_object_belongs_to_target(&root, target, process_is_trusted) {
             return None;
         }
@@ -9932,7 +10184,7 @@ mod windows {
         self_identity: &NativeDiscordSelfProviderIdentity,
         deadline: Instant,
     ) -> Option<NativeDiscordPeerProviderIdentity> {
-        let root = msaa_client_from_window(target.window)?;
+        let root = msaa_client_from_target(target)?;
         if !msaa_object_belongs_to_target(&root, target, process_is_trusted) {
             return None;
         }
@@ -11727,8 +11979,38 @@ mod windows {
     /// reference. The shared helper sends Chromium's required alert before it
     /// issues `WM_GETOBJECT`; holding the returned reference keeps the lazily
     /// built tree alive for the rest of this bounded operation.
-    fn msaa_client_from_window(window: isize) -> Option<IAccessible> {
-        crate::native_a11y::wake_electron_accessibility(window)
+    fn msaa_client_from_target(
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+    ) -> Option<IAccessible> {
+        // The shared substrate decides WHICH window the wake is issued at. For
+        // Discord's plan that resolves to the borrowed outer window itself, so
+        // the handshake below is byte-for-byte the one that shipped -- but the
+        // decision now lives in one place for all four providers instead of
+        // being implied by the argument this function was handed.
+        //
+        // The enumeration is rooted at the borrowed window rather than at the
+        // desktop: OSL reparents Discord's window into its own hierarchy, so a
+        // top-level walk would not find it at all.
+        let target = discord_uia2_wake_target_for_process(
+            target.app_process_name,
+            &crate::native_a11y::win32::Uia2Win32Host::rooted_at(target.window),
+        )
+        .ok()?;
+        // Issued on this thread, in this thread's apartment, exactly as before:
+        // the returned reference is only usable where it was obtained.
+        crate::native_a11y::wake_electron_accessibility(target.bound_hwnd)
+    }
+
+    fn msaa_client_from_window_for_process(
+        window: isize,
+        app_process_name: &'static str,
+    ) -> Option<IAccessible> {
+        discord_uia2_wake_target_for_process(
+            app_process_name,
+            &crate::native_a11y::win32::Uia2Win32Host::rooted_at(window),
+        )
+        .ok()
+        .and_then(|target| crate::native_a11y::wake_electron_accessibility(target.bound_hwnd))
     }
 
     thread_local! {
@@ -12011,9 +12293,7 @@ mod windows {
             // busy, ask again". It is an integer, never text, so classifying it
             // cannot leak anything.
             Err(class) => {
-                return MsaaBridgeElement::CallFailed(MsaaBridgeRefusal::Call(
-                    class,
-                ));
+                return MsaaBridgeElement::CallFailed(MsaaBridgeRefusal::Call(class));
             }
         };
         let Ok(process_id) = (unsafe { element.CurrentProcessId() }) else {
@@ -12521,6 +12801,7 @@ mod windows {
         profile: &ComposerDiscoveryProfile,
         root_bounds: AccessibilityBounds,
         target_window: isize,
+        app_process_name: &'static str,
         process_is_trusted: &dyn Fn(u32) -> bool,
         started: Instant,
         timeout: Duration,
@@ -12536,7 +12817,8 @@ mod windows {
         // Taking the client object is also the documented way to switch
         // Chromium's tree on, and holding it for the whole scan keeps the
         // reference-counted tree from being torn down underneath the probes.
-        let Some(client) = msaa_client_from_window(target_window) else {
+        let Some(client) = msaa_client_from_window_for_process(target_window, app_process_name)
+        else {
             return Ok(MsaaProbeScan {
                 candidates,
                 candidate_found,
@@ -12732,6 +13014,7 @@ mod windows {
         root_bounds: AccessibilityBounds,
         composer_bounds: AccessibilityBounds,
         target_window: isize,
+        app_process_name: &'static str,
         conversation: &str,
         process_is_trusted: &dyn Fn(u32) -> bool,
         started: Instant,
@@ -12744,7 +13027,8 @@ mod windows {
         // The borrowed window's own client object. Everything below is reached from
         // here, which is what makes the walk independent of whatever OSL has painted
         // over Discord.
-        let Some(client) = msaa_client_from_window(target_window) else {
+        let Some(client) = msaa_client_from_window_for_process(target_window, app_process_name)
+        else {
             return Err("Discord did not expose an accessible client object".to_owned());
         };
         let width = root_bounds.right - root_bounds.left;
@@ -13252,6 +13536,7 @@ mod windows {
                         profile,
                         root_bounds,
                         target.window,
+                        target.app_process_name,
                         process_is_trusted,
                         started,
                         msaa_budget,
@@ -13403,7 +13688,15 @@ mod windows {
                             focused.as_ref(),
                             &probe_points,
                             started,
-                            timeout,
+                            // The round's deadline, which every accessibility call
+                            // in the round is bounded by. It is still exactly the
+                            // caller's `timeout` here -- the only assignment to it
+                            // is the settle refund further down, which cannot have
+                            // run yet -- and reading it here rather than `timeout`
+                            // is what makes "`effective_timeout` still governs
+                            // every call above" true of this probe as well as of
+                            // the recovery re-probes.
+                            effective_timeout,
                         )?;
                         self_occluded_points = !scan.self_occluding_windows.is_empty();
                         if !scan.candidates.is_empty() {
@@ -13481,7 +13774,7 @@ mod windows {
                             last_a11y_enable_poke_age(target.window),
                         ) {
                             record_a11y_enable_poke(target.window);
-                            match msaa_client_from_window(target.window) {
+                            match msaa_client_from_target(target) {
                                 Some(_enable_reference) => {
                                     let plan = a11y_enable_settle_plan(A11Y_ENABLE_RECOVERY_BUDGET);
                                     // No affordable settle step still leaves the
@@ -13539,6 +13832,7 @@ mod windows {
                                             profile,
                                             root_bounds,
                                             target.window,
+                                            target.app_process_name,
                                             process_is_trusted,
                                             started,
                                             effective_timeout,
@@ -13690,6 +13984,7 @@ mod windows {
                     root_bounds,
                     bounds,
                     target.window,
+                    target.app_process_name,
                     conversation,
                     process_is_trusted,
                     // The SAME clock and the SAME budget as the header walk, so the
@@ -13779,6 +14074,7 @@ mod windows {
     fn composer_text_with_a11y_recovery(
         element: &IUIAutomationElement,
         window: isize,
+        app_process_name: &'static str,
         urgency: A11yEnableUrgency,
     ) -> DraftRead {
         let (first, first_route) = composer_text_with_route(element);
@@ -13799,7 +14095,8 @@ mod windows {
         record_a11y_enable_poke(window);
         // Discord would not even hand out a client accessible object, which is
         // itself the answer.
-        let Some(_enable_reference) = msaa_client_from_window(window) else {
+        let Some(_enable_reference) = msaa_client_from_window_for_process(window, app_process_name)
+        else {
             return DraftRead {
                 text: None,
                 route: ComposerTextRoute::Unreadable,
@@ -13854,8 +14151,16 @@ mod windows {
     /// still fully preservable. Demanding writability here is what made an
     /// apparently empty composer refuse to open protection: reading is a read, and
     /// mutation no longer goes through `ValuePattern` anywhere.
-    fn exact_native_draft(element: &IUIAutomationElement, window: isize) -> Result<String, String> {
-        let read = composer_text_with_a11y_recovery(element, window, A11yEnableUrgency::Placement);
+    fn exact_native_draft(
+        element: &IUIAutomationElement,
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+    ) -> Result<String, String> {
+        let read = composer_text_with_a11y_recovery(
+            element,
+            target.window,
+            target.app_process_name,
+            A11yEnableUrgency::Placement,
+        );
         if let Some(stage) = draft_read_stage(read.outcome) {
             qa_place_stage(stage);
         }
@@ -14087,7 +14392,7 @@ mod windows {
             scope_binding,
             require_header,
         )?;
-        let draft = exact_native_draft(&before.element, target.window)?;
+        let draft = exact_native_draft(&before.element, target)?;
         // Whose text is in the composer. OSL's own stranded carrier from a failed
         // send is not operator data and must never be preserved as though it were:
         // saving it made the next attempt restore OSL's flagtext into the operator's
@@ -14117,6 +14422,7 @@ mod windows {
                 &before,
                 &before.binding,
                 &draft,
+                None,
                 &mut protected_foreground,
             );
             if let Some(stage) = carrier_reclaim_stage(reclaim) {
@@ -14150,7 +14456,7 @@ mod windows {
                 require_header,
             )?;
             if !binding_identity_matches(&before.binding, &current.binding)
-                || exact_native_draft(&current.element, target.window)? != draft
+                || exact_native_draft(&current.element, target)? != draft
             {
                 return Err("The Discord composer changed before protection opened".to_owned());
             }
@@ -14317,7 +14623,7 @@ mod windows {
             return Err(DRAFT_SAVED_FOR_ANOTHER_CONVERSATION.to_owned());
         }
         match existing_draft_restore(
-            &exact_native_draft(&before.element, target.window)?,
+            &exact_native_draft(&before.element, target)?,
             saved.plaintext.as_str(),
         ) {
             ExistingDraftRestore::AlreadyRestored => {
@@ -14373,7 +14679,7 @@ mod windows {
         // proof, so it stays strict -- but comparing the stale saved binding
         // made it fail for reasons that had nothing to do with the keystrokes.
         if !post_mutation_binding_matches(&before.binding, &restored.binding)
-            || exact_native_draft(&restored.element, target.window)? != saved.plaintext.as_str()
+            || exact_native_draft(&restored.element, target)? != saved.plaintext.as_str()
         {
             return Err(
                 "The saved Discord draft could not be verified after restoration".to_owned(),
@@ -14423,7 +14729,7 @@ mod windows {
             }
         }
         let before = before.ok_or(last_error)?;
-        let original = exact_native_draft(&before.element, target.window)?;
+        let original = exact_native_draft(&before.element, target)?;
         let inserted = original.is_empty();
         let expected = if inserted {
             QA_DRAFT.to_owned()
@@ -14453,7 +14759,7 @@ mod windows {
             }
             let seeded = locate(target, process_is_trusted, &profile, scope_binding, false)?;
             if !post_mutation_binding_matches(&before.binding, &seeded.binding)
-                || exact_native_draft(&seeded.element, target.window)? != expected
+                || exact_native_draft(&seeded.element, target)? != expected
             {
                 let _ = clear_saved_native_draft(
                     target,
@@ -14500,7 +14806,7 @@ mod windows {
         restore_suspended_draft(state, target, process_is_trusted, scope_binding)?;
         let restored = locate(target, process_is_trusted, &profile, scope_binding, false)?;
         if !post_mutation_binding_matches(&before.binding, &restored.binding)
-            || exact_native_draft(&restored.element, target.window)? != expected
+            || exact_native_draft(&restored.element, target)? != expected
         {
             return Err("The native Discord draft probe did not restore exactly".to_owned());
         }
@@ -15054,11 +15360,14 @@ mod windows {
     ///
     /// Neither route is input and neither authorises anything: the caller still
     /// has to read the focus back before a keystroke may go out.
-    fn take_composer_keyboard_focus(element: &IUIAutomationElement) -> bool {
+    fn take_composer_keyboard_focus(
+        element: &IUIAutomationElement,
+        app_process_name: &'static str,
+    ) -> bool {
         if unsafe { element.SetFocus() }.is_ok() {
             return true;
         }
-        let Some(accessible) = composer_msaa_object(element) else {
+        let Some(accessible) = composer_msaa_object(element, app_process_name) else {
             return false;
         };
         let took =
@@ -15083,10 +15392,11 @@ mod windows {
     /// window: the protected composer stays exactly where it is, visible, for the
     /// whole placement.
     fn request_target_input_focus(
-        target_window: isize,
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
         element: &IUIAutomationElement,
         protected_foreground: &mut ProtectedForegroundRestore,
     ) -> InputFocusRequest {
+        let target_window = target.window;
         // Raising Discord stays in scope only while OSL already owns the
         // foreground, or Discord already does. A third application owning it is
         // the one case where nothing may be raised at all.
@@ -15101,9 +15411,9 @@ mod windows {
         // composer still on screen, which is the exact state in which the
         // operator's next keystrokes leave in the clear.
         protected_foreground.arm();
-        let target = target_window as windows_sys::Win32::Foundation::HWND;
+        let target_hwnd = target_window as windows_sys::Win32::Foundation::HWND;
         if !foreground_is_exact_discord(target_window) {
-            unsafe { SetForegroundWindow(target) };
+            unsafe { SetForegroundWindow(target_hwnd) };
             if !foreground_is_exact_discord(target_window) {
                 // The unaided call was refused, or has not landed yet. Ask once
                 // more with the input queue shared, which is the documented way
@@ -15112,12 +15422,12 @@ mod windows {
                 // caller's settle.
                 {
                     let _attachment = ForegroundQueueAttachment::acquire();
-                    unsafe { SetForegroundWindow(target) };
+                    unsafe { SetForegroundWindow(target_hwnd) };
                 }
                 qa_place_stage("place_foreground_attached_request");
             }
         }
-        if !take_composer_keyboard_focus(element) {
+        if !take_composer_keyboard_focus(element, target.app_process_name) {
             return InputFocusRequest::FocusRefused;
         }
         InputFocusRequest::Requested
@@ -15253,7 +15563,7 @@ mod windows {
         expected_composer_text: &str,
     ) -> bool {
         carrier_write_target_is_current(target, element, expected, process_is_trusted)
-            && composer_holds_exact_text(element, expected_composer_text)
+            && composer_holds_exact_text(element, expected_composer_text, target.app_process_name)
     }
 
     /// Fixed label naming which clause refused an injection gate.
@@ -15312,7 +15622,7 @@ mod windows {
     /// prefix -- the measured `send_carrier_write_plateaued`. Any batch being
     /// rejected still fails the whole write, exactly as before, and the text still
     /// arrives as real keystrokes through Slate's own input pipeline.
-    fn send_unicode_chunk(units: &[u16]) -> bool {
+    pub(super) fn send_unicode_chunk(units: &[u16]) -> bool {
         units.chunks(MAX_UNICODE_UNITS_PER_SEND).all(|batch| {
             let mut inputs = Vec::with_capacity(batch.len() * 2);
             for unit in batch {
@@ -15347,7 +15657,7 @@ mod windows {
     /// single physical Enter, and the release is always attempted even when the
     /// Enter itself is rejected, so a failed carrier can never leave Shift
     /// latched on the user's desktop.
-    fn send_shift_enter() -> bool {
+    pub(super) fn send_shift_enter() -> bool {
         let shift_down =
             send_inputs(&[keyboard_input(DISCORD_SHIFT_SCAN_CODE, KEYEVENTF_SCANCODE)]);
         let newline = shift_down
@@ -15424,8 +15734,13 @@ mod windows {
     /// refusal cannot be used to confirm placement. This predicate compares
     /// instead of returning: the observed string is bounded by OSL's own carrier
     /// length, is zeroized on drop, and only a boolean leaves the function.
-    fn composer_holds_exact_text(element: &IUIAutomationElement, expected: &str) -> bool {
-        composer_exact_text_probe(element, expected).is_some_and(|probe| probe.matches)
+    fn composer_holds_exact_text(
+        element: &IUIAutomationElement,
+        expected: &str,
+        app_process_name: &'static str,
+    ) -> bool {
+        composer_exact_text_probe(element, expected, app_process_name)
+            .is_some_and(|probe| probe.matches)
     }
 
     /// One read of the composer, reduced to the two facts a bounded wait needs:
@@ -15452,11 +15767,15 @@ mod windows {
         complete: bool,
     }
 
-    /// One `IUIAutomation` and tree walker per thread, so a read that has to walk
-    /// the composer's leaves does not pay a `CoCreateInstance` per attempt inside
-    /// a bounded polling loop. Apartment-bound, hence thread local, exactly like
-    /// `CACHED_COMPOSER`.
     thread_local! {
+        /// One `IUIAutomation` and tree walker per thread, so a read that has to
+        /// walk the composer's leaves does not pay a `CoCreateInstance` per
+        /// attempt inside a bounded polling loop. Apartment-bound, hence thread
+        /// local, exactly like `CACHED_COMPOSER`.
+        ///
+        /// D-252: this doc comment used to sit on the `thread_local!` invocation
+        /// itself, where rustc drops it (`unused_doc_comments`) -- the only
+        /// documentation this static had was silently not documentation.
         static TEXT_READ_WALKER: std::cell::RefCell<Option<IUIAutomationTreeWalker>> =
             const { std::cell::RefCell::new(None) };
     }
@@ -15650,7 +15969,10 @@ mod windows {
     /// The descent is capped by `MSAA_HIT_TEST_MAX_DEPTH` and the climb by
     /// `MSAA_MAX_ANCESTOR_DEPTH`, so the whole acquisition is a fixed handful of
     /// calls whether or not it succeeds.
-    fn composer_msaa_object(element: &IUIAutomationElement) -> Option<IAccessible> {
+    fn composer_msaa_object(
+        element: &IUIAutomationElement,
+        app_process_name: &'static str,
+    ) -> Option<IAccessible> {
         let id = runtime_id(element).ok()?;
         let name = unsafe { element.CurrentName() }.ok()?.to_string();
         if name.is_empty() {
@@ -15675,7 +15997,7 @@ mod windows {
         // Taking the client object is also the documented way to keep Chromium's
         // tree switched on, and holding it for the descent keeps the
         // reference-counted tree from being torn down underneath it.
-        let client = msaa_client_from_window(window)?;
+        let client = msaa_client_from_window_for_process(window, app_process_name)?;
         let point = POINT {
             x: bounds.left + (bounds.right - bounds.left) / 2,
             y: bounds.top + (bounds.bottom - bounds.top) / 2,
@@ -15785,13 +16107,17 @@ mod windows {
 
     /// The composer's complete text from Chromium's own MSAA tree, addressed by
     /// the UI Automation element the rest of this file works in.
-    fn composer_msaa_tree_text(element: &IUIAutomationElement) -> Option<Zeroizing<String>> {
-        msaa_composer_subtree_text(&composer_msaa_object(element)?)
+    fn composer_msaa_tree_text(
+        element: &IUIAutomationElement,
+        app_process_name: &'static str,
+    ) -> Option<Zeroizing<String>> {
+        msaa_composer_subtree_text(&composer_msaa_object(element, app_process_name)?)
     }
 
     fn composer_exact_text_probe(
         element: &IUIAutomationElement,
         expected: &str,
+        app_process_name: &'static str,
     ) -> Option<ComposerTextProbe> {
         if expected.is_empty() {
             // Emptiness keeps `composer_text`'s own proof, because that is the
@@ -15806,7 +16132,7 @@ mod windows {
             // `expected` is empty on this branch, so every answer trivially accounts
             // for its (single, empty) line and the route order is exactly what it
             // was: cheapest first, MSAA tree only if neither answered.
-            let complete = composer_complete_text(element, expected);
+            let complete = composer_complete_text(element, expected, app_process_name);
             let complete_is_empty = complete
                 .as_deref()
                 .map(|value| canonical_accessible_text(value).is_empty());
@@ -15854,7 +16180,7 @@ mod windows {
             .flatten()
             .any(|text| read_spans_expected_lines(text, expected));
         let msaa = (!uia_spans)
-            .then(|| composer_msaa_tree_text(element))
+            .then(|| composer_msaa_tree_text(element, app_process_name))
             .flatten();
         // Kept, and still able to prove a match on its own, because on a host that
         // does answer it fully it is by far the cheapest route. It just may no
@@ -15932,6 +16258,7 @@ mod windows {
     fn await_composer_write(
         element: &IUIAutomationElement,
         expected: &str,
+        app_process_name: &'static str,
         budget_ms: u64,
         deadline: Instant,
         still_current: &mut dyn FnMut() -> bool,
@@ -15952,7 +16279,7 @@ mod windows {
             if !still_current() {
                 return CarrierWriteOutcome::TargetChanged;
             }
-            let Some(probe) = composer_exact_text_probe(element, expected) else {
+            let Some(probe) = composer_exact_text_probe(element, expected, app_process_name) else {
                 reads_without_progress = reads_without_progress.saturating_add(1);
                 if ever_readable && carrier_write_stalled(reads_without_progress) {
                     break;
@@ -16130,7 +16457,8 @@ mod windows {
                 carrier_target_identity_holds(target, &held.element, expected, process_is_trusted);
             match carrier_observation_source(held_is_current) {
                 CarrierObservationSource::HeldElement => {
-                    match composer_exact_text_probe(&held.element, carrier) {
+                    match composer_exact_text_probe(&held.element, carrier, target.app_process_name)
+                    {
                         Some(probe) if probe.matches => {
                             qa_place_stage(carrier_observation_source_stage(
                                 CarrierObservationSource::HeldElement,
@@ -16141,7 +16469,7 @@ mod windows {
                             // too: a trail that only reports failures cannot tell
                             // "the fold was needed and worked" from "the fold was
                             // never exercised".
-                            qa_report_carrier_read(&held.element, carrier);
+                            qa_report_carrier_read(&held.element, carrier, target.app_process_name);
                             return Some(held.clone());
                         }
                         Some(probe) => {
@@ -16189,7 +16517,7 @@ mod windows {
                 target_change = Some(CarrierTargetChange::PostMutationBinding);
                 break;
             }
-            if composer_holds_exact_text(&observed.element, carrier) {
+            if composer_holds_exact_text(&observed.element, carrier, target.app_process_name) {
                 qa_carrier_write_stage(CarrierWriteOutcome::Complete, None);
                 return Some(observed);
             }
@@ -16208,7 +16536,7 @@ mod windows {
             ),
             target_change,
         );
-        qa_report_carrier_read(&held.element, carrier);
+        qa_report_carrier_read(&held.element, carrier, target.app_process_name);
         None
     }
 
@@ -16268,8 +16596,9 @@ mod windows {
     fn composer_complete_text(
         element: &IUIAutomationElement,
         expected: &str,
+        app_process_name: &'static str,
     ) -> Option<Zeroizing<String>> {
-        composer_complete_read(element, expected).map(|(text, _)| text)
+        composer_complete_read(element, expected, app_process_name).map(|(text, _)| text)
     }
 
     /// The same complete read, plus which route produced it.
@@ -16288,6 +16617,7 @@ mod windows {
     fn composer_complete_read(
         element: &IUIAutomationElement,
         expected: &str,
+        app_process_name: &'static str,
     ) -> Option<(Zeroizing<String>, CompleteReadRoute)> {
         let bounded_length = (MAX_COVER_BYTES + 8) as i32;
         let spans = |candidate: &Option<(Zeroizing<String>, CompleteReadRoute)>| {
@@ -16317,8 +16647,8 @@ mod windows {
             }
         }
         if !spans(&answer) {
-            let msaa =
-                composer_msaa_tree_text(element).map(|text| (text, CompleteReadRoute::MsaaTree));
+            let msaa = composer_msaa_tree_text(element, app_process_name)
+                .map(|text| (text, CompleteReadRoute::MsaaTree));
             if spans(&msaa) || answer.is_none() {
                 answer = msaa.or(answer);
             }
@@ -16356,7 +16686,11 @@ mod windows {
     }
 
     #[cfg(feature = "discord-qa-shell")]
-    fn qa_report_carrier_read(element: &IUIAutomationElement, carrier: &str) {
+    fn qa_report_carrier_read(
+        element: &IUIAutomationElement,
+        carrier: &str,
+        app_process_name: &'static str,
+    ) {
         // The complete route is what the labels describe, falling back to the raw
         // read only when no complete route answered -- and saying which, because
         // "the composer does not hold the carrier" and "OSL cannot see the whole
@@ -16390,7 +16724,7 @@ mod windows {
         // loop, and it holds no lock -- so it cannot reproduce the cross-process
         // accessibility deadlock this file is careful about.
         let msaa = (!uia_matched)
-            .then(|| composer_msaa_tree_text(element))
+            .then(|| composer_msaa_tree_text(element, app_process_name))
             .flatten();
         let value = (!uia_matched)
             .then(|| composer_value_pattern_text(element))
@@ -16454,7 +16788,12 @@ mod windows {
     }
 
     #[cfg(not(feature = "discord-qa-shell"))]
-    fn qa_report_carrier_read(_element: &IUIAutomationElement, _carrier: &str) {}
+    fn qa_report_carrier_read(
+        _element: &IUIAutomationElement,
+        _carrier: &str,
+        _app_process_name: &'static str,
+    ) {
+    }
 
     /// Type `text` into the composer that is already focused and proven, as the
     /// same real Unicode keystrokes every other write in this file uses.
@@ -16519,13 +16858,16 @@ mod windows {
             // inherits the completeness verdict rather than forming its own.
             // `composer_raw_text` alone would put it back on the single-leaf read
             // that made appending destructive.
-            let Some(probe) = composer_exact_text_probe(&held.element, expected_text) else {
+            let Some(probe) =
+                composer_exact_text_probe(&held.element, expected_text, target.app_process_name)
+            else {
                 break;
             };
             if probe.matches {
                 return true;
             }
-            let observed = composer_complete_text(&held.element, expected_text);
+            let observed =
+                composer_complete_text(&held.element, expected_text, target.app_process_name);
             // Said once per re-drive attempt rather than once per poll: whether the
             // read this decision rests on actually accounted for every hard line
             // OSL typed. A trail that only said `send_carrier_write_plateaued`
@@ -16548,7 +16890,11 @@ mod windows {
                 // Already complete, or nothing OSL may touch. Either way there is
                 // no re-drive to make.
                 CarrierRedrive::Nothing => {
-                    return composer_holds_exact_text(&held.element, expected_text)
+                    return composer_holds_exact_text(
+                        &held.element,
+                        expected_text,
+                        target.app_process_name,
+                    )
                 }
                 CarrierRedrive::AppendRemainder => {
                     let Some(remainder) = observed
@@ -16566,7 +16912,17 @@ mod windows {
                     // the caller still holds the authoritative string, and
                     // anything that is not derived from it never reaches here.
                     let cleared = CARRIER_RECLAIM_DELETE_KEYS.iter().any(|(scan, flags)| {
-                        send_select_all_then_delete(*scan, *flags) && composer_empty(&held.element)
+                        matches!(
+                            send_select_all_then_delete(
+                                *scan,
+                                *flags,
+                                target,
+                                &held.element,
+                                expected,
+                                None,
+                            ),
+                            SelectAllDeleteOutcome::Cleared
+                        )
                     });
                     cleared && type_composer_text_steps(expected_text)
                 }
@@ -16578,6 +16934,7 @@ mod windows {
             let outcome = await_composer_write(
                 &held.element,
                 expected_text,
+                target.app_process_name,
                 CARRIER_WRITE_BUDGET_MS,
                 deadline,
                 &mut || {
@@ -16604,6 +16961,87 @@ mod windows {
         false
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum SelectAllDeleteOutcome {
+        InputRejected,
+        AcceptedUnverified,
+        Cleared,
+    }
+
+    fn discord_landing_profile(
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+    ) -> crate::landing_oracle::LandingProfile {
+        crate::landing_oracle::LandingProfile {
+            process_name: target.app_process_name,
+            ..crate::landing_oracle::DISCORD
+        }
+    }
+
+    fn landing_bound_composer(
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+        element: &IUIAutomationElement,
+        expected: &ComposerBinding,
+    ) -> crate::landing_oracle::BoundComposer {
+        let pattern =
+            unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
+                .ok();
+        crate::landing_oracle::BoundComposer {
+            hwnd: target.window,
+            route: crate::native_a11y::Uia2TreeRoute::MsaaBridge,
+            process_id: target.process_id,
+            composer: crate::native_a11y::Uia2Editable {
+                runtime_id: expected.runtime_id.clone(),
+                name: unsafe { element.CurrentName() }
+                    .ok()
+                    .map(|value| value.to_string())
+                    .unwrap_or_default(),
+                value_pattern: pattern.is_some(),
+                enabled: unsafe { element.CurrentIsEnabled() }
+                    .map(|value| value.as_bool())
+                    .unwrap_or(false),
+                keyboard_focusable: unsafe { element.CurrentIsKeyboardFocusable() }
+                    .map(|value| value.as_bool())
+                    .unwrap_or(false),
+                read_only: pattern
+                    .and_then(|pattern| unsafe { pattern.CurrentIsReadOnly() }.ok())
+                    .map(|value| value.as_bool())
+                    .unwrap_or(true),
+            },
+        }
+    }
+
+    fn composer_empty_ink_baseline(
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+        held: &LocatedComposer,
+        expected: &ComposerBinding,
+    ) -> Option<crate::landing_oracle::LandingBaseline> {
+        use crate::landing_oracle::LandingJudgeSyscalls as _;
+
+        let profile = discord_landing_profile(target);
+        let bound = landing_bound_composer(target, &held.element, expected);
+        let judge = crate::landing_oracle::win32::LandingJudgeWin32;
+        judge
+            .composer_ink(
+                &bound,
+                crate::landing_oracle::JudgeDeadline::from_profile(&profile),
+            )
+            .ok()
+            .flatten()
+            .map(|empty_ink| crate::landing_oracle::LandingBaseline { empty_ink })
+    }
+
+    fn composer_clear_verified_by_oracle(
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+        element: &IUIAutomationElement,
+        expected: &ComposerBinding,
+        baseline: crate::landing_oracle::LandingBaseline,
+    ) -> bool {
+        let profile = discord_landing_profile(target);
+        let bound = landing_bound_composer(target, element, expected);
+        let judge = crate::landing_oracle::win32::LandingJudgeWin32;
+        crate::landing_oracle::judge_empty_composer(&judge, &profile, &bound, baseline).is_ok()
+    }
+
     /// Take back exactly what OSL typed, using the same real-input mechanism that
     /// typed it: select the whole composer, then delete the selection.
     ///
@@ -16611,7 +17049,7 @@ mod windows {
     /// delete itself is rejected, so a failed reclaim can never leave Control
     /// latched on the user's desktop -- the same discipline `send_shift_enter`
     /// uses for Shift.
-    fn send_select_all_then_delete(delete_scan: u16, delete_flags: u32) -> bool {
+    fn send_select_all_then_delete_inputs(delete_scan: u16, delete_flags: u32) -> bool {
         let control_down = send_inputs(&[keyboard_input(
             DISCORD_CONTROL_SCAN_CODE,
             KEYEVENTF_SCANCODE,
@@ -16632,6 +17070,71 @@ mod windows {
             keyboard_input(delete_scan, delete_flags),
             keyboard_input(delete_scan, delete_flags | KEYEVENTF_KEYUP),
         ])
+    }
+
+    /// Select all, delete, then prove the composer really cleared. `SendInput`
+    /// accepting the events is only [`SelectAllDeleteOutcome::AcceptedUnverified`].
+    fn send_select_all_then_delete(
+        delete_scan: u16,
+        delete_flags: u32,
+        target: crate::native_window_host::NativeDiscordAccessibilityTarget,
+        element: &IUIAutomationElement,
+        expected: &ComposerBinding,
+        baseline: Option<crate::landing_oracle::LandingBaseline>,
+    ) -> SelectAllDeleteOutcome {
+        if !send_select_all_then_delete_inputs(delete_scan, delete_flags) {
+            return SelectAllDeleteOutcome::InputRejected;
+        }
+        std::thread::sleep(Duration::from_millis(
+            crate::landing_oracle::DISCORD.settle_ms,
+        ));
+        let Some(baseline) = baseline else {
+            return SelectAllDeleteOutcome::AcceptedUnverified;
+        };
+        if composer_clear_verified_by_oracle(target, element, expected, baseline) {
+            SelectAllDeleteOutcome::Cleared
+        } else {
+            SelectAllDeleteOutcome::AcceptedUnverified
+        }
+    }
+
+    /// Ctrl+A alone: exactly the first half of `send_select_all_then_delete`,
+    /// including the guarantee that Control is released on every path.
+    pub(super) fn select_all_only() -> bool {
+        let control_down = send_inputs(&[keyboard_input(
+            DISCORD_CONTROL_SCAN_CODE,
+            KEYEVENTF_SCANCODE,
+        )]);
+        let select_all = control_down
+            && send_inputs(&[
+                keyboard_input(DISCORD_A_SCAN_CODE, KEYEVENTF_SCANCODE),
+                keyboard_input(DISCORD_A_SCAN_CODE, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP),
+            ]);
+        let control_up = send_inputs(&[keyboard_input(
+            DISCORD_CONTROL_SCAN_CODE,
+            KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP,
+        )]);
+        control_down && select_all && control_up
+    }
+
+    /// One delete keystroke alone: the second half of the same function.
+    pub(super) fn delete_key_only(index: usize) -> bool {
+        let Some((scan, flags)) = CARRIER_RECLAIM_DELETE_KEYS.get(index) else {
+            return false;
+        };
+        send_inputs(&[
+            keyboard_input(*scan, *flags),
+            keyboard_input(*scan, *flags | KEYEVENTF_KEYUP),
+        ])
+    }
+
+    /// One round of the shipping reclaim, by index. Exposed for the landing
+    /// oracle's live calibration; it contains no Enter and cannot commit.
+    pub(super) fn select_all_then_delete_variant(index: usize) -> bool {
+        let Some((scan, flags)) = CARRIER_RECLAIM_DELETE_KEYS.get(index) else {
+            return false;
+        };
+        send_select_all_then_delete_inputs(*scan, *flags)
     }
 
     /// The delete keys the reclaim tries, in order: the grey extended `Delete`
@@ -16894,10 +17397,14 @@ mod windows {
         } else {
             CARRIER_WRITE_BUDGET_MS
         };
-        let outcome =
-            await_composer_write(element, expected_text, budget_ms, deadline, &mut || {
-                reclaimed_element_is_readable(target, element, expected, process_is_trusted)
-            });
+        let outcome = await_composer_write(
+            element,
+            expected_text,
+            target.app_process_name,
+            budget_ms,
+            deadline,
+            &mut || reclaimed_element_is_readable(target, element, expected, process_is_trusted),
+        );
         // The guard here is `reclaimed_element_is_readable`, so a `TargetChanged` is
         // one of the facts that predicate covers; it is not tracked per poll, so the
         // cause is reported honestly as unattributed rather than invented.
@@ -16908,7 +17415,7 @@ mod windows {
         // The reclaim and the draft restore both end here when they cannot prove
         // the composer holds what OSL wrote. Same one-label diagnosis the carrier
         // observation emits, because it is the same defect in the same comparator.
-        qa_report_carrier_read(element, expected_text);
+        qa_report_carrier_read(element, expected_text, target.app_process_name);
         false
     }
 
@@ -16941,6 +17448,7 @@ mod windows {
         held: &LocatedComposer,
         expected: &ComposerBinding,
         exact_text: &str,
+        empty_baseline: Option<crate::landing_oracle::LandingBaseline>,
         protected_foreground: &mut ProtectedForegroundRestore,
     ) -> CarrierReclaimOutcome {
         let deadline = Instant::now() + Duration::from_millis(CARRIER_RECLAIM_DEADLINE_MS);
@@ -16970,8 +17478,7 @@ mod windows {
                 // carrier back out of the operator's message box, and giving up on
                 // the first attempt is what left ~117 characters of flagtext
                 // sitting in it.
-                let _ =
-                    request_target_input_focus(target.window, &held.element, protected_foreground);
+                let _ = request_target_input_focus(target, &held.element, protected_foreground);
                 std::thread::sleep(Duration::from_millis(settle_ms));
                 if may_continue_input(
                     target,
@@ -17012,7 +17519,11 @@ mod windows {
             // `NotOurs`, which strands.
             let holds_exact_text =
                 carrier_target_element_is_ours(&held.element, expected, process_is_trusted)
-                    && composer_holds_exact_text(&held.element, exact_text);
+                    && composer_holds_exact_text(
+                        &held.element,
+                        exact_text,
+                        target.app_process_name,
+                    );
             if !may_reclaim_typed_carrier(exact_text, holds_exact_text) {
                 // Which clause refused, so a `place_carrier_reclaim_not_ours` on a cover
                 // OSL provably typed is diagnosable instead of arguable. Evaluated only
@@ -17043,16 +17554,17 @@ mod windows {
             {
                 return CarrierReclaimOutcome::Refused;
             }
-            if send_select_all_then_delete(delete_scan, delete_flags)
-                && reclaimed_composer_holds_exact_text(
+            if matches!(
+                send_select_all_then_delete(
+                    delete_scan,
+                    delete_flags,
                     target,
                     &held.element,
                     expected,
-                    process_is_trusted,
-                    deadline,
-                    "",
-                )
-            {
+                    empty_baseline,
+                ),
+                SelectAllDeleteOutcome::Cleared
+            ) {
                 return CarrierReclaimOutcome::Cleared;
             }
             if Instant::now() >= deadline {
@@ -17083,6 +17595,7 @@ mod windows {
             held,
             expected,
             draft,
+            None,
             &mut protected_foreground,
         );
         qa_place_stage(draft_clear_stage(outcome));
@@ -17128,8 +17641,7 @@ mod windows {
             // Retried to the deadline, like every other handover in this file: the
             // operator's own saved draft is what goes back through here, so a
             // first-attempt refusal must not be allowed to strand it.
-            let _ =
-                request_target_input_focus(target.window, &held.element, &mut protected_foreground);
+            let _ = request_target_input_focus(target, &held.element, &mut protected_foreground);
             std::thread::sleep(Duration::from_millis(settle_ms));
             // The empty expected text is deliberate: restoring a draft must never
             // append to something else that is sitting in the composer.
@@ -17306,6 +17818,7 @@ mod windows {
         /// Exactly what OSL typed. Empty until `arm`, which is what makes an
         /// un-armed guard a no-op.
         carrier: String,
+        empty_baseline: Option<crate::landing_oracle::LandingBaseline>,
         /// Whether this failure also drops the calibration. When it does, the
         /// protected session that was holding the operator's suspended draft is
         /// over, so the draft is typed back rather than stranded in OSL's memory --
@@ -17323,6 +17836,15 @@ mod windows {
             held: LocatedComposer,
             expected: ComposerBinding,
         ) -> Self {
+            // Taken BEFORE the struct literal, not inside it: struct fields are
+            // evaluated in written order, so `held` and `expected` were already
+            // moved by the time the baseline expression borrowed them and this
+            // function did not compile for `--target x86_64-pc-windows-gnu` at
+            // all (two E0382s). Neither is `Copy`, and the module is behind
+            // `#[cfg(target_os = "windows")]`, so a Linux build never saw it.
+            // Behaviour is unchanged: the same call, the same arguments, one
+            // statement earlier.
+            let empty_baseline = composer_empty_ink_baseline(target, &held, &expected);
             Self {
                 state,
                 target,
@@ -17331,6 +17853,7 @@ mod windows {
                 held,
                 expected,
                 carrier: String::new(),
+                empty_baseline,
                 drops_calibration: false,
                 armed: false,
             }
@@ -17391,6 +17914,7 @@ mod windows {
                 &self.held,
                 &self.expected,
                 &carrier,
+                self.empty_baseline,
                 &mut protected_foreground,
             );
             if let Some(stage) = carrier_reclaim_stage(reclaim) {
@@ -17630,6 +18154,24 @@ mod windows {
         }
     }
 
+    /// **RUN B (D-244). This function POSTS, and it earns NO carry receipt.**
+    ///
+    /// `place` ends in `send_enter`, and both of its success returns report
+    /// `enter_sent: true`. `native_apps::tests::carry_receipt::verify_receipt`
+    /// rejects any receipt whose `enter_sent` is not `false` — so **a run that
+    /// goes through here can never produce a `LiveCarryReceipt`, and a run that
+    /// produces one never came through here.**
+    ///
+    /// That is not a bug in either mechanism. The receipt is a *placement* proof
+    /// by construction: `enter_sent == false` is precisely what makes it mean
+    /// *"proven without touching anyone's chat"*. This is a *send*. The keystone
+    /// therefore needs **two** runs — this one for the post, the peer decode and
+    /// the three screenshots, and the oracle probe borrowing
+    /// [`super::shipping_type_text`] for the receipt.
+    ///
+    /// **Do not relax `verify_receipt` to merge them.** It is the clause that
+    /// stops a receipt being claimed for a run whose carry might have been done
+    /// by Discord rather than by placement.
     pub(super) fn place(
         state: &NativeDiscordComposerState,
         target: crate::native_window_host::NativeDiscordAccessibilityTarget,
@@ -17719,11 +18261,8 @@ mod windows {
         let mut last_request = InputFocusRequest::Requested;
         let mut confirmed: Option<LocatedComposer> = None;
         for settle_ms in PLACEMENT_FOCUS_SETTLE_MS {
-            last_request = request_target_input_focus(
-                target.window,
-                &focus_element,
-                &mut protected_foreground,
-            );
+            last_request =
+                request_target_input_focus(target, &focus_element, &mut protected_foreground);
             std::thread::sleep(Duration::from_millis(settle_ms));
             let Ok(observed) =
                 locate_urgent(target, process_is_trusted, &profile, scope_binding, false)
@@ -17909,6 +18448,7 @@ mod windows {
                     let outcome = await_composer_write(
                         &focused.element,
                         chunk.settled,
+                        target.app_process_name,
                         CARRIER_CHUNK_BUDGET_MS,
                         write_deadline,
                         &mut still_current,
@@ -17938,7 +18478,7 @@ mod windows {
                     // paced write that still stops must not be the one failure that
                     // reports no measurement. Bounded, no lock held, at most once per
                     // send, and a no-op outside a QA build.
-                    qa_report_carrier_read(&focused.element, carrier);
+                    qa_report_carrier_read(&focused.element, carrier, target.app_process_name);
                 }
                 ok
             }
@@ -18029,7 +18569,7 @@ mod windows {
         cleanup.observe(&final_check, &expected);
         if !carrier_post_mutation_binding_matches(&expected, &final_check.binding)
             || !exact_composer_holds_keyboard_focus(target.window, &final_check.element, &expected)
-            || !composer_holds_exact_text(&final_check.element, carrier)
+            || !composer_holds_exact_text(&final_check.element, carrier, target.app_process_name)
             || !foreground_is_exact_discord(target.window)
         {
             qa_place_stage("place_refused_post_typing_context");
@@ -18137,11 +18677,8 @@ mod windows {
             // Same correction as the placement handover: a refused request is not
             // a refused handover, so the ladder runs to its deadline instead of
             // abandoning a carrier that is already sitting in the composer.
-            let _ = request_target_input_focus(
-                target.window,
-                &final_check.element,
-                &mut protected_foreground,
-            );
+            let _ =
+                request_target_input_focus(target, &final_check.element, &mut protected_foreground);
             std::thread::sleep(Duration::from_millis(settle_ms));
             // `may_continue_input` re-proves the exact foreground root, the
             // exact calibrated composer identity, its keyboard focus and that it
@@ -18322,6 +18859,1092 @@ mod windows {
         // bounded focus/point probes and still fails closed on ambiguity.
         let _ = (root, started, target.process_id, process_is_trusted);
         assemble_snapshot(target.generation, ProvenEvidence::default())
+    }
+
+    /// D-205: what the EIGHT `?` call sites' shared gate answers at the real
+    /// Discord window on this host.
+    ///
+    /// `msaa_client_from_window` is the single expression every one of those
+    /// sites consumes, and it is two decisions in a trench coat: the substrate
+    /// resolve (`discord_uia2_wake_target`, which decides WHICH window) and the
+    /// Chromium handshake (`wake_electron_accessibility`, which D-204 fixed).
+    /// A `None` from the wrapper does not say which half refused, and that is
+    /// exactly the question a merge gate has to answer, so this reports the
+    /// two halves separately against the same live window.
+    ///
+    /// Read-only. It enumerates, resolves and asks for an accessibility object;
+    /// it walks no tree, writes nothing, and touches no focus.
+    ///
+    /// ```text
+    /// set OSL_D205_DISCORD_IMAGE=DiscordPTB
+    /// osl_privacy_hub-<hash>.exe --ignored --nocapture --test-threads=1 \
+    ///   report_the_discord_msaa_client_gate
+    /// ```
+    #[cfg(test)]
+    #[test]
+    #[ignore = "reads live Discord on a Windows host; run explicitly"]
+    fn report_the_discord_msaa_client_gate() {
+        use crate::native_a11y::{resolve_uia2_wake_target, Uia2WindowPlan};
+
+        const PROBE_CALL_TIMEOUT_MS: u64 = 5_000;
+        const PROBE_POLL_BUDGET_MS: u64 = 20_000;
+
+        let desktop = crate::native_a11y::win32::Uia2Win32Host::desktop();
+
+        // Half one, with the dedicated process name exactly as it ships.
+        match resolve_uia2_wake_target(
+            discord_uia2_window_plan(crate::native_window_host::dedicated_discord_process_name()),
+            &desktop,
+        ) {
+            Ok(window) => eprintln!(
+                "gate: shipping resolve OK bound_pid={} route={:?}",
+                window.bound_process_id, window.tree_route
+            ),
+            Err(error) => eprintln!("gate: shipping resolve REFUSED {error:?}"),
+        }
+
+        // The same resolve against whatever image is actually running, so the
+        // window handle below is a real one even when the shipping constant
+        // cannot name it.
+        let image =
+            std::env::var("OSL_D205_DISCORD_IMAGE").unwrap_or_else(|_| "Discord".to_owned());
+        let image: &'static str = Box::leak(image.into_boxed_str());
+        let plan = Uia2WindowPlan::chromium_outer_msaa_root(
+            "Discord",
+            image,
+            crate::native_a11y::ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
+            PROBE_POLL_BUDGET_MS,
+            PROBE_CALL_TIMEOUT_MS,
+        );
+        let window = resolve_uia2_wake_target(plan, &desktop).unwrap_or_else(|error| {
+            panic!("gate: no Discord window for image {image:?}: {error:?}")
+        });
+        eprintln!(
+            "gate: image={image:?} resolve OK bound_pid={} route={:?}",
+            window.bound_process_id, window.tree_route
+        );
+
+        // Half two, at that same window: the handshake D-204 changed, called
+        // directly, with no resolve in front of it.
+        let woke = crate::native_a11y::wake_electron_accessibility(window.bound_hwnd).is_some();
+        eprintln!("gate: wake_electron_accessibility -> {woke}");
+
+        // And the wrapper the eight sites actually call, at that same window.
+        let client = msaa_client_from_window_for_process(window.bound_hwnd, image).is_some();
+        eprintln!("gate: msaa_client_from_window_for_process -> {client}");
+        eprintln!(
+            "gate: verdict wake={woke} wrapper={client} \
+             (wake=true wrapper=false means the resolve refused, not the handshake)"
+        );
+    }
+
+    /// D-212: drive `matching_conversation_document_count` -- the CONVERSATION
+    /// DOCUMENT PROOF -- against a live Discord, for the first time.
+    ///
+    /// Pre-D-204 this walk returned `Err` at its first statement, because
+    /// `msaa_client_from_window` was `None` unconditionally. That made the
+    /// outcome `Unproven`, which `header_proof_refuses`, and in a shipping build
+    /// (`header_proof_is_enforced()` is `!cfg!(feature = "discord-qa-shell")`)
+    /// every locate was refused. D-204 moves it from ALWAYS REFUSING to ABLE TO
+    /// PASS, and it is the gate that stops a carrier being placed in the wrong
+    /// conversation. This is the probe that watches it pass AND watches it
+    /// refuse.
+    ///
+    /// It calls the shipping function itself -- no re-implementation, no fake
+    /// host -- with the same arguments `locate_with_timeout` passes it:
+    ///
+    /// * `automation`, `root_bounds` and `target_window` from the same resolve;
+    /// * `composer_bounds` from `trusted_visible_element` applied to the ONE
+    ///   candidate `msaa_composer_candidates_from_window` returns, which is
+    ///   literally the production line at `13690`;
+    /// * `process_is_trusted` replicating `pinned_process_trust`, which trusts
+    ///   exactly one pid: the pid that owns the borrowed HWND.
+    ///
+    /// The independent oracle for "which conversation is actually open" is the
+    /// **Win32 window title** (`GetWindowTextW`), which is not an accessibility
+    /// call, does not go through Chromium's tree, and cannot be produced by the
+    /// thing under test.
+    ///
+    /// PRIVACY: no conversation name, DM name or transcript text is ever
+    /// printed. Names are reported as `stable_hash` digests, lengths and
+    /// booleans.
+    ///
+    /// Read-only. It never writes a value, never presses a key, never moves the
+    /// pointer, and never raises a window. Every walk is one of the shipping
+    /// bounded walks or an equally bounded census below.
+    ///
+    /// ```text
+    /// osl_privacy_hub-<hash>.exe --ignored --nocapture --test-threads=1 \
+    ///   report_the_discord_conversation_document_proof
+    /// ```
+    #[cfg(test)]
+    #[test]
+    #[ignore = "reads live Discord on a Windows host; run explicitly"]
+    fn report_the_discord_conversation_document_proof() {
+        use crate::native_a11y::{resolve_uia2_wake_target, Uia2WindowPlan};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowTextW;
+
+        const PROBE_CALL_TIMEOUT_MS: u64 = 5_000;
+        const PROBE_POLL_BUDGET_MS: u64 = 20_000;
+        // The composer discovery gets its own budget; the proof itself always
+        // runs on the shipping `COMPOSER_HEADER_PROOF_BUDGET`.
+        const DISCOVERY_BUDGET: Duration = Duration::from_millis(8_000);
+        // The census is bounded exactly like the shipping walks: a fixed point
+        // grid times a fixed ancestor depth, and no walker.
+        const CENSUS_X_PERCENTS: [i32; 5] = [30, 40, 50, 60, 70];
+        const CENSUS_Y_OFFSETS: [i32; 4] = [18, 30, 42, 56];
+        const SIDEBAR_X_PERCENTS: [i32; 3] = [8, 14, 20];
+        const SIDEBAR_Y_PERCENTS: [i32; 8] = [22, 30, 38, 46, 54, 62, 70, 78];
+        const MAX_OTHER_NAMES: usize = 10;
+
+        let digest = |value: &str| {
+            let full = stable_hash("d212-name", value);
+            full.chars().take(12).collect::<String>()
+        };
+
+        let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let _com = ComGuard(initialized.is_ok());
+
+        let desktop = crate::native_a11y::win32::Uia2Win32Host::desktop();
+        match resolve_uia2_wake_target(
+            discord_uia2_window_plan(crate::native_window_host::dedicated_discord_process_name()),
+            &desktop,
+        ) {
+            Ok(window) => eprintln!(
+                "d212: SHIPPING plan resolve OK bound_pid={} route={:?}",
+                window.bound_process_id, window.tree_route
+            ),
+            Err(error) => eprintln!("d212: SHIPPING plan resolve REFUSED {error:?}"),
+        }
+        let image =
+            std::env::var("OSL_D212_DISCORD_IMAGE").unwrap_or_else(|_| "Discord".to_owned());
+        let image: &'static str = Box::leak(image.into_boxed_str());
+        let plan = Uia2WindowPlan::chromium_outer_msaa_root(
+            "Discord",
+            image,
+            crate::native_a11y::ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
+            PROBE_POLL_BUDGET_MS,
+            PROBE_CALL_TIMEOUT_MS,
+        );
+        let window = resolve_uia2_wake_target(plan, &desktop)
+            .unwrap_or_else(|error| panic!("d212: no Discord window for {image:?}: {error:?}"));
+        let target_window = window.bound_hwnd;
+        let mut window_pid = 0u32;
+        unsafe { GetWindowThreadProcessId(target_window as _, &mut window_pid) };
+        assert!(
+            window_pid != 0,
+            "the borrowed window must have an owner pid"
+        );
+        // `pinned_process_trust` trusts exactly one pid and nothing else.
+        let trusted_pid = window_pid;
+        let is_trusted = move |process_id: u32| process_id != 0 && process_id == trusted_pid;
+        let never_trusted = |_: u32| false;
+        eprintln!(
+            "d212: image={image:?} target_window_pid={window_pid} route={:?}",
+            window.tree_route
+        );
+
+        let automation: IUIAutomation =
+            unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }
+                .expect("d212: UI Automation must be available");
+        let root = unsafe { automation.ElementFromHandle(HWND(target_window as _)) }
+            .expect("d212: the Discord window must publish a root element");
+        let root_bounds = element_bounds(&root).expect("d212: the root must publish bounds");
+        eprintln!(
+            "d212: root {}x{} at ({},{})",
+            root_bounds.right - root_bounds.left,
+            root_bounds.bottom - root_bounds.top,
+            root_bounds.left,
+            root_bounds.top
+        );
+
+        // ---- the composer, exactly the way production finds it ----------------
+        let profile = ComposerDiscoveryProfile::default();
+        let probe_points = composer_probe_points(root_bounds)
+            .into_iter()
+            .map(|(x, y)| POINT { x, y })
+            .collect::<Vec<_>>();
+        let discovery_started = Instant::now();
+        let mut scan = msaa_composer_candidates_from_window(
+            &automation,
+            &profile,
+            root_bounds,
+            target_window,
+            image,
+            &is_trusted,
+            discovery_started,
+            DISCOVERY_BUDGET,
+            &probe_points,
+        )
+        .expect("d212: the composer scan must answer inside its budget");
+        eprintln!(
+            "d212: composer scan candidates={} accessible_nodes={} bound_tripped={}",
+            scan.candidates.len(),
+            scan.accessible_nodes,
+            scan.bound_tripped
+        );
+        assert_eq!(
+            scan.candidates.len(),
+            1,
+            "d212: production binds only when exactly one composer candidate answers"
+        );
+        let (composer_element, _) = scan.candidates.pop().unwrap();
+        let composer_bounds = trusted_visible_element(&composer_element, root_bounds, &is_trusted)
+            .expect("d212: the composer must pass the trusted-visible cross-check");
+        let composer_name = unsafe { composer_element.CurrentName() }
+            .ok()
+            .map(|value| value.to_string())
+            .filter(|value| bounded_identity(Some(value)).is_some())
+            .expect("d212: the composer must publish a bounded name");
+        let conversation = profile
+            .conversation_from_composer_name(&composer_name)
+            .expect("d212: the composer name must yield a conversation")
+            .to_owned();
+        eprintln!(
+            "d212: composer name_hash={} conversation_hash={} conversation_len={} \
+             composer_bounds {}x{} at ({},{})",
+            digest(&composer_name),
+            digest(&conversation),
+            conversation.chars().count(),
+            composer_bounds.right - composer_bounds.left,
+            composer_bounds.bottom - composer_bounds.top,
+            composer_bounds.left,
+            composer_bounds.top
+        );
+
+        // ---- the INDEPENDENT oracle: the Win32 window title -------------------
+        let mut title = [0u16; 512];
+        let title_len =
+            unsafe { GetWindowTextW(target_window as _, title.as_mut_ptr(), title.len() as i32) };
+        let title = String::from_utf16_lossy(&title[..title_len.max(0) as usize]);
+        let variants = conversation_name_variants(&conversation);
+        let title_names_conversation = variants.iter().any(|variant| title.contains(variant));
+        eprintln!(
+            "d212: WIN32 TITLE ORACLE title_hash={} title_len={} title_names_conversation={}",
+            digest(&title),
+            title.chars().count(),
+            title_names_conversation
+        );
+
+        // ---- what the HEADER-shaped proof answers, so the fallback's role is
+        // ---- stated by measurement rather than by the code comment ------------
+        let header_started = Instant::now();
+        let header_count = matching_visible_msaa_header_count(
+            &automation,
+            root_bounds,
+            target_window,
+            &conversation,
+            &is_trusted,
+            header_started,
+            COMPOSER_HEADER_PROOF_BUDGET,
+        );
+        eprintln!(
+            "d212: header proof count={header_count:?} outcome={:?} admits_document_proof={}",
+            header_count
+                .as_ref()
+                .map(|count| header_proof_outcome(*count)),
+            header_count
+                .as_ref()
+                .map(|count| header_absence_admits_document_proof(header_proof_outcome(*count)))
+                .unwrap_or(false)
+        );
+
+        // ---- a bounded census of every document the walk can reach ------------
+        // Not the proof: a diagnostic that answers "how many distinct documents
+        // could ever be counted here", which is the ambiguity question.
+        let census = || {
+            let Some(client) = msaa_client_from_window_for_process(target_window, image) else {
+                eprintln!("d212: census -- no client object, nothing to count");
+                return;
+            };
+            let width = root_bounds.right - root_bounds.left;
+            let mut ids = Vec::<Vec<i32>>::new();
+            let mut named_ids = Vec::<Vec<i32>>::new();
+            let mut contained_ids = Vec::<Vec<i32>>::new();
+            let mut name_digests = Vec::<String>::new();
+            let mut accepted_hits = 0usize;
+            for x_percent in CENSUS_X_PERCENTS {
+                for y_offset in CENSUS_Y_OFFSETS {
+                    let point = POINT {
+                        x: root_bounds.left + width * x_percent / 100,
+                        y: root_bounds.top + y_offset,
+                    };
+                    let Some(mut accessible) = msaa_hit_test_from_root(&client, point) else {
+                        continue;
+                    };
+                    for _ in 0..MSAA_MAX_ANCESTOR_DEPTH {
+                        if msaa_role(&accessible) == Some(MSAA_ROLE_SYSTEM_DOCUMENT) {
+                            let name = msaa_name(&accessible);
+                            let bounds = msaa_bounds(&accessible);
+                            if let Some(element) = trusted_document_bridge_element(
+                                &automation,
+                                &accessible,
+                                &is_trusted,
+                            ) {
+                                if let Ok(id) = runtime_id(&element) {
+                                    if !ids.contains(&id) {
+                                        ids.push(id.clone());
+                                        if let Some(name) = name.as_deref() {
+                                            let mark = digest(name);
+                                            if !name_digests.contains(&mark) {
+                                                name_digests.push(mark);
+                                            }
+                                        }
+                                    }
+                                    let names_match = name.as_deref().is_some_and(|name| {
+                                        variants.iter().any(|variant| variant == name)
+                                    });
+                                    if names_match && !named_ids.contains(&id) {
+                                        named_ids.push(id.clone());
+                                    }
+                                    let contained = bounds.is_some_and(|bounds| {
+                                        conversation_document_bounds(
+                                            bounds,
+                                            composer_bounds,
+                                            root_bounds,
+                                        )
+                                    });
+                                    // Everything the shipping walk requires
+                                    // before it pushes a runtime id: name,
+                                    // containment, the trusted bridge above,
+                                    // the geometry agreement and the bridged
+                                    // name cross-check. Counted per HIT, not
+                                    // per distinct id, so the gap between the
+                                    // two is the dedup doing its work -- which
+                                    // is the whole of the ambiguity question.
+                                    let accepted = names_match
+                                        && contained
+                                        && bounds.is_some_and(|bounds| {
+                                            document_bridge_geometry_agrees(&element, bounds)
+                                        })
+                                        && unsafe { element.CurrentName() }
+                                            .ok()
+                                            .map(|value| value.to_string())
+                                            == name;
+                                    if accepted {
+                                        accepted_hits += 1;
+                                    }
+                                    if accepted && !contained_ids.contains(&id) {
+                                        contained_ids.push(id);
+                                    }
+                                }
+                            }
+                        }
+                        let Some(parent) = msaa_parent(&accessible) else {
+                            break;
+                        };
+                        accessible = parent;
+                    }
+                }
+            }
+            eprintln!(
+                "d212: census trusted_documents={} distinct_document_name_hashes={:?} \
+                 named_after_conversation={} accepted_hits={} distinct_accepted_documents={}",
+                ids.len(),
+                name_digests,
+                named_ids.len(),
+                accepted_hits,
+                contained_ids.len()
+            );
+        };
+        census();
+
+        // ---- the proof itself, case by case -----------------------------------
+        let proof = |label: &str,
+                     conversation: &str,
+                     bounds: AccessibilityBounds,
+                     window: isize,
+                     trust: &dyn Fn(u32) -> bool| {
+            let started = Instant::now();
+            let count = matching_conversation_document_count(
+                &automation,
+                root_bounds,
+                bounds,
+                window,
+                image,
+                conversation,
+                trust,
+                started,
+                COMPOSER_HEADER_PROOF_BUDGET,
+            );
+            let outcome = match &count {
+                Ok(count) => header_proof_outcome(*count),
+                Err(_) => HeaderProofOutcome::Unproven,
+            };
+            eprintln!(
+                "d212: CASE {label:<34} count={count:?} outcome={outcome:?} \
+                 refuses={} stage={} elapsed_ms={}",
+                header_proof_refuses(outcome),
+                document_proof_stage(outcome),
+                started.elapsed().as_millis()
+            );
+            outcome
+        };
+
+        // 1. The right conversation, everything real.
+        let right = proof(
+            "the-open-conversation",
+            &conversation,
+            composer_bounds,
+            target_window,
+            &is_trusted,
+        );
+
+        // 2. Absent: a conversation name no client anywhere has.
+        let absent = proof(
+            "absent-name",
+            "osl-d212-no-such-conversation",
+            composer_bounds,
+            target_window,
+            &is_trusted,
+        );
+
+        // 3. A near-miss of the right name, so the match is not a prefix match.
+        let near_miss = proof(
+            "near-miss-of-the-open-name",
+            &format!("{conversation}x"),
+            composer_bounds,
+            target_window,
+            &is_trusted,
+        );
+
+        // 4. Starved: the same window and the same name, but the composer OSL
+        //    bound is not inside the document. This is the containment that ties
+        //    the conversation NAME to THIS composer.
+        let displaced = AccessibilityBounds {
+            left: root_bounds.right + 10,
+            top: root_bounds.bottom + 10,
+            right: root_bounds.right + 30,
+            bottom: root_bounds.bottom + 30,
+        };
+        let starved_containment = proof(
+            "starved-composer-outside-doc",
+            &conversation,
+            displaced,
+            target_window,
+            &is_trusted,
+        );
+
+        // 5. Starved: no trusted process. The document is still there, still
+        //    named, still containing the composer -- and the bridge refuses it.
+        let starved_trust = proof(
+            "starved-nothing-is-trusted",
+            &conversation,
+            composer_bounds,
+            target_window,
+            &never_trusted,
+        );
+
+        // 6. Starved: a window with no Discord anywhere beneath it, which is how
+        //    `msaa_client_from_window_for_process` returns `None` -- the EXACT pre-D-204
+        //    state, reproduced on demand at a live window. The shell window is
+        //    the default: it is owned by Explorer and has no Discord descendant.
+        //    The desktop window would be wrong here, because Discord's own
+        //    top-level window is a descendant of it.
+        let foreign = std::env::var("OSL_D212_FOREIGN_WINDOW")
+            .ok()
+            .and_then(|value| value.parse::<isize>().ok())
+            .unwrap_or_else(|| unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::GetShellWindow() as isize
+            });
+        let mut foreign_pid = 0u32;
+        unsafe { GetWindowThreadProcessId(foreign as _, &mut foreign_pid) };
+        let foreign_trusted = move |process_id: u32| process_id != 0 && process_id == foreign_pid;
+        eprintln!(
+            "d212: foreign window={foreign} pid={foreign_pid} client={}",
+            msaa_client_from_window_for_process(foreign, image).is_some()
+        );
+        let starved_window = proof(
+            "starved-foreign-window",
+            &conversation,
+            composer_bounds,
+            foreign,
+            &foreign_trusted,
+        );
+
+        // 7. Starved at the earliest possible point: a conversation string whose
+        //    name variants are empty, so the walk refuses before it asks Chromium
+        //    for anything at all.
+        let starved_names = proof(
+            "starved-empty-name-variants",
+            "@",
+            composer_bounds,
+            target_window,
+            &is_trusted,
+        );
+
+        // 8. Every other conversation the client is showing. Harvested from
+        //    Discord's own sidebar so the probe supplies no names of its own,
+        //    and every one of them is a plausible target a caller could ask for.
+        let mut others = Vec::<String>::new();
+        if let Some(client) = msaa_client_from_window_for_process(target_window, image) {
+            let width = root_bounds.right - root_bounds.left;
+            let height = root_bounds.bottom - root_bounds.top;
+            'harvest: for x_percent in SIDEBAR_X_PERCENTS {
+                for y_percent in SIDEBAR_Y_PERCENTS {
+                    let point = POINT {
+                        x: root_bounds.left + width * x_percent / 100,
+                        y: root_bounds.top + height * y_percent / 100,
+                    };
+                    let Some(mut accessible) = msaa_hit_test_from_root(&client, point) else {
+                        continue;
+                    };
+                    for _ in 0..4 {
+                        if let Some(name) = msaa_name(&accessible) {
+                            let name = name.trim().to_owned();
+                            if bounded_identity(Some(&name)).is_some()
+                                && name.chars().count() <= 64
+                                && !variants.contains(&name)
+                                && !others.contains(&name)
+                            {
+                                others.push(name);
+                                if others.len() >= MAX_OTHER_NAMES {
+                                    break 'harvest;
+                                }
+                            }
+                        }
+                        let Some(parent) = msaa_parent(&accessible) else {
+                            break;
+                        };
+                        accessible = parent;
+                    }
+                }
+            }
+        }
+        eprintln!("d212: harvested {} other candidate names", others.len());
+        let mut other_unique = 0usize;
+        for name in &others {
+            let outcome = proof(
+                "another-candidate-conversation",
+                name,
+                composer_bounds,
+                target_window,
+                &is_trusted,
+            );
+            eprintln!("d212:   ^ candidate name_hash={}", digest(name));
+            if matches!(outcome, HeaderProofOutcome::Unique) {
+                other_unique += 1;
+            }
+        }
+
+        eprintln!(
+            "d212: VERDICT right={right:?} absent={absent:?} near_miss={near_miss:?} \
+             starved_containment={starved_containment:?} starved_trust={starved_trust:?} \
+             starved_window={starved_window:?} starved_names={starved_names:?} \
+             others={} others_unique={other_unique} title_agrees={title_names_conversation}",
+            others.len()
+        );
+    }
+
+    /// D-212, the crossover: the same proof either side of a conversation
+    /// SWITCH.
+    ///
+    /// The read-only probe above shows the gate answering `Unique` for the open
+    /// conversation and refusing for every other name it was offered. What it
+    /// cannot show on its own is that `Unique` FOLLOWS the conversation rather
+    /// than being a constant of the window. This one switches the conversation
+    /// and re-asks both names, including the one that was right a second ago,
+    /// which is exactly the "carrier in the wrong conversation" shape.
+    ///
+    /// The switch is `IAccessible::accDoDefaultAction` on a sidebar entry. That
+    /// is a single accessibility call: **no key is pressed, no pointer moves and
+    /// no synthetic input event of any kind is generated.** The node it is
+    /// issued on must be a link or list item, must sit in the left sidebar
+    /// strip, and must carry a bounded name that is not the open conversation's.
+    ///
+    /// Run it once with no `OSL_D212_SWITCH_INDEX` to get the census, then again
+    /// with the index of the entry to open.
+    ///
+    /// PRIVACY: names are reported as digests only.
+    #[cfg(test)]
+    #[test]
+    #[ignore = "drives live Discord on a Windows host; run explicitly"]
+    fn report_the_discord_conversation_document_proof_across_a_switch() {
+        use crate::native_a11y::{resolve_uia2_wake_target, Uia2WindowPlan};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowTextW;
+
+        const PROBE_CALL_TIMEOUT_MS: u64 = 5_000;
+        const PROBE_POLL_BUDGET_MS: u64 = 20_000;
+        const DISCOVERY_BUDGET: Duration = Duration::from_millis(8_000);
+        const MSAA_ROLE_SYSTEM_LINK: u32 = 30;
+        const MSAA_ROLE_SYSTEM_LIST: u32 = 33;
+        const MSAA_ROLE_SYSTEM_LISTITEM: u32 = 34;
+        const MSAA_ROLE_SYSTEM_GROUPING: u32 = 20;
+        const SIDEBAR_X_PERCENTS: [i32; 4] = [6, 11, 16, 21];
+        const SIDEBAR_Y_PERCENTS: [i32; 12] = [18, 24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84];
+        const CENSUS_CAP: usize = 24;
+        const SETTLE_MS: u64 = 2_000;
+
+        let digest = |value: &str| {
+            stable_hash("d212-name", value)
+                .chars()
+                .take(12)
+                .collect::<String>()
+        };
+
+        let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let _com = ComGuard(initialized.is_ok());
+
+        let desktop = crate::native_a11y::win32::Uia2Win32Host::desktop();
+        let image =
+            std::env::var("OSL_D212_DISCORD_IMAGE").unwrap_or_else(|_| "Discord".to_owned());
+        let image: &'static str = Box::leak(image.into_boxed_str());
+        let plan = Uia2WindowPlan::chromium_outer_msaa_root(
+            "Discord",
+            image,
+            crate::native_a11y::ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
+            PROBE_POLL_BUDGET_MS,
+            PROBE_CALL_TIMEOUT_MS,
+        );
+        let window = resolve_uia2_wake_target(plan, &desktop)
+            .unwrap_or_else(|error| panic!("d212s: no Discord window for {image:?}: {error:?}"));
+        let target_window = window.bound_hwnd;
+        let mut window_pid = 0u32;
+        unsafe { GetWindowThreadProcessId(target_window as _, &mut window_pid) };
+        let trusted_pid = window_pid;
+        let is_trusted = move |process_id: u32| process_id != 0 && process_id == trusted_pid;
+
+        let automation: IUIAutomation =
+            unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }
+                .expect("d212s: UI Automation must be available");
+        let root = unsafe { automation.ElementFromHandle(HWND(target_window as _)) }
+            .expect("d212s: the Discord window must publish a root element");
+        let root_bounds = element_bounds(&root).expect("d212s: the root must publish bounds");
+        let profile = ComposerDiscoveryProfile::default();
+
+        // What the window says it is showing, from Win32 rather than from the
+        // tree under test.
+        let title_of = || {
+            let mut buffer = [0u16; 512];
+            let length = unsafe {
+                GetWindowTextW(target_window as _, buffer.as_mut_ptr(), buffer.len() as i32)
+            };
+            String::from_utf16_lossy(&buffer[..length.max(0) as usize])
+        };
+
+        // The composer, and therefore the conversation, exactly as production
+        // derives them.
+        let bind = || -> (String, AccessibilityBounds) {
+            let probe_points = composer_probe_points(root_bounds)
+                .into_iter()
+                .map(|(x, y)| POINT { x, y })
+                .collect::<Vec<_>>();
+            let mut scan = msaa_composer_candidates_from_window(
+                &automation,
+                &profile,
+                root_bounds,
+                target_window,
+                image,
+                &is_trusted,
+                Instant::now(),
+                DISCOVERY_BUDGET,
+                &probe_points,
+            )
+            .expect("d212s: the composer scan must answer");
+            assert_eq!(
+                scan.candidates.len(),
+                1,
+                "d212s: exactly one composer candidate must answer"
+            );
+            let (element, _) = scan.candidates.pop().unwrap();
+            let bounds = trusted_visible_element(&element, root_bounds, &is_trusted)
+                .expect("d212s: the composer must pass the trusted-visible cross-check");
+            let name = unsafe { element.CurrentName() }
+                .ok()
+                .map(|value| value.to_string())
+                .filter(|value| bounded_identity(Some(value)).is_some())
+                .expect("d212s: the composer must publish a bounded name");
+            let conversation = profile
+                .conversation_from_composer_name(&name)
+                .expect("d212s: the composer name must yield a conversation")
+                .to_owned();
+            (conversation, bounds)
+        };
+
+        let count_for = |conversation: &str, bounds: AccessibilityBounds| -> HeaderProofOutcome {
+            let started = Instant::now();
+            match matching_conversation_document_count(
+                &automation,
+                root_bounds,
+                bounds,
+                target_window,
+                image,
+                conversation,
+                &is_trusted,
+                started,
+                COMPOSER_HEADER_PROOF_BUDGET,
+            ) {
+                Ok(count) => header_proof_outcome(count),
+                Err(_) => HeaderProofOutcome::Unproven,
+            }
+        };
+
+        let (before_conversation, before_bounds) = bind();
+        let before_title = title_of();
+        eprintln!(
+            "d212s: BEFORE conversation_hash={} title_hash={} title_names_conversation={} \
+             outcome={:?}",
+            digest(&before_conversation),
+            digest(&before_title),
+            conversation_name_variants(&before_conversation)
+                .iter()
+                .any(|variant| before_title.contains(variant)),
+            count_for(&before_conversation, before_bounds)
+        );
+
+        // ---- census the sidebar ----------------------------------------------
+        let client = msaa_client_from_window_for_process(target_window, image)
+            .expect("d212s: Discord must answer the wake");
+        let width = root_bounds.right - root_bounds.left;
+        let height = root_bounds.bottom - root_bounds.top;
+        let before_variants = conversation_name_variants(&before_conversation);
+        let mut entries = Vec::<(u32, String, AccessibilityBounds)>::new();
+        'census: for x_percent in SIDEBAR_X_PERCENTS {
+            for y_percent in SIDEBAR_Y_PERCENTS {
+                let point = POINT {
+                    x: root_bounds.left + width * x_percent / 100,
+                    y: root_bounds.top + height * y_percent / 100,
+                };
+                let Some(mut accessible) = msaa_hit_test_from_root(&client, point) else {
+                    continue;
+                };
+                for _ in 0..6 {
+                    let role = msaa_role(&accessible).unwrap_or(0);
+                    let mut record = |role: u32, name: Option<String>, bounds| {
+                        let Some(name) = name else { return false };
+                        let name = name.trim().to_owned();
+                        let Some(bounds) = bounds else { return false };
+                        if bounded_identity(Some(&name)).is_some()
+                            && name.chars().count() <= 64
+                            && !before_variants.contains(&name)
+                            && !entries.iter().any(|(_, existing, _)| existing == &name)
+                        {
+                            entries.push((role, name, bounds));
+                        }
+                        entries.len() >= CENSUS_CAP
+                    };
+                    if record(role, msaa_name(&accessible), msaa_bounds(&accessible)) {
+                        break 'census;
+                    }
+                    // A hit test lands on the container, not on the row. The DM
+                    // list's own children are where the other conversations
+                    // are, so enumerate them once, bounded.
+                    if matches!(role, MSAA_ROLE_SYSTEM_LIST | MSAA_ROLE_SYSTEM_GROUPING) {
+                        if let Some(children) = msaa_child_refs(&accessible, 256) {
+                            for child in &children {
+                                if record(child.role().unwrap_or(0), child.name(), child.bounds()) {
+                                    break 'census;
+                                }
+                            }
+                        }
+                    }
+                    let Some(parent) = msaa_parent(&accessible) else {
+                        break;
+                    };
+                    accessible = parent;
+                }
+            }
+        }
+        for (index, (role, name, bounds)) in entries.iter().enumerate() {
+            eprintln!(
+                "d212s: sidebar[{index}] role={role} name_hash={} name_len={} \
+                 at ({},{}) {}x{} document_proof={:?}",
+                digest(name),
+                name.chars().count(),
+                bounds.left,
+                bounds.top,
+                bounds.right - bounds.left,
+                bounds.bottom - bounds.top,
+                count_for(name, before_bounds)
+            );
+        }
+
+        // ---- the same census through UI Automation ----------------------------
+        // Discord's DM rows are not reachable by an MSAA hit test at the strip
+        // above: the deepest object under those points is a container, and the
+        // list's own children are groups. UI Automation names them directly.
+        // `FindAll(TreeScope_Descendants)` is the same call the substrate's own
+        // `subtree` makes (`native_a11y.rs:1840`), bounded by the provider.
+        let mut rows = Vec::<(IUIAutomationElement, String, AccessibilityBounds)>::new();
+        {
+            use ::windows::Win32::UI::Accessibility::TreeScope_Descendants;
+            use ::windows::Win32::UI::Accessibility::{
+                UIA_ControlTypePropertyId, UIA_ListItemControlTypeId,
+            };
+            let condition = unsafe {
+                automation.CreatePropertyCondition(
+                    UIA_ControlTypePropertyId,
+                    &VARIANT::from(UIA_ListItemControlTypeId.0),
+                )
+            }
+            .expect("d212s: the list-item condition must build");
+            // Exactly what `tree_root`'s `MsaaBridge` arm builds
+            // (`native_a11y.rs:1829-1832`), which is the ninth consumer of the
+            // wake and the one every Discord element read goes through.
+            let bridged = crate::native_a11y::element_from_ia_accessible(
+                &automation,
+                &msaa_client_from_window_for_process(target_window, image)
+                    .expect("d212s: Discord must answer the wake"),
+            )
+            .expect("d212s: the MsaaBridge root must bridge");
+            if let Ok(found) = unsafe { bridged.FindAll(TreeScope_Descendants, &condition) } {
+                let length = unsafe { found.Length() }.unwrap_or(0);
+                for index in 0..length {
+                    let Ok(element) = (unsafe { found.GetElement(index) }) else {
+                        continue;
+                    };
+                    let Some(bounds) = element_bounds(&element) else {
+                        continue;
+                    };
+                    // The left sidebar strip only.
+                    if bounds.left > root_bounds.left + width * 30 / 100 {
+                        continue;
+                    }
+                    let Some(name) = unsafe { element.CurrentName() }
+                        .ok()
+                        .map(|value| value.to_string())
+                        .filter(|value| bounded_identity(Some(value.trim())).is_some())
+                    else {
+                        continue;
+                    };
+                    let name = name.trim().to_owned();
+                    rows.push((element, name, bounds));
+                }
+            }
+        }
+        for (index, (_, name, bounds)) in rows.iter().enumerate() {
+            eprintln!(
+                "d212s: uia_row[{index}] name_hash={} name_len={} at ({},{}) {}x{} \
+                 document_proof={:?}",
+                digest(name),
+                name.chars().count(),
+                bounds.left,
+                bounds.top,
+                bounds.right - bounds.left,
+                bounds.bottom - bounds.top,
+                count_for(name, before_bounds)
+            );
+        }
+
+        if let Some(index) = std::env::var("OSL_D212_UIA_INDEX")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+        {
+            use ::windows::Win32::UI::Accessibility::{
+                IUIAutomationLegacyIAccessiblePattern, IUIAutomationSelectionItemPattern,
+                UIA_LegacyIAccessiblePatternId, UIA_SelectionItemPatternId,
+            };
+            let (element, name, _) = rows
+                .get(index)
+                .unwrap_or_else(|| panic!("d212s: no uia row at index {index}"));
+            eprintln!(
+                "d212s: activating uia_row[{index}] name_hash={}",
+                digest(name)
+            );
+            let invoked = unsafe {
+                element.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
+            }
+            .and_then(|pattern| unsafe { pattern.Invoke() })
+            .is_ok();
+            let selected = if invoked {
+                false
+            } else {
+                unsafe {
+                    element.GetCurrentPatternAs::<IUIAutomationSelectionItemPattern>(
+                        UIA_SelectionItemPatternId,
+                    )
+                }
+                .and_then(|pattern| unsafe { pattern.Select() })
+                .is_ok()
+            };
+            // Chromium publishes navigational rows through the legacy bridge
+            // rather than through `Invoke`, so this is the arm that answers.
+            let legacy = if invoked || selected {
+                false
+            } else {
+                unsafe {
+                    element.GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
+                        UIA_LegacyIAccessiblePatternId,
+                    )
+                }
+                .and_then(|pattern| unsafe { pattern.DoDefaultAction() })
+                .is_ok()
+            };
+            eprintln!(
+                "d212s: uia activation invoked={invoked} selected={selected} legacy={legacy}"
+            );
+            assert!(
+                invoked || selected || legacy,
+                "d212s: the row exposed no activation pattern at all"
+            );
+            std::thread::sleep(Duration::from_millis(SETTLE_MS));
+            let (after_conversation, after_bounds) = bind();
+            let after_title = title_of();
+            eprintln!(
+                "d212s: AFTER(uia) conversation_hash={} changed={} title_hash={} \
+                 title_names_conversation={}",
+                digest(&after_conversation),
+                after_conversation != before_conversation,
+                digest(&after_title),
+                conversation_name_variants(&after_conversation)
+                    .iter()
+                    .any(|variant| after_title.contains(variant))
+            );
+            eprintln!(
+                "d212s: CROSSOVER(uia) new_name_new_bounds={:?} OLD_name_new_bounds={:?} \
+                 OLD_name_OLD_bounds={:?} new_name_OLD_bounds={:?}",
+                count_for(&after_conversation, after_bounds),
+                count_for(&before_conversation, after_bounds),
+                count_for(&before_conversation, before_bounds),
+                count_for(&after_conversation, before_bounds)
+            );
+            // Put the operator's client back where it was found.
+            let restore = rows.iter().position(|(_, name, bounds)| {
+                bounds.left <= root_bounds.left + width * 30 / 100
+                    && before_variants
+                        .iter()
+                        .any(|variant| name.contains(variant.as_str()))
+            });
+            match restore {
+                Some(restore) => {
+                    let (element, name, _) = &rows[restore];
+                    eprintln!(
+                        "d212s: restoring uia_row[{restore}] name_hash={}",
+                        digest(name)
+                    );
+                    let invoked = unsafe {
+                        element.GetCurrentPatternAs::<IUIAutomationLegacyIAccessiblePattern>(
+                            UIA_LegacyIAccessiblePatternId,
+                        )
+                    }
+                    .and_then(|pattern| unsafe { pattern.DoDefaultAction() })
+                    .is_ok();
+                    std::thread::sleep(Duration::from_millis(SETTLE_MS));
+                    let (restored, _) = bind();
+                    eprintln!(
+                        "d212s: restored invoked={invoked} back_to_original={}",
+                        restored == before_conversation
+                    );
+                }
+                None => eprintln!("d212s: no row named the original conversation to restore to"),
+            }
+            return;
+        }
+
+        let Some(index) = std::env::var("OSL_D212_SWITCH_INDEX")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+        else {
+            eprintln!("d212s: census only, nothing was activated");
+            return;
+        };
+        let (role, name, _) = entries
+            .get(index)
+            .unwrap_or_else(|| panic!("d212s: no sidebar entry at index {index}"));
+        eprintln!(
+            "d212s: activating sidebar[{index}] role={role} name_hash={}",
+            digest(name)
+        );
+
+        // Re-find the node by name and activate it. One accessibility call, no
+        // synthetic input of any kind.
+        let mut activated = false;
+        'activate: for x_percent in SIDEBAR_X_PERCENTS {
+            for y_percent in SIDEBAR_Y_PERCENTS {
+                let point = POINT {
+                    x: root_bounds.left + width * x_percent / 100,
+                    y: root_bounds.top + height * y_percent / 100,
+                };
+                let Some(mut accessible) = msaa_hit_test_from_root(&client, point) else {
+                    continue;
+                };
+                // The activation is allowed only on a navigational node: a link
+                // or a list item by default, overridable to a single named role
+                // so a census can be acted on without a rebuild. Never a
+                // button, never an edit, never the composer.
+                let allowed_role = std::env::var("OSL_D212_SWITCH_ROLE")
+                    .ok()
+                    .and_then(|value| value.parse::<u32>().ok());
+                let role_is_allowed = |observed: u32| match allowed_role {
+                    Some(allowed) => observed == allowed,
+                    None => {
+                        matches!(observed, MSAA_ROLE_SYSTEM_LINK | MSAA_ROLE_SYSTEM_LISTITEM)
+                    }
+                };
+                for _ in 0..6 {
+                    let observed_role = msaa_role(&accessible).unwrap_or(0);
+                    if role_is_allowed(observed_role)
+                        && msaa_name(&accessible).is_some_and(|value| value.trim() == name.as_str())
+                    {
+                        let child = msaa_self_variant();
+                        match unsafe { accessible.accDoDefaultAction(&child) } {
+                            Ok(()) => {
+                                activated = true;
+                                break 'activate;
+                            }
+                            Err(error) => {
+                                eprintln!("d212s: accDoDefaultAction refused: {error:?}");
+                                break 'activate;
+                            }
+                        }
+                    }
+                    if matches!(
+                        observed_role,
+                        MSAA_ROLE_SYSTEM_LIST | MSAA_ROLE_SYSTEM_GROUPING
+                    ) {
+                        if let Some(children) = msaa_child_refs(&accessible, 256) {
+                            for entry in &children {
+                                if role_is_allowed(entry.role().unwrap_or(0))
+                                    && entry
+                                        .name()
+                                        .is_some_and(|value| value.trim() == name.as_str())
+                                {
+                                    match unsafe { entry.reader.accDoDefaultAction(&entry.child) } {
+                                        Ok(()) => {
+                                            activated = true;
+                                            break 'activate;
+                                        }
+                                        Err(error) => {
+                                            eprintln!(
+                                                "d212s: accDoDefaultAction refused: {error:?}"
+                                            );
+                                            break 'activate;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let Some(parent) = msaa_parent(&accessible) else {
+                        break;
+                    };
+                    accessible = parent;
+                }
+            }
+        }
+        assert!(activated, "d212s: the sidebar entry was never activated");
+        std::thread::sleep(Duration::from_millis(SETTLE_MS));
+
+        let (after_conversation, after_bounds) = bind();
+        let after_title = title_of();
+        let changed = after_conversation != before_conversation;
+        eprintln!(
+            "d212s: AFTER conversation_hash={} changed={changed} title_hash={} \
+             title_names_conversation={}",
+            digest(&after_conversation),
+            digest(&after_title),
+            conversation_name_variants(&after_conversation)
+                .iter()
+                .any(|variant| after_title.contains(variant))
+        );
+        eprintln!(
+            "d212s: CROSSOVER new_name_new_bounds={:?} OLD_name_new_bounds={:?} \
+             OLD_name_OLD_bounds={:?} new_name_OLD_bounds={:?}",
+            count_for(&after_conversation, after_bounds),
+            count_for(&before_conversation, after_bounds),
+            count_for(&before_conversation, before_bounds),
+            count_for(&after_conversation, before_bounds)
+        );
     }
 }
 
@@ -18917,6 +20540,119 @@ mod tests {
         &body[..end]
     }
 
+    /// Discord's window shape now comes from the shared substrate rather than
+    /// from whatever handle this module happened to be passed. Starving the
+    /// substrate's resolver has to break Discord, or the substrate is still the
+    /// taxonomy with no consumer that D-139 found.
+    #[test]
+    fn discord_resolves_its_stable_wake_target_through_the_shared_substrate() {
+        use crate::native_a11y::tests::{discord_graph, RecordedHost};
+        use crate::native_a11y::{Uia2TreeRoute, Uia2WakePolicy};
+
+        let host = RecordedHost::new(discord_graph(), 696).chromium(0);
+        let target = discord_uia2_wake_target_for_process("Discord", &host)
+            .expect("stable Discord's outer window must resolve");
+
+        assert_eq!(
+            target.bound_hwnd, 0x1001,
+            "Discord binds the outer host window, not a renderer child"
+        );
+        assert_eq!(target.app_outer_hwnd, 0x1001);
+        assert_eq!(target.wake_policy, Uia2WakePolicy::WmGetObjectChromium);
+        assert_eq!(
+            target.tree_route,
+            Uia2TreeRoute::MsaaBridge,
+            "Discord reads Chromium's MSAA client object, never a UIA tree at that window"
+        );
+        assert_eq!(target.call_timeout_ms, DISCORD_UIA2_CALL_TIMEOUT_MS);
+        let deadlines = host.deadlines.borrow().clone();
+        assert!(
+            !deadlines.is_empty()
+                && deadlines
+                    .iter()
+                    .all(|deadline| *deadline == DISCORD_UIA2_CALL_TIMEOUT_MS),
+            "every cross-process call must carry the plan's deadline, saw {deadlines:?}"
+        );
+    }
+
+    #[test]
+    fn mutant_revert_dedicated_process_to_stable_makes_ptb_unresolvable() {
+        use crate::native_a11y::tests::{discord_graph, RecordedHost};
+        use crate::native_a11y::{Uia2AcquireError, Uia2WindowResolveError};
+
+        let ptb_graph = discord_graph()
+            .into_iter()
+            .map(|mut window| {
+                if window.process_name == "Discord.exe" {
+                    window.process_name = "DiscordPTB.exe".to_owned();
+                }
+                window
+            })
+            .collect::<Vec<_>>();
+        let host = RecordedHost::new(ptb_graph, 696).chromium(0);
+
+        assert_eq!(
+            discord_uia2_wake_target_for_process("Discord", &host),
+            Err(Uia2AcquireError::Resolve(
+                Uia2WindowResolveError::MissingAppOuter
+            )),
+            "the old stable process name must not resolve the dedicated PTB graph"
+        );
+        let target = discord_uia2_wake_target(&host)
+            .expect("the dedicated Discord process name must resolve the PTB graph");
+        assert_eq!(target.bound_hwnd, 0x1001);
+    }
+
+    #[test]
+    fn discord_refuses_a_window_graph_that_holds_no_discord_window() {
+        use crate::native_a11y::tests::{telegram_graph, RecordedHost};
+        use crate::native_a11y::{Uia2AcquireError, Uia2WindowResolveError};
+
+        let host = RecordedHost::new(telegram_graph(), 743);
+
+        assert_eq!(
+            discord_uia2_wake_target(&host),
+            Err(Uia2AcquireError::Resolve(
+                Uia2WindowResolveError::MissingAppOuter
+            )),
+            "someone else's window is not Discord's, however plausible it looks"
+        );
+    }
+
+    /// The live wake is `cfg(windows)`, so it is neither compiled nor run here.
+    /// Asserted structurally, the way this file already guards every other
+    /// Windows-only route: the wake must be issued at the window the substrate
+    /// resolved, not at the argument.
+    #[test]
+    fn the_discord_wake_is_issued_at_the_window_the_substrate_resolved() {
+        let body = nested_function_body(
+            adapter_source(),
+            "fn msaa_client_from_target(\n        target:",
+        );
+
+        assert!(
+            body.contains("discord_uia2_wake_target_for_process("),
+            "the wake must go through the shared substrate"
+        );
+        assert!(
+            body.contains("wake_electron_accessibility(target.bound_hwnd)"),
+            "the wake must be issued at the resolved window, not at the argument"
+        );
+        assert!(
+            !body.contains("wake_electron_accessibility(target.window)"),
+            "waking the raw argument would leave the shape decision unconsumed"
+        );
+        assert!(
+            body.contains("target.app_process_name"),
+            "the resolver must use the trusted target's process identity"
+        );
+        assert!(
+            body.contains("rooted_at("),
+            "a reparented Discord window is not in the top-level set, so a \
+             desktop-wide enumeration would never find it"
+        );
+    }
+
     #[test]
     fn every_borrowed_input_queue_is_given_back_from_drop_and_nowhere_else() {
         // A leaked attachment permanently couples Discord's input queue to OSL's,
@@ -19002,7 +20738,7 @@ mod tests {
         let focus = nested_function_body(source, "fn take_composer_keyboard_focus(");
         assert!(focus.contains("element.SetFocus()"));
         assert!(focus.contains("accSelect(SELFLAG_TAKEFOCUS as i32"));
-        assert!(focus.contains("composer_msaa_object(element)"));
+        assert!(focus.contains("composer_msaa_object(element, app_process_name)"));
     }
 
     #[test]
@@ -19267,7 +21003,7 @@ mod tests {
 
         let route = nested_function_body(source, "fn msaa_message_list_from_window(");
         // Rooted at the borrowed window, never at a pixel.
-        assert!(route.contains("msaa_client_from_window(target.window)"));
+        assert!(route.contains("msaa_client_from_target(target)"));
         assert!(route.contains("msaa_hit_test_from_root(&client, point)"));
         assert!(!route.contains("AccessibleObjectFromPoint"));
         assert!(!route.contains("msaa_self_at_point"));
@@ -21201,7 +22937,9 @@ mod tests {
         }
         let source = adapter_source();
         assert!(
-            source.contains("chunk.settled,\n                        CARRIER_CHUNK_BUDGET_MS,"),
+            source.contains(
+                "chunk.settled,\n                        target.app_process_name,\n                        CARRIER_CHUNK_BUDGET_MS,"
+            ),
             "the convergence wait must be handed the chunk's own expected prefix"
         );
         // A switch really does still stop the write: the guard is consulted on every
@@ -21233,7 +22971,9 @@ mod tests {
         let source = adapter_source();
         let walk = nested_function_body(source, "fn matching_conversation_document_count(");
         // Discord's own client object, hit tested through Discord's own tree.
-        assert!(walk.contains("msaa_client_from_window(target_window)"));
+        assert!(
+            walk.contains("msaa_client_from_window_for_process(target_window, app_process_name)")
+        );
         assert!(walk.contains("msaa_hit_test_from_root(&client, point)"));
         // A desktop hit test is what the overlay defeats, so neither remains.
         assert!(
@@ -21394,7 +23134,9 @@ mod tests {
         assert!(!gate.contains("expected.bounds"));
         // Every other clause is kept, and the exact-text proof is unchanged.
         assert!(gate.contains("carrier_write_target_is_current("));
-        assert!(gate.contains("composer_holds_exact_text(element, expected_composer_text)"));
+        assert!(gate.contains(
+            "composer_holds_exact_text(element, expected_composer_text, target.app_process_name)"
+        ));
         // One definition, no cfg divergence: this file has already shipped three gates
         // that differed between QA and production and hid a production refusal.
         // `adapter_source()` excludes the test module, so this counts real definitions
@@ -21586,6 +23328,107 @@ mod tests {
         assert!(header.contains("exact_msaa_process_element("));
     }
 
+    /// **D-244 — `place()` IS Run B, DERIVED from its own source, and Run B can
+    /// never earn a `LiveCarryReceipt`.**
+    ///
+    /// This does not restate the ruling; it re-derives it every run. `place`
+    /// contains `send_enter`, so it commits; both of its success returns
+    /// therefore report `enter_sent: true`; and
+    /// `native_apps::tests::carry_receipt::verify_receipt` rejects any receipt
+    /// whose `enter_sent` is not `false`. The keystone's post-requiring clauses
+    /// need this run, and this run cannot hand back a receipt — so the keystone
+    /// is **two** runs.
+    ///
+    /// If a future edit takes `send_enter` out of `place`, or gives it a success
+    /// return that does not commit, this goes red and the split has to be
+    /// re-decided at source rather than assumed.
+    #[test]
+    fn shipping_place_commits_the_message_so_it_is_run_b_and_earns_no_receipt() {
+        use crate::native_apps::tests::carry_receipt::LiveRun;
+
+        let source = adapter_source();
+        let place = nested_function_body(source, "pub(super) fn place(");
+        assert!(
+            place.contains("send_enter("),
+            "place() no longer commits the message. D-244's split exists BECAUSE it does -- \
+             re-derive the ruling before relying on it."
+        );
+
+        let literals: Vec<&str> = place
+            .split("DiscordCarrierReceipt {")
+            .skip(1)
+            .map(|tail| {
+                let end = tail
+                    .find('}')
+                    .expect("every DiscordCarrierReceipt literal is terminated");
+                &tail[..end]
+            })
+            .collect();
+        assert!(
+            literals.len() >= 5,
+            "place() returns {} receipts, which is too few to be reading the whole function",
+            literals.len()
+        );
+        let successes: Vec<&&str> = literals
+            .iter()
+            .filter(|literal| literal.contains("DiscordCarrierStatus::Sent"))
+            .collect();
+        assert_eq!(
+            successes.len(),
+            2,
+            "place() is expected to have exactly two success returns -- the accessibility Send \
+             action and the Enter key. Both are Run B."
+        );
+        for literal in &successes {
+            assert!(
+                literal.contains("enter_sent: true"),
+                "a success return of place() does not report enter_sent: true. If a shipping \
+                 placement can now succeed WITHOUT committing, D-244's two-run split has to be \
+                 re-derived -- do not quietly let that path claim a receipt."
+            );
+        }
+
+        // The half of the derivation that EXECUTES rather than reading source:
+        // `Sent` is *defined* as `placed && enter_sent`, so a Discord send that
+        // succeeded always reports `enter_sent: true` -- which is precisely what
+        // `verify_receipt` refuses.
+        assert_eq!(
+            DiscordCarrierStatus::Sent.protected_send_outcome(true, false),
+            DiscordProtectedSendOutcome::NotSent,
+            "a Discord send cannot be Sent without Enter, so no successful send is Run A"
+        );
+        assert_eq!(
+            DiscordCarrierStatus::Sent.protected_send_outcome(true, true),
+            DiscordProtectedSendOutcome::Sent
+        );
+        assert!(
+            !LiveRun::ShippingSend.earns_a_receipt(),
+            "Run B posts, and a receipt requires enter_sent == false"
+        );
+
+        // Run A's primitive, on the same surface: the shipping write with no
+        // commit verb anywhere near it. This is what the oracle probe borrows,
+        // and it is why Run A can exist at all.
+        let probe_start = source
+            .find("pub(crate) fn shipping_type_text(")
+            .expect("the Run A write primitive is present");
+        let probe_tail = &source[probe_start..];
+        let probe = &probe_tail[..probe_tail
+            .find("\n}\n")
+            .expect("the Run A write primitive is terminated")];
+        assert!(
+            !probe.contains("send_enter"),
+            "shipping_type_text can reach a commit verb, so Run A would post too and NEITHER run \
+             could earn a receipt"
+        );
+        assert!(
+            probe.contains("send_unicode_chunk"),
+            "shipping_type_text must still be the real shipping write, or Run A proves nothing \
+             about the shipping path"
+        );
+        assert!(LiveRun::PlacementProbe.earns_a_receipt());
+    }
+
     /// Every placement stamps the diagnostic contract it was compiled with, before
     /// anything can refuse.
     ///
@@ -21681,7 +23524,9 @@ mod tests {
         // Ownership is identity plus the exact string, which is strictly stronger than
         // a rectangle.
         assert!(clear.contains("carrier_target_element_is_ours("));
-        assert!(clear.contains("composer_holds_exact_text(&held.element, exact_text)"));
+        assert!(clear.contains(
+            "composer_holds_exact_text(\n                        &held.element,\n                        exact_text,\n                        target.app_process_name,"
+        ));
         assert!(clear.contains("may_reclaim_typed_carrier(exact_text, holds_exact_text)"));
         // Neither focus nor foreground is an ownership question. Both are still
         // required before any keystroke goes out, and reported as `Refused`, which
@@ -21705,6 +23550,31 @@ mod tests {
         assert!(clear.contains("place_carrier_reclaim_text_not_ours"));
         assert!(clear.contains("foreground_input_reaches_target("));
         assert!(clear.contains("CarrierReclaimOutcome::Refused"));
+        assert!(clear.contains("SelectAllDeleteOutcome::Cleared"));
+        assert!(clear.contains("empty_baseline"));
+        let select_delete = nested_function_body(source, "fn send_select_all_then_delete(");
+        assert!(
+            select_delete.contains("SelectAllDeleteOutcome::AcceptedUnverified"),
+            "accepted SendInput must have a named non-clear outcome"
+        );
+        assert!(
+            !select_delete.contains("return SelectAllDeleteOutcome::Cleared;"),
+            "accepted SendInput must never return Cleared before the oracle proof"
+        );
+        assert!(
+            select_delete.contains("composer_clear_verified_by_oracle("),
+            "the helper must verify the rendered document and ink before saying cleared"
+        );
+        let oracle_clear = nested_function_body(source, "fn composer_clear_verified_by_oracle(");
+        assert!(
+            oracle_clear.contains("judge_empty_composer("),
+            "the delete helper must use the landing oracle, not the value property"
+        );
+        assert!(
+            !select_delete.contains("composer_empty(")
+                && !select_delete.contains("reclaimed_composer_holds_exact_text("),
+            "the clear proof must not fall back to the adapter's accessibility value path"
+        );
         // The full write-time proof is that identity plus focus, so the write still
         // refuses to type into an unfocused composer.
         let write_target = nested_function_body(source, "fn carrier_write_target_is_current(");
@@ -22827,7 +24697,7 @@ mod tests {
             .expect("uia subtree");
         let document = read.find("UIA_TextPatternId").expect("document range");
         let msaa = read
-            .find("composer_msaa_tree_text(element)")
+            .find("composer_msaa_tree_text(element, app_process_name)")
             .expect("chromium msaa tree");
         assert!(subtree < document && document < msaa);
         // And the same rule gates the probe the polling wait uses, so the two
@@ -22840,7 +24710,7 @@ mod tests {
         assert!(
             probe.find("UIA_ValuePatternId").expect("value pattern")
                 > probe
-                    .find("composer_msaa_tree_text(element)")
+                    .find("composer_msaa_tree_text(element, app_process_name)")
                     .expect("msaa before value")
         );
     }
@@ -26262,6 +28132,11 @@ mod tests {
     // bounded transcript reader this file already ships.
     // -----------------------------------------------------------------------
 
+    /// A read row with NO provider attribution: what the reader returns whenever
+    /// the native producer's batch proof did not hold (`finish_native_visible_rows`
+    /// clears the whole batch, so this is an all-or-nothing state, not a per-row
+    /// one). Such a row can be resolved and counted, but it can never be a
+    /// deletion candidate.
     fn read_row(line: &str, top: i32, bottom: i32) -> VisibleMessageRow {
         VisibleMessageRow {
             locator_sha256: stable_hash("test-row", line),
@@ -26270,6 +28145,62 @@ mod tests {
             bounds: Some([0, top, 700, bottom]),
             attribution: None,
         }
+    }
+
+    /// A read row carrying REAL provider-owned attribution.
+    ///
+    /// The evidence is minted through `native_row_attribution_from_provider`, the
+    /// production constructor, so this test can never assert against a proof the
+    /// shipping producer could not itself have emitted. `line` and `poster` are
+    /// deliberately independent: the whole point of these tests is that the
+    /// rendered line is attacker-chosen and the poster identity is not.
+    fn attributed_read_row(
+        line: &str,
+        top: i32,
+        bottom: i32,
+        poster: NativeDiscordRowPoster,
+        seed: i32,
+    ) -> VisibleMessageRow {
+        const SELF_ID: &str = "111111111111111111";
+        const PEER_ID: &str = "222222222222222222";
+        let poster_identity = match poster {
+            NativeDiscordRowPoster::SelfAccount => SELF_ID,
+            NativeDiscordRowPoster::PeerAccount => PEER_ID,
+        };
+        let carrier = format!("provider carrier for deletion row {seed}");
+        let evidence = native_row_attribution_from_provider(
+            provider_observation(
+                &format!("3{:017}", 10_000_000_000_000_000_i64 + i64::from(seed)),
+                poster_identity,
+                SELF_ID,
+                &carrier,
+                seed,
+            ),
+            &[carrier.clone()],
+            "scope",
+            9,
+            0,
+        )
+        .expect("the production attribution constructor must accept this observation");
+        assert_eq!(evidence.poster, poster);
+        VisibleMessageRow {
+            locator_sha256: evidence.native_locator_sha256.clone(),
+            line: line.to_owned(),
+            decode_candidates: vec![carrier],
+            bounds: Some([0, top, 700, bottom]),
+            attribution: Some(evidence),
+        }
+    }
+
+    /// A row Discord's own provider proved the operator's account posted.
+    fn owned_read_row(line: &str, top: i32, bottom: i32, seed: i32) -> VisibleMessageRow {
+        attributed_read_row(line, top, bottom, NativeDiscordRowPoster::SelfAccount, seed)
+    }
+
+    /// A row Discord's own provider proved SOMEONE ELSE posted, whatever the
+    /// rendered line says.
+    fn peer_read_row(line: &str, top: i32, bottom: i32, seed: i32) -> VisibleMessageRow {
+        attributed_read_row(line, top, bottom, NativeDiscordRowPoster::PeerAccount, seed)
     }
 
     #[test]
@@ -26307,9 +28238,9 @@ mod tests {
     #[test]
     fn a_scan_keeps_only_the_operators_rows_and_numbers_them_over_the_whole_list() {
         let rows = vec![
-            read_row("Deckard first", 0, 44),
-            read_row("Rose reply", 44, 88),
-            read_row("Deckard second", 88, 132),
+            owned_read_row("Deckard first", 0, 44, 1),
+            peer_read_row("Rose reply", 44, 88, 4),
+            owned_read_row("Deckard second", 88, 132, 7),
         ];
         let scan = deletion_scan_from_rows(
             &rows,
@@ -26350,17 +28281,174 @@ mod tests {
     }
 
     #[test]
-    fn a_row_without_a_readable_rectangle_is_unreadable_never_a_candidate() {
+    fn a_peer_who_renames_themselves_to_the_operator_is_never_a_deletion_candidate() {
+        // THE ATTACK. A Discord display name is chosen by the account that holds
+        // it, so the rendered accessible line is attacker-controlled input. This
+        // peer has set theirs byte-exactly to the operator's, and every row here
+        // is the same height and the same length as the operator's own -- which
+        // is all the content-free preview would ever have shown the operator.
+        //
+        // The only thing that separates the two rows is the one fact the peer
+        // does not control: Discord's own poster identity for the message.
+        let spoofed = peer_read_row("Deckard see you at six", 44, 88, 21);
+        let genuine = owned_read_row("Deckard see you at six", 0, 44, 24);
+        assert_eq!(spoofed.line, genuine.line);
+        assert_eq!(spoofed.line.len(), genuine.line.len());
+        assert_eq!(deletion_row_height(&spoofed), deletion_row_height(&genuine));
+        // The display-name test cannot tell them apart, and never could.
+        assert!(row_is_authored_by_operator(
+            &spoofed.line,
+            &["Deckard".to_owned()]
+        ));
+
+        let scan = deletion_scan_from_rows(
+            &[genuine, spoofed],
+            "scope",
+            9,
+            &["Deckard".to_owned()],
+            MAX_VISIBLE_CARRIER_ROWS,
+            Some(true),
+        );
+        assert_eq!(scan.rows_seen, 2);
+        // Exactly one candidate: the operator's own row. The impersonator's is
+        // refused, so it can never reach a preview, a plan or a deletion.
+        assert_eq!(scan.candidates.len(), 1);
+        assert_eq!(scan.candidates[0].scan_ordinal, 0);
+        assert!(scan.candidates.iter().all(|row| row.authored_by_operator));
+    }
+
+    #[test]
+    fn a_row_with_no_provider_attribution_is_refused_rather_than_name_matched() {
+        // `finish_native_visible_rows` clears the WHOLE batch's attribution the
+        // moment the producer proof does not hold, so "no attribution" is the
+        // reader saying it could not prove who posted anything. That is a
+        // refusal, never a fallback to the spoofable name test: a scan taken
+        // from an unproven read has no candidates at all.
         let rows = vec![
-            VisibleMessageRow {
-                locator_sha256: "a".to_owned(),
-                line: "Deckard invisible".to_owned(),
-                decode_candidates: Vec::new(),
-                bounds: None,
-                attribution: None,
-            },
-            read_row("Deckard visible", 0, 44),
+            read_row("Deckard first", 0, 44),
+            read_row("Deckard second", 44, 88),
         ];
+        assert!(rows.iter().all(|row| row.attribution.is_none()));
+        assert!(rows
+            .iter()
+            .all(|row| row_is_authored_by_operator(&row.line, &["Deckard".to_owned()])));
+        let scan = deletion_scan_from_rows(
+            &rows,
+            "scope",
+            9,
+            &["Deckard".to_owned()],
+            MAX_VISIBLE_CARRIER_ROWS,
+            Some(true),
+        );
+        assert_eq!(scan.rows_seen, 2);
+        assert!(scan.candidates.is_empty());
+    }
+
+    #[test]
+    fn provider_attribution_is_necessary_and_the_name_test_is_never_sufficient() {
+        // The predicate both the scan and the execution-time re-resolve consult.
+        // It is a three-way answer collapsed to a bool, and only ONE of the three
+        // is candidacy: proved-self yes, proved-peer no, unproven no.
+        assert!(deletion_row_is_provider_attributed_to_operator(
+            &owned_read_row("Deckard hello", 0, 44, 31)
+        ));
+        assert!(!deletion_row_is_provider_attributed_to_operator(
+            &peer_read_row("Deckard hello", 0, 44, 34)
+        ));
+        assert!(!deletion_row_is_provider_attributed_to_operator(&read_row(
+            "Deckard hello",
+            0,
+            44
+        )));
+
+        // And the subordinate narrowing conjunct: a row the provider DID prove is
+        // the operator's own is still refused when the rendered line does not
+        // begin with a calibrated operator name. That direction can only ever
+        // cost a candidate, never create one, which is why it is safe to keep.
+        let renamed = owned_read_row("ServerNickname hello", 0, 44, 37);
+        assert!(deletion_row_is_provider_attributed_to_operator(&renamed));
+        let scan = deletion_scan_from_rows(
+            &[renamed],
+            "scope",
+            9,
+            &["Deckard".to_owned()],
+            MAX_VISIBLE_CARRIER_ROWS,
+            Some(true),
+        );
+        assert!(scan.candidates.is_empty());
+    }
+
+    #[test]
+    fn the_executor_reproves_ownership_against_the_fresh_read_not_the_plan() {
+        // The plan says this row is the operator's. It is a `Copy` value that
+        // came through a preview, a digest and a confirmation, so at execution
+        // time it is a CLAIM, not evidence. What decides is what the live
+        // provider says about the row the fresh read resolved to.
+        let planned = guided_deletion::ScannedRow {
+            scan_ordinal: 0,
+            shape_ordinal: 0,
+            shape: guided_deletion::RowShape {
+                height_px: 44,
+                children: 0,
+            },
+            text_len: "Deckard see you at six".len(),
+            authored_by_operator: true,
+        };
+
+        // Still the operator's: resolved, and it is row 0.
+        let owned = vec![owned_read_row("Deckard see you at six", 0, 44, 41)];
+        assert_eq!(
+            resolve_owned_deletion_row(&owned, &planned),
+            (guided_deletion::RowResolution::Resolved, Some(0))
+        );
+
+        // The transcript now says a PEER holds that row -- an impersonator
+        // scrolled into the same slot, or the plan was built before the fix. The
+        // old resolver still says `Resolved`, which is exactly why this second
+        // gate exists; the owned resolver refuses.
+        let peer = vec![peer_read_row("Deckard see you at six", 0, 44, 44)];
+        assert_eq!(
+            resolve_planned_deletion_row(&peer, &planned),
+            (guided_deletion::RowResolution::Resolved, Some(0))
+        );
+        assert_eq!(
+            resolve_owned_deletion_row(&peer, &planned),
+            (guided_deletion::RowResolution::Untrusted, None)
+        );
+
+        // A read that could not prove anything is refused the same way, and is
+        // never downgraded into "gone" -- which a caller could read as success.
+        let unproven = vec![read_row("Deckard see you at six", 0, 44)];
+        assert_eq!(
+            resolve_owned_deletion_row(&unproven, &planned),
+            (guided_deletion::RowResolution::Untrusted, None)
+        );
+
+        // Ambiguity still outranks attribution. A peer row of the same shape and
+        // length must keep the answer `Ambiguous`: if attribution were allowed to
+        // filter the transcript first, this would collapse to a confident single
+        // match on the operator's row and delete under a false certainty.
+        let crowded = vec![
+            peer_read_row("Deckard see you at six", 0, 44, 47),
+            owned_read_row("Deckard see you at six", 44, 88, 51),
+        ];
+        assert_eq!(
+            resolve_owned_deletion_row(
+                &crowded,
+                &guided_deletion::ScannedRow {
+                    scan_ordinal: 9,
+                    ..planned
+                }
+            ),
+            (guided_deletion::RowResolution::Ambiguous, None)
+        );
+    }
+
+    #[test]
+    fn a_row_without_a_readable_rectangle_is_unreadable_never_a_candidate() {
+        let mut invisible = owned_read_row("Deckard invisible", 0, 44, 11);
+        invisible.bounds = None;
+        let rows = vec![invisible, owned_read_row("Deckard visible", 0, 44, 14)];
         let scan = deletion_scan_from_rows(
             &rows,
             "scope",

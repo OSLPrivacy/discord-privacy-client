@@ -51,33 +51,91 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
 
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + ttl.ttl;
-  const existing = await env.DB.prepare("SELECT 1 FROM blob_capability_index WHERE blob_id = ? LIMIT 1").bind(headers.blobId).first();
-  if (existing) return error(409, "blob_id_collision", "blob id is already in use");
-  const capacity = await env.DB.prepare(
-    "SELECT COUNT(*) AS rows, COALESCE(SUM(size_bytes), 0) AS bytes FROM blob_capability_index",
-  ).first<{ rows: number; bytes: number }>();
-  if ((capacity?.rows ?? 0) >= MAX_LIVE_BLOB_ROWS || (capacity?.bytes ?? 0) + body.bytes.byteLength > MAX_LIVE_BLOB_BYTES) {
-    return error(503, "storage_capacity", "blob storage is temporarily at capacity");
+
+  // Aggregate backstop (audit HIGH-2) and id admission in ONE write statement,
+  // so the COUNT/SUM predicates cannot race another insert: every concurrent
+  // upload evaluates them against the state its own row is written into, not
+  // against a value read before someone else's row landed (D-256).
+  //
+  // The `NOT EXISTS` predicate belongs inside the same statement for the same
+  // reason. It also replaces the `409 blob_id_collision` that made this route
+  // an existence oracle (D-255): zero rows changed is answered below without
+  // telling the caller which predicate stopped it.
+  const admitted = await insertBlobRow(env, headers, body.bytes, expiresAt, now);
+  if (!admitted) {
+    // Nothing was written. Deciding what to say must not depend on the id, so
+    // only the aggregate is re-read: at capacity EVERY upload is refused
+    // whatever id it names, which is a fact about the store, not about this
+    // blob. Otherwise the id was taken, and the caller gets the answer an
+    // unused id gets. An upload carries no authority over the id it names --
+    // the storage grant is anonymous and claims only aud/exp/jti -- so it has
+    // earned no more than that. First writer keeps the row.
+    const capacity = await env.DB.prepare(
+      "SELECT COUNT(*) AS rows, COALESCE(SUM(size_bytes), 0) AS bytes FROM blob_capability_index",
+    ).first<{ rows: number; bytes: number }>();
+    if ((capacity?.rows ?? 0) >= MAX_LIVE_BLOB_ROWS || (capacity?.bytes ?? 0) + body.bytes.byteLength > MAX_LIVE_BLOB_BYTES) {
+      return error(503, "storage_capacity", "blob storage is temporarily at capacity");
+    }
+    return json({ id: headers.blobId, expires_at: expiresAt }, 201);
   }
 
   // R2 receives the SHA-256(fetch_cap) key, supplied here as a digest. This
   // avoids ever persisting the bearer capability in D1 or object metadata.
+  // It happens only after the row is ours, so a caller who named someone
+  // else's id never reaches `putByDigest` and cannot overwrite its bytes.
+  //
+  // Winning the row is NOT the whole guard, because the object key is not the
+  // id: a caller may hold a genuinely fresh id and still name another blob's
+  // fetch digest (D-264). `putByDigest` is therefore conditional on absence,
+  // like the attachment direct upload. A refused write is deliberately not
+  // reported and does not roll the row back -- both would be new answers about
+  // an object this caller was never told about, which is exactly the D-255
+  // signal one key space over. The refusal is the property; the response is
+  // unchanged.
   const payloads = new R2PayloadStore(env.PAYLOADS);
-  await payloads.putByDigest(headers.fetchDigest, body.bytes);
   try {
-    await env.DB.prepare(
+    await payloads.putByDigest(headers.fetchDigest, body.bytes);
+  } catch (cause) {
+    // Roll the index row back by id -- the row this call created. Deleting by
+    // fetch digest would destroy a payload the digest may be shared with.
+    await env.DB.prepare("DELETE FROM blob_capability_index WHERE blob_id = ?").bind(headers.blobId).run();
+    throw cause;
+  }
+  return json({ id: headers.blobId, expires_at: expiresAt }, 201);
+}
+
+/// Claim `blobId` and the storage it needs, or claim nothing. Returns whether
+/// the row was written; the caller may not learn which predicate refused it.
+async function insertBlobRow(
+  env: Env,
+  headers: NonNullable<ReturnType<typeof uploadHeaders>>,
+  bytes: Uint8Array,
+  expiresAt: number,
+  now: number,
+): Promise<boolean> {
+  try {
+    const inserted = await env.DB.prepare(
       `INSERT INTO blob_capability_index (
         blob_id, fetch_digest_sha256_hex, ack_digest_sha256_hex,
         manage_digest_sha256_hex, object_class, pool, delivery_tag,
         size_bytes, expires_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, 'undelivered', ?, ?, ?, ?)`,
+      )
+      SELECT ?, ?, ?, ?, ?, 'undelivered', ?, ?, ?, ?
+       WHERE NOT EXISTS (SELECT 1 FROM blob_capability_index WHERE blob_id = ?)
+         AND (SELECT COUNT(*) FROM blob_capability_index) < ?
+         AND COALESCE((SELECT SUM(size_bytes) FROM blob_capability_index), 0) <= ? - ?`,
     ).bind(headers.blobId, headers.fetchDigest, headers.ackDigest, headers.manageDigest,
-      headers.objectClass, headers.deliveryTag, body.bytes.byteLength, expiresAt, now).run();
+      headers.objectClass, headers.deliveryTag, bytes.byteLength, expiresAt, now,
+      headers.blobId, MAX_LIVE_BLOB_ROWS, MAX_LIVE_BLOB_BYTES, bytes.byteLength).run();
+    return (inserted.meta?.changes ?? 0) === 1;
   } catch (cause) {
-    await payloads.deleteByDigest(headers.fetchDigest);
+    // The primary key is the backstop behind `NOT EXISTS`: a row that landed
+    // between the predicate and the write raises here instead of overwriting.
+    // That is the taken-id case, and it is answered exactly like one.
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (message.includes("UNIQUE") || message.includes("PRIMARY")) return false;
     throw cause;
   }
-  return json({ id: headers.blobId, expires_at: expiresAt }, 201);
 }
 
 export async function readBoundedBody(request: Request, maxBytes: number): Promise<{ status: "ok"; bytes: Uint8Array } | { status: "too_large" }> {

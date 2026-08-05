@@ -11,8 +11,6 @@ import {
 
 const browserSetupKey = "osl-preview-setup";
 const browserCompleteKey = "osl-preview-onboarded";
-const browserFirstRunPresetKey = "osl-preview-first-run-preset";
-const browserFirstRunSendBehaviorKey = "osl-preview-first-run-send-behavior";
 
 type FirstRunProtectionPreset = "basic" | "balanced" | "maximum";
 type FirstRunOrdinarySendMode = Extract<SendMode, "manual" | "clipboard" | "double">;
@@ -74,12 +72,10 @@ export async function saveFirstRunOnboardingPreferences(selection: {
     throw new Error("First-run protection preset was refused");
   }
 
-  let inherited = false;
   let sendMode: FirstRunOrdinarySendMode;
   let acknowledged = false;
 
   if (selection.sendBehavior === "inherited") {
-    inherited = true;
     sendMode = firstRunPresetSendDefaults[selection.protectionPreset];
   } else {
     sendMode = selection.sendBehavior.mode;
@@ -95,7 +91,7 @@ export async function saveFirstRunOnboardingPreferences(selection: {
     throw new Error("First-run send behavior requires explicit acknowledgement");
   }
 
-  const saved = await saveOnboardingPreferences({
+  return saveOnboardingPreferences({
     onboardingComplete: true,
     setup: {
       sendMode,
@@ -107,15 +103,4 @@ export async function saveFirstRunOnboardingPreferences(selection: {
     windowCaptureEnabled: selection.windowCaptureEnabled !== false,
     forwardSecrecyMode: "keepGroupDelivery",
   });
-
-  if (saved.onboardingComplete && typeof localStorage !== "undefined") {
-    localStorage.setItem(browserFirstRunPresetKey, selection.protectionPreset);
-    localStorage.setItem(browserFirstRunSendBehaviorKey, JSON.stringify({
-      source: inherited ? "inherited" : "override",
-      preset: selection.protectionPreset,
-      mode: sendMode,
-    }));
-  }
-
-  return saved;
 }

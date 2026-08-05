@@ -33,10 +33,13 @@ combining X25519 and ML-KEM-768; breaking confidentiality requires breaking
 both.
 
 This protects contents against future quantum decryption of recorded traffic.
-It does not make identity verification post-quantum. Forward secrecy,
-post-compromise security, group sender keys, view-once messages, timed deletion
-and attachment transport are planned or partially implemented, but they are not
-release-proven capabilities today.
+It does not make identity verification quantum-resistant — that is still
+classical X25519 and Ed25519.
+
+Pairwise forward secrecy and post-quantum ratcheting are planned for OSL-RN, but they are not enabled in the shipping runtime.
+Group sender keys, view-once messages, timed deletion and attachment transport
+are planned or partially implemented, but they are not release-proven
+capabilities today.
 
 ## Using it
 
@@ -62,12 +65,22 @@ kinds and they are different.
 
 Scope burn shreds OSL's local copies for one conversation. The stored ciphertext
 and nonce are overwritten in place, the rows are marked burned so a later sync
-cannot write them back, cached attachments go with them, and OSL's server-side
-state for that scope is deleted. A peer-notification path is implemented, but it
-has not been proved end to end and is not available as a working peer action
-today. Do not rely on Burn to remove another member's copy. Use scope burn when
-you no longer trust the people in one channel with your past messages.
-Everything else you have is untouched.
+cannot write them back, cached attachments go with them, and OSL asks its own
+holding store to delete the objects it uploaded for that scope. That last step can
+fail: an object whose delete credential OSL no longer holds is counted as a burn
+failure and kept for retry, and is never reported as destroyed. A
+peer-notification path is implemented, but it has not been proved end to end and
+is not available as a working peer action today. Do not rely on Burn to remove
+another member's copy.
+
+The reverse also holds today, and it is not in your control. On the transport the
+app currently uses, the credential that authorises deleting an uploaded object is
+the same one every recipient has to derive in order to read it, so a recipient can
+delete objects you sent. Splitting those two authorities apart is designed and not
+yet built.
+
+Use scope burn when you no longer trust the people in one channel with your past
+messages. Everything else you have is untouched.
 
 Account burn shreds everything on your machine — every conversation and every
 saved message — and generates a fresh identity so you can start over. Use this as
@@ -99,9 +112,16 @@ API for deleting your own messages with your own account token, and using the
 private one is self-botting and puts your account at risk. So OSL drives
 Discord's own interface through Windows accessibility — it focuses one of your
 message rows, opens that row's own menu, chooses Discord's own delete item and
-confirms in Discord's own dialog. It never moves your pointer and it only ever
-touches messages you wrote; another person's message has no delete item and is
-reported as unsupported.
+confirms in Discord's own dialog. It never moves your pointer.
+
+It cannot yet prove a row is yours, and you should not read it as if it can. The
+ownership test compares the visible author name at the start of the row against
+your own display name. A Discord display name is chosen by whoever holds the
+account, so a row written by an impersonator can pass that test. Discord's own row
+menu is not a reliable second gate either: an account with Manage Messages is
+offered Delete on other people's messages. Rows that fail the name test are
+reported as unsupported. Nothing is deleted today — see Status below — and this
+check has to be re-based on Discord's own message id before anything is.
 
 Every run is `Scan → Preview → Confirm → Execute → Verify → Receipt`. You see
 exactly which rows will be attempted before anything happens, and the plan is

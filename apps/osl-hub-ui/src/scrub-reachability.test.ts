@@ -9,6 +9,26 @@ const ENTRYPOINT = join(SOURCE_ROOT, "main.ts");
 // This is an intentional, temporary baseline: these modules are implemented but
 // not yet in the shipping graph. Stage R/I must replace entries here with a
 // reachable module, rather than letting the deletion lane disappear unnoticed.
+//
+// `scrub-review-list.ts` and `scrub-scope-fingerprint.ts` left this list when
+// the Scrub route started rendering grouped owner-review rows and the scope
+// digest, so the list is now shorter by exactly the two modules that became
+// reachable -- not by any that merely stopped being checked.
+//
+// Everything still listed is deliberately unreachable. v1 Scrub is DISCOVERY:
+// it shows the owner what an export exposes and gives manual directions. Every
+// remaining entry is part of the live-deletion product -- IMAP delete ports,
+// hosted-session ports and preloads, typed irreversible confirmation, dry-run
+// and receipt views for actions this build never performs -- and must stay out
+// of the shipping graph until the native authority, consent spend, and
+// provider-specific reviewed-run path exist.
+//
+// `autoscrub-progress.ts` stays for a narrower reason: its completion counter
+// only advances through `runNext(remove)`, the destructive step. Nothing in
+// this build can start a run, so the only ways to render it would be to call
+// the destructive path with a no-op -- recording deletions that never happened
+// -- or to widen its API so a caller can assert a completed count it did not
+// earn. Both would make the UI claim more than the build does.
 const KNOWN_ORPHANS = [
   "autoscrub-progress.ts",
   "scrub-attended-imap-run.ts",
@@ -26,8 +46,6 @@ const KNOWN_ORPHANS = [
   "scrub-provider-policy.ts",
   "scrub-provider-preloads.ts",
   "scrub-receipt-view.ts",
-  "scrub-review-list.ts",
-  "scrub-scope-fingerprint.ts",
 ] as const;
 
 function scrubModules(): string[] {

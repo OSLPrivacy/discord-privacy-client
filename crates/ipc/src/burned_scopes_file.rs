@@ -72,6 +72,20 @@ pub fn reset_burn_state_unreadable_for_tests() {
     BURN_STATE_UNREADABLE.store(false, Ordering::SeqCst);
 }
 
+/// Clear the fail-closed latch because the account it was protecting has been
+/// destroyed and replaced.
+///
+/// This is the ONLY non-test way out of the latch, and it is deliberately
+/// bound to the fresh-start path: that path mints a new identity, so nothing
+/// the old kill list covered is decryptable by the new account anyway, and
+/// there is therefore no burn promise left to keep. Without it a user whose
+/// kill list was corrupted or deleted would be stuck — every message blocked,
+/// every launch, forever — with the product's own reset button unable to help
+/// them, which is a worse failure than the one this file guards against.
+pub fn clear_burn_state_for_replaced_account() {
+    BURN_STATE_UNREADABLE.store(false, Ordering::SeqCst);
+}
+
 /// Load the burn kill list.
 ///
 /// FAIL CLOSED. This used to swallow a decrypt failure and return an EMPTY
@@ -88,12 +102,39 @@ pub fn reset_burn_state_unreadable_for_tests() {
 /// expressed as rows; it is expressed as the `BURN_STATE_UNREADABLE` latch,
 /// which `is_message_in_burn_kill_list` honours by returning `true`
 /// unconditionally and which blocks writes so the unreadable file on disk is
-/// never overwritten by an empty one. A missing file is still the ordinary
-/// fresh-install case and clears nothing.
+/// never overwritten by an empty one.
+///
+/// TA-T10-003a closed the matching hole on the MISSING-file path. "The kill
+/// list is not there" had exactly one reading — fresh install — and so
+/// deleting `burned_scopes.json` was a one-step un-burn: the loader returned
+/// an empty ledger, `is_message_in_burn_kill_list` answered `false` for every
+/// message, and the next write persisted the empty list. "I cannot read the
+/// promise" and "the promise is gone" are the same situation for the user
+/// whose messages are at stake, so they now get the same answer. The two are
+/// told apart by the account's burn-ledger enrolment marker
+/// (`whitelist_state.json`), which is set the first time a burn is recorded
+/// and cleared only by `fresh_start` deleting the file:
+///
+/// - marker absent  → no burn was ever recorded → genuine first run, stay open;
+/// - marker present → the ledger existed and is gone → fail closed;
+/// - marker unreadable → no conclusion (pre-gate bootstrap has no file key
+///   yet); the post-unlock `state_reload` pass re-runs this with the key
+///   installed and decides then.
 pub fn load_burned_scopes(path: &Path) -> BurnedScopesFile {
     let Ok(blob) = std::fs::read(path) else {
-        // Absent file: fresh install. Deliberately does NOT clear the latch —
-        // deleting an unreadable kill list must not be a way to unburn.
+        // Absent file. Deliberately does NOT clear the latch — deleting an
+        // unreadable kill list must not be a way to unburn.
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        if crate::whitelist_state::burn_ledger_enrollment(dir)
+            == crate::whitelist_state::BurnLedgerEnrollment::Enrolled
+        {
+            tracing::error!(
+                path = %crate::log_id::redact_path(path),
+                "OSL: burned_scopes.json is missing but this account has recorded burns — \
+                 treating all scopes as still burned"
+            );
+            BURN_STATE_UNREADABLE.store(true, Ordering::SeqCst);
+        }
         return BurnedScopesFile::default();
     };
     let plain = match crate::main_password::maybe_decrypt_file(path, &blob) {

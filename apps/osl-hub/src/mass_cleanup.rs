@@ -132,19 +132,17 @@ fn compiled_manifest() -> MassCleanupCapabilityManifest {
 
     let definitions: &[(ServiceKind, &[MassCleanupAction])] = &[
         (
-            Service::Telegram,
-            &[Action::LeaveAndRemoveChat, Action::ClearHistoryForSelf],
-        ),
-        (
             Service::Discord,
             &[Action::LeaveServer, Action::CloseConversation],
+        ),
+        (
+            Service::Telegram,
+            &[Action::LeaveAndRemoveChat, Action::ClearHistoryForSelf],
         ),
         (
             Service::WhatsApp,
             &[Action::LeaveAndRemoveChat, Action::ClearHistoryForSelf],
         ),
-        (Service::Instagram, &[Action::DeleteConversationForSelf]),
-        (Service::Snapchat, &[]),
         (
             Service::Email,
             &[
@@ -152,12 +150,7 @@ fn compiled_manifest() -> MassCleanupCapabilityManifest {
                 Action::DeleteConversationForSelf,
             ],
         ),
-        (Service::X, &[Action::DeleteConversationForSelf]),
         (Service::Signal, &[]),
-        (Service::Slack, &[]),
-        (Service::Linkedin, &[Action::DeleteConversationForSelf]),
-        (Service::Teams, &[]),
-        (Service::Messenger, &[Action::DeleteConversationForSelf]),
     ];
 
     MassCleanupCapabilityManifest {
@@ -277,7 +270,7 @@ mod tests {
         assert!(manifest.review_required_every_batch);
         assert!(manifest.typed_confirmation_required_every_batch);
         assert!(!manifest.unattended_execution_allowed);
-        assert_eq!(manifest.services.len(), 12);
+        assert_eq!(manifest.services.len(), 5);
         assert!(manifest.services.iter().all(|service| {
             service.availability == MassCleanupAvailability::Unavailable
                 && !service.discovery_supported

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
@@ -12,27 +12,46 @@ function functionSource(name: string, nextName: string): string {
   return source.slice(start, end);
 }
 
-async function loadUi() {
-  vi.resetModules();
-  const store = new Map<string, string>();
+// D-251: `src/main.ts` is ~10k lines, and importing it costs seconds. This file
+// used to do that inside the body of every `it()`, where vitest's default
+// 5,000 ms `testTimeout` applies, so most of each test's budget went on module
+// loading and a busy machine turned the file red with
+// `Test timed out in 5000ms` -- without ever reaching an assertion.
+//
+// The module is now loaded ONCE, in a hook that carries its own budget, and the
+// tests read it synchronously. That is safe here and was checked, not assumed:
+// the first loading test drives the state it renders from through
+// `__oslHubUiTest.reset(...)`, and the second loading test only reads the
+// static "Before deleting anything" disclosure copy, which does not depend on
+// any state `reset()` touches -- which is exactly the state a fresh import
+// would have seen.
+const localStore = new Map<string, string>();
+let ui: typeof import("./main");
+
+beforeAll(async () => {
   vi.stubGlobal("localStorage", {
-    getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => { store.set(key, value); },
-    removeItem: (key: string) => { store.delete(key); },
-    clear: () => { store.clear(); },
+    getItem: (key: string) => localStore.get(key) ?? null,
+    setItem: (key: string, value: string) => { localStore.set(key, value); },
+    removeItem: (key: string) => { localStore.delete(key); },
+    clear: () => { localStore.clear(); },
   });
   vi.stubGlobal("requestAnimationFrame", () => 1);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
-  return import("./main");
-}
+  vi.resetModules();
+  ui = await import("./main");
+}, 300_000);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  localStore.clear();
+});
 
 describe("radical simplicity on deep screens", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("Keep advanced implementation concepts behind detail surfaces", async () => {
-    const { __oslHubUiTest } = await loadUi();
+  it("Keep advanced implementation concepts behind detail surfaces", () => {
+    const { __oslHubUiTest } = ui;
     const bannedMainSurfaceConcepts =
       /\b(?:keyservers?|ratchets?|browser profiles?|provider adapters?|protocol state|storage layout|automation internals|transport plumbing|service-adapter mechanics)\b/i;
     const primaryRoutes = ["home", "inbox", "people", "privacy", "activity", "connections"] as const;
@@ -74,8 +93,8 @@ describe("radical simplicity on deep screens", () => {
     expect(styles).toContain(".settings-disclosure");
   });
 
-  it("keeps transport-gated Scrub automation behind the manual scan", async () => {
-    const { __oslHubUiTest } = await loadUi();
+  it("keeps transport-gated Scrub automation behind the manual scan", () => {
+    const { __oslHubUiTest } = ui;
     const scrub = __oslHubUiTest.renderSettingsSection("scrub");
 
     expect(scrub.indexOf('for="privacy-export-input"')).toBeLessThan(scrub.indexOf("autoscrub-disclosure"));

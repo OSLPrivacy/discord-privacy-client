@@ -896,7 +896,14 @@ describe("Telegram operator webhook route", () => {
     expect(helpBody.text).toContain("OSL operator commands");
     expect(helpBody.text).toContain("/osl status: current coordination state");
     expect(helpBody.text).toContain("/osl progress: project progress block");
-    expect(helpBody.text).toContain("/osl on|off|quiet|bind|unbind");
+    // `110ace457 t9-r-24 stop advertising inert OSL controls` deliberately
+    // dropped the "/osl on|off|quiet|bind|unbind" help line: owner binding is
+    // not active, so every one of those subcommands refuses, and help must not
+    // offer a control that cannot run.  That commit added the same guard beside
+    // the implementation (src/lib/telegram.ts, in-source vitest block); this
+    // route-level test had been asserting the pre-t9-r-24 help text and was
+    // never updated, which no CI run caught (D-172).
+    expect(helpBody.text).not.toMatch(/\/osl (?:on|off|quiet|bind|unbind)/);
     expect(helpBody.text).toContain("OSL progress (internal checklist)");
     expect(helpBody.text).toContain("Provisional verified progress: 100 / 303 points = 33%");
 

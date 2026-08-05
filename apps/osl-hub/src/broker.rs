@@ -40,10 +40,50 @@ fn scope_storage_key(scope_input: &ScopeInput) -> Result<String, String> {
     Ok(scope.storage_key())
 }
 
-/// Derives the private carrier detector from the bilateral secret held by both
-/// ends of an approved manual-peer conversation. It never crosses the adapter
-/// boundary and uses a domain distinct from the delivery tag (D-SEP).
-fn prose_detection_key(
+fn persist_osl_chat_inbound(
+    core: &HubCoreState,
+    channel_id: String,
+    message_id: String,
+    sender_osl_user_id: String,
+    plaintext: String,
+    created_at: i64,
+) -> Result<(), String> {
+    if channel_id.is_empty()
+        || channel_id.len() > 160
+        || message_id.is_empty()
+        || message_id.len() > 96
+        || sender_osl_user_id.is_empty()
+        || sender_osl_user_id.len() > 160
+        || plaintext.is_empty()
+        || created_at <= 0
+    {
+        return Err("OSL: invalid first-party chat history row".to_owned());
+    }
+    let guard = core
+        .osl
+        .message_store
+        .lock()
+        .map_err(|_| "OSL Chat history is unavailable".to_owned())?;
+    let Some(store) = guard.as_ref() else {
+        return Err("OSL Chat history is unavailable".to_owned());
+    };
+    store
+        .put(&store::StoredMessage {
+            discord_message_id: message_id,
+            channel_id,
+            sender_discord_id: sender_osl_user_id.clone(),
+            sender_osl_user_id,
+            plaintext,
+            decrypted_at: created_at,
+            burned: false,
+        })
+        .map_err(|error| format!("OSL: first-party chat history: {error}"))
+}
+
+/// The bilateral secret both ends of an approved manual-peer conversation
+/// hold. Every per-conversation prose value is expanded from it under its own
+/// domain, so no two of them can be substituted for each other.
+fn prose_conversation_secret(
     core: &HubCoreState,
     peer: &ManualPeerBinding,
 ) -> Result<[u8; 32], String> {
@@ -57,7 +97,33 @@ fn prose_detection_key(
     let peer_public = crypto::x25519::PublicKey::from_bytes(peer.peer_x25519_public);
     let shared = crypto::x25519::diffie_hellman(&identity.x25519_secret, &peer_public)
         .map_err(|_| "OSL protected conversation key is unavailable".to_owned())?;
-    ipc::prose_token::derive_detection_key(shared.as_bytes())
+    Ok(*shared.as_bytes())
+}
+
+/// Derives the private carrier detector from the bilateral secret held by both
+/// ends of an approved manual-peer conversation. It never crosses the adapter
+/// boundary and uses a domain distinct from the delivery tag (D-SEP).
+fn prose_detection_key(core: &HubCoreState, peer: &ManualPeerBinding) -> Result<[u8; 32], String> {
+    let shared = prose_conversation_secret(core, peer)?;
+    ipc::prose_token::derive_detection_key(&shared)
+        .map_err(|_| "OSL protected conversation key is unavailable".to_owned())
+}
+
+/// Derives this device's private root for cipher-store burn authority.
+///
+/// It is deliberately not a conversation value: a recipient who could compute
+/// it could destroy the objects this device uploaded. It also has to survive
+/// the conversation, because a scope burn walks recorded blob ids at a point
+/// where the peer binding may be gone.
+pub(crate) fn prose_send_key(core: &HubCoreState) -> Result<[u8; 32], String> {
+    let identity = core
+        .osl
+        .identity
+        .lock()
+        .map_err(|_| "OSL identity state is unavailable".to_owned())?
+        .clone()
+        .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    ipc::prose_token::derive_send_key(identity.x25519_secret.as_bytes())
         .map_err(|_| "OSL protected conversation key is unavailable".to_owned())
 }
 const MAX_PARTICIPANTS: usize = 512;
@@ -1177,6 +1243,8 @@ pub struct OpenedNativeOverlayText {
     /// as `PendingNativeOverlayText::message_id`, so a pending view-once entry
     /// and the text it later reveals name the same message.
     pub message_id: String,
+    #[serde(skip)]
+    sender_order: Option<AuthenticatedSenderOrder>,
     /// The public Discord carrier text that points at this message, i.e. the
     /// exact row the renderer must paint over.
     ///
@@ -1193,6 +1261,7 @@ pub struct OpenedNativeOverlayText {
     pub context_verified: bool,
     pub person_to_person_e2ee: bool,
     pub view_once_consumed: bool,
+    pub created_at: i64,
     pub expires_at: i64,
 }
 
@@ -1302,6 +1371,10 @@ struct LocalProtectedPayload {
 struct PeerProtectedPayload {
     version: u32,
     message_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    send_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scope_commitment: Option<String>,
     created_at: i64,
     expires_at: i64,
     service_id: String,
@@ -1374,8 +1447,19 @@ struct NativeTextReassembly {
 /// peer permanently blocked one logical message. A disagreeing row now forms its
 /// own group, which simply never reassembles, and the legitimate group is
 /// untouched.
+///
+/// Field order is load-bearing: the derived `Ord` is what `chunk_groups`
+/// iterates by, and that iteration order is the order rows are PERSISTED,
+/// consumed and deleted in -- D-128 requires the durable write to happen inside
+/// the loop, before anything is consumed, so it cannot be reordered afterwards
+/// the way the returned batch can. Keyed on `logical_message_id` first, that
+/// order was the sort order of a random id, so durable OSL Chat history came
+/// back in a different order on every run. The authenticated sender sequence
+/// leads instead, so the durable record and the delivered batch agree.
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 struct NativeTextGroupKey {
+    send_seq: Option<u64>,
+    scope_commitment: Option<String>,
     logical_message_id: String,
     chunk_count: u16,
     whole_sha256: String,
@@ -1423,12 +1507,103 @@ struct NativeOverlayAcknowledgmentPayload {
     recipient_osl_user_id: String,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PeerProtectionPolicy {
     view_once: bool,
     require_capture_protection: bool,
     created_at: i64,
     expires_at: i64,
+    send_order: Option<AuthenticatedSenderOrder>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct AuthenticatedSenderOrder {
+    send_seq: u64,
+    scope_commitment: String,
+}
+
+fn valid_authenticated_sender_order_shape(payload: &PeerProtectedPayload) -> bool {
+    match (payload.send_seq, payload.scope_commitment.as_deref()) {
+        (None, None) => true,
+        (Some(send_seq), Some(scope_commitment)) => {
+            send_seq > 0
+                && STANDARD
+                    .decode(scope_commitment)
+                    .ok()
+                    .is_some_and(|bytes| bytes.len() == 32)
+        }
+        _ => false,
+    }
+}
+
+fn authenticated_sender_order(payload: &PeerProtectedPayload) -> Option<AuthenticatedSenderOrder> {
+    if !valid_authenticated_sender_order_shape(payload) {
+        return None;
+    }
+    Some(AuthenticatedSenderOrder {
+        send_seq: payload.send_seq?,
+        scope_commitment: payload.scope_commitment.clone()?,
+    })
+}
+
+fn sort_opened_native_overlay_text_by_sender_order(
+    messages: Vec<OpenedNativeOverlayText>,
+) -> Vec<OpenedNativeOverlayText> {
+    let mut ordered_messages = messages.into_iter().enumerate().collect::<Vec<_>>();
+    ordered_messages.sort_by(|(left_index, left), (right_index, right)| {
+        match (&left.sender_order, &right.sender_order) {
+            (Some(left), Some(right)) => left.cmp(right),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left_index.cmp(right_index),
+        }
+        .then_with(|| left_index.cmp(right_index))
+    });
+    ordered_messages
+        .into_iter()
+        .map(|(_, message)| message)
+        .collect()
+}
+
+/// The one conversation name both ends of a manual peer derive identically.
+///
+/// `manual.scope` must never be used for a value that crosses the wire.
+/// `security::manual_peer_scope_id` (`security.rs:1762`) hashes this install's
+/// own `account_id` and its own roster `person_id`, so the two ends of a single
+/// conversation are *guaranteed* to produce different storage keys --
+/// `manual_peer_scope_is_symmetric_across_different_local_account_ids` asserts
+/// exactly that with `assert_ne!(first_scope.id, second_scope.id)`. A
+/// commitment computed over that key cannot be reproduced by the peer, so
+/// requiring equality against a locally derived copy refuses every protected
+/// message rather than only the wrong ones.
+///
+/// The relay scope id is the name both ends already agree on: it is derived
+/// from the conversation binding the sender authenticates into the envelope and
+/// the receiver compares exactly in `validate_oriented_peer_protected_payload`,
+/// and it is already the id the sender posts under and the receiver drains.
+fn authenticated_sender_order_scope_key(
+    context: &HubConversationContext,
+) -> Result<String, String> {
+    native_overlay_relay_scope_id(&context.conversation_id)
+}
+
+fn validate_authenticated_sender_order_scope(
+    core: &HubCoreState,
+    verified: &ManualPeerBinding,
+    context: &HubConversationContext,
+    payload: &PeerProtectedPayload,
+) -> Result<(), String> {
+    let Some(scope_commitment) = payload.scope_commitment.as_deref() else {
+        return Ok(());
+    };
+    let storage_key = authenticated_sender_order_scope_key(context)?;
+    let expected =
+        security::peer_scope_commitment(core, &verified.peer_x25519_public, &storage_key)?;
+    if scope_commitment == expected {
+        Ok(())
+    } else {
+        Err("This encrypted message could not be opened".to_owned())
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1475,6 +1650,8 @@ struct NativeOverlayAttachmentNotice {
     fetch_token: String,
     attachment_key: [u8; 32],
     content_id: [u8; 16],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    display_duration_seconds: Option<i64>,
     view_once: bool,
 }
 
@@ -1490,6 +1667,7 @@ pub struct NativeOverlayAttachmentSealPlan {
     pub attachment_id: String,
     pub created_at: i64,
     pub expires_at: i64,
+    pub display_duration_seconds: Option<u64>,
     pub original_filename: String,
     pub mime_type: String,
     pub plaintext_size: u64,
@@ -1546,6 +1724,7 @@ pub struct NativeOverlayAttachmentOpenPlan {
     pub fetch_token: String,
     pub attachment_key: [u8; 32],
     pub view_once: bool,
+    pub display_duration_seconds: Option<u64>,
     expires_at: i64,
 }
 
@@ -1676,6 +1855,31 @@ pub fn prepare_peer_prose_text_with_capture(
     .map(|envelope| envelope.prepared)
 }
 
+pub fn prepare_peer_prose_text_with_capture_and_store_client(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    context_token: &str,
+    plaintext: String,
+    view_once: bool,
+    require_capture_protection: bool,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
+) -> Result<PreparedPeerProseMessage, String> {
+    prepare_peer_prose_text_inner_with_chunk(
+        core,
+        security_state,
+        broker,
+        context_token,
+        plaintext,
+        view_once,
+        require_capture_protection,
+        None,
+        Some(store_client),
+        None,
+    )
+    .map(|envelope| envelope.prepared)
+}
+
 /// QA-only seam used by the dedicated WhatsApp build after the exact native
 /// window, paired peer, chat headers, composer, and transcript have been
 /// explicitly visually bound. It does not place or send provider input.
@@ -1685,6 +1889,7 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
     verified: ManualPeerBinding,
     visual_context_sha256: &str,
     plaintext: String,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
 ) -> Result<PreparedPeerProseMessage, String> {
     if !canonical_hex(visual_context_sha256, 64) {
         return Err("WhatsApp QA visual context commitment is invalid".to_owned());
@@ -1709,6 +1914,7 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
             require_capture_protection: false,
             created_at: now,
             expires_at,
+            send_order: None,
         },
         random_peer_message_id(),
         None,
@@ -1719,21 +1925,51 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
 
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
-    let detection_key = prose_detection_key(core, &verified)?;
-    let uploaded = ipc::prose_token::prose_token_send(
-        &dir,
+    let conversation_key = prose_conversation_secret(core, &verified)?;
+    let detection_key = ipc::prose_token::derive_detection_key(&conversation_key)
+        .map_err(|_| "OSL protected conversation key is unavailable".to_owned())?;
+    let send_key = prose_send_key(core)?;
+    let uploaded = ipc::prose_token::prose_token_send_with_client(
+        store_client,
         &scope,
         &detection_key,
+        ipc::prose_token::ProseTokenSendKeys {
+            message_key: &conversation_key,
+            send_key: &send_key,
+            conversation_key: &conversation_key,
+        },
         &encrypted,
         ttl_seconds,
     )
-        .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
-    if security::record_peer_prose_blob(security_state, scope.clone(), uploaded.blob_id.clone())
-        .is_err()
+    // D-144: the user-facing sentence stays byte-identical, but the cause is no
+    // longer thrown away. `map_err(|_| ...)` here cost D-127 a bisect: the word
+    // "prepare" reads as client-side, while this call is the UPLOAD, so the
+    // investigation looked past the server interaction that had actually failed.
+    .map_err(|error| format!("OSL could not prepare the encrypted copy text ({error})"))?;
+    if security::record_peer_prose_blob(
+        security_state,
+        scope.clone(),
+        uploaded.blob_id.clone(),
+        uploaded.burn_capability.clone(),
+    )
+    .is_err()
     {
-        if ipc::prose_token::prose_token_burn_id(&dir, &scope, &uploaded.blob_id).is_err() {
-            let _ =
-                security::record_peer_prose_blob(security_state, scope, uploaded.blob_id.clone());
+        // Same route for the rollback as for the upload it destroys.
+        if burn_uploaded_prose_blob(
+            &dir,
+            Some(store_client),
+            &send_key,
+            &uploaded.blob_id,
+            uploaded.burn_capability.as_deref(),
+        )
+        .is_err()
+        {
+            let _ = security::record_peer_prose_blob(
+                security_state,
+                scope,
+                uploaded.blob_id.clone(),
+                uploaded.burn_capability.clone(),
+            );
         }
         return Err("OSL could not save the encrypted message safely".to_owned());
     }
@@ -1763,7 +1999,43 @@ fn prepare_peer_prose_text_inner(
         view_once,
         require_capture_protection,
         None,
+        None,
+        None,
     )
+}
+
+/// Undo one prose-token upload over the exact route that performed it.
+///
+/// `store_client` is `Some` precisely when the upload was routed, so passing
+/// it straight through is what keeps a burn on its own upload's path. When it
+/// is `None` the upload was unrouted too, and the direct helper is reached
+/// through the same process-wide interlock the upload passed -- so a Tor
+/// choice that arrived in between refuses here instead of leaking a DELETE.
+/// D-232: the rollback DELETE is a burn like any other, so it must present the
+/// credential the protocol that uploaded the object actually accepts. It used
+/// to present a manage capability the deployed Worker answers 401 to, which
+/// meant a failed ledger write left a live object behind every time.
+fn burn_uploaded_prose_blob(
+    config_dir: &std::path::Path,
+    store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
+    send_key: &[u8],
+    blob_id: &str,
+    burn_capability: Option<&str>,
+) -> Result<(), ipc::prose_token::ProseTokenError> {
+    match store_client {
+        Some(client) => ipc::prose_token::prose_token_burn_recorded_with_client(
+            client,
+            send_key,
+            blob_id,
+            burn_capability,
+        ),
+        None => ipc::prose_token::prose_token_burn_recorded(
+            config_dir,
+            send_key,
+            blob_id,
+            burn_capability,
+        ),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1776,6 +2048,8 @@ fn prepare_peer_prose_text_inner_with_chunk(
     view_once: bool,
     require_capture_protection: bool,
     chunk: Option<NativeTextChunkMeta>,
+    store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
+    send_order: Option<AuthenticatedSenderOrder>,
 ) -> Result<PreparedPeerProseEnvelope, String> {
     let manual = broker.manual_peer_for(context_token)?;
     let verified = security::require_manual_peer_scope_approved(
@@ -1817,6 +2091,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
             require_capture_protection,
             created_at: now,
             expires_at,
+            send_order,
         },
         message_id.clone(),
         chunk.as_ref(),
@@ -1827,23 +2102,65 @@ fn prepare_peer_prose_text_inner_with_chunk(
 
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
-    let detection_key = prose_detection_key(core, &verified)?;
-    let uploaded = ipc::prose_token::prose_token_send(
-        &dir,
-        &manual.scope,
-        &detection_key,
-        &encrypted,
-        ttl_seconds,
-    )
-        .map_err(|_| "OSL could not prepare the encrypted copy text".to_owned())?;
+    let conversation_key = prose_conversation_secret(core, &verified)?;
+    let detection_key = ipc::prose_token::derive_detection_key(&conversation_key)
+        .map_err(|_| "OSL protected conversation key is unavailable".to_owned())?;
+    let send_key = prose_send_key(core)?;
+    let send_keys = ipc::prose_token::ProseTokenSendKeys {
+        message_key: &conversation_key,
+        send_key: &send_key,
+        conversation_key: &conversation_key,
+    };
+    // Same pointer, same client-derived blob id, same capability set on every
+    // route. All the route decides is which HTTP client carries the upload:
+    // `store_client` is Some only once the Tor gate has authorized a route, and
+    // a selected-but-unhealthy Tor never reaches here at all.
+    let uploaded = if let Some(store_client) = store_client {
+        ipc::prose_token::prose_token_send_with_client(
+            store_client,
+            &manual.scope,
+            &detection_key,
+            send_keys,
+            &encrypted,
+            ttl_seconds,
+        )
+    } else {
+        ipc::prose_token::prose_token_send(
+            &dir,
+            &manual.scope,
+            &detection_key,
+            send_keys,
+            &encrypted,
+            ttl_seconds,
+        )
+    }
+    // D-144: the user-facing sentence stays byte-identical, but the cause is no
+    // longer thrown away. `map_err(|_| ...)` here cost D-127 a bisect: the word
+    // "prepare" reads as client-side, while this call is the UPLOAD, so the
+    // investigation looked past the server interaction that had actually failed.
+    .map_err(|error| format!("OSL could not prepare the encrypted copy text ({error})"))?;
     if security::record_peer_prose_blob(
         security_state,
         manual.scope.clone(),
         uploaded.blob_id.clone(),
+        uploaded.burn_capability.clone(),
     )
     .is_err()
     {
-        if ipc::prose_token::prose_token_burn_id(&dir, &manual.scope, &uploaded.blob_id).is_err() {
+        // The rollback DELETE must ride the same route as the upload it is
+        // undoing. Burning a Tor-uploaded blob over a direct client would tie
+        // that upload to this device's real address -- a correlation the
+        // upload itself never produced. Hand the burn the client the upload
+        // used; a route that had none is still the same route.
+        if burn_uploaded_prose_blob(
+            &dir,
+            store_client,
+            &send_key,
+            &uploaded.blob_id,
+            uploaded.burn_capability.as_deref(),
+        )
+        .is_err()
+        {
             // A transient primary-ledger failure must not become an
             // untracked remote blob if the authenticated DELETE also fails.
             // Retry the encrypted recoverable ledger before returning failure.
@@ -1851,6 +2168,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
                 security_state,
                 manual.scope.clone(),
                 uploaded.blob_id.clone(),
+                uploaded.burn_capability.clone(),
             );
         }
         return Err("OSL could not save the encrypted message safely".to_owned());
@@ -1956,6 +2274,11 @@ fn prepare_direct_manual_v3(
             PEER_PROTECTED_VERSION
         },
         message_id,
+        send_seq: policy.send_order.as_ref().map(|order| order.send_seq),
+        scope_commitment: policy
+            .send_order
+            .as_ref()
+            .map(|order| order.scope_commitment.clone()),
         created_at: policy.created_at,
         expires_at: policy.expires_at,
         service_id: manual.service_id.clone(),
@@ -3240,6 +3563,8 @@ fn native_overlay_wrapped_key_matches_payload(
 fn same_peer_protected_payload(left: &PeerProtectedPayload, right: &PeerProtectedPayload) -> bool {
     left.version == right.version
         && left.message_id == right.message_id
+        && left.send_seq == right.send_seq
+        && left.scope_commitment == right.scope_commitment
         && left.created_at == right.created_at
         && left.expires_at == right.expires_at
         && left.service_id == right.service_id
@@ -3301,6 +3626,8 @@ fn authenticate_native_overlay_wrapped_payload(
         ipc::main_password::now_unix_secs_pub(),
     )
     .map_err(|_| PeerProsePointerFailure::Rejected)?;
+    validate_authenticated_sender_order_scope(core, verified, context, &payload)
+        .map_err(|_| PeerProsePointerFailure::Rejected)?;
     if native_overlay_wrapped_key_matches_payload(
         &wrapped, identity, notice, manual, context, &payload,
     ) {
@@ -3348,7 +3675,19 @@ fn bind_authenticated_native_row(
         ),
         _ => return None,
     };
-    if !canonical_hex(&authenticated.blob_id, 16)
+    // The cipher-store id, at whichever width the protocol that produced it
+    // assigns. D-232: this used to require 32 hex on the grounds that "the
+    // pointer migration made it the 32-hex value both ends derive from `P`" —
+    // but the B0-01 bridge reverted to the deployed Worker's server-assigned
+    // 8-byte id, so `prose_token_recv*` hands this 16 hex on every real
+    // message and this check discarded the sender attribution of every row
+    // Discord ever delivered. Unconditionally: not a fallback, not a warning.
+    //
+    // Both widths are named by `ipc::prose_token` rather than restated here,
+    // because restating one is precisely how the drift happened. This stays a
+    // strict canonical-hex check at an exact width — an id of any other shape,
+    // including one hex short, is still refused.
+    if !is_canonical_store_blob_id(&authenticated.blob_id)
         || !canonical_hex(&authenticated.ciphertext_sha256, 64)
         || !bounded_attribution_id(&authenticated.payload.message_id)
     {
@@ -3397,8 +3736,8 @@ fn authenticate_oriented_prose_pointer(
     }
     let dir = keystore::osl_config_dir()
         .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
-    let detection_key = prose_detection_key(core, &verified)
-        .map_err(|_| PeerProsePointerFailure::Rejected)?;
+    let detection_key =
+        prose_detection_key(core, &verified).map_err(|_| PeerProsePointerFailure::Rejected)?;
     let recovered = peer_prose_token_outcome(ipc::prose_token::prose_token_recv_classified(
         &dir,
         &manual.scope,
@@ -3438,6 +3777,8 @@ fn authenticate_oriented_prose_pointer(
         ),
     }
     .map_err(|_| PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected))?;
+    validate_authenticated_sender_order_scope(core, &verified, &context, &payload)
+        .map_err(|_| PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected))?;
     let ciphertext_sha256 = sha256_hex(recovered.wire.as_bytes());
     Ok(AuthenticatedProsePointer {
         payload,
@@ -3496,6 +3837,36 @@ pub fn prepare_native_discord_overlay_text(
     )
 }
 
+/// The shipping Discord send, carried by an already-authorized route.
+///
+/// This is the same body as [`prepare_native_discord_overlay_text`]; the only
+/// difference is that the blob upload and the inbox post ride clients the Tor
+/// gate handed over rather than clients this path builds for itself.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_native_discord_overlay_text_with_route_clients(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
+    plaintext: String,
+    view_once: bool,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
+    keyserver_client: Option<&keystore::KeyServerClient>,
+) -> Result<PreparedNativeOverlayCarrier, String> {
+    let context_token = broker.active_native_manual_context_token()?;
+    prepare_peer_inbox_text_with_route_clients(
+        core,
+        security_state,
+        broker,
+        ai_carrier,
+        &context_token,
+        plaintext,
+        view_once,
+        Some(store_client),
+        keyserver_client,
+    )
+}
+
 pub fn prepare_osl_chat_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
@@ -3514,6 +3885,31 @@ pub fn prepare_osl_chat_text(
         &context_token,
         plaintext,
         view_once,
+    )
+    .map(|carrier| carrier.prepared)
+}
+
+pub fn prepare_osl_chat_text_with_route_clients(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
+    plaintext: String,
+    view_once: bool,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
+    keyserver_client: Option<&keystore::KeyServerClient>,
+) -> Result<PreparedNativeOverlayText, String> {
+    let context_token = broker.active_osl_chat_context_token()?;
+    prepare_peer_inbox_text_with_route_clients(
+        core,
+        security_state,
+        broker,
+        ai_carrier,
+        &context_token,
+        plaintext,
+        view_once,
+        Some(store_client),
+        keyserver_client,
     )
     .map(|carrier| carrier.prepared)
 }
@@ -3568,6 +3964,31 @@ fn prepare_peer_inbox_text(
     context_token: &str,
     plaintext: String,
     view_once: bool,
+) -> Result<PreparedNativeOverlayCarrier, String> {
+    prepare_peer_inbox_text_with_route_clients(
+        core,
+        security_state,
+        broker,
+        ai_carrier,
+        context_token,
+        plaintext,
+        view_once,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_peer_inbox_text_with_route_clients(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
+    context_token: &str,
+    plaintext: String,
+    view_once: bool,
+    store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
+    keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
     #[cfg(feature = "discord-qa-shell")]
     let is_fixed_discord_qa_probe = plaintext == "OSL Discord QA probe" && !view_once;
@@ -3640,7 +4061,7 @@ fn prepare_peer_inbox_text(
         "entered",
         None,
     )?;
-    let transport = keyserver_transport(core);
+    let transport = keyserver_transport_with_override(core, keyserver_client);
     #[cfg(feature = "discord-qa-shell")]
     if let Err(error) = &transport {
         record_fixed_discord_qa_broker_stage(
@@ -3694,6 +4115,23 @@ fn prepare_peer_inbox_text(
     let allow_device_bound_qa_receipt_key = native_discord_qa_receipt_context(&context);
     #[cfg(not(feature = "discord-qa-shell"))]
     let allow_device_bound_qa_receipt_key = false;
+    // The name the RECEIVER can also derive. Committing to `manual.scope` here
+    // put a purely local namespace on the wire (see
+    // `authenticated_sender_order_scope_key`), which the peer's equality check
+    // could never satisfy.
+    let storage_key = authenticated_sender_order_scope_key(&context)?;
+    let scope_commitment =
+        security::peer_scope_commitment(core, &verified.peer_x25519_public, &storage_key)?;
+    let send_seq = security::next_peer_send_seq(
+        core,
+        security_state,
+        &verified.peer_x25519_public,
+        &storage_key,
+    )?;
+    let send_order = AuthenticatedSenderOrder {
+        send_seq,
+        scope_commitment,
+    };
     // One prose-token cover per chunk. Only a single-chunk message can carry a
     // Discord row: the row is one token, and a token is all-or-nothing.
     let mut carrier_flagtext = None::<String>;
@@ -3727,6 +4165,8 @@ fn prepare_peer_inbox_text(
             view_once,
             true,
             Some(meta),
+            store_client,
+            Some(send_order.clone()),
         );
         #[cfg(feature = "discord-qa-shell")]
         if let Err(error) = &encrypted_result {
@@ -3819,6 +4259,31 @@ fn prepare_peer_inbox_text(
                     )?;
                 }
                 qa_encrypt_refusal_site("post_control_inbox_failed");
+                // D-223. `post_native_overlay_wrapped_key` above already
+                // succeeded for this chunk, so the recipient holds a key for a
+                // message nothing will ever tell them about: delivery is half
+                // done and cannot be undone. Persist the notice so a reconnect
+                // finishes it.
+                //
+                // Only an unreachable key server qualifies. An HTTP status is
+                // the server *answering* -- a refusal the operator has to see,
+                // not an outage to retry through -- and queueing those would
+                // rebuild exactly the "it says queued, nothing is queued"
+                // dishonesty this defect is about.
+                if crate::osl_chat_queue::is_unreachable(&_error)
+                    && crate::osl_chat_queue::queue_undelivered_relay_notice(
+                        &crate::osl_chat_queue::QueuedRelayNotice {
+                            message_id: notice.message_id.clone(),
+                            recipient_osl_user_id: manual.peer_osl_user_id.clone(),
+                            scope_id: scope_id.clone(),
+                            bundle: bundle.clone(),
+                            expires_at,
+                        },
+                    )
+                    .is_ok()
+                {
+                    return Err(OSL_RELAY_NOTICE_QUEUED.to_owned());
+                }
                 // Which keyserver failure it was. Fixed class labels only
                 // (http_401 / http_403 / transport / ...), never a URL, token,
                 // peer id, or payload.
@@ -3989,6 +4454,46 @@ pub fn reveal_native_discord_overlay_view_once(
     Ok(batch.messages.remove(0))
 }
 
+/// Copy for the one case where a send is neither delivered nor lost: the
+/// wrapped key landed, the relay notice did not, and the notice is now durably
+/// queued. It must not say "sent" and it must not say "not sent".
+pub const OSL_RELAY_NOTICE_QUEUED: &str =
+    "OSL could not reach the key server. This encrypted message is saved and will finish \
+     sending by itself when you are back online.";
+
+/// Finish delivering relay notices whose wrapped key is already on the key
+/// server but whose notice never landed, and report how many completed.
+///
+/// This is the reconnect half of the D-223 queue. It is called from the OSL
+/// Chat receive path, so every poll that proves the network is reachable also
+/// drains what the last outage stranded.
+pub fn drain_osl_chat_send_queue(core: &HubCoreState) -> Result<usize, String> {
+    let queue = crate::osl_chat_queue::osl_chat_send_queue_at_config_dir()?;
+    if queue
+        .pending()
+        .map_err(|error| format!("OSL Chat send queue: {error}"))?
+        .is_empty()
+    {
+        return Ok(0);
+    }
+    let (identity, client) = keyserver_transport(core)?;
+    let now = ipc::main_password::now_unix_secs_pub();
+    let outcome = queue
+        .drain_relay_notices(now, |notice| {
+            client
+                .post_control_inbox(
+                    &identity,
+                    &notice.recipient_osl_user_id,
+                    &notice.scope_id,
+                    &notice.bundle,
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+        .map_err(|error| format!("OSL Chat send queue: {error}"))?;
+    Ok(outcome.delivered)
+}
+
 pub fn drain_osl_chat_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
@@ -3996,6 +4501,11 @@ pub fn drain_osl_chat_text(
     capture_protection_ready: bool,
 ) -> Result<OpenedNativeOverlayTextBatch, String> {
     let context_token = broker.active_osl_chat_context_token()?;
+    // Reaching the inbox at all proves the key server is reachable, so this is
+    // the honest moment to finish anything the last outage stranded. A drain
+    // failure must not block receiving: the records stay queued for the next
+    // poll.
+    let _ = drain_osl_chat_send_queue(core);
     drain_peer_inbox_text(
         core,
         security_state,
@@ -4193,14 +4703,8 @@ fn drain_peer_inbox_text(
             let wire = format!("DPC0::{}", STANDARD.encode(&bundle));
             let message_type = ipc::receipt_wire::MSG_TYPE_PRIVACY_RECEIPT;
             let admitted = (|| {
-                verify_manual_v3_type(
-                    core,
-                    &verified,
-                    &wire,
-                    ManualWireSender::Peer,
-                    message_type,
-                )
-                .map_err(|_| "OSL privacy receipt was invalid".to_owned())?;
+                verify_manual_v3_type(core, &verified, &wire, ManualWireSender::Peer, message_type)
+                    .map_err(|_| "OSL privacy receipt was invalid".to_owned())?;
                 let plaintext = decrypt_direct_manual_v3_payload(
                     core,
                     &verified,
@@ -4585,12 +5089,13 @@ fn drain_peer_inbox_text(
         // before their best-effort history write failed.
         if context.service_id == "osl-chat"
             && !payload.view_once
-            && ipc::commands::cmd_osl_persist_inbound(
-                &core.osl,
+            && persist_osl_chat_inbound(
+                core,
                 scope_storage_key(&manual.scope)?,
                 payload.message_id.clone(),
                 manual.peer_osl_user_id.clone(),
                 payload.plaintext.clone(),
+                payload.created_at,
             )
             .is_err()
         {
@@ -4619,17 +5124,20 @@ fn drain_peer_inbox_text(
         // disclosure is disabled until both peers have durable scope-bound
         // consent.
         let _ = client.delete_control_inbox(&identity, &item.id);
+        let sender_order = authenticated_sender_order(&payload);
         messages.push(OpenedNativeOverlayText {
             // The correlation handle. Both halves are already authenticated
             // facts about this exact row: the payload's own message id, and the
             // cover the signed notice pointed at -- which is the public text of
             // the Discord row this plaintext has to be painted over.
             message_id: payload.message_id,
+            sender_order,
             cover_pointer: native_overlay_cover_handle(&notice.cover_pointer),
             plaintext: payload.plaintext,
             context_verified: true,
             person_to_person_e2ee: true,
             view_once_consumed: payload.view_once,
+            created_at: payload.created_at,
             expires_at: payload.expires_at,
         });
     }
@@ -4765,12 +5273,13 @@ fn drain_peer_inbox_text(
         }
         if context.service_id == "osl-chat"
             && !logical.view_once
-            && ipc::commands::cmd_osl_persist_inbound(
-                &core.osl,
+            && persist_osl_chat_inbound(
+                core,
                 scope_storage_key(&manual.scope)?,
                 logical.message_id.clone(),
                 manual.peer_osl_user_id.clone(),
                 logical.plaintext.clone(),
+                logical.created_at,
             )
             .is_err()
         {
@@ -4796,13 +5305,16 @@ fn drain_peer_inbox_text(
             let _ = client.delete_control_inbox(&identity, inbox_id);
         }
         if !already_consumed {
+            let sender_order = authenticated_sender_order(&logical);
             messages.push(OpenedNativeOverlayText {
                 message_id: logical.message_id,
+                sender_order,
                 cover_pointer: single_carrier_cover,
                 plaintext: logical.plaintext,
                 context_verified: true,
                 person_to_person_e2ee: true,
                 view_once_consumed: logical.view_once,
+                created_at: logical.created_at,
                 expires_at: logical.expires_at,
             });
         }
@@ -4825,6 +5337,7 @@ fn drain_peer_inbox_text(
         &scope_id,
         ipc::main_password::now_unix_secs_pub(),
     );
+    let messages = sort_opened_native_overlay_text_by_sender_order(messages);
     let fetched = u32::try_from(messages.len().saturating_add(pending_view_once.len()))
         .unwrap_or(MAX_NATIVE_OVERLAY_OPEN_BATCH as u32);
     Ok(OpenedNativeOverlayTextBatch {
@@ -4949,6 +5462,7 @@ fn begin_peer_attachment(
         attachment_id: random_peer_message_id(),
         created_at,
         expires_at,
+        display_duration_seconds: view_once.then_some(u64::from(ttl_seconds)),
         original_filename,
         mime_type,
         plaintext_size,
@@ -5073,6 +5587,9 @@ fn deliver_peer_attachment(
         fetch_token: fetch_token.to_string(),
         attachment_key: plan.attachment_key,
         content_id: plan.content_id,
+        display_duration_seconds: plan
+            .display_duration_seconds
+            .map(|seconds| i64::try_from(seconds).unwrap_or(i64::MAX)),
         view_once: plan.view_once,
     };
     let mut encoded = serde_json::to_vec(&notice).map_err(|_| ERROR.to_owned())?;
@@ -5290,6 +5807,7 @@ fn native_overlay_attachment_plans(
             fetch_token: std::mem::take(&mut notice.fetch_token),
             attachment_key: notice.attachment_key,
             view_once: notice.view_once,
+            display_duration_seconds: native_overlay_attachment_display_duration(&notice).ok()?,
             expires_at: notice.expires_at,
         })
     });
@@ -5383,6 +5901,20 @@ fn decode_typed_manual_wire(wire: &str, message_type: u8) -> Result<Vec<u8>, ()>
     Ok(bundle)
 }
 
+/// A cipher-store blob id, at one of the two widths the store protocols
+/// actually assign — never a free-form hex string.
+///
+/// D-232. The two widths are the two protocols: the deployed bridge Worker
+/// assigns [`ipc::prose_token::BRIDGE_ID_BYTES`], and the destination
+/// capability Worker takes a client-derived
+/// [`ipc::cipher_store_client::FETCH_TOKEN_BYTES`]-wide id. Both are sourced
+/// from the crate that produces them, so a consumer can no longer drift away
+/// from what the send path emits the way this one did.
+fn is_canonical_store_blob_id(value: &str) -> bool {
+    canonical_hex(value, ipc::prose_token::BRIDGE_ID_BYTES * 2)
+        || canonical_hex(value, ipc::cipher_store_client::FETCH_TOKEN_BYTES * 2)
+}
+
 fn canonical_hex(value: &str, length: usize) -> bool {
     value.len() == length
         && value
@@ -5403,6 +5935,7 @@ fn validate_native_overlay_attachment_notice(
     now: i64,
 ) -> Result<(), ()> {
     let expected_mime = validate_peer_attachment_filename(&notice.original_filename)?;
+    let display_duration_valid = native_overlay_attachment_display_duration(notice).is_ok();
     if notice.version != NATIVE_OVERLAY_ATTACHMENT_VERSION
         || notice.domain != NATIVE_OVERLAY_ATTACHMENT_DOMAIN
         || !valid_peer_attachment_id(&notice.attachment_id)
@@ -5428,14 +5961,40 @@ fn validate_native_overlay_attachment_notice(
         || !canonical_hex(&notice.fetch_token, 32)
         || notice.attachment_key.iter().all(|byte| *byte == 0)
         || notice.content_id.iter().all(|byte| *byte == 0)
+        || !display_duration_valid
     {
         return Err(());
     }
     Ok(())
 }
 
+fn native_overlay_attachment_display_duration(
+    notice: &NativeOverlayAttachmentNotice,
+) -> Result<Option<u64>, ()> {
+    if !notice.view_once {
+        return if notice.display_duration_seconds.is_none() {
+            Ok(None)
+        } else {
+            Err(())
+        };
+    }
+    let expected = notice.expires_at.checked_sub(notice.created_at).ok_or(())?;
+    let duration = notice.display_duration_seconds.unwrap_or(expected);
+    if duration <= 0 || duration != expected || duration > MAX_PEER_LIFETIME_SECONDS {
+        return Err(());
+    }
+    u64::try_from(duration).map(Some).map_err(|_| ())
+}
+
 fn keyserver_transport(
     core: &HubCoreState,
+) -> Result<(keystore::Identity, keystore::KeyServerClient), String> {
+    keyserver_transport_with_override(core, None)
+}
+
+fn keyserver_transport_with_override(
+    core: &HubCoreState,
+    keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<(keystore::Identity, keystore::KeyServerClient), String> {
     let identity = core
         .osl
@@ -5444,6 +6003,9 @@ fn keyserver_transport(
         .map_err(|_| "OSL identity state is unavailable".to_owned())?
         .clone()
         .ok_or_else(|| "OSL identity is not loaded".to_owned())?;
+    if let Some(client) = keyserver_client {
+        return Ok((identity, client.clone()));
+    }
     let client = core
         .osl
         .keyserver
@@ -5940,6 +6502,19 @@ fn encode_peer_protected_chunk(payload: &PeerProtectedPayload) -> Result<Vec<u8>
         encoded.extend_from_slice(&length.to_be_bytes());
         encoded.extend_from_slice(value.as_bytes());
     }
+    match (payload.send_seq, payload.scope_commitment.as_deref()) {
+        (Some(send_seq), Some(scope_commitment))
+            if send_seq > 0 && scope_commitment.len() <= 64 =>
+        {
+            encoded.extend_from_slice(&send_seq.to_be_bytes());
+            let length = u32::try_from(scope_commitment.len())
+                .map_err(|_| "OSL could not prepare a single manual peer message".to_owned())?;
+            encoded.extend_from_slice(&length.to_be_bytes());
+            encoded.extend_from_slice(scope_commitment.as_bytes());
+        }
+        (None, None) => {}
+        _ => return Err("OSL could not prepare a single manual peer message".to_owned()),
+    }
     Ok(encoded)
 }
 
@@ -5975,12 +6550,21 @@ fn decode_peer_protected_chunk(encoded: &[u8]) -> Result<PeerProtectedPayload, S
     let logical_message_id = read_bounded_utf8(encoded, &mut offset, 96)?;
     let whole_sha256 = read_bounded_utf8(encoded, &mut offset, 64)?;
     let plaintext = read_bounded_utf8(encoded, &mut offset, MAX_NATIVE_OVERLAY_CHUNK_BYTES)?;
+    let (send_seq, scope_commitment) = if offset == encoded.len() {
+        (None, None)
+    } else {
+        let send_seq = read_u64(encoded, &mut offset)?;
+        let scope_commitment = read_bounded_utf8(encoded, &mut offset, 64)?;
+        (Some(send_seq), Some(scope_commitment))
+    };
     if offset != encoded.len() {
         return Err(ERROR.to_owned());
     }
     Ok(PeerProtectedPayload {
         version: PEER_PROTECTED_CHUNK_VERSION,
         message_id,
+        send_seq,
+        scope_commitment,
         created_at,
         expires_at,
         service_id,
@@ -6015,6 +6599,16 @@ fn read_i64(input: &[u8], offset: &mut usize) -> Result<i64, String> {
         .ok_or_else(|| "This encrypted message could not be opened".to_owned())?;
     *offset = end;
     Ok(i64::from_be_bytes(bytes))
+}
+
+fn read_u64(input: &[u8], offset: &mut usize) -> Result<u64, String> {
+    let end = offset.saturating_add(8);
+    let bytes: [u8; 8] = input
+        .get(*offset..end)
+        .and_then(|value| value.try_into().ok())
+        .ok_or_else(|| "This encrypted message could not be opened".to_owned())?;
+    *offset = end;
+    Ok(u64::from_be_bytes(bytes))
 }
 
 fn read_bounded_utf8(input: &[u8], offset: &mut usize, maximum: usize) -> Result<String, String> {
@@ -6214,6 +6808,7 @@ fn validate_oriented_peer_protected_payload(
         || payload.expires_at <= now
         || payload.expires_at
             > now.saturating_add(MAX_PEER_LIFETIME_SECONDS + MAX_PEER_CLOCK_SKEW_SECONDS)
+        || !valid_authenticated_sender_order_shape(payload)
         || payload.service_id != manual.service_id
         || payload.conversation_binding != context.conversation_id
         || payload.sender_osl_user_id != expected_sender
@@ -6249,6 +6844,8 @@ fn valid_peer_message_id(value: &str) -> bool {
 /// key cannot be steered by anything the wire did not prove.
 fn native_text_group_key(payload: &PeerProtectedPayload) -> Option<NativeTextGroupKey> {
     Some(NativeTextGroupKey {
+        send_seq: payload.send_seq,
+        scope_commitment: payload.scope_commitment.clone(),
         logical_message_id: payload.logical_message_id.clone()?,
         chunk_count: payload.chunk_count?,
         whole_sha256: payload.whole_sha256.clone()?,
@@ -6283,6 +6880,8 @@ fn native_overlay_cover_handle(cover_pointer: &str) -> Option<String> {
 
 fn same_native_text_group(left: &PeerProtectedPayload, right: &PeerProtectedPayload) -> bool {
     left.version == right.version
+        && left.send_seq == right.send_seq
+        && left.scope_commitment == right.scope_commitment
         && left.created_at == right.created_at
         && left.expires_at == right.expires_at
         && left.service_id == right.service_id
@@ -10209,6 +10808,8 @@ mod tests {
         PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: message_id.to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: 1_700_000_000,
             expires_at: 1_700_003_600,
             service_id: manual.service_id.clone(),
@@ -10241,6 +10842,7 @@ mod tests {
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
+                send_order: None,
             },
             message_id.to_owned(),
             None,
@@ -10370,6 +10972,7 @@ mod tests {
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
+                send_order: None,
             },
             message_id.to_owned(),
             None,
@@ -11328,7 +11931,7 @@ mod tests {
 
     fn context(account_id: &str, conversation_id: &str) -> HubConversationContext {
         HubConversationContext {
-            service_id: "instagram".to_owned(),
+            service_id: "email".to_owned(),
             account_id: account_id.to_owned(),
             conversation_kind: HubConversationKind::Dm,
             conversation_id: conversation_id.to_owned(),
@@ -11485,11 +12088,13 @@ mod tests {
         assert_eq!(MAX_NATIVE_OVERLAY_OPEN_BATCH, 64);
         let opened = OpenedNativeOverlayText {
             message_id: "peer-fedcba98765432100123456789abcdef".to_owned(),
+            sender_order: None,
             cover_pointer: Some("ordinary looking cover prose".to_owned()),
             plaintext: "first\n\nthird".to_owned(),
             context_verified: true,
             person_to_person_e2ee: true,
             view_once_consumed: true,
+            created_at: 1_786_996_400,
             expires_at: 1_787_000_000,
         };
         let value = serde_json::to_value(OpenedNativeOverlayTextBatch {
@@ -11507,6 +12112,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(value["fetched"], 2);
+        assert_eq!(value["messages"][0]["createdAt"], 1_786_996_400i64);
         assert_eq!(value["messages"][0]["expiresAt"], 1_787_000_000i64);
         assert_eq!(value["messages"][0]["plaintext"], "first\n\nthird");
         // The correlation handle every received message now carries, so the
@@ -11536,15 +12142,183 @@ mod tests {
         // renderer's exact-key parser expects rather than an explicit null.
         let reassembled = serde_json::to_value(OpenedNativeOverlayText {
             message_id: "peer-11112222333344445555666677778888".to_owned(),
+            sender_order: None,
             cover_pointer: None,
             plaintext: "joined".to_owned(),
             context_verified: true,
             person_to_person_e2ee: true,
             view_once_consumed: false,
+            created_at: 1_786_996_400,
             expires_at: 1_787_000_000,
         })
         .unwrap();
         assert!(reassembled.get("coverPointer").is_none());
+    }
+
+    #[test]
+    fn opened_native_overlay_text_sorts_by_authenticated_sender_order_only() {
+        fn opened(message_id: &str, plaintext: &str, send_seq: u64) -> OpenedNativeOverlayText {
+            OpenedNativeOverlayText {
+                message_id: message_id.to_owned(),
+                sender_order: Some(AuthenticatedSenderOrder {
+                    send_seq,
+                    scope_commitment: STANDARD.encode([0x42; 32]),
+                }),
+                cover_pointer: None,
+                plaintext: plaintext.to_owned(),
+                context_verified: true,
+                person_to_person_e2ee: true,
+                view_once_consumed: false,
+                created_at: 1_786_996_400,
+                expires_at: 1_787_000_000,
+            }
+        }
+
+        let sorted = sort_opened_native_overlay_text_by_sender_order(vec![
+            opened("peer-11111111111111111111111111111111", "two", 2),
+            opened("peer-22222222222222222222222222222222", "one", 1),
+            opened("peer-33333333333333333333333333333333", "three", 3),
+        ]);
+
+        assert!(
+            sorted
+                .iter()
+                .map(|message| message.plaintext.as_str())
+                .eq(["one", "two", "three"]),
+            "display order comes from the authenticated sender sequence, not arrival or id order"
+        );
+        let value = serde_json::to_value(&sorted[0]).unwrap();
+        assert!(value.get("senderOrder").is_none());
+        assert!(value.get("sendSeq").is_none());
+        assert!(value.get("scopeCommitment").is_none());
+    }
+
+    /// The regression that took out six receive behaviours at once: the scope
+    /// name committed inside the envelope has to be one the PEER can recompute.
+    /// `manual.scope` is not -- `security::manual_peer_scope_id` hashes this
+    /// install's own account id and its own roster person id, so A and B are
+    /// guaranteed to differ for the same conversation. Committing to it made
+    /// the receiver's equality check refuse every protected message, which is
+    /// indistinguishable from an empty inbox.
+    #[test]
+    fn authenticated_sender_order_scope_key_is_derivable_by_both_ends() {
+        let alice_view = context("alice-local-profile", "shared-conversation");
+        let bob_view = context("bob-completely-different-profile", "shared-conversation");
+        assert_eq!(
+            authenticated_sender_order_scope_key(&alice_view).unwrap(),
+            authenticated_sender_order_scope_key(&bob_view).unwrap(),
+            "both ends commit to the same name, derived from the shared conversation binding"
+        );
+
+        // The namespace this used to commit to, for that same conversation.
+        let alice_local =
+            security::manual_peer_scope_id("osl-chat", "alice-local-profile", "hub-person-bob")
+                .unwrap();
+        let bob_local = security::manual_peer_scope_id(
+            "osl-chat",
+            "bob-completely-different-profile",
+            "hub-person-alice",
+        )
+        .unwrap();
+        assert_ne!(
+            alice_local, bob_local,
+            "a manual peer scope is local by construction, so a commitment over it is \
+             unverifiable by the peer -- it must never be the committed name"
+        );
+
+        assert_ne!(
+            authenticated_sender_order_scope_key(&context("account", "conversation-one")).unwrap(),
+            authenticated_sender_order_scope_key(&context("account", "conversation-two")).unwrap(),
+            "the check still separates conversations: two conversations commit to two names"
+        );
+    }
+
+    /// Discrimination, not presence. The suite already covers the check's
+    /// PRESENCE -- inverting `validate_authenticated_sender_order_scope` to
+    /// always refuse reddens eight two-party receive tests, which is what caught
+    /// the `manual.scope` regression. It did not cover its DISCRIMINATION:
+    /// neutralising the equality at `broker.rs:1603` to `Ok(())` left every
+    /// shipped test green, so the check could have been deleted outright and CI
+    /// would not have noticed. Only the refusal direction is a security
+    /// property, and this is the test that holds it.
+    ///
+    /// Both conversation ids are real `manual_dm_channel_binding` derivations
+    /// for the SAME authenticated pair on two services, so the only thing that
+    /// differs between the accepted and the refused call is the conversation.
+    /// A hand-edited commitment field would test the base64 parser, not the
+    /// derivation, and would not catch this class of regression.
+    #[test]
+    fn authenticated_sender_order_scope_commitment_from_another_conversation_is_refused() {
+        let alice = keystore::generate_identity("osl-scope-discrimination-alice".to_owned());
+        let bob = keystore::generate_identity("osl-scope-discrimination-bob".to_owned());
+        let core = HubCoreState::default();
+        *core.osl.identity.lock().unwrap() = Some(alice.clone());
+        let binding = ManualPeerBinding {
+            person_id: "hub-person-bob".to_owned(),
+            peer_osl_user_id: bob.user_id.clone(),
+            peer_x25519_public: *bob.x25519_public.as_bytes(),
+            peer_mlkem768_public: bob.mlkem_public_bytes,
+        };
+
+        let minted_in = context(
+            "native-discord-alice",
+            &manual_dm_channel_binding("discord", &alice.user_id, &bob.user_id).unwrap(),
+        );
+        let presented_in = context(
+            "native-discord-alice",
+            &manual_dm_channel_binding("telegram", &alice.user_id, &bob.user_id).unwrap(),
+        );
+        assert_ne!(
+            minted_in.conversation_id, presented_in.conversation_id,
+            "the fixture must be two genuinely different conversations, not one \
+             conversation with an edited field"
+        );
+
+        let scope_commitment = security::peer_scope_commitment(
+            &core,
+            &binding.peer_x25519_public,
+            &authenticated_sender_order_scope_key(&minted_in).unwrap(),
+        )
+        .unwrap();
+        let payload = PeerProtectedPayload {
+            version: PEER_PROTECTED_VERSION,
+            message_id: "peer-00112233445566778899aabbccddeeff".to_owned(),
+            send_seq: Some(1),
+            scope_commitment: Some(scope_commitment),
+            created_at: 1_700_000_000,
+            expires_at: 1_700_003_600,
+            service_id: "discord".to_owned(),
+            conversation_binding: minted_in.conversation_id.clone(),
+            sender_osl_user_id: "peer-rose".to_owned(),
+            recipient_osl_user_id: "self-liam".to_owned(),
+            plaintext: "private".to_owned(),
+            view_once: false,
+            require_capture_protection: false,
+            logical_message_id: None,
+            chunk_index: None,
+            chunk_count: None,
+            whole_sha256: None,
+        };
+        assert!(
+            valid_authenticated_sender_order_shape(&payload),
+            "the fixture must present a well-formed order envelope, so the refusal \
+             below can only come from the commitment equality"
+        );
+
+        validate_authenticated_sender_order_scope(&core, &binding, &minted_in, &payload)
+            .expect("the conversation it was minted in accepts its own commitment");
+
+        let refusal =
+            validate_authenticated_sender_order_scope(&core, &binding, &presented_in, &payload)
+                .expect_err(
+                    "a commitment minted in another conversation must be refused -- if this \
+                     passes, the equality check is decoration and can be deleted",
+                );
+        assert_eq!(
+            refusal, "This encrypted message could not be opened",
+            "the refusal is the opaque user-facing message and discloses nothing about \
+             the commitment it rejected"
+        );
     }
 
     #[test]
@@ -11948,6 +12722,7 @@ mod tests {
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
+                send_order: None,
             },
             message_id.to_owned(),
             None,
@@ -12201,6 +12976,8 @@ mod tests {
         let payload = PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: "d7-received-message".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: now.saturating_sub(1),
             expires_at: now.saturating_add(3_600),
             service_id: context.service_id.clone(),
@@ -12290,6 +13067,8 @@ mod tests {
         let payload = PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: "msg-receipt".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: 1_700_000_000,
             expires_at: 1_700_003_600,
             service_id: manual.service_id.clone(),
@@ -12382,6 +13161,85 @@ mod tests {
                 && one_phase_chunked.contains("!received_already_sent")
                 && one_phase_chunked.contains("send_native_overlay_received_acknowledgment("),
             "one-phase chunked view-once opens and replays must post Received before deletion"
+        );
+    }
+
+    #[test]
+    fn first_party_osl_chat_persist_refuses_missing_store() {
+        let core = HubCoreState::default();
+
+        let error = persist_osl_chat_inbound(
+            &core,
+            "manual-dm-history".to_owned(),
+            "peer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            "osl-peer".to_owned(),
+            "private".to_owned(),
+            1_700_000_000,
+        )
+        .expect_err("missing MessageStore is a loud receive failure");
+
+        assert!(error.contains("history is unavailable"), "{error}");
+    }
+
+    #[test]
+    fn first_party_osl_chat_receive_persists_before_consume_or_delete() {
+        let source = include_str!("broker.rs");
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests {")
+            .map(|(production, _)| production)
+            .expect("broker test module boundary remains visible");
+        let drain = production
+            .split_once("fn drain_peer_inbox_text(")
+            .and_then(|(_, tail)| tail.split_once("pub fn load_osl_chat_history("))
+            .map(|(drain, _)| drain)
+            .expect("drain body remains visible");
+
+        assert!(
+            !drain.contains("cmd_osl_persist_inbound("),
+            "the receive drain must not call the best-effort IPC persistence API"
+        );
+
+        let single = drain
+            .split_once("let received_already_sent = two_phase_view_once")
+            .and_then(|(_, tail)| tail.split_once("messages.push(OpenedNativeOverlayText"))
+            .map(|(segment, _)| segment)
+            .expect("single-row receive branch remains visible");
+        let single_persist = single
+            .find("persist_osl_chat_inbound(")
+            .expect("single-row OSL Chat receive persists first");
+        let single_already_consumed = single
+            .find("if already_consumed {")
+            .expect("single-row already-consumed deletion branch remains visible");
+        let single_consume = single
+            .find("security::consume_peer_message(")
+            .expect("single-row consume call remains visible");
+        let single_delete = single
+            .find("delete_control_inbox")
+            .expect("single-row delete call remains visible");
+        assert!(
+            single_persist < single_already_consumed
+                && single_persist < single_consume
+                && single_persist < single_delete,
+            "single-row OSL Chat must persist before already-consumed deletion, consume, or delete"
+        );
+
+        let chunked = drain
+            .split_once("let mut logical = group.template;")
+            .and_then(|(_, tail)| tail.split_once("// Outbound half of the bilateral burn"))
+            .map(|(segment, _)| segment)
+            .expect("chunked receive branch remains visible");
+        let chunked_persist = chunked
+            .find("persist_osl_chat_inbound(")
+            .expect("chunked OSL Chat receive persists first");
+        let chunked_consume = chunked
+            .find("security::consume_peer_message(")
+            .expect("chunked consume call remains visible");
+        let chunked_delete = chunked
+            .find("delete_control_inbox")
+            .expect("chunked delete call remains visible");
+        assert!(
+            chunked_persist < chunked_consume && chunked_persist < chunked_delete,
+            "chunked OSL Chat must persist before consume or delete"
         );
     }
 
@@ -12781,12 +13639,12 @@ mod tests {
         let registry_path = temporary_registry();
         let registry = ServiceRegistryState::load(registry_path.clone());
         let account = registry
-            .create_for_owner(owner, ServiceKind::Instagram, "Test".to_owned())
+            .create_for_owner(owner, ServiceKind::Email, "Test".to_owned())
             .unwrap();
         let host = crate::service_host::ServiceHostState::default();
         let namespace = owner_profile_namespace(owner).unwrap();
         let active = host
-            .begin_open(&namespace, "instagram", &account.id, "www.instagram.com")
+            .begin_open(&namespace, "email", &account.id, "mail.google.com")
             .unwrap();
         let broker = HubBrokerState::default();
         let lease = activate_owned_local_loopback_context(
@@ -12794,7 +13652,7 @@ mod tests {
             &registry,
             &host,
             owner,
-            "instagram",
+            "email",
             &account.id,
             "local-0123456789abcdef".to_owned(),
         )
@@ -12802,7 +13660,7 @@ mod tests {
         let bound = broker.context_for(&lease.context_token).unwrap();
         assert_eq!(bound.self_osl_id, owner);
         assert_eq!(bound.participant_osl_ids, vec![owner]);
-        assert_eq!(bound.service_id, "instagram");
+        assert_eq!(bound.service_id, "email");
         assert_eq!(bound.account_id, account.id);
         assert_eq!(lease.host_generation, active.generation);
         assert!(broker
@@ -12826,12 +13684,12 @@ mod tests {
         let registry_path = temporary_registry();
         let registry = ServiceRegistryState::load(registry_path.clone());
         let account = registry
-            .create_for_owner(owner, ServiceKind::Instagram, "Test".to_owned())
+            .create_for_owner(owner, ServiceKind::Email, "Test".to_owned())
             .unwrap();
         let host = crate::service_host::ServiceHostState::default();
         let namespace = owner_profile_namespace(owner).unwrap();
         let active = host
-            .begin_open(&namespace, "instagram", &account.id, "www.instagram.com")
+            .begin_open(&namespace, "email", &account.id, "mail.google.com")
             .unwrap();
         let broker = HubBrokerState::default();
 
@@ -12848,31 +13706,25 @@ mod tests {
         };
         assert!(activate(
             "osl_owner_bbbbbbbbbbbbbbbb",
-            "instagram",
+            "email",
             &account.id,
             "local-0123456789abcdef"
         )
         .is_err());
         assert!(activate(owner, "discord", &account.id, "local-0123456789abcdef").is_err());
-        assert!(activate(
-            owner,
-            "instagram",
-            "other-account",
-            "local-0123456789abcdef"
-        )
-        .is_err());
-        assert!(activate(owner, "instagram", &account.id, "semantic label").is_err());
-        assert!(activate(owner, "instagram", &account.id, "too-short").is_err());
+        assert!(activate(owner, "email", "other-account", "local-0123456789abcdef").is_err());
+        assert!(activate(owner, "email", &account.id, "semantic label").is_err());
+        assert!(activate(owner, "email", &account.id, "too-short").is_err());
 
         host.next_generation().unwrap();
-        let hostless = activate(owner, "instagram", &account.id, "local-0123456789abcdef")
+        let hostless = activate(owner, "email", &account.id, "local-0123456789abcdef")
             .expect("an owned account may create a standalone local context");
         assert_eq!(
             broker
                 .validate_local_protected_origin(&hostless.context_token, owner)
                 .unwrap(),
             ProtectedContextOrigin::Standalone {
-                service_id: "instagram".to_owned(),
+                service_id: "email".to_owned(),
             }
         );
         assert!(broker
@@ -12925,25 +13777,23 @@ mod tests {
     fn context_switch_invalidates_prior_account_and_conversation() {
         let broker = HubBrokerState::default();
         let first = broker
-            .activate(context("instagram-personal", "dm-1"), 7)
+            .activate(context("email-personal", "dm-1"), 7)
             .unwrap();
-        let second = broker
-            .activate(context("instagram-alt", "dm-2"), 8)
-            .unwrap();
+        let second = broker.activate(context("email-alt", "dm-2"), 8).unwrap();
         assert!(broker.context_for(&first.context_token).is_err());
         assert_eq!(
             broker
                 .context_for(&second.context_token)
                 .unwrap()
                 .account_id,
-            "instagram-alt"
+            "email-alt"
         );
     }
 
     #[test]
     fn canonical_scopes_are_service_and_account_separated() {
-        let first = context("instagram-personal", "dm-1");
-        let second = context("instagram-alt", "dm-1");
+        let first = context("email-personal", "dm-1");
+        let second = context("email-alt", "dm-1");
         assert_ne!(
             scope_input(&first).unwrap().id,
             scope_input(&second).unwrap().id
@@ -13011,7 +13861,7 @@ mod tests {
         );
         assert_ne!(
             first_scope.id,
-            security::manual_peer_scope_id("instagram", "client-one-profile", "hub-person-bob",)
+            security::manual_peer_scope_id("telegram", "client-one-profile", "hub-person-bob",)
                 .unwrap()
         );
     }
@@ -13575,6 +14425,7 @@ mod tests {
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
+                send_order: None,
             },
             "peer-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
             Some(&NativeTextChunkMeta {
@@ -13756,6 +14607,8 @@ mod tests {
         let mut payload = PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: "peer-00112233445566778899aabbccddeeff".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: now - 10,
             expires_at: now + 3_600,
             service_id: "discord".to_owned(),
@@ -13773,7 +14626,7 @@ mod tests {
         validate_peer_protected_payload(&payload, &manual, &context, now).unwrap();
         assert_eq!(payload.plaintext, multiline);
 
-        payload.service_id = "instagram".to_owned();
+        payload.service_id = "telegram".to_owned();
         assert!(validate_peer_protected_payload(&payload, &manual, &context, now).is_err());
         payload.service_id = "discord".to_owned();
         payload.conversation_binding = "manual-dm-forwarded".to_owned();
@@ -13900,6 +14753,7 @@ mod tests {
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
+                send_order: None,
             },
             "peer-0123456789abcdef0123456789abcdef".to_owned(),
             None,
@@ -13969,6 +14823,7 @@ mod tests {
                 require_capture_protection: false,
                 created_at: 1_700_000_002,
                 expires_at: 1_700_003_602,
+                send_order: None,
             },
             "peer-fedcba9876543210fedcba9876543210".to_owned(),
             None,
@@ -14223,6 +15078,7 @@ mod tests {
                 require_capture_protection: true,
                 created_at: meta.created_at,
                 expires_at: meta.expires_at,
+                send_order: None,
             },
             "peer-00001111222233334444555566667777".to_owned(),
             Some(&meta),
@@ -14325,6 +15181,8 @@ mod tests {
         let base = PeerProtectedPayload {
             version: PEER_PROTECTED_CHUNK_VERSION,
             message_id: "peer-00001111222233334444555566667777".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: 1_700_000_000,
             expires_at: 1_700_003_600,
             service_id: "discord".to_owned(),
@@ -14614,7 +15472,7 @@ mod tests {
     fn default_core_fails_closed_instead_of_fabricating_encryption() {
         let broker = HubBrokerState::default();
         let lease = broker
-            .activate(context("instagram-personal", "dm-1"), 7)
+            .activate(context("email-personal", "dm-1"), 7)
             .unwrap();
         let core = HubCoreState::default();
         let error =
@@ -14625,7 +15483,7 @@ mod tests {
 
     #[test]
     fn invalid_participants_and_platform_ids_are_rejected() {
-        let mut invalid = context("instagram-personal", "dm-1");
+        let mut invalid = context("email-personal", "dm-1");
         invalid.participant_osl_ids.push("peer-rose".to_owned());
         assert!(validate_context(&invalid).is_err());
         invalid.participant_osl_ids.pop();
@@ -14637,11 +15495,11 @@ mod tests {
     fn lease_is_bound_to_exact_active_host_generation() {
         let broker = HubBrokerState::default();
         let lease = broker
-            .activate(context("instagram-personal", "dm-1"), 7)
+            .activate(context("email-personal", "dm-1"), 7)
             .unwrap();
         let active = ActiveServiceHost {
-            service_id: "instagram".to_owned(),
-            account_id: "instagram-personal".to_owned(),
+            service_id: "email".to_owned(),
+            account_id: "email-personal".to_owned(),
             generation: 7,
             owner_namespace: "owner-test".to_owned(),
         };
@@ -14766,6 +15624,8 @@ mod tests {
         let mut payload = PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: "peer-a9000000000000000000000000000000".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: 1_700_000_000,
             expires_at: 1_700_003_600,
             service_id: "discord".to_owned(),
@@ -14855,7 +15715,7 @@ ok i will weekend again with you"
                                 poster: RehydratedRowPoster::PeerAccount,
                                 native_locator_sha256: "b".repeat(64),
                                 carrier_sha256: "c".repeat(64),
-                                blob_id: "d".repeat(16),
+                                blob_id: "d".repeat(32),
                                 ciphertext_sha256: "e".repeat(64),
                                 payload_id: "payload-1".to_owned(),
                                 scope_binding_sha256: "f".repeat(64),
@@ -14993,6 +15853,91 @@ ok i will weekend again with you",
         }
     }
 
+    /// D-232. `bind_authenticated_native_row` is the only constructor for row
+    /// attribution on the Discord receive leg, and it required a 32-hex blob
+    /// id — the width the *undeployed* capability Worker will assign. The
+    /// deployed Worker assigns its own 8-byte id, so `prose_token_recv*`
+    /// returns 16 hex (`BRIDGE_ID_BYTES`), and every bridge-era row therefore
+    /// lost its sender attribution unconditionally. Not a fallback, not a
+    /// degraded mode: `None`, on every single received message.
+    ///
+    /// The assertion is about attribution surviving a well-formed receive, not
+    /// about a number, so it stays honest whichever width the protocol settles
+    /// on. `an_ill_formed_blob_id_still_refuses_row_attribution` below is its
+    /// paired floor: this must never become "accept anything".
+    #[test]
+    fn a_blob_id_the_shipping_send_path_produces_still_binds_row_attribution() {
+        // Exactly what a live bridge send records — captured from the deployed
+        // store at ciphers.oslprivacy.com, which answers `POST /v1/blob` with
+        // `{"id":"<16 hex>"}`.
+        const BRIDGE_ERA_BLOB_ID: &str = "c882e13e918656da";
+        assert_eq!(
+            BRIDGE_ERA_BLOB_ID.len(),
+            ipc::prose_token::BRIDGE_ID_BYTES * 2,
+            "the fixture must be the width the shipping send path actually returns"
+        );
+        let evidence =
+            bridge_era_evidence(crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount);
+        let mut authenticated = matrix_authenticated(
+            PeerWireOrientation::PeerToSelf,
+            "payload-bridge-era",
+            "bridge-era plaintext",
+            'b',
+        );
+        authenticated.blob_id = BRIDGE_ERA_BLOB_ID.to_owned();
+
+        let joined = bind_authenticated_native_row(&evidence, authenticated);
+
+        let (_, _, attribution) = joined.expect(
+            "a row whose pointer the shipping send path produced must keep its sender attribution",
+        );
+        assert_eq!(attribution.blob_id, BRIDGE_ERA_BLOB_ID);
+    }
+
+    /// The floor for the test above: widening the accepted id must not become
+    /// "accept anything". Nothing here is a width the send path can emit.
+    #[test]
+    fn an_ill_formed_blob_id_still_refuses_row_attribution() {
+        for bad in [
+            "",
+            "c882e13e918656d",   // 15 — one short of the bridge width
+            "c882e13e918656dab", // 17 — one over
+            "C882E13E918656DA",  // not the canonical lowercase the store indexes
+            "c882e13e918656dz",  // not hex
+            "zzzzzzzzzzzzzzzz",
+        ] {
+            let evidence = bridge_era_evidence(
+                crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount,
+            );
+            let mut authenticated = matrix_authenticated(
+                PeerWireOrientation::PeerToSelf,
+                "payload-bridge-era",
+                "bridge-era plaintext",
+                'b',
+            );
+            authenticated.blob_id = bad.to_owned();
+            assert!(
+                bind_authenticated_native_row(&evidence, authenticated).is_none(),
+                "an ill-formed blob id must not produce row attribution: {bad:?}"
+            );
+        }
+    }
+
+    fn bridge_era_evidence(
+        poster: crate::native_discord_adapter::NativeDiscordRowPoster,
+    ) -> crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
+        crate::native_discord_adapter::NativeDiscordRowAttributionEvidence {
+            discord_message_id: "111111111111111111".to_owned(),
+            poster_identity_sha256: "a".repeat(64),
+            poster,
+            native_locator_sha256: "b".repeat(64),
+            carrier_sha256: "c".repeat(64),
+            scope_binding_sha256: "d".repeat(64),
+            window_generation: 7,
+            row_index: 0,
+        }
+    }
+
     fn matrix_authenticated(
         orientation: PeerWireOrientation,
         payload_id: &str,
@@ -15003,6 +15948,8 @@ ok i will weekend again with you",
             payload: PeerProtectedPayload {
                 version: PEER_PROTECTED_VERSION,
                 message_id: payload_id.to_owned(),
+                send_seq: None,
+                scope_commitment: None,
                 created_at: 1,
                 expires_at: 2,
                 service_id: "discord".to_owned(),
@@ -15018,7 +15965,7 @@ ok i will weekend again with you",
                 whole_sha256: None,
             },
             orientation,
-            blob_id: fill.to_string().repeat(16),
+            blob_id: fill.to_string().repeat(32),
             ciphertext_sha256: fill.to_string().repeat(64),
         }
     }
@@ -15691,6 +16638,7 @@ ok i will weekend again with you",
                 require_capture_protection: false,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
+                send_order: None,
             },
             "peer-0123456789abcdef0123456789abcdef".to_owned(),
             None,
@@ -15855,6 +16803,8 @@ ok i will weekend again with you",
         let payload = PeerProtectedPayload {
             version: PEER_PROTECTED_CHUNK_VERSION,
             message_id: notice.message_id.clone(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: notice.created_at,
             expires_at: notice.expires_at,
             service_id: manual.service_id.clone(),
@@ -15951,6 +16901,8 @@ ok i will weekend again with you",
         let mut payload = PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: "peer-0123456789abcdef0123456789abcdef".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: 1_700_000_000,
             expires_at: 1_700_003_600,
             service_id: "discord".to_owned(),
@@ -15977,6 +16929,8 @@ ok i will weekend again with you",
         let mut payload = PeerProtectedPayload {
             version: PEER_PROTECTED_VERSION,
             message_id: "peer-0123456789abcdef0123456789abcdef".to_owned(),
+            send_seq: None,
+            scope_commitment: None,
             created_at: 1_700_000_000,
             expires_at: 1_700_003_600,
             service_id: "discord".to_owned(),

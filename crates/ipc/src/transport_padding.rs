@@ -33,9 +33,43 @@ pub fn pad_transport_object(mut object: Vec<u8>) -> Option<Vec<u8>> {
     Some(object)
 }
 
+/// Bytes of the length header a framed transport object carries.
+const LENGTH_PREFIX_BYTES: usize = 4;
+
+/// Pad an object whose own bytes do not describe their length.
+///
+/// Padmé conceals a length by appending bytes, which is only recoverable for a
+/// payload that is self-delimiting. A raw ciphertext is not: appending zeroes
+/// to it moves the AEAD tag and the object no longer opens. Frame the true
+/// length ahead of the payload so the padding stays invisible to the reader
+/// and visible only as an object size to the transport observer.
+///
+/// `None` means the framed length cannot be represented as a `usize`.
+pub fn frame_padded_transport_object(payload: &[u8]) -> Option<Vec<u8>> {
+    let length = u32::try_from(payload.len()).ok()?;
+    let mut framed = Vec::with_capacity(payload.len().checked_add(LENGTH_PREFIX_BYTES)?);
+    framed.extend_from_slice(&length.to_be_bytes());
+    framed.extend_from_slice(payload);
+    pad_transport_object(framed)
+}
+
+/// Recover the exact payload from a framed, padded transport object.
+///
+/// `None` for any object whose header is absent or claims more bytes than the
+/// object holds. A truncated or forged object is refused here rather than
+/// handed on as a shorter payload.
+pub fn unframe_padded_transport_object(object: &[u8]) -> Option<&[u8]> {
+    let header = object.get(..LENGTH_PREFIX_BYTES)?;
+    let length = usize::try_from(u32::from_be_bytes(header.try_into().ok()?)).ok()?;
+    object.get(LENGTH_PREFIX_BYTES..LENGTH_PREFIX_BYTES.checked_add(length)?)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{pad_transport_object, padded_transport_len};
+    use super::{
+        frame_padded_transport_object, pad_transport_object, padded_transport_len,
+        unframe_padded_transport_object,
+    };
 
     #[test]
     fn pads_an_unpadded_upload_to_a_server_accepted_length() {
@@ -61,5 +95,37 @@ mod tests {
     fn promotes_an_empty_object_to_the_smallest_uploadable_length() {
         assert_eq!(padded_transport_len(0), Some(1));
         assert_eq!(pad_transport_object(Vec::new()), Some(vec![0]));
+    }
+
+    /// The property the send path depends on: whatever an arbitrary ciphertext
+    /// is padded to, the reader gets back the exact original bytes. Without
+    /// this the padding silently corrupts every message.
+    #[test]
+    fn framing_survives_padding_for_lengths_that_are_not_padme() {
+        for length in [0, 1, 3, 17, 1_001, 4_097, 40_000] {
+            let payload: Vec<u8> = (0..length).map(|index| (index % 251) as u8).collect();
+            let object = frame_padded_transport_object(&payload).expect("representable framing");
+            assert_eq!(
+                padded_transport_len(object.len()),
+                Some(object.len()),
+                "a framed object is uploadable at its Padmé length"
+            );
+            assert!(
+                unframe_padded_transport_object(&object).expect("framed object reads back")
+                    == payload.as_slice(),
+                "the recovered payload is byte-identical to the original"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_an_object_whose_header_overruns_it() {
+        assert_eq!(unframe_padded_transport_object(&[]), None);
+        assert_eq!(unframe_padded_transport_object(&[0, 0, 0]), None);
+        assert_eq!(unframe_padded_transport_object(&[0, 0, 0, 9, 1, 2]), None);
+        assert_eq!(
+            unframe_padded_transport_object(&[0xff, 0xff, 0xff, 0xff, 1]),
+            None
+        );
     }
 }

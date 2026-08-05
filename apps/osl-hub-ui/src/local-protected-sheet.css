@@ -83,10 +83,11 @@
 .local-protected-tabs button { min-height: 36px; border: 0; background: transparent; color: var(--muted); cursor: pointer; font-weight: 600; }
 .local-protected-tabs button.active { background: var(--panel); color: var(--text); box-shadow: 0 1px 5px rgba(0, 0, 0, .22); }
 .local-protected-body { margin-top: 18px; }
-.local-protected-options { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 10px; }
+.local-protected-options { display: grid; grid-template-columns: minmax(0, 1fr) minmax(140px, auto); align-items: end; gap: 10px; }
 .local-protected-options label { display: grid; gap: 7px; color: var(--muted); font-size: 11px; }
-.local-view-once { min-width: 86px; justify-items: center; }
+.local-view-once { min-width: 0; justify-items: start; }
 .local-view-once input { width: 22px; min-height: 22px; }
+.local-view-once small { max-width: 180px; line-height: 1.35; }
 .local-capsule-result { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line-soft); }
 .local-capsule-result small { color: var(--muted); text-align: center; }
 .local-send-truth { color: var(--muted); font-size: 11px; line-height: 1.4; text-align: center; }

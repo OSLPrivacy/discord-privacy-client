@@ -1,13 +1,18 @@
-//! Regression tests for the cover-only, AEAD-backed context store.
+//! Proves `cover_ai::cover_history` is reachable as ordinary crate API.
+//!
+//! T13-C5 added `src/cover_history.rs` without a `mod` declaration in
+//! `lib.rs`, so the module was never compiled into the crate at all: the only
+//! thing that built it was a `#[path]` recompile in this file, which produced a
+//! private second copy and made the module look both "tested" and "dead" at the
+//! same time. Linking the real crate here means a `lib.rs` that drops the module
+//! fails to compile this test instead of silently returning it to that state.
+//!
+//! Assertions that need `CoverText` live in the module's own unit tests: its
+//! constructor is crate-private on purpose, which is the whole point of the
+//! type, so an integration test cannot mint one and must not be given a way to.
 
-#[path = "../src/cover_history.rs"]
-mod cover_history;
+use cover_ai::cover_history::{CoverHistory, CoverHistoryAead, CoverScope, SealedHistory};
 
-use cover_history::{
-    CoverHistory, CoverHistoryAead, CoverScope, CoverText, SealedHistory, MAX_SCOPES, MAX_TURNS,
-};
-
-#[derive(Default)]
 struct TestAead;
 
 impl CoverHistoryAead for TestAead {
@@ -31,73 +36,16 @@ impl CoverHistoryAead for TestAead {
     }
 }
 
-fn scope(id: u8) -> CoverScope {
-    CoverScope::from_hash([id; 32])
-}
-
-fn cover(text: &str) -> CoverText {
-    CoverText::from_verified_render(text.to_owned()).unwrap()
-}
-
 #[test]
-fn only_verified_cover_values_can_be_recorded_and_they_are_aead_sealed() {
-    let scope = scope(7);
+fn the_store_is_public_crate_api_and_holds_nothing_until_a_render_is_recorded() {
     let mut history = CoverHistory::new(TestAead);
-    history
-        .record(scope, cover("the train was late again"), 60, 100)
-        .unwrap();
+    let scope = CoverScope::from_hash([9u8; 32]);
 
-    // `record` takes CoverText, not String or &str: plaintext has no route to
-    // this boundary. The private CoverText constructor is only exposed to the
-    // carrier-verification adapter in this crate.
-    assert_eq!(
-        history
-            .history(scope, 101)
-            .unwrap()
-            .iter()
-            .map(CoverText::as_str)
-            .collect::<Vec<_>>(),
-        ["the train was late again"]
-    );
     assert!(
-        !history
-            .sealed_for_test(scope)
-            .unwrap()
-            .ciphertext
-            .windows(24)
-            .any(|window| window == b"the train was late again"),
-        "stored context must be ciphertext, not readable cover text"
+        history.history(scope, 100).unwrap().is_empty(),
+        "an unseen scope must read back empty, not fabricate context"
     );
-}
-
-#[test]
-fn transcript_is_bounded_expiring_and_scope_keyed() {
-    let mut history = CoverHistory::new(TestAead);
-    let selected = scope(3);
-    for turn in 0..(MAX_TURNS + 5) {
-        history
-            .record(selected, cover(&format!("neutral cover {turn}")), 10, 100)
-            .unwrap();
-    }
-    assert_eq!(history.history(selected, 109).unwrap().len(), MAX_TURNS);
-    assert!(history.history(selected, 110).unwrap().is_empty());
-
-    for id in 0..(MAX_SCOPES + 4) {
-        history
-            .record(
-                scope(id as u8),
-                cover("a visible cover"),
-                60,
-                200 + id as u64,
-            )
-            .unwrap();
-    }
-    assert!(history.history(scope(0), 201).unwrap().is_empty());
-    assert_eq!(
-        history
-            .history(scope((MAX_SCOPES + 3) as u8), 201)
-            .unwrap()
-            .len(),
-        1
-    );
+    history.burn_scope(scope);
+    history.clear();
+    assert!(history.history(scope, 100).unwrap().is_empty());
 }

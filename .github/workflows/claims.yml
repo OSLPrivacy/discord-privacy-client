@@ -2,8 +2,17 @@ name: Website Claims
 
 on:
   push:
-    branches: [main]
+    # D-172. Same as state-authority.yml: this file is not on the default branch,
+    # so it had never run anywhere. Both of its jobs are green on
+    # integrate/first-usable (measured 2026-08-04) and the self-test job proves
+    # the claim gate rejects its sabotage fixtures, so it is a gate that can
+    # fail. Switched on.
+    branches: [main, 'integrate/**']
   pull_request:
+  # D-195: the only trigger a commit message cannot suppress. `[skip ci]` in a
+  # commit subject cancels `push` and `pull_request` outright; see the ruling in
+  # integration-gate.yml. This makes a skipped run re-gradable by hand.
+  workflow_dispatch:
 
 permissions:
   contents: read

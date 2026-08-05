@@ -85,8 +85,15 @@ export class Archive extends DurableObject<Env> {
   }
 
   private entries(): ArchiveEntry[] {
+    // Oldest-first is the retained pool's canonical order (policy.ts
+    // `oldestFirst`), and it is what `idx_archive_entries_received` exists to
+    // serve.  Without the ORDER BY, a WITHOUT ROWID table scans in `id`
+    // primary-key order, so the eviction receipts returned by `store()` came
+    // back in arbitrary lexicographic order rather than the chronological
+    // order the deletions actually happened in.
     return this.sql.exec<ArchiveRow>(
-      "SELECT id, object_key, received_at, expires_at, byte_length FROM archive_entries",
+      `SELECT id, object_key, received_at, expires_at, byte_length FROM archive_entries
+        ORDER BY received_at ASC, id ASC`,
     ).toArray().map((row) => ({
       id: row.id,
       objectKey: row.object_key,

@@ -1,0 +1,21 @@
+{
+  "adapter_source": "src/native_telegram_adapter.rs",
+  "adapter_source_sha256": "3558650f1ad943571ac502c50a5ffe89d3fe8ef33dede752f4289fafe78869fa",
+  "byte_exact": true,
+  "carrier_bytes": 264,
+  "client_process": "Telegram",
+  "composer_empty_after_clear": true,
+  "element_count": 720,
+  "enter_sent": false,
+  "payload_sha256": "c3d4aa9a434ef87a220563e1d43860507fab1d3164aa4adcbb46804f354c29f8",
+  "provider": "telegram",
+  "readback_bytes": 264,
+  "readback_sha256": "88be728d800f6bb7bc1432652345f2dc0bf081a8e1817a9bef3b535dffe85c0e",
+  "recorded_utc": "unix:1785908597",
+  "recovered_sha256": "c3d4aa9a434ef87a220563e1d43860507fab1d3164aa4adcbb46804f354c29f8",
+  "schema": "osl-live-carry-receipt-v2",
+  "seam": "uia2_substrate",
+  "seam_contract_items": 43,
+  "seam_contract_sha256": "06a86bda0d0bbcaabb32947c64c24212d1d58823ea0b76f90d8ca103743350ac",
+  "substrate_source_sha256": "04006405aefc0ec7aebfba17f9edb47511866ab9b42c270883dd822215de7539"
+}

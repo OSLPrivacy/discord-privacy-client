@@ -104,7 +104,7 @@ pub fn reload_encrypted_state_after_unlock(
             Ok(Some(q)) => {
                 tracing::warn!(
                     file = name,
-                    quarantined_to = %q.display(),
+                    quarantined_to = %crate::log_id::redact_path(&q),
                     "OSL: state_reload — {name} sealed by a different key; \
                      quarantined (rename, not delete), recreating under \
                      current key"
@@ -119,9 +119,12 @@ pub fn reload_encrypted_state_after_unlock(
                 // keeps the session locked, which is the correct outcome —
                 // previously only a failed RENAME was reported, so the
                 // ordinary success path lost the file quietly.
+                // D-191: this string is what `cmd_osl_verify_gate_password`
+                // puts in its `tracing::error!`, so it must not carry the
+                // account name the profile path embeds.
                 report.errors.push(format!(
                     "{name}: sealed by a different key; quarantined to {}",
-                    q.display()
+                    crate::log_id::redact_path(&q)
                 ));
             }
             Ok(None) => {}
@@ -139,7 +142,7 @@ pub fn reload_encrypted_state_after_unlock(
     if device_prefs_path != legacy_prefs_path {
         match quarantine_if_wrong_key(&device_prefs_path) {
             Ok(Some(q)) => tracing::warn!(
-                quarantined_to = %q.display(),
+                quarantined_to = %crate::log_id::redact_path(&q),
                 "OSL: device app_preferences sealed by a different key; \
                  quarantined (rename, not delete)"
             ),
@@ -212,21 +215,42 @@ pub fn reload_encrypted_state_after_unlock(
         Err(e) => report.errors.push(format!("whitelist_state: {e}")),
     }
 
-    // burned_scopes.json — the loader is infallible by signature
-    // (returns default on any failure), but missing files are the
-    // fresh-install case, not an error. Use file existence as a
-    // proxy for "should have data."
+    // burned_scopes.json — the loader is infallible by signature (returns
+    // default on any failure).
+    //
+    // TA-T10-003a: this used to be gated on `bs_path.exists()`, which meant
+    // the one code path that runs with the at-rest file key installed never
+    // evaluated the missing-file case at all. A missing kill list is exactly
+    // what a deletion looks like, and the loader can only tell a deletion from
+    // a first run once it can read the enrolment marker — i.e. here, post-gate.
+    // So call it unconditionally and let it decide.
     let bs_path = config_dir.join("burned_scopes.json");
-    if bs_path.exists() {
-        let bs = crate::burned_scopes_file::load_burned_scopes(&bs_path);
-        if crate::burned_scopes_file::burn_state_unreadable() {
-            // Fail closed and say so. The empty list below is NOT authoritative
-            // while this holds — `is_message_in_burn_kill_list` reports every
-            // message as burned and writes are refused.
-            report.errors.push(
-                "burned_scopes: kill list unreadable — all scopes treated as still burned"
-                    .to_string(),
-            );
+    let bs_existed = bs_path.exists();
+    let bs = crate::burned_scopes_file::load_burned_scopes(&bs_path);
+    if crate::burned_scopes_file::burn_state_unreadable() {
+        // Fail closed and say so. The empty list below is NOT authoritative
+        // while this holds — `is_message_in_burn_kill_list` reports every
+        // message as burned and writes are refused.
+        report.errors.push(if bs_existed {
+            "burned_scopes: kill list unreadable — all scopes treated as still burned".to_string()
+        } else {
+            "burned_scopes: kill list is missing but this account has recorded burns — \
+             all scopes treated as still burned"
+                .to_string()
+        });
+    }
+    if bs_existed {
+        // TA-T10-003a self-heal: a ledger we just read with burns in it IS
+        // proof of enrolment, so re-assert the marker here. This closes the
+        // one window the write ordering in `record_burn_ledger_enrollment`
+        // leaves open — a burn whose marker write failed — at the cost of one
+        // no-op read on every unlock once the marker is already set.
+        if !bs.scopes.is_empty() {
+            if let Err(e) = crate::whitelist_state::mark_burn_ledger_enrolled(config_dir) {
+                report.errors.push(format!(
+                    "burned_scopes: enrolment marker not refreshed: {e}"
+                ));
+            }
         }
         report.burned_scopes_count = bs.scopes.len();
         report.burned_scopes_loaded = true;
@@ -241,9 +265,7 @@ pub fn reload_encrypted_state_after_unlock(
         Ok(true) => {
             report.prekeys_loaded = true;
             report.prekey_opks = state
-                .prekey_state
-                .lock()
-                .expect("prekey_state mutex poisoned")
+                .prekey_state_slot()
                 .as_ref()
                 .map(|prekeys| prekeys.opk_pool.len())
                 .unwrap_or(0);
@@ -260,10 +282,30 @@ pub fn reload_encrypted_state_after_unlock(
         let sk = crate::sender_key_state::load_sender_key_state(&sk_path);
         report.sender_keys_count = sk.states.len();
         report.sender_keys_loaded = true;
+        let live = sk
+            .states
+            .into_iter()
+            .filter_map(
+                |(scope, disk)| match crypto::sender_keys::SenderKeyState::try_from(disk) {
+                    Ok(mut state) => {
+                        // A persisted sender root is intentionally absent. Do not
+                        // synthesize one here: the next outbound send must create
+                        // a chain and redistribute its SKDM.
+                        state.discard_sender_chain();
+                        Some((scope, state))
+                    }
+                    Err(error) => {
+                        tracing::warn!(scope = %crate::log_id::log_id(&scope), %error,
+                        "OSL: ignoring unreadable persisted sender-key state");
+                        None
+                    }
+                },
+            )
+            .collect();
         *state
             .sender_key_state
             .lock()
-            .expect("sender_key_state mutex poisoned") = sk;
+            .expect("sender_key_state mutex poisoned") = live;
     }
 
     // membership.json — dynamic recipient observations. Same encrypted-at-rest
@@ -405,13 +447,17 @@ pub fn load_persisted_prekey_state_with_sealer(
 
     let loaded = (|| {
         let identity = state
-            .identity
-            .lock()
-            .map_err(|_| "identity mutex poisoned".to_string())?
+            .identity_slot()
             .clone()
             .ok_or_else(|| "identity is not loaded".to_string())?;
+        // D-142: keep the underlying keystore error. This used to be
+        // `map_err(|_| …)`, so a version mismatch, a sealer-method mismatch and
+        // an AEAD failure all arrived at the gate as the same six words — and
+        // the gate collapses them again into one user-facing sentence. The
+        // cause has to survive at least as far as the log line that names the
+        // loader, or the fail-closed refusal is undiagnosable.
         let prekeys = keystore::load_prekey_state(&path, sealer)
-            .map_err(|_| "local prekey state is unreadable".to_string())?;
+            .map_err(|e| format!("local prekey state is unreadable: {e}"))?;
         validate_prekey_state_for_identity(&identity, &prekeys)?;
         Ok(prekeys)
     })();

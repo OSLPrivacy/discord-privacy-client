@@ -1,6 +1,7 @@
 import { createHash, webcrypto } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { basename, resolve as resolvePath } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
@@ -16,7 +17,6 @@ import {
   D2_R2_BUCKET,
   D2_RECOVERY_MARKER,
   D2_RELEASE_COMMIT,
-  D2_RELEASE_SOURCE_FILES,
   D2_RELEASE_SOURCE_SHA256,
   D2_RELEASE_TREE,
   D2_REQUIRED_MIGRATIONS,
@@ -34,6 +34,14 @@ import {
   verifyD2Migration0010ProductionRelease,
   verifyD2ProductionContractForTestsOnly,
 } from "../scripts/d2-0010-release-contract.js";
+import {
+  deriveReleaseSourceFiles,
+  localModuleClosure,
+  readReleaseRoots,
+  RELEASE_CONFIG_FILES,
+  RELEASE_SOURCE_FILE_FLOOR,
+  releaseSourceManifestSha256,
+} from "../scripts/d2-release-source-manifest.js";
 
 const ACCOUNT_SHA256 = "a".repeat(64);
 const VERSION_ID = "11111111-1111-4111-8111-111111111111";
@@ -475,8 +483,9 @@ describe("D2 migration-0010 authoritative release contract", () => {
   });
 
   it("binds the exact recovery source and migration bytes", () => {
+    const files = deriveReleaseSourceFiles(PROJECT_ROOT);
     const manifest = createHash("sha256");
-    for (const relative of D2_RELEASE_SOURCE_FILES) {
+    for (const relative of files) {
       const bytes = readFileSync(
         fileURLToPath(new URL(`../${relative}`, import.meta.url)),
       );
@@ -486,7 +495,11 @@ describe("D2 migration-0010 authoritative release contract", () => {
       manifest.update("\0");
       manifest.update(bytes);
     }
+    // Recomputed here rather than imported, so the digest under test is not
+    // being produced by the same call the contract gate makes.
     expect(manifest.digest("hex")).toBe(D2_RELEASE_SOURCE_SHA256);
+    expect(releaseSourceManifestSha256(PROJECT_ROOT, files))
+      .toBe(D2_RELEASE_SOURCE_SHA256);
     const migration = readFileSync(
       fileURLToPath(
         new URL(
@@ -503,5 +516,88 @@ describe("D2 migration-0010 authoritative release contract", () => {
     // though the root is correct. The property under test is that the
     // digests above were taken from the cipher-store-cf tree.
     expect(basename(resolvePath(PROJECT_ROOT))).toBe("cipher-store-cf");
+  });
+});
+
+/// D-258 — the pinned set is derived, so it cannot be short by omission.
+describe("D2 release source set derives from the deploy config", () => {
+  const files = deriveReleaseSourceFiles(PROJECT_ROOT);
+
+  it("takes its roots from wrangler.toml rather than a hand-written list", () => {
+    // Behavioural, not a source-text pin: the rule is exercised against a
+    // second, differently-shaped config and must answer differently. A test
+    // that grepped wrangler.toml for the answer it expected would pass even if
+    // `readReleaseRoots` returned a constant.
+    const roots = readReleaseRoots(PROJECT_ROOT);
+    expect(roots.main).toBe("src/index.ts");
+    expect(roots.roots).toEqual(["migrations", "src"]);
+    expect(roots.migrationDirs).toEqual(["migrations"]);
+
+    const scratch = mkdtempSync(join(tmpdir(), "d2-roots-"));
+    mkdirSync(join(scratch, "worker"));
+    mkdirSync(join(scratch, "db"));
+    writeFileSync(
+      join(scratch, "wrangler.toml"),
+      'main = "worker/entry.ts"\nmigrations_dir = "db"\n',
+    );
+    expect(readReleaseRoots(scratch)).toEqual({
+      main: "worker/entry.ts",
+      roots: ["db", "worker"],
+      migrationDirs: ["db"],
+    });
+    rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it("contains the files whose absence from the static list was the defect", () => {
+    // Each of these changed shipping behaviour while outside the old 31-entry
+    // array. `attachment-reserve.ts` is the one D-258 proved with: its
+    // null-dereference fix changed the live fetch path and moved no digest.
+    for (const witness of [
+      "src/endpoints/attachment-reserve.ts",
+      "src/endpoints/blob-request-profile.ts",
+      "src/endpoints/receipt.ts",
+      "src/lib/burn-policy.ts",
+      "src/lib/capability.ts",
+      "src/lib/payload-store.ts",
+      "src/lib/storage-grant.ts",
+      "src/lib/ttl.ts",
+      "src/realtime/connection.ts",
+      "migrations/0011_capability_digests_and_pool.sql",
+      "migrations/0017_attachment_fetch_reservations.sql",
+    ]) {
+      expect(files).toContain(witness);
+    }
+    for (const extra of RELEASE_CONFIG_FILES) expect(files).toContain(extra);
+  });
+
+  it("pins every module that reaches the Worker entry point", () => {
+    const roots = readReleaseRoots(PROJECT_ROOT);
+    const shipped = localModuleClosure(PROJECT_ROOT, roots.main);
+    expect(shipped).toContain(roots.main);
+    expect(shipped.length).toBeGreaterThan(10);
+    expect(shipped.filter((module) => !files.includes(module))).toEqual([]);
+  });
+
+  it("cannot be satisfied by a set that lost a file", () => {
+    // The floor is not decoration: starve the walk and it refuses.
+    expect(files.length).toBeGreaterThanOrEqual(RELEASE_SOURCE_FILE_FLOOR);
+    const scratch = mkdtempSync(join(tmpdir(), "d2-starve-"));
+    mkdirSync(join(scratch, "src"));
+    mkdirSync(join(scratch, "migrations"));
+    writeFileSync(join(scratch, "src", "index.ts"), "export default {};\n");
+    writeFileSync(
+      join(scratch, "wrangler.toml"),
+      'main = "src/index.ts"\nmigrations_dir = "migrations"\n',
+    );
+    expect(() => deriveReleaseSourceFiles(scratch)).toThrow(/below the floor/);
+    rmSync(scratch, { recursive: true, force: true });
+
+    // And the digest itself is membership-sensitive: dropping any single entry
+    // from the real set fails to reproduce the pin.
+    for (const index of [0, Math.floor(files.length / 2), files.length - 1]) {
+      const short = files.filter((_, position) => position !== index);
+      expect(releaseSourceManifestSha256(PROJECT_ROOT, short))
+        .not.toBe(D2_RELEASE_SOURCE_SHA256);
+    }
   });
 });

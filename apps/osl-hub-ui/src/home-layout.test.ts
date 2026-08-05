@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
 vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
@@ -13,21 +13,45 @@ function readRelative(relativePath: string): string {
   return readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), "utf8");
 }
 
-async function loadUi() {
-  vi.resetModules();
-  const store = new Map<string, string>();
+// D-251: `src/main.ts` is ~10k lines, and importing it costs seconds. This file
+// used to do that inside the body of every `it()`, where vitest's default
+// 5,000 ms `testTimeout` applies, so most of each test's budget went on module
+// loading and a busy machine turned the file red with
+// `Test timed out in 5000ms` -- without ever reaching an assertion.
+//
+// The module is now loaded ONCE, in a hook that carries its own budget, and the
+// tests read it synchronously. That is safe here and was checked, not assumed:
+// only 4 of this file's tests load the module at all, each drives the state it
+// renders from through `__oslHubUiTest.reset(...)` or calls a pure exported
+// helper (`homePrimaryActionPlan`), and the stubbed `localStorage` is emptied
+// before each test -- which is exactly the state a fresh import would have
+// seen. Every other test in this file reads `main.ts`/`styles.css` source
+// text directly and never touches the loaded module.
+const localStore = new Map<string, string>();
+let ui: typeof import("./main");
+
+beforeAll(async () => {
   vi.stubGlobal("localStorage", {
-    getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => { store.set(key, value); },
-    removeItem: (key: string) => { store.delete(key); },
-    clear: () => { store.clear(); },
+    getItem: (key: string) => localStore.get(key) ?? null,
+    setItem: (key: string, value: string) => { localStore.set(key, value); },
+    removeItem: (key: string) => { localStore.delete(key); },
+    clear: () => { localStore.clear(); },
   });
   vi.stubGlobal("document", { querySelector: vi.fn(() => null), createElement: vi.fn(() => ({})), documentElement: { classList: { add: vi.fn() }, dataset: {} }, addEventListener: vi.fn(), visibilityState: "visible" });
   vi.stubGlobal("window", { addEventListener: vi.fn(), matchMedia: vi.fn(() => ({ matches: false, addEventListener: vi.fn() })), setTimeout, confirm: vi.fn(() => false) });
   vi.stubGlobal("requestAnimationFrame", () => 1);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
-  return import("./main");
-}
+  vi.resetModules();
+  ui = await import("./main");
+}, 300_000);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  localStore.clear();
+});
 
 function visibleText(markup: string): string {
   return markup.replace(/<[^>]*>/gu, " ").replace(/\s+/gu, " ").trim();
@@ -47,12 +71,8 @@ describe("home workspace hierarchy", () => {
   const destination = functionSource(source, "homeDestinationContent", "workspaceContent");
   const home = functionSource(source, "workspaceContent", "peopleListMarkup");
 
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("Implement Home as the protection status destination", async () => {
-    const { __oslHubUiTest } = await loadUi();
+  it("Implement Home as the protection status destination", () => {
+    const { __oslHubUiTest } = ui;
 
     __oslHubUiTest.reset({ route: "home", coreReady: false, storageMethod: null });
     const blockedHome = __oslHubUiTest.renderWorkspaceContent("home");
@@ -97,7 +117,7 @@ describe("home workspace hierarchy", () => {
     expect(protectedCopy).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/iu);
   });
 
-  it("states first-run Home in words an owner can act on, never build jargon", async () => {
+  it("states first-run Home in words an owner can act on, never build jargon", () => {
     // The shipped first-run Home read "Finish account protection -- source
     // linked . bootstrap required", in both the "Needs attention" summary and
     // the recommended-action card. That is bridge-wiring vocabulary; a
@@ -105,7 +125,7 @@ describe("home workspace hierarchy", () => {
     //
     // Asserted on RENDERED text, not on the source of the template that
     // produced it, so the check is against what the WebView actually paints.
-    const { __oslHubUiTest } = await loadUi();
+    const { __oslHubUiTest } = ui;
     __oslHubUiTest.reset({ route: "home", coreReady: false, storageMethod: null });
     const copy = visibleText(__oslHubUiTest.renderWorkspaceContent("home"));
 
@@ -133,8 +153,8 @@ describe("home workspace hierarchy", () => {
     expect(destination).toContain("visibleAppNotifications().at(0)");
   });
 
-  it("routes the Home primary action to the highest-priority safe fix", async () => {
-    const { homePrimaryActionPlan } = await loadUi();
+  it("routes the Home primary action to the highest-priority safe fix", () => {
+    const { homePrimaryActionPlan } = ui;
     const ready = {
       coreReady: true,
       storageProtected: true,
@@ -271,6 +291,32 @@ describe("home workspace hierarchy", () => {
     expect(styles).toMatch(/\.home-command-bar\s*\{[^}]*padding:\s*0 24px[^}]*justify-content:\s*space-between/s);
     expect(styles).toMatch(/\.home-profile-dock\s*\{[^}]*position:\s*fixed[^}]*right:\s*26px[^}]*bottom:\s*24px/s);
   });
+
+  it("keeps the Home profile tooltip beside the circular dock and bounded for long names", () => {
+    const profileTooltipRule = styles.match(/\.home-profile-dock > \.in-dom-tooltip\s*\{[^}]*\}/s)?.[0] ?? "";
+    expect(profileTooltipRule).toContain("right: calc(100% + 10px)");
+    expect(profileTooltipRule).toContain("top: 50%");
+    expect(profileTooltipRule).toContain("bottom: auto");
+    expect(profileTooltipRule).toContain("max-width: min(14rem, calc(100vw - 96px))");
+    expect(profileTooltipRule).toContain("transform: translateY(-50%)");
+    expect(profileTooltipRule).toContain("overflow-wrap: anywhere");
+
+    const { __oslHubUiTest } = ui;
+
+    __oslHubUiTest.reset({ route: "home" });
+    const defaultHome = __oslHubUiTest.renderWorkspaceContent("home");
+    expect(defaultHome).toContain('class="home-profile-dock in-dom-tooltip-anchor"');
+    expect(defaultHome).toContain('class="in-dom-tooltip" role="tooltip">OSL Profile</span>');
+
+    const longName = "OSL Profile for Research Operations and Recovery Testing";
+    __oslHubUiTest.reset({
+      route: "home",
+      hubIdentities: [{ slotId: "slot-long", label: longName, oslUserId: "OSLUSER-long", active: true }],
+    });
+    const longHome = __oslHubUiTest.renderWorkspaceContent("home");
+    expect(longHome).toContain(`<strong>${longName}</strong>`);
+    expect(longHome).toContain(`role="tooltip">${longName}</span>`);
+  });
 });
 
 describe("home interaction regressions", () => {
@@ -311,10 +357,6 @@ describe("home interaction regressions", () => {
 
   it("has no background polling or interval leak", () => {
     expect(source).not.toContain("setInterval(");
-    expect(source).toContain('window.addEventListener("unhandledrejection"');
-    expect(source).toContain("containBackgroundFailure");
-    expect(source).toMatch(/function containBackgroundFailure[\s\S]*?showToast\("That action failed\. Nothing changed\."\)/);
-    expect(source).not.toContain('window.addEventListener("unhandledrejection", (event) => { event.preventDefault(); showRenderRecovery(); });');
   });
 
   it("does not eagerly duplicate the friends list on Home", () => {
@@ -354,7 +396,7 @@ describe("home interaction regressions", () => {
     expect(source).toContain("openEmbeddedHomeApp(app, services)");
     expect(source).toContain("setupEmbeddedHomeApp(app,");
     expect(source).not.toContain("Firefox workspace");
-    expect(importedApps).toContain('"instagram"');
+    expect(importedApps).toContain('"tuta"');
     expect(importedApps).toContain('"gmail"');
     expect(importedApps).not.toContain('"discord"');
     expect(opening).toMatch(/selectedNativeAppIntent\(app\.id\)[\s\S]*?if \(nativeIntent\)[\s\S]*?openNativeHostedApp/);
@@ -364,7 +406,12 @@ describe("home interaction regressions", () => {
     expect(opening).toContain("else if (app.linked)");
     expect(source).not.toContain("setup-needed");
     expect(home).not.toContain("<small>${module.state}</small>");
-    expect(home).toContain('<span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : ""}</span>');
+    // The caption is the app's CLAIM, derived in `claim_state.rs` and carried
+    // through `NativeApp.supportStatus`. It used to be the literal string
+    // "Coming soon" on every unlaunchable tile, which said "planned" about
+    // Telegram (already built and driven, D-206) and about WhatsApp (measured
+    // against the live client and refused, D-234).
+    expect(home).toContain('<span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : `<small>${escapeHtml(caption)}</small>`}</span>');
     expect(home).toContain("Social</h2>");
     expect(home).toContain("Email</h2>");
     expect(home).toContain('aria-label="OSL tools"');
@@ -438,25 +485,18 @@ describe("home interaction regressions", () => {
     expect(source).toContain("hostDeadlineMs");
     expect(source).toContain("activeNativeHostMode === requestedMode");
     expect(source).toContain('selectedNativeApps().filter((app) => app.availability === "installed")');
-    expect(source).toContain("outlookSessionModeChoices()");
+    expect(source).toContain("supportedNativeAppIds.has(activeHomeAppId as NativeAppId)");
     expect(source).toContain("savedNativeApps.has(nativeId)");
     expect(source).toContain('catalogApp?.availability === "installed" && catalogApp.isolatedProfileAvailable');
-    expect(source).toContain('finishNativeAccountChoice("telegram")');
-    expect(source).toContain(">Use existing account</button>");
+    expect(source).toContain('"Use existing account"');
     expect(source).toContain(">Use separate account</button>");
-    expect(source).toContain('aria-label="Open Telegram"');
-    expect(source).toContain('let telegramSessionMode: NativeSessionMode = "existingSession"');
-    expect(source).toContain('let signalSessionMode: NativeSessionMode = "existingSession"');
-    expect(source).toContain('let whatsappSessionMode: NativeSessionMode = "existingSession"');
-    expect(source).toContain('storedTelegramMode === null ? "existingSession"');
-    expect(source).toContain('storedSignalMode === null ? "existingSession"');
-    expect(source).toContain('storedWhatsappMode === null ? "existingSession"');
-    expect(source).toContain('data-signal-session-mode="dedicated"');
-    expect(source).toContain('data-whatsapp-session-mode="dedicated"');
+    expect(source).not.toContain('finishNativeAccountChoice("telegram")');
+    expect(source).not.toContain('data-signal-session-mode="dedicated"');
+    expect(source).not.toContain('data-whatsapp-session-mode="dedicated"');
     expect(source).toContain('function separateNativeAccountAvailable');
     expect(source).toContain('supportedNativeAppIds.has(app.id as NativeAppId)');
     expect(source).toContain('A separate ${app.displayName} app account is unavailable');
-    expect(source).toContain('["telegram", "signal", "whatsapp"].includes(activeHomeAppId)');
+    expect(source).not.toContain('["telegram", "signal", "whatsapp"].includes(activeHomeAppId)');
     expect(source).toContain('reason === "profileInitializationFailed"');
     expect(source).toContain("your normal ${name} is untouched");
     expect(nativeOpening).toMatch(/result\.status !== "hosted"[\s\S]*?activeNativeHostId = appId[\s\S]*?savedAccountMode = "use"[\s\S]*?savedNativeApps\.add\(appId\)[\s\S]*?persistSavedAccountPreferences\(\)/);

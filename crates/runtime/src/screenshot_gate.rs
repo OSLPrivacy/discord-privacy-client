@@ -113,8 +113,8 @@ pub fn verify_affinity_readback(observed: u32) -> Result<(), CaptureProtectionEr
 pub fn verify_capture_protection(hwnd_isize: isize) -> Result<(), CaptureProtectionError> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GA_ROOT, GWL_EXSTYLE, GetAncestor, GetWindowDisplayAffinity, GetWindowLongPtrW,
-        SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WS_EX_LAYERED,
+        GetAncestor, GetWindowDisplayAffinity, GetWindowLongPtrW, SetWindowDisplayAffinity,
+        GA_ROOT, GWL_EXSTYLE, WDA_EXCLUDEFROMCAPTURE, WS_EX_LAYERED,
     };
 
     let hwnd = HWND(hwnd_isize);
@@ -123,7 +123,7 @@ pub fn verify_capture_protection(hwnd_isize: isize) -> Result<(), CaptureProtect
         is_top_level_window: unsafe { GetAncestor(hwnd, GA_ROOT) == hwnd },
         dwm_is_composing: dwm_is_composing()?,
         is_layered_window: unsafe {
-            GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_LAYERED != 0
+            GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_LAYERED.0 != 0
         },
     };
     validate_prerequisites(prerequisites)?;

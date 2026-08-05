@@ -14,17 +14,12 @@ use tempfile::TempDir;
 const SECRET_A: &[u8; 32] = b"monotonic-anchor-secret-a-32byte";
 const SECRET_B: &[u8; 32] = b"monotonic-anchor-secret-b-32byte";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum Fault {
+    #[default]
     None,
     BeforeAdvance,
     AfterAdvance,
-}
-
-impl Default for Fault {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Default)]

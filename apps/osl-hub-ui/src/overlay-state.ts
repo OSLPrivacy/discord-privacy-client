@@ -106,6 +106,7 @@ export interface NativeDiscordOverlayOpened {
   contextVerified: true;
   personToPersonE2ee: true;
   viewOnceConsumed: boolean;
+  createdAt: number;
   expiresAt: number;
 }
 
@@ -385,7 +386,7 @@ export function parseNativeDiscordOverlayAcknowledgment(value: unknown): NativeD
   return value as unknown as NativeDiscordOverlayAcknowledgment;
 }
 
-const OPENED_KEYS = ["messageId", "coverPointer", "plaintext", "contextVerified", "personToPersonE2ee", "viewOnceConsumed", "expiresAt"] as const;
+const OPENED_KEYS = ["messageId", "coverPointer", "plaintext", "contextVerified", "personToPersonE2ee", "viewOnceConsumed", "createdAt", "expiresAt"] as const;
 const OPENED_KEYS_WITHOUT_COVER = OPENED_KEYS.filter((key) => key !== "coverPointer");
 
 export function parseNativeDiscordOverlayOpened(value: unknown): NativeDiscordOverlayOpened | null {
@@ -396,7 +397,9 @@ export function parseNativeDiscordOverlayOpened(value: unknown): NativeDiscordOv
   if (!exactRecord(value, carriesCover ? OPENED_KEYS : OPENED_KEYS_WITHOUT_COVER)) return null;
   if (!boundedVisible(value.plaintext, MAX_PROTECTED_DRAFT_BYTES) || utf8Length(value.plaintext) > MAX_PROTECTED_DRAFT_BYTES
     || value.contextVerified !== true || value.personToPersonE2ee !== true || typeof value.viewOnceConsumed !== "boolean"
-    || !Number.isSafeInteger(value.expiresAt) || Number(value.expiresAt) <= 0) return null;
+    || !Number.isSafeInteger(value.createdAt) || Number(value.createdAt) <= 0
+    || !Number.isSafeInteger(value.expiresAt) || Number(value.expiresAt) <= 0
+    || Number(value.createdAt) > Number(value.expiresAt)) return null;
   // The handle is routing metadata, so it is held to the same shape rules as the
   // outbound cover: one printable line, bounded, or not present at all.
   if (!validAttachmentId(value.messageId)) return null;

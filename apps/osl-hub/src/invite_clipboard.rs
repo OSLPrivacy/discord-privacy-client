@@ -96,14 +96,18 @@ pub fn write_desktop_clipboard_text(value: &str) -> Result<(), String> {
 /// but no `wl-copy` must not be told the copy failed, so an absent program is
 /// skipped silently; a helper that ran and failed is reported by name, because
 /// that is a fault the operator can look into.
-pub fn write_clipboard_text_with(helpers: &[ClipboardHelper<'_>], value: &str) -> Result<(), String> {
+pub fn write_clipboard_text_with(
+    helpers: &[ClipboardHelper<'_>],
+    value: &str,
+) -> Result<(), String> {
     let mut refusal: Option<String> = None;
     for helper in helpers {
         match offer_to_helper(helper, value) {
             HelperOutcome::Took => return Ok(()),
             HelperOutcome::Absent => continue,
             HelperOutcome::Refused => {
-                refusal.get_or_insert_with(|| format!("{} could not take the invite", helper.program));
+                refusal
+                    .get_or_insert_with(|| format!("{} could not take the invite", helper.program));
             }
         }
     }
@@ -166,7 +170,8 @@ mod tests {
         args: &[],
     };
 
-    const INVITE: &str = "OSLFR1.eyJwYXlsb2FkIjp7InZlcnNpb24iOjEsIm9zbF91c2VyX2lkIjoib3NsX3Rlc3QifX0";
+    const INVITE: &str =
+        "OSLFR1.eyJwYXlsb2FkIjp7InZlcnNpb24iOjEsIm9zbF91c2VyX2lkIjoib3NsX3Rlc3QifX0";
 
     #[test]
     fn a_desktop_with_no_helper_is_told_where_its_invite_actually_is() {
@@ -207,7 +212,10 @@ mod tests {
             args: &[],
         };
         let error = write_clipboard_text_with(&[failing], INVITE).unwrap_err();
-        assert!(error.contains("false"), "expected the helper to be named: {error}");
+        assert!(
+            error.contains("false"),
+            "expected the helper to be named: {error}"
+        );
         assert_ne!(error, NO_CLIPBOARD_HELPER);
     }
 

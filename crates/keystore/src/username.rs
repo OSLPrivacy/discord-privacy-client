@@ -85,10 +85,31 @@ impl Resolver {
             ));
         }
 
-        let client = reqwest::blocking::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|error| UsernameResolveError::Transport(error.to_string()))?;
+        // A directory lookup is egress like any other, and it carries the
+        // username someone is about to talk to. While Tor is selected this
+        // adopts the authorized tunnel or refuses; it never builds a direct
+        // client. See `crate::egress`.
+        let client = match crate::egress::direct_client_decision() {
+            crate::egress::DirectClientDecision::Adopt(client) => *client,
+            crate::egress::DirectClientDecision::Refuse => {
+                return Err(UsernameResolveError::Transport(
+                    crate::egress::TOR_UNAVAILABLE.to_owned(),
+                ));
+            }
+            // `Client::builder().build()` blocks on its private runtime thread
+            // through `reqwest::blocking::wait::timeout`, which drops a shell
+            // runtime on this thread under debug assertions. On a Tokio worker
+            // that panics; build off any async context. See
+            // `crate::blocking_http`.
+            crate::egress::DirectClientDecision::Build => {
+                crate::blocking_http::off_async_context(|| {
+                    reqwest::blocking::Client::builder()
+                        .redirect(reqwest::redirect::Policy::none())
+                        .build()
+                })
+                .map_err(|error| UsernameResolveError::Transport(error.to_string()))?
+            }
+        };
         Ok(Self {
             base_url: parsed.as_str().trim_end_matches('/').to_owned(),
             client,
@@ -114,17 +135,19 @@ impl Resolver {
         let prefix = &digest_hex[..PREFIX_HEX_LEN];
         let suffix = &digest_hex[PREFIX_HEX_LEN..];
         let url = format!("{}/v1/username-bucket/{prefix}", self.base_url);
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .map_err(|error| UsernameResolveError::Transport(error.to_string()))?;
-        if !response.status().is_success() {
-            return Err(UsernameResolveError::HttpStatus(response.status().as_u16()));
-        }
-        let body = response
-            .bytes()
-            .map_err(|error| UsernameResolveError::Transport(error.to_string()))?;
+        // Send + drain off any async context; see `crate::blocking_http`.
+        let request = self.client.get(url);
+        let body = crate::blocking_http::off_async_context(move || {
+            let response = request
+                .send()
+                .map_err(|error| UsernameResolveError::Transport(error.to_string()))?;
+            if !response.status().is_success() {
+                return Err(UsernameResolveError::HttpStatus(response.status().as_u16()));
+            }
+            response
+                .bytes()
+                .map_err(|error| UsernameResolveError::Transport(error.to_string()))
+        })?;
         resolve_bucket(suffix, &body)
     }
 }

@@ -9,7 +9,24 @@
 > the claim-eligibility half of master §20.2 and §8.2.
 > Authority: [`osl-master-decision-2026-07-26.md`](osl-master-decision-2026-07-26.md).
 > Status vocabulary: master §0.3. Evidence detail: [`../THREAT_MODEL.md`](../THREAT_MODEL.md).
-> Claim-gate source SHA-256: `965bd2bc488cc1655c3c786a3ea40697a2870d0180d434b4b1124b3d9ba537ed`
+> Claim-gate source SHA-256: `8a3b8c347b1da3bd2958f71db9cf0e621c95b551649514993aa40b735391e47f`
+>
+> **Re-pin log.** This hash moves only in the same commit as the gate change that
+> caused it, with the reason written here. Re-pinning to settle drift you did not
+> intend is the move this pin exists to prevent.
+> - `965bd2bc…` → `2f950413…` (D-242) — `extractTypeScriptStrings` learned regex
+>   literals; 1,318 real strings had been invisible to the gate.
+> - `2f950413…` → `8a3b8c34…` (D-249 + D-243) — the two detectors stopped deciding
+>   exemption by matching surface phrasing. `semanticScrubClaimSpans`'s present-tense
+>   `attachedLimitation` list and `semanticAtRestClaimSpans`'s destructive-verb
+>   exemption were **deleted**, not extended, and both detectors now call one shared
+>   policy, `limitationGovernsClaim`, which asks whether the claim span lies inside
+>   the scope of an operator that withholds or narrows it. **This change makes the
+>   gate see strictly more:** no trigger condition was weakened, no assertion relaxed,
+>   no fixture deleted, and nothing was added to this allowlist. Proven by four
+>   mutants, each of which kills a self-test fixture (exit 1): restoring either old
+>   exemption list, admitting a shortfall verb to `LIMITING_VERBS`, or removing the
+>   clause-scope cut.
 
 ## How to use it
 
@@ -40,7 +57,7 @@ tree; re-verify anchors before relying on a row.
 | **Permitted wording** | "Message contents are encrypted with a hybrid scheme combining X25519 and ML-KEM-768. Breaking it requires breaking both." |
 | **Status** | **`Beta`** badge. *Corrected 2026-07-26:* the standard is "does the code do this", and it does — the scheme is live and encrypted sends have landed real cover text in a real Discord conversation. `implemented-unwired` describes a call path, not the cryptography. Not `Available`, because it is proven on QA builds rather than a named release build. |
 | **Evidence** | `crates/ipc/src/wire_v2.rs:685-760` (`encrypt_v3`); ML-KEM-768 ciphertext in every recipient slot, `:325-332`, `:731`; hybrid combiner `crates/crypto/src/pqxdh.rs:141-195` |
-| **Required alongside** | "This protects contents against future quantum decryption of recorded traffic. It does not make identity verification post-quantum — that is still classical." |
+| **Required alongside** | "This protects contents against future quantum decryption of recorded traffic. It does not make identity verification quantum-resistant — that is still classical X25519 and Ed25519." <br> *Re-phrased 2026-08-04 (D-242/D-243). The previous wording said "does not make identity verification post-quantum". That sentence is a mandatory limitation, so any surface claiming A1 must print it — but `RATCHET_CLAIM_TERMS` permits "post-quantum" only inside A16's verbatim sentence, so A1's own limitation could not ship past the gate. The disclosure is unchanged in meaning and is now strictly more specific (it names the classical primitives). A1's **Permitted wording** is untouched and nothing was widened. The alternative — teaching the ratchet rule to ignore negated limitations — was rejected: an exemption is what blinded the at-rest detector in D-243, and this rule's entire strength is that it is verbatim-or-nothing. `README.md:36` already ships this wording.* |
 
 ### A2 · Discord cannot read message contents
 
@@ -154,10 +171,10 @@ cautious user actually wants — the product refuses to act rather than acting o
 
 | | |
 |---|---|
-| **Permitted wording** | "OSL's pairwise direct-message encryption adds forward secrecy and post-quantum ratcheting. Classical post-compromise recovery takes one round trip; post-quantum recovery takes about 82 round trips at default settings and requires traffic in both directions. It does not provide post-quantum authentication, groups, multi-device syncing, sealed-sender delivery, or authenticated prekey bundles. Recovery and reset messages do not have forward secrecy, a skipped-key ceiling can make delayed messages unavailable, and the design has had no formal analysis or external cryptographic review." |
-| **Status** | `test-proven-only` → **`Beta`** badge. The `0x10` OSL-RN path is enabled for pairwise direct messages, but it has no named release-build runtime proof. |
-| **Evidence** | `crates/ipc/src/wire_rn.rs:83` opens the compile-time fuse; `crates/ipc/src/state.rs:426` opens the runtime default; `crates/keystore/src/client.rs:204`, `:227-233` advertises live-capability bit 1. Properties and limits: `crates/osl-ratchet-next/DESIGN.md` §10 rows 3-6, 9, 16, 19-21, 24-25, 27 and §11. |
-| **Required alongside** | Use the permitted wording as one indivisible statement. It is direct-message/pairwise only; never abbreviate it to "post-quantum secure messaging," "post-quantum authentication," or an unqualified forward-secrecy or post-compromise claim. |
+| **Permitted wording** | "Pairwise forward secrecy and post-quantum ratcheting are planned for OSL-RN, but they are not enabled in the shipping runtime." |
+| **Status** | `implemented-unwired` → **`Planned`** badge. The `0x10` OSL-RN adapter and compile-time fuse exist, but a fresh shipping `AppState` keeps the runtime gate closed, so OSL-RN must not be marketed as carrying pairwise direct-message traffic. |
+| **Evidence** | `crates/ipc/src/wire_rn.rs:85` opens the compile-time fuse; `crates/ipc/src/state.rs:427` closes the runtime default; `crates/ipc/src/commands.rs:4560-4565` refuses an RN-required peer instead of downgrading while the runtime gate is closed. Properties and limits remain in `crates/osl-ratchet-next/DESIGN.md` §10 rows 3-6, 9, 16, 19-21, 24-25, 27 and §11, but they are not shipping traffic claims. |
+| **Required alongside** | Do not use this row as a present-tense public claim until the owner explicitly opens the runtime gate after the live evidence and recovery decisions are complete. Never abbreviate it to "post-quantum secure messaging," "post-quantum authentication," or an unqualified forward-secrecy or post-compromise claim. |
 
 <!-- ratchet_claims:end -->
 

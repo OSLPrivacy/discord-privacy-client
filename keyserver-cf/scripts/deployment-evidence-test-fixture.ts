@@ -42,18 +42,22 @@ export const DEPLOYMENT_FIXTURE_BUNDLES = {
 export const DEPLOYMENT_FIXTURE_MIGRATIONS = [
   {
     name: "0030_reserve_derived_identity_namespace.sql",
+    path: "migrations/0030_reserve_derived_identity_namespace.sql",
     sha256: "5".repeat(64),
   },
   {
     name: "0031_control_inbox_sender_retention.sql",
+    path: "migrations/0031_control_inbox_sender_retention.sql",
     sha256: "6".repeat(64),
   },
   {
     name: "0032_sender_filter_capability_floor.sql",
+    path: "migrations/0032_sender_filter_capability_floor.sql",
     sha256: "7".repeat(64),
   },
   {
     name: "0033_canonical_identity_rollout_authority.sql",
+    path: "migrations/0033_canonical_identity_rollout_authority.sql",
     sha256: "8".repeat(64),
   },
 ];

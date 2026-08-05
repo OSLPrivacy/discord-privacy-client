@@ -1,5 +1,14 @@
 # Rust
-target/
+# Slashless, deliberately -- a trailing slash matches a DIRECTORY ONLY, so a
+# symlink of the same name slips past it (that is exactly how a machine-specific
+# node_modules link got committed; see the Node section below).
+target
+# Cross-compile and per-lane target dirs. `target` alone does NOT cover these --
+# it is a different NAME, not a subdirectory. `cargo check --target
+# x86_64-pc-windows-gnu` wrote target-win/, which was therefore never ignored,
+# and the public-release audit then scanned 849 build artifacts full of an
+# absolute /home/... path and failed. Build output is never publishable.
+target-*
 **/*.rs.bk
 Cargo.lock.bak
 
@@ -8,7 +17,16 @@ src-tauri/target/
 src-tauri/gen/
 
 # Node
-node_modules/
+# No trailing slash, deliberately. `node_modules/` matches a DIRECTORY only, so
+# a SYMLINK named node_modules is not ignored by it -- which is how
+# apps/osl-hub-ui/node_modules came to be committed as a tracked mode-120000
+# link to an absolute path outside the repo (910a79335, removed in 2e4d8598d).
+# A machine-specific absolute path in the index breaks
+# every other checkout: `npm ci` deletes the link, and a run where it resolved
+# to nothing made four binding ledgers fail with
+# "Cannot find module 'vite/package.json'". The slashless form ignores the
+# directory AND the symlink, so `git add -A` cannot re-commit it.
+node_modules
 dist/
 build/
 .parcel-cache/

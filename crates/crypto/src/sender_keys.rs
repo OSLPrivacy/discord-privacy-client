@@ -932,6 +932,13 @@ impl SenderKeyState {
         self.sender.as_mut()
     }
 
+    /// Sender chains are session-only. A reload may retain receiver progress,
+    /// but must force the next outbound message to install and distribute a
+    /// fresh sender chain.
+    pub fn discard_sender_chain(&mut self) {
+        self.sender = None;
+    }
+
     pub fn rotate_sender(&mut self) -> Result<()> {
         let s = self
             .sender
@@ -1189,7 +1196,9 @@ impl From<&SenderChain> for SenderChainOnDisk {
     fn from(c: &SenderChain) -> Self {
         SenderChainOnDisk {
             physical_device_id_b64: STANDARD.encode(c.physical_device_id.as_bytes()),
-            rotation_root_b64: STANDARD.encode(c.rotation_root.as_bytes()),
+            // Rotation roots are never persisted: retaining one permits a
+            // recovered snapshot to derive prior sender message keys.
+            rotation_root_b64: String::new(),
             chain_id: c.chain_id,
             n: c.n,
             prev_chain_length: c.prev_chain_length,
@@ -1211,22 +1220,10 @@ impl From<&ReceiverChain> for ReceiverChainOnDisk {
             chain_id: c.chain_id,
             ck_n_b64: STANDARD.encode(c.ck_n.as_bytes()),
             n: c.n,
-            skipped: c
-                .skipped
-                .keys
-                .iter()
-                .map(|key| SkippedKeyOnDisk {
-                    chain_id: key.chain_id,
-                    n: key.n,
-                    hk_b64: STANDARD.encode(key.hk.as_bytes()),
-                    mk_b64: STANDARD.encode(key.mk.as_bytes()),
-                    inserted_at_secs: key
-                        .inserted_at
-                        .duration_since(UNIX_EPOCH)
-                        .map(|duration| duration.as_secs())
-                        .unwrap_or(0),
-                })
-                .collect(),
+            // Skipped header/message keys are session-only. They preserve
+            // out-of-order delivery within a running process but must not be
+            // recoverable from an at-rest snapshot.
+            skipped: Vec::new(),
         }
     }
 }
@@ -1288,14 +1285,21 @@ impl TryFrom<SenderChainOnDisk> for SenderChain {
                     Vec::new(),
                 )
             } else {
-                let root = RotationRoot::from_bytes(decode_32(&d.rotation_root_b64, "sender.rotation_root")?);
+                let root = RotationRoot::from_bytes(decode_32(
+                    &d.rotation_root_b64,
+                    "sender.rotation_root",
+                )?);
                 let members = d
                     .last_known_members_b64
                     .iter()
-                    .map(|member| STANDARD.decode(member).map_err(|source| SenderKeyPersistError::Base64 {
-                        field: "sender.last_known_members",
-                        source,
-                    }))
+                    .map(|member| {
+                        STANDARD
+                            .decode(member)
+                            .map_err(|source| SenderKeyPersistError::Base64 {
+                                field: "sender.last_known_members",
+                                source,
+                            })
+                    })
                     .collect::<std::result::Result<Vec<_>, _>>()?;
                 (
                     d.chain_id,
@@ -1309,7 +1313,8 @@ impl TryFrom<SenderChainOnDisk> for SenderChain {
         let mut ck_n = derive_ck_0(&rotation_root, chain_id)
             .map_err(|_| SenderKeyPersistError::SenderChainIdOverflow)?;
         for _ in 0..n {
-            ck_n.advance().map_err(|_| SenderKeyPersistError::SenderChainIdOverflow)?;
+            ck_n.advance()
+                .map_err(|_| SenderKeyPersistError::SenderChainIdOverflow)?;
         }
         Ok(SenderChain {
             physical_device_id,

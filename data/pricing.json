@@ -131,7 +131,7 @@
     "recurring": false,
     "stores_payment_method": false,
     "status": "Planned",
-    "purpose": "Pay-as-you-go cloud processing for the optional AI features (context-aware carrier text, optional AI sensitivity classifier). Pro includes a small allowance; credits top it up.",
+    "purpose": "Planned pay-as-you-go cloud processing for optional AI features (context-aware carrier text, optional AI sensitivity classifier). No credits are included in Pro or sold today.",
     "honest_copy_rules": [
       "Credits are bought separately and never renew.",
       "Local processing is the privacy-preferred option and consumes no credits.",
@@ -163,7 +163,7 @@
       "carrier text",
       "recipient identity"
     ],
-    "redemption_record": "No redemption record exists yet. Issued licence rows contain a licence hash and status, with no account, email, device fingerprint, install ID or joined payment identifier.",
+    "redemption_record": "Redeemed licence rows expose only the licence hash and redemption timestamp as the redemption record; they contain no account, email, device fingerprint, install ID or joined payment identifier.",
     "plain_sentence": "The payment and credit records contain no message text, no conversation names, no carrier text and no recipient identity."
   },
   "open_source": {
@@ -719,28 +719,126 @@
     "$negation_note": "Denying or limiting a property is honest copy only when the denial or Planned/unproved/unknown/not-yet-implemented/not-established limitation governs that exact claim in the same sentence. An unrelated negator in an adjacent sentence or clause never suppresses a violation."
   },
   "forbidden_claims": [
-    "one-time $5 purchase",
-    "$5 once",
-    "Pay once",
-    "lifetime",
-    "forever unlocked",
-    "one time",
-    "No renewal",
-    "Renews monthly",
-    "renews until you cancel",
-    "cancel any time",
-    "subscription",
-    "unlimited messages",
-    "better than Signal",
-    "Signal protocol",
-    "post-quantum authentication",
-    "military-grade",
-    "anti-spyware",
-    "unhackable",
-    "100% private",
-    "cannot be traced"
-  ],
-  "forbidden_claims": [
+    {
+      "id": "billing-one-time-purchase",
+      "scope": "billing",
+      "phrase": "one-time $5 purchase",
+      "reason": "The approved model is a prepaid one-month activation code, not permanent one-time access."
+    },
+    {
+      "id": "billing-five-dollars-once",
+      "scope": "billing",
+      "phrase": "$5 once",
+      "reason": "The approved model is one month of Pro, not pay-once permanent access."
+    },
+    {
+      "id": "billing-pay-once",
+      "scope": "billing",
+      "phrase": "Pay once",
+      "reason": "The approved model is a prepaid month, not a permanent pay-once entitlement."
+    },
+    {
+      "id": "billing-lifetime",
+      "scope": "billing",
+      "phrase": "lifetime",
+      "reason": "Pro is not a lifetime purchase."
+    },
+    {
+      "id": "billing-forever-unlocked",
+      "scope": "billing",
+      "phrase": "forever unlocked",
+      "reason": "Pro is not a permanent entitlement."
+    },
+    {
+      "id": "billing-one-time",
+      "scope": "billing",
+      "phrase": "one time",
+      "reason": "Bare one-time wording is ambiguous with permanent access."
+    },
+    {
+      "id": "billing-no-renewal-standalone",
+      "scope": "billing",
+      "phrase": "No renewal",
+      "reason": "Standalone no-renewal copy must not imply a permanent purchase; use the required prepaid-month disclosure."
+    },
+    {
+      "id": "billing-renews-monthly",
+      "scope": "billing",
+      "phrase": "Renews monthly",
+      "reason": "Pro activation codes do not renew."
+    },
+    {
+      "id": "billing-renews-until-cancel",
+      "scope": "billing",
+      "phrase": "renews until you cancel",
+      "reason": "There is no recurring subscription to cancel."
+    },
+    {
+      "id": "billing-cancel-any-time",
+      "scope": "billing",
+      "phrase": "cancel any time",
+      "reason": "Cancellation copy implies a recurring mandate."
+    },
+    {
+      "id": "billing-subscription",
+      "scope": "billing",
+      "phrase": "subscription",
+      "reason": "Pro activation codes are prepaid and non-renewing."
+    },
+    {
+      "id": "claim-unlimited-messages",
+      "scope": "public-claims",
+      "phrase": "unlimited messages",
+      "reason": "Zhao replaced this positioning with Scrub."
+    },
+    {
+      "id": "claim-better-than-signal",
+      "scope": "public-claims",
+      "phrase": "better than Signal",
+      "reason": "Signal-comparison claims may not outrun the audited live path."
+    },
+    {
+      "id": "claim-signal-protocol",
+      "scope": "public-claims",
+      "phrase": "Signal protocol",
+      "reason": "No public Signal protocol claim may outrun the audited live path."
+    },
+    {
+      "id": "claim-post-quantum-authentication",
+      "scope": "public-claims",
+      "phrase": "post-quantum authentication",
+      "reason": "Post-quantum authentication is not proven on the live path."
+    },
+    {
+      "id": "claim-military-grade",
+      "scope": "public-claims",
+      "phrase": "military-grade",
+      "reason": "Marketing-grade security superlatives are forbidden."
+    },
+    {
+      "id": "claim-anti-spyware",
+      "scope": "public-claims",
+      "phrase": "anti-spyware",
+      "reason": "OSL must not market a limitation as a guarantee."
+    },
+    {
+      "id": "claim-unhackable",
+      "scope": "public-claims",
+      "phrase": "unhackable",
+      "reason": "OSL must not market a limitation as a guarantee."
+    },
+    {
+      "id": "claim-100-private",
+      "scope": "public-claims",
+      "phrase": "100% private",
+      "reason": "OSL must not market a limitation as a guarantee."
+    },
+    {
+      "id": "claim-cannot-be-traced",
+      "scope": "public-claims",
+      "phrase": "cannot be traced",
+      "reason": "OSL must not market a limitation as a guarantee."
+    },
     {
       "id": "website-scrub-browser-history",
       "scope": "website-scrub",
@@ -1538,6 +1636,15 @@
     ]
   },
   "surface_policy": {
+    "surface_ruling": {
+      "schema": "osl-surface-ruling-v1",
+      "ruled_on": "2026-08-05",
+      "chat_carriers": ["discord", "signal", "whatsapp", "telegram"],
+      "email_carriers": ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"],
+      "native_email_carriers": ["outlook"],
+      "first_party_surfaces": ["osl-chats", "osl-mail"],
+      "cut_surfaces": ["instagram", "snapchat", "x", "messenger", "slack", "linkedin", "teams"]
+    },
     "matrix_files": [
       "docs/status.html"
     ],

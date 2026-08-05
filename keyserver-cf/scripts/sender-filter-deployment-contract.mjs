@@ -32,11 +32,110 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
     }),
   "keyserver-cf/src/index.ts": Object.freeze({
     role: "worker-route-registration",
-    // Re-pinned when POST /v1/account-ownership/proof was registered. The
-    // route table is pinned so a new Worker route cannot land without a
+    // The route table is pinned so a new Worker route cannot land without a
     // deliberate re-admission of this closure.
+    //
+    // D-239 re-anchor. Previous digest 1f090308a0233844... reproduced exactly
+    // at commit 922c6f85e (2026-07-31, 21243 bytes). Ten commits changed this
+    // file after it; every changed byte is attributed and the ledger closes
+    // exactly (+2478/-231 = +2247 = 23490-21243), with the one merge machine-
+    // checked as a pure three-way union contributing no content of its own:
+    //
+    //   e3086fea5 D81 remove GET /v1/usernames/:username, add
+    //             POST /v1/usernames/lookup                    +454/-189
+    //   c6fe0626b t16-b2  POST /v1/license/redeem                +156/-0
+    //   f647db9ab T6-K1   export the Archive durable object       +48/-0
+    //   05526e9ae T5-K4   GET /v1/username-bucket/:bucket        +250/-0
+    //   184f5bee0 T13-E5  POST /v1/ai/generate                   +144/-0
+    //   890c6013e T13-F6  POST /v1/credits/spend                 +144/-0
+    //   169b2bebb T21-C5  GET/POST /v1/space-events              +384/-0
+    //   9260ed07c T6-K6   GET /v1/devices/:user_id               +208/-0
+    //   2d6ef259a merge bk7 into fix/conf (pure union)             +0/-0
+    //   d3597486b D-259 injectable cron price fetcher           +690/-42
+    //
+    // WHAT THIS DIGEST DOES AND DOES NOT SAY: it records what the source IS,
+    // not that it was security-reviewed. The D-239 re-anchor explicitly did
+    // NOT endorse 169b2bebb, which (with an empty commit body) had inserted
+    // the two /v1/space-events routes ABOVE `const method`, ahead of both
+    // ingress gates. It said that moving them below would change this digest
+    // again, by design. That is what the re-anchor below is.
+    //
+    // D-260 re-anchor. Previous digest 902396dcd7c134ea... reproduced exactly
+    // at the D-239 anchor commit (23490 bytes) and is superseded ONLY by the
+    // D-260 fix. One change, in one lane; the ledger closes exactly
+    // (+1568/-293 = +1275 = 24765-23490), attributed line by line:
+    //
+    //   comment, 3 blocks recording why the routes may not be
+    //   hoisted again and that the drain is destructive     +1317/-0
+    //   code: the 3 hoisted lines deleted from the top of
+    //   `dispatch`                                             +0/-293
+    //   code: the same 2 routes re-registered inside the
+    //   existing GET and POST route tables, where the
+    //   per-method guards (`request.method === "GET" &&`,
+    //   `"POST" &&`) are redundant and therefore dropped     +251/-0
+    //
+    // Net code is -42 bytes: the routes MOVED, they did not grow, and no
+    // route was added or removed. `git diff` for this file is confined to
+    // those three hunks.
+    //
+    // WHAT CHANGED IN BEHAVIOUR, deliberately: POST /v1/space-events is now
+    // behind the mutation-ingress limit and `bufferRequestBody(
+    // MAX_MUTATION_BODY_BYTES)`, and GET /v1/space-events/:tag -- a
+    // DESTRUCTIVE drain that DELETEs every row it returns -- is now behind the
+    // public-GET ingress limit. Nothing else about the lane changed; the
+    // enqueue/consuming-drain behaviour is held by
+    // test/integration/d260-space-events-ingress.test.ts.
+    //
+    // STILL OPEN, and NOT decided by this digest: whether a destructive
+    // operation may remain a GET at all. The method is frozen by
+    // `03-CONTRACTS/spaces.md` (T21-C1), outside this closure, so changing it
+    // is an owner decision, not a keyserver one. See the D-260 tasklog.
+    //
+    // D-273/D-274 re-anchor. Previous digest 51d639d02c6f585c... reproduced
+    // exactly at this branch's fork point (24765 bytes) — no pre-existing
+    // drift — and appeared in exactly one place in the repository. One lane,
+    // one commit. The ledger closes exactly: 24765 -> 26658 = +1893, and
+    // +2430/-537 = +1893. Attributed change by change:
+    //
+    //   comment: the D-260 drain note rewritten — it asserted the
+    //     drain "deletes every row it returns", which D-273
+    //     makes false; the ingress rule it carries is unchanged  +886/-446
+    //   comment: why the cron now sweeps space_event_queue, and
+    //     that reaching the sweep's bound is not "done"           +573/-0
+    //   comment: that the ack route is NEW and that T21-C1's two
+    //     frozen routes are untouched                             +231/-0
+    //   code: `handleSpaceEventAck` added to the existing
+    //     space-events import (one line rewritten)                +112/-91
+    //   code: `sweepExpiredSpaceEvents` import                     +70/-0
+    //   code: the cron branch that sweeps expired Space events
+    //     and reports the residue it could not remove             +469/-0
+    //   code: `POST /v1/space-events/ack` registered in the
+    //     existing POST route table                                +89/-0
+    //
+    // Comment net +1244, code net +649. EXACTLY ONE ROUTE IS ADDED
+    // (`POST /v1/space-events/ack`); none is removed, none is moved, and the
+    // D-260 ordering — every space-events route below `const method`, behind
+    // its ingress gate — is byte-for-byte unchanged.
+    //
+    // WHAT CHANGED IN BEHAVIOUR, deliberately, and what did NOT:
+    //   - `GET /v1/space-events/:tag` no longer DELETEs what it returns. It
+    //     leases it (D-273), so a dropped response can no longer destroy a
+    //     membership event. Its METHOD, PATH and ingress gate are unchanged;
+    //     the frozen T21-C1 wording "returns and consumes" still holds,
+    //     because a leased row stops being returned.
+    //   - `POST /v1/space-events/ack` is a NEW route and the only thing that
+    //     now deletes a queued event. It is a new endpoint precisely so that
+    //     the two routes T21-C1 freezes are not changed.
+    //   - the hourly cron sweeps `space_event_queue` (D-274). Nothing swept it
+    //     before; `expires_at` was a read filter only.
+    // Held by test/integration/d273-space-event-ack.test.ts; the ingress
+    // ordering is still held by test/integration/d260-space-events-ingress.test.ts.
+    //
+    // STILL OPEN, and STILL not decided by this digest: the GET method itself.
+    // D-273 is independent of it — a POST drain that deleted on transmission
+    // would have exactly the same defect.
     sha256:
-      "1f090308a02338443b9d9d735133ac89b8f559a23b8e468e5e3ddf21e9239c34",
+      "3b2d26c41aa129c5c1c55c594e3afbfee0e8abacca927603716e426bb1b7819c",
   }),
   "keyserver-cf/src/endpoints/register.ts": Object.freeze({
     role: "shipping-canonical-identity-registration-caller",

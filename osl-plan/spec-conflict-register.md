@@ -15,8 +15,8 @@ the remaining non-material closures.
 | SCR-005 | Sender-key forward secrecy claim | Existing durable mirror needed for group delivery | master §0.5, crypto contract, onboarding, sender-key tests, public security copy | D111 makes the trade-off an explicit, unselected onboarding choice and requires the session-only store for the protective choice. | OD-4 → D111 (2026-08-02) | closed |
 
 The detailed escalation evidence is in
-`/home/liamw/osl-plan/OWNER-DECISIONS-NEEDED.md`; the authoritative resolutions
-are D91 and D109–D112 in `/home/liamw/osl-plan/plan/09-DECISIONS.md`. Each
+`plan-repo/OWNER-DECISIONS-NEEDED.md`; the authoritative resolutions
+are D91 and D109–D112 in `plan-repo/plan/09-DECISIONS.md`. Each
 closure lists the artefacts that must be updated or explicitly superseded;
 runtime evidence may establish status only and never rewrites intent.
 

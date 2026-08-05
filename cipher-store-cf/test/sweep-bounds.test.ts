@@ -1,3 +1,4 @@
+import { createExecutionContext } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import worker from "../src/index.js";
 import type { Env } from "../src/env.js";
@@ -61,7 +62,13 @@ function sweepEnv(expiredRows: number) {
 }
 
 const scheduledEvent = { cron: "*/5 * * * *", type: "scheduled", scheduledTime: 0 } as ScheduledEvent;
-const executionContext = { waitUntil() {}, passThroughOnException() {} } as ExecutionContext;
+// `{ waitUntil() {}, passThroughOnException() {} } as ExecutionContext` stopped
+// being a legal assertion once workers-types added `exports`, `props` and
+// `tracing` to ExecutionContext -- the two-method literal no longer overlaps
+// the interface. Hand-stubbing three more members would be inventing a runtime
+// contract; `createExecutionContext()` is the pool's own real one, so the
+// scheduled handler now runs against the same context workerd gives it.
+const executionContext = createExecutionContext();
 
 describe("bounded blob TTL sweep", () => {
   it("drains 5,000 expired rows across scheduled invocations without approaching D1's limit", async () => {

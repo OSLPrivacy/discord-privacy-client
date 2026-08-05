@@ -1,0 +1,13 @@
+{
+  "gate": "hub fmt",
+  "defects": ["D-252", "D-268"],
+  "note": "D-268. Pre-existing rustfmt drift in apps/osl-hub, which `cargo fmt --all -- --check` at the repo root has never seen because the package is `exclude`d from the root workspace: the root command was exit 0 while the same command inside apps/osl-hub was exit 1 with 50 hunks. 49 of those 50 were FORMATTED in the change that added this gate -- across broker.rs, chat_capture_protection.rs, claim_state.rs, cleanup.rs, landing_oracle/{tests,live_telegram,live_whatsapp}.rs, osl_chat_queue.rs, osl_mail.rs, seam_ledger.rs, security.rs, service_host.rs, services.rs, tests/chat_capture_protection.rs and crates/keystore/src/lib.rs. The one below was not: src/main.rs is 10,753 lines and another lane was editing it, so a whitespace reflow there buys a merge conflict in the file that starts the app. It is recorded rather than fixed, and this file is the record. Unlike clippy, rustfmt's verdict is platform-independent, so this number was MEASURED, not proxied. It may only go down.",
+  "command": "cargo fmt --manifest-path apps/osl-hub/Cargo.toml --all -- --check",
+  "recorded": true,
+  "measured": "2026-08-05",
+  "openWarnings": 1,
+  "failedTargets": [],
+  "sites": {
+    "apps/osl-hub/src/main.rs": 1
+  }
+}

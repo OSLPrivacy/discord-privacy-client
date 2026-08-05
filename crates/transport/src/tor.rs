@@ -21,10 +21,8 @@ use thiserror::Error;
 // `From` impl is not a const trait, so that form does not compile in a const
 // and took the whole `transport` crate -- and therefore every Rust test in the
 // workspace -- down with it.
-pub const DEFAULT_SOCKS_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(
-    Ipv4Addr::new(127, 0, 0, 1),
-    9150,
-));
+pub const DEFAULT_SOCKS_ADDR: SocketAddr =
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 9150));
 
 /// Configuration for the signed Arti proxy executable packaged with OSL.
 #[derive(Debug, Clone)]
@@ -135,12 +133,29 @@ impl TorTransport {
     }
 }
 
+/// Build a Tor-routed client for a SOCKS listener whose lifecycle is already
+/// owned by the caller. Production callers should prefer [`TorTransport`];
+/// tests use this to exercise routing against a local SOCKS fixture without a
+/// real Arti daemon.
+pub fn client_for_ready_socks_proxy(socks_addr: SocketAddr) -> Result<Client, TorError> {
+    if !socks_addr.ip().is_loopback() {
+        return Err(TorError::NonLoopbackProxy(socks_addr));
+    }
+    build_store_client(socks_addr)
+}
+
 fn build_store_client(socks_addr: SocketAddr) -> Result<Client, TorError> {
     let proxy = Proxy::all(format!("socks5h://{socks_addr}")).map_err(TorError::Proxy)?;
-    Client::builder()
-        .proxy(proxy)
-        .build()
-        .map_err(TorError::Client)
+    keystore::blocking_http::off_async_context(|| {
+        Client::builder()
+            .proxy(proxy)
+            .timeout(Duration::from_secs(30))
+            .http1_title_case_headers()
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent("discord-privacy-client/0.0.1")
+            .build()
+            .map_err(TorError::Client)
+    })
 }
 
 impl Drop for TorTransport {

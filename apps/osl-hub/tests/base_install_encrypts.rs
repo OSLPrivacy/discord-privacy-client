@@ -31,7 +31,12 @@ fn base_install_encrypts_through_the_word_bank_carrier() {
         .expect("the base install encrypts a protected message");
     assert_ne!(ciphertext.as_slice(), plaintext);
 
-    let blob_id: [u8; TOKEN_ID_BYTES] = [0x53, 0x92, 0x10, 0xef, 0x64, 0x28, 0xba, 0x7c];
+    // `P` is a 160-bit carrier seed (TOKEN_ID_BYTES == 20), not a 64-bit store
+    // id, so the fixture carries a full-width seed.
+    let blob_id: [u8; TOKEN_ID_BYTES] = [
+        0x53, 0x92, 0x10, 0xef, 0x64, 0x28, 0xba, 0x7c, 0x05, 0xd1, 0x9a, 0x36, 0x71, 0xc8, 0x4f,
+        0xe2, 0x1b, 0x8d, 0x60, 0xa4,
+    ];
     let mut cipher_store = BTreeMap::new();
     cipher_store.insert(blob_id, ciphertext);
 

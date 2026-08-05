@@ -34,7 +34,14 @@ fn assert_legacy_control_wire(wire: &str, version: u8, message_type: u8) {
 
 #[test]
 fn recovery_and_group_controls_do_not_ride_a_pinned_open_rn_session() {
-    assert!(RN_WIRE_IN_ENABLED, "RN compile-time fuse must be open");
+    // Kept, and promoted to a `const` block rather than relaxed. This is the
+    // guard that stops the test below from going quietly vacuous: with the fuse
+    // shut, "these controls do not ride OSL-RN" would hold for the trivial
+    // reason that nothing rides OSL-RN, and the test would still pass. In a
+    // `const` block the same condition is checked when the test is compiled, so
+    // closing the fuse breaks the build here instead of leaving a green test
+    // that no longer asserts anything.
+    const { assert!(RN_WIRE_IN_ENABLED, "RN compile-time fuse must be open") };
 
     let state = AppState::new();
     state.set_rn_wire_in_enabled(true);

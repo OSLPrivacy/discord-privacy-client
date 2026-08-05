@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 import { webSurfaceLabel } from "./web-surface-label";
 
 const serviceIds = [
-  "telegram", "discord", "whatsapp", "instagram", "snapchat", "email",
-  "x", "signal", "slack", "linkedin", "teams", "messenger",
+  "telegram", "discord", "whatsapp", "email", "signal",
 ] as const;
 
 describe("web surface label", () => {

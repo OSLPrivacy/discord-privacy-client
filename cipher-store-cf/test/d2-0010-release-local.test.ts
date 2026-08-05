@@ -25,6 +25,13 @@ import {
 const NOW = 1_900_000_000;
 const DIGEST = "d".repeat(64);
 
+// `D2_REQUIRED_MIGRATIONS` is an `as const` tuple, so `.includes(name)` will
+// only accept one of its own ten literals -- and a migration name read back out
+// of D1 is a plain `string`, which is precisely the value this pin exists to
+// test. A ReadonlySet over the same tuple keeps the pinned list byte-for-byte
+// and lets an arbitrary name be checked against it.
+const D2_REQUIRED_MIGRATION_NAMES: ReadonlySet<string> = new Set(D2_REQUIRED_MIGRATIONS);
+
 interface SeededCompleting {
   id: string;
   key: string;
@@ -282,7 +289,7 @@ describe("local D2 migration-0010 release witness", () => {
         // rewrite the historical release manifest that this verifier pins.
         applied_migrations: applied
           .map((row) => row.name)
-          .filter((name) => D2_REQUIRED_MIGRATIONS.includes(name)),
+          .filter((name) => D2_REQUIRED_MIGRATION_NAMES.has(name)),
         migration_0010_sha256: D2_MIGRATION_0010_SHA256,
         recovery_marker: recovery,
         claim_columns: ["claim_origin", "storage_fence_state"],

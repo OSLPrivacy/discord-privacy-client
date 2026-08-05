@@ -144,16 +144,21 @@ describe("hosted scan security review", () => {
     });
   });
 
-  it("records the f78 independent review as fail-closed and scan-only", () => {
+  it("records the f78 independent review as fail-closed with exact guided deletion only", () => {
     const review = section(plan, "Independent Review Pass f78");
     const compact = review.replace(/\s+/gu, " ");
     expect(compact).toContain("Verdict: pass");
-    expect(compact).toContain("registration stays limited to");
-    expect(compact).toContain("renderer can request reachability only");
+    expect(compact).toContain("scan registration stays limited to");
+    expect(compact).toContain("exact step-4 pair");
+    expect(compact).toContain("renderer can request reachability and a bounded reviewed ordinal selection only");
     expect(compact).toContain("remains a refusal");
     expect(compact).toContain("must not be mapped to an empty scan");
+    expect(compact).toContain("stale preview");
+    expect(compact).toContain("boolean success");
     expect(compact).toContain("content-free shape metadata");
     expect(compact).toContain("not row locators");
-    expect(review).not.toMatch(/\bpreview_discord_guided_deletion\b|\bexecute_discord_guided_deletion\b|\bexecute_mass_cleanup_batch\b/u);
+    expect(review).toMatch(/\bpreview_discord_guided_deletion\b/u);
+    expect(review).toMatch(/\bexecute_discord_guided_deletion\b/u);
+    expect(review).not.toMatch(/\bexecute_mass_cleanup_batch\b/u);
   });
 });

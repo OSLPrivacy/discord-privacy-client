@@ -22,6 +22,17 @@ describe("trusted OSL Privacy update contract", () => {
     });
   });
 
+  it("keeps current, unreachable, and available update checks distinguishable", () => {
+    const checkedAndCurrent = parseUpdateCheck({ status: "up_to_date", current: "0.1.0" });
+    const couldNotCheck = parseUpdateCheck({ status: "could_not_check" });
+    const updateAvailable = parseUpdateCheck({ status: "update_available", current: "0.1.0", next: "0.2.0", notes: "Security and reliability fixes." });
+
+    expect(checkedAndCurrent.state).toBe("upToDate");
+    expect(couldNotCheck.state).toBe("couldNotCheck");
+    expect(updateAvailable.state).toBe("available");
+    expect(new Set([checkedAndCurrent.state, couldNotCheck.state, updateAvailable.state]).size).toBe(3);
+  });
+
   it("rejects remote HTML fields, arbitrary URLs, and unknown states", () => {
     expect(parseUpdateCheck({ status: "update_available", current: "0.1.0", next: "0.2.0", notes: "ok", html: "<b>remote</b>" }).state).toBe("error");
     expect(parseUpdateCheck({ status: "update_available", current: "0.1.0", next: "0.2.0", notes: "ok", url: "https://evil.invalid" }).state).toBe("error");

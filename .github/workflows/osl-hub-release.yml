@@ -1,5 +1,11 @@
 name: Build signed OSL Privacy candidate
 
+# D-172 deliberately did NOT wire this to `integrate/**`. It BUILDS AND
+# PUBLISHES a signed candidate and holds `contents: write`, `id-token: write`
+# and `attestations: write`. A release workflow must never fire on a branch
+# people push work-in-progress to. Same ruling for osl-hub-promote.yml
+# (promotes a tested candidate) and reproducible-build.yml (reproduces a
+# PUBLISHED hub-v* release, so it has nothing to reproduce on a branch).
 on:
   push:
     tags:
@@ -56,11 +62,25 @@ jobs:
           npm test -- --run
           npm run build
 
+      - name: Verify frontendDist embedding contract
+        working-directory: apps/osl-hub-ui
+        env:
+          OSL_QA_BUILD_CONTRACTS: "1"
+        run: npx vitest run src/qa-doc-contracts.test.ts -t frontend_dist_is_embedded_after_frontend_build
+
       - name: Test OSL Privacy core
         run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --lib
 
       - name: Test OSL Privacy Windows identity lifecycle
         run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --test windows_identity_lifecycle
+
+      # D-152. The two steps above compile none of `src/main.rs` -- the bin is
+      # `required-features = ["desktop"]` -- so until now a release could be cut
+      # from a tree in which the shipping binary's own 116 tests did not even
+      # compile. The frontend is already built above, which `tauri_build::build()`
+      # requires. `--test-threads=1`: `set_file_storage_key` is process-global.
+      - name: Test the OSL Privacy desktop binary
+        run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features desktop --bin osl-privacy-hub -- --test-threads=1
 
       - name: Audit OSL Privacy updater supply-chain policy
         run: |

@@ -2203,6 +2203,7 @@ pub(crate) struct NativeDiscordAccessibilityTarget {
     pub(crate) generation: u64,
     pub(crate) window: isize,
     pub(crate) process_id: u32,
+    pub(crate) app_process_name: &'static str,
 }
 
 /// Exactly the facts a Discord accessibility operation is allowed to know,
@@ -2225,6 +2226,7 @@ struct LockedDiscordHostFacts {
     generation: u64,
     window: isize,
     window_process_id: u32,
+    app_process_name: &'static str,
     /// What the host's own trust predicate answered for `window_process_id`,
     /// asked once while the lock was still held and for no other process id.
     target_process_trusted: bool,
@@ -2238,6 +2240,7 @@ impl std::fmt::Debug for LockedDiscordHostFacts {
             .field("generation", &self.generation)
             .field("window", &"<redacted-hwnd>")
             .field("window_process_id", &self.window_process_id)
+            .field("app_process_name", &self.app_process_name)
             .field("target_process_trusted", &self.target_process_trusted)
             .finish()
     }
@@ -2252,15 +2255,21 @@ impl LockedDiscordHostFacts {
         generation: u64,
         window: isize,
         window_process_id: u32,
+        app_process_name: &'static str,
         target_process_trusted: bool,
     ) -> Option<Self> {
-        if window == 0 || window_process_id == 0 || !target_process_trusted {
+        if window == 0
+            || window_process_id == 0
+            || app_process_name.is_empty()
+            || !target_process_trusted
+        {
             return None;
         }
         Some(Self {
             generation,
             window,
             window_process_id,
+            app_process_name,
             target_process_trusted,
         })
     }
@@ -2296,6 +2305,7 @@ impl LockedDiscordHostFacts {
             generation: self.generation,
             window: self.window,
             process_id: self.window_process_id,
+            app_process_name: self.app_process_name,
         }
     }
 }
@@ -2846,6 +2856,7 @@ enum DiscordChannel {
 struct DiscordChannelManifest {
     channel: DiscordChannel,
     claim_name: &'static str,
+    process_name: &'static str,
     install_directory: &'static str,
     executable_name: &'static str,
     data_directory: &'static str,
@@ -2857,6 +2868,7 @@ const DISCORD_CHANNELS: &[DiscordChannelManifest] = &[
     DiscordChannelManifest {
         channel: DiscordChannel::Stable,
         claim_name: "stable",
+        process_name: "Discord",
         install_directory: "Discord",
         executable_name: "Discord.exe",
         data_directory: "discord",
@@ -2865,6 +2877,7 @@ const DISCORD_CHANNELS: &[DiscordChannelManifest] = &[
     DiscordChannelManifest {
         channel: DiscordChannel::Ptb,
         claim_name: "ptb",
+        process_name: "DiscordPTB",
         install_directory: "DiscordPTB",
         executable_name: "DiscordPTB.exe",
         data_directory: "discordptb",
@@ -2873,6 +2886,7 @@ const DISCORD_CHANNELS: &[DiscordChannelManifest] = &[
     DiscordChannelManifest {
         channel: DiscordChannel::Canary,
         claim_name: "canary",
+        process_name: "DiscordCanary",
         install_directory: "DiscordCanary",
         executable_name: "DiscordCanary.exe",
         data_directory: "discordcanary",
@@ -2885,6 +2899,38 @@ fn dedicated_discord_channels() -> impl Iterator<Item = &'static DiscordChannelM
     DISCORD_CHANNELS
         .iter()
         .filter(|channel| channel.channel == DiscordChannel::Ptb)
+}
+
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn dedicated_discord_process_name() -> &'static str {
+    dedicated_discord_channels()
+        .next()
+        .expect("a dedicated Discord channel is fixed")
+        .process_name
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn discord_process_name_for_executable_path(path: &Path) -> Option<&'static str> {
+    let file_name = path.file_name()?.to_str()?;
+    DISCORD_CHANNELS
+        .iter()
+        .find(|channel| file_name.eq_ignore_ascii_case(channel.executable_name))
+        .map(|channel| channel.process_name)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn native_accessibility_process_name(id: NativeAppId, trusted_path: &Path) -> Option<&'static str> {
+    match id {
+        NativeAppId::Discord => discord_process_name_for_executable_path(trusted_path),
+        NativeAppId::Telegram => {
+            Some(crate::native_telegram_adapter::TELEGRAM_DESKTOP_PROCESS_NAME)
+        }
+        NativeAppId::Signal => Some(crate::native_signal_adapter::SIGNAL_DESKTOP_PROCESS_NAME),
+        NativeAppId::Whatsapp => {
+            Some(crate::native_whatsapp_adapter::WHATSAPP_DESKTOP_PROCESS_NAME)
+        }
+        NativeAppId::Outlook => None,
+    }
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -6057,6 +6103,14 @@ mod windows {
         // Everything below relaunches the client, so every window it can end up
         // adopting is one OSL created and therefore owes a close to.
 
+        // D-252: this match ends WITHOUT a `_ =>` arm on purpose. The one that
+        // used to be here, `_ => return Err(ExistingSessionUnavailable)`, was
+        // already unreachable -- every `NativeAppId` is handled below -- and an
+        // unreachable catch-all is not harmless: it is what would have absorbed
+        // the NEXT protected app into a silent "existing session unavailable"
+        // instead of a compile error naming this site. Same shape as the
+        // shadowed schema arm in D-253. Adding a `NativeAppId` must fail the
+        // build here until its relaunch path is written.
         let (executable_path, publisher) = match id {
             NativeAppId::Discord => {
                 let local = known_folder(&FOLDERID_LocalAppData)
@@ -6102,7 +6156,6 @@ mod windows {
                 }
                 (Some(path.to_owned()), ExecutablePublisher::Microsoft)
             }
-            _ => return Err(NativeWindowHostReason::ExistingSessionUnavailable),
         };
         let executable_path =
             executable_path.ok_or(NativeWindowHostReason::ExistingSessionUnavailable)?;
@@ -8739,10 +8792,14 @@ mod windows {
                     )
                 }
             };
+            let app_process_name =
+                native_accessibility_process_name(app_id, hosted.trusted_window_executable.path())
+                    .ok_or_else(|| "The trusted native Discord host is unavailable".to_owned())?;
             LockedDiscordHostFacts::copy_from_locked(
                 hosted.generation,
                 hosted.window,
                 hosted.window_process_id,
+                app_process_name,
                 target_process_trusted,
             )
             .ok_or_else(|| "The trusted native Discord host is unavailable".to_owned())?
@@ -8916,10 +8973,23 @@ mod windows {
                         )
                 }
             };
+            let app_process_name = match native_accessibility_process_name(
+                NativeAppId::Discord,
+                hosted.trusted_window_executable.path(),
+            ) {
+                Some(name) => name,
+                None => {
+                    return NativeDiscordAccessibilitySnapshot::unavailable(
+                        hosted.generation,
+                        DiscordSnapshotReason::HostIdentityChanged,
+                    )
+                }
+            };
             match LockedDiscordHostFacts::copy_from_locked(
                 hosted.generation,
                 hosted.window,
                 hosted.window_process_id,
+                app_process_name,
                 target_process_trusted,
             ) {
                 Some(facts) => facts,
@@ -9363,7 +9433,7 @@ mod tests {
 
     #[test]
     fn locked_host_facts_copy_only_the_operation_inputs() {
-        let facts = LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 4242, true)
+        let facts = LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 4242, "DiscordPTB", true)
             .expect("a fully proven host must yield copied facts");
         assert_eq!(
             facts,
@@ -9371,6 +9441,7 @@ mod tests {
                 generation: 7,
                 window: 0x4321,
                 window_process_id: 4242,
+                app_process_name: "DiscordPTB",
                 target_process_trusted: true,
             }
         );
@@ -9378,14 +9449,21 @@ mod tests {
 
     #[test]
     fn locked_host_facts_refuse_unproven_identities() {
-        assert!(LockedDiscordHostFacts::copy_from_locked(7, 0, 4242, true).is_none());
-        assert!(LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 0, true).is_none());
-        assert!(LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 4242, false).is_none());
+        assert!(LockedDiscordHostFacts::copy_from_locked(7, 0, 4242, "DiscordPTB", true).is_none());
+        assert!(
+            LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 0, "DiscordPTB", true).is_none()
+        );
+        assert!(LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 4242, "", true).is_none());
+        assert!(
+            LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 4242, "DiscordPTB", false)
+                .is_none()
+        );
     }
 
     #[test]
     fn pinned_trust_admits_exactly_one_process_id() {
-        let facts = LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 4242, true).unwrap();
+        let facts =
+            LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 4242, "DiscordPTB", true).unwrap();
         let trusted = facts.pinned_process_trust();
         assert!(trusted(4242));
         assert!(!trusted(0));
@@ -9395,11 +9473,25 @@ mod tests {
     }
 
     #[test]
+    fn mutant_untrusted_pid_still_refused_when_resolver_process_name_matches() {
+        let facts =
+            LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 4242, "DiscordPTB", true).unwrap();
+        assert_eq!(facts.app_process_name, "DiscordPTB");
+        let trusted = facts.pinned_process_trust();
+
+        assert!(
+            !trusted(5252),
+            "resolver process identity must not broaden pinned_process_trust"
+        );
+    }
+
+    #[test]
     fn pinned_trust_admits_nothing_when_the_lock_answered_no() {
         let facts = LockedDiscordHostFacts {
             generation: 7,
             window: 0x4321,
             window_process_id: 4242,
+            app_process_name: "DiscordPTB",
             target_process_trusted: false,
         };
         let trusted = facts.pinned_process_trust();
@@ -9410,7 +9502,8 @@ mod tests {
 
     #[test]
     fn stale_host_state_rejects_the_operation_result() {
-        let facts = LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 4242, true).unwrap();
+        let facts =
+            LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 4242, "DiscordPTB", true).unwrap();
         assert!(facts.still_describes(7, 0x4321, 4242));
         // Generation advanced: the host was re-hosted mid-operation.
         assert!(!facts.still_describes(8, 0x4321, 4242));
@@ -9422,7 +9515,8 @@ mod tests {
 
     #[test]
     fn native_target_debug_redacts_window_handles() {
-        let facts = LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 4242, true).unwrap();
+        let facts =
+            LockedDiscordHostFacts::copy_from_locked(7, 0x4321, 4242, "DiscordPTB", true).unwrap();
         let facts_debug = format!("{facts:?}");
         assert!(facts_debug.contains("LockedDiscordHostFacts"));
         assert!(facts_debug.contains("<redacted-hwnd>"));
@@ -11613,6 +11707,7 @@ mod tests {
                 .iter()
                 .map(|channel| (
                     channel.channel,
+                    channel.process_name,
                     channel.install_directory,
                     channel.executable_name,
                     channel.data_directory,
@@ -11623,6 +11718,7 @@ mod tests {
                 (
                     DiscordChannel::Stable,
                     "Discord",
+                    "Discord",
                     "Discord.exe",
                     "discord",
                     "Discord.Discord",
@@ -11630,12 +11726,14 @@ mod tests {
                 (
                     DiscordChannel::Ptb,
                     "DiscordPTB",
+                    "DiscordPTB",
                     "DiscordPTB.exe",
                     "discordptb",
                     "Discord.Discord.PTB",
                 ),
                 (
                     DiscordChannel::Canary,
+                    "DiscordCanary",
                     "DiscordCanary",
                     "DiscordCanary.exe",
                     "discordcanary",
@@ -11651,6 +11749,7 @@ mod tests {
             dedicated_discord_channels()
                 .map(|channel| (
                     channel.channel,
+                    channel.process_name,
                     channel.install_directory,
                     channel.executable_name,
                     channel.data_directory,
@@ -11660,10 +11759,42 @@ mod tests {
             vec![(
                 DiscordChannel::Ptb,
                 "DiscordPTB",
+                "DiscordPTB",
                 "DiscordPTB.exe",
                 "discordptb",
                 "Discord.Discord.PTB",
             )]
+        );
+    }
+
+    #[test]
+    fn discord_channel_process_name_is_decided_by_the_manifest_executable() {
+        assert_eq!(
+            dedicated_discord_process_name(),
+            "DiscordPTB",
+            "mutant_revert_dedicated_process_to_stable would make PTB unresolvable"
+        );
+        assert_eq!(
+            discord_process_name_for_executable_path(Path::new("C:/Discord/app-1/Discord.exe")),
+            Some("Discord"),
+            "mutant_break_stable_existing_channel would regress the stable carrier"
+        );
+        assert_eq!(
+            discord_process_name_for_executable_path(Path::new(
+                "C:/DiscordPTB/app-1/DiscordPTB.exe"
+            )),
+            Some("DiscordPTB")
+        );
+        assert_eq!(
+            discord_process_name_for_executable_path(Path::new(
+                "C:/DiscordCanary/app-1/DiscordCanary.exe"
+            )),
+            Some("DiscordCanary")
+        );
+        assert_eq!(
+            discord_process_name_for_executable_path(Path::new("C:/DiscordBeta/DiscordBeta.exe")),
+            None,
+            "unknown Discord-like variants must add a manifest row, not a comparator suffix rule"
         );
     }
 

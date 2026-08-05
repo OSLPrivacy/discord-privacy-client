@@ -6,6 +6,7 @@ pub mod account_identity_authority;
 #[cfg(feature = "core")]
 pub mod account_recovery;
 pub mod adapter_profile_boot;
+pub mod adapters;
 #[cfg(feature = "core")]
 pub mod attachment_formats;
 #[cfg(feature = "core")]
@@ -15,11 +16,13 @@ pub mod attachment_scan;
 pub mod attachment_thumbnail;
 #[cfg(feature = "core")]
 pub mod attachment_thumbnail_policy;
-// ai_carrier declares a #[tauri::command]. tauri is an optional dependency
-// pulled in by the `desktop` feature (NOT `core`), so an ungated declaration
-// failed to resolve `tauri` in every non-desktop build of the product lib.
-pub mod adapters;
-#[cfg(feature = "desktop")]
+// ai_carrier was once gated on `desktop` because it declared a
+// #[tauri::command] and tauri only arrives with that feature. The command
+// wrapper now lives in main.rs (the macro's __cmd__* helpers must sit beside
+// the invoke_handler), so nothing here needs tauri: cover_ai is a
+// non-optional dependency and credits/ai_consent are ungated. The gate had
+// outlived its reason and broke the default-feature build, because
+// broker.rs takes `&crate::ai_carrier::AiCarrierState` unconditionally.
 pub mod ai_carrier;
 pub mod ai_consent;
 pub mod attended_imap;
@@ -45,6 +48,10 @@ pub mod burn_journal_bridge;
 #[cfg(feature = "core")]
 pub mod burn_server;
 pub mod carrier_placement;
+/// What a live carry receipt is bound to. Not behind a feature: the publication
+/// gate that reads it must exist in every build that can compile the native
+/// adapters.
+pub mod carry_seam_contract;
 pub mod cloud_autoscrub_authority;
 pub mod cloud_autoscrub_consent;
 pub mod cloud_autoscrub_envelope;
@@ -59,6 +66,11 @@ pub mod control_contract;
 // resolve the moment ai_carrier started using it - the file shipped as an
 // orphan and only broke the build once something imported it.
 pub mod credits;
+// D-191: the process-wide `tracing` subscriber. In the lib, not in `main.rs`,
+// so an integration test can install it against a hermetic path and read back
+// the bytes it produced.
+#[cfg(feature = "core")]
+pub mod diagnostics;
 pub mod discord_carrier_geometry;
 #[cfg(feature = "desktop")]
 pub mod entitlement_refresh;
@@ -70,6 +82,10 @@ pub mod hosted_port;
 pub mod hosted_provider_recipe;
 pub mod hosted_session_port;
 pub mod invite_clipboard;
+/// The landing oracle: did this exact text land in the composer? Judged
+/// through channels that did not write it. Pure above its syscall seam, so the
+/// verdict is testable in every build that can compile this crate.
+pub mod landing_oracle;
 /// When the hidden main window may be shown. Pure, and deliberately not behind
 /// `desktop`: the reveal rule is what decides whether the app is visible at all,
 /// so it is testable in every build that can compile this crate.
@@ -86,6 +102,8 @@ pub mod native_signal_adapter;
 pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
 pub mod native_window_host;
+#[cfg(feature = "core")]
+pub mod osl_chat_local_state_key;
 #[cfg(feature = "core")]
 pub mod osl_mail;
 #[cfg(feature = "core")]
@@ -111,13 +129,24 @@ pub mod scrub_hosted {
     pub mod verify_surface;
     pub mod x_web;
 }
-pub mod scrub_hosted_port;
 #[cfg(all(feature = "core", feature = "desktop"))]
 pub mod revocation_drain_timer;
 #[cfg(feature = "core")]
 pub mod rn_attribution;
 #[cfg(feature = "core")]
 pub mod rn_recovery;
+pub mod scrub_hosted_port;
+/// **Binding Ledger 9, the seam ledger.** Adapters declared vs adapters with a
+/// live carry receipt, ratcheted in both directions against
+/// `carry-receipts/seam-ledger-baseline.json`. Test-only because its inputs --
+/// `native_apps::tests::fleet_report` and the receipt verifier -- are, and
+/// because a ledger is a gate rather than product code.
+#[cfg(test)]
+pub(crate) mod seam_ledger;
+/// The one production `RawBackend` for `ipc::secure_local_store::SealedStore`.
+/// Every other implementation in the tree is `#[cfg(test)]`, which is why the
+/// offline send queue could not be wired at all before this module existed.
+pub mod secure_disk_backend;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
@@ -143,6 +172,12 @@ pub mod placement;
 #[cfg(feature = "core")]
 pub mod broker;
 pub mod chat_capture_protection;
+/// **The claim state.** What OSL may publicly say about each ruled surface, and
+/// why — the owner gate `PLAN.md` r4-5 calls "the claim-state gap". Not behind a
+/// feature: `native_apps` derives every public support label from it, and the
+/// publication gates that read it must exist in every build that can compile the
+/// native adapters.
+pub mod claim_state;
 #[cfg(feature = "core")]
 pub mod cleanup;
 #[cfg(feature = "core")]
@@ -159,8 +194,6 @@ pub mod discord_qa_identity;
 pub mod discord_qa_inbound_receipt;
 #[cfg(feature = "core")]
 pub mod eager_fetch;
-pub mod osl_chat_delivery;
-pub mod osl_chat_queue;
 #[cfg(feature = "core")]
 pub mod eager_fetch_retry;
 pub mod identity_binding_verifier;
@@ -171,6 +204,8 @@ pub mod inbound_receipts;
 pub mod isolated_worker;
 #[cfg(feature = "core")]
 pub mod mass_cleanup;
+pub mod osl_chat_delivery;
+pub mod osl_chat_queue;
 pub mod realtime_client;
 pub mod realtime_decoy;
 pub mod realtime_resume;

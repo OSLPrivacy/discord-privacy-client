@@ -56,9 +56,36 @@ fi
 command -v cargo >/dev/null || { echo "cargo is required to build the spike" >&2; exit 2; }
 command -v wasm-bindgen >/dev/null || { echo "wasm-bindgen-cli is required (cargo install wasm-bindgen-cli --version 0.2.106)" >&2; exit 2; }
 
+# D-248. `--no-typescript` means wasm-bindgen emits no declaration file, and the
+# `rm -rf` below deletes the checked-in one that `runtime.ts` -- now a
+# production import, not a spike -- typechecks against. A rebuild used to leave
+# the Worker's own `npm run typecheck` broken with no hint why. Preserve the
+# declaration across the rebuild; it describes the emitted JS's exports and is
+# not derived from the wasm.
+DECL="$DIST_DIR/osl_uts39_wasm.d.ts"
+PRESERVED_DECL=""
+if [[ -f "$DECL" ]]; then
+  PRESERVED_DECL=$(mktemp)
+  cp "$DECL" "$PRESERVED_DECL"
+fi
+
 rm -rf "$DIST_DIR" "$BUNDLE_DIR"
 flock /tmp/osl-cargo.lock cargo build --release --target wasm32-unknown-unknown --manifest-path "$SPIKE_DIR/wasm/Cargo.toml"
 wasm-bindgen "$SPIKE_DIR/wasm/target/wasm32-unknown-unknown/release/osl_uts39_wasm.wasm" \
   --target web --out-dir "$DIST_DIR" --no-typescript
+
+if [[ -n "$PRESERVED_DECL" ]]; then
+  cp "$PRESERVED_DECL" "$DECL"
+  rm -f "$PRESERVED_DECL"
+  # A restored declaration that no longer matches the emitted JS is worse than
+  # none: it would type a function that is not exported. Fail the build instead.
+  for symbol in analyze_identifier initSync; do
+    grep -q "export function $symbol\|export { .*$symbol" "$DIST_DIR/osl_uts39_wasm.js" \
+      || grep -q "$symbol" "$DIST_DIR/osl_uts39_wasm.js" \
+      || { echo "restored declaration names '$symbol', which the rebuilt JS does not export" >&2; exit 1; }
+  done
+else
+  echo "WARNING: no checked-in $DECL to restore; 'npm run typecheck' will fail until one exists." >&2
+fi
 npx wrangler deploy --config "$SPIKE_DIR/spike-wrangler.toml" --dry-run --outdir "$BUNDLE_DIR"
 measure_bundle "$BUNDLE_DIR" "$REPORT_PATH"

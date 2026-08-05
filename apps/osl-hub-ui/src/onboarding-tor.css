@@ -32,8 +32,11 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #38bdf8) 28%, transparent);
 }
 
-.tor-choice-card input { margin-top: .15rem; accent-color: var(--accent, #38bdf8); }
-.tor-choice-copy { display: grid; gap: .3rem; }
+/* Pin both children to their own column. Without this an extra element in the
+   card silently reflows the copy onto row 2 of the 1.125rem radio column and
+   the text wraps one or two words per line. */
+.tor-choice-card input { grid-column: 1; margin-top: .15rem; accent-color: var(--accent, #38bdf8); }
+.tor-choice-copy { grid-column: 2; display: grid; gap: .3rem; align-content: start; }
 .tor-choice-copy strong { font-weight: 600; }
 .tor-choice-copy small, .tor-choice-note { font-size: .875rem; line-height: 1.4; }
 .tor-choice-note { margin: 0; }

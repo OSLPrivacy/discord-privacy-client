@@ -83,7 +83,7 @@ describe("local protected side sheet", () => {
       openedPlaintext: "<private>",
     };
     const readyMarkup = localProtectedSheetMarkup(ready);
-    expect(readyMarkup).toContain("Manual copy & paste");
+    expect(readyMarkup).toContain("Manual placement");
     expect(readyMarkup).toContain("no page access");
     expect(readyMarkup).toContain("not person-to-person E2EE");
     expect(readyMarkup).not.toContain("<Rose>");
@@ -91,13 +91,16 @@ describe("local protected side sheet", () => {
     const openMarkup = localProtectedSheetMarkup({ ...ready, pane: "open" });
     expect(openMarkup).toContain('id="local-decrypt-display"');
     expect(openMarkup).toContain("Only for this local chat.");
+    expect(localProtectedSheetMarkup(ready, "manual")).toContain("Encrypt & prepare");
+    expect(localProtectedSheetMarkup(ready, "manual")).toContain("OSL does not copy or send.");
+    expect(localProtectedSheetMarkup(ready, "manual")).toContain("Copy to clipboard");
     expect(localProtectedSheetMarkup(ready, "clipboard")).toContain("Encrypt & copy");
-    expect(localProtectedSheetMarkup(ready, "double")).toContain("Encrypt & copy");
-    expect(localProtectedSheetMarkup(ready, "single")).toContain("Encrypt & copy");
-    expect(localProtectedSheetMarkup(ready, "double")).not.toContain("Double Enter");
-    expect(localProtectedSheetMarkup(ready, "single")).not.toContain("Single Enter");
-    expect(readyMarkup).toContain("OSL copies encrypted text only.");
-    expect(readyMarkup).toContain("press Send yourself");
+    expect(localProtectedSheetMarkup(ready, "clipboard")).toContain("OSL copies encrypted text only.");
+    expect(localProtectedSheetMarkup(ready, "double")).toContain("Encrypt & copy fallback");
+    expect(localProtectedSheetMarkup(ready, "single")).toContain("Encrypt & copy fallback");
+    expect(localProtectedSheetMarkup(ready, "double")).toContain("Double Enter is unavailable in this local sheet.");
+    expect(localProtectedSheetMarkup(ready, "single")).toContain("Single Enter is unavailable in this local sheet.");
+    expect(readyMarkup).toContain("OSL prepares encrypted text below.");
     expect(readyMarkup).toContain('<option value="259200"');
     expect(readyMarkup).toContain("3 days");
   });

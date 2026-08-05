@@ -1,0 +1,56 @@
+$ tmp=$(mktemp -d /tmp/osl-ledger-events.XXXXXX); rsync temp root; mutate osl://attachment-progress listener -> mutant
+$ node scripts/ledger/events.mjs --root=$tmp
+LEDGER events -- Tauri events emitted vs listened, ledger 5 of 7
+  frontend source files scanned: 154
+  rust source files scanned: 158
+  distinct events emitted: 11
+  distinct events listened: 11
+  event calls with non-literal names: 0
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (4):
+    emitted-but-never-listened (2):
+      - osl://attachment-deletion-drain -- event is emitted on the Tauri event bus but no shipped frontend listener subscribes to it
+          apps/osl-hub/src/native_attachment_transport.rs:472
+      - osl://attachment-progress -- event is emitted on the Tauri event bus but no shipped frontend listener subscribes to it
+          apps/osl-hub/src/native_attachment_jobs_bridge.rs:170
+    listened-but-never-emitted (2):
+      - osl://attachment-progress-mutant -- frontend subscribes to this Tauri event but no shipped frontend/Rust emitter was found
+          apps/osl-hub-ui/src/main.ts:4427
+      - osl://realtime-wakeup -- frontend subscribes to this Tauri event but no shipped frontend/Rust emitter was found
+          apps/osl-hub-ui/src/overlay.ts:2320
+  RESULT: RED
+exit=1
+$ restore temp root and rerun
+$ node scripts/ledger/events.mjs --root=$tmp
+LEDGER events -- Tauri events emitted vs listened, ledger 5 of 7
+  frontend source files scanned: 154
+  rust source files scanned: 158
+  distinct events emitted: 11
+  distinct events listened: 11
+  event calls with non-literal names: 0
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (2):
+    emitted-but-never-listened (1):
+      - osl://attachment-deletion-drain -- event is emitted on the Tauri event bus but no shipped frontend listener subscribes to it
+          apps/osl-hub/src/native_attachment_transport.rs:472
+    listened-but-never-emitted (1):
+      - osl://realtime-wakeup -- frontend subscribes to this Tauri event but no shipped frontend/Rust emitter was found
+          apps/osl-hub-ui/src/overlay.ts:2320
+  RESULT: RED
+exit=1
+
+## Missing-input probe
+$ rm -rf /tmp/osl-ledger-missing-root-b0-08
+$ node scripts/ledger/events.mjs --root=/tmp/osl-ledger-missing-root-b0-08
+LEDGER events -- Tauri events emitted vs listened, ledger 5 of 7
+  accepted exceptions: 0/0 (high-water mark 0)
+  VIOLATIONS (3):
+    ledger-input-missing (3):
+      - missing-input:apps/osl-hub-ui/src/main.ts -- required ledger input is missing: apps/osl-hub-ui/src/main.ts
+          apps/osl-hub-ui/src/main.ts:1
+      - missing-input:apps/osl-hub-ui/src/overlay.ts -- required ledger input is missing: apps/osl-hub-ui/src/overlay.ts
+          apps/osl-hub-ui/src/overlay.ts:1
+      - missing-input:apps/osl-hub/src/main.rs -- required ledger input is missing: apps/osl-hub/src/main.rs
+          apps/osl-hub/src/main.rs:1
+  RESULT: RED
+exit=1

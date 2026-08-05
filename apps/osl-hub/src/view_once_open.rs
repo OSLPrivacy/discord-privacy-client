@@ -47,9 +47,109 @@ pub fn open_view_once<E: ViewOnceOpenEffects>(effects: &mut E) -> Result<(), E::
     effects.shred()
 }
 
+/// The cooperating-client display bound for a native view-once image.
+///
+/// This timer bounds display only. It is deliberately separate from the server
+/// single-fetch guarantee, which decides whether the encrypted blob may be
+/// retrieved at all.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeImageDisplayDuration {
+    seconds: u64,
+}
+
+impl NativeImageDisplayDuration {
+    pub fn from_seconds(seconds: u64) -> Result<Self, String> {
+        if seconds == 0 {
+            return Err("The protected image display duration must be positive".to_owned());
+        }
+        Ok(Self { seconds })
+    }
+
+    pub fn from_signed_seconds(seconds: i64) -> Result<Self, String> {
+        let seconds = u64::try_from(seconds)
+            .map_err(|_| "The protected image display duration must be positive".to_owned())?;
+        Self::from_seconds(seconds)
+    }
+
+    pub fn seconds(self) -> u64 {
+        self.seconds
+    }
+
+    pub fn timer_millis_u32(self) -> Result<u32, String> {
+        self.seconds
+            .checked_mul(1_000)
+            .and_then(|millis| u32::try_from(millis).ok())
+            .filter(|millis| *millis > 0)
+            .ok_or_else(|| "The protected image display duration is too long".to_owned())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeImageViewerEvent {
+    HiddenWindowCreated,
+    CaptureExclusionApplied,
+    CaptureExclusionVerified,
+    Revealed,
+    SensitivePixelsPainted,
+    DisplayTimerStarted,
+    DisplayTimerExpired,
+    WindowClosed,
+    PixelsZeroized,
+}
+
+/// Validate the native view-once image lifecycle that source-only desktop code
+/// must follow: no display timer before verified reveal, and timer expiry must
+/// close the window so the retained pixel buffer is dropped and zeroized.
+pub fn validate_native_image_viewer_lifecycle(
+    events: &[NativeImageViewerEvent],
+) -> Result<(), &'static str> {
+    use NativeImageViewerEvent as Event;
+
+    let position = |wanted| events.iter().position(|event| *event == wanted);
+    let Some(hidden) = position(Event::HiddenWindowCreated) else {
+        return Err("the protected image window must begin hidden");
+    };
+    let Some(applied) = position(Event::CaptureExclusionApplied) else {
+        return Err("capture exclusion must be applied");
+    };
+    let Some(verified) = position(Event::CaptureExclusionVerified) else {
+        return Err("capture exclusion must be read back");
+    };
+    let Some(revealed) = position(Event::Revealed) else {
+        return Err("the protected image was never revealed");
+    };
+    let Some(painted) = position(Event::SensitivePixelsPainted) else {
+        return Err("the protected image was never painted");
+    };
+    let Some(timer) = position(Event::DisplayTimerStarted) else {
+        return Err("the display timer never started");
+    };
+    if !(hidden < applied && applied < verified && verified < revealed && revealed <= painted) {
+        return Err("capture exclusion must be proven before reveal and paint");
+    }
+    if timer < painted {
+        return Err("the display timer must start when protected pixels are visible");
+    }
+    if let Some(expired) = position(Event::DisplayTimerExpired) {
+        let Some(closed) = position(Event::WindowClosed) else {
+            return Err("timer expiry must close the protected image window");
+        };
+        let Some(zeroized) = position(Event::PixelsZeroized) else {
+            return Err("closing the protected image window must zeroize pixels");
+        };
+        if !(expired < closed && closed < zeroized) {
+            return Err("timer expiry must close before the retained pixels are zeroized");
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{open_view_once, ViewOnceOpenEffects};
+    use super::{
+        open_view_once, validate_native_image_viewer_lifecycle, NativeImageDisplayDuration,
+        NativeImageViewerEvent as ImageEvent, ViewOnceOpenEffects,
+    };
 
     #[derive(Debug, PartialEq, Eq)]
     enum Step {
@@ -197,6 +297,113 @@ mod tests {
                 Step::OpenedEmitted,
                 Step::RenderStarted,
             ],
+        );
+    }
+
+    #[test]
+    fn native_image_timer_starts_only_after_verified_reveal_and_visible_pixels() {
+        assert_eq!(
+            validate_native_image_viewer_lifecycle(&[
+                ImageEvent::HiddenWindowCreated,
+                ImageEvent::CaptureExclusionApplied,
+                ImageEvent::CaptureExclusionVerified,
+                ImageEvent::Revealed,
+                ImageEvent::SensitivePixelsPainted,
+                ImageEvent::DisplayTimerStarted,
+            ]),
+            Ok(())
+        );
+
+        assert_eq!(
+            validate_native_image_viewer_lifecycle(&[
+                ImageEvent::HiddenWindowCreated,
+                ImageEvent::CaptureExclusionApplied,
+                ImageEvent::DisplayTimerStarted,
+                ImageEvent::CaptureExclusionVerified,
+                ImageEvent::Revealed,
+                ImageEvent::SensitivePixelsPainted,
+            ]),
+            Err("the display timer must start when protected pixels are visible")
+        );
+    }
+
+    #[test]
+    fn native_image_timer_expiry_closes_and_reaches_zeroize_path() {
+        assert_eq!(
+            validate_native_image_viewer_lifecycle(&[
+                ImageEvent::HiddenWindowCreated,
+                ImageEvent::CaptureExclusionApplied,
+                ImageEvent::CaptureExclusionVerified,
+                ImageEvent::Revealed,
+                ImageEvent::SensitivePixelsPainted,
+                ImageEvent::DisplayTimerStarted,
+                ImageEvent::DisplayTimerExpired,
+                ImageEvent::WindowClosed,
+                ImageEvent::PixelsZeroized,
+            ]),
+            Ok(())
+        );
+
+        assert_eq!(
+            validate_native_image_viewer_lifecycle(&[
+                ImageEvent::HiddenWindowCreated,
+                ImageEvent::CaptureExclusionApplied,
+                ImageEvent::CaptureExclusionVerified,
+                ImageEvent::Revealed,
+                ImageEvent::SensitivePixelsPainted,
+                ImageEvent::DisplayTimerStarted,
+                ImageEvent::DisplayTimerExpired,
+            ]),
+            Err("timer expiry must close the protected image window")
+        );
+    }
+
+    #[test]
+    fn native_image_display_duration_refuses_zero_and_negative() {
+        assert_eq!(
+            NativeImageDisplayDuration::from_seconds(3)
+                .unwrap()
+                .seconds(),
+            3
+        );
+        assert!(NativeImageDisplayDuration::from_seconds(0).is_err());
+        assert!(NativeImageDisplayDuration::from_signed_seconds(0).is_err());
+        assert!(NativeImageDisplayDuration::from_signed_seconds(-1).is_err());
+    }
+
+    #[test]
+    fn native_image_viewer_source_keeps_timer_after_readback_and_paint() {
+        let source = include_str!("native_image_viewer.rs");
+        let prepare = source
+            .split_once("pub(crate) fn prepare(")
+            .and_then(|(_, tail)| tail.split_once("Ok(PreparedImageViewer"))
+            .map(|(body, _)| body)
+            .expect("native image viewer prepare body is present");
+        let readback = prepare
+            .find("GetWindowDisplayAffinity(hwnd, &mut affinity)")
+            .expect("prepare reads capture exclusion back");
+        assert!(
+            readback < prepare.len(),
+            "capture exclusion readback must happen before the prepared viewer can be returned"
+        );
+        assert!(
+            !prepare.contains("SetTimer")
+                && !prepare.contains("arm_display_timer_after_first_paint"),
+            "prepare must not start the display timer while the window is hidden"
+        );
+
+        let paint = source
+            .split_once("StretchDIBits(")
+            .and_then(|(_, tail)| tail.split_once("EndPaint(hwnd, &paint);"))
+            .map(|(body, _)| body)
+            .expect("native image viewer paint body is present");
+        let draw = paint.find("StretchDIBits").unwrap_or(0);
+        let timer = paint
+            .find("arm_display_timer_after_first_paint")
+            .expect("first paint arms the display timer");
+        assert!(
+            draw < timer,
+            "the display timer must start after protected pixels are actually painted"
         );
     }
 }

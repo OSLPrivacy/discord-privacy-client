@@ -1,15 +1,13 @@
 //! Regression guard for the capacity of the shipping bigram carrier.
 //!
-//! This is intentionally a standalone test until `cover-ai` becomes a Cargo
-//! crate. Run it with:
-//!
-//! ```text
-//! rustc --edition=2021 --test crates/cover-ai/tests/entropy_budget.rs -o /tmp/entropy_budget
-//! /tmp/entropy_budget --nocapture
-//! ```
+//! `cover-ai` is a Cargo crate now and `stego` is one of its dev-dependencies,
+//! so this guards the shipping `stego::bigram` directly. It used to `#[path]`
+//! in `../../stego/src/bigram.rs`, which compiled a second private copy of the
+//! carrier: the numbers it checked were then the copy's, and the parts of the
+//! module this test does not call registered as dead code that is in fact live
+//! in `stego`.
 
-#[path = "../../stego/src/bigram.rs"]
-mod bigram;
+use stego::bigram;
 
 const STATIONARY_ITERATIONS: usize = 256;
 

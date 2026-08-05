@@ -1,0 +1,28 @@
+# Wrangler config used for ONE purpose: applying the contracting half of an
+# expand/contract migration pair, from `migrations-contract/`.
+#
+#   npx wrangler d1 migrations apply osl-keyserver-prod --remote \
+#     --config wrangler.contract.toml
+#
+# It exists because `wrangler d1 migrations apply` has no subset selection, so
+# the only supported way to hold a migration back from a batch is to keep it in
+# a different `migrations_dir`.  See `migrations-contract/README.md`.
+#
+# DO NOT DEPLOY WITH THIS CONFIG.  It carries no routes, no bindings beyond the
+# database, no vars and no secrets; a `wrangler deploy -c wrangler.contract.toml`
+# would ship a Worker stripped of everything the real one needs.  The name below
+# is deliberately not the production service name, so such a deploy could not
+# overwrite production even by accident.
+name = "oslprivacy-keyserver-migrations-contract"
+main = "scripts/no-deploy-entrypoint.js"
+compatibility_date = "2026-07-15"
+workers_dev = false
+preview_urls = false
+
+# Same database, same d1_migrations table as wrangler.toml.  Only the directory
+# differs, and that is the whole point of this file.
+[[d1_databases]]
+binding = "DB"
+database_name = "osl-keyserver-prod"
+database_id = "1de837cd-3bf6-4d33-be82-12d358523600"
+migrations_dir = "migrations-contract"

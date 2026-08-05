@@ -54,7 +54,12 @@ pub fn recompute_manage_cap(k_send: &[u8], blob_id: &str) -> [u8; 32] {
 /// Destroy the local copy now, then construct the two independent queued
 /// effects. `destroy_local` intentionally runs before any queue callback or
 /// network transport can be introduced by a caller.
-pub fn dispatch_burn<F>(k_send: &[u8], blob_id: String, peer_instruction: Vec<u8>, destroy_local: F) -> BurnDispatch
+pub fn dispatch_burn<F>(
+    k_send: &[u8],
+    blob_id: String,
+    peer_instruction: Vec<u8>,
+    destroy_local: F,
+) -> BurnDispatch
 where
     F: FnOnce(),
 {
@@ -91,9 +96,14 @@ mod tests {
     #[test]
     fn t1_t63_burn_destroys_local_copy_while_network_is_down() {
         let mut local_destroyed = false;
-        let dispatched = dispatch_burn(b"send key", "blob-1".into(), vec![7], || local_destroyed = true);
+        let dispatched = dispatch_burn(b"send key", "blob-1".into(), vec![7], || {
+            local_destroyed = true
+        });
 
-        assert!(local_destroyed, "local destruction must not wait for the network");
+        assert!(
+            local_destroyed,
+            "local destruction must not wait for the network"
+        );
         assert!(dispatched.local_destroyed);
         assert_eq!(dispatched.queued_server_delete.blob_id, "blob-1");
         assert_eq!(dispatched.queued_peer_instruction.peer_instruction, vec![7]);

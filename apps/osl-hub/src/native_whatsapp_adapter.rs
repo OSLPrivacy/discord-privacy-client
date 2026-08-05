@@ -6,6 +6,17 @@
 
 use sha2::{Digest, Sha256};
 
+// `Uia2Deadline` is deliberately NOT re-exported here. D-155 gave the substrate
+// a public `acquire_uia2_editables`, so this module no longer handles a budget
+// at any point, and a scan test below pins that it never starts again.
+pub use crate::native_a11y::{
+    acquire_uia2_editables, acquire_uia2_window, clear_uia2_composer, place_uia2_carrier,
+    resolve_uia2_composer, uia2_carrier_carries_submit, Uia2AcquireError, Uia2Acquired,
+    Uia2CallTimeout, Uia2ComposerError, Uia2ComposerMatcher, Uia2Editable, Uia2OwnedWindow,
+    Uia2PlacementRefusal, Uia2ResolvedWindow, Uia2Syscalls, Uia2TreeRoute, Uia2WakePolicy,
+    Uia2WindowPlan, Uia2WindowResolveError, Uia2WindowShape, WEBVIEW2_PROCESS_NAME,
+};
+
 pub const WHATSAPP_ROOT_WINDOW_CLASS: &str = "WinUIDesktopWin32WindowClass";
 pub const WHATSAPP_CARRIER_PREFIX: &str = "OSL1.WA.";
 
@@ -526,8 +537,24 @@ fn token_contains(token: &Option<String>, needles: &[&str]) -> bool {
 }
 
 fn canonical_whatsapp_body(text: &str) -> String {
-    text.replace("\r\n", "\n")
-        .replace('\r', "\n")
+    // CRLF and a lone CR both normalize to LF, exactly as before. Spelled with
+    // char literals rather than string ones so the module-wide submit-shaped
+    // scan can cover this whole file without an exception: the scan's needle is
+    // a line break inside a *string*, which is how a commit would be smuggled
+    // into a placed value, and this read-path normalizer must not look like one.
+    let mut normalized = String::with_capacity(text.len());
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\r' {
+            if characters.peek() == Some(&'\n') {
+                characters.next();
+            }
+            normalized.push('\n');
+        } else {
+            normalized.push(character);
+        }
+    }
+    normalized
         .trim_matches(|value: char| value.is_whitespace() && value != '\n')
         .to_owned()
 }
@@ -551,6 +578,440 @@ fn carrier_sha256_label(carrier: &str) -> String {
         encoded.push_str(&format!("{byte:02x}"));
     }
     format!("sha256:{encoded}")
+}
+
+// ---------------------------------------------------------------------------
+// Live placement, driven through the shared UIA2 substrate in `native_a11y`.
+// ---------------------------------------------------------------------------
+
+/// WhatsApp Desktop's shell process, **measured on the owner's host**, not
+/// assumed: `WhatsApp.Root.exe`.
+///
+/// ```text
+/// ProcessId ParentProcessId Name               cmd
+///     23884            9644 WhatsApp.Root.exe  "C:\Program Files\WindowsApps\
+///                                               5319275A.WhatsAppDesktop_2.2629.100.0_x64
+///                                               __cv1g1gvanyjgm\WhatsApp.Root.exe"
+/// ```
+///
+/// `native_a11y`'s recorded fixture calls this process `WhatsApp.exe`, and the
+/// substrate compares image names exactly once `.exe` is stripped. `WhatsApp`
+/// therefore matches nothing on the real machine, and the adapter would have
+/// found no window on a host where WhatsApp was running. The fixture string was
+/// never checked against a live process from Rust; this one was, and the live
+/// run below reports `image="WhatsApp.Root.exe"` -- which also refutes A-00b's
+/// residual risk 4, since `OpenProcess` is clearly not refused for this Appx
+/// package.
+pub const WHATSAPP_DESKTOP_PROCESS_NAME: &str = "WhatsApp.Root";
+
+/// Chromium builds its accessibility tree lazily and A-00 measured ~90 s to a
+/// fully populated Discord tree. WhatsApp's content is a Chromium tree in
+/// another process, so it gets the same budget.
+pub const WHATSAPP_UIA2_DEFAULT_WAIT_MS: u64 = 90_000;
+
+/// Deliberately larger than Signal's 750 ms.
+///
+/// A-00b's first residual risk is a whole-subtree scan on a *live* Chromium
+/// tree: it is one cross-process call per node, and it has never been timed.
+/// WhatsApp's content is a full Chromium document hosted in a second process,
+/// so the per-call budget is set above the Electron adapters' and stays a hard
+/// bound rather than becoming an excuse to wait forever.
+pub const WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS: u64 = 2_000;
+
+/// WhatsApp's measured window shape.
+///
+/// Shape 3 of A-00's three: the WinUI 3 shell proves ownership and a **sibling
+/// `msedgewebview2` process' window** carries the content. Binding WhatsApp's
+/// own `WinUIDesktopWin32WindowClass` root yields 8 elements and never
+/// populates, which a single-window probe reads as "WhatsApp cannot be driven".
+/// Once bound in the sibling process the class is `Chrome_WidgetWin_1` like any
+/// other Electron app, so the renderer child and Chromium's wake handshake
+/// apply unchanged.
+///
+/// # Why `tree_route` is `UiaNative` and not Discord's `MsaaBridge`
+///
+/// The two axes are independent and Discord's answer is not transferable.
+/// Discord's shipping route reads Chromium's MSAA client object on the
+/// **outer** window because OSL has already borrowed and reparented that exact
+/// window.
+///
+/// **Corrected by D-176.** That sentence used to end "and
+/// `wake_electron_accessibility` hands back an `IAccessible` there", which was
+/// not true when it was written: the handshake asked for Chromium's honeypot
+/// object id, which every provider answers with nothing, so it handed back
+/// `None` at Discord's outer window as much as anywhere else. It is true now,
+/// because the handshake takes the object at `OBJID_CLIENT` -- see
+/// [`crate::native_a11y::wake_electron_accessibility_with`] for the measurement
+/// and for what a returned object does and does not prove.
+///
+/// WhatsApp is not a borrowed window: nothing in OSL adopts it, the content
+/// root is in a process OSL never claimed, and the handle this plan binds is
+/// the renderer child -- which is precisely the window A-00 measured with UI
+/// Automation directly (11 elements, one writable `Phone number` edit on the
+/// login screen). Taking `MsaaBridge` here would claim a bridged read that has
+/// never been measured on this provider, on a window that is not the one
+/// Chromium hands its client object for.
+///
+/// # How this plan reaches the content window, measured live
+///
+/// Run from Rust on the owner's Windows host, WhatsApp shown, through this very
+/// plan and the substrate's own enumerator:
+///
+/// ```text
+/// candidate hwnd=198342 pid=23884 image="WhatsApp.Root.exe" class="WinUIDesktopWin32WindowClass"
+///           visible=true area=1092960 parent=None      associated_app=None
+/// candidate hwnd=67446  pid=24196 image="msedgewebview2.exe" class="Chrome_WidgetWin_1"
+///           visible=true area=1068000 parent=None      associated_app=None
+/// candidate hwnd=132018 pid=24196 image="msedgewebview2.exe" class="Chrome_RenderWidgetHostHWND"
+///           visible=true area=1068000 parent=Some(67446) associated_app=None
+/// ```
+///
+/// The shell resolves. The content window exists, is visible, and carries the
+/// renderer child. What was missing was the link: `associated_app_hwnd` is
+/// `None`, and the resolver used to require it to equal the shell's handle. The
+/// WebView2 window is genuinely top-level -- parent, `GA_ROOT`, `GA_ROOTOWNER`
+/// and `GWLP_HWNDPARENT` are all zero or itself, in both directions -- so no
+/// ancestry-derived field can ever produce that link, and this plan resolved to
+/// `Resolve(MissingSiblingContentOuter)`.
+///
+/// The relationship that does exist is **process parentage**: msedgewebview2
+/// pid 24196 has `ParentProcessId` 23884, the shell, and its command line
+/// carries `--webview-exe-name=WhatsApp.Root.exe`. D-156 taught the substrate
+/// that association, in [`crate::native_a11y::classify_sibling_host`]:
+/// parentage is the link and the switch is the corroboration, both are
+/// required, and a host that is parented here while naming another application
+/// is refused rather than guessed at.
+///
+/// **The anchor is not a unique key, and ambiguity fails closed (D-180).** If
+/// more than one host satisfies both signals the substrate refuses; it does not
+/// pick the larger, because size is not evidence of which host holds the
+/// conversation and "biggest visible `msedgewebview2`" was already rejected as
+/// this task's mutant [1]. Nothing downstream would catch a wrong choice --
+/// `whatsapp_placement` guards only `bound_is_app_shell` -- and the text this
+/// adapter places IS the carrier for the payload, so binding the wrong window
+/// sends it somewhere the user did not choose. If a legitimate second window
+/// ever appears (a popped-out chat, a media viewer), the resolution is a
+/// positive discriminator built on [`WHATSAPP_COMPOSER_MATCHER`], never a
+/// heuristic.
+///
+/// **And the corroboration is an accident control, not an anti-spoofing
+/// defence.** A process can choose its apparent parent with
+/// `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, and a command line is chosen by
+/// whoever launches the process, so both signals are attacker-controlled and
+/// requiring both costs an adversary nothing. What it does buy is telling
+/// Windows Search's WebView2 apart from WhatsApp's, which is the failure that
+/// was actually measured on this machine.
+///
+/// It still must not fall back to "the biggest visible msedgewebview2 window":
+/// this machine runs a second one for Windows Search, it is larger, and
+/// `native_a11y`'s `largest_visible_webview2_is_the_decoy_not_whatsapp` pins
+/// that it would be chosen. The refusal also stays reachable -- a shell with no
+/// parented WebView2 still produces
+/// [`WhatsAppPlacementStatus::WebView2ContentUnavailable`], which is what
+/// `the_measured_host_has_no_window_link_from_the_shell_to_its_webview2` and
+/// `native_a11y`'s `a_shell_with_no_parented_webview2_still_refuses` hold down.
+///
+/// **Note for whoever owns this file next.** This module's own recorded graphs
+/// were captured before the process table was read, so `contract_whatsapp_graph`
+/// still carries the window-tree link and `measured_whatsapp_graph` carries no
+/// link at all. Both are still correct as recorded and both still pass, but
+/// neither exercises parentage: adding `.hosted_by(23884, Some("WhatsApp.Root.exe"))`
+/// to the two msedgewebview2 entries of `measured_whatsapp_graph` is what would
+/// flip it from refusing to placing, and that edit belongs to this lane, not to
+/// D-156's.
+pub const WHATSAPP_UIA2_WINDOW_PLAN: Uia2WindowPlan = Uia2WindowPlan::sibling_chromium_renderer(
+    "WhatsApp",
+    WHATSAPP_DESKTOP_PROCESS_NAME,
+    WHATSAPP_ROOT_WINDOW_CLASS,
+    WEBVIEW2_PROCESS_NAME,
+    WHATSAPP_UIA2_DEFAULT_WAIT_MS,
+    WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS,
+);
+
+/// How WhatsApp's conversation composer is told apart from every other writable
+/// element WhatsApp exposes.
+///
+/// The refusals are the load-bearing half. A-00 measured WhatsApp signed out,
+/// and the *only* writable element on that screen was `Phone number` -- a
+/// perfectly good `ValuePattern` target that is not a composer, and placing a
+/// carrier there would type OSL's payload into a login form. `non_composer_stems`
+/// is checked first, so `Search messages` is refused even though it carries the
+/// composer stem.
+pub const WHATSAPP_COMPOSER_MATCHER: Uia2ComposerMatcher = Uia2ComposerMatcher {
+    composer_stems: &[
+        "type a message",
+        "write a message",
+        "message",
+        "nachricht",
+        "mensaje",
+        "mensagem",
+        "messaggio",
+    ],
+    non_composer_stems: &[
+        "search",
+        "buscar",
+        "suchen",
+        "durchsuchen",
+        "pesquisar",
+        "cerca",
+        "filter",
+        "filtro",
+        "request",
+        "phone number",
+        "telefonnummer",
+        "teléfono",
+        "country",
+        "país",
+        "verification",
+        "verificación",
+        "code",
+        "new chat",
+        "caption",
+    ],
+};
+
+/// Why a live WhatsApp placement did not happen, or that it did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WhatsAppPlacementStatus {
+    Placed,
+    /// The carrier could never be placed: empty, oversized, or carrying a
+    /// character a composer treats as a commit.
+    InvalidCarrier,
+    /// No usable WhatsApp shell window. Measured on the owner's host: this is
+    /// what a *running* WhatsApp closed to the tray produces, because every one
+    /// of its windows reports `IsWindowVisible` false and the substrate binds
+    /// only visible windows. "Not running" and "hidden" are indistinguishable
+    /// from here, so the status does not claim to tell them apart.
+    AppWindowUnavailable,
+    /// The shell is running but no sibling WebView2 content window was found.
+    /// This is the state a single-window probe misreports as "WhatsApp cannot
+    /// be driven", so it is a distinct status rather than "no composer".
+    WebView2ContentUnavailable,
+    /// Chromium was asked for its accessibility object and refused.
+    WakeRefused,
+    /// The tree never reached the populated threshold. Skipping Chromium's wake
+    /// produces exactly this, which is why it carries its counts.
+    AccessibilityUnavailable {
+        seen: usize,
+        needed: usize,
+    },
+    /// Resolution came back with WhatsApp's own WinUI shell as the bound window.
+    /// That window never populates; it is refused rather than driven.
+    BoundTheAppShell,
+    /// The substrate's syscall seam could not be reached with a deadline the
+    /// acquisition derived from the plan.
+    ///
+    /// **Unreachable since D-155.** It described the one way A-02c's deadline
+    /// relay could fail: being asked for the editable scan before the
+    /// acquisition had handed it a budget. The substrate now derives that budget
+    /// itself inside `acquire_uia2_editables`, so the state cannot occur. Kept
+    /// rather than deleted -- a receipt status is observable contract, and this
+    /// is the owner's call to retire, not a lane's to drop in passing.
+    DeadlineUnavailable,
+    /// No editable element is WhatsApp's composer -- not signed in, no
+    /// conversation open, or only a search or login field is exposed.
+    ComposerUnavailable,
+    ComposerAmbiguous,
+    ComposerNotWritable,
+    ComposerNotEmpty,
+    ReadbackMismatch,
+    ProbeClearFailed,
+    CallTimedOut,
+    /// The backend reported a submit-shaped interaction. Placement is
+    /// abandoned: OSL never authorizes a send.
+    SubmitShapedCallObserved,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WhatsAppLivePlacementReceipt {
+    pub placed: bool,
+    /// Never a literal: the only thing that can set this true is the backend's
+    /// own submit-shaped counter, read either side of the write.
+    pub enter_sent: bool,
+    pub status: WhatsAppPlacementStatus,
+    pub bound_process_id: u32,
+    /// True would mean the resolver handed back WhatsApp's own WinUI shell.
+    pub bound_is_app_shell: bool,
+    pub tree_route: Uia2TreeRoute,
+    pub woke: bool,
+    pub elements: usize,
+    pub readback_contains_carrier: bool,
+    pub cleared: bool,
+}
+
+impl WhatsAppLivePlacementReceipt {
+    fn unbound(status: WhatsAppPlacementStatus) -> Self {
+        Self {
+            placed: false,
+            enter_sent: false,
+            status,
+            bound_process_id: 0,
+            bound_is_app_shell: false,
+            tree_route: WHATSAPP_UIA2_WINDOW_PLAN.tree_route,
+            woke: false,
+            elements: 0,
+            readback_contains_carrier: false,
+            cleared: false,
+        }
+    }
+}
+
+/// Scan the bound window's editable elements under the plan's own deadline.
+///
+/// The deadline is no longer this module's problem: [`acquire_uia2_editables`]
+/// derives it inside the substrate from the acquisition's own
+/// `call_timeout_ms`, which is why the relay that used to sit here is gone
+/// (D-155). Nothing in this module can name a budget, let alone invent one.
+fn whatsapp_editables(
+    host: &dyn Uia2Syscalls,
+    acquired: Uia2Acquired,
+) -> Result<Vec<Uia2Editable>, WhatsAppPlacementStatus> {
+    acquire_uia2_editables(host, acquired).map_err(|_| WhatsAppPlacementStatus::CallTimedOut)
+}
+
+fn whatsapp_acquire_failure(error: Uia2AcquireError) -> WhatsAppPlacementStatus {
+    match error {
+        Uia2AcquireError::Resolve(Uia2WindowResolveError::MissingAppOuter) => {
+            WhatsAppPlacementStatus::AppWindowUnavailable
+        }
+        Uia2AcquireError::Resolve(Uia2WindowResolveError::MissingSiblingContentOuter)
+        | Uia2AcquireError::Resolve(Uia2WindowResolveError::MissingRendererChild) => {
+            WhatsAppPlacementStatus::WebView2ContentUnavailable
+        }
+        Uia2AcquireError::WakeRefused => WhatsAppPlacementStatus::WakeRefused,
+        Uia2AcquireError::TreeNeverPopulated { seen, needed } => {
+            WhatsAppPlacementStatus::AccessibilityUnavailable { seen, needed }
+        }
+        Uia2AcquireError::CallTimedOut(_) => WhatsAppPlacementStatus::CallTimedOut,
+    }
+}
+
+fn whatsapp_composer_failure(error: Uia2ComposerError) -> WhatsAppPlacementStatus {
+    match error {
+        Uia2ComposerError::NoEditable | Uia2ComposerError::NoComposerName => {
+            WhatsAppPlacementStatus::ComposerUnavailable
+        }
+        Uia2ComposerError::NoWritableEditable => WhatsAppPlacementStatus::ComposerNotWritable,
+        Uia2ComposerError::Ambiguous(_) => WhatsAppPlacementStatus::ComposerAmbiguous,
+    }
+}
+
+/// Resolve WhatsApp's composer through the shared substrate and place a
+/// carrier into it. Placement only.
+///
+/// Nothing here can commit a message. The prohibition rests on four separate
+/// mechanisms, because a field that says so proves nothing:
+/// 1. the carrier is built by [`prefixed_whatsapp_carrier`], which refuses any
+///    whitespace or control character, so a line break cannot ride inside it,
+///    and the substrate refuses one again at the seam;
+/// 2. [`Uia2Syscalls`] has no verb that could commit -- no key, no posted
+///    message, no pattern that activates a control;
+/// 3. the backend's own submit-shaped counter is read either side of the write
+///    and any delta abandons placement with `enter_sent = true`; and
+/// 4. `whatsapp_placement_module_holds_no_submit_shaped_mechanism` scans this
+///    module's production source for a mechanism that would bypass the backend.
+pub fn drive_whatsapp_composer_placement(
+    host: &dyn Uia2Syscalls,
+    carrier_payload: &str,
+    allow_replace_existing: bool,
+) -> WhatsAppLivePlacementReceipt {
+    whatsapp_placement(host, carrier_payload, allow_replace_existing, false)
+}
+
+/// The same path, then always clear the composer. Never leave a carrier sitting
+/// in a real person's chat after a probe.
+pub fn probe_whatsapp_composer_write_then_clear(
+    host: &dyn Uia2Syscalls,
+    carrier_payload: &str,
+    allow_replace_existing: bool,
+) -> WhatsAppLivePlacementReceipt {
+    whatsapp_placement(host, carrier_payload, allow_replace_existing, true)
+}
+
+fn whatsapp_placement(
+    host: &dyn Uia2Syscalls,
+    carrier_payload: &str,
+    allow_replace_existing: bool,
+    clear_after: bool,
+) -> WhatsAppLivePlacementReceipt {
+    let carrier = match prefixed_whatsapp_carrier(carrier_payload) {
+        Ok(carrier) if !uia2_carrier_carries_submit(&carrier) => carrier,
+        _ => return WhatsAppLivePlacementReceipt::unbound(WhatsAppPlacementStatus::InvalidCarrier),
+    };
+
+    let acquired = match acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, host) {
+        Ok(acquired) => acquired,
+        Err(error) => {
+            return WhatsAppLivePlacementReceipt::unbound(whatsapp_acquire_failure(error))
+        }
+    };
+
+    let window = acquired.window;
+    let bound_is_app_shell = window.bound_hwnd == window.app_outer_hwnd;
+    let bound = |status| WhatsAppLivePlacementReceipt {
+        placed: false,
+        enter_sent: false,
+        status,
+        bound_process_id: window.bound_process_id,
+        bound_is_app_shell,
+        tree_route: window.tree_route,
+        woke: acquired.woke,
+        elements: acquired.elements,
+        readback_contains_carrier: false,
+        cleared: false,
+    };
+
+    if bound_is_app_shell {
+        return bound(WhatsAppPlacementStatus::BoundTheAppShell);
+    }
+
+    let editables = match whatsapp_editables(host, acquired) {
+        Ok(editables) => editables,
+        Err(status) => return bound(status),
+    };
+    let composer = match resolve_uia2_composer(WHATSAPP_COMPOSER_MATCHER, &editables) {
+        Ok(composer) => composer,
+        Err(error) => return bound(whatsapp_composer_failure(error)),
+    };
+
+    let receipt =
+        match place_uia2_carrier(host, acquired, &composer, &carrier, allow_replace_existing) {
+            Ok(receipt) => receipt,
+            Err(Uia2PlacementRefusal::SubmitShaped) => {
+                let mut refusal = bound(WhatsAppPlacementStatus::SubmitShapedCallObserved);
+                refusal.enter_sent = true;
+                return refusal;
+            }
+            Err(Uia2PlacementRefusal::ExistingDraft) => {
+                return bound(WhatsAppPlacementStatus::ComposerNotEmpty)
+            }
+            Err(Uia2PlacementRefusal::SetValueRefused) => {
+                return bound(WhatsAppPlacementStatus::ComposerNotWritable)
+            }
+            Err(Uia2PlacementRefusal::ReadbackMissingCarrier) => {
+                return bound(WhatsAppPlacementStatus::ReadbackMismatch)
+            }
+            Err(Uia2PlacementRefusal::EmptyCarrier)
+            | Err(Uia2PlacementRefusal::CarrierCarriesSubmit) => {
+                return bound(WhatsAppPlacementStatus::InvalidCarrier)
+            }
+            Err(Uia2PlacementRefusal::CallTimedOut(_)) => {
+                return bound(WhatsAppPlacementStatus::CallTimedOut)
+            }
+        };
+
+    let mut placed = bound(WhatsAppPlacementStatus::Placed);
+    placed.placed = receipt.placed;
+    placed.readback_contains_carrier = receipt.readback_holds_carrier;
+    placed.enter_sent = receipt.submit_shaped_observed;
+
+    if clear_after {
+        match clear_uia2_composer(host, acquired, &composer) {
+            Ok(()) => placed.cleared = true,
+            Err(_) => placed.status = WhatsAppPlacementStatus::ProbeClearFailed,
+        }
+    }
+    placed
 }
 
 #[cfg(test)]
@@ -1071,6 +1532,925 @@ mod tests {
                 reason: WhatsAppLinkPreviewBlockReason::InvalidCarrier
             }
         ));
+    }
+
+    // -----------------------------------------------------------------
+    // Live placement through the shared substrate, driven off Windows
+    // against A-00's recorded WhatsApp window graph.
+    //
+    // The host is `native_a11y::tests::RecordedHost` on purpose: A-00b made it
+    // `pub(crate)` so every adapter drives the same fake through the same seam.
+    // A second fake here would be the fork the substrate exists to prevent.
+    // -----------------------------------------------------------------
+
+    use crate::native_a11y::tests::{composer, owned, RecordedHost};
+
+    // Only the live probe's enumeration capture still names the syscall seam's
+    // deadline token; the production half no longer handles a budget anywhere.
+    #[cfg(target_os = "windows")]
+    use crate::native_a11y::Uia2Deadline;
+
+    // The window graph MEASURED on the owner's Windows host on 2026-08-04, by
+    // enumerating every top-level window and its descendants and printing class,
+    // image name, parent, GA_ROOT, GA_ROOTOWNER, GW_OWNER and GWLP_HWNDPARENT:
+    //
+    //   198342 pid=23884 WhatsApp.Root  WinUIDesktopWin32WindowClass          parent=0
+    //   197328 pid=23884 WhatsApp.Root  Microsoft.UI.Content.DesktopChildSiteBridge parent=198342
+    //    67446 pid=24196 msedgewebview2 Chrome_WidgetWin_1                    parent=0
+    //   132018 pid=24196 msedgewebview2 Chrome_RenderWidgetHostHWND           parent=67446
+    //
+    // `native_a11y`'s recorded fixture has the WebView2 outer window parented to
+    // the shell. On the real machine it is a TOP-LEVEL window: parent, GA_ROOT,
+    // GA_ROOTOWNER and GWLP_HWNDPARENT are all zero or itself, in both
+    // directions. That difference is the whole finding below.
+    const SHELL_HWND: isize = 198342;
+    const BRIDGE_HWND: isize = 197328;
+    const WEBVIEW_OUTER_HWND: isize = 67446;
+    const RENDERER_HWND: isize = 132018;
+    const DECOY_WEBVIEW_HWND: isize = 900001;
+    const SHELL_IMAGE: &str = "WhatsApp.Root.exe";
+
+    /// The graph the substrate's `SiblingChromiumRenderer` contract requires:
+    /// the WebView2 content window carrying `associated_app_hwnd` back to the
+    /// shell OSL claimed. Everything else is as measured.
+    fn contract_whatsapp_graph() -> Vec<Uia2OwnedWindow> {
+        vec![
+            owned(
+                SHELL_HWND,
+                None,
+                None,
+                23884,
+                SHELL_IMAGE,
+                WHATSAPP_ROOT_WINDOW_CLASS,
+                1_092_960,
+            ),
+            owned(
+                BRIDGE_HWND,
+                Some(SHELL_HWND),
+                None,
+                23884,
+                SHELL_IMAGE,
+                "Microsoft.UI.Content.DesktopChildSiteBridge",
+                1_068_000,
+            ),
+            owned(
+                WEBVIEW_OUTER_HWND,
+                None,
+                Some(SHELL_HWND),
+                24196,
+                "msedgewebview2.exe",
+                crate::native_a11y::ELECTRON_OUTER_WINDOW_CLASS,
+                1_068_000,
+            ),
+            owned(
+                RENDERER_HWND,
+                Some(WEBVIEW_OUTER_HWND),
+                Some(SHELL_HWND),
+                24196,
+                "msedgewebview2.exe",
+                crate::native_a11y::ELECTRON_RENDERER_WINDOW_CLASS,
+                1_068_000,
+            ),
+            // Windows Search hosts its own WebView2 on this machine
+            // (`--webview-exe-name=SearchApp`, pid 22824). It is bigger, and it
+            // is not WhatsApp's. If the association is ever dropped, this is
+            // what OSL would place a carrier into.
+            owned(
+                DECOY_WEBVIEW_HWND,
+                None,
+                None,
+                22824,
+                "msedgewebview2.exe",
+                crate::native_a11y::ELECTRON_OUTER_WINDOW_CLASS,
+                1_920 * 1_080,
+            ),
+        ]
+    }
+
+    /// The same graph exactly as measured: the WebView2 window has no window
+    /// relationship to the shell at all, so `associated_app_hwnd` is `None`.
+    fn measured_whatsapp_graph() -> Vec<Uia2OwnedWindow> {
+        contract_whatsapp_graph()
+            .into_iter()
+            .map(|mut window| {
+                if window.process_name == "msedgewebview2.exe" {
+                    window.associated_app_hwnd = None;
+                }
+                window
+            })
+            .collect()
+    }
+
+    fn whatsapp_graph() -> Vec<Uia2OwnedWindow> {
+        contract_whatsapp_graph()
+    }
+
+    const WHATSAPP_MEASURED_ELEMENTS: usize = 11;
+    const WEBVIEW2_PROCESS_ID: u32 = 24196;
+    const WHATSAPP_SHELL_PROCESS_ID: u32 = 23884;
+    const PAYLOAD: &str = "alpha7731osl";
+    const CARRIER: &str = "OSL1.WA.alpha7731osl";
+
+    /// Keep the window list the substrate enumerated, so a failed live acquire
+    /// can report the evidence the acquisition itself saw.
+    ///
+    /// **This is not the relay coming back.** It never touches a deadline: it
+    /// forwards every call unchanged, budget included, and records only the
+    /// `Vec<Uia2OwnedWindow>` the substrate had already asked for and been
+    /// given. `submit_shaped_calls` is forwarded, never answered. It exists for
+    /// the one `#[ignore]`d live probe below, whose candidate dump is what
+    /// produced A-02c's `associated_app=None` finding; the sibling-association
+    /// lane still needs it.
+    #[cfg(target_os = "windows")]
+    struct CapturedEnumeration<'host> {
+        host: &'host dyn Uia2Syscalls,
+        windows: std::cell::RefCell<Vec<Uia2OwnedWindow>>,
+    }
+
+    #[cfg(target_os = "windows")]
+    impl<'host> CapturedEnumeration<'host> {
+        fn new(host: &'host dyn Uia2Syscalls) -> Self {
+            Self {
+                host,
+                windows: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+
+        fn captured(&self) -> Vec<Uia2OwnedWindow> {
+            self.windows.borrow().clone()
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    impl Uia2Syscalls for CapturedEnumeration<'_> {
+        fn enumerate_windows(
+            &self,
+            deadline: Uia2Deadline,
+        ) -> Result<Vec<Uia2OwnedWindow>, Uia2CallTimeout> {
+            let windows = self.host.enumerate_windows(deadline)?;
+            *self.windows.borrow_mut() = windows.clone();
+            Ok(windows)
+        }
+
+        fn wake_chromium(
+            &self,
+            hwnd: isize,
+            deadline: Uia2Deadline,
+        ) -> Result<bool, Uia2CallTimeout> {
+            self.host.wake_chromium(hwnd, deadline)
+        }
+
+        fn element_count(
+            &self,
+            hwnd: isize,
+            route: Uia2TreeRoute,
+            deadline: Uia2Deadline,
+        ) -> Result<usize, Uia2CallTimeout> {
+            self.host.element_count(hwnd, route, deadline)
+        }
+
+        fn editable_elements(
+            &self,
+            hwnd: isize,
+            route: Uia2TreeRoute,
+            deadline: Uia2Deadline,
+        ) -> Result<Vec<Uia2Editable>, Uia2CallTimeout> {
+            self.host.editable_elements(hwnd, route, deadline)
+        }
+
+        fn set_value(
+            &self,
+            hwnd: isize,
+            route: Uia2TreeRoute,
+            element: &Uia2Editable,
+            value: &str,
+            deadline: Uia2Deadline,
+        ) -> Result<bool, Uia2CallTimeout> {
+            self.host.set_value(hwnd, route, element, value, deadline)
+        }
+
+        fn value_of(
+            &self,
+            hwnd: isize,
+            route: Uia2TreeRoute,
+            element: &Uia2Editable,
+            deadline: Uia2Deadline,
+        ) -> Result<Option<String>, Uia2CallTimeout> {
+            self.host.value_of(hwnd, route, element, deadline)
+        }
+
+        fn submit_shaped_calls(&self) -> usize {
+            self.host.submit_shaped_calls()
+        }
+
+        fn settle(&self, millis: u64) {
+            self.host.settle(millis);
+        }
+    }
+
+    /// WhatsApp as A-00 measured it: the WinUI shell, and the content in a
+    /// sibling WebView2 process, woken and polled before it populates.
+    fn whatsapp_host(editables: Vec<Uia2Editable>) -> RecordedHost {
+        RecordedHost::new(whatsapp_graph(), WHATSAPP_MEASURED_ELEMENTS)
+            .chromium(2)
+            .with_editables(editables)
+    }
+
+    /// The shell with no sibling WebView2 window: what a single-window probe
+    /// sees, and the state that reads as "WhatsApp cannot be driven".
+    fn whatsapp_shell_only_host() -> RecordedHost {
+        let shell_only = whatsapp_graph()
+            .into_iter()
+            .filter(|window| window.process_name == SHELL_IMAGE)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            shell_only.len(),
+            2,
+            "the shell half of the graph is two windows"
+        );
+        RecordedHost::new(shell_only, 8).chromium(2)
+    }
+
+    #[test]
+    fn whatsapp_plan_is_the_sibling_webview2_shape_on_the_uia_native_route() {
+        let plan = WHATSAPP_UIA2_WINDOW_PLAN;
+
+        assert_eq!(plan.shape, Uia2WindowShape::SiblingChromiumRenderer);
+        assert_eq!(plan.sibling_process_name, Some(WEBVIEW2_PROCESS_NAME));
+        assert_eq!(plan.app_outer_class, WHATSAPP_ROOT_WINDOW_CLASS);
+        assert_eq!(
+            WHATSAPP_ROOT_WINDOW_CLASS,
+            crate::native_a11y::WHATSAPP_OUTER_WINDOW_CLASS,
+            "this module and the substrate must name the same shell class"
+        );
+        assert_eq!(
+            plan.wake_policy,
+            Uia2WakePolicy::WmGetObjectChromium,
+            "the content is Chromium, so it needs Chromium's handshake"
+        );
+        assert!(plan.poll_until_populated);
+
+        // The axis A-00b added. Discord's shipping route is Chromium's MSAA
+        // client object on an OUTER window OSL has already borrowed. WhatsApp
+        // binds a renderer child in a process OSL never claimed, which is the
+        // window A-00 measured with UI Automation directly, so the route is
+        // UiaNative and copying Discord's answer would claim an unmeasured read.
+        assert_eq!(plan.tree_route, Uia2TreeRoute::UiaNative);
+        assert_ne!(
+            plan.tree_route,
+            Uia2WindowPlan::chromium_outer_msaa_root(
+                "WhatsApp",
+                WHATSAPP_DESKTOP_PROCESS_NAME,
+                10,
+                WHATSAPP_UIA2_DEFAULT_WAIT_MS,
+                WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS,
+            )
+            .tree_route,
+            "WhatsApp must not inherit Discord's bridged route by assumption"
+        );
+    }
+
+    #[test]
+    fn whatsapp_places_a_carrier_in_the_webview2_sibling_and_never_in_the_shell() {
+        let host = whatsapp_host(vec![composer("Type a message")]);
+
+        let receipt = drive_whatsapp_composer_placement(&host, PAYLOAD, false);
+
+        assert_eq!(receipt.status, WhatsAppPlacementStatus::Placed);
+        assert!(receipt.placed);
+        assert!(receipt.readback_contains_carrier);
+        assert!(!receipt.enter_sent);
+        assert!(
+            !receipt.bound_is_app_shell,
+            "binding WhatsApp's WinUI root is the dead end that reads as undrivable"
+        );
+        assert_eq!(
+            receipt.bound_process_id, WEBVIEW2_PROCESS_ID,
+            "the content lives in the sibling msedgewebview2 process, not in {WHATSAPP_SHELL_PROCESS_ID}"
+        );
+        assert!(
+            receipt.woke,
+            "Chromium's tree does not exist until it is woken"
+        );
+        assert_eq!(receipt.elements, WHATSAPP_MEASURED_ELEMENTS);
+        assert_eq!(host.set_values.borrow().as_slice(), [CARRIER]);
+    }
+
+    #[test]
+    fn whatsapp_reads_back_with_contains_because_a_live_ui_augments_its_own_fields() {
+        let mut host = whatsapp_host(vec![composer("Type a message")]);
+        host.readback_suffix = " and a suggestion WhatsApp appended";
+
+        let receipt = drive_whatsapp_composer_placement(&host, PAYLOAD, false);
+
+        assert_eq!(receipt.status, WhatsAppPlacementStatus::Placed);
+        assert!(receipt.readback_contains_carrier);
+    }
+
+    #[test]
+    fn whatsapp_probe_always_clears_after_it_writes() {
+        let host = whatsapp_host(vec![composer("Type a message")]);
+
+        let receipt = probe_whatsapp_composer_write_then_clear(&host, PAYLOAD, false);
+
+        assert_eq!(receipt.status, WhatsAppPlacementStatus::Placed);
+        assert!(receipt.cleared);
+        assert!(!receipt.enter_sent);
+        assert_eq!(
+            host.set_values.borrow().as_slice(),
+            [CARRIER, ""],
+            "a probe must never leave a carrier in a real person's chat"
+        );
+    }
+
+    #[test]
+    fn whatsapp_signed_out_refuses_instead_of_typing_into_the_phone_number_box() {
+        // A-00 measured WhatsApp signed out: eleven elements, and the ONE
+        // writable one was `Phone number`. It is a perfectly good ValuePattern
+        // target, which is exactly why it has to be refused by name.
+        for name in [
+            "Phone number",
+            "Search or start new chat",
+            "Search messages",
+            "Message requests",
+            "Country code",
+            "Verification code",
+        ] {
+            let host = whatsapp_host(vec![composer(name)]);
+            let receipt = drive_whatsapp_composer_placement(&host, PAYLOAD, false);
+            assert_eq!(
+                receipt.status,
+                WhatsAppPlacementStatus::ComposerUnavailable,
+                "{name:?} is not a composer and must not be written into"
+            );
+            assert!(!receipt.placed);
+            assert!(
+                host.set_values.borrow().is_empty(),
+                "{name:?}: nothing may be written when no composer exists"
+            );
+        }
+
+        // The refusals are the name, not an inert path: put a real composer
+        // beside the login field and the placement goes through.
+        let host = whatsapp_host(vec![composer("Phone number"), composer("Type a message")]);
+        let receipt = drive_whatsapp_composer_placement(&host, PAYLOAD, false);
+        assert_eq!(receipt.status, WhatsAppPlacementStatus::Placed);
+        assert_eq!(host.set_values.borrow().as_slice(), [CARRIER]);
+    }
+
+    #[test]
+    fn whatsapp_refuses_ambiguity_and_unwritable_elements_rather_than_guessing() {
+        let two = whatsapp_host(vec![composer("Message Liam"), composer("Message Ana")]);
+        assert_eq!(
+            drive_whatsapp_composer_placement(&two, PAYLOAD, false).status,
+            WhatsAppPlacementStatus::ComposerAmbiguous
+        );
+        assert!(two.set_values.borrow().is_empty());
+
+        let mut read_only = composer("Type a message");
+        read_only.read_only = true;
+        let locked = whatsapp_host(vec![read_only]);
+        assert_eq!(
+            drive_whatsapp_composer_placement(&locked, PAYLOAD, false).status,
+            WhatsAppPlacementStatus::ComposerNotWritable
+        );
+        assert!(locked.set_values.borrow().is_empty());
+
+        let none = whatsapp_host(Vec::new());
+        assert_eq!(
+            drive_whatsapp_composer_placement(&none, PAYLOAD, false).status,
+            WhatsAppPlacementStatus::ComposerUnavailable
+        );
+    }
+
+    #[test]
+    fn whatsapp_binds_only_the_webview2_that_belongs_to_it() {
+        // This machine runs two independent WebView2 hosts: WhatsApp's
+        // (`--webview-exe-name=WhatsApp.Root.exe`, pid 24196) and Windows
+        // Search's (`--webview-exe-name=SearchApp`, pid 22824). The decoy is
+        // the LARGER window, so "biggest visible msedgewebview2" would pick it
+        // and OSL would place a carrier into the wrong application entirely.
+        let host = whatsapp_host(vec![composer("Type a message")]);
+        let receipt = drive_whatsapp_composer_placement(&host, PAYLOAD, false);
+
+        assert_eq!(receipt.status, WhatsAppPlacementStatus::Placed);
+        assert_eq!(
+            receipt.bound_process_id, WEBVIEW2_PROCESS_ID,
+            "the association is what keeps OSL out of another app's WebView2"
+        );
+        assert_ne!(receipt.bound_process_id, 22824);
+    }
+
+    #[test]
+    fn the_measured_host_has_no_window_link_from_the_shell_to_its_webview2() {
+        // MEASURED, not assumed. On the owner's host the WebView2 content
+        // window is top-level: parent, GA_ROOT, GA_ROOTOWNER and
+        // GWLP_HWNDPARENT are all zero or itself, so
+        // `win32::enumerate`'s `associated_app_hwnd`, which is
+        // `root_ancestor_of(hwnd).filter(|root| pid_of(root) != pid)`, is
+        // `None` -- and `resolve_uia2_window` requires it to equal the shell.
+        //
+        // A-00b listed this as residual risk 3, "inferred from A-00's prose,
+        // not measured from Rust". It is now measured and the inference is
+        // wrong: A-00's "sibling process" is not a window-tree relationship.
+        // The relationship that DOES exist is process parentage --
+        // msedgewebview2 pid 24196 has ParentProcessId 23884, the shell -- with
+        // the `--webview-exe-name=WhatsApp.Root.exe` switch corroborating it.
+        //
+        // That fix belongs to `native_a11y`, which this lane does not own. What
+        // this lane owes is that the adapter REFUSES rather than falling back to
+        // an unlinked WebView2: an unverified content window is exactly the
+        // decoy above, and writing there is a disclosure. So the assertion is
+        // the refusal, not the placement.
+        let host = RecordedHost::new(measured_whatsapp_graph(), WHATSAPP_MEASURED_ELEMENTS)
+            .chromium(2)
+            .with_editables(vec![composer("Type a message")]);
+
+        let receipt = drive_whatsapp_composer_placement(&host, PAYLOAD, false);
+
+        assert_eq!(
+            receipt.status,
+            WhatsAppPlacementStatus::WebView2ContentUnavailable,
+            "without a trustworthy link to the shell the content window must be refused"
+        );
+        assert!(!receipt.placed);
+        assert!(
+            host.set_values.borrow().is_empty(),
+            "nothing may be written into a WebView2 that has not been tied to WhatsApp"
+        );
+
+        // And the ONLY difference between refusing and placing is that one
+        // field, so this test is measuring the association and nothing else.
+        let linked = RecordedHost::new(contract_whatsapp_graph(), WHATSAPP_MEASURED_ELEMENTS)
+            .chromium(2)
+            .with_editables(vec![composer("Type a message")]);
+        assert_eq!(
+            drive_whatsapp_composer_placement(&linked, PAYLOAD, false).status,
+            WhatsAppPlacementStatus::Placed
+        );
+    }
+
+    #[test]
+    fn whatsapp_shell_without_its_webview2_sibling_is_a_distinct_refusal() {
+        // The trap, stated as a status: the app IS running and IS drivable in
+        // principle; what is missing is the sibling content window. Reporting
+        // this as "no composer" is how WhatsApp gets written off.
+        let shell_only = whatsapp_shell_only_host();
+        let receipt = drive_whatsapp_composer_placement(&shell_only, PAYLOAD, false);
+        assert_eq!(
+            receipt.status,
+            WhatsAppPlacementStatus::WebView2ContentUnavailable
+        );
+        assert!(!receipt.placed);
+        assert!(shell_only.set_values.borrow().is_empty());
+
+        let absent = RecordedHost::new(Vec::new(), 0).chromium(2);
+        assert_eq!(
+            drive_whatsapp_composer_placement(&absent, PAYLOAD, false).status,
+            WhatsAppPlacementStatus::AppWindowUnavailable
+        );
+    }
+
+    #[test]
+    fn whatsapp_without_the_chromium_wake_never_populates() {
+        // The RecordedHost answers one element until it is woken, which is what
+        // A-00 measured: skipping Chromium's handshake is not slower, it is
+        // blind. A wake that is refused is a different failure from a tree that
+        // never fills, and both are distinct from "no composer".
+        let mut refused = whatsapp_host(vec![composer("Type a message")]);
+        refused.wake_answers = false;
+        assert_eq!(
+            drive_whatsapp_composer_placement(&refused, PAYLOAD, false).status,
+            WhatsAppPlacementStatus::WakeRefused
+        );
+
+        let mut never = whatsapp_host(vec![composer("Type a message")]);
+        never.settles_before_populated = usize::MAX;
+        assert_eq!(
+            drive_whatsapp_composer_placement(&never, PAYLOAD, false).status,
+            WhatsAppPlacementStatus::AccessibilityUnavailable {
+                seen: 1,
+                needed: crate::native_a11y::ELECTRON_UIA2_POPULATED_MIN_ELEMENTS,
+            }
+        );
+    }
+
+    #[test]
+    fn whatsapp_placement_refuses_a_backend_that_reports_a_submit_shaped_call() {
+        // The relay forwards `submit_shaped_calls` instead of
+        // answering it. A wrapper that answered zero would blind the guard, and
+        // `enter_sent` would become a field that cannot be true -- D-139's
+        // finding 2, one layer further out.
+        let mut host = whatsapp_host(vec![composer("Type a message")]);
+        host.submit_shaped_on_set = true;
+
+        let receipt = drive_whatsapp_composer_placement(&host, PAYLOAD, false);
+
+        assert_eq!(
+            receipt.status,
+            WhatsAppPlacementStatus::SubmitShapedCallObserved
+        );
+        assert!(
+            receipt.enter_sent,
+            "the verdict comes from the backend's counter"
+        );
+        assert!(!receipt.placed);
+        assert_eq!(host.submit_shaped_calls(), 1);
+    }
+
+    #[test]
+    fn whatsapp_refuses_to_replace_an_operator_draft_by_default() {
+        let host = whatsapp_host(vec![composer("Type a message")]);
+        *host.value.borrow_mut() = Some("half a sentence the owner typed".to_owned());
+
+        assert_eq!(
+            drive_whatsapp_composer_placement(&host, PAYLOAD, false).status,
+            WhatsAppPlacementStatus::ComposerNotEmpty
+        );
+        assert!(host.set_values.borrow().is_empty());
+
+        assert_eq!(
+            drive_whatsapp_composer_placement(&host, PAYLOAD, true).status,
+            WhatsAppPlacementStatus::Placed
+        );
+    }
+
+    #[test]
+    fn whatsapp_refuses_a_carrier_that_could_commit_before_anything_is_written() {
+        for payload in ["", "   ", "alpha\nsend", "alpha\r\nsend", "has spaces"] {
+            let host = whatsapp_host(vec![composer("Type a message")]);
+            let receipt = drive_whatsapp_composer_placement(&host, payload, false);
+            assert_eq!(
+                receipt.status,
+                WhatsAppPlacementStatus::InvalidCarrier,
+                "{payload:?} must never reach a live composer"
+            );
+            assert!(host.set_values.borrow().is_empty());
+        }
+
+        // And the substrate's own seam agrees, so the refusal does not depend
+        // on this module's prefix rule alone.
+        assert!(uia2_carrier_carries_submit(&format!(
+            "{WHATSAPP_CARRIER_PREFIX}alpha\nsend"
+        )));
+    }
+
+    #[test]
+    fn whatsapp_every_cross_process_call_carries_the_plans_deadline() {
+        let host = whatsapp_host(vec![composer("Type a message")]);
+        let receipt = probe_whatsapp_composer_write_then_clear(&host, PAYLOAD, false);
+        assert_eq!(receipt.status, WhatsAppPlacementStatus::Placed);
+
+        let deadlines = host.deadlines.borrow();
+        assert!(!deadlines.is_empty());
+        assert!(
+            deadlines
+                .iter()
+                .all(|deadline| *deadline == WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS),
+            "every call must carry the plan's deadline, saw {deadlines:?}"
+        );
+    }
+
+    /// Was `whatsapp_editable_scan_refuses_without_a_deadline_the_acquisition_derived`.
+    ///
+    /// A-02c's relay could be asked for the scan before the acquisition had
+    /// handed it a budget, and refused with `DeadlineUnavailable`. D-155 made
+    /// that state unrepresentable: the scan takes a `Uia2Acquired`, so there is
+    /// no way to reach it without an acquisition, and the substrate derives the
+    /// budget from that acquisition's own plan. The assertion is pointed at the
+    /// property that replaced the refusal.
+    #[test]
+    fn whatsapp_editable_scan_can_only_run_under_the_deadline_the_acquisition_derived() {
+        let host = whatsapp_host(vec![composer("Type a message")]);
+        let acquired = acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &host)
+            .expect("WhatsApp acquires through the substrate");
+        assert_eq!(
+            acquired.window.call_timeout_ms,
+            WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS
+        );
+        host.deadlines.borrow_mut().clear();
+
+        assert_eq!(
+            whatsapp_editables(&host, acquired).map(|editables| editables.len()),
+            Ok(1)
+        );
+        assert_eq!(
+            *host.deadlines.borrow(),
+            vec![WHATSAPP_UIA2_DEFAULT_CALL_TIMEOUT_MS],
+            "the scan must issue exactly one call, under the plan's own budget"
+        );
+    }
+
+    /// Was `the_deadline_relay_cannot_blind_the_submit_shaped_guard_or_invent_a_budget`.
+    /// The relay is gone; both things it was pinned for still have to hold of
+    /// the direct path.
+    #[test]
+    fn nothing_stands_between_the_placement_guard_and_the_backends_own_counter() {
+        // The submit-shaped counter is read straight off the backend. Anything
+        // in the way that answered it itself would blind every placement guard.
+        let host = whatsapp_host(vec![composer("Type a message")]);
+        host.submit_shaped.set(3);
+        let receipt = drive_whatsapp_composer_placement(&host, PAYLOAD, false);
+        assert_eq!(
+            receipt.status,
+            WhatsAppPlacementStatus::SubmitShapedCallObserved,
+            "a backend already admitting a submit-shaped call must refuse the path"
+        );
+        assert!(receipt.enter_sent);
+        assert!(!receipt.placed);
+
+        // And no budget is invented anywhere along the way: every call the whole
+        // path issues carries the plan's own deadline.
+        let host = whatsapp_host(vec![composer("Type a message")]);
+        assert_eq!(
+            drive_whatsapp_composer_placement(&host, PAYLOAD, false).status,
+            WhatsAppPlacementStatus::Placed
+        );
+        let deadlines = host.deadlines.borrow();
+        assert!(!deadlines.is_empty());
+        assert!(
+            deadlines
+                .iter()
+                .all(|deadline| *deadline == WHATSAPP_UIA2_WINDOW_PLAN.call_timeout_ms),
+            "every call, including the editable scan, must carry the plan's own \
+             deadline, saw {deadlines:?}"
+        );
+    }
+
+    /// Neither adapter may grow a budget of its own again. Both reach
+    /// `editable_elements` only through the substrate's door, which derives the
+    /// deadline from the plan; a `Uia2Deadline` named in this module would be
+    /// the first step back to a relay.
+    #[test]
+    fn the_adapter_never_builds_a_deadline_of_its_own() {
+        for (module, code) in whatsapp_production_regions() {
+            assert!(
+                !code.contains("uia2deadline"),
+                "{module} must not name the deadline token at all: the substrate \
+                 derives every budget from the plan"
+            );
+        }
+        let (_, live) = whatsapp_production_regions().remove(0);
+        assert!(
+            live.contains("acquire_uia2_editables"),
+            "the editable scan must go through the substrate's public door"
+        );
+    }
+
+    #[test]
+    fn whatsapp_reports_a_call_that_overran_its_deadline_instead_of_driving_on() {
+        let mut host = whatsapp_host(vec![composer("Type a message")]);
+        host.never_answers = true;
+        assert_eq!(
+            drive_whatsapp_composer_placement(&host, PAYLOAD, false).status,
+            WhatsAppPlacementStatus::CallTimedOut
+        );
+    }
+
+    /// Drive the REAL WhatsApp composer through the shared substrate.
+    ///
+    /// This is the only thing in this lane that touches a live provider, and it
+    /// cannot run here: `win32` is `cfg(target_os = "windows")` and this machine
+    /// is Linux. It is `#[ignore]`d so it never runs unattended, and it is
+    /// read-only unless `OSL_WA_PROBE_CARRIER` is set -- setting that variable
+    /// is what opts into a write, and the composer is cleared immediately after.
+    ///
+    /// The host is `desktop()`, not `rooted_at`: OSL reparents *Discord's*
+    /// window into its own hierarchy, which is why Discord's consumption had to
+    /// be rooted. Nothing in OSL borrows WhatsApp, and WhatsApp's content window
+    /// belongs to a process OSL never claimed, so the enumeration has to be
+    /// desktop-wide or the sibling would be unreachable.
+    ///
+    /// ```text
+    /// # from WSL, build the Windows test binary:
+    /// flock /tmp/osl-cargo.lock cargo test --manifest-path apps/osl-hub/Cargo.toml \
+    ///   --lib --target x86_64-pc-windows-gnu -j 4 --no-run
+    /// # then, on the Windows host, WhatsApp signed in with a conversation open:
+    /// set OSL_WA_PROBE_CARRIER=alpha7731osl
+    /// osl_privacy_hub-<hash>.exe --ignored --nocapture --test-threads=1 \
+    ///   drive_the_real_whatsapp_composer_through_the_substrate
+    /// ```
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "drives live WhatsApp Desktop on a Windows host; run explicitly"]
+    fn drive_the_real_whatsapp_composer_through_the_substrate() {
+        let win32 = crate::native_a11y::win32::Uia2Win32Host::desktop();
+        let host = CapturedEnumeration::new(&win32);
+        let acquired = match acquire_uia2_window(WHATSAPP_UIA2_WINDOW_PLAN, &host) {
+            Ok(acquired) => acquired,
+            Err(error) => {
+                // Say WHY, from what the substrate itself enumerated, instead of
+                // leaving the conductor to guess between "not running", "hidden",
+                // "named something else" and "the association is missing". This
+                // is the dump that produced A-02c's `associated_app=None`
+                // finding, so it is kept verbatim -- it reports the exact list
+                // the failed acquisition saw, not a second enumeration.
+                for window in host.captured().iter().filter(|window| {
+                    let name = window.process_name.to_ascii_lowercase();
+                    name.contains("whatsapp") || name.contains("webview2")
+                }) {
+                    eprintln!(
+                        "  candidate hwnd={} pid={} image={:?} class={:?} \
+                         visible={} area={} parent={:?} associated_app={:?}",
+                        window.hwnd,
+                        window.process_id,
+                        window.process_name,
+                        window.class_name,
+                        window.visible,
+                        window.area,
+                        window.parent_hwnd,
+                        window.associated_app_hwnd,
+                    );
+                }
+                panic!("whatsapp: acquire failed: {error:?}");
+            }
+        };
+        eprintln!(
+            "whatsapp: pid={} elements={} woke={} settled_ms={} bound_is_app_shell={}",
+            acquired.window.bound_process_id,
+            acquired.elements,
+            acquired.woke,
+            acquired.settled_ms,
+            acquired.window.bound_hwnd == acquired.window.app_outer_hwnd,
+        );
+
+        let editables = whatsapp_editables(&host, acquired)
+            .unwrap_or_else(|status| panic!("whatsapp: editable scan refused: {status:?}"));
+        eprintln!(
+            "whatsapp: editable={} writable={}",
+            editables.len(),
+            editables
+                .iter()
+                .filter(|element| element.writable())
+                .count()
+        );
+        for element in &editables {
+            eprintln!(
+                "  edit name={:?} value_pattern={} enabled={} kbd={} read_only={}",
+                element.name,
+                element.value_pattern,
+                element.enabled,
+                element.keyboard_focusable,
+                element.read_only
+            );
+        }
+
+        let composer = resolve_uia2_composer(WHATSAPP_COMPOSER_MATCHER, &editables)
+            .unwrap_or_else(|error| panic!("whatsapp: no composer resolved: {error:?}"));
+        eprintln!("whatsapp: composer name={:?}", composer.name);
+
+        let Ok(payload) = std::env::var("OSL_WA_PROBE_CARRIER") else {
+            eprintln!("whatsapp: read-only probe, nothing written");
+            return;
+        };
+        let receipt = probe_whatsapp_composer_write_then_clear(&host, &payload, false);
+        eprintln!("whatsapp: {receipt:?}");
+        assert_eq!(receipt.status, WhatsAppPlacementStatus::Placed);
+        assert!(receipt.readback_contains_carrier);
+        assert!(
+            receipt.cleared,
+            "the composer must never be left holding a carrier"
+        );
+        assert!(!receipt.enter_sent, "nothing here may commit a message");
+    }
+
+    /// Every mechanism that could commit a WhatsApp message without going
+    /// through the substrate's syscall seam, spelled as it would appear in Rust
+    /// source. Case-insensitive, over code with comments removed.
+    const SUBMIT_SHAPED_MECHANISMS: &[&str] = &[
+        "sendinput",
+        "keybd_event",
+        "keyeventf",
+        "input_keyboard",
+        "vk_return",
+        "vk_enter",
+        "postmessage",
+        "sendmessage",
+        "sendnotifymessage",
+        "wm_keydown",
+        "wm_keyup",
+        "wm_char",
+        "wm_ime_char",
+        "invoke",
+        "\\n\"",
+        "\\r\"",
+        "\\u{000a}",
+        "\\u{000d}",
+    ];
+
+    /// Built rather than written, so this file does not contain the marker it
+    /// splits on -- a literal here would create phantom test-module boundaries
+    /// and the region count below would be scanning the wrong thing.
+    fn test_module_marker() -> String {
+        format!("#[cfg({})]", "test")
+    }
+
+    fn production_code(source: &str) -> String {
+        source
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_ascii_lowercase()
+    }
+
+    /// This file's production halves. It has TWO test modules, not one, and the
+    /// second sits after `pub mod scan_selectors`, so splitting once and taking
+    /// the head -- which is what the Signal guard does -- would leave the whole
+    /// selector module unscanned. The count is asserted so a third test module
+    /// fails this guard loudly instead of quietly escaping it.
+    fn whatsapp_production_regions() -> Vec<(&'static str, String)> {
+        let source = include_str!("native_whatsapp_adapter.rs");
+        let segments = source
+            .split(test_module_marker().as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            segments.len(),
+            3,
+            "native_whatsapp_adapter.rs has exactly two test modules; a new one \
+             must be accounted for here rather than silently escaping the scan"
+        );
+        let selectors = segments[1]
+            .split_once(format!("pub mod {} {{", "scan_selectors").as_str())
+            .expect("the scan-only selector module must stay inside the scanned region")
+            .1;
+        vec![
+            (
+                "native_whatsapp_adapter.rs (live placement)",
+                production_code(segments[0]),
+            ),
+            (
+                "native_whatsapp_adapter.rs (scan_selectors)",
+                production_code(selectors),
+            ),
+        ]
+    }
+
+    #[test]
+    fn whatsapp_placement_module_holds_no_submit_shaped_mechanism() {
+        // The scanner must be able to fire, or this guard is decoration.
+        assert!(production_code("let _ = element.Invoke(0);").contains("invoke"));
+        assert!(production_code("set_value(&format!(\"{carrier}\\n\"))").contains("\\n\""));
+        assert!(
+            production_code("// element.Invoke(0) described in a comment")
+                .trim()
+                .is_empty(),
+            "comments must be stripped before scanning"
+        );
+
+        let mut regions = whatsapp_production_regions();
+        regions.push((
+            "native_a11y.rs",
+            production_code(
+                include_str!("native_a11y.rs")
+                    .split(test_module_marker().as_str())
+                    .next()
+                    .unwrap_or_default(),
+            ),
+        ));
+
+        for (module, anchor) in [
+            (
+                "native_whatsapp_adapter.rs (live placement)",
+                "fn drive_whatsapp_composer_placement",
+            ),
+            (
+                "native_whatsapp_adapter.rs (scan_selectors)",
+                "fn whatsapp_composer_candidate",
+            ),
+            ("native_a11y.rs", "fn resolve_uia2_window"),
+        ] {
+            let code = &regions
+                .iter()
+                .find(|(name, _)| *name == module)
+                .expect("every named region must be scanned")
+                .1;
+            assert!(
+                code.contains(anchor),
+                "{module}: scanned region lost its production code, so the scan is vacuous"
+            );
+        }
+
+        for (module, code) in &regions {
+            for mechanism in SUBMIT_SHAPED_MECHANISMS {
+                assert!(
+                    !code.contains(mechanism),
+                    "{module} contains the submit-shaped mechanism {mechanism:?}. \
+                     No OSL mode may silently send: the placement path may only write \
+                     a value and read it back."
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn whatsapp_body_normalizer_still_folds_crlf_after_losing_its_string_literals() {
+        // `canonical_whatsapp_body` was respelled with char literals so the scan
+        // above can cover this whole file without an exception. Same behaviour.
+        assert_eq!(canonical_whatsapp_body("  exact\r\nbody  "), "exact\nbody");
+        assert_eq!(canonical_whatsapp_body("lone\rcarriage"), "lone\ncarriage");
+        assert_eq!(canonical_whatsapp_body("  plain  "), "plain");
+        assert_eq!(canonical_whatsapp_body("\r"), "\n");
     }
 }
 

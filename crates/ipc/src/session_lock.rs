@@ -233,7 +233,6 @@ pub fn session_holds_live_secrets(state: &AppState) -> bool {
         .sender_key_state
         .lock()
         .expect("sender_key_state mutex poisoned")
-        .states
         .is_empty()
     {
         return true;
@@ -299,8 +298,8 @@ pub fn lock_session(state: &AppState, trigger: SessionLockTrigger) -> SessionLoc
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned");
-        report.sender_key_chains_cleared = sk.states.len();
-        *sk = crate::sender_key_state::SenderKeyStateFile::default();
+        report.sender_key_chains_cleared = sk.len();
+        sk.clear();
     }
     state
         .sender_key_rotation
@@ -434,7 +433,7 @@ pub fn unlock_session(state: &AppState, account_dir: &Path) -> Result<SessionUnl
             let sealer = keystore::select_best_sealer();
             let identity = keystore::load_identity(&identity_path, sealer.as_ref())
                 .map_err(|e| format!("OSL: sealed identity could not be reopened: {e}"))?;
-            *state.identity.lock().expect("identity mutex poisoned") = Some(identity);
+            *state.identity_slot() = Some(identity);
             report.identity_reloaded = true;
         }
     }
@@ -475,7 +474,7 @@ pub fn unlock_session(state: &AppState, account_dir: &Path) -> Result<SessionUnl
 /// see `message_store_reopened == false` and the warn is emitted here.
 fn reopen_message_store(state: &AppState, account_dir: &Path) -> bool {
     let secret_bytes: [u8; 32] = {
-        let guard = state.identity.lock().expect("identity mutex poisoned");
+        let guard = state.identity_slot();
         match guard.as_ref() {
             Some(identity) => *identity.x25519_secret.as_bytes(),
             None => return false,
@@ -493,7 +492,7 @@ fn reopen_message_store(state: &AppState, account_dir: &Path) -> bool {
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                path = %store_dir.display(),
+                path = %crate::log_id::redact_path(&store_dir),
                 "OSL: message_store could not be reopened after unlock; \
                  persistence stays disabled for this session"
             );

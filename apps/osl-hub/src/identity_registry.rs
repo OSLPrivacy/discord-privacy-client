@@ -44,6 +44,12 @@ const ACCOUNT_ARTIFACTS: &[&str] = &[
     "hub_people.json",
     "hub_profile.json",
     "hub_security_preferences.json",
+    // Account-scoped and encrypted with this account's file key. A first
+    // account lives flat in the base directory until a second one forces the
+    // migration below, so if this were not swept the "recovery kit not yet
+    // saved" reminder would be silently lost — and the file left behind —
+    // exactly when the owner added their second identity.
+    crate::account_recovery::RECOVERY_KIT_STATUS_FILE,
     "store",
 ];
 

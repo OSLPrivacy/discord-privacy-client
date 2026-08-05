@@ -1,23 +1,44 @@
 import { readFileSync } from "node:fs";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { oslMailStage, oslMailStages } from "./desktop-service-policy";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 
-async function loadUi() {
-  vi.resetModules();
-  const store = new Map<string, string>();
+// D-251: `src/main.ts` is ~10k lines, and importing it costs seconds. This file
+// used to do that inside the body of every `it()`, where vitest's default
+// 5,000 ms `testTimeout` applies, so most of each test's budget went on module
+// loading and a busy machine turned the file red with
+// `Test timed out in 5000ms` -- without ever reaching an assertion.
+//
+// The module is now loaded ONCE, in a hook that carries its own budget, and the
+// tests read it synchronously. That is safe here and was checked, not assumed:
+// each test drives the state it renders from through `__oslHubUiTest.reset(...)`
+// or calls pure exported helpers, and the stubbed `localStorage` is emptied
+// before each test -- which is exactly the state a fresh import would have seen.
+const localStore = new Map<string, string>();
+let ui: typeof import("./main");
+
+beforeAll(async () => {
   vi.stubGlobal("localStorage", {
-    getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => { store.set(key, value); },
-    removeItem: (key: string) => { store.delete(key); },
-    clear: () => { store.clear(); },
+    getItem: (key: string) => localStore.get(key) ?? null,
+    setItem: (key: string, value: string) => { localStore.set(key, value); },
+    removeItem: (key: string) => { localStore.delete(key); },
+    clear: () => { localStore.clear(); },
   });
   vi.stubGlobal("requestAnimationFrame", () => 1);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
-  return import("./main");
-}
+  vi.resetModules();
+  ui = await import("./main");
+}, 300_000);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  localStore.clear();
+});
 
 function functionSource(name: string, nextName: string): string {
   const start = source.indexOf(`function ${name}`);
@@ -29,10 +50,6 @@ function functionSource(name: string, nextName: string): string {
 
 describe("OSL Mail surface", () => {
   const scope = functionSource("mailComposerEncryptionScope", "oslMailContent");
-
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
 
   it("Show external email encryption scope before send", () => {
     expect(scope).toContain('app?.serviceId !== "email"');
@@ -59,8 +76,8 @@ describe("OSL Mail surface", () => {
     expect(styles).toContain(".mail-composer-encryption-scope");
   });
 
-  it("renders OSL Mail as unavailable until its desktop bridge exists", async () => {
-    const { __oslHubUiTest, oslMailStageAContent } = await loadUi();
+  it("renders OSL Mail as unavailable until its desktop bridge exists", () => {
+    const { __oslHubUiTest, oslMailStageAContent } = ui;
     __oslHubUiTest.reset({ route: "inbox" });
 
     const card = oslMailStageAContent();
