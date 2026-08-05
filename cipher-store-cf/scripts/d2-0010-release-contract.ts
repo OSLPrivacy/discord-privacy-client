@@ -22,12 +22,58 @@ export const D2_SIGNED_STATEMENT_FORMAT =
   "osl.cipher-store.d2-migration-0010-signed-statement.v1";
 export const D2_PROBE_FORMAT =
   "osl.cipher-store.d2-migration-0010-production-probe.v1";
+/**
+ * RE-ANCHORED 2026-08-05. The previous manifest digest
+ * (7888abf28374e3c4097addac8653422205d2ced15ed1892e37fc2de1f1024abd) was
+ * correct at D2_RELEASE_COMMIT and is now stale: 27 commits have landed
+ * against `D2_RELEASE_SOURCE_FILES` since. Verified before re-anchoring —
+ * every one of the 11 changed files traces to a named, task-numbered commit,
+ * and the blob.ts byte ledger closes exactly (+3597/-6025 = -2428):
+ *
+ *   package.json          6064a0bff  add `verify:worker-build` dry-run script
+ *   src/env.ts            f01faf29f  add PAYLOADS R2 binding
+ *   src/endpoints/healthz 539339355  advertise storage_ack_v1 capability
+ *   src/lib/id.ts         cc619a55e  server-generated 8-byte ids -> client
+ *                                    -derived 160-bit pointers (isBlobId)
+ *   src/lib/blob-limits   2ea9968c8  ADD isPadmeLength (net-additive gate)
+ *   src/lib/rate-limit    3fb1662cc  fetch budget 3600/hr -> 120/hr AND
+ *                                    fetch moved to MUTATION_BUCKETS
+ *                                    (fail-open -> fail-closed). Tightening.
+ *   src/lib/sweep.ts      34b2e589c  bound sweep to 798 D1 queries/invocation
+ *                         cc619a55e  sweep blob_capability_index + R2 payloads
+ *   src/index.ts          539339355/779a1a4da/d6b23e723/7a10fc03e
+ *                                    storage-grant gate before rate limit,
+ *                                    /ack route, PushConnection DO export
+ *   src/endpoints/attachment.ts
+ *                         cba9fc41f  T2-41 view-once fetch reservation
+ *   src/endpoints/blob.ts 10 commits (D81, t1-11..t1-18, t6-w4, T6-W7/W15)
+ *   wrangler.toml         e293a403c/4bc4a42af/f01faf29f/5a80653f5
+ *                                    PUSH_CONNECTION DO + PAYLOADS bucket;
+ *                                    observability blocks UNCHANGED, only an
+ *                                    overclaiming comment corrected.
+ *
+ * Three changes are real but were NOT described by their commit subjects, and
+ * are filed as defects rather than silently blessed by this re-anchor. This
+ * digest records what the source IS, not that it was security-reviewed:
+ *   - cc619a55e added an unauthenticated `409 blob_id_collision` existence
+ *     oracle on the upload route (blob.ts).
+ *   - cc619a55e split the atomic INSERT..SELECT..WHERE capacity gate — labelled
+ *     in-code as the fix for audit finding HIGH-2 — into a non-atomic
+ *     SELECT-then-INSERT (TOCTOU).
+ *   - dbcdfab12 removed the blob fetch-capability check outright with an empty
+ *     commit body; restored five commits later by 0132d223f. Present at HEAD.
+ *
+ * D2_RELEASE_COMMIT / D2_RELEASE_TREE deliberately still name the superseded
+ * v2 release. They anchor `verifyD2Migration0010ProductionRelease`, which is
+ * retired and always throws, and D2_TRUSTED_PRODUCERS is empty, so the triple
+ * authorizes nothing. Re-cutting them is an owner action at the next release.
+ */
 export const D2_RELEASE_COMMIT =
   "5a2bad492dec2d90094d2c4a797124366d7dea32";
 export const D2_RELEASE_TREE =
   "18149f3dbb14bae687cea33a56f624171958c8cd";
 export const D2_RELEASE_SOURCE_SHA256 =
-  "7888abf28374e3c4097addac8653422205d2ced15ed1892e37fc2de1f1024abd";
+  "98c4a8a0a4a8e7fb136800e86fd6c17452c4cae6000b850f9fa63df1ece46f86";
 export const D2_MIGRATION_0010_SHA256 =
   "a545f989172c32c8f5f5c78754b4eda2f045778643cbb86c9eb81f22be2f6636";
 export const D2_DATABASE_ID = "be3d31f1-f6b4-4d6e-8ede-74514950b9e2";
