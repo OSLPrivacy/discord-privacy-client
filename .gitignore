@@ -11,8 +11,8 @@ src-tauri/gen/
 # No trailing slash, deliberately. `node_modules/` matches a DIRECTORY only, so
 # a SYMLINK named node_modules is not ignored by it -- which is how
 # apps/osl-hub-ui/node_modules came to be committed as a tracked mode-120000
-# link to /home/liamw/osl-integrate/apps/osl-hub-ui/node_modules (910a79335,
-# removed in 2e4d8598d). A machine-specific absolute path in the index breaks
+# link to an absolute path outside the repo (910a79335, removed in 2e4d8598d).
+# A machine-specific absolute path in the index breaks
 # every other checkout: `npm ci` deletes the link, and a run where it resolved
 # to nothing made four binding ledgers fail with
 # "Cannot find module 'vite/package.json'". The slashless form ignores the

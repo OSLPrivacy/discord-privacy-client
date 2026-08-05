@@ -749,9 +749,8 @@ pub fn prose_token_burn_recorded_with_client(
     // DELETE honours is the fetch token the sender chose before uploading.
     if blob_id.len() == BRIDGE_ID_BYTES * 2 {
         let _ = bridge_id_from_hex(blob_id)?;
-        let capability = burn_capability.ok_or_else(|| {
-            ProseTokenError::MissingBurnCapability(blob_id.to_string())
-        })?;
+        let capability = burn_capability
+            .ok_or_else(|| ProseTokenError::MissingBurnCapability(blob_id.to_string()))?;
         let token = burn_capability_hex_to_bytes(capability)?;
         client.delete(blob_id, &token)?;
         return Ok(());
@@ -819,12 +818,18 @@ mod tests {
         // the whole contract.
         match prose_token_burn_recorded_with_client(&client, &send_key, bridge_id, None) {
             Err(ProseTokenError::MissingBurnCapability(id)) => assert_eq!(id, bridge_id),
-            other => panic!("a credential-less bridge row must report that it cannot burn: {other:?}"),
+            other => {
+                panic!("a credential-less bridge row must report that it cannot burn: {other:?}")
+            }
         }
 
         // A malformed credential is not a credential.
-        for bad in ["", "abc", "E120FE7BB3C76B186459A18D115A8885", "zz20fe7bb3c76b186459a18d115a888"]
-        {
+        for bad in [
+            "",
+            "abc",
+            "E120FE7BB3C76B186459A18D115A8885",
+            "zz20fe7bb3c76b186459a18d115a888",
+        ] {
             assert!(
                 matches!(
                     prose_token_burn_recorded_with_client(&client, &send_key, bridge_id, Some(bad)),
@@ -836,8 +841,12 @@ mod tests {
 
         // An id of neither protocol's width is still a hard refusal, so
         // dispatching on width never became "try something and hope".
-        for bad in ["", "c882e13e918656d", "c882e13e918656dab", "0707070707070707070707070707070"]
-        {
+        for bad in [
+            "",
+            "c882e13e918656d",
+            "c882e13e918656dab",
+            "0707070707070707070707070707070",
+        ] {
             assert!(
                 matches!(
                     prose_token_burn_recorded_with_client(

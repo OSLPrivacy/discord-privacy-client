@@ -69,10 +69,7 @@ fn detection_key() -> [u8; 32] {
 /// re-records every other entry into `failed_blob_ids`. Nothing here is a
 /// stand-in: this is the shipping accounting, run against the shipping burn
 /// entry point, over exactly what the shipping ledger stores.
-fn burn_walk(
-    dir: &std::path::Path,
-    recorded: Vec<RecordedBlob>,
-) -> (usize, Vec<(String, String)>) {
+fn burn_walk(dir: &std::path::Path, recorded: Vec<RecordedBlob>) -> (usize, Vec<(String, String)>) {
     let mut remote_blobs_deleted = 0usize;
     let mut failed_blob_ids = Vec::new();
     for entry in recorded {
