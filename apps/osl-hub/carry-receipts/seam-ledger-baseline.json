@@ -2,19 +2,17 @@
   "schema": "osl-seam-ledger-baseline-v1",
   "ledger": "seam",
   "note": "THE LEDGER-9 RATCHET. This is NOT an exception file. Every id below is an OPEN, OWNED finding that ships today, printed on every run: adapters that are DECLARED and cannot show a live, sound, on-seam carry receipt. Excepting them would delete the finding. Recording them as a set keeps it printed while letting a NEW one -- a provider published on nothing, or a receipt that went off-seam -- fail the build by name. openViolations must equal ids.length, exactly as in scripts/ledger/state-baseline.json and carry-receipts/debt-baseline.json; a count pinned without its set is D-192. apps/osl-hub/src/seam_ledger.rs FAILS if the live set is LARGER (a regression), if it is SMALLER (a seam was proven and this file was not lowered in the same change), and if it is the SAME SIZE with different ids (one proven, one introduced, hidden by the number). This number may only go down, and it may never be spent again. OSL_SEAM_LEDGER_STRICT=1 fails on ANY row regardless of this file.",
-  "measured": "cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --lib -- --nocapture seam_ledger, 2026-08-05",
+  "measured": "cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --lib -- --nocapture seam_ledger, 2026-08-05 (re-measured the same day: telegram:receipt-off-seam PAID by a live carry -- landing_oracle::live_telegram::carry_a_real_carrier_through_live_telegram on the owner's signed-in host, schema osl-live-carry-receipt-v2, seam 06a86bda0d0b over 43 declarations)",
   "owners": ["D-203", "D-206", "PLAN.md r4-6"],
-  "openViolations": 5,
+  "openViolations": 4,
   "ids": [
     "discord:published-without-a-sound-receipt",
     "outlook:no-carry-path-declared",
     "signal:declared-without-a-live-receipt",
-    "telegram:receipt-off-seam",
     "whatsapp:declared-without-a-live-receipt"
   ],
   "defects": {
     "discord:published-without-a-sound-receipt": "D-203 -- support-matrix.json carries Discord as not-qualified/unavailable while native_apps.rs ships it as Experimental. It is also the one carrier a friend uses today, so the contradiction is not academic. Tracked in PUBLISHED_WITHOUT_A_LIVE_RECEIPT with RECEIPT_DEBT_CEILING = 1; this ledger and that ceiling must fall together.",
-    "telegram:receipt-off-seam": "D-206 -- carry-receipts/telegram.json is schema osl-live-carry-receipt-v1, written before the receipt was rebound from the substrate file's bytes to the seam contract. The proof is real and is about a binding that no longer exists. Fix: native_apps::tests::migrate_a_v1_receipt_to_the_seam_binding, which reads the existing receipt and REFUSES unless the tree has not moved since the run -- it cannot mint one.",
     "signal:declared-without-a-live-receipt": "PLAN.md r4-6 -- Signal declares CarrySeam::ProviderOwnedBackend and no live run has ever been made against it. Not shipping today; blocks publication. Signal also carries a standing prohibition on SendInput generalisation (r4-5).",
     "whatsapp:declared-without-a-live-receipt": "PLAN.md r4-6 -- WhatsApp declares CarrySeam::Uia2Substrate and is bound at compile time by seam_bindings::_WHATSAPP_TAKES_THE_SUBSTRATE, so the seam is real; no live run has produced a receipt. r4-3 item 4 asks for its composer shape to be measured before Signal is scheduled.",
     "outlook:no-carry-path-declared": "PLAN.md r4-6 -- Outlook desktop declares CarrySeam::NoCarryPath and carry_receipt::adapter_source returns None, so no receipt can be bound and none may be written. Recorded rather than skipped: an unwired provider on the ruled surface list is a fact about the product, not an absence of data."
