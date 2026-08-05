@@ -13668,7 +13668,15 @@ mod windows {
                             focused.as_ref(),
                             &probe_points,
                             started,
-                            timeout,
+                            // The round's deadline, which every accessibility call
+                            // in the round is bounded by. It is still exactly the
+                            // caller's `timeout` here -- the only assignment to it
+                            // is the settle refund further down, which cannot have
+                            // run yet -- and reading it here rather than `timeout`
+                            // is what makes "`effective_timeout` still governs
+                            // every call above" true of this probe as well as of
+                            // the recovery re-probes.
+                            effective_timeout,
                         )?;
                         self_occluded_points = !scan.self_occluding_windows.is_empty();
                         if !scan.candidates.is_empty() {
@@ -15739,11 +15747,15 @@ mod windows {
         complete: bool,
     }
 
-    /// One `IUIAutomation` and tree walker per thread, so a read that has to walk
-    /// the composer's leaves does not pay a `CoCreateInstance` per attempt inside
-    /// a bounded polling loop. Apartment-bound, hence thread local, exactly like
-    /// `CACHED_COMPOSER`.
     thread_local! {
+        /// One `IUIAutomation` and tree walker per thread, so a read that has to
+        /// walk the composer's leaves does not pay a `CoCreateInstance` per
+        /// attempt inside a bounded polling loop. Apartment-bound, hence thread
+        /// local, exactly like `CACHED_COMPOSER`.
+        ///
+        /// D-252: this doc comment used to sit on the `thread_local!` invocation
+        /// itself, where rustc drops it (`unused_doc_comments`) -- the only
+        /// documentation this static had was silently not documentation.
         static TEXT_READ_WALKER: std::cell::RefCell<Option<IUIAutomationTreeWalker>> =
             const { std::cell::RefCell::new(None) };
     }

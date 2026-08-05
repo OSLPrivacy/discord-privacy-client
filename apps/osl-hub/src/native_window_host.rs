@@ -6103,6 +6103,14 @@ mod windows {
         // Everything below relaunches the client, so every window it can end up
         // adopting is one OSL created and therefore owes a close to.
 
+        // D-252: this match ends WITHOUT a `_ =>` arm on purpose. The one that
+        // used to be here, `_ => return Err(ExistingSessionUnavailable)`, was
+        // already unreachable -- every `NativeAppId` is handled below -- and an
+        // unreachable catch-all is not harmless: it is what would have absorbed
+        // the NEXT protected app into a silent "existing session unavailable"
+        // instead of a compile error naming this site. Same shape as the
+        // shadowed schema arm in D-253. Adding a `NativeAppId` must fail the
+        // build here until its relaunch path is written.
         let (executable_path, publisher) = match id {
             NativeAppId::Discord => {
                 let local = known_folder(&FOLDERID_LocalAppData)
@@ -6148,7 +6156,6 @@ mod windows {
                 }
                 (Some(path.to_owned()), ExecutablePublisher::Microsoft)
             }
-            _ => return Err(NativeWindowHostReason::ExistingSessionUnavailable),
         };
         let executable_path =
             executable_path.ok_or(NativeWindowHostReason::ExistingSessionUnavailable)?;
