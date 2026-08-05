@@ -219,22 +219,12 @@
       ],
       "extract": "a11y-findings",
       "runsIn": ".github/workflows/site-tests.yml is not enabled on integrate/** (see the reasons in that file); this is what runs and grades it there, from the quarantine-ratchet job of integration-gate.yml",
-      "why": "Horizontal-overflow findings on /docs/compare, /docs/download and /docs/faq at 320px and 390px @200% zoom. D-193: this used to be in \"notRatcheted\" -- excluded from the ratchet and executed by nothing. The stated reason, that the finding count depends on the renderer, is true and is why \"idsByEnvironment\" exists; it is not a reason to stop running the check. The identity deliberately drops the pixel amount, which is the part that varies with the font stack, and keeps page + width + zoom, which is the finding. \"combinations\" pins the size of the audited matrix so a page silently leaving data/public-surface-manifest.json fails here.",
-      "owner": "unassigned - website lane; surfaced by D-172, re-scoped by D-193",
-      "whyEnvironmentDependent": "Measured 6 findings on WSL/Chromium and 2 on ubuntu-latest/google-chrome from identical HTML (runs 30928896726 and 30929905893). The overflow is in pixels and the pixels depend on the installed font stack, so ONE pinned set would be a false red on the other machine and pinning nothing is what D-193 objected to. Each environment is graded against its own recorded set and an unrecorded environment is REFUSED, not waved through. The right permanent fix is to make the measurement reproducible -- a pinned font stack or a container -- after which this becomes a single \"ids\" array.",
+      "why": "EMPTY IN BOTH ENVIRONMENTS -- the findings this entry quarantined are FIXED, not accepted. It stays because this is what RUNS node scripts/check-a11y.mjs on integrate/** (see \"runsIn\"); deleting the entry would stop the check, not graduate it. Both baselines are now [], so the ratchet is a floor at zero: any horizontal overflow, missing alt text, unnamed control or structural finding that arrives is an id the baseline does not contain, and \"introduced\" fails. \"combinations\" still pins the size of the audited matrix so a page silently leaving data/public-surface-manifest.json fails here.\n\nHistory. The findings were horizontal overflow on /docs/compare, /docs/download and /docs/faq at 320px and 390px @200% zoom. D-193: this used to be in \"notRatcheted\" -- excluded from the ratchet and executed by nothing. The identity deliberately drops the pixel amount, which is the part that varies with the font stack, and keeps page + width + zoom, which is the finding.\n\nCause: docs/compare.html, docs/download.html and docs/faq.html carried no stylesheet at all and rendered from user-agent defaults, where overflow-wrap is \"normal\" and a word is therefore unbreakable. At a 160px layout viewport (320px @200%) one bold heading word measured 178px-217px against a ~130px content box -- \"messengers\", \"Download\", \"Frequently\" -- and widened documentElement.scrollWidth. The a11y auditor listed no offending ELEMENT for any of the six rows because the overflowing box was a text run, not an element. Fix: docs/site.css, an external same-origin stylesheet (style-src 'self' drops inline styles, so it cannot be a <style> block or a style= attribute), whose load-bearing rule is overflow-wrap: break-word on body.",
+      "owner": "website lane; surfaced by D-172, re-scoped by D-193, fixed on fix/website-overflow-findings",
+      "whyEnvironmentDependent": "Kept for the schema and for the next finding: the pixel amount depends on the installed font stack, so each environment is graded against its own recorded set and an unrecorded environment is REFUSED, not waved through. Historically that mattered -- identical HTML measured 6 findings on WSL/Chromium and 2 on ubuntu-latest/google-chrome (runs 30928896726 and 30929905893) -- and it is why one pinned set would have been a false red on the other machine. It no longer splits the two sets, because the fix is not font-metric dependent: overflow-wrap: break-word breaks a word at the point it would leave its line box, whatever that word measures. Verified by re-measuring all three pages at 320px/390px, 100%/200%, under forced font families Times New Roman / DejaVu Sans / Liberation Serif at base sizes 16/24/32/48px -- 108 measurements, zero overflow. Both sets are therefore [] rather than one set being empty and the other not.",
       "idsByEnvironment": {
-        "local": [
-          "overflow /docs/compare 320px @200%",
-          "overflow /docs/compare 390px @200%",
-          "overflow /docs/download 320px @200%",
-          "overflow /docs/download 390px @200%",
-          "overflow /docs/faq 320px @200%",
-          "overflow /docs/faq 390px @200%"
-        ],
-        "github-actions": [
-          "overflow /docs/compare 320px @200%",
-          "overflow /docs/download 320px @200%"
-        ]
+        "local": [],
+        "github-actions": []
       },
       "metrics": {
         "combinations": 40
