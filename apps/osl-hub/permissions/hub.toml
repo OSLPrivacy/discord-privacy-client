@@ -199,6 +199,11 @@ description = "Persist the explicit OSL network route before encrypted text can 
 commands.allow = ["set_tor_preference"]
 
 [[permission]]
+identifier = "allow-set-osl-chat-capture-preference"
+description = "Allow only the trusted main OSL window to set one verified peer's local OSL Chat capture-protection opt-in; the handler resolves the person through an existing manual peer binding and reports the enforced effective state rather than the requested one."
+commands.allow = ["set_osl_chat_capture_preference"]
+
+[[permission]]
 identifier = "allow-scan-local-privacy"
 description = "Scan bounded caller-provided visible message text in local process memory without persistence or network access."
 commands.allow = ["scan_local_privacy"]

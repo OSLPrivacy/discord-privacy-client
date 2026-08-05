@@ -30,6 +30,7 @@
     "allow-copy-hub-friend-invite",
     "allow-save-onboarding-preferences",
     "allow-set-tor-preference",
+    "allow-set-osl-chat-capture-preference",
     "allow-scan-local-privacy",
     "allow-initialize-scrub-index",
     "allow-set-scrub-index-manifest",
