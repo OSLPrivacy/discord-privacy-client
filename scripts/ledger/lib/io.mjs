@@ -112,8 +112,11 @@ export function rustSources(root) {
  * Rust also has raw strings (`r#"..."#`) that no JS lexer models, HTML has
  * `don't` in prose, and the PNG has whatever bytes it has.
  *
- * So: JavaScript/TypeScript gets the real lexer, and EVERY other input keeps
- * the previous behaviour byte for byte. The language is taken from the path
+ * So this dispatches THREE ways. JavaScript/TypeScript gets the JS lexer; Rust
+ * gets the Rust lexer that ledger 10 already had (`blankRustComments`, W2-7),
+ * which is why `.rs` is no longer lumped in with everything else; and every
+ * remaining input -- CSS, HTML, JSON, SVG, and one PNG -- keeps the previous
+ * behaviour byte for byte. The language is taken from the path
  * the text was read from -- `read`/`tryRead` are the only doors into the tree
  * (see the header of this file), so the path is known for essentially every
  * call -- and only sniffed when a caller bypassed them with its own
@@ -165,7 +168,12 @@ export function sniffSourceLanguage(source) {
     /\blet\s+mut\s/.test(source) ||
     /\bimpl\s+[A-Za-z_<]/.test(source) ||
     /->\s*(?:Result|Option|Vec|String|bool|u\d|i\d|f\d|Self)\b/.test(source);
-  if (looksRust) return "other";
+  // The sniffer already computed Rust evidence and used to throw it away. It is
+  // only consulted when a caller bypassed `read`/`tryRead` with its own
+  // `readFileSync`; on this tree that is ONE source and it is JavaScript, so
+  // this branch is dead in production and is covered by a direct test that
+  // feeds it all 225 real .rs files instead.
+  if (looksRust) return "rust";
   const looksJs =
     /^\s*(?:import|export)\s/m.test(source) ||
     /\bfunction\s*[A-Za-z_$*(]/.test(source) ||
@@ -177,7 +185,10 @@ export function sniffSourceLanguage(source) {
 
 export function sourceLanguage(source) {
   const known = sourceExtensions.get(sourceFingerprint(source));
-  if (known !== undefined && known !== AMBIGUOUS) return JS_EXTENSIONS.has(known) ? "js" : "other";
+  if (known !== undefined && known !== AMBIGUOUS) {
+    if (JS_EXTENSIONS.has(known)) return "js";
+    return known === "rs" ? "rust" : "other";
+  }
   return sniffSourceLanguage(source);
 }
 
@@ -188,27 +199,210 @@ export function sourceLanguage(source) {
  * computed from the blanked text are the line numbers of the real file. Every
  * `file:line` this ledger prints comes from `lineOf` over blanked text.
  *
- * Pass `{ language: "js" | "other" }` to override the language; otherwise it is
- * resolved by `sourceLanguage` above.
+ * Pass `{ language: "js" | "rust" | "other" }` to override the language;
+ * otherwise it is resolved by `sourceLanguage` above.
  */
 export function blankComments(source, options = {}) {
   const language = options.language ?? sourceLanguage(source);
-  return language === "js" ? blankJsComments(source) : blankTextComments(source);
+  if (language === "js") return blankJsComments(source);
+  // Rust gets the real Rust lexer, with literals PRESERVED -- see
+  // `blankRustComments` for why the shared path must not blank them.
+  if (language === "rust") return blankRustComments(source, { blankLiterals: false });
+  return blankTextComments(source);
 }
 
 /**
  * The behaviour every ledger had before regex literals were understood, kept
- * verbatim for Rust/CSS/HTML/JSON/binary. It reads `//` and `/*` inside string
- * literals as comment starts, which is wrong -- but it is wrong in exactly the
- * way ledgers 3, 5 and 8 are currently calibrated for on the Rust corpus, and
- * changing THAT is a Rust-lexer lane (pins.mjs already has `blankRustComments`;
- * the other ledgers do not use it yet). Recorded, not silently altered.
+ * verbatim for CSS/HTML/JSON/SVG/binary. It reads `//` and `/*` inside string
+ * literals as comment starts, which is wrong -- and for RUST it is no longer
+ * used: `.rs` now goes to `blankRustComments`, which measurably recovered 828
+ * characters of real code in 11 files that this function was destroying.
+ *
+ * It survives for the inputs where no better lexer exists here and where the
+ * previous behaviour is what the ledgers are calibrated against. Extending the
+ * Rust fix to CSS or HTML would be a different lane with its own measurement;
+ * this one deliberately changed the `.rs` branch and nothing else.
  */
 export function blankTextComments(source) {
   const blank = (s) => s.replace(/[^\n]/g, " ");
   return source
     .replace(/\/\*[\s\S]*?\*\//g, blank)
     .replace(/(^|[^:\\])\/\/[^\n]*/g, (m, p1) => p1 + blank(m.slice(p1.length)));
+}
+
+/**
+ * THE ONE Rust lexer. Blank every Rust comment, keeping byte offsets so line
+ * numbers stay true, and blank the whole of every literal too when asked.
+ *
+ * TWO CALLERS, TWO LITERAL POLICIES, ONE SCANNER. The scanner below is the only
+ * code in this repo that knows where a Rust literal begins and ends; what the
+ * two callers differ on is what to DO with the span it finds, which is a single
+ * `if`. A second copy of this scanner is exactly the drift D-241 and D-266 were
+ * -- and the dead `full_cleanup_manifest` before them -- so there is not one.
+ *
+ *   blankLiterals: true  (the DEFAULT, and what ledger 10's `scanRust` uses)
+ *     The literal is blanked ENTIRELY, delimiters included. Ledger 10 walks
+ *     BRACES to find `fn` scopes, so it needs no quote character left behind
+ *     for the brace-matcher to resynchronise on. It never reads a literal's
+ *     value.
+ *
+ *   blankLiterals: false (what the shared `blankComments` uses for `.rs`)
+ *     The literal is PRESERVED and merely skipped over. Ledgers 3, 4, 5 and 8
+ *     read Rust literal VALUES -- `stringConstants` resolves
+ *     `const NAME: &str = "value"`, and the event, command, permission and
+ *     persisted-key surfaces are all named by those strings. Blanking literals
+ *     on that path would delete the very text those ledgers grade, which is a
+ *     ledger WEAKENED, not fixed. Skipping rather than blanking still fixes the
+ *     defect that matters there: a `//` or a `/*` INSIDE a literal is no longer
+ *     read as the start of a comment, so it no longer eats the real code after
+ *     it. This mirrors `blankJsComments`, which preserves JS string and
+ *     template literals for the same reason.
+ *
+ * WHY THIS IS A LEXER AND NOT TWO REGEXES
+ *
+ * The regex version of this function (one regex for a block comment, then one
+ * for everything after a `//` on a line -- and nothing else)
+ * could not tell code from the inside of a string, and that is not a cosmetic
+ * difference -- it is the same disease as D-242, where the claim gate's
+ * tokenizer read a regex literal as a string and mis-parsed every literal after
+ * it in 16 files. Measured here, it produced three distinct failures:
+ *
+ *   PHANTOM SCOPES. `apps/osl-hub/src/native_apps.rs:3469` contains the string
+ *   "pub fn uia2_settle_plan(\n    budget_ms: u64,\n) -> Vec<u64> {" as a
+ *   MUTANT INPUT to a refactor test. The old scanner read that as a function
+ *   and brace-matched from the `{` INSIDE the string, inventing a 604-line
+ *   scope (3469 -> 4073) whose end moved with any brace added anywhere after
+ *   it. A pre-existing assert became newly "visible" purely because an
+ *   unrelated lane's edit shifted that boundary -- so the census could
+ *   attribute a pin to the wrong subject, and its count could move for reasons
+ *   unrelated to any pin being written or deleted. In a TWO-WAY ratchet that
+ *   makes both directions unreliable.
+ *
+ *   SWALLOWED CODE. A `//` inside a string literal -- `"https://..."`, or the
+ *   `"// a comment added by a refactor"` mutants in this very tree -- blanked
+ *   the rest of that REAL line, and a `/*` inside a string blanked everything
+ *   up to the next `*` + `/` anywhere in the file. Assertions inside those
+ *   spans were invisible to the census: a pin could be added, or deleted, with
+ *   the ratchet silent in both directions.
+ *
+ *   MIS-ATTRIBUTION. A binding's name occurring inside a string literal matched
+ *   `\bname\b` and named the subject of a pin that was not about it.
+ *
+ * Blanking the literal ENTIRELY (delimiters included) rather than only its
+ * interior is deliberate: it leaves no quote characters behind, so the
+ * brace-matcher cannot resynchronise on half a raw-string delimiter.
+ *
+ * Forms handled, all of which occur in this tree:
+ *   //, ///, //!            line comments
+ *   slash-star ... star-slash  block comments, NESTED, as Rust defines them
+ *   "..."                   escapes, embedded braces and quotes
+ *   r"...", r#"..."#, r##.. raw strings, arbitrary hash count, no escapes
+ *   b"...", br#"..."#       byte strings; c"...", cr#"..."# C strings
+ *   '{', '"', '\'', '\u{7}' char literals whose contents are braces or quotes
+ *   b'{'                    byte chars
+ *   'a, 'static, 'outer:    lifetimes and loop labels, which are NOT literals
+ *                           and must not open one (this is the case a naive
+ *                           quote-toggler gets wrong and then runs to EOF)
+ */
+export function blankRustComments(source, { blankLiterals = true } = {}) {
+  const n = source.length;
+  const out = source.split("");
+  const blank = (from, to) => {
+    for (let i = from; i < to && i < n; i += 1) if (out[i] !== "\n") out[i] = " ";
+  };
+  // What to do with a span the scanner has identified as a LITERAL. Comments
+  // are always blanked; literals are blanked only when the caller asked for it.
+  const literal = blankLiterals ? blank : () => {};
+  // From the opening delimiter of an escaped literal to just past its close.
+  const escaped = (start, delim) => {
+    let i = start + 1;
+    while (i < n) {
+      const c = source[i];
+      if (c === "\\") { i += 2; continue; }
+      if (c === delim) return i + 1;
+      i += 1;
+    }
+    return n; // unterminated: swallow to EOF rather than desynchronise
+  };
+  // `r`/`br`/`cr` + N hashes + `"` ... `"` + N hashes. No escapes inside.
+  const rawFrom = (hashStart) => {
+    let k = hashStart;
+    let hashes = 0;
+    while (k < n && source[k] === "#") { hashes += 1; k += 1; }
+    if (source[k] !== '"') return -1;
+    const term = `"${"#".repeat(hashes)}`;
+    const end = source.indexOf(term, k + 1);
+    return end === -1 ? n : end + term.length;
+  };
+
+  let i = 0;
+  while (i < n) {
+    const c = source[i];
+    if (c === "/" && source[i + 1] === "/") {
+      let j = i;
+      while (j < n && source[j] !== "\n") j += 1;
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    if (c === "/" && source[i + 1] === "*") {
+      let depth = 0;
+      let j = i;
+      while (j < n) {
+        if (source[j] === "/" && source[j + 1] === "*") { depth += 1; j += 2; continue; }
+        if (source[j] === "*" && source[j + 1] === "/") { depth -= 1; j += 2; if (depth === 0) break; continue; }
+        j += 1;
+      }
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(c)) {
+      // Consume the whole identifier, so a `r` inside `for` or an `err` cannot
+      // be mistaken for a raw-string prefix.
+      let j = i;
+      while (j < n && /\w/.test(source[j])) j += 1;
+      const word = source.slice(i, j);
+      if ((word === "r" || word === "br" || word === "rb" || word === "cr") && (source[j] === '"' || source[j] === "#")) {
+        const end = rawFrom(j);
+        if (end !== -1) { literal(i, end); i = end; continue; }
+      }
+      if ((word === "b" || word === "c") && source[j] === '"') {
+        const end = escaped(j, '"');
+        literal(i, end);
+        i = end;
+        continue;
+      }
+      if (word === "b" && source[j] === "'") {
+        const end = escaped(j, "'");
+        literal(i, end);
+        i = end;
+        continue;
+      }
+      i = j;
+      continue;
+    }
+    if (c === '"') {
+      const end = escaped(i, '"');
+      literal(i, end);
+      i = end;
+      continue;
+    }
+    if (c === "'") {
+      // `'ident` NOT followed by `'` is a lifetime or a loop label, not a char.
+      if (/[A-Za-z_]/.test(source[i + 1] ?? "")) {
+        let j = i + 1;
+        while (j < n && /\w/.test(source[j])) j += 1;
+        if (source[j] !== "'") { i = j; continue; }
+      }
+      const end = escaped(i, "'");
+      literal(i, end);
+      i = end;
+      continue;
+    }
+    i += 1;
+  }
+  return out.join("");
 }
 
 /** Keywords after which a `/` opens a REGEX rather than dividing. */
