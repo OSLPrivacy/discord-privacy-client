@@ -56,9 +56,12 @@
 //!
 //! # What is true today, and this module must not hide it
 //!
-//! **`carry-receipts/` does not exist as a directory** (`PLAN.md` r5-6: *"Not
-//! empty — absent"*). **Zero** carrier surfaces have earned a live carry
-//! receipt. So [`carrier_receipt_census`] is computed from the receipt verifier
+//! **2026-08-05: Telegram has earned the first live carry receipt this project
+//! has ever held** (`apps/osl-hub/carry-receipts/telegram.json`, schema v2,
+//! ledger 9 `Ok`). This header previously read *"`carry-receipts/` does not
+//! exist as a directory ... zero carrier surfaces have earned a receipt"*,
+//! which was true when written and false the moment the receipt landed --
+//! the same staleness the row below it already carried. So [`carrier_receipt_census`] is computed from the receipt verifier
 //! on every run rather than recorded, no carrier surface can reach a capability
 //! claim, and the count is rendered to the user rather than kept in a test.
 //!
@@ -570,7 +573,7 @@ pub fn carrier_surface_count() -> usize {
 
 /// **The receipt census, computed rather than recorded.**
 ///
-/// `PLAN.md` r5-6: *"`carry-receipts/` does not exist as a directory. Not empty
+/// `PLAN.md` r5-6 recorded *"`carry-receipts/` does not exist as a directory"*; that was superseded 2026-08-05 when Telegram earned the first receipt. Kept as history: *"Not empty
 /// — absent."* This returns `(earned, of)` so the app can state that fact
 /// instead of leaving it in a plan document. `earned` counts only rows whose
 /// table entry claims a receipt; the gates additionally require the receipt
