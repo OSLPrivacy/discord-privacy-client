@@ -5254,7 +5254,7 @@ function burnDialogMarkup(): string {
   const cards: Array<{ scope: BurnScope; title: string; detail: string }> = [
     { scope: "chat", title: "This chat", detail: activeProtectedContextKind === "peer" ? "Revoke this app account + friend scope." : "Forget this exact OSL conversation on this device." },
     { scope: "app", title: "This app", detail: "Remove indexed local OSL data and request relay cleanup." },
-    { scope: "account", title: "Entire OSL account", detail: "Remove every OSL identity and local setting on this computer." },
+    { scope: "account", title: "Entire OSL account", detail: "Remove the OSL identities and local settings on the cleanup list." },
   ];
   const selectedReason = burnScopeReason(burnScope);
   const phrase = burnConfirmationPhrase(burnScope);
@@ -5267,7 +5267,7 @@ function burnDialogMarkup(): string {
       ? "OSL revokes local approval, display, and expiry settings for this app account + friend, then attempts to delete sent relay blobs. Provider messages and opened copies remain."
       : "OSL destroys local decrypt material and caches for this exact chat."
     : burnScope === "account"
-      ? "OSL removes every local identity, decrypt key, cache, and preference on this computer."
+      ? "OSL removes the local identities, keys, caches, and preferences named in its cleanup list. That list is fixed, not a sweep of this computer."
       : serviceBurnReadiness?.coverageComplete
         ? `OSL removes local settings and caches for ${serviceBurnReadiness.indexedScopes} indexed ${serviceBurnReadiness.indexedScopes === 1 ? "scope" : "scopes"} in this connected account, then attempts to delete their sent relay blobs. Login profile, cookies, provider history, and other copies remain.`
         : "OSL must prove complete local coverage before app-wide burn is available.";

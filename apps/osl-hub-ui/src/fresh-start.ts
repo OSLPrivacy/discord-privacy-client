@@ -11,7 +11,7 @@ export interface FreshStartCleanupPresentation {
  * irreversible-action contract and must be shown before its confirmation.
  */
 export function freshStartLimitationsMarkup(): string {
-  return `<section class="burn-truth fresh-start-limitations" aria-labelledby="fresh-start-limits-title"><strong id="fresh-start-limits-title">What Fresh Start cannot remove</strong><ul><li>Messages already opened by another person remain on their device.</li><li>Server blobs whose deletion is still queued can remain available until OSL reconnects and the server confirms deletion.</li><li>Cover text already posted on a platform remains on that platform.</li></ul></section>`;
+  return `<section class="burn-truth fresh-start-limitations" aria-labelledby="fresh-start-limits-title"><strong id="fresh-start-limits-title">What Fresh Start cannot remove</strong><ul><li>Messages already opened by another person remain on their device.</li><li>Server blobs whose deletion is still queued can remain available until OSL reconnects and the server confirms deletion.</li><li>Cover text already posted on a platform remains on that platform.</li><li>The account key Windows holds in secure storage is not removed and stays on this computer.</li><li>Fresh Start works from a fixed cleanup list. Preference files and staged browser data outside that list stay on this computer.</li></ul></section>`;
 }
 
 /**
@@ -32,13 +32,13 @@ export function freshStartCleanupPresentation(result: HubFullCleanupResult): Fre
     return {
       tone: "warning",
       complete: false,
-      message: `All local OSL data was removed. Remote unregister was not acknowledged for ${unconfirmedRemote} identity ${unconfirmedRemote === 1 ? "record" : "records"}; no remote deletion success is being claimed.`,
+      message: `The local OSL data on the cleanup list was removed. Remote unregister was not acknowledged for ${unconfirmedRemote} identity ${unconfirmedRemote === 1 ? "record" : "records"}; no remote deletion success is being claimed.`,
     };
   }
 
   return {
     tone: "success",
     complete: true,
-    message: "All local OSL identities, decrypt material, caches, and preferences were removed from this computer.",
+    message: "The OSL identities, keys, caches, and preferences on the cleanup list were removed from this computer.",
   };
 }

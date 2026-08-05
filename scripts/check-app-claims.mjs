@@ -2487,6 +2487,243 @@ function semanticAttachmentClaimSpans(text) {
   return spans.map(({ start, end }) => ({ start, end }));
 }
 
+// ---------------------------------------------------------------------------
+// THE LIMITATION-EXEMPTION POLICY (D-249 / D-243)
+//
+// Two detectors used to decide "is this an overclaim or a limitation?" by
+// matching SURFACE PHRASING inside the sentence. Both inverted on exactly the
+// sentences that matter:
+//
+//   "The provider did not attest that Scrub saw the whole account history."
+//        -> FLAGGED. An honest disclosure, because the exemption list held
+//           "does not" but not "did not".
+//   "Scrub does not miss anything and sees the whole account history."
+//        -> EXEMPT. A real overclaim, because "does not" appears somewhere.
+//   "This permanently removes all encrypted local state."
+//        -> EXEMPT. A product-wide at-rest claim, because a destructive verb
+//           appears somewhere.
+//
+// The disease is the same in all three: an exemption granted on the PRESENCE of
+// a token anywhere in the sentence, rather than on what the sentence does to
+// the claim. Adding "did not" to the list would have reopened the hole in the
+// next tense; adding a verb would have reopened it for the next verb.
+//
+// THE RULE, stated structurally.
+//
+//   A sentence LIMITS a claim only when the claim-bearing span itself lies
+//   inside the scope of an operator that declines to assert it. A negation, a
+//   hedge or a destructive verb ELSEWHERE in the sentence is irrelevant.
+//
+// Negation alone cannot decide it, and the two failing Scrub sentences are the
+// proof: both contain a negation. The difference is what the negation is
+// applied to.
+//
+//   "did not ATTEST that <claim>"  - the claim is the complement of a WITHHELD
+//                                    assertion. It is mentioned, not made.
+//   "does not MISS anything and <claim>" - the negation is applied to a verb of
+//                                    SHORTFALL, which ASSERTS completeness, and
+//                                    the claim sits in a separate conjunct that
+//                                    the negation never reaches.
+//
+// So the policy asks three questions of the CLAIM SPAN, not of the sentence:
+//
+//   W (withheld/narrowed) - is there a negated LIMITING verb whose complement
+//       contains the claim, with no clause boundary in between? A LIMITING verb
+//       is one whose negation removes something: a reporting verb (attest,
+//       prove, claim, mean) or a capability verb (cover, work, encrypt, reach).
+//       Verbs of SHORTFALL (miss, omit, fail, lose, skip) are permanently
+//       excluded and the self-test asserts the two sets stay disjoint, because
+//       negating a shortfall is an ASSERTION, not a limitation.
+//
+//   H (status-qualified) - is an unearned-status token (planned, unproven,
+//       unknown, not yet qualified, not all) in the claim's OWN clause - i.e.
+//       reachable from the claim without crossing a clause boundary?
+//
+//   Anything else is a claim and is graded.
+//
+// The policy is FAIL-CLOSED in both directions that matter. An unrecognised
+// limiting verb produces a false positive (loud, cheap to fix, and fixable by a
+// fixture); it never produces a silent exemption. A claim that reaches past a
+// coordinator is never governed by a negation that came before it - which is
+// precisely what kills "does not miss anything AND sees the whole history".
+//
+// WHAT THIS RULE CANNOT DO. It is a scope approximation over flat text, not a
+// parser. It cannot resolve an exemption expressed across sentences, in an
+// appositive, or by a verb outside LIMITING_VERBS. That is deliberate: every
+// one of those cases is refused rather than guessed, so the residual risk is a
+// false positive that a human must clear, never a claim that ships unseen.
+//
+// ADMISSION RULE for LIMITING_VERBS - the only list here that may ever grow:
+// a lemma may be added ONLY if negating it REMOVES a capability or WITHHOLDS an
+// assertion. If negating it ASSERTS something (any verb of failure, absence or
+// shortfall), it must never be added. `assertLimitationPolicyLists` enforces
+// the negative half mechanically.
+// ---------------------------------------------------------------------------
+
+// Negating one of these withholds an assertion or removes a capability.
+const LIMITING_VERBS = [
+  // Reporting / epistemic: the claim is the complement, and it is withheld.
+  "attest", "attests", "attested",
+  "prove", "proves", "proved", "proven",
+  "verify", "verifies", "verified",
+  "confirm", "confirms", "confirmed",
+  "establish", "establishes", "established",
+  "demonstrate", "demonstrates", "demonstrated",
+  "show", "shows", "showed", "shown",
+  "guarantee", "guarantees", "guaranteed",
+  "promise", "promises", "promised",
+  "claim", "claims", "claimed",
+  "assert", "asserts", "asserted",
+  "certify", "certifies", "certified",
+  "imply", "implies", "implied",
+  "mean", "means", "meant",
+  "indicate", "indicates", "indicated",
+  "ensure", "ensures", "ensured",
+  "determine", "determines", "determined",
+  "know", "knows", "knew", "known",
+  "check", "checks", "checked",
+  "measure", "measures", "measured",
+  "observe", "observes", "observed",
+  "qualify", "qualifies", "qualified",
+  // Capability: the claim IS the capability, and it is denied.
+  "work", "works", "worked",
+  "run", "runs", "ran",
+  "operate", "operates", "operated",
+  "scan", "scans", "scanned",
+  "cover", "covers", "covered",
+  "see", "sees", "saw", "seen",
+  "read", "reads",
+  "reach", "reaches", "reached",
+  "include", "includes", "included",
+  "import", "imports", "imported",
+  "export", "exports", "exported",
+  "support", "supports", "supported",
+  "handle", "handles", "handled",
+  "understand", "understands", "understood",
+  "protect", "protects", "protected",
+  "encrypt", "encrypts", "encrypted",
+  "secure", "secures", "secured",
+  "seal", "seals", "sealed",
+  "delete", "deletes", "deleted",
+  "remove", "removes", "removed",
+  "erase", "erases", "erased",
+  "clear", "clears", "cleared",
+  "detect", "detects", "detected",
+  "recover", "recovers", "recovered",
+  "restore", "restores", "restored",
+  "touch", "touches", "touched",
+  "apply", "applies", "applied",
+  "extend", "extends", "extended",
+  "store", "stores", "stored",
+  "retain", "retains", "retained",
+  "download", "downloads", "downloaded",
+  "parse", "parses", "parsed",
+];
+
+// Negating one of these ASSERTS. None of them may ever enter LIMITING_VERBS.
+// "Scrub does not miss anything" claims completeness; it does not disclaim it.
+const SHORTFALL_VERBS = [
+  "miss", "misses", "missed",
+  "omit", "omits", "omitted",
+  "fail", "fails", "failed",
+  "skip", "skips", "skipped",
+  "lose", "loses", "lost",
+  "overlook", "overlooks", "overlooked",
+  "forget", "forgets", "forgot", "forgotten",
+  "drop", "drops", "dropped",
+  "neglect", "neglects", "neglected",
+  "exclude", "excludes", "excluded",
+  "ignore", "ignores", "ignored",
+  "stop", "stops", "stopped",
+  "leave", "leaves", "left",
+];
+
+const LIMITATION_NEGATOR =
+  "(?:\\b(?:does|do|did|is|are|was|were|has|have|had|can|could|will|would|shall|should|may|might|must)\\s+not\\b"
+  + "|\\bcannot\\b|\\bcan't\\b"
+  + "|\\b(?:doesn|don|didn|isn|aren|wasn|weren|hasn|haven|hadn|couldn|won|wouldn|shouldn|mustn)'t\\b"
+  + "|\\bnever\\b|\\bnothing\\b"
+  + "|\\bno\\s+(?:test|check|evidence|proof|measurement|run|audit|build|release)\\b)";
+
+// Adverbs and complementisers that may sit between the negator and its verb.
+const LIMITATION_INFIX = "(?:\\s+(?:yet|ever|fully|always|currently|actually|necessarily|itself|today|by\\s+itself))*\\s+";
+
+const LIMITATION_FRAME = new RegExp(
+  `${LIMITATION_NEGATOR}${LIMITATION_INFIX}(?:${LIMITING_VERBS.join("|")})\\b`,
+  "gi",
+);
+
+// A claim's status is unearned. These do not assert the claim; they decline it.
+const LIMITATION_STATUS =
+  /\b(?:planned|coming\s+soon|on\s+the\s+roadmap|roadmap|unavailable|unproved|unproven|unverified|unknown|unqualified|unwired|implemented[-\s]unwired|test[-\s]proven(?:[-\s]only)?|view[-\s]only|experimental|not\s+yet\s+(?:available|implemented|wired|supported|proved|proven|qualified|established|measured|reconciled)|not\s+(?:established|implemented|available|supported|wired|qualified|proved|proven)|not\s+(?:all|each|every|everything|the\s+(?:entire|whole|complete))|may\s+remain\s+plaintext|plaintext\s+(?:fallback|writes?)|without\s+(?:an?\s+)?(?:installed\s+)?storage\s+key)\b/gi;
+
+// A coordinator or punctuation mark that starts a new assertion. A negation or
+// a status word on one side of this NEVER governs a claim on the other side.
+// This single line is what stops "does not X and <claim>" being exempt.
+const LIMITATION_CLAUSE_BOUNDARY =
+  /(?:\b(?:and|but|or|nor|yet|so|because|while|whereas|though|although|however|instead|then|otherwise|plus)\b|[,;:()[\]"]|—|–|\s-\s)/i;
+
+function crossesClauseBoundary(sentence, start, end) {
+  if (end <= start) {
+    return false;
+  }
+  return LIMITATION_CLAUSE_BOUNDARY.test(sentence.slice(start, end));
+}
+
+/**
+ * The single policy both semantic detectors use. `sentence` is one sentence of
+ * normalized claim text; [claimStart, claimEnd) is the span that MADE the claim,
+ * not the whole sentence. Returns true only when that span is governed.
+ */
+function limitationGovernsClaim(sentence, claimStart, claimEnd) {
+  // W - the claim lies inside the complement of a negated limiting verb.
+  LIMITATION_FRAME.lastIndex = 0;
+  for (const frame of sentence.matchAll(LIMITATION_FRAME)) {
+    const frameStart = frame.index ?? 0;
+    const frameEnd = frameStart + frame[0].length;
+    if (claimStart < frameStart) {
+      continue; // The claim precedes the negation; the negation cannot reach it.
+    }
+    if (!crossesClauseBoundary(sentence, frameEnd, claimStart)) {
+      return true;
+    }
+  }
+
+  // H - an unearned-status token sits in the claim's own clause.
+  LIMITATION_STATUS.lastIndex = 0;
+  for (const status of sentence.matchAll(LIMITATION_STATUS)) {
+    const statusStart = status.index ?? 0;
+    const statusEnd = statusStart + status[0].length;
+    if (statusEnd <= claimStart) {
+      if (!crossesClauseBoundary(sentence, statusEnd, claimStart)) {
+        return true;
+      }
+      continue;
+    }
+    if (statusStart >= claimEnd) {
+      if (!crossesClauseBoundary(sentence, claimEnd, statusStart)) {
+        return true;
+      }
+      continue;
+    }
+    // The qualifier is inside the claim span. It governs the claim only if it
+    // reaches the claim's own head - "not yet qualified as complete" does,
+    // "planned and covers your complete history" does not.
+    if (!crossesClauseBoundary(sentence, statusEnd, claimEnd)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function firstMatchSpan(sentence, pattern) {
+  const match = sentence.match(pattern);
+  return match && match.index !== undefined
+    ? { start: match.index, end: match.index + match[0].length }
+    : null;
+}
+
 function semanticAtRestClaimSpans(text) {
   const spans = [];
   const universalScope =
@@ -2499,12 +2736,30 @@ function semanticAtRestClaimSpans(text) {
     /\b(?:encrypt(?:s|ed|ing)?|decrypt(?:s|ed|ing)?|encipher(?:s|ed|ing)?|unencrypted|ciphertext|cleartext|plain[-\s]*text|sealed?|protect(?:s|ed|ing)?|secur(?:e|es|ed|ing)?|gated|guards?|locked|unlocks?|inaccessible|unreadable|opaque|passphrase|password|in\s+the\s+clear)\b/i;
   const localContext =
     /\bat[-\s]+rest\b|\bon[-\s]+disk\b|\bfilesystem\b|\blocal(?:ly)?\b|\bon[-\s]+device\b|\bon\s+(?:this|your|the)\s+(?:device|computer|machine)\b|\bwhole[-\s]+profile\b|\b(?:persist(?:s|ed|ing)?|retain(?:s|ed|ing)?|saved?|stored?)\b/i;
-  const destructive =
-    /\b(?:delete|deletes|deleted|deleting|remove|removes|removed|removing|uninstall|clear|clears|cleared|clearing)\b/i;
   const residueAbsence =
     /\b(?:(?:osl\s+)?leaves?\s+(?:behind\s+)?(?:no|zero)\s+(?:readable\s+)?(?:private|confidential|sensitive)?\s*(?:residue|artifacts?|data|material)|nothing\s+(?:private|confidential|sensitive)\s+survives?\s+(?:on[-\s]+disk|at[-\s]+rest|locally|on\s+(?:the|your|this)\s+(?:device|computer|machine)))\b/i;
-  const attachedLimitation =
-    /\b(?:planned|unavailable|unknown|unproved|unproven|not\s+yet\s+(?:available|implemented|proved)|not\s+established|does\s+not\s+(?:claim|cover|protect|encrypt|secure|mean|imply)(?:\s+that)?\s+(?:all|each|every|nothing)|not\s+(?:all|each|every|everything|the\s+(?:entire|whole|complete))|may\s+remain\s+plaintext|plaintext\s+(?:fallback|writes?)|without\s+(?:an?\s+)?(?:installed\s+)?storage\s+key|remov(?:e|es|ed|ing)\b.{0,80}\b(?:restores?|causes?)\s+plaintext\s+writes?)\b/i;
+
+  // The span that MADE the at-rest claim, so the policy can ask what governs
+  // it. The detector's trigger conditions are unchanged; only the exemption is.
+  function atRestClaimSpan(sentence) {
+    const residue = firstMatchSpan(sentence, residueAbsence);
+    if (residue) {
+      return residue;
+    }
+    const broad = firstMatchSpan(sentence, broadCategory);
+    if (broad) {
+      return broad;
+    }
+    const scopeWord = firstMatchSpan(sentence, universalScope);
+    const objectWord = firstMatchSpan(sentence, stateObject);
+    if (scopeWord && objectWord) {
+      return {
+        start: Math.min(scopeWord.start, objectWord.start),
+        end: Math.max(scopeWord.end, objectWord.end),
+      };
+    }
+    return null;
+  }
 
   for (const block of text.matchAll(/[^\n]+/g)) {
     const blockText = block[0];
@@ -2519,9 +2774,11 @@ function semanticAtRestClaimSpans(text) {
         && localContext.test(sentence)
         && (broadCategory.test(sentence)
           || (universalScope.test(sentence) && stateObject.test(sentence)));
-      return !attachedLimitation.test(sentence)
-        && !destructive.test(sentence)
-        && (residueAbsence.test(sentence) || broadProtectedState);
+      if (!residueAbsence.test(sentence) && !broadProtectedState) {
+        return false;
+      }
+      const claim = atRestClaimSpan(sentence);
+      return claim === null || !limitationGovernsClaim(sentence, claim.start, claim.end);
     });
     if (!scope) {
       continue;
@@ -2537,8 +2794,6 @@ function semanticAtRestClaimSpans(text) {
 function semanticScrubClaimSpans(text) {
   const spans = [];
   const scrubContext = /\b(?:auto\s*scrub|scrub)\b/i;
-  const attachedLimitation =
-    /\b(?:planned|coming\s+soon|unavailable|not\s+(?:available|implemented|wired|supported|proved|proven|qualified)|not\s+yet\s+(?:available|implemented|wired|supported|proved|proven|qualified)|implemented[-\s]+unwired|test[-\s]+proven(?:[-\s]+only)?|unwired|unproved|unproven|unknown|view[-\s]+only|manual(?:ly|\s+only)?|requires?\s+(?:your\s+)?(?:review|confirmation)|does\s+not|cannot|never|may\s+(?:omit|exclude|miss)|can\s+be\s+incomplete|future|intended|design)\b/i;
   const completeHistory =
     /(?:\b(?:complete|full|entire|whole|all|fully\s+reconciled)\b.{0,45}\b(?:history|content|messages?|posts?|records?|account\s+data|exports?|downloads?)\b|\b(?:history|content|messages?|posts?|records?|account\s+data|exports?|downloads?)\b.{0,45}\b(?:complete|full|entire|whole|all|fully\s+reconciled|nothing\s+(?:is\s+)?omitted)\b|\bnothing\s+(?:is\s+)?omitted\b.{0,45}\b(?:scrub|exports?|downloads?|history|content)\b)/i;
   const awayOperation =
@@ -2560,17 +2815,23 @@ function semanticScrubClaimSpans(text) {
 
   for (const sentenceMatch of text.matchAll(/[^.!?;\n]+[.!?;]?/g)) {
     const sentence = sentenceMatch[0].trim();
-    if (!sentence || !scrubContext.test(sentence) || attachedLimitation.test(sentence)) {
+    if (!sentence || !scrubContext.test(sentence)) {
       continue;
     }
     const providerCount = providerPatterns.filter((pattern) => pattern.test(sentence)).length;
-    if (
-      completeHistory.test(sentence)
-      || awayOperation.test(sentence)
-      || automaticDeletion.test(sentence)
-      || fiveProviderWording.test(sentence)
-      || (providerSupport.test(sentence) && providerCount >= 5)
-    ) {
+    // Each claim in the sentence is judged on its own. One governed claim never
+    // exempts an ungoverned one sitting beside it.
+    const claims = [
+      firstMatchSpan(sentence, completeHistory),
+      firstMatchSpan(sentence, awayOperation),
+      firstMatchSpan(sentence, automaticDeletion),
+      firstMatchSpan(sentence, fiveProviderWording),
+      providerCount >= 5 ? firstMatchSpan(sentence, providerSupport) : null,
+    ].filter(Boolean);
+    const ungoverned = claims.some(
+      (claim) => !limitationGovernsClaim(sentence, claim.start, claim.end),
+    );
+    if (ungoverned) {
       const start = sentenceMatch.index ?? 0;
       spans.push({ start, end: start + sentenceMatch[0].length });
     }
@@ -4320,6 +4581,65 @@ async function runSelfTest() {
       text: "Discord, Meta, WhatsApp, Google, and Microsoft are Planned targets for Scrub.",
       shouldFlag: false,
     },
+
+    // --- D-249 / D-243: the limitation-exemption policy -------------------
+    // The four cases that defined the defect. If any of these flips, the
+    // policy is wrong and must be re-derived - do NOT special-case one of them.
+    {
+      // D-249, the overclaim that shipped past the gate. The negation is
+      // applied to a SHORTFALL verb, so it asserts completeness, and the claim
+      // it asserts sits in a second conjunct the negation never reaches.
+      name: "D-249 negated shortfall does not exempt a completeness claim",
+      text: "Scrub does not miss anything and sees the whole account history.",
+      shouldFlag: true,
+    },
+    {
+      // D-249, the honest disclosure the gate used to flag. Same negation
+      // count as the sentence above; the claim is the complement of a WITHHELD
+      // assertion, so it is mentioned rather than made.
+      name: "D-249 withheld attestation exempts the claim it declines to make",
+      text: "The provider did not attest that Scrub saw the whole account history.",
+      shouldFlag: false,
+    },
+    {
+      // D-243, the product-wide at-rest claim that the destructive-verb
+      // exemption hid. A destructive verb is not a limitation of anything.
+      name: "D-243 destructive verb does not exempt a product-wide at-rest claim",
+      text: "This permanently removes all encrypted local state.",
+      shouldFlag: true,
+    },
+    {
+      // The other side of D-243: a real limitation that happens to contain a
+      // destructive verb must still pass. The exemption comes from the negated
+      // reporting verb, not from the presence or absence of "clearing".
+      name: "D-243 destructive verb inside a real limitation stays exempt",
+      text: "Clearing the cache does not prove that all local state is encrypted at rest.",
+      shouldFlag: false,
+    },
+    {
+      // Scope, not phrasing: the same negated limiting verb stops governing as
+      // soon as a coordinator starts a new assertion.
+      name: "negation does not reach a claim past a coordinator",
+      text: "Scrub does not cover attachments and imports your complete account history.",
+      shouldFlag: true,
+    },
+    {
+      name: "negated limiting verb governs its own complement",
+      text: "Scrub does not import your complete account history.",
+      shouldFlag: false,
+    },
+    {
+      // Tense is not the rule. Both tenses of a withholding frame behave the
+      // same, which is the whole point of replacing the present-tense list.
+      name: "present-tense withheld attestation behaves as the past tense does",
+      text: "The provider does not attest that Scrub saw the whole account history.",
+      shouldFlag: false,
+    },
+    {
+      name: "status qualifier in another clause does not launder a Scrub claim",
+      text: "Scrub downloads are Planned and cover your complete history.",
+      shouldFlag: true,
+    },
   ];
   const rustFixtures = [
     {
@@ -5220,6 +5540,24 @@ async function runSelfTest() {
     `${scrubMutationCaught ? "PASS" : "FAIL"} actual Scrub UI completeness mutation is nonvacuous and caught`,
   );
 
+  // The forbidden fix for D-249/D-243 was "add another word to the exemption
+  // list". This makes the one list that may grow unable to grow the wrong way:
+  // if a verb of shortfall is ever admitted to LIMITING_VERBS, negating it
+  // would start exempting assertions, and this fails.
+  const overlappingVerbs = LIMITING_VERBS.filter((verb) => SHORTFALL_VERBS.includes(verb));
+  const shortfallStillAsserts = SHORTFALL_VERBS.every((verb) => {
+    const sentence = `scrub does not ${verb} anything and sees the whole account history.`;
+    return semanticScrubClaimSpans(sentence).length > 0;
+  });
+  const verbListsDisjoint = overlappingVerbs.length === 0 && shortfallStillAsserts;
+  if (!verbListsDisjoint) {
+    failures += 1;
+  }
+  console.log(
+    `${verbListsDisjoint ? "PASS" : "FAIL"} limiting and shortfall verb sets stay disjoint`
+      + (overlappingVerbs.length > 0 ? ` (admitted: ${overlappingVerbs.join(", ")})` : ""),
+  );
+
   const productionSupportMatrixShape = validateSupportMatrixObject(productionSupportMatrix);
   const mutatedSourceMatrix = JSON.parse(JSON.stringify(productionSupportMatrix));
   const firstAnchor = collectMatrixSourceAnchors(mutatedSourceMatrix)[0];
@@ -5240,7 +5578,7 @@ async function runSelfTest() {
   );
 
   console.log(
-    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + supportClaimFixtures.length + supportMatrixFixtures.length + tokenizerFixtures.length + 4}, failures=${failures}`,
+    `Self-test: phrases parsed=${bannedPhrases.length}, fixtures=${fixtures.length + rustFixtures.length + inputCases.length + supportClaimFixtures.length + supportMatrixFixtures.length + tokenizerFixtures.length + 5}, failures=${failures}`,
   );
 
   return failures === 0 ? 0 : 1;
