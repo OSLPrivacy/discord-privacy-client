@@ -6,7 +6,7 @@ interchangeable.
 | Directory | Role | May gate a release? |
 | --- | --- | --- |
 | `scripts/vmqa/` in the OSL repository | The authoritative, release-grade harness. It validates its contract, namespaces VM resources, holds a per-VM Azure lease, and rejects vacuous passes. Run `scripts/vmqa/vmqa-run.sh` for release evidence. | **Yes** |
-| `/home/liamw/osl-plan/vmqa/` | Scratch drivers and diagnostics for iterating on a VM or investigating a failure. Its output is exploratory evidence only. | **No** |
+| `plan-repo/vmqa/` | Scratch drivers and diagnostics for iterating on a VM or investigating a failure. Its output is exploratory evidence only. | **No** |
 
 ## Release rule
 

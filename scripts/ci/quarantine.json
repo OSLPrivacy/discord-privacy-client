@@ -36,28 +36,9 @@
       ],
       "extract": "audit-dash-findings",
       "runsIn": ".github/workflows/public-release-audit.yml is NOT enabled on integrate/**; this file is what grades it there, from the quarantine-ratchet job of integration-gate.yml",
-      "why": "18 tracked files carry a personal home path. scripts/verify-all.sh is one of them and stays one: D-172 removed its hardcoded fallback checkout but left the comment recording what the fallback used to be, because that comment is the lesson. Note this file itself is graded by that audit -- an early draft quoted the offending path and pushed the count to 19, which the ratchet caught on its first real run. Do not quote absolute home paths here; the extractors normalise them out of identities for the same reason.",
-      "owner": "unassigned - surfaced by D-172",
-      "ids": [
-        "apps/osl-hub/tests/add_friend_handshake_e2e.rs: personal WSL path",
-        "cipher-store-cf/wrangler.toml: personal WSL path",
-        "claude-bridge/tests/test_model_downgrade_recovery.py: personal WSL path",
-        "claude-bridge/tests/test_plan_b_dispatch_gate.py: personal WSL path",
-        "crates/keystore/src/client.rs: personal WSL path",
-        "docs/design/osl-spaces-feature-gaps.md: personal WSL path",
-        "docs/design/storage-portability.md: personal WSL path",
-        "docs/evidence/t7-linux/audit.json: personal WSL path",
-        "docs/reports/t9-r-26-live-plan-tooling.md: personal WSL path",
-        "docs/reports/t9-r-34-live-plan-tooling.md: personal WSL path",
-        "keyserver-cf/test/integration/usernames.test.ts: personal WSL path",
-        "keyserver-cf/wrangler.toml: personal WSL path",
-        "osl-plan/spec-conflict-register.md: personal WSL path",
-        "scripts/fleet/claude-b.sh: personal WSL path",
-        "scripts/ledger/exceptions/attributes.json: personal WSL path",
-        "scripts/ledger/exceptions/commands.json: personal WSL path",
-        "scripts/verify-all.sh: personal WSL path",
-        "scripts/vmqa/README.md: personal WSL path"
-      ]
+      "why": "D-232 TOOK THE WIN: this was 18 tracked files carrying a personal home path, and it is now ZERO -- `python3 scripts/audit_public_release.py` exits 0 across 2541 publishable files. The entry is deliberately KEPT at zero rather than deleted, so the check still runs on every push and any personal path that arrives is graded as a REGRESSION rather than as a check nobody runs (mutation-proved: one reintroduced path takes this entry to FAILED with the id named). scripts/verify-all.sh was previously argued to stay red because its comment records the hardcoded fallback checkout D-172 removed and 'that comment is the lesson'; the lesson is kept verbatim, with the one operator's absolute path replaced by 'one hardcoded personal checkout', which is what the lesson actually is. Do not quote absolute home paths here: this file is itself graded by that audit.",
+      "owner": "closed by D-232 CI triage; a regression is now the only way this entry can be non-empty",
+      "ids": []
     },
     {
       "id": "keyserver-typecheck",

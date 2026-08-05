@@ -146,7 +146,26 @@ export const EXTRACTORS = {
         .filter(Boolean)
         .map((m) => `${m[1]}: ${m[2]}`),
     );
-    if (ids.length === 0 && !/Public-release audit/.test(out)) return null;
+    // D-232. This guard used to accept an empty result ONLY when the output
+    // still said "Public-release audit". scripts/audit_public_release.py says
+    // that on FAILURE and nothing like it on success -- it prints
+    // "OK: public-release boundary checked across N publishable files"
+    // (scripts/audit_public_release.py:593). So the one output this extractor
+    // could not read was the audit PASSING: fixing all 18 findings produced
+    //   "extractor 'audit-dash-findings' found nothing it could parse ...
+    //    Refusing to read that as zero findings."
+    // and the ratchet failed the fix. A ratchet that cannot record a win is a
+    // floor nobody can ever lower, which is the rot its own keyserver-worker
+    // message warns about.
+    //
+    // Nothing is loosened: an empty result is still refused unless the script
+    // printed one of its own two sentinels, so a renamed script, a missing
+    // python or a changed format is still a starved input, and
+    // assertMeasurable still refuses ids=[] whenever the process exited
+    // non-zero.
+    if (ids.length === 0 && !/Public-release audit|^OK: public-release boundary checked/m.test(out)) {
+      return null;
+    }
     return { ids, metrics: {} };
   },
 
@@ -501,6 +520,16 @@ function selfTest() {
     const got = EXTRACTORS[id](sample);
     ok(`extractor ${id} names its findings`, JSON.stringify(got?.ids) === JSON.stringify(want));
   }
+
+  // D-232. The audit extractor must be able to read the audit PASSING, and
+  // must still refuse output that is neither of the script's own sentinels --
+  // otherwise the ratchet either cannot be lowered, or reads a script that
+  // never ran as a clean bill of health.
+  ok('extractor audit-dash-findings reads a clean audit as zero findings',
+    JSON.stringify(EXTRACTORS['audit-dash-findings'](
+      'OK: public-release boundary checked across 2541 publishable files').ids) === '[]');
+  ok('extractor audit-dash-findings refuses output that is neither sentinel',
+    EXTRACTORS['audit-dash-findings']('bash: python3: command not found') === null);
 
   const vitestSample = [
     ' FAIL  test/a.test.ts > suite > one',

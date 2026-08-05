@@ -8,7 +8,7 @@ compatibility_date = "2026-05-13"
 #   1. Workers Logs are intentionally disabled. These blocks govern Workers
 #      Logs/trace events only; they do not disable Cloudflare zone HTTP request
 #      data, Analytics, or zone Logpush. A proxied request URL can still be
-#      retained there. See /home/liamw/osl-plan/CLOUDFLARE-LOG-EXPOSURE.md.
+#      retained there. See plan-repo/CLOUDFLARE-LOG-EXPOSURE.md.
 #      Keep the blocks disabled, but do not treat them as a zone-log mitigation.
 #
 #   2. tail / live logging is operator-controlled via `wrangler

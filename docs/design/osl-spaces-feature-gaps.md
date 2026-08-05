@@ -89,10 +89,10 @@ generalise to N recipients and are out of scope for this handoff.
 
 ## Sources
 
-- T21-B4 in `/home/liamw/osl-plan/plan/05-TRACKS/T21-servers.md`:
+- T21-B4 in `plan-repo/plan/05-TRACKS/T21-servers.md`:
   departed-member acknowledgements, channel/Space expiry precedence, and
   removed-member tombstones.
-- T18-D1 in `/home/liamw/osl-plan/plan/05-TRACKS/T18-groups.md`: the four
+- T18-D1 in `plan-repo/plan/05-TRACKS/T18-groups.md`: the four
   group-scale feature gaps and the T2 handoff boundary.
 - Owner decisions D14, D17, D28, and D66 in
-  `/home/liamw/osl-plan/plan/09-DECISIONS.md`.
+  `plan-repo/plan/09-DECISIONS.md`.

@@ -2,7 +2,7 @@
 //! app: manual invite-code exchange in BOTH directions, safety-number
 //! verification on each side, and per-friend chat approval on each side.
 //!
-//! Companion document: `/home/liamw/osl-plan/ADD-FRIEND-PROCEDURE.md`. Every
+//! Companion document: `plan-repo/ADD-FRIEND-PROCEDURE.md`. Every
 //! numbered step in that document that is marked EXECUTED is executed here.
 //!
 //! What is driven, in the order the shipping commands drive it:

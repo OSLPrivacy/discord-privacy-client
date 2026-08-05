@@ -1,30 +1,30 @@
 {
-  "note": "Seeded only from the verified NOT dead section of /home/liamw/osl-plan/plan-test/audit-results/UI-AUDIT.md. These are metadata or computed attributes proven reachable by a second binding, not added to make dead controls pass.",
+  "note": "Seeded only from the verified NOT dead section of plan-repo/plan-test/audit-results/UI-AUDIT.md. These are metadata or computed attributes proven reachable by a second binding, not added to make dead controls pass.",
   "highWaterMark": 4,
   "entries": [
     {
       "id": "data-scrub-finding",
       "class": "accepted",
       "reason": "Emitted through the computed inputAttribute branch; UI-AUDIT verified this is not a dead selector.",
-      "citation": "/home/liamw/osl-plan/plan-test/audit-results/UI-AUDIT.md:534"
+      "citation": "plan-repo/plan-test/audit-results/UI-AUDIT.md:534"
     },
     {
       "id": "data-scrub-review-finding",
       "class": "accepted",
       "reason": "Emitted through the computed inputAttribute branch; UI-AUDIT verified this is not a dead selector.",
-      "citation": "/home/liamw/osl-plan/plan-test/audit-results/UI-AUDIT.md:534"
+      "citation": "plan-repo/plan-test/audit-results/UI-AUDIT.md:534"
     },
     {
       "id": "data-primary-destination",
       "class": "accepted",
       "reason": "Navigation buttons carry a second handled route attribute; this metadata is verified not dead.",
-      "citation": "/home/liamw/osl-plan/plan-test/audit-results/UI-AUDIT.md:537"
+      "citation": "plan-repo/plan-test/audit-results/UI-AUDIT.md:537"
     },
     {
       "id": "data-review-target",
       "class": "accepted",
       "reason": "Primary action buttons carry a second handled route/action attribute; this metadata is verified not dead.",
-      "citation": "/home/liamw/osl-plan/plan-test/audit-results/UI-AUDIT.md:537"
+      "citation": "plan-repo/plan-test/audit-results/UI-AUDIT.md:537"
     }
   ]
 }

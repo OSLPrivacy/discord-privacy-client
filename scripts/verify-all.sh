@@ -21,7 +21,8 @@
 #                         esbuild bundle the deploy uses. It is a dry run: it
 #                         writes a local outdir and touches no remote state.
 set -u
-# D-162 adversary, hole 1. This used to be `cd /home/liamw/osl-integrate`, which
+# D-162 adversary, hole 1. This used to be a `cd` to one hardcoded personal
+# checkout -- one operator's absolute home path, spelled out -- which
 # meant every gate below measured ONE hardcoded checkout no matter where the
 # script was invoked from. Run from a lane worktree it silently graded a
 # different tree -- so a broken worktree could print SHIPPABLE, which is the
