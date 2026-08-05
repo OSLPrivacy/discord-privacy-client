@@ -1,36 +1,38 @@
 #!/usr/bin/env bash
-# D-293 -- THE IMPORT DOOR, PROVEN TO BE LOAD-BEARING. Ledger 10.
+# D-297 -- PROJECTION, PROVEN TO BE LOAD-BEARING. Ledger 10.
 #
-# `scripts/ledger/pins.mjs` used to recognise file text only when it arrived
-# through a CALL (`TEXT_READERS`). Text imported with Vite's `?raw` suffix never
-# appears as a call, so 29 pre-existing assertions over `?raw` source were
-# invisible to the census, and 13 more were invisible because `execFileSync` was
-# missing from a set of three that had two of its members written down.
+# `scripts/ledger/pins.mjs` followed file text through exactly one relation:
+# a text-preserving operation applied to text (`source.replace(...).split(";")`).
+# It did NOT follow text through PROJECTION -- a member taken out of a value
+# that holds text. So `statements` was counted and `statement` in
+#
+#     for (const statement of statements) expect(statement).toMatch(...)
+#
+# was not, and 41 pre-existing assertions across 13 files were invisible.
 #
 # Three mutants, each a real edit to a real file in a real copy of the tree,
 # read by the same code path CI runs (`--root=`).
 #
-#   A  the blindness re-introduced          -> the census FALLS BACK to 4691 and
-#                                              every one of the 42 newly-visible
+#   A  the blindness re-introduced          -> the census FALLS BACK to 4733 and
+#                                              every one of the 41 newly-visible
 #                                              ids VANISHES; RED against the real
 #                                              baseline.
 #   B  a genuine assertion planted over a
-#      `?raw` import                        -> the FIXED census COUNTS it (RED,
+#      LOOP VARIABLE bound from file text   -> the FIXED census COUNTS it (RED,
 #                                              naming the new id); the BLINDED
 #                                              census does not move at all.
 #                                              THIS IS THE MUTANT THAT MATTERS.
 #   C  a counted pin deleted, pulled BY ID
-#      out of the live census               -> RED, "BASELINE IS STALE", and the
-#                                              id is gone from the census.
+#      out of the live census               -> RED, "BASELINE IS STALE", and that
+#                                              subject loses exactly one pin.
 #
 # EVERY MUTATION IS VERIFIED TO HAVE HAD ITS EFFECT, not merely to have applied.
-# Ten lanes this session shipped mutants that changed nothing: one planted at EOF
-# where a non-greedy regex blanked nothing, one deleting a construct that was not
-# in the census so the count never moved. So mutant C takes its target BY ID out
-# of the LIVE census and then asserts that id is absent afterwards, and mutants A
-# and B assert on the ID SETS, never on a message.
+# And mutant C asserts on the FAMILY, never on the exact id: an id is
+# `<file>#<subject>~<ordinal>`, so deleting the FIRST of five renumbers the rest
+# and "the id vanished" fails against a census working perfectly -- the inverse
+# trap D-293 hit and recorded.
 #
-#   bash scripts/ledger/mutants/pins-import-origin-mutants.sh
+#   bash scripts/ledger/mutants/pins-loop-propagation-mutants.sh
 #
 # Exit 0 only when the control is GREEN and all three mutants behave as required.
 
@@ -39,8 +41,11 @@ cd "$(dirname "$0")/../../.."
 ROOT=$(pwd)
 ELIDE='^ *(apps|services|crates|scripts|docs|03-|keyserver|infra|src-tauri|tools|cipher|vmqa|webview|plan/|selector)'
 FAILURES=0
-WORK=$(mktemp -d /tmp/osl-d293-mutants.XXXXXX)
+WORK=$(mktemp -d /tmp/osl-d297-mutants.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
+
+BASELINE_N=4774
+PREFIX_N=4733
 
 ok()   { echo "  OK: $1"; }
 bad()  { echo "  *** GATE FAILURE: $1 ***"; FAILURES=$((FAILURES + 1)); }
@@ -53,9 +58,9 @@ copy_tree() {
   echo "$tmp"
 }
 
-# A copy of scripts/ledger with door 2 and execFileSync REMOVED -- the recogniser
-# exactly as it was before D-293. It carries the REAL pin-baseline.json, so it is
-# ratcheted against the same recorded facts the fixed one is.
+# A copy of scripts/ledger with PROJECTION removed -- the recogniser exactly as
+# it was before D-297, transformation-only. It carries the REAL pin-baseline.json
+# so it is ratcheted against the same recorded facts the fixed one is.
 blind_ledger() {
   local dir="$WORK/blind"
   rm -rf "$dir"
@@ -64,14 +69,14 @@ blind_ledger() {
 import sys
 p = sys.argv[1]
 s = open(p).read()
-door = "export function importYieldsFileText(spec, fromDir = null) {"
-if s.count(door) != 1:
-    sys.exit("MUTATION DID NOT APPLY: importYieldsFileText signature not found")
-s = s.replace(door, door + "\n  return false; // BLINDED: door 2 removed", 1)
-reader = '  "execFileSync",\n'
-if s.count(reader) != 1:
-    sys.exit("MUTATION DID NOT APPLY: execFileSync not in TEXT_READERS")
-s = s.replace(reader, "", 1)
+sites = "export function projectionSites(src) {"
+walk = "function callbackProjections(src, from) {"
+if s.count(sites) != 1:
+    sys.exit("MUTATION DID NOT APPLY: projectionSites signature not found")
+if s.count(walk) != 1:
+    sys.exit("MUTATION DID NOT APPLY: callbackProjections signature not found")
+s = s.replace(sites, sites + "\n  return []; // BLINDED: projection removed", 1)
+s = s.replace(walk, walk + "\n  return []; // BLINDED: projection removed", 1)
 open(p, "w").write(s)
 PY
   echo "$dir"
@@ -91,8 +96,8 @@ run_census() { # $1 = pins.mjs, $2 = tree -- REAL exit code, never the pipeline'
   return "${PIPESTATUS[0]}"
 }
 
-echo "STARVATION TRANSCRIPT -- D-293, THE IMPORT DOOR"
-echo "generated by scripts/ledger/mutants/pins-import-origin-mutants.sh at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "STARVATION TRANSCRIPT -- D-297, PROJECTION"
+echo "generated by scripts/ledger/mutants/pins-loop-propagation-mutants.sh at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "head: $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 echo
 
@@ -101,39 +106,28 @@ echo "\$ node scripts/ledger/pins.mjs"
 node "$ROOT/scripts/ledger/pins.mjs"
 check "$?" 0 "control exits 0"
 FIXED_N=$(census_ids "$ROOT/scripts/ledger/pins.mjs" "$ROOT" | tee "$WORK/fixed.ids" | wc -l)
-echo "  control census: $FIXED_N ids"
+check "$FIXED_N" "$BASELINE_N" "control census matches the recorded baseline"
 
 echo
-echo "=== MUTANT A: the blindness re-introduced (door 2 + execFileSync removed) ==="
+echo "=== MUTANT A: the blindness re-introduced (projection removed) ==="
 BLIND=$(blind_ledger) || { echo "  *** MUTATION DID NOT APPLY ***"; exit 9; }
-echo "\$ # scripts/ledger/pins.mjs in \$blind: importYieldsFileText() returns false; execFileSync dropped"
+echo "\$ # scripts/ledger/pins.mjs in \$blind: projectionSites() and callbackProjections() return []"
 census_ids "$BLIND/pins.mjs" "$ROOT" > "$WORK/blind.ids"
 BLIND_N=$(wc -l < "$WORK/blind.ids")
 VANISHED=$(comm -23 <(sort "$WORK/fixed.ids") <(sort "$WORK/blind.ids") | wc -l)
 GAINED=$(comm -13 <(sort "$WORK/fixed.ids") <(sort "$WORK/blind.ids") | wc -l)
 echo "  blinded census: $BLIND_N ids"
-# 4691 and 42 when this suite was written. D-297 then taught the census to
-# follow text through PROJECTION, and the two doors COMPOSE: the SQL of
-# migration 0004 arrives through a `?raw` import and is then split and asserted
-# in a `for (const statement of statements)` loop, and `wrangler.toml?raw` the
-# same way through `for (const className of migrationClasses(...))`. Those two
-# pins are import-origin, so blinding door 2 takes them with it -- measured, and
-# the two ids are named in plan-test/tasklogs/pins-loop-propagation.md. The
-# check is still an exact count in both directions; only the tree it describes
-# has more of the census visible.
-IMPORT_BLIND_N=4730     # 4774 - 44
-IMPORT_BLIND_VANISHED=44 # 42 direct + 2 reached through projection
-check "$BLIND_N" "$IMPORT_BLIND_N" "EFFECT: the census falls back to its pre-D-293 count"
-check "$VANISHED" "$IMPORT_BLIND_VANISHED" "EFFECT: newly-visible pins that VANISH when blinded"
+check "$BLIND_N" "$PREFIX_N" "EFFECT: the census falls back to its pre-D-297 count"
+check "$VANISHED" "$((BASELINE_N - PREFIX_N))" "EFFECT: newly-visible pins that VANISH when blinded"
 check "$GAINED" "0" "EFFECT: the blindness invents nothing (blinded-only ids)"
 echo "  vanished, by file:"
 comm -23 <(sort "$WORK/fixed.ids") <(sort "$WORK/blind.ids") | cut -d'#' -f1 | sort | uniq -c | sed 's/^/    /'
-echo "\$ node \$blind/pins.mjs --root=\$ROOT   # ratcheted against the REAL baseline of 4733"
+echo "\$ node \$blind/pins.mjs --root=\$ROOT   # ratcheted against the REAL baseline of $BASELINE_N"
 run_census "$BLIND/pins.mjs" "$ROOT"
 check "$?" 1 "mutant A is REJECTED by the ratchet"
 
 echo
-echo "=== MUTANT B: a genuine assertion planted over a ?raw import ==="
+echo "=== MUTANT B: a genuine assertion planted over a LOOP VARIABLE ==="
 echo "    THE ONE THAT MATTERS: the fixed census must COUNT it and the broken one must NOT."
 tmp=$(copy_tree)
 PLANT=apps/osl-hub-ui/src/onboarding-presets.test.ts
@@ -141,21 +135,26 @@ python3 - "$tmp/$PLANT" <<'PY' || { echo "  *** MUTATION DID NOT APPLY ***"; exi
 import sys
 p = sys.argv[1]
 s = open(p).read()
-if "?raw" in s:
-    sys.exit("MUTATION IS NOT A MUTATION: the target already imports ?raw")
-first_import = s.index("import ")
-s = s[:first_import] + 'import mutantRawSource from "./main.ts?raw";\n' + s[first_import:]
+if "mutantLine" in s:
+    sys.exit("MUTATION IS NOT A MUTATION: the target already binds mutantLine")
+if "const source = readFileSync(" not in s:
+    sys.exit("MUTATION DID NOT APPLY: the target no longer reads main.ts into `source`")
 s += (
-    '\nit("MUTANT: a source-text pin whose text arrived through a ?raw import", () => {\n'
-    '  expect(mutantRawSource).toContain("protectionPreset");\n'
+    '\nit("MUTANT: a source-text pin over a loop variable bound from file text", () => {\n'
+    '  for (const mutantLine of source.split("\\n")) {\n'
+    '    expect(mutantLine).not.toContain("MUTANT-SENTINEL-D297");\n'
+    "  }\n"
     "});\n"
 )
 open(p, "w").write(s)
+if "for (const mutantLine of source.split" not in open(p).read():
+    sys.exit("MUTATION DID NOT APPLY: the planted loop is not in the file")
 PY
 echo "\$ # added to $PLANT:"
-echo "\$ #   import mutantRawSource from \"./main.ts?raw\";"
-echo "\$ #   expect(mutantRawSource).toContain(\"protectionPreset\");"
-MUTANT_ID="$PLANT#mutantRawSource~0"
+echo "\$ #   for (const mutantLine of source.split(\"\\n\")) {"
+echo "\$ #     expect(mutantLine).not.toContain(\"MUTANT-SENTINEL-D297\");"
+echo "\$ #   }"
+MUTANT_ID="$PLANT#mutantLine~0"
 census_ids "$ROOT/scripts/ledger/pins.mjs" "$tmp" > "$WORK/fixed.planted.ids"
 census_ids "$BLIND/pins.mjs" "$tmp" > "$WORK/blind.planted.ids"
 FIXED_SEES=$(grep -Fxc "$MUTANT_ID" "$WORK/fixed.planted.ids" || true)
@@ -167,15 +166,16 @@ check "$(wc -l < "$WORK/blind.planted.ids")" "$BLIND_N" "EFFECT: blind count doe
 echo "\$ node scripts/ledger/pins.mjs --root=\$tmp"
 run_census "$ROOT/scripts/ledger/pins.mjs" "$tmp"
 check "$?" 1 "mutant B is REJECTED by the fixed ratchet"
-echo "\$ node \$blind/pins.mjs --root=\$tmp   # the pre-D-293 recogniser, same tree"
+echo "\$ node \$blind/pins.mjs --root=\$tmp   # the pre-D-297 recogniser, same tree"
 run_census "$BLIND/pins.mjs" "$tmp"
-check "$?" 1 "the blind ratchet fails too -- but on the 42 it lost, NOT on the planted pin"
+check "$?" 1 "the blind ratchet fails too -- but on the 41 it lost, NOT on the planted pin"
 rm -rf "$tmp"
 
 echo
 echo "=== MUTANT C: a counted pin DELETED, taken by id out of the live census ==="
+echo "    The victim is one of the NEWLY-VISIBLE pins, so this also proves they are ratcheted."
 tmp=$(copy_tree)
-VICTIM_ID="cipher-store-cf/test/push-connection.test.ts#connectionSource~0"
+VICTIM_ID="apps/osl-hub-ui/src/public-claim-copy.test.ts#source~0"
 node --input-type=module -e "
   import { collect } from '$ROOT/scripts/ledger/pins.mjs';
   const pin = collect('$tmp').pins.find((p) => p.id === '$VICTIM_ID');
@@ -198,16 +198,11 @@ if victim in open(path).read():
 print(f"  deleted {meta['file']}:{meta['line']}  {victim.strip()}")
 PY
 census_ids "$ROOT/scripts/ledger/pins.mjs" "$tmp" > "$WORK/deleted.ids"
-# The id is <file>#<subject>~<ordinal>, so deleting the FIRST of three
-# `connectionSource` pins does not remove `~0` -- it removes `~2` and renumbers.
-# Asserting "the id ~0 vanished" would therefore FAIL on a census that is working
-# perfectly, so the effect is asserted on the FAMILY: three pins over that
-# subject before, two after, and the assertion's own text gone from the file.
 VICTIM_KEY=${VICTIM_ID%~*}
 BEFORE_FAMILY=$(grep -Fc "$VICTIM_KEY~" "$WORK/fixed.ids" || true)
 AFTER_FAMILY=$(grep -Fc "$VICTIM_KEY~" "$WORK/deleted.ids" || true)
-check "$BEFORE_FAMILY" "3" "the victim's subject had three pins before"
-check "$AFTER_FAMILY" "2" "EFFECT: that subject now has two -- one real assertion is gone"
+check "$BEFORE_FAMILY" "5" "the victim's subject had five pins before"
+check "$AFTER_FAMILY" "4" "EFFECT: that subject now has four -- one real assertion is gone"
 check "$(wc -l < "$WORK/deleted.ids")" "$((FIXED_N - 1))" "EFFECT: the count falls by exactly one"
 echo "\$ node scripts/ledger/pins.mjs --root=\$tmp"
 run_census "$ROOT/scripts/ledger/pins.mjs" "$tmp"
@@ -215,9 +210,14 @@ check "$?" 1 "mutant C is REJECTED -- an unrecorded decrease is a stale baseline
 rm -rf "$tmp"
 
 echo
+echo "=== ORACLE: the TypeScript compiler's parser over the same files ==="
+node "$ROOT/scripts/ledger/mutants/pins-loop-propagation-oracle.mjs"
+check "$?" 0 "the projection recogniser and the compiler agree on every binding form"
+
+echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "ALL MUTANTS REJECTED, AND EVERY MUTATION'S EFFECT WAS VERIFIED."
   exit 0
 fi
-echo "$FAILURES CHECK(S) FAILED. The import door is decoration until this is 0."
+echo "$FAILURES CHECK(S) FAILED. Projection is decoration until this is 0."
 exit 1
