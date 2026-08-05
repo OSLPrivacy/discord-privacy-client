@@ -7401,21 +7401,65 @@ pub(crate) fn request_native_visible_row_qa_probe(
 /// Longest operator name prefix the ownership test will consider.
 const MAX_OPERATOR_NAME_BYTES: usize = 64;
 
-/// Whether one transcript row was written by the operator.
+/// Whether Discord's own provider proved the operator's account posted this row.
 ///
-/// Discord's rows begin with their author, so the row's own concatenated
-/// accessible line starts with the author's visible name. `operator_names` are
-/// the visible account labels OSL already confirmed with the operator at
-/// calibration; native code supplies them, never the renderer.
+/// THIS is the ownership authority for guided deletion, and it is the only one.
+/// `VisibleMessageRow::attribution` is emitted exclusively by the bounded native
+/// row read (`native_row_attribution_from_provider`), which classifies the
+/// provider-owned poster snowflake against the independently read self account
+/// and the conversation header's expected peer. No renderer field can construct
+/// it, and no participant can choose it: a Discord message id and its author id
+/// are Discord's, not the author's.
 ///
-/// A name must be followed by the end of the line or a non-alphanumeric
-/// boundary, so `Liam` never matches `Liamwerner`. Nothing is logged, hashed or
-/// kept: the answer is one boolean.
+/// `None` is a REFUSAL, never a fall-through. The producer clears attribution
+/// for a whole batch (`finish_native_visible_rows`) the moment its proof does
+/// not hold, so `None` means "this read could not prove who posted anything" --
+/// which is the state in which a deletion feature must do nothing at all.
 ///
-/// This is only the FIRST of two ownership gates. The second is Discord's own:
-/// its row menu offers no delete item for a message the account may not delete,
-/// and a row whose menu does not offer one becomes `Unsupported` rather than
-/// being attempted. Neither gate is sufficient alone; both are required.
+/// Contrast `row_is_authored_by_operator`, which reads a rendered display name.
+/// That input is chosen by whoever holds the account. It may narrow this answer;
+/// it may never stand in for it.
+pub fn deletion_row_is_provider_attributed_to_operator(row: &VisibleMessageRow) -> bool {
+    matches!(
+        row.attribution.as_ref().map(|evidence| evidence.poster),
+        Some(NativeDiscordRowPoster::SelfAccount)
+    )
+}
+
+/// Whether one transcript row's RENDERED LINE begins with a calibrated operator
+/// name.
+///
+/// # This is not an ownership proof
+///
+/// A Discord display name is chosen by the account that holds it, per guild and
+/// at will, so this function's entire input is attacker-controlled. A peer who
+/// renames themselves to the operator satisfies it exactly. It was once the sole
+/// ownership gate for guided deletion and that was the defect: three layers of
+/// checking all read one bool derived from this one spoofable string.
+///
+/// It survives only as a strictly SUBORDINATE narrowing conjunct, applied after
+/// `deletion_row_is_provider_attributed_to_operator` has already said yes.
+/// Being a conjunct on the candidacy side, an attacker-chosen name can only ever
+/// remove a row from the candidate set, never add one -- so it costs nothing in
+/// the direction that matters. What it buys is a non-adversarial cross-check:
+/// if the producer's self-account binding were ever wrong (a second signed-in
+/// account, a misread self-identity node), the rendered author would disagree
+/// and the row would be refused. Its cost is the opposite error -- an operator
+/// whose per-guild nickname is not in `operator_names` loses their own rows from
+/// the candidate list -- which fails closed, and is the correct direction for a
+/// permanent-deletion feature.
+///
+/// `operator_names` are the visible account labels OSL confirmed with the
+/// operator at calibration; native code supplies them, never the renderer. A
+/// name must be followed by the end of the line or a non-alphanumeric boundary,
+/// so `Liam` never matches `Liamwerner`. Nothing is logged, hashed or kept.
+///
+/// Downstream there is still Discord's own third gate: its row menu offers no
+/// delete item for a message the account may not delete, and a row whose menu
+/// does not offer one becomes `Unsupported` rather than being attempted. That
+/// gate does NOT hold for an operator with Manage Messages, who is offered
+/// Delete on other people's messages, which is why it was never sufficient
+/// either.
 pub fn row_is_authored_by_operator(line: &str, operator_names: &[String]) -> bool {
     let line = line.trim_start();
     operator_names.iter().any(|name| {
@@ -7480,6 +7524,16 @@ fn deletion_walk_completeness(
 }
 
 /// Build a scan from one bounded read. Owned rows only become candidates.
+///
+/// "Owned" means Discord's own provider proved the operator's account posted the
+/// row -- `deletion_row_is_provider_attributed_to_operator`. A row with no
+/// attribution is REFUSED, never name-matched as a fallback: the producer clears
+/// a whole batch's attribution when its proof does not hold, so an unattributed
+/// read yields a scan with no candidates and the workflow stops there.
+///
+/// The rendered-line name test is applied afterwards as a subordinate narrowing
+/// conjunct only. See `row_is_authored_by_operator` for why it is kept and why
+/// it can never be sufficient.
 pub fn deletion_scan_from_rows(
     rows: &[VisibleMessageRow],
     scope_binding: &str,
@@ -7501,6 +7555,16 @@ pub fn deletion_scan_from_rows(
         seen = seen.saturating_add(1);
         let shape_ordinal = heights.iter().filter(|other| **other == height).count();
         heights.push(height);
+        // THE ownership gate. Discord's own provider identity for the message,
+        // which no participant and no renderer can choose. `None` -- the reader
+        // could not prove who posted this row -- falls through to `continue`,
+        // which is a refusal and deliberately NOT a fall-back to the name test.
+        if !deletion_row_is_provider_attributed_to_operator(row) {
+            continue;
+        }
+        // Subordinate narrowing conjunct, never sufficient on its own. It runs
+        // only on rows the provider already proved are the operator's, so an
+        // attacker-chosen display name can only ever subtract a candidate here.
         if !row_is_authored_by_operator(&row.line, operator_names) {
             continue;
         }
@@ -7565,6 +7629,46 @@ pub fn resolve_planned_deletion_row(
             (RowResolution::Resolved, Some(planned.scan_ordinal))
         }
         _ => (RowResolution::Ambiguous, None),
+    }
+}
+
+/// Re-prove a planned row against a fresh read AND re-prove that the row that
+/// read resolved to is still provably the operator's own.
+///
+/// This is the execution-time ownership gate, and it is deliberately separate
+/// from the one in `deletion_scan_from_rows`. `ScannedRow` is a plain `Copy`
+/// value: by the time the executor sees it, the claim "the operator wrote this"
+/// has travelled through a preview, a digest and a confirmation, and re-reading
+/// its own `authored_by_operator` bool would only re-read the scan's conclusion.
+/// This re-derives the answer from provider evidence that was read moments ago.
+///
+/// Ambiguity is judged FIRST, over every readable row, exactly as before. That
+/// ordering matters: a peer's row of the same shape and length must still make
+/// the resolution `Ambiguous`, so the attribution test may never be allowed to
+/// filter the transcript down to a single "clean" match and turn an ambiguous
+/// row into a confident one.
+///
+/// A resolved row that is no longer provably the operator's is `Untrusted`, not
+/// `Gone` and not `Unreadable`: it was read perfectly well: it simply cannot be
+/// shown to be theirs.
+pub fn resolve_owned_deletion_row(
+    rows: &[VisibleMessageRow],
+    planned: &guided_deletion::ScannedRow,
+) -> (guided_deletion::RowResolution, Option<usize>) {
+    let (resolution, index) = resolve_planned_deletion_row(rows, planned);
+    let Some(index) = index else {
+        return (resolution, None);
+    };
+    let resolved = rows
+        .iter()
+        .filter(|row| deletion_row_height(row).is_some())
+        .nth(index);
+    match resolved {
+        Some(row) if deletion_row_is_provider_attributed_to_operator(row) => {
+            (resolution, Some(index))
+        }
+        Some(_) => (guided_deletion::RowResolution::Untrusted, None),
+        None => (guided_deletion::RowResolution::Unreadable, None),
     }
 }
 
@@ -7712,10 +7816,12 @@ impl guided_deletion::DiscordDeletionSurface for HostDeletionSurface<'_> {
         let Ok(rows) = self.read() else {
             return guided_deletion::RowResolution::Untrusted;
         };
-        let (resolution, index) = resolve_planned_deletion_row(&rows, row);
+        // Ownership is re-proven here, against this fresh read's own provider
+        // evidence, not against the bool the plan carried in.
+        let (resolution, index) = resolve_owned_deletion_row(&rows, row);
         if let Some(index) = index {
             // The resolved row's own text is captured once, here, and used only
-            // to count. `resolve_planned_deletion_row` indexes the readable rows,
+            // to count. `resolve_owned_deletion_row` indexes the readable rows,
             // so the same filter has to be applied to get back to it.
             if let Some((resolved, height)) = rows
                 .iter()
@@ -27875,6 +27981,11 @@ mod tests {
     // bounded transcript reader this file already ships.
     // -----------------------------------------------------------------------
 
+    /// A read row with NO provider attribution: what the reader returns whenever
+    /// the native producer's batch proof did not hold (`finish_native_visible_rows`
+    /// clears the whole batch, so this is an all-or-nothing state, not a per-row
+    /// one). Such a row can be resolved and counted, but it can never be a
+    /// deletion candidate.
     fn read_row(line: &str, top: i32, bottom: i32) -> VisibleMessageRow {
         VisibleMessageRow {
             locator_sha256: stable_hash("test-row", line),
@@ -27883,6 +27994,62 @@ mod tests {
             bounds: Some([0, top, 700, bottom]),
             attribution: None,
         }
+    }
+
+    /// A read row carrying REAL provider-owned attribution.
+    ///
+    /// The evidence is minted through `native_row_attribution_from_provider`, the
+    /// production constructor, so this test can never assert against a proof the
+    /// shipping producer could not itself have emitted. `line` and `poster` are
+    /// deliberately independent: the whole point of these tests is that the
+    /// rendered line is attacker-chosen and the poster identity is not.
+    fn attributed_read_row(
+        line: &str,
+        top: i32,
+        bottom: i32,
+        poster: NativeDiscordRowPoster,
+        seed: i32,
+    ) -> VisibleMessageRow {
+        const SELF_ID: &str = "111111111111111111";
+        const PEER_ID: &str = "222222222222222222";
+        let poster_identity = match poster {
+            NativeDiscordRowPoster::SelfAccount => SELF_ID,
+            NativeDiscordRowPoster::PeerAccount => PEER_ID,
+        };
+        let carrier = format!("provider carrier for deletion row {seed}");
+        let evidence = native_row_attribution_from_provider(
+            provider_observation(
+                &format!("3{:017}", 10_000_000_000_000_000_i64 + i64::from(seed)),
+                poster_identity,
+                SELF_ID,
+                &carrier,
+                seed,
+            ),
+            &[carrier.clone()],
+            "scope",
+            9,
+            0,
+        )
+        .expect("the production attribution constructor must accept this observation");
+        assert_eq!(evidence.poster, poster);
+        VisibleMessageRow {
+            locator_sha256: evidence.native_locator_sha256.clone(),
+            line: line.to_owned(),
+            decode_candidates: vec![carrier],
+            bounds: Some([0, top, 700, bottom]),
+            attribution: Some(evidence),
+        }
+    }
+
+    /// A row Discord's own provider proved the operator's account posted.
+    fn owned_read_row(line: &str, top: i32, bottom: i32, seed: i32) -> VisibleMessageRow {
+        attributed_read_row(line, top, bottom, NativeDiscordRowPoster::SelfAccount, seed)
+    }
+
+    /// A row Discord's own provider proved SOMEONE ELSE posted, whatever the
+    /// rendered line says.
+    fn peer_read_row(line: &str, top: i32, bottom: i32, seed: i32) -> VisibleMessageRow {
+        attributed_read_row(line, top, bottom, NativeDiscordRowPoster::PeerAccount, seed)
     }
 
     #[test]
@@ -27920,9 +28087,9 @@ mod tests {
     #[test]
     fn a_scan_keeps_only_the_operators_rows_and_numbers_them_over_the_whole_list() {
         let rows = vec![
-            read_row("Deckard first", 0, 44),
-            read_row("Rose reply", 44, 88),
-            read_row("Deckard second", 88, 132),
+            owned_read_row("Deckard first", 0, 44, 1),
+            peer_read_row("Rose reply", 44, 88, 4),
+            owned_read_row("Deckard second", 88, 132, 7),
         ];
         let scan = deletion_scan_from_rows(
             &rows,
@@ -27963,17 +28130,174 @@ mod tests {
     }
 
     #[test]
-    fn a_row_without_a_readable_rectangle_is_unreadable_never_a_candidate() {
+    fn a_peer_who_renames_themselves_to_the_operator_is_never_a_deletion_candidate() {
+        // THE ATTACK. A Discord display name is chosen by the account that holds
+        // it, so the rendered accessible line is attacker-controlled input. This
+        // peer has set theirs byte-exactly to the operator's, and every row here
+        // is the same height and the same length as the operator's own -- which
+        // is all the content-free preview would ever have shown the operator.
+        //
+        // The only thing that separates the two rows is the one fact the peer
+        // does not control: Discord's own poster identity for the message.
+        let spoofed = peer_read_row("Deckard see you at six", 44, 88, 21);
+        let genuine = owned_read_row("Deckard see you at six", 0, 44, 24);
+        assert_eq!(spoofed.line, genuine.line);
+        assert_eq!(spoofed.line.len(), genuine.line.len());
+        assert_eq!(deletion_row_height(&spoofed), deletion_row_height(&genuine));
+        // The display-name test cannot tell them apart, and never could.
+        assert!(row_is_authored_by_operator(
+            &spoofed.line,
+            &["Deckard".to_owned()]
+        ));
+
+        let scan = deletion_scan_from_rows(
+            &[genuine, spoofed],
+            "scope",
+            9,
+            &["Deckard".to_owned()],
+            MAX_VISIBLE_CARRIER_ROWS,
+            Some(true),
+        );
+        assert_eq!(scan.rows_seen, 2);
+        // Exactly one candidate: the operator's own row. The impersonator's is
+        // refused, so it can never reach a preview, a plan or a deletion.
+        assert_eq!(scan.candidates.len(), 1);
+        assert_eq!(scan.candidates[0].scan_ordinal, 0);
+        assert!(scan.candidates.iter().all(|row| row.authored_by_operator));
+    }
+
+    #[test]
+    fn a_row_with_no_provider_attribution_is_refused_rather_than_name_matched() {
+        // `finish_native_visible_rows` clears the WHOLE batch's attribution the
+        // moment the producer proof does not hold, so "no attribution" is the
+        // reader saying it could not prove who posted anything. That is a
+        // refusal, never a fallback to the spoofable name test: a scan taken
+        // from an unproven read has no candidates at all.
         let rows = vec![
-            VisibleMessageRow {
-                locator_sha256: "a".to_owned(),
-                line: "Deckard invisible".to_owned(),
-                decode_candidates: Vec::new(),
-                bounds: None,
-                attribution: None,
-            },
-            read_row("Deckard visible", 0, 44),
+            read_row("Deckard first", 0, 44),
+            read_row("Deckard second", 44, 88),
         ];
+        assert!(rows.iter().all(|row| row.attribution.is_none()));
+        assert!(rows
+            .iter()
+            .all(|row| row_is_authored_by_operator(&row.line, &["Deckard".to_owned()])));
+        let scan = deletion_scan_from_rows(
+            &rows,
+            "scope",
+            9,
+            &["Deckard".to_owned()],
+            MAX_VISIBLE_CARRIER_ROWS,
+            Some(true),
+        );
+        assert_eq!(scan.rows_seen, 2);
+        assert!(scan.candidates.is_empty());
+    }
+
+    #[test]
+    fn provider_attribution_is_necessary_and_the_name_test_is_never_sufficient() {
+        // The predicate both the scan and the execution-time re-resolve consult.
+        // It is a three-way answer collapsed to a bool, and only ONE of the three
+        // is candidacy: proved-self yes, proved-peer no, unproven no.
+        assert!(deletion_row_is_provider_attributed_to_operator(
+            &owned_read_row("Deckard hello", 0, 44, 31)
+        ));
+        assert!(!deletion_row_is_provider_attributed_to_operator(
+            &peer_read_row("Deckard hello", 0, 44, 34)
+        ));
+        assert!(!deletion_row_is_provider_attributed_to_operator(&read_row(
+            "Deckard hello",
+            0,
+            44
+        )));
+
+        // And the subordinate narrowing conjunct: a row the provider DID prove is
+        // the operator's own is still refused when the rendered line does not
+        // begin with a calibrated operator name. That direction can only ever
+        // cost a candidate, never create one, which is why it is safe to keep.
+        let renamed = owned_read_row("ServerNickname hello", 0, 44, 37);
+        assert!(deletion_row_is_provider_attributed_to_operator(&renamed));
+        let scan = deletion_scan_from_rows(
+            &[renamed],
+            "scope",
+            9,
+            &["Deckard".to_owned()],
+            MAX_VISIBLE_CARRIER_ROWS,
+            Some(true),
+        );
+        assert!(scan.candidates.is_empty());
+    }
+
+    #[test]
+    fn the_executor_reproves_ownership_against_the_fresh_read_not_the_plan() {
+        // The plan says this row is the operator's. It is a `Copy` value that
+        // came through a preview, a digest and a confirmation, so at execution
+        // time it is a CLAIM, not evidence. What decides is what the live
+        // provider says about the row the fresh read resolved to.
+        let planned = guided_deletion::ScannedRow {
+            scan_ordinal: 0,
+            shape_ordinal: 0,
+            shape: guided_deletion::RowShape {
+                height_px: 44,
+                children: 0,
+            },
+            text_len: "Deckard see you at six".len(),
+            authored_by_operator: true,
+        };
+
+        // Still the operator's: resolved, and it is row 0.
+        let owned = vec![owned_read_row("Deckard see you at six", 0, 44, 41)];
+        assert_eq!(
+            resolve_owned_deletion_row(&owned, &planned),
+            (guided_deletion::RowResolution::Resolved, Some(0))
+        );
+
+        // The transcript now says a PEER holds that row -- an impersonator
+        // scrolled into the same slot, or the plan was built before the fix. The
+        // old resolver still says `Resolved`, which is exactly why this second
+        // gate exists; the owned resolver refuses.
+        let peer = vec![peer_read_row("Deckard see you at six", 0, 44, 44)];
+        assert_eq!(
+            resolve_planned_deletion_row(&peer, &planned),
+            (guided_deletion::RowResolution::Resolved, Some(0))
+        );
+        assert_eq!(
+            resolve_owned_deletion_row(&peer, &planned),
+            (guided_deletion::RowResolution::Untrusted, None)
+        );
+
+        // A read that could not prove anything is refused the same way, and is
+        // never downgraded into "gone" -- which a caller could read as success.
+        let unproven = vec![read_row("Deckard see you at six", 0, 44)];
+        assert_eq!(
+            resolve_owned_deletion_row(&unproven, &planned),
+            (guided_deletion::RowResolution::Untrusted, None)
+        );
+
+        // Ambiguity still outranks attribution. A peer row of the same shape and
+        // length must keep the answer `Ambiguous`: if attribution were allowed to
+        // filter the transcript first, this would collapse to a confident single
+        // match on the operator's row and delete under a false certainty.
+        let crowded = vec![
+            peer_read_row("Deckard see you at six", 0, 44, 47),
+            owned_read_row("Deckard see you at six", 44, 88, 51),
+        ];
+        assert_eq!(
+            resolve_owned_deletion_row(
+                &crowded,
+                &guided_deletion::ScannedRow {
+                    scan_ordinal: 9,
+                    ..planned
+                }
+            ),
+            (guided_deletion::RowResolution::Ambiguous, None)
+        );
+    }
+
+    #[test]
+    fn a_row_without_a_readable_rectangle_is_unreadable_never_a_candidate() {
+        let mut invisible = owned_read_row("Deckard invisible", 0, 44, 11);
+        invisible.bounds = None;
+        let rows = vec![invisible, owned_read_row("Deckard visible", 0, 44, 14)];
         let scan = deletion_scan_from_rows(
             &rows,
             "scope",
