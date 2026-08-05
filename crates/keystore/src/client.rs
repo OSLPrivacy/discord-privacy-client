@@ -1786,28 +1786,36 @@ impl KeyServerClient {
                 "control-inbox sender filter is invalid".into(),
             ));
         }
-        // Deliberately NESTED, not a match on a (capability, floor) pair: the
-        // floor endpoint is only consulted once the server has claimed v1. A
-        // legacy server refuses here without being sent a floor request it may
-        // not implement -- issuing one would turn a clean "capability
-        // unavailable" refusal into an opaque transport error. Refusal is the
-        // outcome either way, so measuring first buys no safety.
-        // NOTE: keyserver-cf/scripts/sender-filter-rollout-contract.mjs
-        // (requireShippingClientDataflow) demands the flattened tuple shape and
-        // therefore fails against this function. That is a real, unresolved
-        // disagreement between the rollout contract and the shipping client --
-        // see broker.rs::audit_control_inbox_consumers_have_no_active_peer_unfiltered_drain,
-        // which asserts a legacy refusal stops before any further request.
-        match self.probe_control_inbox_sender_filter_capability()? {
-            ControlInboxSenderFilterCapability::Version1 => {
-                match self.observe_sender_filter_capability_floor(identity)? {
-                    SenderFilterCapabilityFloor::Version1 => {
-                        self.get_control_inbox_from(identity, sender_id)
-                    }
-                }
-            }
-            ControlInboxSenderFilterCapability::Legacy => Err(Error::Transport(
-                "control-inbox sender-filter capability unavailable".into(),
+        // BOTH measurements are taken before either can decide, and neither is
+        // nested inside the other. `/v1/healthz` is an UNSIGNED claim; the
+        // `/v1/sender-filter-capability-floor/:user_id` observation is signed,
+        // identity-anchored and, per migration 0032, an immutable/undeletable D1
+        // record that the Worker genesis-inserts on first observation. There is
+        // no local floor (see keyserver-cf/SENDER_FILTER_ROLLOUT.md), so the
+        // signed authority is the ONLY way to learn that a floor exists.
+        //
+        // Gating the floor observation on the health claim would subordinate the
+        // authority to the claim: an active attacker who rewrites only the
+        // unsigned health body could keep the durable floor from ever being
+        // established, and `(Legacy, Version1)` -- a Worker that has a durable
+        // v1 floor yet claims legacy, i.e. a rollback -- would be
+        // indistinguishable from a Worker that never advertised the capability.
+        // That distinction is the contract's `capability-downgrade` verdict
+        // (sender-filter-rollout-contract.mjs::classifyCapability) and the
+        // documented "refuse: authority route absent" legacy-Worker cell of the
+        // version-skew matrix.
+        let capability = self.probe_control_inbox_sender_filter_capability()?;
+        let measured_floor = self.observe_sender_filter_capability_floor(identity)?;
+        match (capability, measured_floor) {
+            (
+                ControlInboxSenderFilterCapability::Version1,
+                SenderFilterCapabilityFloor::Version1,
+            ) => self.get_control_inbox_from(identity, sender_id),
+            (
+                ControlInboxSenderFilterCapability::Legacy,
+                SenderFilterCapabilityFloor::Version1,
+            ) => Err(Error::Transport(
+                "control-inbox sender-filter capability downgrade refused".into(),
             )),
         }
     }
