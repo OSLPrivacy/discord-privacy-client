@@ -1,8 +1,30 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OslMailStage } from "./desktop-service-policy";
 
-async function loadUi() {
-  vi.resetModules();
+/**
+ * D-238. This gate was red in the full suite and green in isolation, which
+ * looked like an order dependency. It was not: vitest runs every spec file in
+ * its own forked process (`pool: "forks"`, `isolate: true`), so nothing here
+ * can inherit another file's globals, mocks or module state.
+ *
+ * The real cause was that each `it()` did `vi.resetModules()` and then
+ * re-imported `./main` -- a ~10,000-line module -- from INSIDE the test body,
+ * where vitest's default 5,000 ms `testTimeout` applies. That import costs
+ * ~2.6 s on an idle machine and ~3.2 s when the whole 313-file suite is
+ * running; when anything else was building it crossed 5 s and the first test
+ * died with "Test timed out in 5000ms" -- a red that said nothing about OSL
+ * Mail. A gate that fails for reasons unrelated to what it checks is not a
+ * gate, so the expensive load now happens once, in a hook, before any test is
+ * timed.
+ *
+ * Loading once is safe here: the first four tests only call the pure
+ * `oslMailboxStageCGate` function, and the fifth resets the UI state it uses
+ * via `__oslHubUiTest.reset(...)`. No test mutates state another test reads.
+ * Every assertion below is unchanged.
+ */
+let ui: typeof import("./main");
+
+beforeAll(async () => {
   const store = new Map<string, string>();
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => store.get(key) ?? null,
@@ -12,8 +34,17 @@ async function loadUi() {
   });
   vi.stubGlobal("requestAnimationFrame", () => 1);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
-  return import("./main");
-}
+  vi.resetModules();
+  ui = await import("./main");
+}, /* hook budget: */ 300_000);
+// The hook budget is deliberately generous: what it covers is module loading,
+// not the behaviour under test. Even the default 10 s hook timeout is under
+// what a saturated machine needs for this import -- starving that load is
+// exactly how D-238 presented -- and no assertion depends on it being tight.
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
 
 const reviewedStageC: OslMailStage = {
   id: "stageC",
@@ -33,12 +64,8 @@ const acceptedReview = {
 };
 
 describe("OSL Mail Stage C gate", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("keeps current mailbox operations off until Stage C is separately reviewed", async () => {
-    const { oslMailboxStageCGate } = await loadUi();
+  it("keeps current mailbox operations off until Stage C is separately reviewed", () => {
+    const { oslMailboxStageCGate } = ui;
 
     const gate = oslMailboxStageCGate(acceptedReview);
 
@@ -51,8 +78,8 @@ describe("OSL Mail Stage C gate", () => {
     expect(gate.detail).toContain("separate mail operations review");
   });
 
-  it("refuses future Stage C without the separate mail operations review", async () => {
-    const { oslMailboxStageCGate } = await loadUi();
+  it("refuses future Stage C without the separate mail operations review", () => {
+    const { oslMailboxStageCGate } = ui;
 
     const gate = oslMailboxStageCGate(null, reviewedStageC);
 
@@ -63,8 +90,8 @@ describe("OSL Mail Stage C gate", () => {
     });
   });
 
-  it("refuses future Stage C when consent, mailbox access, or authority is absent", async () => {
-    const { oslMailboxStageCGate } = await loadUi();
+  it("refuses future Stage C when consent, mailbox access, or authority is absent", () => {
+    const { oslMailboxStageCGate } = ui;
 
     for (const missing of ["explicitConsentBound", "mailboxBindingReviewed", "accountAuthorityReviewed"] as const) {
       const gate = oslMailboxStageCGate({ ...acceptedReview, [missing]: false }, reviewedStageC);
@@ -75,8 +102,8 @@ describe("OSL Mail Stage C gate", () => {
     }
   });
 
-  it("allows only a reviewed Stage C mailbox with consent, mailbox access, and authority", async () => {
-    const { oslMailboxStageCGate } = await loadUi();
+  it("allows only a reviewed Stage C mailbox with consent, mailbox access, and authority", () => {
+    const { oslMailboxStageCGate } = ui;
 
     const gate = oslMailboxStageCGate(acceptedReview, reviewedStageC);
 
@@ -88,8 +115,8 @@ describe("OSL Mail Stage C gate", () => {
     });
   });
 
-  it("renders the Inbox OSL Mail card as refused for mailbox operations", async () => {
-    const { __oslHubUiTest } = await loadUi();
+  it("renders the Inbox OSL Mail card as refused for mailbox operations", () => {
+    const { __oslHubUiTest } = ui;
     __oslHubUiTest.reset({ route: "inbox" });
 
     const html = __oslHubUiTest.renderWorkspaceContent("inbox");
