@@ -168,6 +168,12 @@ pub mod placement;
 #[cfg(feature = "core")]
 pub mod broker;
 pub mod chat_capture_protection;
+/// **The claim state.** What OSL may publicly say about each ruled surface, and
+/// why — the owner gate `PLAN.md` r4-5 calls "the claim-state gap". Not behind a
+/// feature: `native_apps` derives every public support label from it, and the
+/// publication gates that read it must exist in every build that can compile the
+/// native adapters.
+pub mod claim_state;
 #[cfg(feature = "core")]
 pub mod cleanup;
 #[cfg(feature = "core")]

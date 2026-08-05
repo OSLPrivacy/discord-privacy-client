@@ -60,17 +60,29 @@ describe("linked-service contract", () => {
   });
 
   it("strictly validates native launcher state and action receipts", () => {
-    expect(parseNativeApps([{ id: "discord", displayName: "Discord", availability: "installed", supportStatus: "beta", protectedMode: "assistOnly", isolatedProfileAvailable: false, supportsOverlay: false }]))
-      .toEqual([{ id: "discord", displayName: "Discord", availability: "installed", supportStatus: "beta", protectedMode: "assistOnly", isolatedProfileAvailable: false, supportsOverlay: false }]);
-    expect(parseNativeApps([{ id: "telegram", displayName: "Telegram", availability: "installed", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false }]))
-      .toEqual([{ id: "telegram", displayName: "Telegram", availability: "installed", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false }]);
+    const claim = {
+      carrierEvidence: "builtNeverProvenLive", deliveryEvidence: "neverProvenLive",
+      claimBlockers: [], claimNote: "Nothing has been proven on this surface yet.",
+    } as const;
+    const discord = { id: "discord", displayName: "Discord", availability: "installed", supportStatus: "noClaim", ...claim, protectedMode: "assistOnly", isolatedProfileAvailable: false, supportsOverlay: false };
+    const telegram = { id: "telegram", displayName: "Telegram", availability: "installed", supportStatus: "comingSoon", ...claim, protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false };
+    expect(parseNativeApps([discord])).toEqual([{ ...discord, claimBlockers: [] }]);
+    expect(parseNativeApps([telegram])).toEqual([{ ...telegram, claimBlockers: [] }]);
     expect(parseNativeAppAction({ id: "discord", started: true }, false)).toEqual({ id: "discord", started: true });
     expect(parseNativeAppAction({ id: "signal", started: true, packageId: "OpenWhisperSystems.Signal" }, true).packageId)
       .toBe("OpenWhisperSystems.Signal");
-    expect(() => parseNativeApps([{ id: "discord", displayName: "Discord", availability: "web", supportStatus: "beta", protectedMode: "assistOnly", isolatedProfileAvailable: false, supportsOverlay: true }])).toThrow();
-    expect(() => parseNativeApps([{ id: "discord", displayName: "Discord", availability: "installed", supportStatus: "beta", protectedMode: "assistOnly", supportsOverlay: false }])).toThrow();
-    expect(() => parseNativeApps([{ id: "telegram", displayName: "Telegram", availability: "installed", supportStatus: "comingSoon", protectedMode: "assistOnly", isolatedProfileAvailable: true, supportsOverlay: false }])).toThrow();
-    expect(() => parseNativeApps([{ id: "signal", displayName: "Signal", availability: "installed", supportStatus: "comingSoon", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: true }])).toThrow();
+    expect(() => parseNativeApps([{ ...discord, availability: "web", supportsOverlay: true }])).toThrow();
+    expect(() => parseNativeApps([{ id: "discord", displayName: "Discord", availability: "installed", supportStatus: "noClaim", ...claim, protectedMode: "assistOnly", supportsOverlay: false }])).toThrow();
+    expect(() => parseNativeApps([{ ...telegram, protectedMode: "assistOnly" }])).toThrow();
+    expect(() => parseNativeApps([{ id: "signal", displayName: "Signal", availability: "installed", supportStatus: "comingSoon", ...claim, protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: true }])).toThrow();
+    // The claim state's own fields are validated as strictly as the rest: an
+    // unknown label, a missing reason, or an evidence value this build does not
+    // understand is a refusal, not a shrug.
+    expect(() => parseNativeApps([{ ...telegram, supportStatus: "supported" }])).toThrow();
+    expect(() => parseNativeApps([{ ...telegram, carrierEvidence: "probablyFine" }])).toThrow();
+    expect(() => parseNativeApps([{ ...telegram, deliveryEvidence: "" }])).toThrow();
+    expect(() => parseNativeApps([{ ...telegram, claimNote: "" }])).toThrow();
+    expect(() => parseNativeApps([{ ...telegram, claimBlockers: "none" }])).toThrow();
     expect(() => parseNativeAppAction({ id: "instagram", started: true }, false)).toThrow();
   });
 
@@ -261,13 +273,73 @@ describe("native app catalog agrees with the Rust support decision", () => {
     "utf8",
   );
 
-  /** `SupportLevel` -> the `NativeAppSupportStatus` `native_app_support_status` maps it to. */
-  const publicStatusOf: Record<string, string> = {
-    Supported: "beta",
-    Experimental: "beta",
-    ComingSoon: "comingSoon",
+  const claimStateRs = readFileSync(
+    new URL("../../osl-hub/src/claim_state.rs", import.meta.url),
+    "utf8",
+  );
+
+  /**
+   * The claim state's own derivation, transcribed from `claim_state.rs`
+   * `derived_claim` + `claim_for`. It is short on purpose: if it stops being
+   * short, the Rust derivation has grown a special case and this test should be
+   * the thing that notices.
+   */
+  const derivedClaim: Record<string, string> = {
+    ExternallyBlocked: "externallyBlocked",
+    BuiltNeverProvenLive: "experimental",
+    ProvenLiveWithReceipt: "experimental",
+    MeasuredAndRefused: "comingSoon",
+    NotBuilt: "comingSoon",
+  };
+  const matrixCeiling: Record<string, string> = {
+    NoCapabilityClaim: "comingSoon",
     ExternallyBlocked: "externallyBlocked",
   };
+  /** The capability-strength order; `externallyBlocked` is deliberately absent. */
+  const strength = ["noClaim", "comingSoon", "experimental", "beta", "available"];
+
+  // Extractor guards THROW rather than `expect`: a missing anchor means this
+  // test could not run at all, which is a different thing from a claim being
+  // wrong, and it is not an assertion about source text either way.
+  function rustField(rustSurface: string, field: string): string {
+    const row = claimStateRs.split("SurfaceClaim {")
+      .find((block) => block.includes(`surface: Surface::${rustSurface},`));
+    if (!row) throw new Error(`claim_state.rs has no row for ${rustSurface}`);
+    const value = new RegExp(`${field}: (?:CarrierEvidence|DeliveryEvidence|MatrixPosition)::(\\w+),`)
+      .exec(row);
+    if (!value) throw new Error(`no ${field} for ${rustSurface}`);
+    return value[1];
+  }
+
+  function rustBlockers(rustSurface: string): string[] {
+    const row = claimStateRs.split("SurfaceClaim {")
+      .find((block) => block.includes(`surface: Surface::${rustSurface},`)) as string;
+    const list = /blockers: &\[([\s\S]*?)\],/.exec(row);
+    return list ? [...list[1].matchAll(/ClaimBlocker::(\w+)/g)].map((m) => m[1]) : [];
+  }
+
+  /** `claim_state.rs` `claim_for`, re-implemented so a drift in Rust shows up here. */
+  function rustClaim(rustSurface: string): string {
+    if (rustBlockers(rustSurface).some((b) => b === "OpenSecurityFinding" || b === "UnknownRecheckRequired")) {
+      return "noClaim";
+    }
+    const carrier = rustField(rustSurface, "carrier");
+    const delivery = rustField(rustSurface, "delivery");
+    let derived: string;
+    if (carrier === "NoCarrierByConstruction") {
+      derived = delivery === "ProvenLiveBothWays" ? "beta" : "comingSoon";
+    } else if (carrier === "ProvenLiveWithReceipt" && delivery === "ProvenLiveBothWays") {
+      derived = "beta";
+    } else {
+      derived = derivedClaim[carrier];
+    }
+    if (!derived) throw new Error(`unmapped CarrierEvidence ${carrier} for ${rustSurface}`);
+    const ceiling = matrixCeiling[rustField(rustSurface, "matrix")];
+    if (!ceiling) return derived;
+    // Incomparable authorities earn no claim; comparable ones take the weaker.
+    if (strength.includes(derived) !== strength.includes(ceiling)) return "noClaim";
+    return strength.indexOf(derived) <= strength.indexOf(ceiling) ? derived : ceiling;
+  }
 
   function rustSupportLevel(rustId: string): string {
     const manifest = nativeAppsRs.split("NativeAppManifest {")
@@ -285,16 +357,56 @@ describe("native app catalog agrees with the Rust support decision", () => {
   });
 
   it("never claims more than Rust does", async () => {
-    const rustIdFor: Record<string, string> = {
+    const rustSurfaceFor: Record<string, string> = {
       discord: "Discord", telegram: "Telegram", signal: "Signal",
-      whatsapp: "Whatsapp", outlook: "Outlook",
+      whatsapp: "Whatsapp", outlook: "OutlookDesktop",
     };
     const catalog = await loadNativeApps();
-    expect(catalog.length).toBe(Object.keys(rustIdFor).length);
+    expect(catalog.length).toBe(Object.keys(rustSurfaceFor).length);
     for (const app of catalog) {
-      const expected = publicStatusOf[rustSupportLevel(rustIdFor[app.id])];
-      expect(expected, `unmapped SupportLevel for ${app.id}`).toBeTruthy();
-      expect(app.supportStatus, `${app.id} disagrees with native_apps.rs`).toBe(expected);
+      const surface = rustSurfaceFor[app.id];
+      expect(app.supportStatus, `${app.id} disagrees with claim_state.rs`).toBe(rustClaim(surface));
+      expect(app.carrierEvidence, `${app.id} evidence disagrees with claim_state.rs`)
+        .toBe(rustField(surface, "carrier").replace(/^./, (c) => c.toLowerCase()));
+      // Every row ships its reason. A badge with nothing behind it is how two
+      // different evidence states become one state to a reader.
+      expect(app.claimNote.length, `${app.id} has no reason line`).toBeGreaterThan(20);
     }
+
+    // The evidence is per surface and is NOT one value stamped on everything --
+    // asserted over the catalog the app actually loads, not over the Rust
+    // source, so it executes rather than reading text.
+    expect(new Set(catalog.map((app) => app.carrierEvidence)).size).toBeGreaterThan(1);
+    expect(new Set(catalog.map((app) => app.claimNote)).size).toBe(catalog.length);
+  });
+
+  /**
+   * THE PUBLIC CLAIM FLOOR, checked at the frontend boundary.
+   *
+   * `carry-receipts/` does not exist as a directory (`PLAN.md` r5-6), so no
+   * connected app may present as working. The parser must refuse a capability
+   * claim that arrives without the receipt evidence behind it, whatever the
+   * backend says.
+   */
+  it("refuses a capability claim with no live carry receipt behind it", async () => {
+    const catalog = await loadNativeApps();
+    for (const app of catalog) {
+      expect(["beta", "available"], `${app.id} claims capability with no receipt`)
+        .not.toContain(app.supportStatus);
+      expect(app.carrierEvidence, `${app.id} claims a receipt that does not exist`)
+        .not.toBe("provenLiveWithReceipt");
+    }
+
+    const promoted = {
+      id: "telegram", displayName: "Telegram", availability: "installed",
+      supportStatus: "beta", carrierEvidence: "builtNeverProvenLive",
+      deliveryEvidence: "neverProvenLive", claimBlockers: [],
+      claimNote: "Telegram works.", protectedMode: "unavailable",
+      isolatedProfileAvailable: true, supportsOverlay: false,
+    };
+    expect(() => parseNativeApps([promoted])).toThrow();
+    // And the same row without the promotion is accepted, so the refusal is
+    // measuring the claim and not the shape.
+    expect(parseNativeApps([{ ...promoted, supportStatus: "comingSoon" }])).toHaveLength(1);
   });
 });

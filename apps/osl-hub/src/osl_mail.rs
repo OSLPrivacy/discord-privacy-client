@@ -19,7 +19,24 @@ use std::sync::Mutex;
 
 const MAIL_DOMAIN: &str = "oslprivacy.com";
 const RETENTION_SECONDS: u32 = 7 * 24 * 60 * 60;
-const OSL_MAIL_DESKTOP_BRIDGE_AVAILABLE: bool = false;
+/// Whether the user-facing OSL Mail client may present as usable.
+///
+/// **Derived, not written.** This was the literal `false` that D-221 called out
+/// from the other side: it *"matches every authority but hides provision/send/
+/// burn, which do work against the deployed keyserver"*, while the `true` it
+/// replaced promised a mailbox that can never be read. *"The tile has no third
+/// state."*
+///
+/// One boolean still cannot hold three states, so it no longer tries to. It
+/// answers exactly one question — may OSL Mail present as working — and the
+/// answer comes from [`crate::claim_state`], where the full state IS
+/// expressible: `NoCarrierByConstruction` (first-party, no composer to bind,
+/// `PLAN.md` r5-2a) with `NotDeliverable` (no payload is uploaded and D-137
+/// deleted retrieval), which derives to `Planned` and ships the sentence saying
+/// what does and does not work.
+fn osl_mail_desktop_bridge_available() -> bool {
+    crate::claim_state::public_claim(crate::claim_state::Surface::OslMail).is_capability_claim()
+}
 
 #[derive(Default)]
 pub struct OslMailState {
@@ -393,7 +410,7 @@ fn ensure_capabilities(base_url: &str) -> Result<(), String> {
 fn status_from_address(address: Option<String>) -> OslMailStatus {
     let provisioned = address.is_some();
     OslMailStatus {
-        available: OSL_MAIL_DESKTOP_BRIDGE_AVAILABLE,
+        available: osl_mail_desktop_bridge_available(),
         provisioned,
         address,
         unread_count: 0,
@@ -473,6 +490,32 @@ mod tests {
                 unread_count: 0,
                 retention_seconds: 604_800,
             }
+        );
+    }
+
+    /// D-221. The flag is the claim state's answer, so OSL Mail cannot present
+    /// as usable while its own evidence row says nothing can be retrieved — and
+    /// the row carries the part a boolean never could: provisioning, send and
+    /// burn DO work against the deployed service.
+    #[test]
+    fn the_mail_client_availability_flag_is_the_claim_state_and_not_a_literal() {
+        use crate::claim_state::{claim_of, public_claim, CarrierEvidence, DeliveryEvidence, PublicClaim, Surface};
+
+        assert_eq!(
+            super::osl_mail_desktop_bridge_available(),
+            public_claim(Surface::OslMail).is_capability_claim()
+        );
+        assert!(!super::osl_mail_desktop_bridge_available());
+
+        let row = claim_of(Surface::OslMail);
+        assert_eq!(row.carrier, CarrierEvidence::NoCarrierByConstruction);
+        assert_eq!(row.delivery, DeliveryEvidence::NotDeliverable);
+        assert_eq!(public_claim(Surface::OslMail), PublicClaim::Planned);
+        // The third state, stated rather than hidden behind `false`.
+        assert!(
+            row.reason.contains("burn") && row.reason.contains("cannot deliver"),
+            "the OSL Mail row must say what works AND what cannot: {}",
+            row.reason
         );
     }
 

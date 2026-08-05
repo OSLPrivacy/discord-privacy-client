@@ -18,6 +18,13 @@ function signalOnlyCatalog(raw: unknown): NativeApp[] {
   return [{
     id: "signal", displayName: "Signal", availability: signal.availability as NativeApp["availability"],
     supportStatus: "comingSoon", protectedMode: "unavailable",
+    // Fixed, not read from the backend: this QA shell must never be the route by
+    // which Signal acquires a claim it has not earned. `builtNeverProvenLive`
+    // says exactly what is true — an adapter profile exists and has never been
+    // driven against the live client.
+    carrierEvidence: "builtNeverProvenLive", deliveryEvidence: "neverProvenLive",
+    claimBlockers: ["send-input-generalisation"],
+    claimNote: "A Signal adapter profile exists and has never been driven against the live client. Nothing is proven here.",
     isolatedProfileAvailable: signal.isolatedProfileAvailable, supportsOverlay: signal.supportsOverlay,
   }];
 }

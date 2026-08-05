@@ -386,7 +386,12 @@ describe("home interaction regressions", () => {
     expect(opening).toContain("else if (app.linked)");
     expect(source).not.toContain("setup-needed");
     expect(home).not.toContain("<small>${module.state}</small>");
-    expect(home).toContain('<span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : "<small>Coming soon</small>"}</span>');
+    // The caption is the app's CLAIM, derived in `claim_state.rs` and carried
+    // through `NativeApp.supportStatus`. It used to be the literal string
+    // "Coming soon" on every unlaunchable tile, which said "planned" about
+    // Telegram (already built and driven, D-206) and about WhatsApp (measured
+    // against the live client and refused, D-234).
+    expect(home).toContain('<span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : `<small>${escapeHtml(caption)}</small>`}</span>');
     expect(home).toContain("Social</h2>");
     expect(home).toContain("Email</h2>");
     expect(home).toContain('aria-label="OSL tools"');

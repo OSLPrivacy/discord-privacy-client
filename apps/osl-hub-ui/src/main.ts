@@ -237,6 +237,60 @@ function statusTag(label: string, extra = ""): string {
   const classes = ["status-tag", statusTagTone(label), extra].filter(Boolean).join(" ");
   return `<span class="${classes}">${label}</span>`;
 }
+
+/**
+ * The user-facing word for a connected app's public claim.
+ *
+ * Every value here is a label `osl-public-claim-allowlist.md` permits, and none
+ * of them says the app works — because no connected app has earned a live carry
+ * receipt. `PLAN.md` r5-6: `carry-receipts/` does not exist as a directory.
+ *
+ * "Not claimed" is allowlist §E's *no badge, no claim*. It is deliberately not
+ * "Coming soon": saying a surface is planned when OSL has already built and
+ * driven it is as false as saying it works (D-203, D-206).
+ */
+function nativeClaimLabel(status: NativeApp["supportStatus"]): string {
+  switch (status) {
+    case "available": return "Available";
+    case "beta": return "Beta";
+    case "experimental": return "Experimental";
+    case "comingSoon": return "Coming later";
+    case "externallyBlocked": return "Externally blocked";
+    case "noClaim": return "Not claimed";
+  }
+}
+
+/** The claim row for one connected app: the label, and the sentence behind it. */
+function nativeClaimMarkup(app: NativeApp): string {
+  return `<p class="native-claim-note" data-claim-status="${app.supportStatus}" data-carrier-evidence="${app.carrierEvidence}" data-delivery-evidence="${app.deliveryEvidence}">${statusTag(nativeClaimLabel(app.supportStatus))} ${escapeHtml(app.claimNote)}</p>`;
+}
+
+/**
+ * What OSL has proven about carrying a message through somebody else's app,
+ * stated as a count rather than left in a plan document.
+ *
+ * Computed from the catalog on every render, so the day a surface earns a
+ * receipt this sentence changes on its own.
+ */
+/**
+ * The census as it is rendered. Built here rather than inline at the call site
+ * so the sentence lives next to the contract it reports on.
+ */
+function carrierReceiptCensusMarkup(apps: readonly NativeApp[]): string {
+  const earned = apps.filter((app) => app.carrierEvidence === "provenLiveWithReceipt").length;
+  return `<p class="carrier-receipt-census" data-carrier-receipt-census="${earned}">${escapeHtml(carrierReceiptCensusLine(apps))}</p>`;
+}
+
+function carrierReceiptCensusLine(apps: readonly NativeApp[]): string {
+  const earned = apps.filter((app) => app.carrierEvidence === "provenLiveWithReceipt").length;
+  // No denominator is quoted, because this list is the connected apps on THIS
+  // device and not the full surface list. Quoting a total the view does not have
+  // would be the same shortcut the claim state exists to refuse.
+  return earned === 0
+    ? "None of the apps above has earned a live carry receipt. OSL has not proven that it can place a protected message in another app's composer."
+    : `${earned} of the apps above have earned a live carry receipt. The rest are unproven.`;
+}
+
 const PROTECTED_DISPLAY_VISIBILITY_CHANGED_EVENT = "osl://protected-display-visibility-changed";
 const NATIVE_DISCORD_OVERLAY_CLOSED_EVENT = "osl://native-discord-overlay-closed";
 const MAIN_WINDOW_CAPTURE_REFUSED_EVENT = "hub-main-capture-protection-refused";
@@ -4359,7 +4413,16 @@ function workspaceContent(): string {
     const pending = appLaunchPendingId === app.id;
     const available = app.launchState === "available";
     const disabled = !available || Boolean(appLaunchPendingId);
-    return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}" ${disabled ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : "<small>Coming soon</small>"}</span></button>${controls}</article>`;
+    // The tile's caption is the app's CLAIM, not a single hardcoded word.
+    // "Coming soon" on every unlaunchable tile collapsed four different states
+    // into one sentence, and said "planned" about surfaces OSL has already built
+    // and driven (D-206) or measured and had refused (D-234). Where the backend
+    // has a claim for this app, that claim is what the tile says; where it does
+    // not, the tile keeps the roadmap wording it always had.
+    const claim = nativeApps.find((candidate) => candidate.id === app.id as NativeAppId);
+    const caption = claim ? nativeClaimLabel(claim.supportStatus) : "Coming soon";
+    const claimTitle = claim ? ` title="${escapeHtml(claim.claimNote)}"` : "";
+    return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" data-claim-status="${claim ? claim.supportStatus : "comingSoon"}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}"${claimTitle} ${disabled ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : `<small>${escapeHtml(caption)}</small>`}</span></button>${controls}</article>`;
   };
   const socialIds = new Set(homeApps.filter((app) => app.provider === null).map((app) => app.id));
   const emailIds = new Set(homeApps.filter((app) => app.provider !== null).map((app) => app.id));
@@ -4660,8 +4723,12 @@ export function connectionsDestinationContent(): string {
         return `<article class="connection-row connection-account-row" data-connection-app="${app.id}" data-connection-account="${app.id}"><div>${homeAppLogo(app)}<span><strong>${escapeHtml(app.displayName)}</strong><small>${escapeHtml(state)}</small></span></div>${action}</article>`;
       }).join("")
     : `<div class="empty-state"><strong>No account catalog loaded</strong><p>Reconnect when apps are available on this device.</p></div>`;
+  // Two separate facts on one row, and they were being confused: whether the
+  // app is INSTALLED on this device, and whether OSL claims anything about
+  // protecting it. Detecting an app is not a support claim; the claim comes from
+  // `claim_state` and ships with the sentence that justifies it.
   const nativeRows = nativeApps.length
-    ? nativeApps.map((app) => `<article class="setting-line" data-device-connection="${app.id}"><span><strong>${escapeHtml(app.displayName)}</strong><small>${app.availability === "installed" ? "Installed native app" : app.availability === "installable" ? "Can be installed" : "Unavailable on this device"}</small></span>${statusTag(app.availability === "installed" ? "Ready" : app.availability === "installable" ? "Installable" : "Unavailable")}</article>`).join("")
+    ? `${nativeApps.map((app) => `<article class="setting-line native-claim-line" data-device-connection="${app.id}"><span><strong>${escapeHtml(app.displayName)}</strong><small>${app.availability === "installed" ? "Installed native app" : app.availability === "installable" ? "Can be installed" : "Unavailable on this device"}</small>${nativeClaimMarkup(app)}</span>${statusTag(app.availability === "installed" ? "Ready" : app.availability === "installable" ? "Installable" : "Unavailable")}</article>`).join("")}${carrierReceiptCensusMarkup(nativeApps)}`
     : `<div class="empty-state"><strong>No native app status yet</strong><p>Native app status appears after OSL checks this device.</p></div>`;
   const androidCards = AndroidSurface.preview().map((surface) => androidWorkspaceConnectionCard(surface)).join("");
   return `<main class="content-viewport connections-destination" aria-labelledby="route-heading"><header class="destination-header"><div><p class="eyebrow">Connections</p><h1 id="route-heading" tabindex="-1">Connections</h1><p>Accounts, local app windows, network tools, and planned device surfaces OSL can connect to or refuse safely.</p></div><button class="button primary" data-connections-primary-action type="button">Connect a service</button></header><section class="connections-grid"><section class="settings-list connected-accounts connections-accounts" aria-labelledby="connected-accounts-title"><header><h2 id="connected-accounts-title">Connected accounts</h2><p>Each profile stays separate. OSL never merges accounts from names, avatars, addresses, or shared contacts.</p></header>${accountRows}</section><section class="settings-list connected-devices connections-devices" aria-labelledby="connected-devices-title"><header><h2 id="connected-devices-title">Devices and app windows</h2><p>Local devices and companion windows require explicit user action before use.</p></header>${nativeRows}${mullvadConnectionCardMarkup()}${androidCards}</section></section></main>`;

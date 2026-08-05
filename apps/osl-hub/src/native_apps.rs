@@ -146,7 +146,22 @@ pub struct NativeAppStatus {
     /// Public claim state for OSL's support of this native service. This is
     /// deliberately separate from `availability` so a detected app does not
     /// become a product support claim.
+    ///
+    /// Derived from [`crate::claim_state`]; it cannot be set directly.
     pub support_status: NativeAppSupportStatus,
+    /// **Why the label is what it is.** What has been measured about this
+    /// service's carrier path — built and never proven, measured and refused,
+    /// never built at all. Two services can share a badge and be in different
+    /// states, and shipping only the badge is how those two states collapse.
+    pub carrier_evidence: &'static str,
+    /// Whether a message can actually reach a person on this surface.
+    pub delivery_evidence: &'static str,
+    /// Governance conditions standing on the row, if any.
+    pub claim_blockers: Vec<&'static str>,
+    /// **The sentence shown to the user.** One line, no promise. `PLAN.md` r4-6:
+    /// every capability the app does not have says so plainly, in a label the
+    /// allowlist permits.
+    pub claim_note: &'static str,
     /// The strongest protected-mode handoff the public UI may offer today.
     pub protected_mode: NativeAppProtectedMode,
     /// True only when the current integration has a verified secondary-instance
@@ -165,12 +180,51 @@ pub enum NativeAppAvailability {
     Unavailable,
 }
 
+/// The public claim OSL makes about a native service, and nothing else.
+///
+/// **This enum is no longer written anywhere.** It is the wire form of
+/// [`crate::claim_state::PublicClaim`], which is *derived* from what was
+/// measured — see `claim_state`'s module docs for the gate this closes
+/// (`PLAN.md` r4-5, "the claim-state gap").
+///
+/// It gained two variants because two real states had no label:
+///
+/// * `Experimental` — an adapter is wired and has **never been proven against a
+///   live provider**. D-206 held Telegram at `ComingSoon` for want of exactly
+///   this: *"Held until a status that renders as `Experimental` exists."*
+///   Permitted for these services by `osl-public-claim-allowlist.md` §B
+///   ("Must carry `Coming soon`, `Experimental`, or `Externally blocked`") and
+///   absent from `check-app-claims.mjs` `FORBIDDEN_PROMOTION_STATUSES`.
+/// * `NoClaim` — allowlist §E maps `open-security-finding` and
+///   `unknown-recheck-required` to **no badge, no claim**. Both stand on Discord
+///   at once (D-203), which is why every one of the old three labels was false.
+///
+/// `Available` exists so the mapping from `PublicClaim` is total. Nothing in
+/// this product reaches it, and `claim_state::tests::nothing_reaches_available`
+/// holds that open rather than deleting the variant.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NativeAppSupportStatus {
+    Available,
     Beta,
+    Experimental,
     ComingSoon,
     ExternallyBlocked,
+    NoClaim,
+}
+
+impl From<crate::claim_state::PublicClaim> for NativeAppSupportStatus {
+    fn from(claim: crate::claim_state::PublicClaim) -> Self {
+        use crate::claim_state::PublicClaim;
+        match claim {
+            PublicClaim::Available => Self::Available,
+            PublicClaim::Beta => Self::Beta,
+            PublicClaim::Experimental => Self::Experimental,
+            PublicClaim::Planned => Self::ComingSoon,
+            PublicClaim::ExternallyBlocked => Self::ExternallyBlocked,
+            PublicClaim::NoClaim => Self::NoClaim,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
@@ -740,12 +794,33 @@ fn isolated_native_profile_available(id: NativeAppId) -> bool {
     matches!(id, NativeAppId::Discord | NativeAppId::Telegram)
 }
 
-fn native_app_support_status(id: NativeAppId) -> NativeAppSupportStatus {
-    match manifest(id).adapter_support {
-        SupportLevel::Supported | SupportLevel::Experimental => NativeAppSupportStatus::Beta,
-        SupportLevel::ComingSoon => NativeAppSupportStatus::ComingSoon,
-        SupportLevel::ExternallyBlocked => NativeAppSupportStatus::ExternallyBlocked,
+/// The ruled surface a native app is.
+///
+/// `NativeAppId::Outlook` is the **desktop** Outlook surface. `PLAN.md` r5-2a
+/// treats desktop and web Outlook as two surfaces "unless measurement shows one
+/// composer shape serves both — that is a measurement, not a decision", and no
+/// such measurement exists.
+pub(crate) const fn claim_surface(id: NativeAppId) -> crate::claim_state::Surface {
+    use crate::claim_state::Surface;
+    match id {
+        NativeAppId::Discord => Surface::Discord,
+        NativeAppId::Telegram => Surface::Telegram,
+        NativeAppId::Signal => Surface::Signal,
+        NativeAppId::Whatsapp => Surface::Whatsapp,
+        NativeAppId::Outlook => Surface::OutlookDesktop,
     }
+}
+
+/// The public claim for a native app.
+///
+/// **Derived, never written.** It used to read `manifest(id).adapter_support`
+/// and collapse `Supported` and `Experimental` onto one label, which is the
+/// collapse the owner gate names. `adapter_support` remains what it always was —
+/// the *adapter profile's* internal support level, consumed by
+/// `adapter_profile` and by the publication gate — and it is no longer a public
+/// claim about anything.
+fn native_app_support_status(id: NativeAppId) -> NativeAppSupportStatus {
+    crate::claim_state::public_claim(claim_surface(id)).into()
 }
 
 fn native_app_protected_mode(id: NativeAppId) -> NativeAppProtectedMode {
@@ -797,11 +872,20 @@ fn list_native_apps_with_installer_probe(
             } else {
                 NativeAppAvailability::Unavailable
             };
+            let claim = crate::claim_state::claim_of(claim_surface(app.id));
             NativeAppStatus {
                 id: app.id,
                 display_name: app.display_name,
                 availability,
                 support_status: native_app_support_status(app.id),
+                carrier_evidence: claim.carrier.slug(),
+                delivery_evidence: claim.delivery.slug(),
+                claim_blockers: claim
+                    .blockers
+                    .iter()
+                    .map(|blocker| blocker.slug())
+                    .collect(),
+                claim_note: claim.reason,
                 protected_mode: native_app_protected_mode(app.id),
                 isolated_profile_available: isolated_native_profile_available(app.id),
                 supports_overlay: false,
@@ -2494,15 +2578,23 @@ pub(crate) mod tests {
                 "{:?} native inventory must bind to installed native adapter surface",
                 app.id
             );
-            assert_eq!(
-                native_app_support_status(app.id),
-                match app.adapter_support {
-                    SupportLevel::Supported | SupportLevel::Experimental => {
-                        NativeAppSupportStatus::Beta
-                    }
-                    SupportLevel::ComingSoon => NativeAppSupportStatus::ComingSoon,
-                    SupportLevel::ExternallyBlocked => NativeAppSupportStatus::ExternallyBlocked,
-                }
+            // The public status is no longer a second reading of
+            // `adapter_support`. The mapping that used to sit here sent BOTH
+            // `Supported` and `Experimental` to `Beta` -- the collapse the owner
+            // gate names (`PLAN.md` r4-5) -- and it made the label a function of
+            // the adapter profile's internal support level, which is not a
+            // public claim about anything. `decoupling` below proves the two are
+            // now independent; asserting the map here would only restate it.
+            assert!(
+                !matches!(
+                    (app.adapter_support, native_app_support_status(app.id)),
+                    (SupportLevel::Experimental, NativeAppSupportStatus::Beta)
+                        | (SupportLevel::Supported, NativeAppSupportStatus::Beta)
+                ),
+                "{:?} reproduces D-203: an adapter-profile support level promoted straight to a \
+                 `Beta` public claim. `Beta` is reserved for runtime-proven / test-proven-only \
+                 rows, and no carrier surface has earned one.",
+                app.id
             );
             if app.id == NativeAppId::Outlook {
                 assert!(app.package_id.is_empty());
@@ -2617,9 +2709,19 @@ pub(crate) mod tests {
                 },
             ]
         );
+        // D-206: the evidence-only derivation is `Experimental` -- the label the
+        // product could not express -- and the support matrix still says
+        // `externally blocked`. Conflicting authorities earn no claim.
+        assert_eq!(
+            crate::claim_state::derived_claim(
+                crate::claim_state::claim_of(crate::claim_state::Surface::Telegram).carrier,
+                crate::claim_state::claim_of(crate::claim_state::Surface::Telegram).delivery,
+            ),
+            crate::claim_state::PublicClaim::Experimental
+        );
         assert_eq!(
             native_app_support_status(NativeAppId::Telegram),
-            NativeAppSupportStatus::ComingSoon
+            NativeAppSupportStatus::NoClaim
         );
         assert_eq!(
             native_app_protected_mode(NativeAppId::Telegram),
@@ -2723,7 +2825,12 @@ pub(crate) mod tests {
             id: NativeAppId::Discord,
             display_name: "Discord",
             availability: NativeAppAvailability::Installed,
-            support_status: NativeAppSupportStatus::Beta,
+            support_status: NativeAppSupportStatus::NoClaim,
+            carrier_evidence: "builtNeverProvenLive",
+            delivery_evidence: "neverProvenLive",
+            claim_blockers: vec!["open-security-finding", "unknown-recheck-required"],
+            claim_note: "OSL has never carried a message through Discord and back in a recorded \
+                         two-party run.",
             protected_mode: NativeAppProtectedMode::AssistOnly,
             isolated_profile_available: true,
             supports_overlay: false,
@@ -2732,7 +2839,7 @@ pub(crate) mod tests {
         let json = serde_json::to_value(status).unwrap();
         assert_eq!(json["id"], "discord");
         assert_eq!(json["availability"], "installed");
-        assert_eq!(json["supportStatus"], "beta");
+        assert_eq!(json["supportStatus"], "noClaim");
         assert_eq!(json["protectedMode"], "assistOnly");
         assert_eq!(json["isolatedProfileAvailable"], true);
         assert_eq!(
@@ -2794,7 +2901,12 @@ pub(crate) mod tests {
             id: NativeAppId::Discord,
             display_name: "Discord",
             availability: NativeAppAvailability::Installed,
-            support_status: NativeAppSupportStatus::Beta,
+            support_status: NativeAppSupportStatus::NoClaim,
+            carrier_evidence: "builtNeverProvenLive",
+            delivery_evidence: "neverProvenLive",
+            claim_blockers: vec!["open-security-finding", "unknown-recheck-required"],
+            claim_note: "OSL has never carried a message through Discord and back in a recorded \
+                         two-party run.",
             protected_mode: NativeAppProtectedMode::AssistOnly,
             isolated_profile_available: true,
             supports_overlay: false,
@@ -2807,17 +2919,24 @@ pub(crate) mod tests {
             keys,
             BTreeSet::from([
                 "availability",
+                "carrierEvidence",
+                "claimBlockers",
+                "claimNote",
+                "deliveryEvidence",
                 "displayName",
                 "id",
                 "isolatedProfileAvailable",
                 "protectedMode",
                 "supportStatus",
                 "supportsOverlay"
-            ])
+            ]),
+            "the public contract must ship the REASON with the label. A badge alone cannot \
+             distinguish `measured and refused` from `never built`, and shipping only the badge \
+             is how those two states collapse."
         );
         assert_eq!(json["id"], "discord");
         assert_eq!(json["availability"], "installed");
-        assert_eq!(json["supportStatus"], "beta");
+        assert_eq!(json["supportStatus"], "noClaim");
         assert_eq!(json["protectedMode"], "assistOnly");
         assert_eq!(json["isolatedProfileAvailable"], true);
         assert_eq!(json["supportsOverlay"], false);
@@ -2830,19 +2949,78 @@ pub(crate) mod tests {
 
         for status in statuses {
             match status.id {
+                // D-203 is DISCHARGED as a label. Two allowlist extinguishers
+                // stand on Discord at once -- `support-matrix.json` carries D6
+                // as `open-security-finding`, and master §9's "current tree
+                // recheck required" is allowlist rule 5's
+                // `unknown-recheck-required` -- and §E maps both to **no badge,
+                // no claim**. `Beta` was an overclaim, `ComingSoon` said Discord
+                // was planned when it is the one carrier the app enables, and
+                // `ExternallyBlocked` said a third party blocks us. None of the
+                // three was true; `NoClaim` is.
                 NativeAppId::Discord => {
-                    assert_eq!(status.support_status, NativeAppSupportStatus::Beta);
+                    assert_eq!(status.support_status, NativeAppSupportStatus::NoClaim);
                     assert_eq!(status.protected_mode, NativeAppProtectedMode::AssistOnly);
+                    assert_eq!(status.carrier_evidence, "builtNeverProvenLive");
                 }
-                NativeAppId::Telegram
-                | NativeAppId::Signal
-                | NativeAppId::Whatsapp
-                | NativeAppId::Outlook => {
+                // D-206's held label. The evidence supports `Experimental` and
+                // `support-matrix.json` still records Telegram as
+                // `externally_blocked`; those are different assertions, not
+                // different strengths, so allowlist rule 5's "conflicting"
+                // clause applies and the answer is no claim.
+                NativeAppId::Telegram => {
+                    assert_eq!(status.support_status, NativeAppSupportStatus::NoClaim);
+                    assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
+                }
+                NativeAppId::Signal | NativeAppId::Whatsapp | NativeAppId::Outlook => {
                     assert_eq!(status.support_status, NativeAppSupportStatus::ComingSoon);
                     assert_eq!(status.protected_mode, NativeAppProtectedMode::Unavailable);
                 }
             }
+
+            // Whatever the label, every row ships the sentence that says what
+            // OSL has and has not proven there. `PLAN.md` r4-6.
+            assert!(
+                !status.claim_note.is_empty(),
+                "{:?} ships a label with no reason line",
+                status.id
+            );
         }
+    }
+
+    /// **The public claim and the adapter profile's support level are
+    /// independent.** This is the property the old hand-written map destroyed:
+    /// it made the label a function of `adapter_support`, so a provider could
+    /// not be described except by moving a value that means something else.
+    ///
+    /// Falsifiable by construction — it fails the moment the mapping is
+    /// reinstated, because a reinstated mapping makes equal support levels
+    /// produce equal labels.
+    #[test]
+    fn the_public_claim_is_not_a_function_of_the_adapter_support_level() {
+        let mut by_level: std::collections::BTreeMap<String, BTreeSet<String>> = Default::default();
+        for app in NATIVE_APPS {
+            by_level
+                .entry(format!("{:?}", app.adapter_support))
+                .or_default()
+                .insert(format!("{:?}", native_app_support_status(app.id)));
+        }
+        assert!(
+            by_level.values().any(|labels| labels.len() > 1),
+            "every adapter support level maps to exactly one public label, so the label is still \
+             a function of the adapter profile rather than of the evidence: {by_level:?}"
+        );
+
+        // And the reverse: distinct evidence must not be flattened into one
+        // label across the whole native inventory.
+        let labels: BTreeSet<String> = NATIVE_APPS
+            .iter()
+            .map(|app| format!("{:?}", native_app_support_status(app.id)))
+            .collect();
+        assert!(
+            labels.len() > 1,
+            "every native app carries the same public label: {labels:?}"
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -2895,7 +3073,7 @@ pub(crate) mod tests {
         NoCarryPath,
     }
 
-    const fn carry_seam(id: NativeAppId) -> CarrySeam {
+    pub(crate) const fn carry_seam(id: NativeAppId) -> CarrySeam {
         match id {
             NativeAppId::Discord => CarrySeam::NativeWindowHost,
             NativeAppId::Telegram => CarrySeam::Uia2Substrate,
@@ -3662,11 +3840,10 @@ pub(crate) mod tests {
             out.push_str(&format!(
                 "  {:<10} {:<14} {:<22} {:<22} {}\n",
                 carry_receipt::provider_slug(row.id),
-                if row.published {
-                    format!("{:?}", row.support)
-                } else {
-                    "ComingSoon".to_owned()
-                },
+                // The public claim, derived. Printing `adapter_support` for a
+                // published row and the literal "ComingSoon" for everything
+                // else was the fleet report's copy of the collapse.
+                crate::claim_state::public_claim(claim_surface(row.id)).slug(),
                 carry_receipt::seam_slug(row.seam),
                 format!("{:?}", row.action),
                 row.detail
@@ -3821,13 +3998,29 @@ pub(crate) mod tests {
 
         let claim_tier = |status: &str| matches!(status, "available" | "beta" | "verified_live");
 
-        let mut contradictions = Vec::new();
-        for manifest in NATIVE_APPS {
-            let rust_public = match native_app_support_status(manifest.id) {
+        /// The matrix slug for a public claim. Exhaustive on purpose: a new
+        /// label cannot be added without deciding what the matrix comparison
+        /// makes of it.
+        fn matrix_slug(status: NativeAppSupportStatus) -> &'static str {
+            match status {
+                NativeAppSupportStatus::Available => "available",
                 NativeAppSupportStatus::Beta => "beta",
+                // Master §8.2 badge, and NOT a capability claim: allowlist §B
+                // permits it for exactly these services, and it is absent from
+                // `check-app-claims.mjs` FORBIDDEN_PROMOTION_STATUSES while
+                // appearing in its limitation-language set.
+                NativeAppSupportStatus::Experimental => "experimental",
                 NativeAppSupportStatus::ComingSoon => "coming_soon",
                 NativeAppSupportStatus::ExternallyBlocked => "externally_blocked",
-            };
+                // Allowlist §E: no badge, no claim. Weaker than every matrix
+                // state, so it can never contradict one.
+                NativeAppSupportStatus::NoClaim => "no_claim",
+            }
+        }
+
+        let mut contradictions = Vec::new();
+        for manifest in NATIVE_APPS {
+            let rust_public = matrix_slug(native_app_support_status(manifest.id));
             let Some(matrix_states) = stated.get(manifest.display_name) else {
                 continue;
             };
@@ -3839,23 +4032,36 @@ pub(crate) mod tests {
             }
         }
 
-        let expected: Vec<String> = PUBLISHED_WITHOUT_A_LIVE_RECEIPT
+        /// **Native apps whose in-app claim is knowingly stronger than the
+        /// public support matrix. Empty, and it used to hold Discord.**
+        ///
+        /// D-203's contradiction was "`Beta` in `native_apps.rs`, `unavailable`
+        /// / `not-qualified` in the matrix", and it existed because the public
+        /// label was a function of `adapter_support`. `claim_state` derives it
+        /// from evidence instead, and Discord's two extinguishing blockers put
+        /// it at **no claim** -- weaker than the matrix, not stronger.
+        ///
+        /// This is deliberately NOT `PUBLISHED_WITHOUT_A_LIVE_RECEIPT`. That
+        /// list records a different fact -- a provider published above
+        /// `ComingSoon` with no receipt -- and Discord is still on it, because
+        /// it still has no receipt. Deriving one from the other is what made
+        /// this assertion read as "the label is fine because the debt is
+        /// recorded". They are separate, and both must shrink on their own.
+        const RECORDED_MATRIX_OVERCLAIMS: &[&str] = &[];
+
+        let expected: Vec<String> = RECORDED_MATRIX_OVERCLAIMS
             .iter()
-            .filter_map(|(id, _)| {
-                let m = manifest(*id);
+            .filter_map(|name| {
+                let m = NATIVE_APPS.iter().find(|m| m.display_name == *name)?;
                 stated.get(m.display_name).map(|states| {
-                    let rust_public = match native_app_support_status(*id) {
-                        NativeAppSupportStatus::Beta => "beta",
-                        NativeAppSupportStatus::ComingSoon => "coming_soon",
-                        NativeAppSupportStatus::ExternallyBlocked => "externally_blocked",
-                    };
                     format!(
-                        "{} is {rust_public} in native_apps.rs but {:?} in support-matrix.json",
-                        m.display_name, states
+                        "{} is {} in native_apps.rs but {:?} in support-matrix.json",
+                        m.display_name,
+                        matrix_slug(native_app_support_status(m.id)),
+                        states
                     )
                 })
             })
-            .filter(|line| !line.contains("coming_soon in native_apps.rs"))
             .collect();
 
         assert_eq!(
