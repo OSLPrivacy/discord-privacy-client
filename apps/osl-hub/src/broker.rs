@@ -1650,6 +1650,8 @@ struct NativeOverlayAttachmentNotice {
     fetch_token: String,
     attachment_key: [u8; 32],
     content_id: [u8; 16],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    display_duration_seconds: Option<i64>,
     view_once: bool,
 }
 
@@ -1665,6 +1667,7 @@ pub struct NativeOverlayAttachmentSealPlan {
     pub attachment_id: String,
     pub created_at: i64,
     pub expires_at: i64,
+    pub display_duration_seconds: Option<u64>,
     pub original_filename: String,
     pub mime_type: String,
     pub plaintext_size: u64,
@@ -1721,6 +1724,7 @@ pub struct NativeOverlayAttachmentOpenPlan {
     pub fetch_token: String,
     pub attachment_key: [u8; 32],
     pub view_once: bool,
+    pub display_duration_seconds: Option<u64>,
     expires_at: i64,
 }
 
@@ -5340,6 +5344,7 @@ fn begin_peer_attachment(
         attachment_id: random_peer_message_id(),
         created_at,
         expires_at,
+        display_duration_seconds: view_once.then_some(u64::from(ttl_seconds)),
         original_filename,
         mime_type,
         plaintext_size,
@@ -5464,6 +5469,9 @@ fn deliver_peer_attachment(
         fetch_token: fetch_token.to_string(),
         attachment_key: plan.attachment_key,
         content_id: plan.content_id,
+        display_duration_seconds: plan
+            .display_duration_seconds
+            .map(|seconds| i64::try_from(seconds).unwrap_or(i64::MAX)),
         view_once: plan.view_once,
     };
     let mut encoded = serde_json::to_vec(&notice).map_err(|_| ERROR.to_owned())?;
@@ -5681,6 +5689,7 @@ fn native_overlay_attachment_plans(
             fetch_token: std::mem::take(&mut notice.fetch_token),
             attachment_key: notice.attachment_key,
             view_once: notice.view_once,
+            display_duration_seconds: native_overlay_attachment_display_duration(&notice).ok()?,
             expires_at: notice.expires_at,
         })
     });
@@ -5794,6 +5803,7 @@ fn validate_native_overlay_attachment_notice(
     now: i64,
 ) -> Result<(), ()> {
     let expected_mime = validate_peer_attachment_filename(&notice.original_filename)?;
+    let display_duration_valid = native_overlay_attachment_display_duration(notice).is_ok();
     if notice.version != NATIVE_OVERLAY_ATTACHMENT_VERSION
         || notice.domain != NATIVE_OVERLAY_ATTACHMENT_DOMAIN
         || !valid_peer_attachment_id(&notice.attachment_id)
@@ -5819,10 +5829,29 @@ fn validate_native_overlay_attachment_notice(
         || !canonical_hex(&notice.fetch_token, 32)
         || notice.attachment_key.iter().all(|byte| *byte == 0)
         || notice.content_id.iter().all(|byte| *byte == 0)
+        || !display_duration_valid
     {
         return Err(());
     }
     Ok(())
+}
+
+fn native_overlay_attachment_display_duration(
+    notice: &NativeOverlayAttachmentNotice,
+) -> Result<Option<u64>, ()> {
+    if !notice.view_once {
+        return if notice.display_duration_seconds.is_none() {
+            Ok(None)
+        } else {
+            Err(())
+        };
+    }
+    let expected = notice.expires_at.checked_sub(notice.created_at).ok_or(())?;
+    let duration = notice.display_duration_seconds.unwrap_or(expected);
+    if duration <= 0 || duration != expected || duration > MAX_PEER_LIFETIME_SECONDS {
+        return Err(());
+    }
+    u64::try_from(duration).map(Some).map_err(|_| ())
 }
 
 fn keyserver_transport(

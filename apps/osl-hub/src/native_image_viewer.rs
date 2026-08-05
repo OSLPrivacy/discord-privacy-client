@@ -6,6 +6,7 @@
 
 #[cfg(windows)]
 mod windows_viewer {
+    use osl_privacy_hub::view_once_open::NativeImageDisplayDuration;
     use std::collections::HashMap;
     use std::sync::{
         atomic::{AtomicU64, Ordering},
@@ -26,19 +27,22 @@ mod windows_viewer {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallWindowProcW, DefWindowProcW, GetClientRect, GetWindowDisplayAffinity,
-        GetWindowLongPtrW, PostMessageW, SetWindowLongPtrW, ShowWindow, GWLP_WNDPROC, SW_HIDE,
-        WDA_EXCLUDEFROMCAPTURE, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_NCDESTROY, WM_PAINT,
-        WNDPROC,
+        GetWindowLongPtrW, KillTimer, PostMessageW, SetTimer, SetWindowLongPtrW, ShowWindow,
+        GWLP_WNDPROC, SW_HIDE, WDA_EXCLUDEFROMCAPTURE, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND,
+        WM_NCDESTROY, WM_PAINT, WM_TIMER, WNDPROC,
     };
     use zeroize::{Zeroize, Zeroizing};
 
     const MAX_DECODED_PIXELS: u64 = 64 * 1024 * 1024;
+    const VIEW_ONCE_DISPLAY_TIMER_ID: usize = 1;
 
     struct ViewerPixels {
         previous_proc: isize,
         width: u32,
         height: u32,
         pixels: Zeroizing<Vec<u8>>,
+        display_duration: Option<NativeImageDisplayDuration>,
+        display_timer_started: bool,
     }
 
     fn viewers() -> &'static Mutex<HashMap<isize, ViewerPixels>> {
@@ -166,12 +170,17 @@ mod windows_viewer {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
+        if message == WM_TIMER && wparam == VIEW_ONCE_DISPLAY_TIMER_ID {
+            KillTimer(hwnd, VIEW_ONCE_DISPLAY_TIMER_ID);
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            return 0;
+        }
         // Both messages are answered only while this window's pixels are
         // reachable. A poisoned registry falls through to the fail-closed path
         // below instead of silently claiming the background was erased.
         if message == WM_PAINT || message == WM_ERASEBKGND {
-            if let Ok(guard) = viewers().lock() {
-                if let Some(viewer) = guard.get(&(hwnd as isize)) {
+            if let Ok(mut guard) = viewers().lock() {
+                if let Some(viewer) = guard.get_mut(&(hwnd as isize)) {
                     if message == WM_ERASEBKGND {
                         return 1;
                     }
@@ -217,6 +226,7 @@ mod windows_viewer {
                             DIB_RGB_COLORS,
                             SRCCOPY,
                         );
+                        arm_display_timer_after_first_paint(hwnd, viewer);
                     }
                     EndPaint(hwnd, &paint);
                     return 0;
@@ -259,10 +269,31 @@ mod windows_viewer {
         CallWindowProcW(procedure, hwnd, message, wparam, lparam)
     }
 
+    fn arm_display_timer_after_first_paint(hwnd: HWND, viewer: &mut ViewerPixels) {
+        if viewer.display_timer_started {
+            return;
+        }
+        let Some(duration) = viewer.display_duration else {
+            return;
+        };
+        viewer.display_timer_started = true;
+        let Ok(millis) = duration.timer_millis_u32() else {
+            unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
+            return;
+        };
+        if unsafe { SetTimer(hwnd, VIEW_ONCE_DISPLAY_TIMER_ID, millis, None) } == 0 {
+            unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
+        }
+    }
+
     pub(crate) fn prepare(
         app: &tauri::AppHandle,
         encoded: Zeroizing<Vec<u8>>,
+        display_duration_seconds: Option<u64>,
     ) -> Result<PreparedImageViewer, String> {
+        let display_duration = display_duration_seconds
+            .map(NativeImageDisplayDuration::from_seconds)
+            .transpose()?;
         let (width, height, pixels) = decode_image(encoded)?;
         let max_width = width.min(1200).max(320);
         let max_height = height.min(800).max(240);
@@ -270,8 +301,13 @@ mod windows_viewer {
             "native-image-viewer-{}",
             NEXT_LABEL.fetch_add(1, Ordering::AcqRel).wrapping_add(1)
         );
+        let title = if display_duration.is_some() {
+            "OSL private image - display timer only"
+        } else {
+            "OSL private image"
+        };
         let window = tauri::window::WindowBuilder::new(app, label)
-            .title("OSL private image")
+            .title(title)
             .inner_size(f64::from(max_width), f64::from(max_height))
             .min_inner_size(320.0, 240.0)
             .visible(false)
@@ -300,6 +336,8 @@ mod windows_viewer {
                     width,
                     height,
                     pixels,
+                    display_duration,
+                    display_timer_started: false,
                 },
             );
         if unsafe {
@@ -353,6 +391,7 @@ impl PreparedImageViewer {
 pub(crate) fn prepare(
     _app: &tauri::AppHandle,
     _encoded: zeroize::Zeroizing<Vec<u8>>,
+    _display_duration_seconds: Option<u64>,
 ) -> Result<PreparedImageViewer, String> {
     Err("The protected image viewer requires Windows".to_owned())
 }
