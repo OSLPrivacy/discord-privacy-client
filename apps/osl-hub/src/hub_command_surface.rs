@@ -474,15 +474,8 @@ pub fn service_kind_id(kind: ServiceKind) -> &'static str {
         ServiceKind::Discord => "discord",
         ServiceKind::Telegram => "telegram",
         ServiceKind::WhatsApp => "whatsapp",
-        ServiceKind::Instagram => "instagram",
-        ServiceKind::Messenger => "messenger",
-        ServiceKind::Snapchat => "snapchat",
-        ServiceKind::X => "x",
         ServiceKind::Email => "email",
         ServiceKind::Signal => "signal",
-        ServiceKind::Slack => "slack",
-        ServiceKind::Linkedin => "linkedin",
-        ServiceKind::Teams => "teams",
     }
 }
 
@@ -635,6 +628,7 @@ macro_rules! hub_tauri_commands {
             activate_manual_peer_context,
             activate_native_manual_peer_context,
             activate_osl_chat_context,
+            set_osl_chat_capture_preference,
             close_osl_chat_context,
             prepare_encrypted_text,
             decrypt_hub_capsule,

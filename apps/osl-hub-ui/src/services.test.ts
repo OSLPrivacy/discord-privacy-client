@@ -3,29 +3,29 @@ import { describe, expect, it } from "vitest";
 import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeAppsFromServices, loadLinkedServices, loadNativeApps, notificationIntegrationEligibility, parseEmbeddedServiceHost, parseFirefoxStatus, parseLinkedAccount, parseLinkedServices, parseMullvadStatus, parseNativeAppAction, parseNativeApps, serviceAccountsForProvider } from "./services";
 
 const originalAppRoster = [
-  "discord", "telegram", "instagram", "snapchat", "x", "messenger", "signal", "whatsapp",
-  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+  "discord", "telegram", "signal", "whatsapp",
+  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
 ] as const;
 const unsupportedOriginalApps = originalAppRoster.filter((id) => id !== "discord");
 
 function validRegistry(): unknown[] {
-  const ids = ["discord", "telegram", "instagram", "snapchat", "email", "x", "messenger", "signal", "whatsapp", "slack", "linkedin", "teams"];
+  const ids = ["discord", "telegram", "email", "signal", "whatsapp"];
   return ids.map((id, sidebarOrder) => ({
     id,
     displayName: id,
     sidebarGlyph: id.slice(0, 2).toUpperCase(),
     sidebarOrder,
-    category: id === "slack" || id === "linkedin" || id === "teams" ? "enterprise" : "consumer",
-    launchState: id === "signal" || id === "slack" || id === "linkedin" || id === "teams" ? "comingSoon" : "available",
-    supportsNativePreview: id !== "signal" && id !== "slack" && id !== "linkedin" && id !== "teams",
-    supportsProtectedPreview: id !== "signal" && id !== "slack" && id !== "linkedin" && id !== "teams",
-    accounts: id === "signal" || id === "slack" || id === "linkedin" || id === "teams" ? [] : [{ id: `${id}-preview`, label: "Personal", displayHandle: "@preview", state: "demoLinked", provider: id === "email" ? "gmail" : null }],
+    category: "consumer",
+    launchState: "available",
+    supportsNativePreview: true,
+    supportsProtectedPreview: true,
+    accounts: [{ id: `${id}-preview`, label: "Personal", displayHandle: "@preview", state: "demoLinked", provider: id === "email" ? "gmail" : null }],
   }));
 }
 
 describe("linked-service contract", () => {
-  it("accepts and orders the exact twelve-service Rust payload", () => {
-    expect(parseLinkedServices(validRegistry())).toHaveLength(12);
+  it("accepts and orders the exact ruled-service Rust payload", () => {
+    expect(parseLinkedServices(validRegistry())).toHaveLength(5);
   });
 
   it("keeps WhatsApp in the service registry without making it a launch tile", async () => {
@@ -48,10 +48,10 @@ describe("linked-service contract", () => {
 
   it("quarantines one malformed account without hiding the service catalog", () => {
     const malformed = validRegistry();
-    ((malformed[2] as Record<string, unknown>).accounts as Array<Record<string, unknown>>)[0].id = "../cookie";
+    ((malformed[1] as Record<string, unknown>).accounts as Array<Record<string, unknown>>)[0].id = "../cookie";
     const parsed = parseLinkedServices(malformed);
-    expect(parsed).toHaveLength(12);
-    expect(parsed?.find((service) => service.id === "instagram")?.accounts).toEqual([]);
+    expect(parsed).toHaveLength(5);
+    expect(parsed?.find((service) => service.id === "telegram")?.accounts).toEqual([]);
     expect(parsed?.find((service) => service.id === "discord")?.accounts).toHaveLength(1);
   });
 
@@ -110,7 +110,7 @@ describe("linked-service contract", () => {
   });
 
   it("accepts new and legacy allowlisted email providers", () => {
-    for (const provider of ["aol", "gmx", "maildotcom", "icloud", "tuta", "zoho"]) {
+    for (const provider of ["aol", "gmx", "maildotcom", "icloud", "tuta"]) {
       expect(parseLinkedAccount({ id: `email-${provider}`, label: "Personal", displayHandle: "Sign in", state: "notLinked", provider }).provider).toBe(provider);
     }
   });
@@ -132,10 +132,10 @@ describe("linked-service contract", () => {
       expect(apps.find((app) => app.id === unsupported)).toMatchObject({ launchState: "comingSoon", setupEligible: false });
     }
     expect(launch.filter((app) => app.section === "social").map((app) => app.id)).toEqual([
-      "discord", "telegram", "instagram", "snapchat", "x", "messenger", "signal", "whatsapp",
+      "discord", "telegram", "signal", "whatsapp",
     ]);
     expect(launch.filter((app) => app.section === "email").map((app) => app.id)).toEqual([
-      "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+      "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
     ]);
 
     const fallbackLaunch = homeAppsFromServices([]).filter((app) => app.visibility === "launch");
@@ -225,10 +225,6 @@ describe("linked-service contract", () => {
     const apps = homeAppsFromServices(parseLinkedServices(validRegistry())!);
     expect(apps.filter((app) => app.visibility === "launch" && app.launchState === "comingSoon")).toEqual([
       expect.objectContaining({ id: "telegram", setupEligible: false }),
-      expect.objectContaining({ id: "instagram", setupEligible: false }),
-      expect.objectContaining({ id: "snapchat", setupEligible: false }),
-      expect.objectContaining({ id: "x", setupEligible: false }),
-      expect.objectContaining({ id: "messenger", setupEligible: false }),
       expect.objectContaining({ id: "signal", setupEligible: false }),
       expect.objectContaining({ id: "whatsapp", setupEligible: false }),
       expect.objectContaining({ id: "gmail", setupEligible: false }),
@@ -239,11 +235,11 @@ describe("linked-service contract", () => {
       expect.objectContaining({ id: "gmx", setupEligible: false }),
       expect.objectContaining({ id: "maildotcom", setupEligible: false }),
       expect.objectContaining({ id: "icloud", setupEligible: false }),
+      expect.objectContaining({ id: "tuta", setupEligible: false }),
     ]);
-    expect(apps.filter((app) => app.visibility === "later")).toEqual([
-      expect.objectContaining({ id: "slack", launchState: "comingSoon", setupEligible: false }),
-      expect.objectContaining({ id: "linkedin", launchState: "comingSoon", setupEligible: false }),
-    ]);
+    // Superseded by owner ruling 2026-08-05: the stale later-only Slack and
+    // LinkedIn specs must not silently re-enter the active home catalog.
+    expect(apps.filter((app) => app.visibility === "later")).toEqual([]);
   });
 });
 

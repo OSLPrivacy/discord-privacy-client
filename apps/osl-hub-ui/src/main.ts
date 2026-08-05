@@ -731,20 +731,13 @@ let rnWirePolicyRequested = false;
 const autoScrubServiceLabels: Record<ServiceId, string> = {
   discord: "Discord",
   telegram: "Telegram",
-  instagram: "Instagram",
-  snapchat: "Snapchat",
   email: "Email",
-  x: "X",
-  slack: "Slack",
-  linkedin: "LinkedIn",
-  teams: "Teams",
-  messenger: "Messenger",
   signal: "Signal",
   whatsapp: "WhatsApp",
 };
 const supportedNativeAppIds = new Set<NativeAppId>(["discord"]);
 const importedFirefoxHomeAppIds = new Set<HomeAppId>([
-  "instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud",
+  "gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta",
 ]);
 const friendsDialogPageSize = 24;
 const friendScopeRenderLimit = 16;
@@ -2201,7 +2194,7 @@ function discordQaHostStatusMarkup(): string {
 }
 
 function defaultBrowserCompanionEligible(appId: HomeAppId | null): appId is HomeAppId {
-  return appId !== null && ["instagram", "snapchat", "x", "messenger", "gmail", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud"].includes(appId);
+  return appId !== null && ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"].includes(appId);
 }
 
 function browserSessionModeChoices(): string {

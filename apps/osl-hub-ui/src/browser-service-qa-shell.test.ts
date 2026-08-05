@@ -67,7 +67,7 @@ describe("browser service QA shell", () => {
         displayName: "Chrome",
       }),
     });
-    const state = await createBrowserServiceQaShell(adapter).open("instagram");
+    const state = await createBrowserServiceQaShell(adapter).open("gmail");
 
     expect(state).toMatchObject({ phase: "failed", error: "defaultFirefoxUnavailable" });
     expect(adapter.hostExistingFirefoxSession).not.toHaveBeenCalled();
@@ -110,7 +110,7 @@ describe("browser service QA shell", () => {
       }),
     });
 
-    const state = await createBrowserServiceQaShell(adapter).open("x");
+    const state = await createBrowserServiceQaShell(adapter).open("tuta");
 
     expect(state).toMatchObject({ phase: "failed", browserId: null, error: "hostRejected" });
   });
@@ -126,9 +126,9 @@ describe("browser service QA shell", () => {
     const transitions: string[] = [];
     shell.subscribe((state) => transitions.push(state.phase));
 
-    const opening = shell.open("messenger");
-    const overlapping = await shell.open("snapchat");
-    expect(overlapping).toMatchObject({ phase: "checking", serviceId: "messenger", error: "operationInProgress" });
+    const opening = shell.open("gmail");
+    const overlapping = await shell.open("tuta");
+    expect(overlapping).toMatchObject({ phase: "checking", serviceId: "gmail", error: "operationInProgress" });
 
     resolveStatus?.(firefoxStatus);
     const hosted = await opening;

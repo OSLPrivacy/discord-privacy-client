@@ -50,8 +50,8 @@ import {
   type LinkedService,
 } from "./services";
 
-const instagramApp: HomeAppCatalogEntry = {
-  id: "instagram", displayName: "Instagram", serviceId: "instagram", provider: null,
+const discordApp: HomeAppCatalogEntry = {
+  id: "discord", displayName: "Discord", serviceId: "discord", provider: null,
   visibility: "launch", section: "social", launchState: "available", linked: false,
   accountCount: 0, setupEligible: true,
 };
@@ -65,15 +65,15 @@ describe("embedded service IPC", () => {
   it("creates then opens the real embedded login surface", async () => {
     mocks.invoke
       .mockResolvedValueOnce({ id: "acct-123", label: "Personal", displayHandle: "Sign in on the service", state: "notLinked", provider: null })
-      .mockResolvedValueOnce({ serviceId: "instagram", accountId: "acct-123", generation: 1 });
-    await expect(setupEmbeddedHomeApp(instagramApp)).resolves.toMatchObject({
-      account: { id: "acct-123" }, host: { serviceId: "instagram", accountId: "acct-123" },
+      .mockResolvedValueOnce({ serviceId: "discord", accountId: "acct-123", generation: 1 });
+    await expect(setupEmbeddedHomeApp(discordApp)).resolves.toMatchObject({
+      account: { id: "acct-123" }, host: { serviceId: "discord", accountId: "acct-123" },
     });
     expect(mocks.invoke).toHaveBeenNthCalledWith(1, "create_service_account", {
-      serviceId: "instagram", label: "Personal", provider: null,
+      serviceId: "discord", label: "Personal", provider: null,
     });
     expect(mocks.invoke).toHaveBeenNthCalledWith(2, "open_service_host", {
-      serviceId: "instagram", accountId: "acct-123",
+      serviceId: "discord", accountId: "acct-123",
     });
   });
 
@@ -85,25 +85,25 @@ describe("embedded service IPC", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("create_service_account", {
       serviceId: "email", label: "Personal", provider: "outlook",
     });
-    await expect(createEmbeddedServiceAccount("instagram", "Personal", "gmail")).rejects.toThrow();
+    await expect(createEmbeddedServiceAccount("discord", "Personal", "gmail")).rejects.toThrow();
   });
 
   it("resumes one exact configured profile and never accepts a path-like id", async () => {
     const services = [{
-      id: "instagram", displayName: "Instagram", sidebarGlyph: "IG", sidebarOrder: 1,
+      id: "discord", displayName: "Discord", sidebarGlyph: "DC", sidebarOrder: 1,
       category: "consumer", launchState: "available", supportsNativePreview: true,
       supportsProtectedPreview: false,
       accounts: [{ id: "acct-a", label: "A", displayHandle: "Sign in", state: "notLinked", provider: null }],
     }] as LinkedService[];
-    mocks.invoke.mockResolvedValueOnce({ serviceId: "instagram", accountId: "acct-a", generation: 2 });
-    await expect(openEmbeddedHomeApp({ ...instagramApp, linked: true, accountCount: 1 }, services))
+    mocks.invoke.mockResolvedValueOnce({ serviceId: "discord", accountId: "acct-a", generation: 2 });
+    await expect(openEmbeddedHomeApp({ ...discordApp, linked: true, accountCount: 1 }, services))
       .resolves.toMatchObject({ accountId: "acct-a" });
-    await expect(openEmbeddedServiceAccount("instagram", "../profile")).rejects.toThrow();
+    await expect(openEmbeddedServiceAccount("discord", "../profile")).rejects.toThrow();
   });
 
   it("opens the exact locally selected profile when more than one exists", async () => {
     const services = [{
-      id: "instagram", displayName: "Instagram", sidebarGlyph: "IG", sidebarOrder: 1,
+      id: "discord", displayName: "Discord", sidebarGlyph: "DC", sidebarOrder: 1,
       category: "consumer", launchState: "available", supportsNativePreview: true,
       supportsProtectedPreview: false,
       accounts: [
@@ -111,24 +111,24 @@ describe("embedded service IPC", () => {
         { id: "acct-b", label: "Work", displayHandle: "Sign in", state: "notLinked", provider: null },
       ],
     }] as LinkedService[];
-    mocks.invoke.mockResolvedValueOnce({ serviceId: "instagram", accountId: "acct-b", generation: 3 });
-    await expect(openEmbeddedHomeApp({ ...instagramApp, linked: true, accountCount: 2 }, services, "acct-b"))
+    mocks.invoke.mockResolvedValueOnce({ serviceId: "discord", accountId: "acct-b", generation: 3 });
+    await expect(openEmbeddedHomeApp({ ...discordApp, linked: true, accountCount: 2 }, services, "acct-b"))
       .resolves.toMatchObject({ accountId: "acct-b" });
     expect(mocks.invoke).toHaveBeenCalledWith("open_service_host", {
-      serviceId: "instagram", accountId: "acct-b",
+      serviceId: "discord", accountId: "acct-b",
     });
   });
 
   it("removes only one exact owned profile through the narrow command", async () => {
     mocks.invoke.mockResolvedValueOnce({
-      serviceId: "instagram", accountId: "acct-a", profileExisted: true,
+      serviceId: "discord", accountId: "acct-a", profileExisted: true,
       cleanupPending: false, registryRemoved: true,
     });
-    await expect(removeEmbeddedServiceAccount("instagram", "acct-a")).resolves.toMatchObject({
+    await expect(removeEmbeddedServiceAccount("discord", "acct-a")).resolves.toMatchObject({
       accountId: "acct-a", registryRemoved: true,
     });
     expect(mocks.invoke).toHaveBeenCalledWith("remove_service_account", {
-      serviceId: "instagram", accountId: "acct-a",
+      serviceId: "discord", accountId: "acct-a",
     });
   });
 
@@ -385,13 +385,13 @@ describe("browser-owned import IPC", () => {
       .mockResolvedValueOnce(detached);
 
     await expect(loadDefaultBrowserCompanionStatus()).resolves.toEqual(status);
-    await expect(hostDefaultBrowserCompanion("instagram")).resolves.toEqual(hosted);
+    await expect(hostDefaultBrowserCompanion("gmail")).resolves.toEqual(hosted);
     await expect(resizeDefaultBrowserCompanion()).resolves.toEqual(resized);
     await expect(focusDefaultBrowserCompanion()).resolves.toEqual(focused);
     await expect(detachDefaultBrowserCompanion()).resolves.toEqual(detached);
     expect(mocks.invoke.mock.calls).toEqual([
       ["get_default_browser_companion_status"],
-      ["host_default_browser_companion", { serviceId: "instagram", browserId: null, accountMode: "existingBrowser" }],
+      ["host_default_browser_companion", { serviceId: "gmail", browserId: null, accountMode: "existingBrowser" }],
       ["resize_default_browser_companion"],
       ["focus_default_browser_companion"],
       ["detach_default_browser_companion"],
@@ -417,7 +417,6 @@ describe("browser-owned import IPC", () => {
     });
     mocks.invoke.mockClear();
     await expect(hostBrowserCompanion("discord", "firefox", "isolatedOsl")).rejects.toThrow("browser companion unavailable");
-    await expect(hostBrowserCompanion("outlook", "firefox", "isolatedOsl")).rejects.toThrow("browser companion unavailable");
     await expect(hostBrowserCompanion("gmail", "../firefox" as "firefox", "isolatedOsl")).rejects.toThrow("browser companion unavailable");
     await expect(hostBrowserCompanion("gmail", "firefox", "fresh" as "isolatedOsl")).rejects.toThrow("browser companion unavailable");
     expect(mocks.invoke).not.toHaveBeenCalled();
@@ -490,15 +489,15 @@ describe("browser-owned import IPC", () => {
     mocks.invoke
       .mockResolvedValueOnce({ availability: "installed" })
       .mockResolvedValueOnce({ started: true, packageId: "Mozilla.Firefox" })
-      .mockResolvedValueOnce({ serviceId: "instagram", started: true });
+      .mockResolvedValueOnce({ serviceId: "tuta", started: true });
 
     await expect(loadFirefoxStatus()).resolves.toEqual({ availability: "installed" });
     await expect(installFirefox()).resolves.toBeUndefined();
-    await expect(launchFirefoxService("instagram")).resolves.toBeUndefined();
+    await expect(launchFirefoxService("tuta")).resolves.toBeUndefined();
     expect(mocks.invoke.mock.calls).toEqual([
       ["get_firefox_status"],
       ["install_firefox"],
-      ["launch_firefox_service", { serviceId: "instagram" }],
+      ["launch_firefox_service", { serviceId: "tuta" }],
     ]);
   });
 

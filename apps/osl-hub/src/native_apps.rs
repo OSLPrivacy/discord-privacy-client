@@ -203,13 +203,10 @@ pub struct MullvadActionResult {
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FirefoxServiceId {
-    Instagram,
-    Snapchat,
-    X,
-    Messenger,
     Gmail,
     Outlook,
     Proton,
+    Tuta,
     Yahoo,
     Aol,
     Gmx,
@@ -707,19 +704,10 @@ const FIREFOX_CANDIDATES: &[ExecutableCandidate] = &[
 
 #[cfg(any(target_os = "windows", test))]
 const FIREFOX_SERVICES: &[(FirefoxServiceId, &str)] = &[
-    (FirefoxServiceId::Instagram, "https://www.instagram.com/"),
-    (FirefoxServiceId::Snapchat, "https://web.snapchat.com/"),
-    (FirefoxServiceId::X, "https://x.com/"),
-    // Meta retired the standalone Windows client and messenger.com now routes
-    // desktop users into Facebook. Keep the OSL profile on Meta's current,
-    // first-party messages surface instead of an unofficial wrapper.
-    (
-        FirefoxServiceId::Messenger,
-        "https://www.facebook.com/messages/",
-    ),
     (FirefoxServiceId::Gmail, "https://mail.google.com/"),
     (FirefoxServiceId::Outlook, "https://outlook.live.com/mail/"),
     (FirefoxServiceId::Proton, "https://mail.proton.me/"),
+    (FirefoxServiceId::Tuta, "https://app.tuta.com/"),
     (FirefoxServiceId::Yahoo, "https://mail.yahoo.com/"),
     (FirefoxServiceId::Aol, "https://mail.aol.com/"),
     (FirefoxServiceId::Gmx, "https://www.gmx.com/"),
@@ -728,12 +716,13 @@ const FIREFOX_SERVICES: &[(FirefoxServiceId, &str)] = &[
 ];
 
 fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
-    // Exhaustive enum input and a static manifest make this infallible. Avoid
-    // accepting a service name string and accidentally widening the boundary.
-    NATIVE_APPS
-        .iter()
-        .find(|manifest| manifest.id == id)
-        .expect("every native app enum has a fixed manifest")
+    match id {
+        NativeAppId::Discord => &NATIVE_APPS[0],
+        NativeAppId::Telegram => &NATIVE_APPS[1],
+        NativeAppId::Signal => &NATIVE_APPS[2],
+        NativeAppId::Whatsapp => &NATIVE_APPS[3],
+        NativeAppId::Outlook => &NATIVE_APPS[4],
+    }
 }
 
 pub(crate) fn whatsapp_store_package_family_name() -> &'static str {
@@ -1436,10 +1425,17 @@ pub fn install_firefox() -> Result<FirefoxInstallResult, String> {
 
 #[cfg(any(target_os = "windows", test))]
 pub(crate) fn firefox_service_url(service_id: FirefoxServiceId) -> &'static str {
-    FIREFOX_SERVICES
-        .iter()
-        .find_map(|(candidate, url)| (*candidate == service_id).then_some(*url))
-        .expect("every Firefox service enum has one fixed URL")
+    match service_id {
+        FirefoxServiceId::Gmail => "https://mail.google.com/",
+        FirefoxServiceId::Outlook => "https://outlook.live.com/mail/",
+        FirefoxServiceId::Proton => "https://mail.proton.me/",
+        FirefoxServiceId::Tuta => "https://app.tuta.com/",
+        FirefoxServiceId::Yahoo => "https://mail.yahoo.com/",
+        FirefoxServiceId::Aol => "https://mail.aol.com/",
+        FirefoxServiceId::Gmx => "https://www.gmx.com/",
+        FirefoxServiceId::Maildotcom => "https://www.mail.com/",
+        FirefoxServiceId::Icloud => "https://www.icloud.com/mail/",
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -4446,7 +4442,7 @@ pub(crate) mod tests {
 
     #[test]
     fn firefox_manifest_is_exhaustive_and_https_only() {
-        assert_eq!(FIREFOX_SERVICES.len(), 12);
+        assert_eq!(FIREFOX_SERVICES.len(), 9);
         assert_eq!(FIREFOX_PACKAGE_ID, "Mozilla.Firefox");
         assert_eq!(FIREFOX_MIGRATION_SWITCH, "--migration");
         assert_eq!(FIREFOX_WAIT_FOR_BROWSER_SWITCH, "-wait-for-browser");
@@ -5051,7 +5047,7 @@ pub(crate) mod tests {
         assert!(launch_firefox_service(
             std::path::Path::new("/trusted/app-local-data"),
             "owner-test",
-            FirefoxServiceId::Instagram
+            FirefoxServiceId::Gmail
         )
         .is_err());
         assert!(install_firefox().is_err());

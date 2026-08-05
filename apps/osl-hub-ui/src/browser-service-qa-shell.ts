@@ -14,17 +14,15 @@ import {
  * deliberately absent: callers cannot turn this into a general URL launcher.
  */
 export const browserServiceQaIds = [
-  "instagram",
-  "snapchat",
-  "x",
-  "messenger",
   "gmail",
+  "outlook",
   "proton",
   "yahoo",
   "aol",
   "gmx",
   "maildotcom",
   "icloud",
+  "tuta",
 ] as const satisfies readonly HomeAppId[];
 
 export type BrowserServiceQaId = (typeof browserServiceQaIds)[number];

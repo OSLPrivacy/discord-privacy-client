@@ -11799,7 +11799,7 @@ mod tests {
 
     fn context(account_id: &str, conversation_id: &str) -> HubConversationContext {
         HubConversationContext {
-            service_id: "instagram".to_owned(),
+            service_id: "email".to_owned(),
             account_id: account_id.to_owned(),
             conversation_kind: HubConversationKind::Dm,
             conversation_id: conversation_id.to_owned(),
@@ -12134,7 +12134,7 @@ mod tests {
         );
         let presented_in = context(
             "native-discord-alice",
-            &manual_dm_channel_binding("instagram", &alice.user_id, &bob.user_id).unwrap(),
+            &manual_dm_channel_binding("telegram", &alice.user_id, &bob.user_id).unwrap(),
         );
         assert_ne!(
             minted_in.conversation_id, presented_in.conversation_id,
@@ -13507,12 +13507,12 @@ mod tests {
         let registry_path = temporary_registry();
         let registry = ServiceRegistryState::load(registry_path.clone());
         let account = registry
-            .create_for_owner(owner, ServiceKind::Instagram, "Test".to_owned())
+            .create_for_owner(owner, ServiceKind::Email, "Test".to_owned())
             .unwrap();
         let host = crate::service_host::ServiceHostState::default();
         let namespace = owner_profile_namespace(owner).unwrap();
         let active = host
-            .begin_open(&namespace, "instagram", &account.id, "www.instagram.com")
+            .begin_open(&namespace, "email", &account.id, "mail.google.com")
             .unwrap();
         let broker = HubBrokerState::default();
         let lease = activate_owned_local_loopback_context(
@@ -13520,7 +13520,7 @@ mod tests {
             &registry,
             &host,
             owner,
-            "instagram",
+            "email",
             &account.id,
             "local-0123456789abcdef".to_owned(),
         )
@@ -13528,7 +13528,7 @@ mod tests {
         let bound = broker.context_for(&lease.context_token).unwrap();
         assert_eq!(bound.self_osl_id, owner);
         assert_eq!(bound.participant_osl_ids, vec![owner]);
-        assert_eq!(bound.service_id, "instagram");
+        assert_eq!(bound.service_id, "email");
         assert_eq!(bound.account_id, account.id);
         assert_eq!(lease.host_generation, active.generation);
         assert!(broker
@@ -13552,12 +13552,12 @@ mod tests {
         let registry_path = temporary_registry();
         let registry = ServiceRegistryState::load(registry_path.clone());
         let account = registry
-            .create_for_owner(owner, ServiceKind::Instagram, "Test".to_owned())
+            .create_for_owner(owner, ServiceKind::Email, "Test".to_owned())
             .unwrap();
         let host = crate::service_host::ServiceHostState::default();
         let namespace = owner_profile_namespace(owner).unwrap();
         let active = host
-            .begin_open(&namespace, "instagram", &account.id, "www.instagram.com")
+            .begin_open(&namespace, "email", &account.id, "mail.google.com")
             .unwrap();
         let broker = HubBrokerState::default();
 
@@ -13574,7 +13574,7 @@ mod tests {
         };
         assert!(activate(
             "osl_owner_bbbbbbbbbbbbbbbb",
-            "instagram",
+            "email",
             &account.id,
             "local-0123456789abcdef"
         )
@@ -13582,23 +13582,23 @@ mod tests {
         assert!(activate(owner, "discord", &account.id, "local-0123456789abcdef").is_err());
         assert!(activate(
             owner,
-            "instagram",
+            "email",
             "other-account",
             "local-0123456789abcdef"
         )
         .is_err());
-        assert!(activate(owner, "instagram", &account.id, "semantic label").is_err());
-        assert!(activate(owner, "instagram", &account.id, "too-short").is_err());
+        assert!(activate(owner, "email", &account.id, "semantic label").is_err());
+        assert!(activate(owner, "email", &account.id, "too-short").is_err());
 
         host.next_generation().unwrap();
-        let hostless = activate(owner, "instagram", &account.id, "local-0123456789abcdef")
+        let hostless = activate(owner, "email", &account.id, "local-0123456789abcdef")
             .expect("an owned account may create a standalone local context");
         assert_eq!(
             broker
                 .validate_local_protected_origin(&hostless.context_token, owner)
                 .unwrap(),
             ProtectedContextOrigin::Standalone {
-                service_id: "instagram".to_owned(),
+                service_id: "email".to_owned(),
             }
         );
         assert!(broker
@@ -13651,10 +13651,10 @@ mod tests {
     fn context_switch_invalidates_prior_account_and_conversation() {
         let broker = HubBrokerState::default();
         let first = broker
-            .activate(context("instagram-personal", "dm-1"), 7)
+            .activate(context("email-personal", "dm-1"), 7)
             .unwrap();
         let second = broker
-            .activate(context("instagram-alt", "dm-2"), 8)
+            .activate(context("email-alt", "dm-2"), 8)
             .unwrap();
         assert!(broker.context_for(&first.context_token).is_err());
         assert_eq!(
@@ -13662,14 +13662,14 @@ mod tests {
                 .context_for(&second.context_token)
                 .unwrap()
                 .account_id,
-            "instagram-alt"
+            "email-alt"
         );
     }
 
     #[test]
     fn canonical_scopes_are_service_and_account_separated() {
-        let first = context("instagram-personal", "dm-1");
-        let second = context("instagram-alt", "dm-1");
+        let first = context("email-personal", "dm-1");
+        let second = context("email-alt", "dm-1");
         assert_ne!(
             scope_input(&first).unwrap().id,
             scope_input(&second).unwrap().id
@@ -13737,7 +13737,7 @@ mod tests {
         );
         assert_ne!(
             first_scope.id,
-            security::manual_peer_scope_id("instagram", "client-one-profile", "hub-person-bob",)
+            security::manual_peer_scope_id("telegram", "client-one-profile", "hub-person-bob",)
                 .unwrap()
         );
     }
@@ -14502,7 +14502,7 @@ mod tests {
         validate_peer_protected_payload(&payload, &manual, &context, now).unwrap();
         assert_eq!(payload.plaintext, multiline);
 
-        payload.service_id = "instagram".to_owned();
+        payload.service_id = "telegram".to_owned();
         assert!(validate_peer_protected_payload(&payload, &manual, &context, now).is_err());
         payload.service_id = "discord".to_owned();
         payload.conversation_binding = "manual-dm-forwarded".to_owned();
@@ -15348,7 +15348,7 @@ mod tests {
     fn default_core_fails_closed_instead_of_fabricating_encryption() {
         let broker = HubBrokerState::default();
         let lease = broker
-            .activate(context("instagram-personal", "dm-1"), 7)
+            .activate(context("email-personal", "dm-1"), 7)
             .unwrap();
         let core = HubCoreState::default();
         let error =
@@ -15359,7 +15359,7 @@ mod tests {
 
     #[test]
     fn invalid_participants_and_platform_ids_are_rejected() {
-        let mut invalid = context("instagram-personal", "dm-1");
+        let mut invalid = context("email-personal", "dm-1");
         invalid.participant_osl_ids.push("peer-rose".to_owned());
         assert!(validate_context(&invalid).is_err());
         invalid.participant_osl_ids.pop();
@@ -15371,11 +15371,11 @@ mod tests {
     fn lease_is_bound_to_exact_active_host_generation() {
         let broker = HubBrokerState::default();
         let lease = broker
-            .activate(context("instagram-personal", "dm-1"), 7)
+            .activate(context("email-personal", "dm-1"), 7)
             .unwrap();
         let active = ActiveServiceHost {
-            service_id: "instagram".to_owned(),
-            account_id: "instagram-personal".to_owned(),
+            service_id: "email".to_owned(),
+            account_id: "email-personal".to_owned(),
             generation: 7,
             owner_namespace: "owner-test".to_owned(),
         };

@@ -3,11 +3,10 @@ import { homeAppsFromServices, type LinkedService, type ServiceId } from "./serv
 
 const launchServices: LinkedService[] = [
   ["discord", "Discord"],
-  ["instagram", "Instagram"],
-  ["snapchat", "Snapchat"],
-  ["x", "X"],
-  ["messenger", "Messenger"],
   ["email", "Email"],
+  ["telegram", "Telegram"],
+  ["signal", "Signal"],
+  ["whatsapp", "WhatsApp"],
 ].map(([id, displayName], sidebarOrder) => ({
   id: id as ServiceId,
   displayName,

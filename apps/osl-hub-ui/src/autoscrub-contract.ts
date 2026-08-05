@@ -117,7 +117,7 @@ export function createAutoscrubUnattendedContract(
 }
 
 const serviceIds: readonly ServiceId[] = [
-  "discord", "telegram", "instagram", "snapchat", "email", "x", "slack", "linkedin", "teams", "messenger", "signal", "whatsapp",
+  "discord", "telegram", "email", "signal", "whatsapp",
 ];
 const phases: readonly AutoScrubRunPhase[] = ["reviewRequired", "running", "stopping", "blocked", "complete", "failed"];
 const quitGuardStates: readonly AutoScrubQuitGuardState[] = ["notRequested", "checking", "estimated", "stopped", "unknown", "refused"];

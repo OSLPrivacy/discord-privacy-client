@@ -20,6 +20,7 @@ pub mod recorder;
 pub mod revalidation;
 pub mod rotation;
 pub mod screenshot;
+pub mod screenshot_gate;
 pub mod usb;
 
 pub use clock::{Clock, MockClock, SystemClock};
@@ -35,6 +36,11 @@ pub use rotation::{RotationConfig, RotationController, RotationReason, Suspiciou
 pub use screenshot::{
     apply_to_hwnd, apply_to_hwnd_and_children, capture_protection_is_enforced, ScreenshotError,
     ScreenshotProtection,
+};
+pub use screenshot_gate::{
+    verify_affinity_readback, verify_capture_protection, CaptureProtectionError,
+    CaptureProtectionPrerequisites, EXCLUDE_FROM_CAPTURE_AFFINITY,
+    MINIMUM_CAPTURE_PROTECTION_BUILD,
 };
 pub use usb::{
     is_capture_device, usb_monitor_event_from_device_change, ArrivalCallback, StorageDeviceId,
