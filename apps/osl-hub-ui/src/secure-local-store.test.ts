@@ -3,6 +3,17 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SecureLocalStore, SecureLocalStoreError, registerSecureLocalStoreTests } from "./secure-local-store";
 
+
+// D-251: every `it()` below deliberately re-loads `./main` with its own
+// selectors / storage / stubs, so the import CANNOT be hoisted into a single
+// `beforeAll` without destroying what the tests check. `src/main.ts` is ~10k
+// lines and one load costs ~2.5 s cold, which left almost nothing of vitest's
+// default 5,000 ms budget for the behaviour under test: on a busy machine these
+// tests died with `Test timed out in 5000ms` before reaching an assertion.
+// The budget below covers MODULE LOADING, not the behaviour -- no assertion
+// depends on it, and every assertion is unchanged.
+const MODULE_RELOAD_BUDGET_MS = 30_000;
+
 const mocks = vi.hoisted(() => ({
   emitTo: vi.fn(),
   getCurrentWindow: vi.fn(),
@@ -178,7 +189,7 @@ describe("OSL chat notification secure storage", () => {
     expect([...encrypted.values.values()][0]).not.toContain("New encrypted message");
     await expect((await secureStore(encrypted)).getItem("osl-chat-notifications-v1"))
       .resolves.toBe(JSON.stringify([{ id: "chat-2", title: "OSL Chat", detail: "New encrypted message", createdAt: "Today" }]));
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 });
 
 describe("SecureLocalStore integration contracts", () => {
@@ -224,4 +235,4 @@ describe("SecureLocalStore integration contracts", () => {
     expect(wireRn).toContain('pub const RN_SESSION_DIR: &str = "rn_sessions"');
     expect(wireRn).toContain(".create_new(true)");
   });
-});
+}, MODULE_RELOAD_BUDGET_MS);

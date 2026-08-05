@@ -1,20 +1,41 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { identityProtectionStatus, parseIdentitySetupResult, parseMainPasswordSetupResult } from "./core";
 import { initialRecoveryKitState, recoveryKitReducer, recoveryKitView, visibleRecoverySecrets } from "./recovery-kit";
 
-async function loadUi() {
-  vi.resetModules();
-  const store = new Map<string, string>();
+// D-251: `src/main.ts` is ~10k lines, and importing it costs seconds. This file
+// used to do that inside the body of every `it()`, where vitest's default
+// 5,000 ms `testTimeout` applies, so most of each test's budget went on module
+// loading and a busy machine turned the file red with
+// `Test timed out in 5000ms` -- without ever reaching an assertion.
+//
+// The module is now loaded ONCE, in a hook that carries its own budget, and the
+// tests read it synchronously. That is safe here and was checked, not assumed:
+// the one test that touches the module drives its state entirely through
+// `__oslHubUiTest.reset(...)`, and the stubbed `localStorage` is emptied before
+// each test -- which is exactly the state a fresh import would have seen.
+const localStore = new Map<string, string>();
+let ui: typeof import("./main");
+
+beforeAll(async () => {
   vi.stubGlobal("localStorage", {
-    getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => { store.set(key, value); },
-    removeItem: (key: string) => { store.delete(key); },
-    clear: () => { store.clear(); },
+    getItem: (key: string) => localStore.get(key) ?? null,
+    setItem: (key: string, value: string) => { localStore.set(key, value); },
+    removeItem: (key: string) => { localStore.delete(key); },
+    clear: () => { localStore.clear(); },
   });
   vi.stubGlobal("requestAnimationFrame", () => 1);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
-  return import("./main");
-}
+  vi.resetModules();
+  ui = await import("./main");
+}, 300_000);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  localStore.clear();
+});
 
 describe("A1 reconciliation independent audit (unit a14)", () => {
   it("holds recovery secrets back until capture protection is proven or the owner explicitly accepts the risk", () => {
@@ -41,13 +62,13 @@ describe("A1 reconciliation independent audit (unit a14)", () => {
     expect(completed).toMatchObject({ outcome: "leave-recovery", state: { secrets: null, kitUnsaved: false } });
   });
 
-  it("renders verified device protection as ready and treats unknown or unverified methods as not secure", async () => {
+  it("renders verified device protection as ready and treats unknown or unverified methods as not secure", () => {
     expect(identityProtectionStatus("tpm-pcp")).toMatchObject({ state: "protected", label: "Account protected" });
     for (const method of [null, undefined, "memory-ephemeral", "future-device-vault"]) {
       expect(identityProtectionStatus(method)).toMatchObject({ state: "not-secure", label: "Account not secure" });
     }
 
-    const { __oslHubUiTest } = await loadUi();
+    const { __oslHubUiTest } = ui;
     __oslHubUiTest.reset({ route: "settings", coreReady: true, storageMethod: "tpm-pcp" });
     expect(__oslHubUiTest.renderRouteShell("settings")).toContain('data-identity-protection="protected"');
 

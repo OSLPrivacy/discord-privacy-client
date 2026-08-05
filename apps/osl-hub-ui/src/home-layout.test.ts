@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
 vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
@@ -13,21 +13,45 @@ function readRelative(relativePath: string): string {
   return readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), "utf8");
 }
 
-async function loadUi() {
-  vi.resetModules();
-  const store = new Map<string, string>();
+// D-251: `src/main.ts` is ~10k lines, and importing it costs seconds. This file
+// used to do that inside the body of every `it()`, where vitest's default
+// 5,000 ms `testTimeout` applies, so most of each test's budget went on module
+// loading and a busy machine turned the file red with
+// `Test timed out in 5000ms` -- without ever reaching an assertion.
+//
+// The module is now loaded ONCE, in a hook that carries its own budget, and the
+// tests read it synchronously. That is safe here and was checked, not assumed:
+// only 4 of this file's tests load the module at all, each drives the state it
+// renders from through `__oslHubUiTest.reset(...)` or calls a pure exported
+// helper (`homePrimaryActionPlan`), and the stubbed `localStorage` is emptied
+// before each test -- which is exactly the state a fresh import would have
+// seen. Every other test in this file reads `main.ts`/`styles.css` source
+// text directly and never touches the loaded module.
+const localStore = new Map<string, string>();
+let ui: typeof import("./main");
+
+beforeAll(async () => {
   vi.stubGlobal("localStorage", {
-    getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => { store.set(key, value); },
-    removeItem: (key: string) => { store.delete(key); },
-    clear: () => { store.clear(); },
+    getItem: (key: string) => localStore.get(key) ?? null,
+    setItem: (key: string, value: string) => { localStore.set(key, value); },
+    removeItem: (key: string) => { localStore.delete(key); },
+    clear: () => { localStore.clear(); },
   });
   vi.stubGlobal("document", { querySelector: vi.fn(() => null), createElement: vi.fn(() => ({})), documentElement: { classList: { add: vi.fn() }, dataset: {} }, addEventListener: vi.fn(), visibilityState: "visible" });
   vi.stubGlobal("window", { addEventListener: vi.fn(), matchMedia: vi.fn(() => ({ matches: false, addEventListener: vi.fn() })), setTimeout, confirm: vi.fn(() => false) });
   vi.stubGlobal("requestAnimationFrame", () => 1);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
-  return import("./main");
-}
+  vi.resetModules();
+  ui = await import("./main");
+}, 300_000);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  localStore.clear();
+});
 
 function visibleText(markup: string): string {
   return markup.replace(/<[^>]*>/gu, " ").replace(/\s+/gu, " ").trim();
@@ -47,12 +71,8 @@ describe("home workspace hierarchy", () => {
   const destination = functionSource(source, "homeDestinationContent", "workspaceContent");
   const home = functionSource(source, "workspaceContent", "peopleListMarkup");
 
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  it("Implement Home as the protection status destination", async () => {
-    const { __oslHubUiTest } = await loadUi();
+  it("Implement Home as the protection status destination", () => {
+    const { __oslHubUiTest } = ui;
 
     __oslHubUiTest.reset({ route: "home", coreReady: false, storageMethod: null });
     const blockedHome = __oslHubUiTest.renderWorkspaceContent("home");
@@ -97,7 +117,7 @@ describe("home workspace hierarchy", () => {
     expect(protectedCopy).not.toMatch(/keyservers?|ratchets?|receipts?|browser profiles?|provider adapters?/iu);
   });
 
-  it("states first-run Home in words an owner can act on, never build jargon", async () => {
+  it("states first-run Home in words an owner can act on, never build jargon", () => {
     // The shipped first-run Home read "Finish account protection -- source
     // linked . bootstrap required", in both the "Needs attention" summary and
     // the recommended-action card. That is bridge-wiring vocabulary; a
@@ -105,7 +125,7 @@ describe("home workspace hierarchy", () => {
     //
     // Asserted on RENDERED text, not on the source of the template that
     // produced it, so the check is against what the WebView actually paints.
-    const { __oslHubUiTest } = await loadUi();
+    const { __oslHubUiTest } = ui;
     __oslHubUiTest.reset({ route: "home", coreReady: false, storageMethod: null });
     const copy = visibleText(__oslHubUiTest.renderWorkspaceContent("home"));
 
@@ -133,8 +153,8 @@ describe("home workspace hierarchy", () => {
     expect(destination).toContain("visibleAppNotifications().at(0)");
   });
 
-  it("routes the Home primary action to the highest-priority safe fix", async () => {
-    const { homePrimaryActionPlan } = await loadUi();
+  it("routes the Home primary action to the highest-priority safe fix", () => {
+    const { homePrimaryActionPlan } = ui;
     const ready = {
       coreReady: true,
       storageProtected: true,
@@ -272,7 +292,7 @@ describe("home workspace hierarchy", () => {
     expect(styles).toMatch(/\.home-profile-dock\s*\{[^}]*position:\s*fixed[^}]*right:\s*26px[^}]*bottom:\s*24px/s);
   });
 
-  it("keeps the Home profile tooltip beside the circular dock and bounded for long names", async () => {
+  it("keeps the Home profile tooltip beside the circular dock and bounded for long names", () => {
     const profileTooltipRule = styles.match(/\.home-profile-dock > \.in-dom-tooltip\s*\{[^}]*\}/s)?.[0] ?? "";
     expect(profileTooltipRule).toContain("right: calc(100% + 10px)");
     expect(profileTooltipRule).toContain("top: 50%");
@@ -281,7 +301,7 @@ describe("home workspace hierarchy", () => {
     expect(profileTooltipRule).toContain("transform: translateY(-50%)");
     expect(profileTooltipRule).toContain("overflow-wrap: anywhere");
 
-    const { __oslHubUiTest } = await loadUi();
+    const { __oslHubUiTest } = ui;
 
     __oslHubUiTest.reset({ route: "home" });
     const defaultHome = __oslHubUiTest.renderWorkspaceContent("home");

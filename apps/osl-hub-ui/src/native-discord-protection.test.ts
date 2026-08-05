@@ -1,14 +1,28 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 const source = readFileSync(fileURLToPath(new URL("./main.ts", import.meta.url)), "utf8");
 const nativeMain = readFileSync(fileURLToPath(new URL("../../osl-hub/src/main.rs", import.meta.url)), "utf8");
 const nativeAdapter = readFileSync(fileURLToPath(new URL("../../osl-hub/src/native_discord_adapter.rs", import.meta.url)), "utf8");
 const nativeOverlay = readFileSync(fileURLToPath(new URL("../../osl-hub/src/native_discord_overlay.rs", import.meta.url)), "utf8");
 
-async function loadUi() {
-  vi.resetModules();
+// D-251: `src/main.ts` is ~10k lines, and importing it costs seconds. This file
+// used to do that inside the body of every `it()` that needed it, where
+// vitest's default 5,000 ms `testTimeout` applies, so most of that test's
+// budget went on module loading and a busy machine turned the file red with
+// `Test timed out in 5000ms` -- without ever reaching an assertion.
+//
+// The module is now loaded ONCE, in a hook that carries its own budget, and the
+// two tests that need it read it synchronously. Checked, not assumed: only two
+// tests in this file touch the live module (`offers Protect for native Discord
+// while leaving the in-window sheet embedded-only` and `never opens the
+// WebView geometry sheet for the native branch`), every other test here reads
+// `source`/`nativeMain`/`nativeAdapter`/`nativeOverlay` text directly and never
+// touches module state.
+let ui: typeof import("./main");
+
+beforeAll(async () => {
   vi.stubGlobal("localStorage", {
     getItem: () => null,
     setItem: () => undefined,
@@ -17,14 +31,17 @@ async function loadUi() {
   });
   vi.stubGlobal("requestAnimationFrame", () => 1);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
-  return import("./main");
-}
+  vi.resetModules();
+  ui = await import("./main");
+}, 300_000);
 
-afterEach(() => vi.unstubAllGlobals());
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("native Discord protected overlay routing", () => {
   it("offers Protect for native Discord while leaving the in-window sheet embedded-only", async () => {
-    const { __oslHubUiTest } = await loadUi();
+    const { __oslHubUiTest } = ui;
     __oslHubUiTest.reset({
       hubPeople: [{ personId: "verified-friend", alias: "Rose", safetyNumberVerified: true }],
     });
@@ -157,7 +174,7 @@ describe("native Discord protected overlay routing", () => {
   });
 
   it("never opens the WebView geometry sheet for the native branch", async () => {
-    const { __oslHubUiTest } = await loadUi();
+    const { __oslHubUiTest } = ui;
     __oslHubUiTest.reset();
     __oslHubUiTest.useNativeDiscordProtectionForTest();
 

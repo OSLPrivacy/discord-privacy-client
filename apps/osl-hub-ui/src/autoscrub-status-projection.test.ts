@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -27,10 +27,24 @@ function installGlobals(): void {
   });
 }
 
+// D-251: `src/main.ts` is ~10k lines, and importing it costs seconds. This file
+// used to do that inside the body of the only `it()`, where vitest's default
+// 5,000 ms `testTimeout` applies, so most of the test's budget went on module
+// loading and a busy machine turned the file red with
+// `Test timed out in 5000ms` -- without ever reaching an assertion.
+//
+// The module is now loaded ONCE, in a hook that carries its own budget, and the
+// test reads it synchronously.
+let ui: typeof import("./main");
+
+beforeAll(async () => {
+  installGlobals();
+  ui = await import("./main");
+}, 300_000);
+
 describe("autoscrub status projection", () => {
-  it("Status-projection UI renders receipts for a completed run (simple repo", async () => {
-    installGlobals();
-    const { autoscrubStatusProjectionMarkup } = await import("./main");
+  it("Status-projection UI renders receipts for a completed run (simple repo", () => {
+    const { autoscrubStatusProjectionMarkup } = ui;
 
     const markup = autoscrubStatusProjectionMarkup({
       phase: "completed",

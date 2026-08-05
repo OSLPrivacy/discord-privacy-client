@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
@@ -44,12 +44,26 @@ function memoryStorage(): Storage {
   };
 }
 
-async function loadUi(): Promise<{ append: ReturnType<typeof vi.fn> }> {
+// D-251: `src/main.ts` is ~10k lines, and importing it costs seconds. This file
+// used to do that inside the body of the only `it()`, where vitest's default
+// 5,000 ms `testTimeout` applies, so most of the test's budget went on module
+// loading and a busy machine turned the file red with
+// `Test timed out in 5000ms` -- without ever reaching an assertion.
+//
+// The module is now loaded ONCE, in a hook that carries its own budget, and the
+// test reads it synchronously. The old `beforeEach(() => { vi.unstubAllGlobals();
+// vi.restoreAllMocks(); })` ran BEFORE the (only) test, which would have torn
+// down the globals just stubbed in `beforeAll` before the test ever ran; it is
+// now an `afterAll` instead.
+let append: ReturnType<typeof vi.fn>;
+let ui: typeof import("./main");
+
+beforeAll(async () => {
   vi.resetModules();
   mocks.invoke.mockReset();
   const appFrame = new FakeElement();
   const root = new FakeElement({ ".app-frame": appFrame });
-  const append = vi.fn();
+  append = vi.fn();
   vi.stubGlobal("document", {
     querySelector: (selector: string) => selector === "#app" ? root : null,
     createElement: () => new FakeElement(),
@@ -69,19 +83,17 @@ async function loadUi(): Promise<{ append: ReturnType<typeof vi.fn> }> {
   vi.stubGlobal("localStorage", memoryStorage());
   vi.stubGlobal("requestAnimationFrame", () => 1);
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
-  await import("./main");
-  return { append };
-}
+  ui = await import("./main");
+}, 300_000);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("B0-05 unhandled Tauri command rejection visibility", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-  });
-
   it("surfaces a nonexistent command rejection while still containing background failure", async () => {
-    const { append } = await loadUi();
-    const { __oslHubUiTest } = await import("./main");
+    const { __oslHubUiTest } = ui;
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const missingCommand = "b0_05_command_that_does_not_exist";
     const missingCommandRejection = new Error(`unknown command ${missingCommand}`);

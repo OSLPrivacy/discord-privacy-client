@@ -1,6 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SecureLocalStore } from "./secure-local-store";
 
+
+// D-251: every `it()` below deliberately re-loads `./main` with its own
+// selectors / storage / stubs, so the import CANNOT be hoisted into a single
+// `beforeAll` without destroying what the tests check. `src/main.ts` is ~10k
+// lines and one load costs ~2.5 s cold, which left almost nothing of vitest's
+// default 5,000 ms budget for the behaviour under test: on a busy machine these
+// tests died with `Test timed out in 5000ms` before reaching an assertion.
+// The budget below covers MODULE LOADING, not the behaviour -- no assertion
+// depends on it, and every assertion is unchanged.
+const MODULE_RELOAD_BUDGET_MS = 30_000;
+
 const mocks = vi.hoisted(() => ({
   emitTo: vi.fn(),
   getCurrentWindow: vi.fn(),
@@ -91,7 +102,7 @@ describe("UI preferences", () => {
     });
     expect([...encrypted.values.values()].join("\n")).not.toContain("person-a");
     expect([...encrypted.values.values()].join("\n")).not.toContain("person-d");
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("loadUiPreferences falls back per migrated key when a secure value is absent or refused", async () => {
     const legacy = new MemoryStorage();
@@ -117,5 +128,5 @@ describe("UI preferences", () => {
       mutedPeople: ["legacy-muted"],
       unread: [["secure-unread", 4]],
     });
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 });

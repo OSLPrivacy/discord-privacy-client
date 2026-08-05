@@ -26,6 +26,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+
+// D-251: every `it()` below deliberately re-loads `./main` with its own
+// selectors / storage / stubs, so the import CANNOT be hoisted into a single
+// `beforeAll` without destroying what the tests check. `src/main.ts` is ~10k
+// lines and one load costs ~2.5 s cold, which left almost nothing of vitest's
+// default 5,000 ms budget for the behaviour under test: on a busy machine these
+// tests died with `Test timed out in 5000ms` before reaching an assertion.
+// The budget below covers MODULE LOADING, not the behaviour -- no assertion
+// depends on it, and every assertion is unchanged.
+const MODULE_RELOAD_BUDGET_MS = 30_000;
+
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
@@ -188,7 +199,7 @@ describe("OSL Chat local state on disk", () => {
     expect(snapshot.mutedPeople).toEqual([CORRESPONDENT]);
     expect(snapshot.unread).toEqual([[CORRESPONDENT, 3], [SECOND_CORRESPONDENT, 1]]);
     expect(snapshot.previewsVisible).toBe(false);
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("keeps a live write of the correspondent out of the bytes and still reads it back after a restart", async () => {
     const path = newStorageFile();
@@ -233,7 +244,7 @@ describe("OSL Chat local state on disk", () => {
     expect(restarted.oslChatUiPreferenceSnapshot().unread)
       .toEqual([[CORRESPONDENT, 3], [SECOND_CORRESPONDENT, 1]]);
     expect(restarted.oslChatUiPreferenceSnapshot().mutedPeople).toEqual([CORRESPONDENT]);
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 
   it("persists nothing rather than plaintext when the native side refuses the key", async () => {
     const path = newStorageFile();
@@ -248,5 +259,5 @@ describe("OSL Chat local state on disk", () => {
     expect(scanPersistedBytes(path, CORRESPONDENT).hit).toBe(false);
     expect(storage.getItem(unreadKey), "a refused key must not fall back to plaintext").toBeNull();
     expect([...storage.values.keys()].filter((key) => key.startsWith("osl-secure-local-store-v1:"))).toEqual([]);
-  });
+  }, MODULE_RELOAD_BUDGET_MS);
 });
