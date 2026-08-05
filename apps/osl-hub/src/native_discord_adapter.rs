@@ -8036,6 +8036,37 @@ pub(crate) fn snapshot_claimed_window(
     windows::snapshot(target, process_is_trusted)
 }
 
+/// The shipping carrier write primitive, exposed for the landing oracle's live
+/// calibration and for nothing else.
+///
+/// This is the exact function [`windows::place`] drives at `:18017`: real
+/// `SendInput` Unicode keystrokes through Slate's own input pipeline, which is
+/// why `ValuePattern.SetValue` is rejected at `:1557-1563`.
+///
+/// **It cannot commit.** There is no Enter in it. `send_enter` is a different
+/// function, guarded by its own foreground proof, and it is not reachable from
+/// here.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_type_text(text: &str) -> bool {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    windows::send_unicode_chunk(&units)
+}
+
+/// Discord's soft line break: Shift is pressed around a single Enter, which is
+/// how `carrier_input_steps` (`:1579`) maps every `\n`. **Never a bare Enter** —
+/// a bare Enter mid-carrier would send early.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_type_soft_break() -> bool {
+    windows::send_shift_enter()
+}
+
+/// The shipping reclaim: Ctrl+A then Delete (`:16761`), tried over
+/// `CARRIER_RECLAIM_DELETE_KEYS`. Clears a composer without committing.
+#[cfg(target_os = "windows")]
+pub(crate) fn shipping_clear_composer() -> bool {
+    windows::clear_composer_by_reclaim()
+}
+
 #[cfg(target_os = "windows")]
 mod windows {
     use super::*;
@@ -15426,7 +15457,7 @@ mod windows {
     /// prefix -- the measured `send_carrier_write_plateaued`. Any batch being
     /// rejected still fails the whole write, exactly as before, and the text still
     /// arrives as real keystrokes through Slate's own input pipeline.
-    fn send_unicode_chunk(units: &[u16]) -> bool {
+    pub(super) fn send_unicode_chunk(units: &[u16]) -> bool {
         units.chunks(MAX_UNICODE_UNITS_PER_SEND).all(|batch| {
             let mut inputs = Vec::with_capacity(batch.len() * 2);
             for unit in batch {
@@ -15461,7 +15492,7 @@ mod windows {
     /// single physical Enter, and the release is always attempted even when the
     /// Enter itself is rejected, so a failed carrier can never leave Shift
     /// latched on the user's desktop.
-    fn send_shift_enter() -> bool {
+    pub(super) fn send_shift_enter() -> bool {
         let shift_down =
             send_inputs(&[keyboard_input(DISCORD_SHIFT_SCAN_CODE, KEYEVENTF_SCANCODE)]);
         let newline = shift_down
@@ -16779,6 +16810,16 @@ mod windows {
             keyboard_input(delete_scan, delete_flags),
             keyboard_input(delete_scan, delete_flags | KEYEVENTF_KEYUP),
         ])
+    }
+
+    /// Clear a composer the way the shipping reclaim does, and by no other
+    /// means: Ctrl+A then each key in `CARRIER_RECLAIM_DELETE_KEYS` until one
+    /// is accepted. Exposed for the landing oracle's live calibration; it
+    /// contains no Enter and cannot commit.
+    pub(super) fn clear_composer_by_reclaim() -> bool {
+        CARRIER_RECLAIM_DELETE_KEYS
+            .iter()
+            .any(|(scan, flags)| send_select_all_then_delete(*scan, *flags))
     }
 
     /// The delete keys the reclaim tries, in order: the grey extended `Delete`

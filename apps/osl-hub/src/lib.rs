@@ -78,6 +78,10 @@ pub mod hosted_port;
 pub mod hosted_provider_recipe;
 pub mod hosted_session_port;
 pub mod invite_clipboard;
+/// The landing oracle: did this exact text land in the composer? Judged
+/// through channels that did not write it. Pure above its syscall seam, so the
+/// verdict is testable in every build that can compile this crate.
+pub mod landing_oracle;
 /// When the hidden main window may be shown. Pure, and deliberately not behind
 /// `desktop`: the reveal rule is what decides whether the app is visible at all,
 /// so it is testable in every build that can compile this crate.
