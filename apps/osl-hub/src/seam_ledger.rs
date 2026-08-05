@@ -399,9 +399,7 @@ pub(crate) fn ratchet(live_ids: &[String], baseline: &Baseline) -> Verdict {
                 baseline.owners.join(", ")
             }
         ));
-        lines.push(
-            "  The number may only go DOWN, and it may never be spent again.".to_owned(),
-        );
+        lines.push("  The number may only go DOWN, and it may never be spent again.".to_owned());
         return Verdict { ok: true, lines };
     }
 
@@ -442,7 +440,10 @@ pub(crate) fn ratchet(live_ids: &[String], baseline: &Baseline) -> Verdict {
         }
     }
     if !fixed.is_empty() {
-        lines.push("  Violations still listed in the baseline that no longer exist -- delete these ids:".to_owned());
+        lines.push(
+            "  Violations still listed in the baseline that no longer exist -- delete these ids:"
+                .to_owned(),
+        );
         for id in &fixed {
             lines.push(format!("    - {id}"));
         }
@@ -741,12 +742,22 @@ mod tests {
         assert_eq!(violation, Some(SeamViolation::DeclaredWithoutALiveReceipt));
 
         assert_eq!(
-            classify(FleetAction::NoReceiptNotPublished, false, CarrySeam::NoCarryPath).3,
+            classify(
+                FleetAction::NoReceiptNotPublished,
+                false,
+                CarrySeam::NoCarryPath
+            )
+            .3,
             Some(SeamViolation::NoCarryPathDeclared),
             "a provider with no carrier path wired is recorded as that, not as an unearned receipt"
         );
         assert_eq!(
-            classify(FleetAction::RerunBeforePublishing, false, CarrySeam::Uia2Substrate).3,
+            classify(
+                FleetAction::RerunBeforePublishing,
+                false,
+                CarrySeam::Uia2Substrate
+            )
+            .3,
             Some(SeamViolation::ReceiptOffSeam),
             "a receipt measured against a seam that has moved is not a proof of today's seam"
         );
@@ -769,7 +780,11 @@ mod tests {
         };
 
         assert!(
-            ratchet(&["discord:published-without-a-sound-receipt".to_owned()], &base).ok,
+            ratchet(
+                &["discord:published-without-a-sound-receipt".to_owned()],
+                &base
+            )
+            .ok,
             "the recorded baseline itself must be green, or every case below is vacuous"
         );
 
@@ -793,12 +808,18 @@ mod tests {
         let decrease = ratchet(&[], &base);
         assert!(!decrease.ok, "an unrecorded decrease must fail");
         assert!(
-            decrease.lines.iter().any(|line| line.contains("BASELINE IS STALE")),
+            decrease
+                .lines
+                .iter()
+                .any(|line| line.contains("BASELINE IS STALE")),
             "a decrease must say the baseline is stale, not congratulate anyone:\n{}",
             decrease.lines.join("\n")
         );
 
-        let swap = ratchet(&["signal:declared-without-a-live-receipt".to_owned()], &base);
+        let swap = ratchet(
+            &["signal:declared-without-a-live-receipt".to_owned()],
+            &base,
+        );
         assert!(!swap.ok, "same count, different ids must fail");
         assert!(
             swap.lines.iter().any(|line| line.contains("DRIFTED")),

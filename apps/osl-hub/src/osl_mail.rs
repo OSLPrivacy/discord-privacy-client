@@ -499,7 +499,9 @@ mod tests {
     /// burn DO work against the deployed service.
     #[test]
     fn the_mail_client_availability_flag_is_the_claim_state_and_not_a_literal() {
-        use crate::claim_state::{claim_of, public_claim, CarrierEvidence, DeliveryEvidence, PublicClaim, Surface};
+        use crate::claim_state::{
+            claim_of, public_claim, CarrierEvidence, DeliveryEvidence, PublicClaim, Surface,
+        };
 
         assert_eq!(
             super::osl_mail_desktop_bridge_available(),

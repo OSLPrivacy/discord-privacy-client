@@ -1651,7 +1651,10 @@ mod tests {
 
     #[test]
     fn superseded_messenger_surface_is_cut_by_owner_ruling_2026_08_05() {
-        assert_eq!(service_manifest("messenger"), Err(ServiceHostError::UnknownService));
+        assert_eq!(
+            service_manifest("messenger"),
+            Err(ServiceHostError::UnknownService)
+        );
     }
 
     #[test]
@@ -1846,7 +1849,11 @@ mod tests {
             }
         }
         for cut in ["instagram", "snapchat", "x", "messenger", "slack", "teams"] {
-            assert_eq!(service_manifest(cut), Err(ServiceHostError::UnknownService), "{cut}");
+            assert_eq!(
+                service_manifest(cut),
+                Err(ServiceHostError::UnknownService),
+                "{cut}"
+            );
         }
     }
 

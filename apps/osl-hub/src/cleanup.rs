@@ -606,7 +606,11 @@ fn validate_trusted_roots(app_config_dir: &Path, app_local_data_dir: &Path) -> R
     Ok(())
 }
 
-fn root_path<'a>(root: CleanupRoot, app_config_dir: &'a Path, app_local_data_dir: &'a Path) -> &'a Path {
+fn root_path<'a>(
+    root: CleanupRoot,
+    app_config_dir: &'a Path,
+    app_local_data_dir: &'a Path,
+) -> &'a Path {
     match root {
         CleanupRoot::Config => app_config_dir,
         CleanupRoot::LocalData => app_local_data_dir,
@@ -1106,11 +1110,18 @@ mod tests {
             "a burn could report {worst_case} ids; the frontend parser accepts {FRONTEND_LIST_BOUND}"
         );
         for id in &ids {
-            assert!(id.len() <= FRONTEND_ID_BYTES, "id {id} is too long to report");
+            assert!(
+                id.len() <= FRONTEND_ID_BYTES,
+                "id {id} is too long to report"
+            );
         }
         // Ids must be unique, or `failed_targets` cannot say which site survived.
         let distinct: HashSet<&String> = ids.iter().collect();
-        assert_eq!(distinct.len(), ids.len(), "two registry entries share an id");
+        assert_eq!(
+            distinct.len(),
+            ids.len(),
+            "two registry entries share an id"
+        );
     }
 
     #[test]
@@ -1151,25 +1162,28 @@ mod tests {
     /// the app is caught the other way, at run time, by
     /// [`residual_local_state`].
     const APP_PERSISTED_NAMES: &[(CleanupRoot, &str)] = &[
-        (CleanupRoot::Config, "osl-core"),                       // main.rs:9613
-        (CleanupRoot::Config, "preview-preferences.json"),       // main.rs:9642
-        (CleanupRoot::Config, "tor-preference.json"),            // main.rs:9646
-        (CleanupRoot::Config, "service-registry.json"),          // main.rs:9650
-        (CleanupRoot::Config, "service-scope-index.json"),       // main.rs:9654
-        (CleanupRoot::Config, "deadman-bindings.json"),          // main.rs:9735
-        (CleanupRoot::Config, "browser-footprint.json"),         // main.rs:9779
-        (CleanupRoot::Config, "components-v1"),                  // main.rs:2003
-        (CleanupRoot::Config, "whatsapp-qa-device-secret.v1"),   // main.rs:1593
-        (CleanupRoot::Config, ".whatsapp-qa-device-secret.v1.a1b2.tmp"), // main.rs:1624
-        (CleanupRoot::Config, "discord-qa-shell-v1"),            // main.rs:9602
-        (CleanupRoot::Config, "service-registry.json.tmp-7-3"),  // services.rs staging
-        (CleanupRoot::LocalData, "service-profiles-v2"),         // service_host.rs:1181
-        (CleanupRoot::LocalData, "native-window-profiles-v1"),   // native_window_host.rs:43
+        (CleanupRoot::Config, "osl-core"),                 // main.rs:9613
+        (CleanupRoot::Config, "preview-preferences.json"), // main.rs:9642
+        (CleanupRoot::Config, "tor-preference.json"),      // main.rs:9646
+        (CleanupRoot::Config, "service-registry.json"),    // main.rs:9650
+        (CleanupRoot::Config, "service-scope-index.json"), // main.rs:9654
+        (CleanupRoot::Config, "deadman-bindings.json"),    // main.rs:9735
+        (CleanupRoot::Config, "browser-footprint.json"),   // main.rs:9779
+        (CleanupRoot::Config, "components-v1"),            // main.rs:2003
+        (CleanupRoot::Config, "whatsapp-qa-device-secret.v1"), // main.rs:1593
+        (
+            CleanupRoot::Config,
+            ".whatsapp-qa-device-secret.v1.a1b2.tmp",
+        ), // main.rs:1624
+        (CleanupRoot::Config, "discord-qa-shell-v1"),      // main.rs:9602
+        (CleanupRoot::Config, "service-registry.json.tmp-7-3"), // services.rs staging
+        (CleanupRoot::LocalData, "service-profiles-v2"),   // service_host.rs:1181
+        (CleanupRoot::LocalData, "native-window-profiles-v1"), // native_window_host.rs:43
         (CleanupRoot::LocalData, "native-discord-channel-claims-v1"), // native_window_host.rs:2958
         (CleanupRoot::LocalData, "browser-companion-profiles-v1"), // browser_companion.rs:729
-        (CleanupRoot::LocalData, "browser-profile-snapshots"),   // main.rs:9775
-        (CleanupRoot::LocalData, "peer-attachment-staging"),     // peer_attachment_io.rs:20
-        (CleanupRoot::LocalData, "discord-qa-shell-v1"),         // main.rs:9626
+        (CleanupRoot::LocalData, "browser-profile-snapshots"), // main.rs:9775
+        (CleanupRoot::LocalData, "peer-attachment-staging"), // peer_attachment_io.rs:20
+        (CleanupRoot::LocalData, "discord-qa-shell-v1"),   // main.rs:9626
     ];
 
     /// The registry must account for every name the app writes, and account for
@@ -1259,7 +1273,11 @@ mod tests {
 
         // Exactly the D-254 shape: a future lane persists new local state and
         // never touches the cleanup registry.
-        std::fs::write(config.join("a-new-preference-nobody-registered.json"), b"{}").unwrap();
+        std::fs::write(
+            config.join("a-new-preference-nobody-registered.json"),
+            b"{}",
+        )
+        .unwrap();
         std::fs::create_dir_all(local.join("a-new-profile-tree-nobody-registered")).unwrap();
 
         let (_, mut failed) = purge_fixed_targets(&config, &local);
@@ -1364,7 +1382,11 @@ mod tests {
         run_key_material_wipe(&wipe, &mut removed, &mut failed);
 
         assert_eq!(tpm.load(Ordering::SeqCst), 1, "TPM eviction did not run");
-        assert_eq!(keyring.load(Ordering::SeqCst), 1, "keyring purge did not run");
+        assert_eq!(
+            keyring.load(Ordering::SeqCst),
+            1,
+            "keyring purge did not run"
+        );
         assert!(failed.is_empty());
         assert!(removed.iter().any(|id| id == "tpm_persisted_key"));
         assert!(removed.iter().any(|id| id == "os_keyring_credential"));
@@ -1389,12 +1411,14 @@ mod tests {
             evict_tpm_key: Box::new(|| KeyMaterialOutcome::Failed),
             purge_keyring_entry: Box::new(|| KeyMaterialOutcome::Wiped),
         };
-        let result = execute_full_hub_cleanup_with_key_material_wipe(
-            &core, &config, &local, true, &failing,
-        )
-        .expect("cleanup runs");
+        let result =
+            execute_full_hub_cleanup_with_key_material_wipe(&core, &config, &local, true, &failing)
+                .expect("cleanup runs");
         assert!(
-            result.failed_targets.iter().any(|id| id == "tpm_persisted_key"),
+            result
+                .failed_targets
+                .iter()
+                .any(|id| id == "tpm_persisted_key"),
             "a failed TPM eviction was not reported: {:?}",
             result.failed_targets
         );
@@ -1492,11 +1516,10 @@ mod tests {
         let (scanned, beyond) = identity_paths(&base);
         let paths = scanned.len() + beyond;
         assert_eq!(paths, MAX_IDENTITIES + overflow);
-        let (identities, unreadable) =
-            collect_identities_with_sealer(&core, &config, move || {
-                Ok(Box::new(sealer) as Box<dyn keystore::Sealer>)
-            })
-            .expect("enumerate");
+        let (identities, unreadable) = collect_identities_with_sealer(&core, &config, move || {
+            Ok(Box::new(sealer) as Box<dyn keystore::Sealer>)
+        })
+        .expect("enumerate");
 
         assert_eq!(
             identities.len(),

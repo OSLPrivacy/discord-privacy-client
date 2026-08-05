@@ -225,7 +225,10 @@ mod state_tests {
             peer_match_off.effective_changed,
             Some(EffectiveCaptureProtection::Off)
         );
-        assert_eq!(peer_match_off.state.effective, EffectiveCaptureProtection::Off);
+        assert_eq!(
+            peer_match_off.state.effective,
+            EffectiveCaptureProtection::Off
+        );
     }
 
     #[test]

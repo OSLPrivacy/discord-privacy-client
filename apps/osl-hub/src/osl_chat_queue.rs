@@ -94,7 +94,9 @@ pub fn osl_chat_send_queue_key(dir: &Path) -> Result<Zeroizing<[u8; 32]>, String
         Some(key) => Zeroizing::new(key),
         None => Zeroizing::new(
             ipc::main_password::ensure_device_bound_fallback_file_storage_key(dir).map_err(
-                |error| format!("OSL: no storage-key authority for the OSL Chat send queue: {error}"),
+                |error| {
+                    format!("OSL: no storage-key authority for the OSL Chat send queue: {error}")
+                },
             )?,
         ),
     };
@@ -107,8 +109,11 @@ pub fn osl_chat_send_queue_key(dir: &Path) -> Result<Zeroizing<[u8; 32]>, String
 pub fn osl_chat_send_queue(dir: &Path) -> Result<OslChatDiskSendQueue, String> {
     let key = osl_chat_send_queue_key(dir)?;
     let backend = SecureDiskBackend::new(dir.join(OSL_CHAT_SEND_QUEUE_DIR));
-    let queue = OfflineSendQueue::new(SealedStore::new(*key, backend), OSL_CHAT_SEND_QUEUE_CAPACITY)
-        .map_err(|error| format!("OSL: open OSL Chat send queue: {error}"))?;
+    let queue = OfflineSendQueue::new(
+        SealedStore::new(*key, backend),
+        OSL_CHAT_SEND_QUEUE_CAPACITY,
+    )
+    .map_err(|error| format!("OSL: open OSL Chat send queue: {error}"))?;
     Ok(OslChatSendQueue::new(queue))
 }
 
@@ -122,8 +127,8 @@ pub fn is_unreachable(error: &keystore::Error) -> bool {
 /// Open the durable queue under the account config dir — the same directory
 /// authority `peer_attachment_io`'s deletion outbox already resolves through.
 pub fn osl_chat_send_queue_at_config_dir() -> Result<OslChatDiskSendQueue, String> {
-    let dir = keystore::osl_config_dir()
-        .map_err(|_| "OSL account storage is unavailable".to_owned())?;
+    let dir =
+        keystore::osl_config_dir().map_err(|_| "OSL account storage is unavailable".to_owned())?;
     osl_chat_send_queue(&dir)
 }
 
@@ -131,7 +136,9 @@ pub fn osl_chat_send_queue_at_config_dir() -> Result<OslChatDiskSendQueue, Strin
 ///
 /// Fails loudly rather than silently discarding: a caller that cannot persist
 /// the promise must report the message as undelivered, not as queued.
-pub fn queue_undelivered_relay_notice(notice: &QueuedRelayNotice) -> Result<EnqueueOutcome, String> {
+pub fn queue_undelivered_relay_notice(
+    notice: &QueuedRelayNotice,
+) -> Result<EnqueueOutcome, String> {
     osl_chat_send_queue_at_config_dir()?
         .enqueue_relay_notice(notice)
         .map_err(|error| format!("OSL Chat send queue: {error}"))

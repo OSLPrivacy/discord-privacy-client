@@ -49,11 +49,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: '1.97.1'
           components: rustfmt
       - run: cargo fmt --all -- --check
+      # D-268. THE LINE ABOVE DOES NOT SEE THE HUB. `apps/osl-hub` is `exclude`d
+      # from the root workspace (Cargo.toml:31), so `--all` resolves to the
+      # workspace members and stops: `cargo fmt --all -- --check` was exit 0 at
+      # the root while the same command run inside `apps/osl-hub` was exit 1 with
+      # 50 diff hunks. Two independent gates -- this one and `clippy` above --
+      # both green, both looking away from the same 185,383 lines.
+      #
+      # 49 of those 50 hunks were formatted in the change that added this gate.
+      # The one that is left is `src/main.rs`, which another lane was editing at
+      # the time; it is recorded in scripts/ci/hub-fmt-baseline.json rather than
+      # fixed, and the ratchet fails if it grows, if it is fixed without the
+      # baseline being lowered in the same change, or if it moves to a different
+      # file at the same count.
+      #
+      # Two steps, not one, and the self-test first: D-195's rule. A grader that
+      # has never been shown to fail is decoration, and its exit code must be a
+      # step result of its own rather than a line inside a multi-command `run:`.
+      - name: Prove the hub lint ratchet can fail
+        if: ${{ !cancelled() }}
+        run: node scripts/ci/hub-lint-ratchet.mjs --self-test
+      # D-194: `!cancelled()`, so the root fmt check above -- which has been red
+      # on this branch before -- cannot go back to skipping the thing below it.
+      - name: apps/osl-hub fmt, ratcheted
+        if: ${{ !cancelled() }}
+        run: node scripts/ci/hub-lint-ratchet.mjs fmt
 
   test:
     name: test
@@ -166,6 +194,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: '1.97.1'
+          # D-268. `clippy` is not in rustup's minimal profile, and this job is
+          # the only place the hub is ever linted -- see the ratchet steps at the
+          # bottom of this job.
+          components: clippy
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
         with:
           workspaces: apps/osl-hub -> target
@@ -181,6 +213,57 @@ jobs:
       # --test-threads=1: `set_file_storage_key` is process-global.
       - name: Test the OSL Privacy desktop binary
         run: cargo test --manifest-path apps/osl-hub/Cargo.toml --features desktop --bin osl-privacy-hub -- --test-threads=1
+      # D-268 / D-252. THE HUB LINT CENSUS, AND IT LIVES HERE FOR FOUR REASONS.
+      #
+      # `cargo clippy --workspace --all-targets -- -D warnings` (the `clippy` job
+      # at the top of this file) has never linted a line of `apps/osl-hub`: the
+      # package is `exclude`d from the root workspace and `-p osl-hub` does not
+      # even resolve. Three defects were found only because somebody ran the
+      # command by hand -- D-269 (an ACL proof that never ran, visible only to
+      # `duplicate_macro_attributes`), D-253 (a stale schema arm that would have
+      # skipped a migration, visible only to `unreachable_patterns`), and D-268
+      # itself (the `[[bin]]`'s 22,634 lines, in no census on any platform).
+      #
+      # WHY THIS JOB:
+      #   1. windows-latest. 71 of the 302 known src/ sites are Windows-only,
+      #      including both lints D-252 named, and 54 of the 55 Linux-only ones
+      #      are `dead_code` on items that are LIVE on Windows -- so an ubuntu
+      #      hub lint job would grade the wrong tree and push people to annotate
+      #      shipping code as dead. This is the Windows job.
+      #   2. It already builds the embedded frontend, which `tauri_build::build()`
+      #      requires under `desktop`, and `--features desktop` is REQUIRED here,
+      #      not optional: without it `tests/web_surface_a11y_spike.rs` does not
+      #      compile at all on Windows, and the 22,634-line binary is not built.
+      #   3. It already caches `apps/osl-hub -> target`. A standalone job would
+      #      duplicate the frontend build and pay a second cold cache.
+      #   4. It is the job whose stated purpose is "the only job that builds the
+      #      app as it ships" (D-152, above). The unlinted surface IS that app.
+      #
+      # WHY IT IS THE LAST STEP AND CARRIES `!cancelled()`: D-194. Every prior
+      # attempt at this in this repository put a cheap check in front of an
+      # expensive truth, and Actions aborts a job at its first failing step -- so
+      # a lint stood in front of the whole Rust suite, twice. This step is after
+      # the desktop binary test on purpose: a ratchet failure can never skip the
+      # test above it, and `!cancelled()` means a red test above cannot skip the
+      # ratchet either. Neither can mask the other.
+      #
+      # NOT `-- -D warnings`. 302 pre-existing sites; forcing it buys either a
+      # permanently red required job or ~300 `#[allow]`s, 54 of them false. The
+      # baseline in scripts/ci/hub-clippy-baseline.json is the mechanism for the
+      # debt, and it may only go down. Read the header of the script.
+      #
+      # `shell: bash` (D-195): the default shell on windows-latest is pwsh, whose
+      # wrapper surfaces only the LAST command's exit code. These steps are one
+      # command each, so it is belt and braces -- but the one job where D-195 was
+      # found was a windows job running a ratchet, and it is not worth relearning.
+      - name: Prove the hub lint ratchet can fail
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: node scripts/ci/hub-lint-ratchet.mjs --self-test
+      - name: apps/osl-hub clippy, ratcheted
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: node scripts/ci/hub-lint-ratchet.mjs clippy
 
   # D-160. Until this job existed, `grep -rn "scripts/ledger" .github/workflows/`
   # returned one comment and nothing else: eight Binding Ledgers, and the only

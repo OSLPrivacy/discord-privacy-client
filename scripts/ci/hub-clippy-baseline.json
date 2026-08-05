@@ -1,0 +1,17 @@
+{
+  "gate": "hub clippy",
+  "defects": ["D-252", "D-268"],
+  "note": "D-268. UNRECORDED ON PURPOSE, AND THE GRADING STEP IS RED UNTIL IT IS RECORDED. The gate's own configuration is `--features desktop --all-targets` on windows-latest, and no local box can reproduce it: 71 of the 302 known src/ sites are Windows-only, 54 of the 55 Linux-only ones are FALSE (dead_code on items that are live on Windows), and on Windows one test target does not compile at all (scripts/ci/hub-target-ratchet.mjs pins it). The lane that measured the debt said so in as many words -- '>238 and unmeasured' -- and the honest answer to a number nobody has measured is not to guess one, because a guessed baseline is red on its first real run and teaches everyone that the fix for this file is to overwrite it. The FIRST CI RUN of `apps/osl-hub clippy, ratcheted` in rust-test.yml's hub-desktop-bin job prints this file, filled in, ready to paste. Commit it verbatim and the step goes green. From then on the number MAY ONLY GO DOWN, and it may never be spent again: see the header of scripts/ci/hub-lint-ratchet.mjs. Do NOT add `#[allow]`, a `[lints]` table or a clippy.toml to lower it -- that lowers the number without lowering the debt, and .github/workflows/rust-test.workflow-test.py fails if a clippy.toml or a [lints] table appears.",
+  "command": "cargo clippy --manifest-path apps/osl-hub/Cargo.toml --features desktop --all-targets --locked --keep-going --message-format json",
+  "recorded": false,
+  "measured": "UNRECORDED -- the first CI run on windows-latest records it",
+  "proxyEvidence": {
+    "note": "NOT the baseline, and deliberately not written into `sites`. This is the closest census this lane could take locally and it is a PROXY: host Linux, so it sees none of the 71 Windows-only sites and does see the 54 Linux-only dead_code reports that are false on the shipping target. It is recorded so a reviewer can tell a plausible first-run number from an implausible one, and so that the size of D-268's blind spot is on the record: 14 of these sites are in src/main.rs and 13 in src/native_discord_overlay.rs -- files inside the 22,634 lines that no lint census on any platform had ever read. The windows-latest number will be LARGER; it adds the Windows-only halves.",
+    "command": "cargo clippy --manifest-path apps/osl-hub/Cargo.toml --features desktop --all-targets --locked --keep-going --message-format json (host linux, x86_64-unknown-linux-gnu, rustc 1.97.1)",
+    "measured": "2026-08-05: 282 warnings in 193 buckets, 0 targets failed to compile",
+    "priorLaneComparison": "The D-252 lane measured 243 for the same command WITHOUT --features desktop on Linux. `desktop` is worth ~39 more sites on Linux alone."
+  },
+  "openWarnings": null,
+  "failedTargets": null,
+  "sites": null
+}

@@ -102,8 +102,8 @@ pub use recipients::{
     osl_config_dir, set_active_account_dir, set_base_dir_override, RecipientError,
 };
 pub use sealer::{
-    evict_tpm_key, select_best_sealer, verify_sealer_round_trip, KeyringSealer, MemorySealer,
-    KeyringPurgeOutcome, NoOpSealer, Sealer, SealerError, TpmEvictOutcome, TpmSealer,
+    evict_tpm_key, select_best_sealer, verify_sealer_round_trip, KeyringPurgeOutcome,
+    KeyringSealer, MemorySealer, NoOpSealer, Sealer, SealerError, TpmEvictOutcome, TpmSealer,
     METHOD_EPHEMERAL, METHOD_KEYRING, METHOD_MEMORY, METHOD_NOOP, METHOD_TPM,
 };
 pub use signed_get::{

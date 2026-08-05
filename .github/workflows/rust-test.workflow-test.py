@@ -24,6 +24,8 @@ RUST_CACHE = "Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae"
 # The one command that compiles and runs `apps/osl-hub/src/main.rs` and the five
 # other modules reachable only from it. `--features core --lib` compiles none of
 # them, because the bin is `required-features = ["desktop"]`.
+HUB_LINT_RATCHET = "scripts/ci/hub-lint-ratchet.mjs"
+HUB_LINT_BASELINES = ("hub-clippy-baseline.json", "hub-fmt-baseline.json")
 BIN_TEST_FRAGMENTS = (
     "cargo test",
     "--manifest-path apps/osl-hub/Cargo.toml",
@@ -264,6 +266,219 @@ class LedgerEightBaselineIsARatchetTest(unittest.TestCase):
             "and are owned by D-092/D-108/D-114. Track the number, do not "
             "except the row.",
         )
+
+
+class HubLintCensusHasAnOwnerTest(unittest.TestCase):
+    """D-268/D-252: delete the step and this is what tells you.
+
+    `apps/osl-hub` is `exclude`d from the root workspace, so
+    `cargo clippy --workspace --all-targets -- -D warnings` has never linted one
+    line of it -- and `-p osl-hub` does not resolve, so nobody notices. Three
+    defects came straight out of that blindness: D-269 (two `#[test]` attributes
+    on one function and none on the next, so a registration proof never ran; only
+    `duplicate_macro_attributes` sees it), D-253 (a stale schema arm that would
+    have skipped a migration; only `unreachable_patterns` sees it) and D-268 (the
+    `[[bin]]`'s 22,634 lines, in no census on any platform).
+
+    Like D-152's contract above, this runs from `quality-checks` -- a different
+    job from the one it guards.
+    """
+
+    def hub_lint_steps(self, mode: str) -> list[tuple[dict, dict]]:
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        return [
+            (job, step)
+            for job in workflow["jobs"].values()
+            for step in job.get("steps", [])
+            if f"{HUB_LINT_RATCHET} {mode}" in str(step.get("run", ""))
+        ]
+
+    def test_some_job_runs_the_hub_clippy_census(self) -> None:
+        self.assertTrue(
+            self.hub_lint_steps("clippy"),
+            f"no CI job runs `node {HUB_LINT_RATCHET} clippy`. The hub is then "
+            "linted by nothing, on any platform, which is the state D-252 and "
+            "D-268 record.",
+        )
+
+    def test_the_census_runs_where_the_app_ships(self) -> None:
+        # 71 of the 302 known src/ sites are Windows-only, and 54 of the 55
+        # Linux-only ones are `dead_code` on items that are LIVE on Windows. An
+        # ubuntu hub lint job would grade the wrong tree and would demand 54
+        # FALSE `#[allow(dead_code)]` on shipping code.
+        for job, _step in self.hub_lint_steps("clippy"):
+            self.assertIn("windows", job["runs-on"])
+
+    def test_the_frontend_is_built_before_the_census(self) -> None:
+        # `--features desktop` runs `tauri_build::build()`, which reads
+        # frontendDist. Without the renderer the step dies in the build script
+        # and reports a missing directory instead of a census.
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        for job in workflow["jobs"].values():
+            steps = job.get("steps", [])
+            census_at = [
+                i for i, s in enumerate(steps)
+                if f"{HUB_LINT_RATCHET} clippy" in str(s.get("run", ""))
+            ]
+            if not census_at:
+                continue
+            build_at = [
+                i for i, s in enumerate(steps)
+                if "npm run build" in str(s.get("run", ""))
+                and s.get("working-directory") == "apps/osl-hub-ui"
+            ]
+            self.assertTrue(build_at, "the hub clippy census job must build the embedded frontend")
+            self.assertLess(min(build_at), min(census_at))
+
+    def test_the_census_cannot_mask_the_desktop_binary_test(self) -> None:
+        # D-194, the whole of it. A lint has stood in front of the entire Rust
+        # suite twice in this repository. The census is the LAST step of its job
+        # and every step of that job from the census onward carries
+        # `!cancelled()`, so a red ratchet cannot skip the binary test and a red
+        # binary test cannot skip the ratchet.
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        for job in workflow["jobs"].values():
+            steps = job.get("steps", [])
+            census_at = [
+                i for i, s in enumerate(steps)
+                if f"{HUB_LINT_RATCHET} clippy" in str(s.get("run", ""))
+            ]
+            if not census_at:
+                continue
+            bin_at = [
+                i for i, s in enumerate(steps)
+                if all(f in str(s.get("run", "")) for f in BIN_TEST_FRAGMENTS)
+            ]
+            if bin_at:
+                self.assertGreater(min(census_at), max(bin_at))
+            for step in steps[min(census_at):]:
+                self.assertEqual(step.get("if"), "${{ !cancelled() }}", step.get("name"))
+
+    def test_the_grader_is_proved_able_to_fail_before_it_grades(self) -> None:
+        # D-195. A ratchet nobody has watched fail is decoration, and its proof
+        # is a step of its own so that its exit code is a step result rather than
+        # a line inside a multi-command `run:`.
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        for job in workflow["jobs"].values():
+            steps = job.get("steps", [])
+            graded_at = [
+                i for i, s in enumerate(steps)
+                if HUB_LINT_RATCHET in str(s.get("run", ""))
+                and "--self-test" not in str(s.get("run", ""))
+            ]
+            if not graded_at:
+                continue
+            self_test_at = [
+                i for i, s in enumerate(steps)
+                if f"{HUB_LINT_RATCHET} --self-test" in str(s.get("run", ""))
+            ]
+            self.assertTrue(self_test_at, "the hub lint ratchet must prove it can fail first")
+            self.assertLess(min(self_test_at), min(graded_at))
+
+    def test_the_census_job_installs_clippy(self) -> None:
+        # rustup's minimal profile does not carry clippy, and dtolnay's action
+        # installs only what is asked for.
+        for job, _step in self.hub_lint_steps("clippy"):
+            components = [
+                str(step.get("with", {}).get("components", ""))
+                for step in job.get("steps", [])
+                if str(step.get("uses", "")).startswith("dtolnay/rust-toolchain")
+            ]
+            self.assertTrue(any("clippy" in c for c in components))
+
+    def test_the_census_command_is_the_one_that_sees_the_binary(self) -> None:
+        # These four are not style. Without `--features desktop` the 22,634-line
+        # `[[bin]]` is not built and `web_surface_a11y_spike.rs` does not compile;
+        # without `--all-targets` the tests are not linted; without `--keep-going`
+        # a single failing target makes the census depend on which of the others
+        # happened to compile first; and `-p osl-hub` does not resolve, so the
+        # manifest path is the only way in.
+        source = (REPO_ROOT / HUB_LINT_RATCHET).read_text(encoding="utf-8")
+        for fragment in (
+            "'--manifest-path', 'apps/osl-hub/Cargo.toml'",
+            "'--features', 'desktop'",
+            "'--all-targets'",
+            "'--keep-going'",
+        ):
+            self.assertIn(fragment, source)
+
+    def test_the_census_silences_no_lint(self) -> None:
+        # The baseline is the mechanism for pre-existing debt. An `-A` or
+        # `--allow` on the command line would lower the number without lowering
+        # the debt, and would do it invisibly.
+        source = (REPO_ROOT / HUB_LINT_RATCHET).read_text(encoding="utf-8")
+        args = source.split("export const MODES")[1].split("// ---")[0]
+        for forbidden in ("'-A'", "'--allow'", "'--cap-lints'"):
+            self.assertNotIn(forbidden, args)
+
+
+class HubFmtGateHasAnOwnerTest(unittest.TestCase):
+    """D-268: the same exclusion blinded the fmt job, and nobody had noticed.
+
+    `cargo fmt --all -- --check` was exit 0 at the repo root and exit 1 with 50
+    diff hunks inside `apps/osl-hub`.
+    """
+
+    def test_the_root_fmt_check_still_runs(self) -> None:
+        # Adding the hub must never be allowed to arrive as a REPLACEMENT for
+        # the root check. Both, or neither is a gate.
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        runs = [str(s.get("run", "")) for j in workflow["jobs"].values() for s in j.get("steps", [])]
+        self.assertTrue(any("cargo fmt --all -- --check" in r for r in runs))
+
+    def test_some_job_runs_the_hub_fmt_ratchet(self) -> None:
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        runs = [str(s.get("run", "")) for j in workflow["jobs"].values() for s in j.get("steps", [])]
+        self.assertTrue(
+            any(f"{HUB_LINT_RATCHET} fmt" in r for r in runs),
+            f"no CI job runs `node {HUB_LINT_RATCHET} fmt`; `cargo fmt --all` at "
+            "the repo root does not reach apps/osl-hub (D-268).",
+        )
+
+
+class HubLintBaselinesAreRatchetsTest(unittest.TestCase):
+    """The two ways a baseline quietly stops being one.
+
+    (a) The file goes missing, so the comparison has nothing to compare against
+    and the only choices left are 'permanently red' or 'not run at all'.
+    (b) The number and the list of sites drift apart, at which point the number
+    is no longer checkable. Ledger 8 states this rule as
+    `openViolations == len(ids)`; this is the same rule for a counted map.
+    """
+
+    def baselines(self) -> list[Path]:
+        return [REPO_ROOT / "scripts" / "ci" / name for name in HUB_LINT_BASELINES]
+
+    def test_the_baseline_files_exist(self) -> None:
+        for path in self.baselines():
+            self.assertTrue(path.exists(), f"{path} is missing; the hub lint ratchet has nothing to ratchet against")
+
+    def test_a_recorded_baseline_number_matches_its_sites(self) -> None:
+        for path in self.baselines():
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            if not doc.get("recorded"):
+                # An unrecorded baseline is the bootstrap state: the grading step
+                # is RED and prints the census to commit. It must not also be
+                # allowed to claim a number.
+                self.assertIsNone(doc.get("openWarnings"), path)
+                continue
+            self.assertIsInstance(doc.get("openWarnings"), int, path)
+            self.assertIsInstance(doc.get("sites"), dict, path)
+            self.assertEqual(doc["openWarnings"], sum(doc["sites"].values()), path)
+
+    def test_no_clippy_config_undercuts_the_census(self) -> None:
+        # The cheap way to make this gate green is a clippy.toml or a `[lints]`
+        # table, and both lower the number without lowering the debt. If one is
+        # ever wanted, it has to arrive by deleting this test and arguing for it.
+        for candidate in (
+            REPO_ROOT / "clippy.toml",
+            REPO_ROOT / ".clippy.toml",
+            REPO_ROOT / "apps" / "osl-hub" / "clippy.toml",
+            REPO_ROOT / "apps" / "osl-hub" / ".clippy.toml",
+        ):
+            self.assertFalse(candidate.exists(), f"{candidate} suppresses what the D-268 census exists to count")
+        manifest = (REPO_ROOT / "apps" / "osl-hub" / "Cargo.toml").read_text(encoding="utf-8")
+        self.assertNotIn("[lints]", manifest)
 
 
 if __name__ == "__main__":

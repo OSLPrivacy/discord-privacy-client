@@ -13712,13 +13712,7 @@ mod tests {
         )
         .is_err());
         assert!(activate(owner, "discord", &account.id, "local-0123456789abcdef").is_err());
-        assert!(activate(
-            owner,
-            "email",
-            "other-account",
-            "local-0123456789abcdef"
-        )
-        .is_err());
+        assert!(activate(owner, "email", "other-account", "local-0123456789abcdef").is_err());
         assert!(activate(owner, "email", &account.id, "semantic label").is_err());
         assert!(activate(owner, "email", &account.id, "too-short").is_err());
 
@@ -13785,9 +13779,7 @@ mod tests {
         let first = broker
             .activate(context("email-personal", "dm-1"), 7)
             .unwrap();
-        let second = broker
-            .activate(context("email-alt", "dm-2"), 8)
-            .unwrap();
+        let second = broker.activate(context("email-alt", "dm-2"), 8).unwrap();
         assert!(broker.context_for(&first.context_token).is_err());
         assert_eq!(
             broker
@@ -15884,9 +15876,8 @@ ok i will weekend again with you",
             ipc::prose_token::BRIDGE_ID_BYTES * 2,
             "the fixture must be the width the shipping send path actually returns"
         );
-        let evidence = bridge_era_evidence(
-            crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount,
-        );
+        let evidence =
+            bridge_era_evidence(crate::native_discord_adapter::NativeDiscordRowPoster::PeerAccount);
         let mut authenticated = matrix_authenticated(
             PeerWireOrientation::PeerToSelf,
             "payload-bridge-era",
@@ -15909,10 +15900,10 @@ ok i will weekend again with you",
     fn an_ill_formed_blob_id_still_refuses_row_attribution() {
         for bad in [
             "",
-            "c882e13e918656d",    // 15 — one short of the bridge width
-            "c882e13e918656dab",  // 17 — one over
-            "C882E13E918656DA",   // not the canonical lowercase the store indexes
-            "c882e13e918656dz",   // not hex
+            "c882e13e918656d",   // 15 — one short of the bridge width
+            "c882e13e918656dab", // 17 — one over
+            "C882E13E918656DA",  // not the canonical lowercase the store indexes
+            "c882e13e918656dz",  // not hex
             "zzzzzzzzzzzzzzzz",
         ] {
             let evidence = bridge_era_evidence(

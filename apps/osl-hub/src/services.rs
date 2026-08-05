@@ -656,7 +656,15 @@ mod tests {
         assert_eq!(service_kind_from_id("signal"), Some(ServiceKind::Signal));
         // Superseded by the owner ruling on 2026-08-05: social and enterprise
         // IDs are cut surfaces, not service aliases.
-        for cut in ["instagram", "snapchat", "x", "messenger", "slack", "linkedin", "teams"] {
+        for cut in [
+            "instagram",
+            "snapchat",
+            "x",
+            "messenger",
+            "slack",
+            "linkedin",
+            "teams",
+        ] {
             assert_eq!(service_kind_from_id(cut), None, "{cut}");
         }
         assert_eq!(service_kind_from_id("Discord"), None);
