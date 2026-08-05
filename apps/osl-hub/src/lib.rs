@@ -136,6 +136,13 @@ pub mod rn_attribution;
 #[cfg(feature = "core")]
 pub mod rn_recovery;
 pub mod scrub_hosted_port;
+/// **Binding Ledger 9, the seam ledger.** Adapters declared vs adapters with a
+/// live carry receipt, ratcheted in both directions against
+/// `carry-receipts/seam-ledger-baseline.json`. Test-only because its inputs --
+/// `native_apps::tests::fleet_report` and the receipt verifier -- are, and
+/// because a ledger is a gate rather than product code.
+#[cfg(test)]
+pub(crate) mod seam_ledger;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;

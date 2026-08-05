@@ -57,6 +57,28 @@ const BASELINE_REL = "scripts/ledger/state-baseline.json";
 /** The one ledger whose count is ratcheted rather than gated at zero. */
 export const RATCHETED_LEDGER = "state";
 
+/**
+ * Ledger 10, the PIN CENSUS. Ratcheted, like ledger 8, but by its own file
+ * (scripts/ledger/pin-baseline.json) and by its own code -- `pins.mjs` owns
+ * both directions of its ratchet, so this file only has to honour its exit
+ * code. Its policy is identical: up FAILS, an unrecorded down FAILS, and the
+ * same count with different ids FAILS.
+ *
+ * Ledger 9 is the SEAM LEDGER and it is deliberately NOT in this list. It
+ * consumes the live carry-receipt machinery in apps/osl-hub (the seam contract,
+ * the receipt verifier, the fleet report), which is Rust, and this job "invokes
+ * no cargo at all" by design -- .github/workflows/rust-test.yml:214-216. Ledger
+ * 9 therefore runs where its inputs are:
+ *
+ *   cargo test --manifest-path apps/osl-hub/Cargo.toml --features core --lib \
+ *     -- --nocapture seam_ledger
+ *
+ * which is already a CI step (rust-test.yml:128). Re-deriving the seam contract
+ * in JavaScript to give it a seat in this file would be a second implementation
+ * of the one mechanism whose whole value is that there is only one.
+ */
+export const PIN_LEDGER = "pins";
+
 const ledgers = [
   ["attributes", () => import("./attributes.mjs")],
   ["css-vars", () => import("./css-vars.mjs")],
@@ -66,6 +88,7 @@ const ledgers = [
   ["routes", () => import("./routes.mjs")],
   ["bundle", () => import("./bundle.mjs")],
   ["state", () => import("./state.mjs")],
+  ["pins", () => import("./pins.mjs")],
 ];
 
 export function loadBaseline(path = STATE_BASELINE_PATH) {
@@ -194,7 +217,7 @@ export async function run(argv = process.argv.slice(2)) {
   let failed = false;
 
   results.forEach(({ name, red, result }, index) => {
-    if (name === RATCHETED_LEDGER) return;
+    if (name === RATCHETED_LEDGER || name === PIN_LEDGER) return;
     const count = result.live?.length ?? 0;
     out.push(
       `  ${index + 1} ${name.padEnd(11)} ` +
@@ -225,6 +248,25 @@ export async function run(argv = process.argv.slice(2)) {
   if (strict && state?.red) {
     failed = true;
     out.push(`  --strict: ledger 8 is red, and --strict fails on any red regardless of the baseline.`);
+  }
+
+  // Ledger 10, the pin census. `pins.mjs` decides its own verdict against
+  // scripts/ledger/pin-baseline.json in BOTH directions, so red here means the
+  // ratchet tripped -- a new pin, a removed pin the baseline still lists, or a
+  // swap at an unchanged count. There is nothing to soften: its green state IS
+  // "at the recorded baseline".
+  const pins = results.find((r) => r.name === PIN_LEDGER);
+  out.push(
+    `  10 ${PIN_LEDGER.padEnd(10)} ${pins?.red ? "RED  " : "GREEN"} ${pins?.result.live?.length ?? "?"} source-text pin(s)   ` +
+      `<-- RATCHETED against scripts/ledger/pin-baseline.json`,
+  );
+  if (pins?.red) {
+    failed = true;
+    out.push(`  RATCHET: the pin census moved. Its report above names the file and line of every pin.`);
+  }
+  if (!pins) {
+    failed = true;
+    out.push(`  ledger 10 did not run -- a census that does not run is not a bound.`);
   }
 
   out.push("=".repeat(72));
