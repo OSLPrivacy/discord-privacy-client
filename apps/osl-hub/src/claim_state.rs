@@ -1052,6 +1052,66 @@ mod tests {
             ClaimBlocker::WebSurfaceLegalReview,
         ];
 
+        // 0. WHICH blockers extinguish is the allowlist's decision, not this
+        //    module's, so the SET is asserted by name before anything iterates
+        //    it. Clause 1 below filters on `extinguishes_claim()` and then
+        //    asserts those blockers extinguish -- which is a check that cannot
+        //    fail, because narrowing the set also narrows what it examines.
+        //    A mutation proved exactly that: removing `UnknownRecheckRequired`
+        //    from `extinguishes_claim` left clause 1 GREEN (observed exit 0).
+        //    Allowlist §E names two statuses that earn no badge and no claim,
+        //    and rule 5 makes "stale, conflicting, or not naming an exact
+        //    build" the second of them. There are exactly two.
+        let extinguishing: Vec<ClaimBlocker> = BLOCKERS
+            .iter()
+            .copied()
+            .filter(|blocker| blocker.extinguishes_claim())
+            .collect();
+        assert_eq!(
+            extinguishing,
+            vec![
+                ClaimBlocker::OpenSecurityFinding,
+                ClaimBlocker::UnknownRecheckRequired
+            ],
+            "the set of claim-extinguishing blockers is the allowlist's: §E maps \
+             `open-security-finding` and `unknown-recheck-required` to NO BADGE AND NO CLAIM, and \
+             nothing else on this list may join or leave that set here. Dropping one silently \
+             promotes every row that carries it."
+        );
+        // And each of the two, named rather than filtered, extinguishes on its
+        // own -- so the assertion above cannot be satisfied by a set that is
+        // right while the behaviour is wrong.
+        for blocker in [
+            ClaimBlocker::OpenSecurityFinding,
+            ClaimBlocker::UnknownRecheckRequired,
+        ] {
+            let row = SurfaceClaim {
+                surface: Surface::Discord,
+                carrier: CarrierEvidence::ProvenLiveWithReceipt,
+                delivery: DeliveryEvidence::ProvenLiveBothWays,
+                blockers: &[],
+                matrix: MatrixPosition::NoRow,
+                authority: "named-extinguisher probe",
+                reason: "named-extinguisher probe",
+            };
+            assert_eq!(
+                claim_for(&SurfaceClaim {
+                    blockers: match blocker {
+                        ClaimBlocker::OpenSecurityFinding =>
+                            &[ClaimBlocker::OpenSecurityFinding],
+                        _ => &[ClaimBlocker::UnknownRecheckRequired],
+                    },
+                    ..row
+                }),
+                PublicClaim::NoClaim,
+                "{blocker:?} did not extinguish the claim on a row that would otherwise reach \
+                 `Beta`. Allowlist §E: it outranks everything else on the row."
+            );
+            // The same row WITHOUT the blocker does reach `Beta`, so the check
+            // above is measuring the blocker and not the row.
+            assert_eq!(claim_for(&row), PublicClaim::Beta);
+        }
+
         // 1. Allowlist §E: an extinguishing blocker outranks everything on the
         //    row, however well built the feature is. Checked over the whole
         //    product, not on the one row that has one.
