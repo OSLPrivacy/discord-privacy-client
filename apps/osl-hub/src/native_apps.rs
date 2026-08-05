@@ -3529,6 +3529,17 @@ pub(crate) mod tests {
         pub detail: String,
     }
 
+    /// Every native app the manifest declares, in manifest order.
+    ///
+    /// `NATIVE_APPS` is private to this module and stays that way. Binding
+    /// Ledger 9 (`crate::seam_ledger`) needs the declared POPULATION to prove
+    /// its own coverage -- a ledger that silently stopped seeing a provider
+    /// would report a clean set difference over an empty set, which is the
+    /// failure `scripts/ledger/lib/io.mjs:124-135` already names.
+    pub(crate) fn declared_native_apps() -> Vec<NativeAppId> {
+        NATIVE_APPS.iter().map(|manifest| manifest.id).collect()
+    }
+
     /// Classify every provider **without** going through `verify_receipt`, so the
     /// cross-check above compares two independent routes rather than a value with
     /// itself.
