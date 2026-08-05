@@ -3825,6 +3825,20 @@ async fn prepare_native_discord_overlay_text(
                 visual,
                 carrier.flagtext.clone().unwrap_or_default(),
             );
+        // D-265: `burn_native_discord_overlay_chat` destroys this scope's local
+        // cover history and is mutation-proved, but nothing had ever written to
+        // it, so the burn always destroyed an empty map. Record the cover this
+        // send just rendered under the SAME binding the burn resolves. The
+        // retention is minted with the cover by the library — it expires with the
+        // protected message it points at, capped at 24h — so this caller cannot
+        // widen it, and the cover is public wire content Discord is about to hold
+        // in the clear, never the draft. A refusal retains nothing, which is the
+        // fail-closed outcome and must not undo a send that already committed.
+        if let Some(cover) = osl_privacy_hub::pro_context_cover::recordable_cover(&carrier) {
+            let _ = app
+                .state::<LocalCoverState>()
+                .record_cover(&scope_binding, &cover);
+        }
         Ok(broker::PreparedNativeDiscordOverlayText {
             prepared: carrier.prepared,
             flagtext: carrier.flagtext,
