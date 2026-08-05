@@ -417,15 +417,20 @@ describe("bundled preview security boundary", () => {
       // (`record_scan`, hub_command_surface.rs:200), so calling it can only
       // narrow a pending deletion authority, never widen one. Its body is
       // identical to the already-granted `request_hosted_session_scan_command`.
-      // Read its NAME sceptically rather than trusting it: "own messages" is a
-      // display-name PREFIX match on the row's rendered accessible line
-      // (`row_is_authored_by_operator`, native_discord_adapter.rs:7419), not a
-      // provider author identity -- see the refusal block. The scan itself is
-      // read-only whichever rows it lists, which is why it is granted and the
-      // executor is not.
+      // The handler also checks `caller.label() == "main"` itself (main.rs:790),
+      // so the capability scoping is not the only thing keeping another webview
+      // out. Its NAME is now accurate, which it was not when this entry was
+      // first written: "own messages" is decided by
+      // `deletion_row_is_provider_attributed_to_operator`
+      // (native_discord_adapter.rs:7422) against Discord's own provider-proven
+      // poster identity, not by a display-name prefix -- see the executor entry
+      // below for why that distinction is the whole security story here. The
+      // scan is read-only whichever rows it lists in any case.
       "allow-scan-discord-own-messages-for-deletion",
-      // `preview_discord_guided_deletion` (main.rs:799) deletes nothing and
-      // reaches nothing outside this process. The renderer supplies only
+      // `preview_discord_guided_deletion` (main.rs:803) deletes nothing and
+      // reaches nothing outside this process. It checks
+      // `caller.label() == "main"` in the handler (main.rs:809) as well as here.
+      // The renderer supplies only
       // ordinals into the native-held scan; it cannot supply a row, a name, a
       // path or a digest, and it cannot mint a scan. Pro entitlement is answered
       // by native code (`ipc::tier_gate::is_paid_equivalent`), never by the
@@ -438,56 +443,94 @@ describe("bundled preview security boundary", () => {
       // confirm -- which is why the executor's own grant is the one that carries
       // the blast radius, and is withheld.
       "allow-preview-discord-guided-deletion",
-      // DELIBERATELY NOT GRANTED: "allow-execute-discord-guided-deletion".
-      // capabilities/hub.json currently grants it, so this test is RED on
-      // exactly that one element. That is the intended state, not an oversight,
-      // and the fix is to remove it from hub.json or to close the gap below --
-      // NOT to paste the string in here.
+      // `execute_discord_guided_deletion` (main.rs:821). REFUSED on 2026-08-04
+      // and written now, on the same day, because the refusal's one stated
+      // condition was met. The condition was not "reassure me"; it was a named
+      // code change, and this entry records what that change actually was so a
+      // later reader can check it rather than trust it.
       //
-      // `execute_discord_guided_deletion` (main.rs:811) is the only irreversible
-      // action in this list. It drives Discord's own delete affordance against
-      // real messages on Discord's servers; nothing in OSL or anywhere else can
-      // undo it, which is why `DeletionPreview.irreversible` is a hardcoded
-      // `true`. Its scaffolding is genuinely strong: a plan cannot be minted by
-      // the renderer, `confirm_preview` requires a preview that only native code
-      // could have built, the preview's scope hash and generation must still
-      // equal the live native ones, the digest is recomputed natively and the
-      // echoed one must match, the preview is consumed on confirm so a
-      // confirmation cannot be replayed, `require_same_overlay_context` runs
-      // twice, `execute_guided_deletion` rechecks the scope hash, and every
-      // rung of `execute_row` is observation-gated.
+      // This is the only IRREVERSIBLE action in this list. It drives Discord's
+      // own delete affordance against real messages on Discord's servers, and
+      // nothing in OSL or anywhere else can undo it -- `DeletionPreview.
+      // irreversible` is a hardcoded `true`.
       //
-      // None of that establishes the one claim the grant's name makes, which is
-      // that it can only destroy the OPERATOR'S OWN messages. All three
-      // ownership checks -- `deletion_scan_from_rows` (adapter:7504),
+      // WHAT WAS WRONG. All three ownership checks -- `deletion_scan_from_rows`,
       // `build_preview` (guided_deletion.rs:402) and `execute_row`
-      // (guided_deletion.rs:929) -- read the SAME `authored_by_operator` bool,
-      // and that bool is produced once, by `row_is_authored_by_operator`
-      // (adapter:7419), as `line.strip_prefix(operator_name)` on the row's
-      // rendered accessible text. A display name is attacker-chosen: another
-      // participant who sets theirs to the operator's makes their rows
-      // candidates. The module names Discord's own menu as the second gate, and
-      // for an ordinary member it holds -- but an operator with Manage Messages
-      // IS offered Delete on other people's messages, and this route is not
-      // DM-only (the scope binding carries a group/server scope). The usual
-      // backstop, "the operator reads the exact plan before confirming", cannot
-      // catch it either: the preview is content-free by design, so an
-      // impersonator's row and the operator's own are a height, an ordinal and a
-      // length apart on screen.
+      // (guided_deletion.rs:929) -- read the same `authored_by_operator` bool,
+      // and that bool was produced exactly once, by `row_is_authored_by_operator`,
+      // as `line.strip_prefix(operator_name)` on the row's RENDERED accessible
+      // text. A Discord display name is chosen by whoever holds the account, so
+      // three layers of checking rested on one attacker-controlled string. A
+      // participant who renamed themselves to the operator made their own
+      // messages deletion candidates. Discord's row menu was named as the second
+      // gate, and it holds for an ordinary member -- but an operator with Manage
+      // Messages IS offered Delete on other people's messages, and this route is
+      // not DM-only (the scope binding carries a group/server scope). "The
+      // operator reads the plan before confirming" could not catch it either:
+      // the preview is content-free by design, so an impersonator's row and the
+      // operator's own differ on screen by a height, an ordinal and a length.
       //
-      // The fix is already sitting on the rows being read.
-      // `VisibleMessageRow.attribution` (adapter:6133) carries provider-proven
-      // `NativeDiscordRowAttributionEvidence` with `poster: SelfAccount |
-      // PeerAccount`, derived from Discord's own message id and identity, and
-      // explicitly not constructible by the renderer.
-      // `deletion_scan_from_rows` ignores it. Gate candidacy on
-      // `attribution.poster == SelfAccount` (and refuse a row with no
-      // attribution) and this grant becomes writable.
+      // WHAT CHANGED. Candidacy is now decided by
+      // `deletion_row_is_provider_attributed_to_operator`
+      // (native_discord_adapter.rs:7422), which reads
+      // `VisibleMessageRow.attribution` (adapter:6133) -- provider-proven
+      // `NativeDiscordRowAttributionEvidence` (adapter:6155) whose `poster` is
+      // `SelfAccount` or `PeerAccount`, classified by
+      // `native_row_attribution_from_provider` (adapter:6277) from Discord's own
+      // message id and poster snowflake against an independently read self
+      // account and the conversation header's expected peer. No renderer field
+      // can construct that type and no participant can choose their own message
+      // id. `deletion_scan_from_rows` calls it at adapter:7562 and CONTINUES --
+      // i.e. refuses -- on both `PeerAccount` and `None`.
       //
-      // Today every input rung of `HostDeletionSurface` is a stub returning
-      // false / NotObserved (adapter:7766-7809), so every row comes back `Held`
-      // and nothing is deleted at all. That is a pending measurement, not a
-      // security property, and it is NOT the reason to grant or withhold this.
+      // `None` is a refusal and explicitly not a fall-back to the old name test.
+      // It is also not a per-row condition: `finish_native_visible_rows`
+      // (adapter:6657) clears the whole batch's attribution the moment the
+      // producer's proof does not hold, so an unproven read yields a scan with
+      // ZERO candidates and the workflow stops before a preview exists.
+      //
+      // The display-name test survives at adapter:7568 as a SUBORDINATE
+      // narrowing conjunct, applied only to rows the provider already proved are
+      // the operator's, and it is documented at adapter:7463 as never sufficient
+      // on its own. On the candidacy side a conjunct can only ever subtract a
+      // row, so an attacker-chosen name cannot add one; what it can do is catch a
+      // non-adversarial mis-binding of the self account. Its cost is the opposite
+      // error -- an operator whose per-guild nickname is not in the calibrated
+      // names loses their own rows -- which fails closed.
+      //
+      // The execution path no longer trusts the plan's bool alone.
+      // `HostDeletionSurface::resolve_row` (adapter:7801) re-proves attribution
+      // against the row it just re-read from the live provider and returns
+      // `Untrusted` if it is not `SelfAccount`. `ScannedRow` is a plain value
+      // that travelled through a preview and a confirmation to reach the
+      // executor; this is the check that is independent of it rather than a
+      // second reading of it.
+      //
+      // The rest of the scaffolding is unchanged and was already sound: the
+      // handler now also checks `caller.label() == "main"` (main.rs:826), a plan
+      // cannot be minted by the renderer, `confirm_preview` requires a preview
+      // only native code could have built, its scope hash and generation must
+      // still equal the live native ones, the digest is recomputed natively and
+      // the echoed one must match, the preview is consumed on confirm so a
+      // confirmation cannot be replayed, `require_same_overlay_context` runs
+      // twice, `execute_guided_deletion` rechecks the scope hash, and every rung
+      // of `execute_row` is observation-gated.
+      //
+      // BLAST RADIUS, stated for the WIRED case and not for today's. Permanent
+      // deletion, from Discord's servers, of at most `MAX_ROWS_PER_PLAN` (32)
+      // messages that Discord's own provider proved this account posted, in the
+      // single conversation the scan was taken in, after the operator echoed that
+      // plan's digest back. It cannot reach another conversation, another
+      // account, another person's messages, the network beyond Discord's own UI,
+      // OSL keys, or local files -- the receipt hardcodes `burn_performed`,
+      // `osl_content_expiry_applied` and `local_removal_applied` to `false`.
+      //
+      // NOT the reason this is granted: every input rung of
+      // `HostDeletionSurface` is still a stub returning false / NotObserved, so
+      // today every row comes back `Held` and nothing is deleted at all. That is
+      // a pending measurement, not a security property, and this entry is written
+      // against the wired case exactly as the refusal was.
+      "allow-execute-discord-guided-deletion",
       "allow-close-service-host",
       "allow-set-local-protected-sheet-open",
       // Stores the explicitly chosen route locally before onboarding proceeds;
@@ -733,6 +776,43 @@ describe("bundled preview security boundary", () => {
     // against weakening that property locally while keeping the build green.
     expect(criteria).not.toMatch(/\n\s*_\s*=>/);
     expect(driver).not.toMatch(/\n\s*_\s*=>/);
+  });
+
+  it("keeps all three Discord guided-deletion commands main-window only", () => {
+    // A PIN, declared as one (scripts/ledger/pins.mjs). A `#[tauri::command]`
+    // handler cannot be invoked from a unit test -- `caller` is a live
+    // `tauri::WebviewWindow` and there is no app to make one from -- so there is
+    // no behaviour here to execute. What CAN be asserted is that the check is
+    // present in each of the three handlers.
+    //
+    // Why it is worth pinning at all: capabilities/hub.json is `local: true`
+    // with `webviews: ["main"]`, which already keeps every other webview out.
+    // That is one layer, in a different file, maintained by a different lane.
+    // The destructive siblings (`set_osl_chat_capture_preference`,
+    // `set_native_discord_overlay_security`) each add the handler-side check
+    // too, and the guided-deletion trio -- one of which is the only irreversible
+    // command on this surface -- shipped without it.
+    const deletionMain = readRelative("../../osl-hub/src/main.rs");
+    const deletionHandler = (name: string): string => {
+      const handlerStart = deletionMain.indexOf(`fn ${name}(`);
+      expect(handlerStart).toBeGreaterThanOrEqual(0);
+      const rest = deletionMain.slice(handlerStart);
+      const next = rest.indexOf("\n#[tauri::command]");
+      return next < 0 ? rest : rest.slice(0, next);
+    };
+
+    for (const name of [
+      "scan_discord_own_messages_for_deletion",
+      "preview_discord_guided_deletion",
+      "execute_discord_guided_deletion",
+    ]) {
+      const handlerBody = deletionHandler(name);
+      // Both halves matter. The parameter alone is a signature Tauri will fill
+      // in and nothing will read; the comparison alone cannot compile without
+      // it. Asserting the pair is what makes deleting either one go red.
+      expect(handlerBody).toContain("caller: tauri::WebviewWindow,");
+      expect(handlerBody).toContain('if caller.label() != "main" {');
+    }
   });
 
   it("does not turn a stuck transcript read into an automatic retry storm", () => {

@@ -784,10 +784,14 @@ async fn request_hosted_session_scan_command(
 
 #[tauri::command]
 async fn scan_discord_own_messages_for_deletion(
+    caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
     session: State<'_, HubAccountSessionState>,
     plans: State<'_, DiscordGuidedDeletionPlanState>,
 ) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may scan Discord for guided deletion".to_owned());
+    }
     let _session = session.transition.lock().await;
     let scan = tauri::async_runtime::spawn_blocking(move || run_checked_hosted_session_scan(app))
         .await
@@ -797,10 +801,14 @@ async fn scan_discord_own_messages_for_deletion(
 
 #[tauri::command]
 fn preview_discord_guided_deletion(
+    caller: tauri::WebviewWindow,
     core: State<'_, HubCoreState>,
     plans: State<'_, DiscordGuidedDeletionPlanState>,
     scan_ordinals: Vec<usize>,
 ) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionPreview, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may preview a Discord guided deletion".to_owned());
+    }
     plans.build_preview(
         &scan_ordinals,
         ipc::tier_gate::is_paid_equivalent(&core.osl),
@@ -809,6 +817,7 @@ fn preview_discord_guided_deletion(
 
 #[tauri::command]
 async fn execute_discord_guided_deletion(
+    caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
     session: State<'_, HubAccountSessionState>,
     plans: State<'_, DiscordGuidedDeletionPlanState>,
@@ -816,6 +825,9 @@ async fn execute_discord_guided_deletion(
     authority: GuidedDeletionRunAuthorityInput,
 ) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::GuidedDeletionReceipt, String>
 {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may execute a Discord guided deletion".to_owned());
+    }
     let _session = session.transition.lock().await;
     let checked = checked_host_for_hosted_session_scan(&app)?;
     require_same_overlay_context(&app, checked.context_epoch, &checked.active)?;
