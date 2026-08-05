@@ -1,0 +1,88 @@
+﻿HOST=osl-client-2 USER=osladmin
+SESSION=1
+--- C:\OSL ---
+in 1
+out 1
+shots 1
+addfriend.ps1 5305
+advance.ps1 4892
+advance2.ps1 4892
+af2.ps1 5305
+agent.ps1 13058
+apps2.ps1 1851
+c2adv.ps1 4892
+c2mkid.ps1 3844
+c2unlock.ps1 3364
+chat.ps1 5260
+diskB.ps1 2190
+focuslib.ps1 2144
+health.ps1 263
+inv2.ps1 3657
+invite.ps1 3657
+invite2.ps1 3657
+invite3.ps1 3657
+ksinv.ps1 2167
+mkid.ps1 3844
+mkid2.ps1 3844
+osl-privacy-hub.exe 50093933
+p2adv.ps1 4892
+p2adv2.ps1 4892
+p2cold.ps1 5558
+p2cold2.ps1 6107
+p2input.ps1 6622
+p2mkid.ps1 3844
+p2nav.ps1 5344
+p2res.ps1 3167
+p2u2.ps1 6471
+p2unl.ps1 3364
+p2unlock.ps1 3998
+pf2.ps1 5391
+postB.ps1 5391
+priv2.ps1 1851
+probe.ps1 3349
+rst1.ps1 3231
+rst2.ps1 3231
+rstB.ps1 3352
+run-in-session.ps1 462
+sd2.ps1 2238
+send3.ps1 5701
+shot.ps1 436
+shotlib.ps1 2943
+sweepB.ps1 2981
+uialib.ps1 5864
+unlock.ps1 3231
+vfresh.ps1 6219
+vfresh2.ps1 6219
+vorecv.ps1 5260
+vpastrec.ps1 3387
+vpastrec2.ps1 3387
+webview2.exe 1691856
+WebView2Loader.dll 160320
+--- discord installs ---
+C:\Users\osladmin\AppData\Local\Discord ABSENT
+C:\Users\osladmin\AppData\Local\DiscordPTB ABSENT
+C:\Users\osladmin\AppData\Local\DiscordCanary ABSENT
+--- running procs ---
+msedgewebview2 pid=1472 sess=1 title=
+msedgewebview2 pid=4604 sess=1 title=
+msedgewebview2 pid=4940 sess=1 title=
+msedgewebview2 pid=6276 sess=1 title=
+msedgewebview2 pid=6380 sess=1 title=
+msedgewebview2 pid=7344 sess=1 title=
+msedgewebview2 pid=7400 sess=1 title=
+msedgewebview2 pid=7924 sess=1 title=
+osl-privacy-hub pid=4536 sess=1 title=OSL Privacy
+--- webview2 ---
+Microsoft Edge WebView2 Runtime 151.0.4129.59
+--- osl appdata ---
+C:\Users\osladmin\AppData\Roaming\com.oslprivacy.hub ABSENT
+C:\Users\osladmin\AppData\Roaming\OSL Privacy Hub ABSENT
+C:\Users\osladmin\AppData\Local\com.oslprivacy.hub ABSENT
+--- appdata roaming top ---
+Adobe
+Microsoft
+org.oslprivacy.hub
+--- disk ---
+C: used=14.5GB free=112GB
+--- screen ---
+SCREEN={X=0,Y=0,Width=1024,Height=768}

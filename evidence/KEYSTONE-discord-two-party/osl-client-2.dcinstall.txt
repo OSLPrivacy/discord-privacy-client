@@ -1,0 +1,11 @@
+﻿05:46:01 downloading DiscordSetup.exe
+05:46:02 downloaded bytes=107226856
+05:46:02 running installer (Squirrel, auto-launches)
+05:46:24 Discord window appeared
+05:46:39 proc Discord pid=3508 sess=1 title=''
+05:46:39 proc Discord pid=5068 sess=1 title=''
+05:46:39 proc Discord pid=5620 sess=1 title=''
+05:46:39 proc Discord pid=7916 sess=1 title=''
+05:46:39 proc Discord pid=8332 sess=1 title='Discord Updater'
+05:46:39 proc Discord pid=8436 sess=1 title=''
+05:46:39 exe C:\Users\osladmin\AppData\Local\Discord\app-1.0.9251\Discord.exe 221782456
