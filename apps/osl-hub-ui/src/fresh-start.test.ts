@@ -31,12 +31,16 @@ describe("Fresh Start limits", () => {
       "Messages already opened by another person",
       "Server blobs whose deletion is still queued",
       "Cover text already posted on a platform",
-      // D-249a: Fresh Start deletes a fixed enumeration (cleanup.rs cleanup_targets),
-      // and does NOT run the duress wipe's TPM/keyring steps. Both limits must be
-      // shown before the confirmation, not left to be inferred from a "removes
-      // everything" success line.
-      "The account key Windows holds in secure storage is not removed",
-      "Fresh Start works from a fixed cleanup list",
+      // D-254 CLOSED THE CAPABILITY, so the two limits D-249a added here are
+      // no longer true and were replaced rather than deleted. Fresh Start now
+      // runs the duress wipe's MANDATORY TpmEvict + KeyringPurge steps
+      // (cleanup.rs run_key_material_wipe) and sweeps both application roots
+      // for residue afterwards, so neither "the account key stays" nor "it
+      // works from a fixed list" describes the shipping behaviour. What OSL
+      // still cannot reach is written below, and the count of limits shown
+      // before the confirmation control is unchanged.
+      "Diagnostic logs and QA trace files OSL writes to the system temporary folder",
+      "restart OSL and retry before treating the account as gone",
     ];
 
     expect(confirmAt).toBeGreaterThan(0);
