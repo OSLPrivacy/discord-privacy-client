@@ -518,6 +518,7 @@ fn a_profile_that_judges_by_the_writing_channel_is_refused_before_any_call() {
     static SELF_JUDGING: LandingProfile = LandingProfile {
         // The one thing changed: it judges through the channel it writes.
         judges: &[JudgeChannel::ComposerValueProperty],
+        document_channel: JudgeChannel::RenderedDocumentUia,
         write_channel: WriteChannel::ValueSet,
         provider: NativeAppId::Discord,
         provider_name: "Discord",
@@ -744,11 +745,7 @@ fn an_unmeasured_provider_gets_no_neighbours_numbers() {
     // excused: its profile is pinned field by field in
     // `whatsapps_profile_records_what_was_measured_rather_than_what_is_usual`,
     // and the run that took the figures wrote nothing into a conversation.
-    for provider in [
-        NativeAppId::Telegram,
-        NativeAppId::Signal,
-        NativeAppId::Outlook,
-    ] {
+    for provider in [NativeAppId::Signal, NativeAppId::Outlook] {
         let ProfileLookup::Unmeasured { missing, .. } = landing_profile(provider) else {
             panic!("{provider:?} claims a measured profile it has not earned");
         };
@@ -760,7 +757,7 @@ fn an_unmeasured_provider_gets_no_neighbours_numbers() {
 }
 
 #[test]
-fn discord_is_the_only_measured_profile_today() {
+fn exactly_three_surfaces_have_a_measured_profile_today() {
     // Discord was the only surface that carried. WhatsApp is the second, and
     // this test is the place that claim is recorded -- not a place to widen
     // quietly. WhatsApp's profile was measured live on 2026-08-05 through this
@@ -778,8 +775,12 @@ fn discord_is_the_only_measured_profile_today() {
     .collect();
     assert_eq!(
         measured,
-        vec![NativeAppId::Discord, NativeAppId::Whatsapp],
-        "exactly two surfaces have a measured landing profile; every other provider must still \
+        vec![
+            NativeAppId::Discord,
+            NativeAppId::Telegram,
+            NativeAppId::Whatsapp
+        ],
+        "exactly three surfaces have a measured landing profile; every other provider must still \
          name the measurement it is missing"
     );
 }
@@ -851,4 +852,229 @@ fn a_declared_channel_that_answers_nothing_is_refused_by_name() {
         panic!("wrong refusal: {refusal:?}");
     };
     assert_eq!(channel, JudgeChannel::RenderedDocumentTextPattern);
+}
+
+// ---------------------------------------------------------------------------
+// The primary document channel — added 2026-08-05, and held to MORE than a
+// corroborator is
+// ---------------------------------------------------------------------------
+
+/// `document_channel` was hard-wired to `RenderedDocumentUia` until Telegram
+/// showed that hard-wiring encoded a Chromium assumption. Making it declarable
+/// must not make it a hole, so all three of its guards are driven here by
+/// starving what would have earned the pass — and each is checked **before any
+/// cross-process call**, proven by a judge whose every method panics.
+struct Exploding2;
+impl LandingJudgeSyscalls for Exploding2 {
+    fn window_identity(&self, _: isize, _: JudgeDeadline) -> Result<WindowIdentity, JudgeTimeout> {
+        panic!("the oracle must refuse before it touches the provider");
+    }
+    fn rendered_document_uia(
+        &self,
+        _: &BoundComposer,
+        _: WalkCaps,
+        _: &str,
+        _: JudgeDeadline,
+    ) -> Result<Option<RenderedDocument>, JudgeTimeout> {
+        panic!("the oracle must refuse before it touches the provider");
+    }
+    fn rendered_document_text_pattern(
+        &self,
+        _: &BoundComposer,
+        _: WalkCaps,
+        _: JudgeDeadline,
+    ) -> Result<Option<RenderedDocument>, JudgeTimeout> {
+        panic!("the oracle must refuse before it touches the provider");
+    }
+    fn rendered_document_msaa(
+        &self,
+        _: &BoundComposer,
+        _: WalkCaps,
+        _: &str,
+        _: JudgeDeadline,
+    ) -> Result<Option<RenderedDocument>, JudgeTimeout> {
+        panic!("the oracle must refuse before it touches the provider");
+    }
+    fn composer_ink(&self, _: &BoundComposer, _: JudgeDeadline) -> Result<Option<Ink>, JudgeTimeout> {
+        panic!("the oracle must refuse before it touches the provider");
+    }
+    fn disowned_value_property(
+        &self,
+        _: &BoundComposer,
+        _: JudgeDeadline,
+    ) -> Result<Option<String>, JudgeTimeout> {
+        panic!("the oracle must refuse before it touches the provider");
+    }
+    fn submit_shaped_calls(&self) -> usize {
+        panic!("the oracle must refuse before it touches the provider");
+    }
+}
+
+#[test]
+fn the_value_property_can_never_be_the_primary_document_channel() {
+    let value_as_document = LandingProfile {
+        judges: &[
+            JudgeChannel::ComposerValueProperty,
+            JudgeChannel::ComposerInk,
+        ],
+        document_channel: JudgeChannel::ComposerValueProperty,
+        ..DISCORD
+    };
+    // Caught by the independence table first, which is the stronger refusal.
+    let refusal = check_independence(&value_as_document).expect_err("D-205 made unrepresentable");
+    assert_eq!(refusal.name(), "JudgedByTheWritingChannel");
+    let refusal = judge_landing(
+        &Exploding2,
+        &value_as_document,
+        &bound(),
+        CARRIER,
+        baseline(),
+        &[],
+    )
+    .expect_err("the disowned channel cannot be the document");
+    assert_eq!(refusal.name(), "JudgedByTheWritingChannel");
+}
+
+#[test]
+fn ink_is_not_a_document_and_cannot_be_the_primary_channel() {
+    let ink_as_document = LandingProfile {
+        judges: &[JudgeChannel::ComposerInk],
+        document_channel: JudgeChannel::ComposerInk,
+        ..DISCORD
+    };
+    assert!(!is_document_channel(JudgeChannel::ComposerInk));
+    let refusal = check_independence(&ink_as_document).expect_err("pixels are not a document");
+    assert_eq!(refusal.name(), "InvalidDocumentChannel");
+    let refusal = judge_landing(
+        &Exploding2,
+        &ink_as_document,
+        &bound(),
+        CARRIER,
+        baseline(),
+        &[],
+    )
+    .expect_err("pixels are not a document");
+    assert_eq!(refusal.name(), "InvalidDocumentChannel");
+    let refusal = judge_empty_composer(&Exploding2, &ink_as_document, &bound(), baseline())
+        .expect_err("the empty judge takes the same guard");
+    assert_eq!(refusal.name(), "InvalidDocumentChannel");
+}
+
+#[test]
+fn a_primary_channel_that_is_not_declared_in_judges_is_refused() {
+    // The whole point of the independence table is that every judging channel
+    // passes it. A primary that is not in `judges` would be the one channel
+    // that never did.
+    let undeclared = LandingProfile {
+        judges: &[
+            JudgeChannel::RenderedDocumentUia,
+            JudgeChannel::ComposerInk,
+        ],
+        document_channel: JudgeChannel::RenderedDocumentMsaa,
+        ..DISCORD
+    };
+    let refusal = check_independence(&undeclared).expect_err("an undeclared primary is a hole");
+    assert_eq!(refusal.name(), "InvalidDocumentChannel");
+    let LandingRefusal::InvalidDocumentChannel { channel, .. } = refusal else {
+        panic!("wrong refusal");
+    };
+    assert_eq!(channel, JudgeChannel::RenderedDocumentMsaa);
+}
+
+#[test]
+fn every_shipped_profile_declares_its_primary_channel_in_its_judges() {
+    for provider in [
+        NativeAppId::Discord,
+        NativeAppId::Telegram,
+        NativeAppId::Signal,
+        NativeAppId::Whatsapp,
+        NativeAppId::Outlook,
+    ] {
+        if let ProfileLookup::Measured(profile) = landing_profile(provider) {
+            assert!(
+                is_document_channel(profile.document_channel),
+                "{provider:?} judges a document through a channel that publishes none"
+            );
+            assert!(
+                profile.judges.contains(&profile.document_channel),
+                "{provider:?}'s primary channel skips the independence table"
+            );
+            assert!(
+                judges_independently(profile.write_channel, profile.document_channel),
+                "{provider:?} reads its document through the channel that wrote it"
+            );
+        }
+    }
+}
+
+/// The two Chromium surfaces must not move: making the channel declarable was
+/// meant to change nothing for them, and this is where that is recorded.
+#[test]
+fn the_chromium_surfaces_still_judge_through_the_leaf_walk() {
+    assert_eq!(DISCORD.document_channel, JudgeChannel::RenderedDocumentUia);
+    assert_eq!(WHATSAPP.document_channel, JudgeChannel::RenderedDocumentUia);
+}
+
+/// Telegram's profile is a record of what was read on the owner's live host,
+/// and each of these is a figure a later lane could otherwise quietly relax.
+#[test]
+fn telegrams_profile_records_what_was_measured_rather_than_what_is_usual() {
+    assert_eq!(TELEGRAM.write_channel, WriteChannel::ValueSet);
+    assert!(
+        !TELEGRAM.wake,
+        "Qt publishes its UIA tree eagerly; woke=false was measured on every acquisition, and \
+         sending Chromium's handshake here would be a call to an object that does not want it"
+    );
+    assert_eq!(TELEGRAM.commit_key, "Enter");
+    assert_eq!(
+        TELEGRAM.document_channel,
+        JudgeChannel::RenderedDocumentTextPattern,
+        "the leaf walk answered None on Telegram's composer with the field empty AND with 32 \
+         characters in it; a channel that cannot tell those apart is not this surface's document"
+    );
+    assert!(
+        !TELEGRAM.judges.contains(&JudgeChannel::RenderedDocumentUia),
+        "declaring the leaf walk here would be a corroborator that cannot corroborate"
+    );
+    assert!(
+        !TELEGRAM.judges.contains(&JudgeChannel::RenderedDocumentMsaa),
+        "on Qt a childless composer's MSAA leaf read collapses to accValue, which is the \
+         disowned value property under another name"
+    );
+    assert!(
+        TELEGRAM.judges.contains(&JudgeChannel::ComposerInk),
+        "with one document channel the pixels are the corroborator, so they are not optional here"
+    );
+    assert!(
+        TELEGRAM.empty_document_chars.is_empty(),
+        "Telegram's empty composer publishes the EMPTY STRING; an empty character set is the \
+         narrowest possible claim and widening it is how a residue would pass as clear"
+    );
+    assert!(
+        TELEGRAM.normalisations.is_empty(),
+        "no re-encoding has been measured on Telegram, so none may be declared"
+    );
+    // The measured ink rate was 22.53 px/char on this host. The floor is five
+    // characters' worth, by the same rule Discord's 48 and WhatsApp's 38 were
+    // set by.
+    assert_eq!(TELEGRAM.min_ink_delta, 112);
+    assert_eq!(
+        TELEGRAM.walk.max_nodes,
+        crate::native_telegram_adapter::TELEGRAM_LIVE_CARRIER_MAX_BYTES,
+        "on this profile max_nodes bounds GetText's character count; anything below the shipping \
+         carrier bound would silently truncate a carrier the shipping path is willing to place"
+    );
+}
+
+/// **The empty string is the only empty state Telegram admits.** Starve it: one
+/// stray character and the composer is not empty, whatever the ink says.
+#[test]
+fn telegram_admits_no_sentinel_as_an_empty_composer() {
+    assert!(is_empty_document("", TELEGRAM.empty_document_chars));
+    for residue in ["\n", "\u{feff}", " ", "o"] {
+        assert!(
+            !is_empty_document(residue, TELEGRAM.empty_document_chars),
+            "{residue:?} must not read as an empty Telegram composer"
+        );
+    }
 }

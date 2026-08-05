@@ -73,6 +73,7 @@ fn recon_profile() -> LandingProfile {
         process_name: "msedgewebview2",
         write_channel: WriteChannel::ValueSet,
         judges: &[JudgeChannel::RenderedDocumentUia],
+        document_channel: JudgeChannel::RenderedDocumentUia,
         empty_document_chars: &[],
         leaf_join: "",
         matcher: WHATSAPP_COMPOSER_MATCHER,
