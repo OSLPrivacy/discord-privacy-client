@@ -32,11 +32,39 @@ export const SENDER_FILTER_SOURCE_FILES = Object.freeze({
     }),
   "keyserver-cf/src/index.ts": Object.freeze({
     role: "worker-route-registration",
-    // Re-pinned when POST /v1/account-ownership/proof was registered. The
-    // route table is pinned so a new Worker route cannot land without a
+    // The route table is pinned so a new Worker route cannot land without a
     // deliberate re-admission of this closure.
+    //
+    // D-239 re-anchor. Previous digest 1f090308a0233844... reproduced exactly
+    // at commit 922c6f85e (2026-07-31, 21243 bytes). Ten commits changed this
+    // file after it; every changed byte is attributed and the ledger closes
+    // exactly (+2478/-231 = +2247 = 23490-21243), with the one merge machine-
+    // checked as a pure three-way union contributing no content of its own:
+    //
+    //   e3086fea5 D81 remove GET /v1/usernames/:username, add
+    //             POST /v1/usernames/lookup                    +454/-189
+    //   c6fe0626b t16-b2  POST /v1/license/redeem                +156/-0
+    //   f647db9ab T6-K1   export the Archive durable object       +48/-0
+    //   05526e9ae T5-K4   GET /v1/username-bucket/:bucket        +250/-0
+    //   184f5bee0 T13-E5  POST /v1/ai/generate                   +144/-0
+    //   890c6013e T13-F6  POST /v1/credits/spend                 +144/-0
+    //   169b2bebb T21-C5  GET/POST /v1/space-events              +384/-0
+    //   9260ed07c T6-K6   GET /v1/devices/:user_id               +208/-0
+    //   2d6ef259a merge bk7 into fix/conf (pure union)             +0/-0
+    //   d3597486b D-259 injectable cron price fetcher           +690/-42
+    //
+    // WHAT THIS DIGEST DOES AND DOES NOT SAY: it records what the source IS,
+    // not that it was security-reviewed. One change here alters what is
+    // checked before a caller may send, and it is NOT endorsed by this
+    // re-anchor -- 169b2bebb (empty commit body) inserted the two
+    // /v1/space-events routes ABOVE `const method`, i.e. ahead of both ingress
+    // gates: POST /v1/space-events therefore skips the mutation-ingress rate
+    // limit AND `bufferRequestBody(MAX_MUTATION_BODY_BYTES)`, and
+    // GET /v1/space-events/:tag (a destructive drain) skips the public-GET
+    // rate limit. Tracked as D-260. Moving those two lines below
+    // `const method` will change this digest again, by design.
     sha256:
-      "1f090308a02338443b9d9d735133ac89b8f559a23b8e468e5e3ddf21e9239c34",
+      "902396dcd7c134eaafe9f1b6c2964a01900f14b144ddfdd9180b65e10713851f",
   }),
   "keyserver-cf/src/endpoints/register.ts": Object.freeze({
     role: "shipping-canonical-identity-registration-caller",
