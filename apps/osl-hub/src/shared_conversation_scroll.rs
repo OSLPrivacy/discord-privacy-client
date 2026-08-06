@@ -45,11 +45,93 @@ pub struct SharedConversationScrollPageLog {
     pub gate_after_page: SharedConversationScrollGateState,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedConversationScrollActionKind {
+    Open,
+    Scroll,
+}
+
+impl SharedConversationScrollActionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Scroll => "scroll",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedConversationScrollActionLog {
+    pub kind: SharedConversationScrollActionKind,
+    pub page_number: usize,
+    pub pause_ms: u64,
+    pub started_at_ms: u64,
+    pub finished_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedConversationScrollPace {
+    pause_ms: u64,
+    clock_ms: u64,
+    active_actions: usize,
+    max_parallel_actions: usize,
+}
+
+impl SharedConversationScrollPace {
+    pub fn new(pause_ms: u64) -> Self {
+        Self {
+            pause_ms,
+            clock_ms: 0,
+            active_actions: 0,
+            max_parallel_actions: 0,
+        }
+    }
+
+    pub fn immediate() -> Self {
+        Self::new(0)
+    }
+
+    pub fn pause_ms(&self) -> u64 {
+        self.pause_ms
+    }
+
+    pub fn elapsed_ms(&self) -> u64 {
+        self.clock_ms
+    }
+
+    pub fn max_parallel_actions(&self) -> usize {
+        self.max_parallel_actions
+    }
+
+    fn paced_action(
+        &mut self,
+        kind: SharedConversationScrollActionKind,
+        page_number: usize,
+    ) -> SharedConversationScrollActionLog {
+        self.clock_ms = self.clock_ms.saturating_add(self.pause_ms);
+        self.active_actions = self.active_actions.saturating_add(1);
+        self.max_parallel_actions = self.max_parallel_actions.max(self.active_actions);
+        let started_at_ms = self.clock_ms;
+        self.clock_ms = self.clock_ms.saturating_add(1);
+        self.active_actions = self.active_actions.saturating_sub(1);
+        SharedConversationScrollActionLog {
+            kind,
+            page_number,
+            pause_ms: self.pause_ms,
+            started_at_ms,
+            finished_at_ms: self.clock_ms,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedConversationScrollRead {
     pub messages: Vec<SharedPlaceMessage>,
     pub page_log: Vec<SharedConversationScrollPageLog>,
+    pub action_log: Vec<SharedConversationScrollActionLog>,
     pub stop_reason: SharedConversationScrollStop,
     pub stopped_on_page_number: Option<usize>,
 }
@@ -113,15 +195,33 @@ where
     P: SharedConversationScrollablePlace,
     G: SharedConversationScrollGate + ?Sized,
 {
+    let mut pace = SharedConversationScrollPace::immediate();
+    read_shared_conversation_messages_one_page_at_a_time_with_gate_and_pace(
+        place, page_limit, gate, &mut pace,
+    )
+}
+
+pub fn read_shared_conversation_messages_one_page_at_a_time_with_gate_and_pace<P, G>(
+    place: &mut P,
+    page_limit: usize,
+    gate: &G,
+    pace: &mut SharedConversationScrollPace,
+) -> Result<SharedConversationScrollRead, String>
+where
+    P: SharedConversationScrollablePlace,
+    G: SharedConversationScrollGate + ?Sized,
+{
     if page_limit == 0 {
         return Err("shared conversation scroll page limit must be at least one".to_owned());
     }
 
     let mut messages = Vec::new();
     let mut page_log = Vec::new();
+    let mut action_log = Vec::new();
     let mut seen_message_ids = HashSet::new();
 
     for page_number in 1..=page_limit {
+        action_log.push(pace.paced_action(SharedConversationScrollActionKind::Open, page_number));
         let screen = place.read_current_screen()?;
         let messages_on_screen = screen.len();
         let mut new_messages_read = 0usize;
@@ -149,6 +249,7 @@ where
                 return Ok(SharedConversationScrollRead {
                     messages,
                     page_log,
+                    action_log,
                     stop_reason: SharedConversationScrollStop::PauseRequested,
                     stopped_on_page_number: Some(page_number),
                 });
@@ -157,6 +258,7 @@ where
                 return Ok(SharedConversationScrollRead {
                     messages,
                     page_log,
+                    action_log,
                     stop_reason: SharedConversationScrollStop::StopRequested,
                     stopped_on_page_number: Some(page_number),
                 });
@@ -167,6 +269,7 @@ where
             return Ok(SharedConversationScrollRead {
                 messages,
                 page_log,
+                action_log,
                 stop_reason: SharedConversationScrollStop::PageLimitReached,
                 stopped_on_page_number: None,
             });
@@ -176,6 +279,7 @@ where
             return Ok(SharedConversationScrollRead {
                 messages,
                 page_log,
+                action_log,
                 stop_reason: SharedConversationScrollStop::NoNewMessages,
                 stopped_on_page_number: None,
             });
@@ -185,10 +289,12 @@ where
             return Ok(SharedConversationScrollRead {
                 messages,
                 page_log,
+                action_log,
                 stop_reason: SharedConversationScrollStop::EndOfPlace,
                 stopped_on_page_number: None,
             });
         }
+        action_log.push(pace.paced_action(SharedConversationScrollActionKind::Scroll, page_number));
     }
 
     unreachable!("the loop always returns from its page-limit branch");
