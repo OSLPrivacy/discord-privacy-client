@@ -1882,6 +1882,56 @@ async fn list_hub_app_notifications(
 }
 
 #[tauri::command]
+async fn get_hub_chat_approval_suggestion_choice(
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<security::ChatApprovalSuggestionChoiceDto, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read chat approval suggestions".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    security::chat_approval_suggestion_choice()
+}
+
+#[tauri::command]
+async fn set_hub_chat_approval_suggestion_choice(
+    caller: tauri::WebviewWindow,
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    choice: String,
+) -> Result<security::ChatApprovalSuggestionChoiceDto, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may set chat approval suggestions".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    security::save_chat_approval_suggestion_choice(&security_state, choice)
+}
+
+#[tauri::command]
+async fn answer_hub_chat_approval_suggestion(
+    caller: tauri::WebviewWindow,
+    broker_state: State<'_, HubBrokerState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    context_token: String,
+    person_id: String,
+) -> Result<security::ChatApprovalSuggestionAnswer, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may ask for chat approval suggestions".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let active_token = broker_state.active_osl_chat_context_token()?;
+    if active_token != context_token {
+        return Err("OSL Chat context is stale or belongs to another account".to_owned());
+    }
+    let person_id = broker_state.manual_permission_target(&context_token, &person_id, false)?;
+    let scope = broker_state.scope_for_context(&context_token)?;
+    security::chat_approval_suggestion_for_manual_peer_scope(
+        &core, "osl-chat", "osl-main", person_id, scope,
+    )
+}
+
+#[tauri::command]
 async fn check_hub_for_updates(
     app: tauri::AppHandle,
     state: State<'_, HubUpdaterState>,

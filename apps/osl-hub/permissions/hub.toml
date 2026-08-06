@@ -189,6 +189,21 @@ description = "Enable or disable local OSL security-notification reads for this 
 commands.allow = ["set_hub_notifications_enabled"]
 
 [[permission]]
+identifier = "allow-get-hub-chat-approval-suggestion-choice"
+description = "Read the saved local choice for suggesting approval of unapproved OSL Chats."
+commands.allow = ["get_hub_chat_approval_suggestion_choice"]
+
+[[permission]]
+identifier = "allow-set-hub-chat-approval-suggestion-choice"
+description = "Persist the trusted local UI's on/off choice for suggesting approval of unapproved OSL Chats."
+commands.allow = ["set_hub_chat_approval_suggestion_choice"]
+
+[[permission]]
+identifier = "allow-answer-hub-chat-approval-suggestion"
+description = "Answer whether the active first-party OSL Chat should offer an approval suggestion without enabling decryption."
+commands.allow = ["answer_hub_chat_approval_suggestion"]
+
+[[permission]]
 identifier = "allow-save-onboarding-preferences"
 description = "Save the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["save_onboarding_preferences"]

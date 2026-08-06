@@ -739,6 +739,9 @@ mod tests {
         "remove_hub_burn_password",
         "set_hub_notifications_enabled",
         "list_hub_app_notifications",
+        "get_hub_chat_approval_suggestion_choice",
+        "set_hub_chat_approval_suggestion_choice",
+        "answer_hub_chat_approval_suggestion",
         "check_hub_for_updates",
         "install_hub_update",
         "open_hub_releases_page",
@@ -833,6 +836,9 @@ mod tests {
         "get_hub_username_status",
         "add_hub_friend_by_username",
         "get_osl_profile",
+        "set_owner_profile_picture",
+        "read_owner_profile_picture",
+        "clear_owner_profile_picture",
         // Local-only: derives an HKDF subkey from the on-device storage-key
         // authority and returns it to the local webview. No socket, no
         // constructor that consults keystore::egress.
@@ -840,10 +846,6 @@ mod tests {
         "verify_hub_friend_safety_number",
         "remove_hub_friend",
         "list_hub_people",
-        "add_allowed_place_record",
-        "remove_allowed_place_record",
-        "list_allowed_place_records",
-        "query_allowed_place_allowed",
         "set_hub_friend_nickname",
         "set_active_hub_friend_permission",
         "set_active_hub_friend_reach",
