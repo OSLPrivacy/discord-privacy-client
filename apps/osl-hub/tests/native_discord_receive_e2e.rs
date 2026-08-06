@@ -1853,7 +1853,7 @@ fn reveal_once_consumes_on_b() {
     alice.open_native_context_to(&bob.friend_code);
     bob.open_native_context_to(&alice.friend_code);
 
-    const FIXTURE: &str = "B74 native Discord reveal-once fixture";
+    const FIXTURE: &str = "TASK-1348 marked content";
     alice.activate();
     let prepared = prepare_native_discord_overlay_text(
         &alice.core,
@@ -1923,10 +1923,12 @@ fn reveal_once_consumes_on_b() {
         &bob.broker,
         &prepared.prepared.message_id,
     );
-    assert!(
-        replay.is_err(),
-        "B must refuse a replayed copy of an already consumed view-once row"
-    );
+    if let Ok(opened_again) = replay {
+        panic!(
+            "second open returned marked content: {}",
+            opened_again.plaintext
+        );
+    }
     let replay_drain = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
         .expect("B drains the replayed already-consumed row");
     assert!(
