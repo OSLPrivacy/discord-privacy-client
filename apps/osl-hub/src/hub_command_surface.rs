@@ -32,9 +32,8 @@ use crate::preferences::{
 };
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
-use serde::Deserialize;
-#[cfg(feature = "discord-qa-shell")]
-use serde::Serialize;
+use crate::website_driver::{WebsiteDriver, WebsitePageRequest};
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
 pub fn build_review_ui_identity_binding_verifier(
@@ -63,6 +62,77 @@ pub fn compose_erasure_request_for_user(
     scrub_erasure::compose_erasure_request(&input).map_err(|_| {
         "Complete provider, account identifier, and data categories are required".to_owned()
     })
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedEmailOpenMessageReadRequest {
+    pub page_url: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedEmailOpenMessageRead {
+    pub message_id: String,
+    pub cover_message: String,
+    pub conversation_identity: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProtectedEmailReaderState {
+    successful_read_count: u32,
+    last_successful_read: Option<ProtectedEmailOpenMessageRead>,
+}
+
+impl ProtectedEmailReaderState {
+    pub fn successful_read_count(&self) -> u32 {
+        self.successful_read_count
+    }
+
+    pub fn last_successful_read(&self) -> Option<&ProtectedEmailOpenMessageRead> {
+        self.last_successful_read.as_ref()
+    }
+}
+
+pub fn read_protected_email_open_message_with_driver<D>(
+    driver: &mut D,
+    request: ProtectedEmailOpenMessageReadRequest,
+) -> Result<ProtectedEmailOpenMessageRead, String>
+where
+    D: WebsiteDriver,
+{
+    let mut state = ProtectedEmailReaderState::default();
+    read_protected_email_open_message_with_driver_and_state(driver, &mut state, request)
+}
+
+pub fn read_protected_email_open_message_with_driver_and_state<D>(
+    driver: &mut D,
+    state: &mut ProtectedEmailReaderState,
+    request: ProtectedEmailOpenMessageReadRequest,
+) -> Result<ProtectedEmailOpenMessageRead, String>
+where
+    D: WebsiteDriver,
+{
+    if request.page_url.trim().is_empty() {
+        return Err("Protected email reader requires an open service page".to_owned());
+    }
+
+    let page = driver
+        .find_page(WebsitePageRequest {
+            url: request.page_url,
+        })
+        .map_err(|error| error.to_string())?;
+    let selected = driver
+        .read_selected_email(&page)
+        .map_err(|error| error.to_string())?;
+    let read = ProtectedEmailOpenMessageRead {
+        message_id: selected.message_id,
+        cover_message: selected.body,
+        conversation_identity: selected.conversation_identity,
+    };
+    state.successful_read_count += 1;
+    state.last_successful_read = Some(read.clone());
+    Ok(read)
 }
 
 pub fn save_scrub_account_permissions_command(
