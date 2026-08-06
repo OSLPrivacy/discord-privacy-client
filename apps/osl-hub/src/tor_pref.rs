@@ -848,6 +848,7 @@ mod tests {
         "add_allowed_place_record",
         "remove_allowed_place_record",
         "query_allowed_place_record",
+        "compare_allowed_place_direction_state",
         "list_whatsapp_whitelist_kinds",
         "set_active_hub_friend_permission",
         "set_active_hub_friend_reach",

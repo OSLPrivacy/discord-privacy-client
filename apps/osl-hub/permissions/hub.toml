@@ -809,6 +809,11 @@ description = "Query one saved allowed-place record from encrypted device-local 
 commands.allow = ["query_allowed_place_record"]
 
 [[permission]]
+identifier = "allow-compare-allowed-place-direction-state"
+description = "Compare the two saved allowed-place directions for the same pair of local reachable accounts."
+commands.allow = ["compare_allowed_place_direction_state"]
+
+[[permission]]
 identifier = "allow-list-whatsapp-whitelist-kinds"
 description = "List the static WhatsApp whitelist scope kinds supported by the local OSL UI."
 commands.allow = ["list_whatsapp_whitelist_kinds"]

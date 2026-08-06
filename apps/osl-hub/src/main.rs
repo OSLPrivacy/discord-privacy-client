@@ -87,9 +87,9 @@ use osl_privacy_hub::scrub_index::{
     ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
-    self, AddFriendResult, AllowedPlaceRecord, FriendCodeExport, GroupMemberPermissionRecord,
-    HubRevocationStatusDto, HubScopeBurnResult, HubSecurityState, OneUseInviteLink, PersonDto,
-    RemoveFriendResult, ScopeSecurityDto, WhatsAppWhitelistKind,
+    self, AddFriendResult, AllowedPlaceDirectionState, AllowedPlaceRecord, FriendCodeExport,
+    GroupMemberPermissionRecord, HubRevocationStatusDto, HubScopeBurnResult, HubSecurityState,
+    OneUseInviteLink, PersonDto, RemoveFriendResult, ScopeSecurityDto, WhatsAppWhitelistKind,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -6323,6 +6323,25 @@ async fn query_allowed_place_record(
 ) -> Result<Option<AllowedPlaceRecord>, String> {
     let _session = session.transition.lock().await;
     security::query_allowed_place_record(&security_state, stable_id)
+}
+
+#[tauri::command]
+async fn compare_allowed_place_direction_state(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    app: String,
+    kind: String,
+    first_account: String,
+    second_account: String,
+) -> Result<AllowedPlaceDirectionState, String> {
+    let _session = session.transition.lock().await;
+    security::compare_allowed_place_direction_state(
+        &security_state,
+        app,
+        kind,
+        first_account,
+        second_account,
+    )
 }
 
 #[tauri::command]
