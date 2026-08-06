@@ -7,7 +7,8 @@
 //! Tauri-attribute wrappers live in [`crate::tauri_glue`].
 
 use crate::auto_whitelist_rules::{
-    AutoWhitelistAppKind, AutoWhitelistChoice, AutoWhitelistRule, AutoWhitelistRuleQuery,
+    discord_whitelist_kind_labels, AutoWhitelistAppKind, AutoWhitelistChoice, AutoWhitelistRule,
+    AutoWhitelistRuleQuery,
 };
 use crate::state::AppState;
 use crate::{IpcError, IpcResult};
@@ -15799,6 +15800,13 @@ pub fn cmd_osl_query_auto_whitelist_rule(
         .lock()
         .expect("auto_whitelist_rules mutex poisoned");
     Ok(rules.query(app_kind))
+}
+
+pub fn cmd_osl_list_discord_whitelist_kinds(
+    _state: &AppState,
+) -> Result<Vec<&'static str>, String> {
+    record_activity_on_command_entry();
+    Ok(discord_whitelist_kind_labels())
 }
 
 // ---- Phase 9-B1: app preferences ----

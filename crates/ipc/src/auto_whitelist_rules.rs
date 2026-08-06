@@ -41,6 +41,44 @@ impl AutoWhitelistChoice {
     }
 }
 
+/// The complete set of Discord place kinds that can be whitelisted.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscordWhitelistKind {
+    DirectMessage,
+    GroupChat,
+    Server,
+    ServerChannel,
+    Thread,
+}
+
+impl DiscordWhitelistKind {
+    pub const ALL: [Self; 5] = [
+        Self::DirectMessage,
+        Self::GroupChat,
+        Self::Server,
+        Self::ServerChannel,
+        Self::Thread,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct message",
+            Self::GroupChat => "group chat",
+            Self::Server => "server",
+            Self::ServerChannel => "server channel",
+            Self::Thread => "thread",
+        }
+    }
+}
+
+pub fn discord_whitelist_kind_labels() -> Vec<&'static str> {
+    DiscordWhitelistKind::ALL
+        .iter()
+        .map(|kind| kind.label())
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AutoWhitelistRule {
     pub app_kind: AutoWhitelistAppKind,
