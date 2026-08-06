@@ -11366,6 +11366,20 @@
         }
         // __OSL_TEST_EXTRACT_END oslIngestRosterFrame
 
+        function oslBuildTwoWayFriendIdsForBulkWhitelist(relationships) {
+            if (!Array.isArray(relationships)) {
+                return [];
+            }
+            return relationships
+                .filter(
+                    (r) =>
+                        r &&
+                        r.type === 1 &&
+                        r.user &&
+                        typeof r.user.id === "string"
+                )
+                .map((r) => r.user.id);
+        }
         function ingestFrame(data) {
             let payload;
             try {
@@ -11401,15 +11415,10 @@
                     // Whitelist modal. relationships[*].type === 1
                     // → friend (2=blocked, 3=incoming req, 4=outgoing).
                     if (Array.isArray(d.relationships)) {
-                        const friendIds = d.relationships
-                            .filter(
-                                (r) =>
-                                    r &&
-                                    r.type === 1 &&
-                                    r.user &&
-                                    typeof r.user.id === "string"
-                            )
-                            .map((r) => r.user.id);
+                        const friendIds =
+                            oslBuildTwoWayFriendIdsForBulkWhitelist(
+                                d.relationships
+                            );
                         try {
                             if (typeof oslInvoke === "function") {
                                 oslInvoke("osl_set_friend_ids", { ids: friendIds });
