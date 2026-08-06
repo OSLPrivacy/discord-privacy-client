@@ -4632,6 +4632,14 @@ fn validate_allowed_place_record(record: &AllowedPlaceRecord) -> Result<(), Stri
     validate_allowed_place_id(&record.app, "OSL allowed-place app is invalid")?;
     validate_allowed_place_id(&record.account, "OSL allowed-place account is invalid")?;
     validate_allowed_place_id(&record.kind, "OSL allowed-place kind is invalid")?;
+    if record.app == "instagram"
+        && !matches!(
+            record.kind.as_str(),
+            "direct_message" | "group_chat" | "channel"
+        )
+    {
+        return Err("OSL Instagram allowed-place kind is invalid".to_owned());
+    }
     validate_allowed_place_id(&record.stable_id, "OSL allowed-place identifier is invalid")?;
     let expected_prefix = format!("{}:{}:{}:", record.app, record.account, record.kind);
     if !record.stable_id.starts_with(&expected_prefix) {
