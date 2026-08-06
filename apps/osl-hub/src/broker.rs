@@ -22,7 +22,7 @@ use crate::core_bridge::HubCoreState;
 use crate::models::ServiceKind;
 use crate::security::{self, HubSecurityState, ManualPeerBinding};
 use crate::service_host::{service_manifest, validate_opaque_id, ActiveServiceHost};
-use crate::service_scope_index::ServiceScopeRegistration;
+use crate::service_scope_index::{ServiceScopeIndexState, ServiceScopeRegistration};
 use crate::services::{service_kind_from_id, ServiceRegistryState};
 
 // Kept beside the broker rather than as an unreferenced helper: this public
@@ -874,6 +874,51 @@ impl HubBrokerState {
         ])
     }
 
+    pub fn server_channel_burn_target(
+        &self,
+        context_token: &str,
+        choice: &str,
+        index: &ServiceScopeIndexState,
+    ) -> Result<HubContextBurnTarget, String> {
+        let context = self.context_for(context_token)?;
+        let choices = self.server_channel_burn_choices(context_token)?;
+        match choice {
+            "this_channel" => {
+                let selected = choices
+                    .into_iter()
+                    .find(|candidate| candidate.choice == "this_channel")
+                    .ok_or_else(|| "OSL burn choice is unavailable".to_owned())?;
+                let channel_id = selected.scope.channel_id.clone().ok_or_else(|| {
+                    "OSL active server-channel scope is missing its channel id".to_owned()
+                })?;
+                Ok(HubContextBurnTarget {
+                    scope: selected.scope,
+                    canonical_channel_ids: vec![channel_id],
+                })
+            }
+            "whole_server" => {
+                let selected = choices
+                    .into_iter()
+                    .find(|candidate| candidate.choice == "whole_server")
+                    .ok_or_else(|| "OSL burn choice is unavailable".to_owned())?;
+                let server_id = selected.scope.server_id.as_deref().ok_or_else(|| {
+                    "OSL active server-channel scope is missing its server id".to_owned()
+                })?;
+                let indexed = index.complete_server_scope(
+                    &context.self_osl_id,
+                    &context.service_id,
+                    &context.account_id,
+                    server_id,
+                )?;
+                Ok(HubContextBurnTarget {
+                    scope: indexed.scope,
+                    canonical_channel_ids: indexed.canonical_channel_ids,
+                })
+            }
+            _ => Err(format!("OSL unknown server burn choice: {choice}")),
+        }
+    }
+
     pub fn service_scope_registration(
         &self,
         context_token: &str,
@@ -1019,6 +1064,12 @@ pub struct ManualPeerBurnTarget {
 pub struct HubContextBurnChoice {
     pub choice: String,
     pub scope: ScopeInput,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HubContextBurnTarget {
+    pub scope: ScopeInput,
+    pub canonical_channel_ids: Vec<String>,
 }
 
 impl core::fmt::Debug for ManualPeerBurnTarget {
@@ -13883,6 +13934,142 @@ mod tests {
         assert_eq!(choices[1].scope.kind, ScopeKind::ServerFull);
         assert_eq!(choices[1].scope.server_id, choices[0].scope.server_id);
         assert_eq!(choices[1].scope.channel_id, None);
+    }
+
+    #[test]
+    fn task_0529_server_burn_choice_feeds_selected_channels_into_burn_action() {
+        fn run_choice(choice: &str) -> (usize, usize, usize) {
+            let _serial = crate::global_keystore_test_lock();
+            let _globals = KeystoreGlobalsGuard;
+            let dir = tempfile::TempDir::new().expect("temp account dir");
+            let previous_account_dir = keystore::active_account_dir();
+            let previous_file_key = ipc::main_password::get_file_storage_key();
+            keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
+            ipc::main_password::set_file_storage_key(Some([0x29; 32]));
+
+            let broker = HubBrokerState::default();
+            let core = HubCoreState::default();
+            let security = HubSecurityState::default();
+            let context = HubConversationContext {
+                service_id: "discord".to_owned(),
+                account_id: "discord-account-0529".to_owned(),
+                conversation_kind: HubConversationKind::Channel,
+                conversation_id: "discord-channel-0529-a".to_owned(),
+                space_id: Some("discord-server-0529".to_owned()),
+                participant_osl_ids: vec!["peer-0529".to_owned(), "self-0529".to_owned()],
+                self_osl_id: "self-0529".to_owned(),
+            };
+            let active_scope = scope_input(&context).expect("active server-channel scope");
+            let active_channel = active_scope.channel_id.clone().expect("active channel id");
+            let server_id = active_scope.server_id.clone().expect("active server id");
+            let sibling_context = HubConversationContext {
+                conversation_id: "discord-channel-0529-b".to_owned(),
+                ..context.clone()
+            };
+            let sibling_channel = scope_input(&sibling_context)
+                .expect("sibling server-channel scope")
+                .channel_id
+                .expect("sibling channel id");
+            let lease = broker
+                .activate(context.clone(), 52)
+                .expect("open server channel context activates");
+
+            let index = crate::service_scope_index::ServiceScopeIndexState::load(
+                dir.path().join("service-scope-index.json"),
+            );
+            index
+                .initialize_clean_account(
+                    &context.self_osl_id,
+                    &context.service_id,
+                    &context.account_id,
+                )
+                .expect("clean account coverage");
+            index
+                .with_registered_write(
+                    crate::service_scope_index::ServiceScopeRegistration {
+                        owner_osl_user_id: context.self_osl_id.clone(),
+                        service_id: context.service_id.clone(),
+                        account_id: context.account_id.clone(),
+                        scope: ScopeInput {
+                            kind: ScopeKind::ServerFull,
+                            id: server_id.clone(),
+                            server_id: Some(server_id),
+                            channel_id: None,
+                        },
+                        canonical_channel_ids: vec![
+                            active_channel.clone(),
+                            sibling_channel.clone(),
+                        ],
+                        local_context_binding_sha256: "c".repeat(64),
+                        manual_peer_person_id: None,
+                    },
+                    || Ok(()),
+                )
+                .expect("seed whole-server index record");
+            let target = broker
+                .server_channel_burn_target(&lease.context_token, choice, &index)
+                .expect("server burn choice resolves to burn target");
+
+            let store = store::MessageStore::open(&dir.path().join("messages"), &[0x52; 32])
+                .expect("open message store");
+            for (message_id, channel_id) in [
+                ("task0529-a", active_channel.as_str()),
+                ("task0529-b", sibling_channel.as_str()),
+            ] {
+                store
+                    .put(&store::StoredMessage {
+                        discord_message_id: message_id.to_owned(),
+                        channel_id: channel_id.to_owned(),
+                        sender_discord_id: "self-0529".to_owned(),
+                        sender_osl_user_id: "self-0529".to_owned(),
+                        plaintext: format!("seeded row {message_id}"),
+                        decrypted_at: 1_800_000_529,
+                        burned: false,
+                    })
+                    .expect("seed local row");
+            }
+            *core.osl.message_store.lock().unwrap() = Some(store);
+
+            let selected_channel_count = target.canonical_channel_ids.len();
+            let result = security::burn_scope(
+                &core,
+                &security,
+                target.scope,
+                target.canonical_channel_ids,
+                true,
+                Vec::new(),
+            )
+            .expect("selected target enters burn action");
+            let remaining_rows = {
+                let guard = core.osl.message_store.lock().unwrap();
+                let store = guard.as_ref().expect("message store remains installed");
+                store.list_by_channel(&active_channel, 10).unwrap().len()
+                    + store.list_by_channel(&sibling_channel, 10).unwrap().len()
+            };
+
+            keystore::set_active_account_dir(previous_account_dir);
+            ipc::main_password::set_file_storage_key(previous_file_key);
+            (
+                selected_channel_count,
+                result.channels_destroyed,
+                remaining_rows,
+            )
+        }
+
+        let channel = run_choice("this_channel");
+        let server = run_choice("whole_server");
+
+        println!(
+            "TASK0529 channel_choice.selected_channels={} burn_action.channels_destroyed={} remaining_rows={}",
+            channel.0, channel.1, channel.2
+        );
+        println!(
+            "TASK0529 server_choice.selected_channels={} burn_action.channels_destroyed={} remaining_rows={}",
+            server.0, server.1, server.2
+        );
+
+        assert_eq!(channel, (1, 1, 1));
+        assert_eq!(server, (2, 2, 0));
     }
 
     #[test]
