@@ -5541,6 +5541,17 @@ async fn create_service_account(
 }
 
 #[tauri::command]
+async fn agree_messaging_service_risk(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: String,
+) -> Result<(), String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    osl_privacy_hub::services::save_messaging_risk_agreement(&owner, &service_id)
+}
+
+#[tauri::command]
 async fn open_service_host(
     app: tauri::AppHandle,
     host: State<'_, ServiceHostState>,

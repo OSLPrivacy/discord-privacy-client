@@ -16,6 +16,9 @@ use crate::models::{
 const REGISTRY_VERSION: u8 = 3;
 const MAX_REGISTRY_BYTES: u64 = 64 * 1024;
 const MAX_ACCOUNTS_PER_SERVICE: usize = 10;
+const MESSAGING_RISK_AGREEMENT_VERSION: u8 = 1;
+const MAX_MESSAGING_RISK_AGREEMENT_BYTES: u64 = 32 * 1024;
+const MESSAGING_RISK_AGREEMENT_FILE: &str = "messaging-risk-agreements.json.enc";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -37,6 +40,21 @@ struct AccountRecord {
 struct RegistryDocument {
     version: u8,
     accounts: Vec<AccountRecord>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MessagingRiskAgreementDocument {
+    version: u8,
+    agreements: Vec<MessagingRiskAgreementRecord>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MessagingRiskAgreementRecord {
+    owner_osl_user_id: String,
+    service_id: String,
+    agreed_at: i64,
 }
 
 /// Local metadata for isolated service profiles. It intentionally stores no
@@ -340,6 +358,56 @@ pub fn messaging_risk_facts(service_id: &str) -> Result<MessagingRiskFacts, Stri
         .ok_or_else(|| "unknown messaging service".to_owned())
 }
 
+pub fn messaging_risk_refusal(service_id: &str) -> Option<String> {
+    let facts = MESSAGING_RISK_FACT_ROWS
+        .into_iter()
+        .find(|facts| facts.service_id == service_id)?;
+    Some(format!(
+        "you have not agreed to the {} risk",
+        facts.display_name
+    ))
+}
+
+pub fn require_messaging_risk_agreed(
+    owner_osl_user_id: &str,
+    service_id: &str,
+) -> Result<(), String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    let Some(refusal) = messaging_risk_refusal(service_id) else {
+        return Ok(());
+    };
+    let document = load_messaging_risk_agreements()?;
+    if document.agreements.iter().any(|agreement| {
+        agreement.owner_osl_user_id == owner_osl_user_id && agreement.service_id == service_id
+    }) {
+        Ok(())
+    } else {
+        Err(refusal)
+    }
+}
+
+pub fn save_messaging_risk_agreement(
+    owner_osl_user_id: &str,
+    service_id: &str,
+) -> Result<(), String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    messaging_risk_facts(service_id)?;
+    let mut document = load_messaging_risk_agreements()?;
+    let now = ipc::main_password::now_unix_secs_pub();
+    if let Some(existing) = document.agreements.iter_mut().find(|agreement| {
+        agreement.owner_osl_user_id == owner_osl_user_id && agreement.service_id == service_id
+    }) {
+        existing.agreed_at = now;
+    } else {
+        document.agreements.push(MessagingRiskAgreementRecord {
+            owner_osl_user_id: owner_osl_user_id.to_owned(),
+            service_id: service_id.to_owned(),
+            agreed_at: now,
+        });
+    }
+    write_messaging_risk_agreements(&document)
+}
+
 fn service_capability_facts_for_kind(service_id: ServiceKind) -> Option<ServiceCapabilityFacts> {
     SERVICE_CAPABILITY_FACTS
         .iter()
@@ -475,6 +543,73 @@ fn valid_account_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+fn messaging_risk_agreement_path() -> Result<PathBuf, String> {
+    Ok(keystore::osl_config_dir()
+        .map_err(|_| "OSL account storage is unavailable".to_owned())?
+        .join(MESSAGING_RISK_AGREEMENT_FILE))
+}
+
+fn load_messaging_risk_agreements() -> Result<MessagingRiskAgreementDocument, String> {
+    let key = ipc::main_password::get_file_storage_key()
+        .ok_or_else(|| "Unlock OSL before agreeing to messaging service risk".to_owned())?;
+    let path = messaging_risk_agreement_path()?;
+    let Some(bytes) = crate::atomic_file::read_recoverable_bounded(
+        &path,
+        MAX_MESSAGING_RISK_AGREEMENT_BYTES,
+        "messaging risk agreement state",
+    )?
+    else {
+        return Ok(MessagingRiskAgreementDocument {
+            version: MESSAGING_RISK_AGREEMENT_VERSION,
+            agreements: Vec::new(),
+        });
+    };
+    let plain = ipc::main_password::decrypt_at_rest(&bytes, &key)
+        .map_err(|_| "messaging risk agreement state is unavailable".to_owned())?;
+    let document: MessagingRiskAgreementDocument = serde_json::from_slice(&plain)
+        .map_err(|_| "messaging risk agreement state is malformed".to_owned())?;
+    if document.version != MESSAGING_RISK_AGREEMENT_VERSION {
+        return Err("messaging risk agreement state is unsupported".to_owned());
+    }
+    Ok(sanitize_messaging_risk_agreements(document))
+}
+
+fn write_messaging_risk_agreements(
+    document: &MessagingRiskAgreementDocument,
+) -> Result<(), String> {
+    let key = ipc::main_password::get_file_storage_key()
+        .ok_or_else(|| "Unlock OSL before agreeing to messaging service risk".to_owned())?;
+    let path = messaging_risk_agreement_path()?;
+    let bytes = serde_json::to_vec(document)
+        .map_err(|_| "messaging risk agreement state could not be encoded".to_owned())?;
+    if bytes.len() as u64 > MAX_MESSAGING_RISK_AGREEMENT_BYTES {
+        return Err("messaging risk agreement state exceeds limit".to_owned());
+    }
+    let sealed = ipc::main_password::encrypt_at_rest(&bytes, &key)
+        .map_err(|_| "messaging risk agreement state could not be encrypted".to_owned())?;
+    crate::atomic_file::write_recoverable(&path, &sealed, "messaging risk agreement state")
+}
+
+fn sanitize_messaging_risk_agreements(
+    mut document: MessagingRiskAgreementDocument,
+) -> MessagingRiskAgreementDocument {
+    document.agreements.retain(|agreement| {
+        validate_owner_osl_user_id(&agreement.owner_osl_user_id).is_ok()
+            && messaging_risk_refusal(&agreement.service_id).is_some()
+            && agreement.agreed_at > 0
+    });
+    document.agreements.sort_by(|left, right| {
+        left.owner_osl_user_id
+            .cmp(&right.owner_osl_user_id)
+            .then_with(|| left.service_id.cmp(&right.service_id))
+            .then_with(|| left.agreed_at.cmp(&right.agreed_at))
+    });
+    document.agreements.dedup_by(|left, right| {
+        left.owner_osl_user_id == right.owner_osl_user_id && left.service_id == right.service_id
+    });
+    document
 }
 
 fn load_protected_registry(path: &Path) -> Result<Vec<AccountRecord>, String> {

@@ -23,7 +23,10 @@ use crate::models::ServiceKind;
 use crate::security::{self, HubSecurityState, ManualPeerBinding};
 use crate::service_host::{service_manifest, validate_opaque_id, ActiveServiceHost};
 use crate::service_scope_index::ServiceScopeRegistration;
-use crate::services::{service_kind_from_id, ServiceRegistryState};
+use crate::services::{
+    messaging_risk_refusal, require_messaging_risk_agreed, service_kind_from_id,
+    ServiceRegistryState,
+};
 
 // Kept beside the broker rather than as an unreferenced helper: this public
 // entry is the application-level path that prepares one sealed copy per device.
@@ -742,6 +745,23 @@ impl HubBrokerState {
                     && active.manual_peer.is_some()
             })
             .ok_or_else(|| "OSL native Discord protection is not active".to_owned())?;
+        Ok(active.lease.context_token.clone())
+    }
+
+    pub fn active_messaging_service_context_token(&self) -> Result<String, String> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| "OSL broker state is unavailable".to_owned())?;
+        let active = inner
+            .active
+            .as_ref()
+            .filter(|active| {
+                active.authority == ContextAuthority::ManualPeer
+                    && messaging_risk_refusal(&active.context.service_id).is_some()
+                    && active.manual_peer.is_some()
+            })
+            .ok_or_else(|| "OSL messaging service protection is not active".to_owned())?;
         Ok(active.lease.context_token.clone())
     }
 
@@ -3938,6 +3958,31 @@ pub fn prepare_native_discord_overlay_text_with_route_clients(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_active_messaging_service_overlay_text_with_route_clients(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
+    plaintext: String,
+    view_once: bool,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
+    keyserver_client: Option<&keystore::KeyServerClient>,
+) -> Result<PreparedNativeOverlayCarrier, String> {
+    let context_token = broker.active_messaging_service_context_token()?;
+    prepare_peer_inbox_text_with_route_clients(
+        core,
+        security_state,
+        broker,
+        ai_carrier,
+        &context_token,
+        plaintext,
+        view_once,
+        Some(store_client),
+        keyserver_client,
+    )
+}
+
 /// Read back the exact prepared carrier copy before a native surface can post
 /// it.
 ///
@@ -4114,6 +4159,7 @@ fn prepare_peer_inbox_text_with_route_clients(
     let _carrier_decision = ai_carrier.select_for_shipping_send();
     let manual = broker.manual_peer_for(context_token)?;
     let context = broker.context_for(context_token)?;
+    require_messaging_risk_agreed(&context.self_osl_id, &context.service_id)?;
     let now = ipc::main_password::now_unix_secs_pub();
     let ttl_seconds = security::scope_security(manual.scope.clone())?.ttl_seconds;
     let expires_at = now.checked_add(i64::from(ttl_seconds)).ok_or_else(|| {

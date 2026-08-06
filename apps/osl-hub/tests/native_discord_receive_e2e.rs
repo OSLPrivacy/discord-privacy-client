@@ -29,6 +29,7 @@ use osl_privacy_hub::security::{
     set_scope_security, verify_friend_safety_number, HubSecurityState,
 };
 use osl_privacy_hub::service_host::ServiceHostState;
+use osl_privacy_hub::services::save_messaging_risk_agreement;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
@@ -883,6 +884,10 @@ impl Peer {
     /// Add + verify `other` as a friend and open a native Discord protected
     /// context against them, with decrypted display enabled.
     fn open_native_context_to(&self, other_code: &str) -> String {
+        self.open_native_context_to_with_risk(other_code, true)
+    }
+
+    fn open_native_context_to_with_risk(&self, other_code: &str, agree_risk: bool) -> String {
         self.activate();
         let friend = add_friend_code(
             &self.core,
@@ -904,12 +909,16 @@ impl Peer {
             friend.safety_number.clone(),
         )
         .expect("verify safety number");
-        self.reopen_native_context(&friend.person_id)
+        self.reopen_native_context_with_risk(&friend.person_id, agree_risk)
     }
 
     /// Re-activate an already verified friend. Every activation takes a fresh
     /// native host generation, exactly like a real Discord window re-attach.
     fn reopen_native_context(&self, person_id: &str) -> String {
+        self.reopen_native_context_with_risk(person_id, true)
+    }
+
+    fn reopen_native_context_with_risk(&self, person_id: &str, agree_risk: bool) -> String {
         self.activate();
         let active = self
             .host
@@ -936,6 +945,10 @@ impl Peer {
         .expect("approve manual peer scope");
         set_scope_security(&self.security, activated.scope.clone(), 3600, true)
             .expect("enable decrypted display for this scope");
+        if agree_risk {
+            save_messaging_risk_agreement(&self.identity_id, "discord")
+                .expect("save Discord risk agreement for fixture prerequisite");
+        }
         *self.scope.lock().unwrap_or_else(|error| error.into_inner()) =
             Some(activated.scope.clone());
         activated.person_id
@@ -1027,6 +1040,62 @@ impl Peer {
 // ---------------------------------------------------------------------------
 // Tests.
 // ---------------------------------------------------------------------------
+
+pub fn task_3110_discord_send_is_risk_gated() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task-3110-discord-send-risk");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice-3110", &relay_url, "a3110");
+    let bob = Peer::new(&storage, "bob-3110", &relay_url, "b3110");
+    alice.open_native_context_to_with_risk(&bob.friend_code, false);
+
+    const FIXTURE: &str = "task 3110 same Discord protected send";
+    alice.activate();
+    let first_refusal = match prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        FIXTURE.to_owned(),
+        false,
+    ) {
+        Ok(_) => panic!("first Discord send must be refused before risk agreement"),
+        Err(refusal) => refusal,
+    };
+    let pending_after_refusal = relay.pending_for(&bob.identity_id);
+
+    save_messaging_risk_agreement(&alice.identity_id, "discord")
+        .expect("save Discord risk agreement");
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        FIXTURE.to_owned(),
+        false,
+    )
+    .expect("same Discord send must work after risk agreement");
+    let discord_send_worked_after_agreement =
+        prepared.prepared.person_to_person_e2ee && prepared.prepared.delivered_to_osl_inbox;
+    let pending_after_agreement = relay.pending_for(&bob.identity_id);
+
+    println!("TASK3110_DISCORD_FIRST_SEND_REFUSAL={first_refusal}");
+    println!("TASK3110_DISCORD_PENDING_AFTER_REFUSAL={pending_after_refusal}");
+    println!("TASK3110_DISCORD_AGREEMENT_SAVED=true");
+    println!(
+        "TASK3110_DISCORD_SAME_SEND_WORKED_AFTER_AGREEMENT={discord_send_worked_after_agreement}"
+    );
+    println!("TASK3110_DISCORD_PENDING_AFTER_AGREEMENT={pending_after_agreement}");
+
+    assert_eq!(first_refusal, "you have not agreed to the Discord risk");
+    assert_eq!(pending_after_refusal, 0);
+    assert!(discord_send_worked_after_agreement);
+    assert_eq!(pending_after_agreement, 1);
+}
 
 /// P1: A commits an encrypted native-Discord protected message into B's live
 /// conversation without handing plaintext to the relay row or the public
