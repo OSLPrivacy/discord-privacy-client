@@ -28,11 +28,13 @@ use crate::native_discord_adapter::{
 };
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
-use serde::Deserialize;
-#[cfg(feature = "discord-qa-shell")]
-use serde::Serialize;
+use crate::website_driver::{
+    WebsiteDriver, WebsiteLiveRunProgress, WebsiteNamedControl, WebsitePageRequest,
+    WebsiteTextPlacement,
+};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Mutex;
+use std::{path::PathBuf, sync::Mutex};
 
 pub fn build_review_ui_identity_binding_verifier(
     core: &HubCoreState,
@@ -60,6 +62,291 @@ pub fn compose_erasure_request_for_user(
     scrub_erasure::compose_erasure_request(&input).map_err(|_| {
         "Complete provider, account identifier, and data categories are required".to_owned()
     })
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedEmailOpenMessageReadRequest {
+    pub page_url: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedEmailOpenMessageRead {
+    pub cover_message: String,
+    pub conversation_identity: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedEmailLiveRunProgressRequest {
+    pub page_url: String,
+}
+
+const ORDINARY_SEND_PROGRESS_LABEL: &str = "ordinary send progress";
+const ORDINARY_SEND_PROGRESS_MAX_BYTES: u64 = 16 * 1024;
+const ORDINARY_SEND_STEPS: [&str; 5] = [
+    "private_save",
+    "service_acceptance",
+    "local_save",
+    "receiver_publish",
+    "final_confirmation",
+];
+const ORDINARY_SEND_LOCAL_SAVE_CONTROL: &str = "Save local";
+const ORDINARY_SEND_RECEIVER_PUBLISH_CONTROL: &str = "Publish to receiver";
+const ORDINARY_SEND_FINAL_CONFIRMATION_CONTROL: &str = "Confirm final";
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OrdinarySendProgressRequest {
+    pub page_url: String,
+    pub draft_text: String,
+    pub progress_path: PathBuf,
+    pub max_steps: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrdinarySendProgressStep {
+    pub name: String,
+    pub completed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrdinarySendProgress {
+    pub send_id: String,
+    pub steps: Vec<OrdinarySendProgressStep>,
+    pub final_confirmation: bool,
+}
+
+pub struct OrdinarySendProgressStore {
+    path: PathBuf,
+}
+
+impl OrdinarySendProgressStore {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn load_or_new(&self, send_id: &str) -> Result<OrdinarySendProgress, String> {
+        let Some(bytes) = crate::atomic_file::read_recoverable_bounded(
+            &self.path,
+            ORDINARY_SEND_PROGRESS_MAX_BYTES,
+            ORDINARY_SEND_PROGRESS_LABEL,
+        )?
+        else {
+            return Ok(new_ordinary_send_progress(send_id));
+        };
+        let progress: OrdinarySendProgress =
+            serde_json::from_slice(&bytes).map_err(|_| "ordinary send progress is invalid")?;
+        if progress.send_id == send_id && progress.step_names() == ORDINARY_SEND_STEPS {
+            Ok(progress.with_derived_confirmation())
+        } else {
+            Ok(new_ordinary_send_progress(send_id))
+        }
+    }
+
+    fn save(&self, progress: &OrdinarySendProgress) -> Result<(), String> {
+        let bytes = serde_json::to_vec(&progress.clone().with_derived_confirmation())
+            .map_err(|_| "ordinary send progress could not be encoded")?;
+        crate::atomic_file::write_recoverable(&self.path, &bytes, ORDINARY_SEND_PROGRESS_LABEL)
+    }
+}
+
+impl OrdinarySendProgress {
+    pub fn completed_step_names(&self) -> Vec<&str> {
+        self.steps
+            .iter()
+            .filter(|step| step.completed)
+            .map(|step| step.name.as_str())
+            .collect()
+    }
+
+    fn step_names(&self) -> Vec<&str> {
+        self.steps.iter().map(|step| step.name.as_str()).collect()
+    }
+
+    fn with_derived_confirmation(mut self) -> Self {
+        self.final_confirmation = self.steps.len() == ORDINARY_SEND_STEPS.len()
+            && self.steps.iter().all(|step| step.completed);
+        self
+    }
+
+    fn mark_completed(&mut self, name: &str) {
+        if let Some(step) = self.steps.iter_mut().find(|step| step.name == name) {
+            step.completed = true;
+        }
+        self.final_confirmation = self.steps.iter().all(|step| step.completed);
+    }
+}
+
+pub fn ordinary_send_stable_id(page_url: &str, draft_text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ordinary-send-v1\0");
+    hasher.update(page_url.trim().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(draft_text.as_bytes());
+    let digest = hasher.finalize();
+    format!("ordinary-send-v1-{}", hex_prefix(&digest, 12))
+}
+
+pub fn read_ordinary_send_progress(
+    request: &OrdinarySendProgressRequest,
+) -> Result<OrdinarySendProgress, String> {
+    let send_id = ordinary_send_stable_id(&request.page_url, &request.draft_text);
+    OrdinarySendProgressStore::new(request.progress_path.clone()).load_or_new(&send_id)
+}
+
+pub fn send_ordinary_message_with_progress<D>(
+    driver: &mut D,
+    request: OrdinarySendProgressRequest,
+) -> Result<OrdinarySendProgress, String>
+where
+    D: WebsiteDriver,
+{
+    if request.page_url.trim().is_empty() {
+        return Err("ordinary send requires an open service page".to_owned());
+    }
+    if request.draft_text.is_empty() {
+        return Err("ordinary send requires draft text".to_owned());
+    }
+
+    let send_id = ordinary_send_stable_id(&request.page_url, &request.draft_text);
+    let store = OrdinarySendProgressStore::new(request.progress_path.clone());
+    let mut progress = store.load_or_new(&send_id)?;
+    let page = driver
+        .find_page(WebsitePageRequest {
+            url: request.page_url,
+        })
+        .map_err(|error| error.to_string())?;
+    driver.read_page(&page).map_err(|error| error.to_string())?;
+    let max_steps = request.max_steps.unwrap_or(ORDINARY_SEND_STEPS.len());
+
+    for (index, step) in ORDINARY_SEND_STEPS.iter().enumerate() {
+        if index >= max_steps {
+            break;
+        }
+        if progress
+            .steps
+            .iter()
+            .any(|existing| existing.name == *step && existing.completed)
+        {
+            continue;
+        }
+        match *step {
+            "private_save" => {}
+            "service_acceptance" => driver
+                .place_text(WebsiteTextPlacement {
+                    page: page.clone(),
+                    text: request.draft_text.clone(),
+                })
+                .map_err(|error| error.to_string())?,
+            "local_save" => {
+                press_ordinary_send_control(driver, &page, ORDINARY_SEND_LOCAL_SAVE_CONTROL)?
+            }
+            "receiver_publish" => {
+                press_ordinary_send_control(driver, &page, ORDINARY_SEND_RECEIVER_PUBLISH_CONTROL)?
+            }
+            "final_confirmation" => press_ordinary_send_control(
+                driver,
+                &page,
+                ORDINARY_SEND_FINAL_CONFIRMATION_CONTROL,
+            )?,
+            _ => unreachable!("ordinary send step list is fixed"),
+        }
+        progress.mark_completed(step);
+        store.save(&progress)?;
+    }
+
+    Ok(progress.with_derived_confirmation())
+}
+
+fn new_ordinary_send_progress(send_id: &str) -> OrdinarySendProgress {
+    OrdinarySendProgress {
+        send_id: send_id.to_owned(),
+        steps: ORDINARY_SEND_STEPS
+            .iter()
+            .map(|name| OrdinarySendProgressStep {
+                name: (*name).to_owned(),
+                completed: false,
+            })
+            .collect(),
+        final_confirmation: false,
+    }
+}
+
+fn press_ordinary_send_control<D>(
+    driver: &mut D,
+    page: &crate::website_driver::WebsitePage,
+    name: &str,
+) -> Result<(), String>
+where
+    D: WebsiteDriver,
+{
+    driver
+        .press_named_control(WebsiteNamedControl {
+            page: page.clone(),
+            name: name.to_owned(),
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn hex_prefix(bytes: &[u8], len: usize) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(len * 2);
+    for byte in bytes.iter().take(len) {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+pub fn read_protected_email_open_message_with_driver<D>(
+    driver: &mut D,
+    request: ProtectedEmailOpenMessageReadRequest,
+) -> Result<ProtectedEmailOpenMessageRead, String>
+where
+    D: WebsiteDriver,
+{
+    if request.page_url.trim().is_empty() {
+        return Err("Protected email reader requires an open service page".to_owned());
+    }
+
+    let page = driver
+        .find_page(WebsitePageRequest {
+            url: request.page_url,
+        })
+        .map_err(|error| error.to_string())?;
+    let selected = driver
+        .read_selected_email(&page)
+        .map_err(|error| error.to_string())?;
+
+    Ok(ProtectedEmailOpenMessageRead {
+        cover_message: selected.body,
+        conversation_identity: selected.conversation_identity,
+    })
+}
+
+pub fn read_protected_email_live_run_progress_with_driver<D>(
+    driver: &mut D,
+    request: ProtectedEmailLiveRunProgressRequest,
+) -> Result<WebsiteLiveRunProgress, String>
+where
+    D: WebsiteDriver,
+{
+    if request.page_url.trim().is_empty() {
+        return Err("Protected email progress requires an open service page".to_owned());
+    }
+
+    let page = driver
+        .find_page(WebsitePageRequest {
+            url: request.page_url,
+        })
+        .map_err(|error| error.to_string())?;
+    driver
+        .read_live_run_progress(&page)
+        .map_err(|error| error.to_string())
 }
 
 pub fn require_review_ui_identity_binding_from_verifier(
