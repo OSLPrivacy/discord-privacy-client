@@ -166,6 +166,29 @@ pub struct ScopeSecurityDto {
     pub decrypt_display_enabled: bool,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedPlaceDirectionStateDto {
+    /// `none`, `one-way`, or `two-way`.
+    pub state: String,
+    /// `visible` only when the reciprocal direct-message whitelist exists.
+    pub verification_state: String,
+    pub saved_directions: usize,
+    pub first_to_second: bool,
+    pub second_to_first: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupVerificationBuildListEntryDto {
+    pub member_id: String,
+    /// Mirrors the direct allowed-place comparison: `none`, `one-way`, or `two-way`.
+    pub two_way_state: String,
+    /// `unmodified` when the member is on the original build; `modified` when
+    /// their build has intentionally diverged.
+    pub build_state: String,
+}
+
 pub const TIMER_PICKER_MAX_DAYS: u32 = 30;
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -619,6 +642,21 @@ struct SecurityPreferences {
     /// so it can never outlive one.
     #[serde(default)]
     manual_approved_scope_people: BTreeMap<String, String>,
+    /// Directional allowed-place records. A direct conversation is complete
+    /// only when both people saved the reciprocal record for the same app kind.
+    #[serde(default)]
+    allowed_place_directions: BTreeSet<String>,
+    /// Local group verification rows shown in the group build list.
+    #[serde(default)]
+    group_verification_build_list: Vec<GroupVerificationBuildListRecord>,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupVerificationBuildListRecord {
+    group_id: String,
+    member_id: String,
+    build_state: String,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -3848,6 +3886,159 @@ fn load_security_preferences() -> Result<SecurityPreferences, String> {
     load_encrypted_json::<SecurityPreferences>(&path)
 }
 
+fn validate_allowed_place_component(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 80
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+    {
+        return Err(format!("OSL allowed-place {label} is invalid"));
+    }
+    Ok(())
+}
+
+fn allowed_place_direction_key(app: &str, account: &str, kind: &str, stable_id: &str) -> String {
+    format!("{app}:{account}:{kind}:{stable_id}")
+}
+
+fn validate_allowed_place_direction(
+    app: &str,
+    first_account: &str,
+    second_account: &str,
+    kind: &str,
+) -> Result<(), String> {
+    validate_allowed_place_component(app, "app")?;
+    validate_allowed_place_component(kind, "kind")?;
+    if kind != "direct_message" {
+        return Err("OSL allowed-place kind is invalid".to_owned());
+    }
+    if first_account == second_account {
+        return Err("OSL allowed-place direction needs two different people".to_owned());
+    }
+    if app == "discord" {
+        if !is_discord_snowflake_shaped(first_account)
+            || !is_discord_snowflake_shaped(second_account)
+        {
+            return Err("OSL allowed-place Discord account is invalid".to_owned());
+        }
+    } else {
+        validate_allowed_place_component(first_account, "account")?;
+        validate_allowed_place_component(second_account, "account")?;
+    }
+    Ok(())
+}
+
+fn compare_allowed_place_direction_state_from_prefs(
+    prefs: &SecurityPreferences,
+    app: &str,
+    first_account: &str,
+    second_account: &str,
+    kind: &str,
+) -> Result<AllowedPlaceDirectionStateDto, String> {
+    validate_allowed_place_direction(app, first_account, second_account, kind)?;
+    let first_key = allowed_place_direction_key(app, first_account, kind, second_account);
+    let second_key = allowed_place_direction_key(app, second_account, kind, first_account);
+    let first_to_second = prefs.allowed_place_directions.contains(&first_key);
+    let second_to_first = prefs.allowed_place_directions.contains(&second_key);
+    let saved_directions = usize::from(first_to_second) + usize::from(second_to_first);
+    let state = match saved_directions {
+        0 => "none",
+        1 => "one-way",
+        2 => "two-way",
+        _ => unreachable!("only two directions are compared"),
+    }
+    .to_owned();
+    let verification_state = if saved_directions == 2 {
+        "visible"
+    } else {
+        "hidden"
+    }
+    .to_owned();
+    Ok(AllowedPlaceDirectionStateDto {
+        state,
+        verification_state,
+        saved_directions,
+        first_to_second,
+        second_to_first,
+    })
+}
+
+pub fn compare_allowed_place_direction_state(
+    app: String,
+    first_account: String,
+    second_account: String,
+    kind: String,
+) -> Result<AllowedPlaceDirectionStateDto, String> {
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    compare_allowed_place_direction_state_from_prefs(
+        &prefs,
+        &app,
+        &first_account,
+        &second_account,
+        &kind,
+    )
+}
+
+fn validate_group_verification_build_state(build_state: &str) -> Result<(), String> {
+    match build_state {
+        "unmodified" | "modified" => Ok(()),
+        _ => Err("OSL group verification build state is invalid".to_owned()),
+    }
+}
+
+fn list_group_verification_build_entries_from_prefs(
+    prefs: &SecurityPreferences,
+    app: &str,
+    local_account: &str,
+    group_id: &str,
+) -> Result<Vec<GroupVerificationBuildListEntryDto>, String> {
+    validate_allowed_place_component(app, "app")?;
+    validate_allowed_place_component(group_id, "group")?;
+    if app == "discord" {
+        if !is_discord_snowflake_shaped(local_account) || !is_discord_snowflake_shaped(group_id) {
+            return Err("OSL group verification Discord id is invalid".to_owned());
+        }
+    } else {
+        validate_allowed_place_component(local_account, "account")?;
+    }
+
+    let mut entries = Vec::new();
+    for record in prefs
+        .group_verification_build_list
+        .iter()
+        .filter(|record| record.group_id == group_id)
+    {
+        validate_allowed_place_direction(app, local_account, &record.member_id, "direct_message")?;
+        validate_group_verification_build_state(&record.build_state)?;
+        let two_way = compare_allowed_place_direction_state_from_prefs(
+            prefs,
+            app,
+            local_account,
+            &record.member_id,
+            "direct_message",
+        )?;
+        entries.push(GroupVerificationBuildListEntryDto {
+            member_id: record.member_id.clone(),
+            two_way_state: two_way.state,
+            build_state: record.build_state.clone(),
+        });
+    }
+    entries.sort_by(|left, right| left.member_id.cmp(&right.member_id));
+    Ok(entries)
+}
+
+pub fn list_group_verification_build_entries(
+    app: String,
+    local_account: String,
+    group_id: String,
+) -> Result<Vec<GroupVerificationBuildListEntryDto>, String> {
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    list_group_verification_build_entries_from_prefs(&prefs, &app, &local_account, &group_id)
+}
+
 fn manual_approved_scopes_for_person(
     prefs: &SecurityPreferences,
     person_id: &str,
@@ -6876,6 +7067,94 @@ key"
             .unwrap();
         assert!(!manual_burn.contains("delete_messages_in_channel"));
         assert!(manual_burn.contains("let rows_destroyed = 0"));
+    }
+
+    #[test]
+    fn task_0177_group_build_list_returns_one_entry_of_each_build_state() {
+        let harness = FileBackedSecurityHarness::new("task0177-group-build-list");
+        let local_account = "900000000000017700";
+        let unmodified_member = "900000000000017701";
+        let modified_member = "900000000000017702";
+        let other_group_member = "900000000000017703";
+        let group_id = "900000000000017704";
+        let other_group_id = "900000000000017705";
+        let mut prefs = SecurityPreferences {
+            version: 2,
+            ..SecurityPreferences::default()
+        };
+        for member_id in [unmodified_member, modified_member, other_group_member] {
+            prefs
+                .allowed_place_directions
+                .insert(allowed_place_direction_key(
+                    "discord",
+                    local_account,
+                    "direct_message",
+                    member_id,
+                ));
+            prefs
+                .allowed_place_directions
+                .insert(allowed_place_direction_key(
+                    "discord",
+                    member_id,
+                    "direct_message",
+                    local_account,
+                ));
+        }
+        prefs.group_verification_build_list.extend([
+            GroupVerificationBuildListRecord {
+                group_id: group_id.to_owned(),
+                member_id: unmodified_member.to_owned(),
+                build_state: "unmodified".to_owned(),
+            },
+            GroupVerificationBuildListRecord {
+                group_id: group_id.to_owned(),
+                member_id: modified_member.to_owned(),
+                build_state: "modified".to_owned(),
+            },
+            GroupVerificationBuildListRecord {
+                group_id: other_group_id.to_owned(),
+                member_id: other_group_member.to_owned(),
+                build_state: "unmodified".to_owned(),
+            },
+        ]);
+        write_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE), &prefs).unwrap();
+
+        let entries = list_group_verification_build_entries(
+            "discord".to_owned(),
+            local_account.to_owned(),
+            group_id.to_owned(),
+        )
+        .unwrap();
+        let unmodified_count = entries
+            .iter()
+            .filter(|entry| entry.build_state == "unmodified")
+            .count();
+        let modified_count = entries
+            .iter()
+            .filter(|entry| entry.build_state == "modified")
+            .count();
+        println!(
+            "TASK0177 direct_query=list_group_verification_build_entries group_id={} entries={} unmodified={} modified={}",
+            group_id,
+            entries.len(),
+            unmodified_count,
+            modified_count
+        );
+        for entry in &entries {
+            println!(
+                "TASK0177 entry member_id={} two_way_state={} build_state={}",
+                entry.member_id, entry.two_way_state, entry.build_state
+            );
+        }
+        assert_eq!(entries.len(), 2);
+        assert_eq!(unmodified_count, 1);
+        assert_eq!(modified_count, 1);
+        assert_eq!(entries[0].member_id, unmodified_member);
+        assert_eq!(entries[0].two_way_state, "two-way");
+        assert_eq!(entries[0].build_state, "unmodified");
+        assert_eq!(entries[1].member_id, modified_member);
+        assert_eq!(entries[1].two_way_state, "two-way");
+        assert_eq!(entries[1].build_state, "modified");
     }
 
     #[test]

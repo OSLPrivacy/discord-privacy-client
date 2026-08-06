@@ -654,6 +654,8 @@ macro_rules! hub_tauri_commands {
             verify_hub_friend_safety_number,
             remove_hub_friend,
             list_hub_people,
+            compare_allowed_place_direction_state,
+            list_group_verification_build_entries,
             set_hub_friend_nickname,
             set_active_hub_friend_permission,
             set_active_hub_friend_reach,
@@ -1653,6 +1655,20 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["list_components", "install_component", "remove_component"],
+        );
+    }
+
+    #[test]
+    fn group_verification_build_queries_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "compare_allowed_place_direction_state",
+                "list_group_verification_build_entries",
+            ],
         );
     }
 

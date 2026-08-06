@@ -87,7 +87,8 @@ use osl_privacy_hub::scrub_index::{
     ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
-    self, AddFriendResult, FriendCodeExport, HubRevocationStatusDto, HubScopeBurnResult,
+    self, AddFriendResult, AllowedPlaceDirectionStateDto, FriendCodeExport,
+    GroupVerificationBuildListEntryDto, HubRevocationStatusDto, HubScopeBurnResult,
     HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
@@ -6274,6 +6275,29 @@ async fn list_hub_people(
 ) -> Result<Vec<PersonDto>, String> {
     let _session = session.transition.lock().await;
     security::list_people(&core)
+}
+
+#[tauri::command]
+async fn compare_allowed_place_direction_state(
+    session: State<'_, HubAccountSessionState>,
+    app: String,
+    first_account: String,
+    second_account: String,
+    kind: String,
+) -> Result<AllowedPlaceDirectionStateDto, String> {
+    let _session = session.transition.lock().await;
+    security::compare_allowed_place_direction_state(app, first_account, second_account, kind)
+}
+
+#[tauri::command]
+async fn list_group_verification_build_entries(
+    session: State<'_, HubAccountSessionState>,
+    app: String,
+    local_account: String,
+    group_id: String,
+) -> Result<Vec<GroupVerificationBuildListEntryDto>, String> {
+    let _session = session.transition.lock().await;
+    security::list_group_verification_build_entries(app, local_account, group_id)
 }
 
 #[tauri::command]

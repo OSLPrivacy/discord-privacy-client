@@ -561,6 +561,8 @@ describe("bundled preview security boundary", () => {
       "allow-verify-hub-friend-safety-number",
       "allow-remove-hub-friend",
       "allow-list-hub-people",
+      "allow-compare-allowed-place-direction-state",
+      "allow-list-group-verification-build-entries",
       "allow-set-hub-friend-nickname",
       "allow-set-active-hub-friend-permission",
       "allow-set-active-hub-friend-reach",
