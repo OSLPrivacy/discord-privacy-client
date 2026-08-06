@@ -236,6 +236,8 @@ impl MailboxMessageCandidate {
 pub struct MailboxReaderSnapshot {
     pub folders: Vec<MailboxFolderCandidate>,
     pub messages: Vec<MailboxMessageCandidate>,
+    #[serde(default)]
+    pub signed_in_address: Option<String>,
 }
 
 impl MailboxReaderSnapshot {
@@ -246,7 +248,42 @@ impl MailboxReaderSnapshot {
         Self {
             folders: folders.into_iter().collect(),
             messages: messages.into_iter().collect(),
+            signed_in_address: None,
         }
+    }
+
+    pub fn new_for_signed_in_address(
+        signed_in_address: impl Into<String>,
+        folders: impl IntoIterator<Item = MailboxFolderCandidate>,
+        messages: impl IntoIterator<Item = MailboxMessageCandidate>,
+    ) -> Self {
+        Self {
+            folders: folders.into_iter().collect(),
+            messages: messages.into_iter().collect(),
+            signed_in_address: Some(signed_in_address.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedMailboxOwnership {
+    Yours,
+    NotYours,
+}
+
+impl SharedMailboxOwnership {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Yours => "yours",
+            Self::NotYours => "not yours",
+        }
+    }
+}
+
+impl Default for SharedMailboxOwnership {
+    fn default() -> Self {
+        Self::NotYours
     }
 }
 
@@ -269,6 +306,8 @@ pub struct SharedMailboxMessageSummary {
     pub subject: String,
     pub time: i64,
     pub sender: String,
+    #[serde(default)]
+    pub ownership: SharedMailboxOwnership,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -281,6 +320,8 @@ pub struct SharedMailboxMessage {
     pub subject: String,
     pub time: i64,
     pub sender: String,
+    #[serde(default)]
+    pub ownership: SharedMailboxOwnership,
     pub body: String,
 }
 
@@ -746,6 +787,7 @@ pub fn read_shared_mailbox_messages(
         .filter(|message| message.folder_id == folder_id)
         .map(|message| {
             validate_mailbox_message(message)?;
+            let ownership = mailbox_message_ownership(service_filled_mailbox, message)?;
             Ok(SharedMailboxMessageSummary {
                 service_id: service_id.to_owned(),
                 account_id: account_id.to_owned(),
@@ -754,6 +796,7 @@ pub fn read_shared_mailbox_messages(
                 subject: message.subject.clone(),
                 time: message.time,
                 sender: message.sender.clone(),
+                ownership,
             })
         })
         .collect()
@@ -783,6 +826,7 @@ pub fn open_shared_mailbox_message(
         return Err("mailbox message is duplicated".to_owned());
     }
     validate_mailbox_message(message)?;
+    let ownership = mailbox_message_ownership(service_filled_mailbox, message)?;
     Ok(SharedMailboxMessage {
         service_id: service_id.to_owned(),
         account_id: account_id.to_owned(),
@@ -791,6 +835,7 @@ pub fn open_shared_mailbox_message(
         subject: message.subject.clone(),
         time: message.time,
         sender: message.sender.clone(),
+        ownership,
         body: message.body.clone(),
     })
 }
@@ -1040,6 +1085,21 @@ fn validate_mailbox_message(message: &MailboxMessageCandidate) -> Result<(), Str
         Ok(())
     } else {
         Err("mailbox message time is invalid".to_owned())
+    }
+}
+
+fn mailbox_message_ownership(
+    mailbox: &MailboxReaderSnapshot,
+    message: &MailboxMessageCandidate,
+) -> Result<SharedMailboxOwnership, String> {
+    let Some(signed_in_address) = mailbox.signed_in_address.as_deref() else {
+        return Ok(SharedMailboxOwnership::NotYours);
+    };
+    validate_mailbox_text(signed_in_address, "mailbox signed-in address", 254)?;
+    if message.sender.eq_ignore_ascii_case(signed_in_address) {
+        Ok(SharedMailboxOwnership::Yours)
+    } else {
+        Ok(SharedMailboxOwnership::NotYours)
     }
 }
 
