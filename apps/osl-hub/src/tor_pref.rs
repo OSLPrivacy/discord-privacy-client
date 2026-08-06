@@ -799,6 +799,7 @@ mod tests {
         "prepare_osl_chat_text",
         "open_osl_chat_text",
         "list_osl_chat_history",
+        "burn_osl_chat_history",
         "select_osl_chat_attachment",
         "list_osl_chat_attachments",
         "open_osl_chat_attachment",

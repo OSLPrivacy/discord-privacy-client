@@ -25,6 +25,7 @@ import {
   parseHubPerson,
   parseHubServiceBurnReadiness,
   parseHubServiceBurnResult,
+  parseOslChatBurnResult,
   parseFullCleanup,
   parseLocalPrivacyScan,
   parseLocalLoopbackContext,
@@ -548,6 +549,25 @@ describe("optional OSL Privacy adapters", () => {
     const result = { burnId, scopesBurned: 3, rowsDestroyed: 4, whitelistEntriesRemoved: 2, remoteBlobsDeleted: 1, remoteBlobDeletionsFailed: 0, localCleanupComplete: true, remoteCleanupComplete: true, loginProfileUntouched: true, nativeHistoryUntouched: true };
     expect(parseHubServiceBurnResult(result)?.loginProfileUntouched).toBe(true);
     expect(parseHubServiceBurnResult({ ...result, loginProfileUntouched: false })).toBeNull();
+  });
+
+  it("accepts OSL Chat burn evidence only for the named local choices", () => {
+    const result = {
+      choice: "bothSides",
+      messagesBefore: 5,
+      messagesAfter: 1,
+      rowsDestroyed: 4,
+      yourRowsDestroyed: 2,
+      theirRowsDestroyed: 2,
+      othersRowsDestroyed: 0,
+      othersMessagesHidden: true,
+      localCleanupComplete: true,
+      recipientCopiesDeleted: false,
+    };
+    expect(parseOslChatBurnResult(result)?.rowsDestroyed).toBe(4);
+    expect(parseOslChatBurnResult({ ...result, choice: "everybody" })).toBeNull();
+    expect(parseOslChatBurnResult({ ...result, othersRowsDestroyed: 1 })).toBeNull();
+    expect(parseOslChatBurnResult({ ...result, recipientCopiesDeleted: true })).toBeNull();
   });
 
   it("accepts only bounded, local-only privacy findings", () => {

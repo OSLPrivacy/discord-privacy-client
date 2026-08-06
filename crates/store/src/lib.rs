@@ -1052,6 +1052,36 @@ impl MessageStore {
         Ok(out)
     }
 
+    /// Count live, unburned messages in a channel without decrypting their
+    /// bodies. When `only_sender_discord_id` is present, the count is limited
+    /// to that sender.
+    pub fn count_live_by_channel(
+        &self,
+        channel_id: &str,
+        only_sender_discord_id: Option<&str>,
+    ) -> Result<usize, StoreError> {
+        let chan_bi = self.bi(cipher::BI_CHANNEL_ID, channel_id)?;
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let count: i64 = match only_sender_discord_id {
+            Some(sender) => {
+                let sender_bi = self.bi(cipher::BI_SENDER_ID, sender)?;
+                conn.query_row(
+                    "SELECT COUNT(*) FROM messages \
+                      WHERE chan_bi = ?1 AND sender_bi = ?2 AND burned = 0",
+                    params![chan_bi, sender_bi],
+                    |row| row.get(0),
+                )?
+            }
+            None => conn.query_row(
+                "SELECT COUNT(*) FROM messages WHERE chan_bi = ?1 AND burned = 0",
+                params![chan_bi],
+                |row| row.get(0),
+            )?,
+        };
+        usize::try_from(count)
+            .map_err(|_| StoreError::Corrupted("live message count does not fit usize".to_string()))
+    }
+
     /// Mark a message burned and cryptographically shred the local
     /// ciphertext. Subsequent `get` returns `Ok(None)` and
     /// `list_by_channel` filters the audit-stub row out.
@@ -1165,14 +1195,15 @@ impl MessageStore {
             Some(sender_bi) => {
                 tx.execute(
                     "DELETE FROM attachment_manifests WHERE mid_bi IN ( \
-                        SELECT mid_bi FROM messages WHERE chan_bi = ?1 AND sender_bi = ?2)",
+                        SELECT mid_bi FROM messages \
+                         WHERE chan_bi = ?1 AND sender_bi = ?2 AND burned = 0)",
                     params![&chan_bi, sender_bi],
                 )?;
             }
             None => {
                 tx.execute(
                     "DELETE FROM attachment_manifests WHERE mid_bi IN ( \
-                        SELECT mid_bi FROM messages WHERE chan_bi = ?1)",
+                        SELECT mid_bi FROM messages WHERE chan_bi = ?1 AND burned = 0)",
                     params![&chan_bi],
                 )?;
             }
@@ -1190,7 +1221,7 @@ impl MessageStore {
                             burned = 1
                       WHERE mid_bi IN (
                         SELECT mid_bi FROM messages
-                         WHERE chan_bi = ?1 AND sender_bi = ?2
+                         WHERE chan_bi = ?1 AND sender_bi = ?2 AND burned = 0
                       )",
                     params![&chan_bi, sender_bi],
                 )?;
@@ -1206,7 +1237,7 @@ impl MessageStore {
                             wrapped_key = NULL,
                             burned = 1
                       WHERE mid_bi IN (
-                        SELECT mid_bi FROM messages WHERE chan_bi = ?1
+                        SELECT mid_bi FROM messages WHERE chan_bi = ?1 AND burned = 0
                       )",
                     params![&chan_bi],
                 )?;
@@ -1221,7 +1252,7 @@ impl MessageStore {
                             nonce = zeroblob(length(nonce)), \
                             wrapped_key_nonce = NULL, wrapped_key = NULL, \
                             burned = 1 \
-                      WHERE chan_bi = ?1 AND sender_bi = ?2",
+                      WHERE chan_bi = ?1 AND sender_bi = ?2 AND burned = 0",
                     params![chan_bi, sender_bi],
                 )?
             }
@@ -1231,7 +1262,7 @@ impl MessageStore {
                         nonce = zeroblob(length(nonce)), \
                         wrapped_key_nonce = NULL, wrapped_key = NULL, \
                         burned = 1 \
-                  WHERE chan_bi = ?1",
+                  WHERE chan_bi = ?1 AND burned = 0",
                 params![chan_bi],
             )?,
         };

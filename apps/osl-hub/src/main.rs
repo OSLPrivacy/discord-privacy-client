@@ -5030,6 +5030,7 @@ async fn list_osl_chat_history(
     app: tauri::AppHandle,
     caller: tauri::WebviewWindow,
     session: State<'_, HubAccountSessionState>,
+    hide_others_messages: Option<bool>,
 ) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may read OSL Chat history".to_owned());
@@ -5039,10 +5040,38 @@ async fn list_osl_chat_history(
     })?;
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
-        broker::load_osl_chat_history(&app.state::<HubCoreState>(), &app.state::<HubBrokerState>())
+        broker::load_osl_chat_history_with_visibility(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubBrokerState>(),
+            hide_others_messages.unwrap_or(false),
+        )
     })
     .await
     .map_err(|error| format!("OSL Chat history worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn burn_osl_chat_history(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    choice: broker::OslChatBurnChoice,
+    hide_others_messages: Option<bool>,
+) -> Result<broker::OslChatBurnResult, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may burn OSL Chat history".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        broker::burn_osl_chat_history(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubBrokerState>(),
+            choice,
+            hide_others_messages.unwrap_or(false),
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat burn worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -5702,7 +5731,9 @@ async fn set_osl_chat_capture_preference(
     local_opt_in: bool,
 ) -> Result<ChatCaptureProtectionDto, String> {
     if caller.label() != "main" {
-        return Err("Only the trusted OSL window may change OSL Chat capture protection".to_owned());
+        return Err(
+            "Only the trusted OSL window may change OSL Chat capture protection".to_owned(),
+        );
     }
     let _session = session.transition.lock().await;
     let binding = security::manual_peer_binding(&core, person_id)?;

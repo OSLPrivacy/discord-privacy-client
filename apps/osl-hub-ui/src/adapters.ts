@@ -100,6 +100,19 @@ export interface OslChatHistoryRow {
   createdAt: number;
   decryptedAt: number;
 }
+export type OslChatBurnChoice = "yourSide" | "theirSide" | "bothSides";
+export interface OslChatBurnResult {
+  choice: OslChatBurnChoice;
+  messagesBefore: number;
+  messagesAfter: number;
+  rowsDestroyed: number;
+  yourRowsDestroyed: number;
+  theirRowsDestroyed: number;
+  othersRowsDestroyed: 0;
+  othersMessagesHidden: boolean;
+  localCleanupComplete: true;
+  recipientCopiesDeleted: false;
+}
 export interface PreparedHubAttachment {
   sealedB64: string;
   transportFilename: string;
@@ -512,10 +525,10 @@ export async function openOslChatText(): Promise<NativeDiscordOverlayOpenedBatch
   catch (error) { recordBackendFailure("open_osl_chat_text", error); return null; }
 }
 
-export async function listOslChatHistory(): Promise<OslChatHistoryRow[] | null> {
+export async function listOslChatHistory(hideOthersMessages = false): Promise<OslChatHistoryRow[] | null> {
   if (!isTauriRuntime()) return null;
   try {
-    const value = await invoke<unknown>("list_osl_chat_history");
+    const value = await invoke<unknown>("list_osl_chat_history", { hideOthersMessages });
     if (!Array.isArray(value) || value.length > 200) return null;
     const rows = value.map((entry) => {
       if (!isRecord(entry)
@@ -539,6 +552,24 @@ export async function listOslChatHistory(): Promise<OslChatHistoryRow[] | null> 
       rows.some((row) => row === null) ? null : rows as OslChatHistoryRow[],
       "a history row did not match the expected shape");
   } catch (error) { recordBackendFailure("list_osl_chat_history", error); return null; }
+}
+
+export async function burnOslChatHistory(choice: OslChatBurnChoice, hideOthersMessages = false): Promise<OslChatBurnResult | null> {
+  if (!isTauriRuntime() || !["yourSide", "theirSide", "bothSides"].includes(choice)) return null;
+  try {
+    return parseOslChatBurnResult(await invoke<unknown>("burn_osl_chat_history", { choice, hideOthersMessages }));
+  } catch (error) { recordBackendFailure("burn_osl_chat_history", error); return null; }
+}
+
+export function parseOslChatBurnResult(raw: unknown): OslChatBurnResult | null {
+  if (!isRecord(raw) || !exact(raw, ["choice", "messagesBefore", "messagesAfter", "rowsDestroyed", "yourRowsDestroyed", "theirRowsDestroyed", "othersRowsDestroyed", "othersMessagesHidden", "localCleanupComplete", "recipientCopiesDeleted"])) return null;
+  if (!["yourSide", "theirSide", "bothSides"].includes(String(raw.choice))
+    || ![raw.messagesBefore, raw.messagesAfter, raw.rowsDestroyed, raw.yourRowsDestroyed, raw.theirRowsDestroyed, raw.othersRowsDestroyed].every(boundedCount)
+    || raw.othersRowsDestroyed !== 0
+    || typeof raw.othersMessagesHidden !== "boolean"
+    || raw.localCleanupComplete !== true
+    || raw.recipientCopiesDeleted !== false) return null;
+  return raw as unknown as OslChatBurnResult;
 }
 
 export async function preparePeerProseText(
