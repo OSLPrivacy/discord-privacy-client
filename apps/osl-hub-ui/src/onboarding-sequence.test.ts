@@ -27,6 +27,7 @@ describe("T15-C1 onboarding sequence", () => {
       "tor",
       "sending",
       "cover",
+      "visibility",
       "passwords",
       "burnpass",
       "mullvad",

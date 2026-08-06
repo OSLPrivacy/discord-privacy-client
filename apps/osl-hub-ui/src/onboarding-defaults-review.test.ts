@@ -109,6 +109,8 @@ describe("review defaults onboarding", () => {
     expect(previousOnboardingRoute("tor", branches)).toBe("defaults");
     expect(nextOnboardingRoute("tor", branches)).toBe("sending");
     expect(previousOnboardingRoute("sending", branches)).toBe("tor");
+    expect(nextOnboardingRoute("cover", branches)).toBe("visibility");
+    expect(previousOnboardingRoute("visibility", branches)).toBe("cover");
     expect(reviewDefaultsOnboardingContent()).toContain('id="continue-defaults-review"');
     expect(sendingSetupContent()).toContain('data-send-mode="manual"');
     expect(sendingSetupContent()).toContain('id="finish-onboarding"');

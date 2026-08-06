@@ -13,6 +13,7 @@ export const ONBOARDING_SEQUENCE = [
   "tor",
   "sending",
   "cover",
+  "visibility",
   "passwords",
   "burnpass",
   "mullvad",
