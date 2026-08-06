@@ -12,6 +12,8 @@ use crate::scrub_index::ScrubAccountSelection;
 const STORE_DIR: &str = "run-choices-v1";
 const MAX_RUN_ID_BYTES: usize = 64;
 const MAX_ACCOUNT_SCANS: usize = 32;
+const MAX_SELECTED_FILES: usize = 32;
+const MAX_FILE_FINGERPRINT_BYTES: usize = 64;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -100,6 +102,9 @@ impl OslRunChoices {
         {
             return Err("OSL run account scans must be canonical".to_owned());
         }
+        if self.selected_file_paths.len() > MAX_SELECTED_FILES {
+            return Err("Select no more than 32 files for an OSL run".to_owned());
+        }
         for path in &self.selected_file_paths {
             validate_selected_file_path(path)?;
         }
@@ -142,6 +147,29 @@ impl OslRunPlan {
 
     pub fn selected_file_count(&self) -> usize {
         self.selected_file_paths.len()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OslRunScannedFile {
+    pub service_id: String,
+    pub account_id: String,
+    pub file_name: String,
+    pub fingerprint: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OslRunFileScanReceipt {
+    pub run_id: String,
+    pub scanned_file_count: usize,
+    pub files: Vec<OslRunScannedFile>,
+}
+
+impl OslRunFileScanReceipt {
+    pub fn first_fingerprint(&self) -> Option<&str> {
+        self.files.first().map(|file| file.fingerprint.as_str())
     }
 }
 
@@ -201,9 +229,87 @@ pub fn build_osl_run_plan(root: &Path, run_id: &str) -> Result<OslRunPlan, Strin
     })
 }
 
+pub fn read_osl_run_file_scan_receipt(
+    root: &Path,
+    run_id: &str,
+) -> Result<Option<OslRunFileScanReceipt>, String> {
+    let path = file_scan_receipt_path(root, run_id)?;
+    let Ok(sealed) = std::fs::read(&path) else {
+        return Ok(None);
+    };
+    let plain = ipc::main_password::maybe_decrypt_file(&path, &sealed)
+        .map_err(|error| format!("decrypt OSL run file scan receipt: {error}"))?;
+    let receipt: OslRunFileScanReceipt = serde_json::from_slice(&plain)
+        .map_err(|error| format!("parse OSL run file scan receipt: {error}"))?;
+    validate_file_scan_receipt(&receipt)?;
+    Ok(Some(receipt))
+}
+
+pub fn scan_selected_files_for_approved_account(
+    root: &Path,
+    run_id: &str,
+) -> Result<OslRunFileScanReceipt, String> {
+    let plan = build_osl_run_plan(root, run_id)?;
+    let approved = plan
+        .selected_account_scans
+        .first()
+        .ok_or_else(|| "approved account required".to_owned())?;
+    let mut files = Vec::new();
+    for path in &plan.selected_file_paths {
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "OSL selected file path must name a readable file".to_owned())?
+            .to_owned();
+        let body = std::fs::read_to_string(path)
+            .map_err(|error| format!("read selected OSL run file: {error}"))?;
+        let fingerprint = extract_selected_file_fingerprint(&body)?;
+        files.push(OslRunScannedFile {
+            service_id: approved.service_id.clone(),
+            account_id: approved.account_id.clone(),
+            file_name,
+            fingerprint,
+        });
+    }
+
+    let receipt = OslRunFileScanReceipt {
+        run_id: plan.run_id,
+        scanned_file_count: files.len(),
+        files,
+    };
+    validate_file_scan_receipt(&receipt)?;
+    save_file_scan_receipt(root, &receipt)?;
+    Ok(receipt)
+}
+
 fn choices_path(root: &Path, run_id: &str) -> Result<PathBuf, String> {
     validate_run_id(run_id)?;
     Ok(root.join(STORE_DIR).join(format!("{run_id}.json")))
+}
+
+fn file_scan_receipt_path(root: &Path, run_id: &str) -> Result<PathBuf, String> {
+    validate_run_id(run_id)?;
+    Ok(root
+        .join(STORE_DIR)
+        .join(format!("{run_id}.file-scan.json")))
+}
+
+fn save_file_scan_receipt(root: &Path, receipt: &OslRunFileScanReceipt) -> Result<(), String> {
+    let path = file_scan_receipt_path(root, &receipt.run_id)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create OSL run file scan store: {error}"))?;
+    }
+    let body = serde_json::to_vec_pretty(receipt)
+        .map_err(|error| format!("serialize OSL run file scan receipt: {error}"))?;
+    let sealed = ipc::main_password::maybe_encrypt(&body)
+        .map_err(|error| format!("encrypt OSL run file scan receipt: {error}"))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, sealed)
+        .map_err(|error| format!("write OSL run file scan temp file: {error}"))?;
+    std::fs::rename(&tmp, &path)
+        .map_err(|error| format!("commit OSL run file scan file: {error}"))?;
+    Ok(())
 }
 
 fn validate_run_id(value: &str) -> Result<(), String> {
@@ -228,6 +334,51 @@ fn validate_downloaded_file_path(path: &Path) -> Result<(), String> {
 fn validate_selected_file_path(path: &Path) -> Result<(), String> {
     if path.as_os_str().is_empty() || !path.is_file() {
         return Err("OSL selected file path must name a real file".to_owned());
+    }
+    Ok(())
+}
+
+fn extract_selected_file_fingerprint(body: &str) -> Result<String, String> {
+    let fingerprint = body
+        .lines()
+        .find_map(|line| line.strip_prefix("fingerprint="))
+        .ok_or_else(|| "OSL selected file fingerprint is missing".to_owned())?
+        .trim();
+    validate_selected_file_fingerprint(fingerprint)?;
+    Ok(fingerprint.to_owned())
+}
+
+fn validate_selected_file_fingerprint(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > MAX_FILE_FINGERPRINT_BYTES
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err("OSL selected file fingerprint is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_file_scan_receipt(receipt: &OslRunFileScanReceipt) -> Result<(), String> {
+    validate_run_id(&receipt.run_id)?;
+    if receipt.scanned_file_count != receipt.files.len() || receipt.files.len() > MAX_SELECTED_FILES
+    {
+        return Err("OSL run file scan receipt count is invalid".to_owned());
+    }
+    for file in &receipt.files {
+        validate_account_scan(&ScrubAccountSelection {
+            service_id: file.service_id.clone(),
+            account_id: file.account_id.clone(),
+        })?;
+        if file.file_name.is_empty()
+            || file.file_name.contains('/')
+            || file.file_name.contains('\\')
+            || file.file_name.len() > 255
+        {
+            return Err("OSL run scanned file name is invalid".to_owned());
+        }
+        validate_selected_file_fingerprint(&file.fingerprint)?;
     }
     Ok(())
 }
@@ -343,5 +494,64 @@ mod tests {
         );
         assert_eq!(plan.selected_file_count(), 0);
         assert_eq!(plan.selected_account_scans, [selected_real_account_scan]);
+    }
+
+    #[test]
+    fn task_1419_file_only_start_requires_approved_account_and_preserves_first_result() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        ipc::main_password::set_file_storage_key(Some([0x19; 32]));
+
+        let maple = temp.path().join("maple.txt");
+        std::fs::write(&maple, b"fingerprint=MAPLE-4172\n").expect("maple fixture");
+        let before_count = read_osl_run_file_scan_receipt(temp.path(), "task-1419-run")
+            .expect("read before receipt")
+            .map(|receipt| receipt.scanned_file_count)
+            .unwrap_or(0);
+
+        let approved_account = ScrubAccountSelection {
+            service_id: "discord".to_owned(),
+            account_id: "discord-maple".to_owned(),
+        };
+        let approved_choices = OslRunChoices::watch_live("task-1419-run")
+            .expect("watch choices")
+            .with_selected_account_scans([approved_account.clone()])
+            .expect("approved account")
+            .with_selected_file_paths([maple.clone()])
+            .expect("selected maple file");
+        save_osl_run_choices(temp.path(), &approved_choices).expect("save approved choices");
+        let after = scan_selected_files_for_approved_account(temp.path(), "task-1419-run")
+            .expect("scan with approved account");
+
+        let no_account_choices = OslRunChoices::watch_live("task-1419-run")
+            .expect("watch choices")
+            .with_selected_file_paths([maple])
+            .expect("same selected maple file");
+        save_osl_run_choices(temp.path(), &no_account_choices).expect("save no-account choices");
+        let refused = scan_selected_files_for_approved_account(temp.path(), "task-1419-run")
+            .expect_err("account none must refuse");
+        let final_receipt = read_osl_run_file_scan_receipt(temp.path(), "task-1419-run")
+            .expect("read final receipt")
+            .expect("previous receipt remains");
+        let first = final_receipt.files.first().expect("first scanned file");
+
+        println!(
+            "TASK1419_TEST before_scanned_file_count={} after_scanned_file_count={} after_file={} after_fingerprint={} after_account={} refused=\"{}\" final_first_fingerprint={} final_scanned_file_count={}",
+            before_count,
+            after.scanned_file_count,
+            after.files[0].file_name,
+            after.files[0].fingerprint,
+            after.files[0].account_id,
+            refused,
+            first.fingerprint,
+            final_receipt.scanned_file_count
+        );
+        assert_eq!(before_count, 0);
+        assert_eq!(after.scanned_file_count, 1);
+        assert_eq!(after.files[0].file_name, "maple.txt");
+        assert_eq!(after.files[0].fingerprint, "MAPLE-4172");
+        assert_eq!(after.files[0].account_id, "discord-maple");
+        assert_eq!(refused, "approved account required");
+        assert_eq!(first.fingerprint, "MAPLE-4172");
+        assert_eq!(final_receipt.scanned_file_count, 1);
     }
 }
