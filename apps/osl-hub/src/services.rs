@@ -56,6 +56,45 @@ pub struct ScrubAccountDescriptor {
     pub app_or_browser_label: String,
 }
 
+#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DetectedAccountOpenChoiceKind {
+    WindowsApp,
+    Browser,
+}
+
+#[derive(Debug, Clone, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedAccountOpenChoice {
+    pub kind: DetectedAccountOpenChoiceKind,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedAccountDescriptor {
+    pub service_id: ServiceKind,
+    pub account_id: String,
+    pub account_label: String,
+    pub open_choices: Vec<DetectedAccountOpenChoice>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct DetectedAccountStoreRecord {
+    pub service_id: ServiceKind,
+    pub account_id: String,
+    pub account_label: String,
+    pub app_label: Option<String>,
+    pub browser_label: Option<String>,
+}
+
+pub trait DetectedAccountStore {
+    fn detected_accounts_for_owner(
+        &self,
+        owner_osl_user_id: &str,
+    ) -> Result<Vec<DetectedAccountStoreRecord>, String>;
+}
+
 #[derive(Default)]
 struct RegistryCache {
     loaded: bool,
@@ -102,6 +141,13 @@ impl ServiceRegistryState {
         validate_owner_osl_user_id(owner_osl_user_id)?;
         let cache = self.locked_cache()?;
         Ok(scrub_accounts(&cache.accounts, owner_osl_user_id))
+    }
+
+    pub fn list_detected_accounts_with_open_choices(
+        &self,
+        owner_osl_user_id: &str,
+    ) -> Result<Vec<DetectedAccountDescriptor>, String> {
+        list_detected_accounts_with_open_choices(self, owner_osl_user_id)
     }
 
     pub fn create_for_owner(
@@ -273,6 +319,40 @@ impl ServiceRegistryState {
             })?;
         Ok(account.provider)
     }
+}
+
+impl DetectedAccountStore for ServiceRegistryState {
+    fn detected_accounts_for_owner(
+        &self,
+        owner_osl_user_id: &str,
+    ) -> Result<Vec<DetectedAccountStoreRecord>, String> {
+        validate_owner_osl_user_id(owner_osl_user_id)?;
+        let cache = self.locked_cache()?;
+        Ok(cache
+            .accounts
+            .iter()
+            .filter(|account| account.owner_osl_user_id.as_deref() == Some(owner_osl_user_id))
+            .map(detected_account_store_record)
+            .collect())
+    }
+}
+
+pub fn list_detected_accounts_with_open_choices<S: DetectedAccountStore>(
+    store: &S,
+    owner_osl_user_id: &str,
+) -> Result<Vec<DetectedAccountDescriptor>, String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    let mut accounts = store
+        .detected_accounts_for_owner(owner_osl_user_id)?
+        .into_iter()
+        .map(detected_account_descriptor)
+        .collect::<Vec<_>>();
+    accounts.sort_by(|left, right| {
+        left.account_label
+            .cmp(&right.account_label)
+            .then_with(|| left.account_id.cmp(&right.account_id))
+    });
+    Ok(accounts)
 }
 
 pub fn service_kind_from_id(service_id: &str) -> Option<ServiceKind> {
@@ -510,6 +590,51 @@ fn scrub_accounts(
     scrub_accounts
 }
 
+fn detected_account_store_record(account: &AccountRecord) -> DetectedAccountStoreRecord {
+    let app_label = match account.service_id {
+        ServiceKind::Email => None,
+        _ => Some(
+            service_descriptor(account.service_id)
+                .display_name
+                .to_owned(),
+        ),
+    };
+    let browser_label = match account.service_id {
+        ServiceKind::Email => Some(scrub_app_or_browser_label(account).to_owned()),
+        _ => None,
+    };
+    DetectedAccountStoreRecord {
+        service_id: account.service_id,
+        account_id: account.id.clone(),
+        account_label: account.label.clone(),
+        app_label,
+        browser_label,
+    }
+}
+
+fn detected_account_descriptor(record: DetectedAccountStoreRecord) -> DetectedAccountDescriptor {
+    let mut open_choices = Vec::new();
+    if let Some(label) = record.app_label {
+        open_choices.push(DetectedAccountOpenChoice {
+            kind: DetectedAccountOpenChoiceKind::WindowsApp,
+            label,
+        });
+    }
+    if let Some(label) = record.browser_label {
+        open_choices.push(DetectedAccountOpenChoice {
+            kind: DetectedAccountOpenChoiceKind::Browser,
+            label,
+        });
+    }
+    open_choices.sort();
+    DetectedAccountDescriptor {
+        service_id: record.service_id,
+        account_id: record.account_id,
+        account_label: record.account_label,
+        open_choices,
+    }
+}
+
 fn service_registry(accounts: &[AccountRecord], owner_osl_user_id: &str) -> Vec<LinkedServiceDemo> {
     service_descriptors()
         .into_iter()
@@ -623,6 +748,188 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    struct FakeDetectedAccountStore {
+        records_by_owner: Vec<(&'static str, Vec<DetectedAccountStoreRecord>)>,
+    }
+
+    impl DetectedAccountStore for FakeDetectedAccountStore {
+        fn detected_accounts_for_owner(
+            &self,
+            owner_osl_user_id: &str,
+        ) -> Result<Vec<DetectedAccountStoreRecord>, String> {
+            Ok(self
+                .records_by_owner
+                .iter()
+                .find_map(|(owner, records)| (*owner == owner_osl_user_id).then(|| records.clone()))
+                .unwrap_or_default())
+        }
+    }
+
+    fn choice_kind_label(kind: DetectedAccountOpenChoiceKind) -> &'static str {
+        match kind {
+            DetectedAccountOpenChoiceKind::WindowsApp => "Windows app",
+            DetectedAccountOpenChoiceKind::Browser => "browser",
+        }
+    }
+
+    #[test]
+    fn detected_account_reader_returns_each_fake_account_and_browser_versus_app_choices() {
+        let store = FakeDetectedAccountStore {
+            records_by_owner: vec![(
+                OWNER_A,
+                vec![
+                    DetectedAccountStoreRecord {
+                        service_id: ServiceKind::Email,
+                        account_id: "browser-gmail-0314".to_owned(),
+                        account_label: "Work Gmail".to_owned(),
+                        app_label: None,
+                        browser_label: Some("Chrome".to_owned()),
+                    },
+                    DetectedAccountStoreRecord {
+                        service_id: ServiceKind::Email,
+                        account_id: "hybrid-outlook-0314".to_owned(),
+                        account_label: "Work Outlook".to_owned(),
+                        app_label: Some("Outlook app".to_owned()),
+                        browser_label: Some("Edge".to_owned()),
+                    },
+                    DetectedAccountStoreRecord {
+                        service_id: ServiceKind::Discord,
+                        account_id: "windows-discord-0314".to_owned(),
+                        account_label: "Personal Discord".to_owned(),
+                        app_label: Some("Discord app".to_owned()),
+                        browser_label: None,
+                    },
+                ],
+            )],
+        };
+
+        let accounts = list_detected_accounts_with_open_choices(&store, OWNER_A).unwrap();
+        let missing_owner_accounts =
+            list_detected_accounts_with_open_choices(&store, OWNER_B).unwrap();
+        let produced_choices = accounts
+            .iter()
+            .flat_map(|account| {
+                account.open_choices.iter().map(move |choice| {
+                    format!(
+                        "{}:{}={}",
+                        account.account_label,
+                        choice_kind_label(choice.kind),
+                        choice.label
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let row_open_labels = accounts
+            .iter()
+            .map(|account| {
+                let choices = account
+                    .open_choices
+                    .iter()
+                    .map(|choice| match choice.kind {
+                        DetectedAccountOpenChoiceKind::WindowsApp => "Windows app".to_owned(),
+                        DetectedAccountOpenChoiceKind::Browser => choice.label.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("+");
+                format!("{}:{}", account.account_label, choices)
+            })
+            .collect::<Vec<_>>();
+        let no_windows_app = accounts
+            .iter()
+            .find(|account| account.account_id == "browser-gmail-0314")
+            .expect("fake browser-only account should be present");
+
+        println!(
+            "detected_account_reader rows={} choices={} browser_versus_app_choices={}",
+            accounts.len(),
+            produced_choices.len(),
+            produced_choices.join("|")
+        );
+        println!(
+            "detected_account_reader_row_labels={}",
+            row_open_labels.join("|")
+        );
+        println!(
+            "detected_account_reader_no_windows_app_choices={}",
+            no_windows_app
+                .open_choices
+                .iter()
+                .map(|choice| format!("{}={}", choice_kind_label(choice.kind), choice.label))
+                .collect::<Vec<_>>()
+                .join("|")
+        );
+        println!(
+            "detected_account_reader_missing_owner_rows={}",
+            missing_owner_accounts.len()
+        );
+        println!(
+            "detected_account_reader_json={}",
+            serde_json::to_string(&accounts).unwrap()
+        );
+
+        assert_eq!(
+            accounts,
+            vec![
+                DetectedAccountDescriptor {
+                    service_id: ServiceKind::Discord,
+                    account_id: "windows-discord-0314".to_owned(),
+                    account_label: "Personal Discord".to_owned(),
+                    open_choices: vec![DetectedAccountOpenChoice {
+                        kind: DetectedAccountOpenChoiceKind::WindowsApp,
+                        label: "Discord app".to_owned(),
+                    }],
+                },
+                DetectedAccountDescriptor {
+                    service_id: ServiceKind::Email,
+                    account_id: "browser-gmail-0314".to_owned(),
+                    account_label: "Work Gmail".to_owned(),
+                    open_choices: vec![DetectedAccountOpenChoice {
+                        kind: DetectedAccountOpenChoiceKind::Browser,
+                        label: "Chrome".to_owned(),
+                    }],
+                },
+                DetectedAccountDescriptor {
+                    service_id: ServiceKind::Email,
+                    account_id: "hybrid-outlook-0314".to_owned(),
+                    account_label: "Work Outlook".to_owned(),
+                    open_choices: vec![
+                        DetectedAccountOpenChoice {
+                            kind: DetectedAccountOpenChoiceKind::WindowsApp,
+                            label: "Outlook app".to_owned(),
+                        },
+                        DetectedAccountOpenChoice {
+                            kind: DetectedAccountOpenChoiceKind::Browser,
+                            label: "Edge".to_owned(),
+                        },
+                    ],
+                },
+            ],
+            "the detected-account reader must return every fake-store account with its browser-versus-app open choices"
+        );
+        assert_eq!(
+            row_open_labels,
+            vec![
+                "Personal Discord:Windows app".to_owned(),
+                "Work Gmail:Chrome".to_owned(),
+                "Work Outlook:Windows app+Edge".to_owned(),
+            ],
+            "each row must name either the Windows app choice or a named browser choice"
+        );
+        assert_eq!(
+            no_windows_app.open_choices,
+            vec![DetectedAccountOpenChoice {
+                kind: DetectedAccountOpenChoiceKind::Browser,
+                label: "Chrome".to_owned(),
+            }],
+            "an account with no Windows app must offer the browser choice only"
+        );
+        assert_eq!(
+            missing_owner_accounts,
+            Vec::<DetectedAccountDescriptor>::new(),
+            "an account owner the fake store does not hold must return nothing"
+        );
     }
 
     #[test]
