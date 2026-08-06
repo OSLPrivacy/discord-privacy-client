@@ -40,6 +40,13 @@ The keyserver migration numbers `0041` through `0043` are reserved for this
 lane: event queue, invite capability state, and expiry/index hardening.  No
 unrelated schema may use that block.
 
+**Amendment, 2026-08-06 - invite record numbering.** `0042` remains a recorded
+skip in the keyserver migration-sequence gate because another local lane already
+used that number. The one-use invite record therefore lands as
+`0044_one_use_invite_links.sql`: it defines the creator, singular intended use,
+expiry, and consumed state for invite links without taking the reserved `0042`
+name.
+
 ## Boundary
 
 Roles grant governance capability, never visibility. An Enclave role does not

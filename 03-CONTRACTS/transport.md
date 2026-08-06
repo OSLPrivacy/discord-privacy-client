@@ -271,14 +271,14 @@ the 32-byte tag space to the mutation gate's 3600. Those bound the *cost* of
 probing the tag space; they are not an authorization check and must not be
 described as one.
 
-**There is still no invite capability in this repository.** `spaces.md` reserved
-migrations `0041`–`0043` for "event queue, invite capability state, and
-expiry/index hardening". `0041` and `0043` now exist. **`0042` — the invite
-*capability* state — still does not**; `keyserver-cf/migrations/` steps straight
-from `0041` to `0043`, and the D-274 lane recorded that it deliberately did not
-take it (`0043_space_event_expiry_hardening.sql:4`). So the "capability rules"
-this lane was told it inherited still amount to exactly one rule: **the tag is a
-bearer capability.**
+Task 0216 adds the first invite record in this repository:
+`keyserver-cf/migrations/0044_one_use_invite_links.sql`. `0042` remains
+deliberately skipped by the migration-sequence gate because another local lane
+already used that number, so the invite record does not take the reserved
+`0042` name. The new record stores only creator, singular intended use, expiry,
+and consumed state; it does not change the Space event lane's bearer-capability
+rule. Possession of the current 32-byte `recipient_tag` remains the entire
+capability for the event, drain, and acknowledgement routes.
 
 ### 6b.5 The acknowledgement — OBSERVED (new since the first draft)
 
