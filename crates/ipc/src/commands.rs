@@ -23,6 +23,10 @@ use crate::group_send::{
     OSL_RESULT_RECOVERY_IGNORED,
 };
 
+pub fn cmd_osl_list_telegram_whitelist_kinds() -> Vec<crate::allowed_places::AllowedPlaceKind> {
+    crate::allowed_places::telegram_whitelist_kinds()
+}
+
 // 9-TD2.3: F0-FIX3 trace logs.
 //
 // Set the `OSL_TRACE` env var (any value) to surface the snowflake
