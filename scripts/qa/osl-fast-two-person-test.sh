@@ -14,6 +14,8 @@ identity_a="osl-copy-a-disposable"
 identity_b="osl-copy-b-disposable"
 password_screen_a="on"
 password_screen_b="off"
+port_a=""
+port_b=""
 timeout_seconds=60
 
 usage() {
@@ -31,6 +33,8 @@ options:
   --identity-b <name>         Disposable identity name for copy B.
   --password-screen-a <on|off>
   --password-screen-b <on|off>
+  --port-a <port>             Loopback/control port for copy A.
+  --port-b <port>             Loopback/control port for copy B.
   --timeout <seconds>         Seconds to wait for both metadata records.
 USAGE
   exit 2
@@ -75,6 +79,16 @@ while [[ $# -gt 0 ]]; do
       password_screen_b="$2"
       shift 2
       ;;
+    --port-a)
+      need_value "$@"
+      port_a="$2"
+      shift 2
+      ;;
+    --port-b)
+      need_value "$@"
+      port_b="$2"
+      shift 2
+      ;;
     --timeout)
       need_value "$@"
       timeout_seconds="$2"
@@ -113,6 +127,18 @@ fi
 output_dir="$(realpath -m -- "$output_dir")"
 root="$(realpath -m -- "$root")"
 mkdir -p -- "$output_dir"
+
+launcher_args=(
+  --root "$root"
+  --identity-a "$identity_a"
+  --identity-b "$identity_b"
+)
+if [[ -n "$port_a" ]]; then
+  launcher_args+=(--port-a "$port_a")
+fi
+if [[ -n "$port_b" ]]; then
+  launcher_args+=(--port-b "$port_b")
+fi
 
 pid_a=""
 pid_b=""
@@ -222,9 +248,7 @@ TASK0064_DIRECT_COMMAND="$direct_command" \
 TASK0064_PASSWORD_SCREEN_A="$password_screen_a" \
 TASK0064_PASSWORD_SCREEN_B="$password_screen_b" \
 "$launcher" \
-  --root "$root" \
-  --identity-a "$identity_a" \
-  --identity-b "$identity_b" \
+  "${launcher_args[@]}" \
   -- bash -c "$command_script" >"$plan_file"
 cat "$plan_file"
 

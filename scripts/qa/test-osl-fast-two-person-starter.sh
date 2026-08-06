@@ -107,3 +107,37 @@ shared_metadata_count="$(find "$shared_out" -maxdepth 1 -name 'metadata-*.json' 
 [[ ! -e "$shared_root" ]] || fail "shared identity left a copy root"
 printf 'TASK0064 two-person-starter shared_identity_exit=%s\n' "$shared_rc"
 printf 'TASK0064 two-person-starter shared_identity_status_count=0 shared_identity_metadata_count=0\n'
+
+same_port_out="${tmpdir}/same-port-output"
+same_port_root="${tmpdir}/same-port-root"
+same_port_log="${tmpdir}/same-port.log"
+set +e
+"$starter" \
+  --output "$same_port_out" \
+  --root "$same_port_root" \
+  --port-a 48267 \
+  --port-b 48267 >"$same_port_log" 2>&1
+same_port_rc=$?
+set -e
+cat "$same_port_log"
+[[ "$same_port_rc" == "1" ]] || fail "same port returned ${same_port_rc}, expected 1"
+grep -Fq 'shared port: 48267' "$same_port_log" ||
+  fail "same port failure did not name the shared port"
+same_port_status_count="$(find "$same_port_out" -maxdepth 1 -name 'status-*.txt' 2>/dev/null | wc -l | tr -d ' ')"
+same_port_metadata_count="$(find "$same_port_out" -maxdepth 1 -name 'metadata-*.json' 2>/dev/null | wc -l | tr -d ' ')"
+same_port_plan_bytes=0
+if [[ -f "$same_port_out/launch-plan.txt" ]]; then
+  same_port_plan_bytes="$(wc -c <"$same_port_out/launch-plan.txt" | tr -d ' ')"
+fi
+same_port_pid_count=0
+if [[ -e "$same_port_root" ]]; then
+  same_port_pid_count="$(find "$same_port_root" -name pid 2>/dev/null | wc -l | tr -d ' ')"
+fi
+[[ "$same_port_status_count" == "0" ]] || fail "same port saved status results"
+[[ "$same_port_metadata_count" == "0" ]] || fail "same port saved metadata"
+[[ "$same_port_plan_bytes" == "0" ]] || fail "same port printed a launch plan"
+[[ "$same_port_pid_count" == "0" ]] || fail "same port started a copy process"
+[[ ! -e "$same_port_root" ]] || fail "same port left a copy root"
+printf 'TASK0067 two-person-starter same_port_exit=%s\n' "$same_port_rc"
+printf 'TASK0067 two-person-starter refusal=%q\n' "$(head -n1 "$same_port_log")"
+printf 'TASK0067 two-person-starter status_count=0 metadata_count=0 launch_plan_bytes=0 pid_count=0 root_exists=false\n'
