@@ -268,6 +268,140 @@ pub fn service_kind_from_id(service_id: &str) -> Option<ServiceKind> {
     })
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceCapabilityFacts {
+    pub service_id: ServiceKind,
+    pub placing: bool,
+    pub reading: bool,
+    pub opening: bool,
+    pub real_two_person_protected_messaging: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProtectedDeliveryProof {
+    pub service_id: ServiceKind,
+    pub protected_message_id: String,
+    pub sender_person_id: String,
+    pub recipient_person_id: String,
+    pub protected_message_received: bool,
+    pub received_by_real_other_person: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ServiceReadyLabel {
+    Ready,
+}
+
+pub const READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY: &str =
+    "ready_requires_real_two_person_protected_messaging_capability";
+pub const READY_REQUIRES_MATCHING_DELIVERY_PROOF: &str = "ready_requires_matching_delivery_proof";
+
+pub fn installed_service_count() -> usize {
+    service_descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.launch_state == ServiceLaunchState::Available)
+        .count()
+}
+
+pub fn installed_service_capability_facts() -> Vec<ServiceCapabilityFacts> {
+    service_descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.launch_state == ServiceLaunchState::Available)
+        .filter_map(|descriptor| service_capability_facts_for_kind(descriptor.id))
+        .collect()
+}
+
+pub fn service_capability_facts(service_id: &str) -> Option<ServiceCapabilityFacts> {
+    let service_id = service_kind_from_id(service_id)?;
+    service_capability_facts_for_kind(service_id)
+}
+
+pub fn direct_service_ready_label(
+    service_id: &str,
+    delivery_proof: Option<&ProtectedDeliveryProof>,
+) -> Result<ServiceReadyLabel, &'static str> {
+    let facts =
+        service_capability_facts(service_id).ok_or(READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY)?;
+    direct_service_ready_label_for_facts(facts, delivery_proof)
+}
+
+pub fn direct_service_ready_label_for_facts(
+    facts: ServiceCapabilityFacts,
+    delivery_proof: Option<&ProtectedDeliveryProof>,
+) -> Result<ServiceReadyLabel, &'static str> {
+    if !facts.real_two_person_protected_messaging {
+        return Err(READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY);
+    }
+    let Some(delivery_proof) = delivery_proof else {
+        return Err(READY_REQUIRES_MATCHING_DELIVERY_PROOF);
+    };
+    if !delivery_proof_matches_ready_rule(facts.service_id, delivery_proof) {
+        return Err(READY_REQUIRES_MATCHING_DELIVERY_PROOF);
+    }
+    Ok(ServiceReadyLabel::Ready)
+}
+
+fn delivery_proof_matches_ready_rule(
+    service_id: ServiceKind,
+    proof: &ProtectedDeliveryProof,
+) -> bool {
+    proof.service_id == service_id
+        && proof.protected_message_received
+        && proof.received_by_real_other_person
+        && !proof.protected_message_id.trim().is_empty()
+        && !proof.sender_person_id.trim().is_empty()
+        && !proof.recipient_person_id.trim().is_empty()
+        && proof.sender_person_id != proof.recipient_person_id
+}
+
+fn service_capability_facts_for_kind(service_id: ServiceKind) -> Option<ServiceCapabilityFacts> {
+    SERVICE_CAPABILITY_FACTS
+        .iter()
+        .copied()
+        .find(|facts| facts.service_id == service_id)
+}
+
+const SERVICE_CAPABILITY_FACTS: [ServiceCapabilityFacts; 5] = [
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::Discord,
+        placing: true,
+        reading: true,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::Telegram,
+        placing: true,
+        reading: true,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::WhatsApp,
+        placing: false,
+        reading: true,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::Email,
+        placing: false,
+        reading: false,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::Signal,
+        placing: false,
+        reading: true,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+];
+
 fn new_account_id(counter: &AtomicU64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
