@@ -6946,6 +6946,7 @@ async fn burn_active_hub_context(
     app: tauri::AppHandle,
     session: State<'_, HubAccountSessionState>,
     context_token: String,
+    burn_choice: Option<String>,
 ) -> Result<HubScopeBurnResult, String> {
     let _session = session.transition.lock().await;
     app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>()
@@ -6955,6 +6956,9 @@ async fn burn_active_hub_context(
         let core = app.state::<HubCoreState>();
         let _active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
         let result = if let Some(manual) = broker_state.manual_burn_target(&context_token)? {
+            if burn_choice.is_some() {
+                return Err("OSL server burn choice requires an active server channel".to_owned());
+            }
             security::burn_manual_peer_scope(
                 &core,
                 &app.state::<HubSecurityState>(),
@@ -6965,7 +6969,24 @@ async fn burn_active_hub_context(
             )?
         } else {
             let scope_input = broker_state.scope_for_context(&context_token)?;
-            let known_channel_ids = scope_input.channel_id.clone().into_iter().collect();
+            let (scope_input, known_channel_ids) =
+                if scope_input.kind == ipc::scope::ScopeKind::ServerChannel {
+                    let choice = burn_choice.as_deref().unwrap_or("this_channel");
+                    let target = broker_state.server_channel_burn_target(
+                        &context_token,
+                        choice,
+                        &app.state::<ServiceScopeIndexState>(),
+                    )?;
+                    (target.scope, target.canonical_channel_ids)
+                } else {
+                    if burn_choice.is_some() {
+                        return Err(
+                            "OSL server burn choice requires an active server channel".to_owned()
+                        );
+                    }
+                    let known_channel_ids = scope_input.channel_id.clone().into_iter().collect();
+                    (scope_input, known_channel_ids)
+                };
             security::burn_scope(
                 &core,
                 &app.state::<HubSecurityState>(),
