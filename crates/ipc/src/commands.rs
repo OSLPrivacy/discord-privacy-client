@@ -232,6 +232,9 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_read_screen_words", || {
             let _ = cmd_osl_read_screen_words(&state, "welcome".to_owned());
         });
+        assert_command_marks_activity("cmd_osl_check_message_timer_before_send", || {
+            let _ = cmd_osl_check_message_timer_before_send(&state, "Discord".to_owned(), 60);
+        });
         assert_command_marks_activity("cmd_osl_get_self_user_id", || {
             let _ = cmd_osl_get_self_user_id(&state);
         });
@@ -16865,6 +16868,125 @@ pub fn cmd_osl_read_screen_words(
         prefs.language.clone()
     };
     crate::screen_words::load_screen_words(&language, &screen)
+}
+
+// ---- Message timer pre-send admission ----
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageTimerAdmissionDto {
+    pub app_name: String,
+    pub requested_seconds: u64,
+    pub max_seconds: u64,
+    pub accepted: bool,
+}
+
+#[derive(Clone, Copy)]
+struct MessageTimerLimit {
+    canonical_name: &'static str,
+    max_seconds: u64,
+    max_label: &'static str,
+}
+
+const TIMER_LIMITS: &[(&str, MessageTimerLimit)] = &[
+    (
+        "messenger",
+        MessageTimerLimit {
+            canonical_name: "Messenger",
+            max_seconds: 10 * 60,
+            max_label: "10 minutes",
+        },
+    ),
+    (
+        "signal",
+        MessageTimerLimit {
+            canonical_name: "Signal",
+            max_seconds: 24 * 60 * 60,
+            max_label: "24 hours",
+        },
+    ),
+    (
+        "whatsapp",
+        MessageTimerLimit {
+            canonical_name: "WhatsApp",
+            max_seconds: 60 * 60 * 60,
+            max_label: "60 hours",
+        },
+    ),
+    (
+        "discord",
+        MessageTimerLimit {
+            canonical_name: "Discord",
+            max_seconds: crate::message_expiry_dial::MAX_VIEW_LIFETIME_SECONDS as u64,
+            max_label: "30 days",
+        },
+    ),
+];
+
+fn timer_limit_for_app(app_name: &str) -> Result<MessageTimerLimit, String> {
+    let normalized = app_name.trim().to_ascii_lowercase();
+    TIMER_LIMITS
+        .iter()
+        .find_map(|(name, limit)| (*name == normalized).then_some(*limit))
+        .ok_or_else(|| {
+            "OSL: app timer support is unknown; choose Messenger, Signal, WhatsApp, or Discord"
+                .to_owned()
+        })
+}
+
+/// Refuse a requested message timer before any send path places a carrier row.
+///
+/// The per-message expiry envelope can represent up to thirty days, but some
+/// surfaces cannot honestly keep a local timer that long. This command is the
+/// send-boundary admission check: callers must not clamp or accept a value this
+/// refuses.
+pub fn cmd_osl_check_message_timer_before_send(
+    state: &AppState,
+    app_name: String,
+    requested_seconds: u64,
+) -> Result<MessageTimerAdmissionDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let limit = timer_limit_for_app(&app_name)?;
+    if requested_seconds == 0 {
+        return Err(format!(
+            "OSL: {} timer must be at least 1 second",
+            limit.canonical_name
+        ));
+    }
+    if requested_seconds > limit.max_seconds {
+        return Err(format!(
+            "OSL: {} cannot keep a timer for {}; longest supported timer is {}",
+            limit.canonical_name,
+            human_timer_label(requested_seconds),
+            limit.max_label
+        ));
+    }
+    Ok(MessageTimerAdmissionDto {
+        app_name: limit.canonical_name.to_owned(),
+        requested_seconds,
+        max_seconds: limit.max_seconds,
+        accepted: true,
+    })
+}
+
+fn human_timer_label(seconds: u64) -> String {
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    for (unit_seconds, singular, plural) in [
+        (DAY, "day", "days"),
+        (HOUR, "hour", "hours"),
+        (MINUTE, "minute", "minutes"),
+    ] {
+        if seconds % unit_seconds == 0 {
+            let units = seconds / unit_seconds;
+            let unit_name = if units == 1 { singular } else { plural };
+            return format!("{units} {unit_name}");
+        }
+    }
+    let unit_name = if seconds == 1 { "second" } else { "seconds" };
+    format!("{seconds} {unit_name}")
 }
 
 // ---- Phase 9-D: onboarding tour + VPN warning ----
