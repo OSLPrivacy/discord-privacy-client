@@ -6,6 +6,7 @@ use osl_privacy_hub::account_recovery;
 use osl_privacy_hub::ai_carrier::{
     ai_carrier_status_for, set_ai_carrier_preview_enabled_for, AiCarrierState,
 };
+use osl_privacy_hub::app_own_names::{AppOwnNameConfirmation, AppOwnNameState};
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
@@ -1194,6 +1195,47 @@ async fn list_scrub_accounts(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     state.list_scrub_accounts_for_owner(&owner)
+}
+
+#[tauri::command]
+async fn record_connected_app_own_names(
+    state: State<'_, AppOwnNameState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: ServiceKind,
+    account_id: String,
+    observed_names: Vec<String>,
+) -> Result<AppOwnNameConfirmation, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    state.record_connected_account_names(&owner, service_id, &account_id, observed_names)
+}
+
+#[tauri::command]
+async fn get_connected_app_own_names(
+    state: State<'_, AppOwnNameState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: ServiceKind,
+    account_id: String,
+) -> Result<AppOwnNameConfirmation, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    state.confirmation_for_person(&owner, service_id, &account_id)
+}
+
+#[tauri::command]
+async fn correct_connected_app_own_names(
+    state: State<'_, AppOwnNameState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: ServiceKind,
+    account_id: String,
+    corrected_names: Vec<String>,
+) -> Result<AppOwnNameConfirmation, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    state.correction_for_person(&owner, service_id, &account_id, corrected_names)
 }
 
 #[tauri::command]
@@ -9851,6 +9893,7 @@ fn main() {
             config_dir.join("service-registry.json"),
         ));
         startup_breadcrumb("setup_step_15_service_registry_state_managed"); // STARTUP-TRACE
+        app.manage(AppOwnNameState::load(config_dir.join("app-own-names.json")));
         app.manage(ServiceScopeIndexState::load(
             config_dir.join("service-scope-index.json"),
         ));

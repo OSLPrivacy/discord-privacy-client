@@ -27,6 +27,8 @@ pub mod attachment_thumbnail_policy;
 // broker.rs takes `&crate::ai_carrier::AiCarrierState` unconditionally.
 pub mod ai_carrier;
 pub mod ai_consent;
+#[cfg(feature = "core")]
+pub mod app_own_names;
 pub mod attended_imap;
 #[cfg(feature = "core")]
 pub mod autoscrub_bridge;
