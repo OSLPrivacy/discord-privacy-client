@@ -100,7 +100,7 @@ use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole}
 use osl_privacy_hub::tor_pref::{TorPreference, TorPreferenceState};
 use osl_privacy_hub::updates::{
     bounded_plain_notes, bounded_version, expected_download_fingerprint,
-    prepare_verified_update_download, RELEASES_URL, SOURCE_REPOSITORY_URL,
+    prepare_verified_update_install, RELEASES_URL, SOURCE_REPOSITORY_URL,
 };
 use osl_privacy_hub::whatsapp_accessibility::{
     WhatsAppAccessibilityState, WhatsAppVerificationReceipt, WhatsAppVerificationStatus,
@@ -1968,11 +1968,13 @@ async fn install_hub_update(
         .path()
         .app_local_data_dir()
         .map_err(|_| "OSL local update staging is unavailable".to_owned())?;
-    let staged =
-        prepare_verified_update_download(&local_data_dir, &expected_fingerprint, |writer| {
-            writer.write_all(&bytes)
-        })
-        .map_err(|error| format!("The update download failed its fingerprint check: {error}"))?;
+    let staged = prepare_verified_update_install(
+        &local_data_dir,
+        &expected_version,
+        &expected_fingerprint,
+        |writer| writer.write_all(&bytes),
+    )
+    .map_err(|error| format!("The update download failed its fingerprint check: {error}"))?;
     let staged_bytes = std::fs::read(&staged.staged_path)
         .map_err(|_| "The verified update download could not be read for install".to_owned())?;
     update

@@ -48,8 +48,20 @@ pub struct VerifiedUpdateDownload {
     pub actual_fingerprint: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifiedUpdateInstall {
+    pub status: &'static str,
+    pub version: String,
+    pub staged_path: PathBuf,
+    pub bytes: u64,
+    pub expected_fingerprint: String,
+    pub actual_fingerprint: String,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum UpdateDownloadGateError {
+    InvalidExpectedVersion,
     InvalidExpectedFingerprint,
     CreateStagingDirectory,
     CreateStagingFile,
@@ -61,12 +73,17 @@ pub enum UpdateDownloadGateError {
         actual_fingerprint: String,
         staged_path: PathBuf,
         deleted_downloaded_file: bool,
+        downloaded_file_count_before_delete: usize,
+        downloaded_file_count_after_delete: usize,
     },
 }
 
 impl fmt::Display for UpdateDownloadGateError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidExpectedVersion => {
+                formatter.write_str("expected update version is invalid")
+            }
             Self::InvalidExpectedFingerprint => {
                 formatter.write_str("expected update fingerprint is invalid")
             }
@@ -129,12 +146,16 @@ pub fn prepare_verified_update_download(
     let bytes = u64::try_from(payload.len()).unwrap_or(u64::MAX);
     let actual_fingerprint = sha256_hex(&payload);
     if actual_fingerprint != expected_fingerprint {
+        let downloaded_file_count_before_delete = usize::from(staged_path.exists());
         let deleted_downloaded_file = fs::remove_file(&staged_path).is_ok();
+        let downloaded_file_count_after_delete = usize::from(staged_path.exists());
         return Err(UpdateDownloadGateError::FingerprintMismatch {
             expected_fingerprint,
             actual_fingerprint,
             staged_path,
             deleted_downloaded_file,
+            downloaded_file_count_before_delete,
+            downloaded_file_count_after_delete,
         });
     }
 
@@ -144,6 +165,26 @@ pub fn prepare_verified_update_download(
         bytes,
         expected_fingerprint,
         actual_fingerprint,
+    })
+}
+
+pub fn prepare_verified_update_install(
+    staging_root: &Path,
+    expected_version: &str,
+    expected_fingerprint: &str,
+    download: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+) -> Result<VerifiedUpdateInstall, UpdateDownloadGateError> {
+    let Some(version) = bounded_version(expected_version) else {
+        return Err(UpdateDownloadGateError::InvalidExpectedVersion);
+    };
+    let verified = prepare_verified_update_download(staging_root, expected_fingerprint, download)?;
+    Ok(VerifiedUpdateInstall {
+        status: verified.status,
+        version,
+        staged_path: verified.staged_path,
+        bytes: verified.bytes,
+        expected_fingerprint: verified.expected_fingerprint,
+        actual_fingerprint: verified.actual_fingerprint,
     })
 }
 
@@ -202,6 +243,10 @@ fn normalize_sha256(value: &str) -> Option<String> {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+pub fn file_sha256_hex(path: &Path) -> io::Result<String> {
+    fs::read(path).map(|bytes| sha256_hex(&bytes))
 }
 
 #[cfg(test)]
@@ -299,6 +344,118 @@ mod tests {
         println!(
             "TASK3170_MISMATCH_STAGED_FILE_EXISTS_AFTER={}",
             staged_path.exists()
+        );
+    }
+
+    #[test]
+    fn task_3171_update_mismatch_preserves_installed_build_and_can_retry_matching() {
+        let root = tempfile::tempdir().expect("create update install temp root");
+        let installed_path = root.path().join("installed-osl-build.bin");
+        let installed_version = "0.1.0";
+        let installed_bytes = b"installed OSL build bytes";
+        fs::write(&installed_path, installed_bytes).expect("write installed build");
+        let installed_fingerprint_before =
+            file_sha256_hex(&installed_path).expect("fingerprint installed build before");
+
+        let update_version = "0.2.0";
+        let matching_payload = b"new OSL build bytes";
+        let expected_update_fingerprint = sha256_hex(matching_payload);
+
+        let first_ready = prepare_verified_update_install(
+            root.path(),
+            update_version,
+            &expected_update_fingerprint,
+            |writer| writer.write_all(matching_payload),
+        )
+        .expect("matching update should first reach ready to install");
+        assert_eq!(first_ready.status, UPDATE_DOWNLOAD_READY_TO_INSTALL);
+        assert_eq!(first_ready.version, update_version);
+        assert_eq!(
+            first_ready.expected_fingerprint,
+            expected_update_fingerprint
+        );
+        assert_eq!(first_ready.actual_fingerprint, expected_update_fingerprint);
+        assert!(first_ready.staged_path.exists());
+
+        let mut changed_payload = matching_payload.to_vec();
+        changed_payload[0] ^= 0x01;
+        let mismatch = prepare_verified_update_install(
+            root.path(),
+            update_version,
+            &expected_update_fingerprint,
+            |writer| writer.write_all(&changed_payload),
+        )
+        .expect_err("one byte changed must be refused before install");
+        let UpdateDownloadGateError::FingerprintMismatch {
+            actual_fingerprint: changed_fingerprint,
+            staged_path: changed_path,
+            downloaded_file_count_before_delete,
+            downloaded_file_count_after_delete,
+            ..
+        } = mismatch
+        else {
+            panic!("one byte changed must be refused with fingerprint mismatch");
+        };
+        assert_ne!(changed_fingerprint, expected_update_fingerprint);
+        assert_eq!(downloaded_file_count_before_delete, 1);
+        assert_eq!(downloaded_file_count_after_delete, 0);
+        assert!(!changed_path.exists());
+
+        let installed_fingerprint_after_mismatch =
+            file_sha256_hex(&installed_path).expect("fingerprint installed build after mismatch");
+        assert_eq!(installed_version, "0.1.0");
+        assert_eq!(
+            installed_fingerprint_after_mismatch,
+            installed_fingerprint_before
+        );
+        assert_eq!(
+            fs::read(&installed_path).expect("read installed build after mismatch"),
+            installed_bytes
+        );
+
+        let retry_ready = prepare_verified_update_install(
+            root.path(),
+            update_version,
+            &expected_update_fingerprint,
+            |writer| writer.write_all(matching_payload),
+        )
+        .expect("matching update should still reach ready to install after mismatch");
+        assert_eq!(retry_ready.status, UPDATE_DOWNLOAD_READY_TO_INSTALL);
+        assert_eq!(retry_ready.version, update_version);
+        assert_eq!(retry_ready.actual_fingerprint, expected_update_fingerprint);
+        assert!(retry_ready.staged_path.exists());
+
+        println!("TASK3171_FIRST_READY_STATUS=\"{}\"", first_ready.status);
+        println!("TASK3171_FIRST_READY_VERSION={}", first_ready.version);
+        println!(
+            "TASK3171_FIRST_READY_EXPECTED_FINGERPRINT={}",
+            first_ready.expected_fingerprint
+        );
+        println!(
+            "TASK3171_FIRST_READY_ACTUAL_FINGERPRINT={}",
+            first_ready.actual_fingerprint
+        );
+        println!(
+            "TASK3171_ONE_BYTE_CHANGED_REFUSED=\"{}\"",
+            UPDATE_DOWNLOAD_FINGERPRINT_MISMATCH
+        );
+        println!("TASK3171_CHANGED_ACTUAL_FINGERPRINT={changed_fingerprint}");
+        println!(
+            "TASK3171_CHANGED_DOWNLOAD_COUNT_BEFORE_DELETE={downloaded_file_count_before_delete}"
+        );
+        println!(
+            "TASK3171_CHANGED_DOWNLOAD_COUNT_AFTER_DELETE={downloaded_file_count_after_delete}"
+        );
+        println!("TASK3171_INSTALLED_VERSION_AFTER_MISMATCH={installed_version}");
+        println!("TASK3171_INSTALLED_FINGERPRINT_BEFORE={installed_fingerprint_before}");
+        println!(
+            "TASK3171_INSTALLED_FINGERPRINT_AFTER_MISMATCH={installed_fingerprint_after_mismatch}"
+        );
+        println!("TASK3171_MATCHING_RETRY_STATUS=\"{}\"", retry_ready.status);
+        println!("TASK3171_MATCHING_RETRY_VERSION={}", retry_ready.version);
+        println!(
+            "TASK3171_MATCHING_RETRY_ACTUAL_FINGERPRINT={}",
+            retry_ready.actual_fingerprint
         );
     }
 }
