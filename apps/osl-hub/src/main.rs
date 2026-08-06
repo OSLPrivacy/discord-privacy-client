@@ -24,6 +24,9 @@ use osl_privacy_hub::browser_profile_scan::{
     BrowserProfileScanReceipt, BrowserProfileScanState,
 };
 use osl_privacy_hub::build_integrity::{check_current, BuildIntegrity};
+use osl_privacy_hub::burn_review_state::{
+    BurnReviewState, BurnReviewStateCommand, BurnReviewStateSummary,
+};
 use osl_privacy_hub::chat_capture_protection::{
     ChatCaptureProtectionState, ConsentTransition, EffectiveCaptureProtection,
 };
@@ -654,6 +657,21 @@ fn save_scrub_setup(
     command: ScrubSetupCommand,
 ) -> Result<ScrubSetupSummary, String> {
     state.save_command(command)
+}
+
+#[tauri::command]
+fn save_burn_review_state(
+    state: State<'_, BurnReviewState>,
+    command: BurnReviewStateCommand,
+) -> Result<BurnReviewStateSummary, String> {
+    state.save_command(command)
+}
+
+#[tauri::command]
+fn get_burn_review_state(
+    state: State<'_, BurnReviewState>,
+) -> Result<BurnReviewStateSummary, String> {
+    state.summary()
 }
 
 /// Persist the explicit connection route selected during onboarding.
@@ -9681,6 +9699,9 @@ fn main() {
             config_dir.join("preview-preferences.json"),
         ));
         app.manage(ScrubSetupState::load(config_dir.join("scrub-setup.json")));
+        app.manage(BurnReviewState::load(
+            config_dir.join("burn-review-state.json"),
+        ));
         startup_breadcrumb("setup_step_14_preview_state_managed"); // STARTUP-TRACE
         app.manage(TorPreferenceState::load_with_arti_proxy_config(
             config_dir.join("tor-preference.json"),

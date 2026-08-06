@@ -495,6 +495,8 @@ macro_rules! hub_tauri_commands {
             set_hub_screenshot_protection,
             save_onboarding_preferences,
             save_scrub_setup,
+            save_burn_review_state,
+            get_burn_review_state,
             set_tor_preference,
             scan_local_privacy,
             open_hosted_session_scan,
@@ -1629,6 +1631,29 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["save_scrub_setup"],
+        );
+    }
+
+    #[test]
+    fn burn_review_state_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "save_burn_review_state",
+        );
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "get_burn_review_state",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["save_burn_review_state", "get_burn_review_state"],
         );
     }
 

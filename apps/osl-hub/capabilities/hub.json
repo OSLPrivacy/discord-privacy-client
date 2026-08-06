@@ -30,6 +30,8 @@
     "allow-copy-hub-friend-invite",
     "allow-save-onboarding-preferences",
     "allow-save-scrub-setup",
+    "allow-save-burn-review-state",
+    "allow-get-burn-review-state",
     "allow-set-tor-preference",
     "allow-set-osl-chat-capture-preference",
     "allow-scan-local-privacy",

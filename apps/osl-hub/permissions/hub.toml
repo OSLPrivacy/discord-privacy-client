@@ -199,6 +199,16 @@ description = "Save the local Scrub setup account count, automatic schedule, and
 commands.allow = ["save_scrub_setup"]
 
 [[permission]]
+identifier = "allow-save-burn-review-state"
+description = "Save the local burn review selected scope, selected chat, and hide-other-people choice before the confirmation step."
+commands.allow = ["save_burn_review_state"]
+
+[[permission]]
+identifier = "allow-get-burn-review-state"
+description = "Read the local burn review selected scope, selected chat, and hide-other-people choice for the confirmation step."
+commands.allow = ["get_burn_review_state"]
+
+[[permission]]
 identifier = "allow-set-tor-preference"
 description = "Persist the explicit OSL network route before encrypted text can be sent."
 commands.allow = ["set_tor_preference"]
