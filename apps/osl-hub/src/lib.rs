@@ -95,6 +95,7 @@ pub mod main_window_reveal;
 pub mod model_pack_install;
 pub mod models;
 pub mod mullvad_window_host;
+pub mod named_places;
 pub mod native_a11y;
 pub mod native_apps;
 pub mod native_attachment_jobs;
