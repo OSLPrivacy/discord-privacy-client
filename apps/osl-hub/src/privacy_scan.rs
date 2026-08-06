@@ -17,6 +17,7 @@ const MAX_MESSAGES: usize = 2_000;
 const MAX_TEXT_BYTES: usize = 8 * 1024;
 const MAX_LOCATOR_BYTES: usize = 256;
 const MAX_PREVIEW_CHARS: usize = 120;
+const MAX_SENDER_BYTES: usize = 256;
 const MAX_ATTACHMENT_ID_BYTES: usize = 128;
 const MAX_ATTACHMENT_DISPLAY_NAME_BYTES: usize = 256;
 const MAX_ATTACHMENT_ENCODED_BYTES: usize = MAX_ATTACHMENT_BYTES.div_ceil(3) * 4;
@@ -42,10 +43,10 @@ pub struct LocalMessageCandidate {
 pub struct ServiceFoundMessageInput {
     pub service_id: String,
     pub sender: Option<String>,
+    pub signed_in_account_sender: Option<String>,
     pub sent_at_unix_ms: i64,
     pub place: String,
     pub text: String,
-    pub sent_by_signed_in_account: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -58,9 +59,38 @@ pub struct FoundMessageRecord {
     pub sent_by_signed_in_account: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MessageOwnerCheckInput {
+    pub signed_in_account_sender: Option<String>,
+    pub message_sender: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MessageOwnerCheckError {
+    UnknownSignedInAccountSender,
+    UnknownMessageSender,
+    InvalidSender,
+}
+
+impl std::fmt::Display for MessageOwnerCheckError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownSignedInAccountSender => {
+                f.write_str("signed-in account sender is unknown")
+            }
+            Self::UnknownMessageSender => f.write_str("message sender is unknown"),
+            Self::InvalidSender => f.write_str("message owner check sender is invalid"),
+        }
+    }
+}
+
+impl std::error::Error for MessageOwnerCheckError {}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FoundMessageRecordError {
     MissingSender,
+    MissingSignedInAccountSender,
     InvalidField,
 }
 
@@ -68,12 +98,27 @@ impl std::fmt::Display for FoundMessageRecordError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingSender => f.write_str("found message sender is missing"),
+            Self::MissingSignedInAccountSender => {
+                f.write_str("signed-in account sender is missing")
+            }
             Self::InvalidField => f.write_str("found message record field is invalid"),
         }
     }
 }
 
 impl std::error::Error for FoundMessageRecordError {}
+
+impl From<MessageOwnerCheckError> for FoundMessageRecordError {
+    fn from(value: MessageOwnerCheckError) -> Self {
+        match value {
+            MessageOwnerCheckError::UnknownMessageSender => Self::MissingSender,
+            MessageOwnerCheckError::UnknownSignedInAccountSender => {
+                Self::MissingSignedInAccountSender
+            }
+            MessageOwnerCheckError::InvalidSender => Self::InvalidField,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -215,18 +260,18 @@ pub fn name_found_message_record(
         return Err(FoundMessageRecordError::InvalidField);
     }
 
-    let sender = input
-        .sender
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .ok_or(FoundMessageRecordError::MissingSender)?;
+    let sent_by_signed_in_account = did_signed_in_account_send_message(MessageOwnerCheckInput {
+        signed_in_account_sender: input.signed_in_account_sender,
+        message_sender: input.sender.clone(),
+    })?;
+    let sender = normalized_sender(input.sender, MessageOwnerCheckError::UnknownMessageSender)?;
 
     Ok(FoundMessageRecord {
         sender,
         sent_at_unix_ms: input.sent_at_unix_ms,
         place: input.place,
         text: input.text,
-        sent_by_signed_in_account: input.sent_by_signed_in_account,
+        sent_by_signed_in_account,
     })
 }
 
@@ -234,6 +279,21 @@ pub fn name_found_message_records(
     inputs: Vec<ServiceFoundMessageInput>,
 ) -> Result<Vec<FoundMessageRecord>, FoundMessageRecordError> {
     inputs.into_iter().map(name_found_message_record).collect()
+}
+
+pub fn did_signed_in_account_send_message(
+    input: MessageOwnerCheckInput,
+) -> Result<bool, MessageOwnerCheckError> {
+    let signed_in_account_sender = normalized_sender(
+        input.signed_in_account_sender,
+        MessageOwnerCheckError::UnknownSignedInAccountSender,
+    )?;
+    let message_sender = normalized_sender(
+        input.message_sender,
+        MessageOwnerCheckError::UnknownMessageSender,
+    )?;
+
+    Ok(message_sender == signed_in_account_sender)
 }
 
 /// Reject oversized attachment IPC inputs before they are cloned, decoded, or
@@ -406,6 +466,20 @@ fn valid_candidate(message: &LocalMessageCandidate) -> bool {
         && !message.text.contains('\0')
         && message.attachments.len() <= MAX_ATTACHMENTS_PER_MESSAGE
         && message.attachments.iter().all(valid_attachment_input)
+}
+
+fn normalized_sender(
+    value: Option<String>,
+    unknown_error: MessageOwnerCheckError,
+) -> Result<String, MessageOwnerCheckError> {
+    let sender = value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or(unknown_error)?;
+    if sender.len() > MAX_SENDER_BYTES || sender.chars().any(char::is_control) {
+        return Err(MessageOwnerCheckError::InvalidSender);
+    }
+    Ok(sender)
 }
 
 fn valid_attachment_input(value: &LocalAttachmentCandidate) -> bool {
@@ -891,26 +965,26 @@ mod tests {
             ServiceFoundMessageInput {
                 service_id: "discord".to_owned(),
                 sender: Some("Ari Discord".to_owned()),
+                signed_in_account_sender: Some("Tessa Telegram".to_owned()),
                 sent_at_unix_ms: 1_786_008_600_000,
                 place: "discord:dm:task-3000-alpha:message-1".to_owned(),
                 text: "Discord sample found message 3000".to_owned(),
-                sent_by_signed_in_account: false,
             },
             ServiceFoundMessageInput {
                 service_id: "telegram".to_owned(),
                 sender: Some("Tessa Telegram".to_owned()),
+                signed_in_account_sender: Some("Tessa Telegram".to_owned()),
                 sent_at_unix_ms: 1_786_012_200_000,
                 place: "telegram:chat:task-3000-beta:message-2".to_owned(),
                 text: "Telegram sample found message 3000".to_owned(),
-                sent_by_signed_in_account: true,
             },
             ServiceFoundMessageInput {
                 service_id: "signal".to_owned(),
                 sender: Some("Sam Signal".to_owned()),
+                signed_in_account_sender: Some("Tessa Telegram".to_owned()),
                 sent_at_unix_ms: 1_786_015_800_000,
                 place: "signal:thread:task-3000-gamma:message-3".to_owned(),
                 text: "Signal sample found message 3000".to_owned(),
-                sent_by_signed_in_account: false,
             },
         ];
         let services: Vec<String> = samples
@@ -972,10 +1046,10 @@ mod tests {
         let refused = name_found_message_record(ServiceFoundMessageInput {
             service_id: "discord".to_owned(),
             sender: None,
+            signed_in_account_sender: Some("Ari Discord".to_owned()),
             sent_at_unix_ms: 1_786_008_600_000,
             place: "discord:dm:task-3000-alpha:message-missing-sender".to_owned(),
             text: "Missing sender must be refused".to_owned(),
-            sent_by_signed_in_account: false,
         })
         .expect_err("missing sender must be refused");
         println!(
@@ -984,6 +1058,49 @@ mod tests {
             refused
         );
         assert_eq!(refused, FoundMessageRecordError::MissingSender);
+    }
+
+    #[test]
+    fn task_3001_direct_command_answers_owner_check_and_refuses_unknown_sender() {
+        let signed_in = "task-3001-signed-in-account";
+        let yes = did_signed_in_account_send_message(MessageOwnerCheckInput {
+            signed_in_account_sender: Some(signed_in.to_owned()),
+            message_sender: Some(signed_in.to_owned()),
+        })
+        .expect("known matching sender checks");
+        println!(
+            "TASK3001_OWNER_CHECK command=did_signed_in_account_send_message message=sent-by-account signed_in_sender=\"{}\" message_sender=\"{}\" result={}",
+            signed_in,
+            signed_in,
+            if yes { "yes" } else { "no" }
+        );
+
+        let other_sender = "task-3001-other-account";
+        let no = did_signed_in_account_send_message(MessageOwnerCheckInput {
+            signed_in_account_sender: Some(signed_in.to_owned()),
+            message_sender: Some(other_sender.to_owned()),
+        })
+        .expect("known non-matching sender checks");
+        println!(
+            "TASK3001_OWNER_CHECK command=did_signed_in_account_send_message message=sent-by-someone-else signed_in_sender=\"{}\" message_sender=\"{}\" result={}",
+            signed_in,
+            other_sender,
+            if no { "yes" } else { "no" }
+        );
+
+        let refused = did_signed_in_account_send_message(MessageOwnerCheckInput {
+            signed_in_account_sender: Some(signed_in.to_owned()),
+            message_sender: None,
+        })
+        .expect_err("unknown sender must be refused");
+        println!(
+            "TASK3001_OWNER_CHECK_REFUSAL command=did_signed_in_account_send_message message=unknown-sender result=ERR error=\"{}\"",
+            refused
+        );
+
+        assert!(yes);
+        assert!(!no);
+        assert_eq!(refused, MessageOwnerCheckError::UnknownMessageSender);
     }
 
     #[test]
