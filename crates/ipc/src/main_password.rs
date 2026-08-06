@@ -1775,6 +1775,7 @@ pub const AT_REST_STATE_FILES: &[&str] = &[
     "scope_blobs.json",
     "control_inbox_dead_letter.json",
     "friend_request_state.json",
+    "private_contact_links.json",
     // Sealed by `save_pending_friend_requests` (commands.rs). Omitting it here
     // would let a password change re-key the ten files above and leave this one
     // sealed under the OLD key -- the exact defect burned_scopes.json already

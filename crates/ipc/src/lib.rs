@@ -58,6 +58,7 @@ pub mod migration;
 pub mod offline_send_queue;
 pub mod peer_capabilities;
 pub mod peer_map;
+pub mod private_contact_link;
 pub mod prose_token;
 pub mod receipt_wire;
 pub mod recovery;

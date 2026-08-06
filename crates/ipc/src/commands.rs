@@ -15774,6 +15774,43 @@ pub fn cmd_osl_get_friend_ids(state: &AppState) -> Result<Vec<String>, String> {
     Ok(g.clone())
 }
 
+pub fn cmd_osl_create_private_contact_link(
+    state: &AppState,
+    person_id: String,
+) -> Result<crate::private_contact_link::PrivateContactLinkDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: private contact link dir: {e}"))?;
+    crate::private_contact_link::create_private_contact_link(
+        &dir,
+        &person_id,
+        now_unix_secs().max(0) as u64 * 1000,
+    )
+}
+
+pub fn cmd_osl_private_contact_link_status(
+    state: &AppState,
+    link_value: String,
+) -> Result<crate::private_contact_link::PrivateContactLinkStatusDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: private contact link dir: {e}"))?;
+    crate::private_contact_link::private_contact_link_status(&dir, &link_value)
+}
+
+pub fn cmd_osl_use_private_contact_link(
+    state: &AppState,
+    link_value: String,
+) -> Result<crate::private_contact_link::PrivateContactLinkUseDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: private contact link dir: {e}"))?;
+    crate::private_contact_link::use_private_contact_link(&dir, &link_value)
+}
+
 const SAVED_FRIEND_REQUEST_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
