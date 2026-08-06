@@ -75,6 +75,48 @@ impl UpdateChannel {
     }
 }
 
+/// When to warn before interacting with a conversation whose verification has
+/// not been confirmed by the user.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum VerificationWarningChoice {
+    #[default]
+    #[serde(rename = "every time")]
+    EveryTime,
+    #[serde(rename = "once")]
+    Once,
+    #[serde(rename = "before sending")]
+    BeforeSending,
+    #[serde(rename = "never")]
+    Never,
+}
+
+impl VerificationWarningChoice {
+    pub const ALL: [Self; 4] = [
+        Self::EveryTime,
+        Self::Once,
+        Self::BeforeSending,
+        Self::Never,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::EveryTime => "every time",
+            Self::Once => "once",
+            Self::BeforeSending => "before sending",
+            Self::Never => "never",
+        }
+    }
+}
+
+pub fn parse_verification_warning_choice(
+    choice: &str,
+) -> Result<VerificationWarningChoice, String> {
+    VerificationWarningChoice::ALL
+        .into_iter()
+        .find(|candidate| candidate.label() == choice)
+        .ok_or_else(|| format!("OSL: unknown verification warning choice '{choice}'"))
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -87,6 +129,8 @@ pub struct AppPreferences {
     pub update_channel: UpdateChannel,
     #[serde(default)]
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
+    #[serde(default)]
+    pub verification_warning: VerificationWarningChoice,
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 2;

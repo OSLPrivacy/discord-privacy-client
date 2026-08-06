@@ -13332,6 +13332,151 @@ fn auto_whitelist_allowed_place(app_kind: &str) -> Option<AutoWhitelistAllowedPl
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerificationWarningChoiceDto {
+    pub choice: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VerificationWarningCheckDto {
+    pub conversation_id: String,
+    pub choice: String,
+    pub check: String,
+    pub warning_point: String,
+    pub should_warn: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerificationWarningCheck {
+    Opening,
+    Sending,
+}
+
+impl VerificationWarningCheck {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Opening => "opening",
+            Self::Sending => "sending",
+        }
+    }
+}
+
+pub fn cmd_osl_save_verification_warning_choice(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<PathBuf>,
+) -> Result<VerificationWarningChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::parse_verification_warning_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.verification_warning = choice;
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(VerificationWarningChoiceDto {
+        choice: choice.label().to_string(),
+    })
+}
+
+pub fn cmd_osl_read_verification_warning_choice(
+    state: &AppState,
+) -> Result<VerificationWarningChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .verification_warning;
+    Ok(VerificationWarningChoiceDto {
+        choice: choice.label().to_string(),
+    })
+}
+
+pub fn cmd_osl_check_verification_warning_on_opening(
+    state: &AppState,
+    conversation_id: String,
+    verified: bool,
+) -> Result<VerificationWarningCheckDto, String> {
+    record_activity_on_command_entry();
+    verification_warning_check(
+        state,
+        conversation_id,
+        verified,
+        VerificationWarningCheck::Opening,
+    )
+}
+
+pub fn cmd_osl_check_verification_warning_before_sending(
+    state: &AppState,
+    conversation_id: String,
+    verified: bool,
+) -> Result<VerificationWarningCheckDto, String> {
+    record_activity_on_command_entry();
+    verification_warning_check(
+        state,
+        conversation_id,
+        verified,
+        VerificationWarningCheck::Sending,
+    )
+}
+
+fn verification_warning_check(
+    state: &AppState,
+    conversation_id: String,
+    verified: bool,
+    check: VerificationWarningCheck,
+) -> Result<VerificationWarningCheckDto, String> {
+    let conversation_id = normalize_verification_warning_conversation_id(conversation_id)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .verification_warning;
+    let should_warn = if verified {
+        false
+    } else {
+        match choice {
+            crate::app_preferences::VerificationWarningChoice::EveryTime => true,
+            crate::app_preferences::VerificationWarningChoice::Once => {
+                let mut seen = state
+                    .verification_warning_seen
+                    .lock()
+                    .expect("verification_warning_seen mutex poisoned");
+                seen.insert(conversation_id.clone())
+            }
+            crate::app_preferences::VerificationWarningChoice::BeforeSending => {
+                check == VerificationWarningCheck::Sending
+            }
+            crate::app_preferences::VerificationWarningChoice::Never => false,
+        }
+    };
+    let warning_point = if should_warn { check.label() } else { "none" };
+    Ok(VerificationWarningCheckDto {
+        conversation_id,
+        choice: choice.label().to_string(),
+        check: check.label().to_string(),
+        warning_point: warning_point.to_string(),
+        should_warn,
+    })
+}
+
+fn normalize_verification_warning_conversation_id(
+    conversation_id: String,
+) -> Result<String, String> {
+    let trimmed = conversation_id.trim();
+    if trimmed.is_empty() || trimmed.len() > 256 {
+        return Err("OSL: verification warning conversation id is invalid".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NewPlaceAllowRequestDto {
     pub request_id: String,
     pub choice_required: bool,
