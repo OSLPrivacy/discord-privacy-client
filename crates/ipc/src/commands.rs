@@ -16231,6 +16231,51 @@ pub fn cmd_osl_read_verification_warning_choice(
     Ok(choice.into())
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AlertModeChoiceDto {
+    pub mode: String,
+}
+
+impl From<crate::app_preferences::AlertModeChoice> for AlertModeChoiceDto {
+    fn from(mode: crate::app_preferences::AlertModeChoice) -> Self {
+        Self {
+            mode: mode.words().to_string(),
+        }
+    }
+}
+
+pub fn cmd_osl_save_alert_mode_choice(
+    state: &AppState,
+    mode: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<AlertModeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let mode = crate::app_preferences::parse_alert_mode_choice(&mode)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.alert_mode_choice = mode;
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(mode.into())
+}
+
+pub fn cmd_osl_read_alert_mode_choice(state: &AppState) -> Result<AlertModeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let mode = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .alert_mode_choice;
+    Ok(mode.into())
+}
+
 // ---- Phase 9-D: onboarding tour + VPN warning ----
 
 /// DTO mirroring [`crate::app_preferences::TourState`]. One
