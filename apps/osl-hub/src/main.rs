@@ -1334,6 +1334,20 @@ fn request_autoscrub_global_stop(
     autoscrub_run::request_global_stop(&state.osl)
 }
 
+#[tauri::command]
+fn keep_scanning_after_autoscrub_stop_request(
+    state: State<'_, HubCoreState>,
+) -> Result<AutoScrubFleetStatus, String> {
+    autoscrub_run::keep_scanning_after_stop_request(&state.osl)
+}
+
+#[tauri::command]
+fn stop_autoscrub_now_after_stop_request(
+    state: State<'_, HubCoreState>,
+) -> Result<AutoScrubFleetStatus, String> {
+    autoscrub_run::stop_now_after_stop_request(&state.osl)
+}
+
 /// Produce local statutory-erasure text for the user to review and send.
 /// The command has no transport side effect.
 #[tauri::command]
@@ -10878,6 +10892,8 @@ mod tauri_command_acl_tests {
             "get_autoscrub_run_fl",
             "start_autoscrub_reviewed_run",
             "request_autoscrub_global_stop",
+            "keep_scanning_after_autoscrub_stop_request",
+            "stop_autoscrub_now_after_stop_request",
         ]);
     }
 

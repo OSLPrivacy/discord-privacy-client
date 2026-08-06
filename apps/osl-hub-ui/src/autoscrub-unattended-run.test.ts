@@ -34,15 +34,22 @@ vi.mock("./preferences", async () => {
 });
 
 import {
+  keepScanningAfterAutoScrubStopRequest,
   loadAutoScrubRunFleetStatus,
   requestAutoScrubGlobalStop,
   startAutoScrubReviewedRun,
+  stopAutoScrubNowAfterStopRequest,
 } from "./autoscrub-unattended-run";
 
 const fleetStatus = {
   contract: "autoscrubRunFleet.v1",
   openRunCount: 2,
   globalStopRequested: false,
+  stopConfirmation: {
+    required: false,
+    keepScanningLabel: "Keep scanning",
+    stopNowLabel: "Stop now",
+  },
   unattendedExecutionAllowed: false,
   quitGuard: {
     state: "notRequested",
@@ -92,8 +99,12 @@ describe("AutoScrub unattended run production wiring", () => {
     mocks.invoke.mockResolvedValue(fleetStatus);
     await expect(loadAutoScrubRunFleetStatus()).resolves.toEqual(fleetStatus);
     await expect(requestAutoScrubGlobalStop()).resolves.toEqual(fleetStatus);
+    await expect(keepScanningAfterAutoScrubStopRequest()).resolves.toEqual(fleetStatus);
+    await expect(stopAutoScrubNowAfterStopRequest()).resolves.toEqual(fleetStatus);
     expect(mocks.invoke).toHaveBeenNthCalledWith(1, "get_autoscrub_run_fl");
     expect(mocks.invoke).toHaveBeenNthCalledWith(2, "request_autoscrub_global_stop");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(3, "keep_scanning_after_autoscrub_stop_request");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(4, "stop_autoscrub_now_after_stop_request");
   });
 
   it("starts only an explicitly reviewed batch and refuses absent consent before native invocation", async () => {

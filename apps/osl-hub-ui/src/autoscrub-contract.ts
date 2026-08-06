@@ -35,7 +35,7 @@ export type AutoscrubUnattendedRunResult =
 
 
 export type AutoScrubRunPhase = "reviewRequired" | "running" | "stopping" | "blocked" | "complete" | "failed";
-export type AutoScrubQuitGuardState = "notRequested" | "checking" | "estimated" | "stopped" | "unknown" | "refused";
+export type AutoScrubQuitGuardState = "notRequested" | "confirming" | "checking" | "estimated" | "stopped" | "unknown" | "refused";
 export type AutoScrubDisplayTone = "neutral" | "working" | "warning" | "blocked";
 
 export interface AutoScrubRunSummary {
@@ -55,10 +55,17 @@ export interface AutoScrubQuitGuardEstimate {
   readonly reason: string;
 }
 
+export interface AutoScrubStopConfirmationState {
+  readonly required: boolean;
+  readonly keepScanningLabel: "Keep scanning";
+  readonly stopNowLabel: "Stop now";
+}
+
 export interface AutoScrubFleetStatus {
   readonly contract: "autoscrubRunFleet.v1";
   readonly openRunCount: number;
   readonly globalStopRequested: boolean;
+  readonly stopConfirmation: AutoScrubStopConfirmationState;
   readonly unattendedExecutionAllowed: false;
   readonly quitGuard: AutoScrubQuitGuardEstimate;
   readonly runs: readonly AutoScrubRunSummary[];
@@ -120,7 +127,7 @@ const serviceIds: readonly ServiceId[] = [
   "discord", "telegram", "email", "signal", "whatsapp",
 ];
 const phases: readonly AutoScrubRunPhase[] = ["reviewRequired", "running", "stopping", "blocked", "complete", "failed"];
-const quitGuardStates: readonly AutoScrubQuitGuardState[] = ["notRequested", "checking", "estimated", "stopped", "unknown", "refused"];
+const quitGuardStates: readonly AutoScrubQuitGuardState[] = ["notRequested", "confirming", "checking", "estimated", "stopped", "unknown", "refused"];
 const outcomes: readonly AutoScrubRunSummary["lastOutcome"][] = ["none", "prepared", "confirmed", "held", "unknown"];
 
 
@@ -242,8 +249,22 @@ function parseQuitGuard(raw: unknown): AutoScrubQuitGuardEstimate {
   } as AutoScrubQuitGuardEstimate);
 }
 
+function parseStopConfirmation(raw: unknown): AutoScrubStopConfirmationState {
+  if (!exactRecord(raw, ["required", "keepScanningLabel", "stopNowLabel"])
+    || typeof raw.required !== "boolean"
+    || raw.keepScanningLabel !== "Keep scanning"
+    || raw.stopNowLabel !== "Stop now") {
+    throw new Error("invalid AutoScrub stop confirmation");
+  }
+  return deepFreeze({
+    required: raw.required,
+    keepScanningLabel: "Keep scanning",
+    stopNowLabel: "Stop now",
+  } as AutoScrubStopConfirmationState);
+}
+
 export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
-  if (!exactRecord(raw, ["contract", "openRunCount", "globalStopRequested", "unattendedExecutionAllowed", "quitGuard", "runs"])
+  if (!exactRecord(raw, ["contract", "openRunCount", "globalStopRequested", "stopConfirmation", "unattendedExecutionAllowed", "quitGuard", "runs"])
     || raw.contract !== "autoscrubRunFleet.v1"
     || !boundedCount(raw.openRunCount, 2)
     || typeof raw.globalStopRequested !== "boolean"
@@ -253,6 +274,7 @@ export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
     throw new Error("invalid AutoScrub fleet status");
   }
   const quitGuard = parseQuitGuard(raw.quitGuard);
+  const stopConfirmation = parseStopConfirmation(raw.stopConfirmation);
   const runs = raw.runs.map(parseRun);
   if (new Set(runs.map((run) => run.runId)).size !== runs.length) {
     throw new Error("invalid AutoScrub fleet status");
@@ -261,6 +283,7 @@ export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
     contract: "autoscrubRunFleet.v1",
     openRunCount: raw.openRunCount,
     globalStopRequested: raw.globalStopRequested,
+    stopConfirmation,
     unattendedExecutionAllowed: false,
     quitGuard,
     runs,
@@ -309,6 +332,14 @@ export function projectAutoScrubFleetStatus(status: AutoScrubFleetStatus | null)
       label: "Stopped",
       detail: "OSL refused to continue because stop authority could not be proven.",
       tone: "blocked",
+      stopAvailable: false,
+    };
+  }
+  if (status.stopConfirmation.required || status.quitGuard.state === "confirming") {
+    return {
+      label: "Confirm stop",
+      detail: "Choose Keep scanning or Stop now.",
+      tone: "warning",
       stopAvailable: false,
     };
   }

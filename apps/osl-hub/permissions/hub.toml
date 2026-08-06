@@ -270,8 +270,18 @@ commands.allow = ["start_autoscrub_reviewed_run"]
 
 [[permission]]
 identifier = "allow-request-autoscrub-global-stop"
-description = "Request a global stop for local AutoScrub runs; the native run state remains responsible for bounded halt progress."
+description = "Request a global stop confirmation for local AutoScrub runs; this does not end a run without an explicit follow-up choice."
 commands.allow = ["request_autoscrub_global_stop"]
+
+[[permission]]
+identifier = "allow-keep-scanning-after-autoscrub-stop-request"
+description = "Choose Keep scanning after an AutoScrub stop request so the active local run continues."
+commands.allow = ["keep_scanning_after_autoscrub_stop_request"]
+
+[[permission]]
+identifier = "allow-stop-autoscrub-now-after-stop-request"
+description = "Choose Stop now after an AutoScrub stop request so the active local run ends."
+commands.allow = ["stop_autoscrub_now_after_stop_request"]
 
 [[permission]]
 identifier = "allow-list-linked-services"

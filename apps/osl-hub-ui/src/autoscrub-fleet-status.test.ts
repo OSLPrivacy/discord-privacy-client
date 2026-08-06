@@ -35,6 +35,11 @@ const fleetStatus = {
   contract: "autoscrubRunFleet.v1",
   openRunCount: 1,
   globalStopRequested: false,
+  stopConfirmation: {
+    required: false,
+    keepScanningLabel: "Keep scanning",
+    stopNowLabel: "Stop now",
+  },
   unattendedExecutionAllowed: false,
   quitGuard: {
     state: "notRequested",
@@ -120,6 +125,28 @@ describe("AutoScrub fleet status renderer contract", () => {
   });
 
   it("projects stop state from the fleet quit-guard honest estimate", () => {
+    const confirming = projectAutoScrubFleetStatus(parseAutoScrubFleetStatus({
+      ...fleetStatus,
+      globalStopRequested: true,
+      stopConfirmation: {
+        required: true,
+        keepScanningLabel: "Keep scanning",
+        stopNowLabel: "Stop now",
+      },
+      quitGuard: {
+        state: "confirming",
+        honestRemainingSecondsEstimate: null,
+        reason: "Choose Keep scanning or Stop now before OSL stops AutoScrub.",
+      },
+      runs: [{
+        ...fleetStatus.runs[0],
+        stopRequested: true,
+      }],
+    }));
+    expect(confirming.label).toBe("Confirm stop");
+    expect(confirming.detail).toBe("Choose Keep scanning or Stop now.");
+    expect(confirming.stopAvailable).toBe(false);
+
     const stopping = parseAutoScrubFleetStatus({
       ...fleetStatus,
       globalStopRequested: true,

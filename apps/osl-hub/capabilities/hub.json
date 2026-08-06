@@ -45,6 +45,8 @@
     "allow-get-autoscrub-run-fl",
     "allow-start-autoscrub-reviewed-run",
     "allow-request-autoscrub-global-stop",
+    "allow-keep-scanning-after-autoscrub-stop-request",
+    "allow-stop-autoscrub-now-after-stop-request",
     "allow-list-linked-services",
     "allow-get-core-readiness",
     "allow-list-core-features",

@@ -719,6 +719,8 @@ mod tests {
         "get_autoscrub_run_fl",
         "start_autoscrub_reviewed_run",
         "request_autoscrub_global_stop",
+        "keep_scanning_after_autoscrub_stop_request",
+        "stop_autoscrub_now_after_stop_request",
         "compose_scrub_erasure_request",
         "validate_hub_activation_code",
         "clear_hub_activation_code",

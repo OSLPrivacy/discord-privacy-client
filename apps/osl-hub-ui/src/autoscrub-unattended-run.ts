@@ -42,6 +42,16 @@ export async function requestAutoScrubGlobalStop(): Promise<AutoScrubFleetStatus
   return parseAutoScrubFleetStatus(await invoke<unknown>("request_autoscrub_global_stop"));
 }
 
+export async function keepScanningAfterAutoScrubStopRequest(): Promise<AutoScrubFleetStatus | null> {
+  if (!isTauriRuntime()) return null;
+  return parseAutoScrubFleetStatus(await invoke<unknown>("keep_scanning_after_autoscrub_stop_request"));
+}
+
+export async function stopAutoScrubNowAfterStopRequest(): Promise<AutoScrubFleetStatus | null> {
+  if (!isTauriRuntime()) return null;
+  return parseAutoScrubFleetStatus(await invoke<unknown>("stop_autoscrub_now_after_stop_request"));
+}
+
 export async function startAutoScrubReviewedRun(request: AutoScrubReviewedRunRequest): Promise<AutoScrubFleetStatus | null> {
   const reviewed = parseAutoScrubReviewedRunRequest(request);
   if (!isTauriRuntime()) return null;
