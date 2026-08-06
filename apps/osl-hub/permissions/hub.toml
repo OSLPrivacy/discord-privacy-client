@@ -19,6 +19,11 @@ description = "Read the already-computed startup build-integrity verdict; it cop
 commands.allow = ["build_integrity_status"]
 
 [[permission]]
+identifier = "allow-installed-build-version-record"
+description = "Read the startup-recorded app version and installed executable SHA-256 fingerprint; it copies a status value and performs no I/O, no network operation and no key access."
+commands.allow = ["installed_build_version_record"]
+
+[[permission]]
 identifier = "allow-verify-peer-build-integrity"
 description = "Classify one peer-reported executable hash against the bundled signed build list and return only a warning state; it never disables OSL Chat sending."
 commands.allow = ["verify_peer_build_integrity"]

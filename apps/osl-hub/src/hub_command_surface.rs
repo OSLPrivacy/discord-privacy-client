@@ -530,6 +530,7 @@ macro_rules! hub_tauri_commands {
             ai_carrier_status,
             set_ai_carrier_preview_enabled,
             build_integrity_status,
+            installed_build_version_record,
             verify_peer_build_integrity,
             list_hub_app_notifications,
             set_hub_notifications_enabled,

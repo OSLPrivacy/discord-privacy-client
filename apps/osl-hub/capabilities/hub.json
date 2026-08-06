@@ -23,6 +23,7 @@
     "allow-set-ai-carrier-preview-enabled",
     "allow-compose-scrub-erasure-request",
     "allow-build-integrity-status",
+    "allow-installed-build-version-record",
     "allow-verify-peer-build-integrity",
     "allow-get-onboarding-preferences",
     "allow-list-hub-app-notifications",

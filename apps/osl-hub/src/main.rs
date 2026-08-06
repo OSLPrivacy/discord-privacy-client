@@ -44,6 +44,9 @@ use osl_privacy_hub::identity_registry::{
     self, HubIdentityBurnResult, HubIdentityRegistryState, HubIdentitySlotCreation,
     HubIdentitySlotDto, HubIdentitySwitchResult,
 };
+use osl_privacy_hub::installed_build_version::{
+    record_current_executable_at_start, InstalledBuildVersionRecord,
+};
 use osl_privacy_hub::main_window_reveal::{
     main_window_reveal, main_window_should_start_hidden, CaptureAffinity, MainWindowReveal,
     PageLoadPhase,
@@ -9489,6 +9492,13 @@ fn build_integrity_status(state: tauri::State<'_, BuildIntegrity>) -> BuildInteg
 }
 
 #[tauri::command]
+fn installed_build_version_record(
+    state: tauri::State<'_, InstalledBuildVersionRecord>,
+) -> InstalledBuildVersionRecord {
+    state.inner().clone()
+}
+
+#[tauri::command]
 fn verify_peer_build_integrity(peer_exe_sha256: String) -> Result<PeerBuildCheck, String> {
     verify_peer_build_from_hex(&peer_exe_sha256)
 }
@@ -9793,9 +9803,12 @@ fn main() {
         };
         #[cfg(feature = "discord-qa-shell")]
         startup_breadcrumb("setup_step_02_qa_config_dir_remapped"); // STARTUP-TRACE
-                                                                    // The app owns a separate OSL identity namespace. Never inherit
-                                                                    // the original Discord client's `%APPDATA%/osl` login merely
-                                                                    // because both applications run on the same Windows account.
+        let installed_build_record = record_current_executable_at_start(&config_dir)?;
+        startup_breadcrumb("setup_step_02_installed_build_version_recorded"); // STARTUP-TRACE
+
+        // The app owns a separate OSL identity namespace. Never inherit
+        // the original Discord client's `%APPDATA%/osl` login merely
+        // because both applications run on the same Windows account.
         keystore::set_active_account_dir(None);
         startup_breadcrumb("setup_step_03_keystore_active_account_dir_cleared"); // STARTUP-TRACE
         let osl_core_dir = config_dir.join("osl-core");
@@ -9949,6 +9962,7 @@ fn main() {
         // Evaluate the bundled signed manifest once per launch, before the UI
         // can present a local integrity verdict.
         app.manage(check_current());
+        app.manage(installed_build_record);
         app.manage(OverlaySessionState::default());
         startup_breadcrumb("setup_step_32_overlay_session_state_managed"); // STARTUP-TRACE
         app.manage(native_surface_capture::NativeSurfaceCaptureState::default());
