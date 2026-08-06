@@ -13,6 +13,7 @@ use base64::Engine;
 use crypto::{aead, ed25519, hkdf, random, x25519};
 use keystore::{generate_identity, select_best_sealer, KeyServerClient};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14045,6 +14046,8 @@ const OSL_EXPORT_FILES: &[&str] = &[
     "store/messages.sqlite-shm",
 ];
 
+const OSL_EXPORT_FILES_SHA256_FIELD: &str = "files_sha256";
+
 /// Account-relative files carried by an encrypted identity export.
 ///
 /// Consumers that own another account lifecycle sweep use this to prove a
@@ -14081,6 +14084,51 @@ fn export_aead_key(entropy: &[u8; 16]) -> Result<crypto::aead::Key, String> {
     let k = crypto::hkdf::derive_32(b"OSL-data-export-v1", entropy, b"aead-key")
         .map_err(|e| format!("OSL: export key derive: {e}"))?;
     Ok(crypto::aead::Key::from_bytes(k))
+}
+
+fn hex_sha256(bytes: impl AsRef<[u8]>) -> String {
+    Sha256::digest(bytes.as_ref())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn write_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+fn account_export_files_integrity(
+    files: &serde_json::Map<String, serde_json::Value>,
+) -> Result<String, String> {
+    let mut canonical = Vec::new();
+    write_len_prefixed(&mut canonical, b"OSL/account-export-files/v1");
+    for rel in OSL_EXPORT_FILES {
+        if let Some(value) = files.get(*rel) {
+            let encoded = value
+                .as_str()
+                .ok_or_else(|| format!("OSL: import: file {rel} is not base64 text"))?;
+            write_len_prefixed(&mut canonical, rel.as_bytes());
+            write_len_prefixed(&mut canonical, encoded.as_bytes());
+        }
+    }
+    Ok(hex_sha256(canonical))
+}
+
+fn verify_account_export_files_integrity(
+    files: &serde_json::Map<String, serde_json::Value>,
+    bundle: &serde_json::Value,
+) -> Result<(), String> {
+    let declared = bundle
+        .get(OSL_EXPORT_FILES_SHA256_FIELD)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "OSL: import: export file integrity missing".to_string())?;
+    let actual = account_export_files_integrity(files)?;
+    if subtle::ConstantTimeEq::ct_eq(actual.as_bytes(), declared.as_bytes()).into() {
+        Ok(())
+    } else {
+        Err("OSL: import: export file integrity mismatch".to_string())
+    }
 }
 
 fn require_recovery_entropy(state: &AppState, why: &str) -> Result<[u8; 16], String> {
@@ -14541,7 +14589,13 @@ fn cmd_osl_export_data_with_dir(state: &AppState, dir: &Path) -> Result<String, 
             })
         })
     };
-    let bundle = serde_json::json!({ "version": 1, "files": files, "identity": identity_obj });
+    let files_sha256 = account_export_files_integrity(&files)?;
+    let bundle = serde_json::json!({
+        "version": 1,
+        "files": files,
+        OSL_EXPORT_FILES_SHA256_FIELD: files_sha256,
+        "identity": identity_obj
+    });
     let plaintext =
         serde_json::to_vec(&bundle).map_err(|e| format!("OSL: export serialize: {e}"))?;
 
@@ -14620,6 +14674,11 @@ fn cmd_osl_recover_account_from_export_with_dir(
     // Validate every field and decode every file before releasing the SQLite
     // handle or replacing any live state.  This is deliberately strict: a
     // partial/malformed bundle must be a no-op.
+    let files = bundle
+        .get("files")
+        .and_then(|f| f.as_object())
+        .ok_or_else(|| "OSL: import: files missing".to_string())?;
+    verify_account_export_files_integrity(files, &bundle)?;
     let idobj = bundle
         .get("identity")
         .filter(|v| v.is_object())
@@ -14637,10 +14696,6 @@ fn cmd_osl_recover_account_from_export_with_dir(
             imported_snowflake = crate::log_id::log_id(imported_snowflake)
         ));
     }
-    let files = bundle
-        .get("files")
-        .and_then(|f| f.as_object())
-        .ok_or_else(|| "OSL: import: files missing".to_string())?;
     let files = decode_export_files(files)?;
 
     // Stage the complete replacement first.  Renames are atomic per path;
@@ -14715,8 +14770,9 @@ mod account_transfer_tests {
 
     fn state_with_entropy(entropy: [u8; 16]) -> AppState {
         let state = AppState::new();
-        *state.identity.lock().unwrap() =
-            Some(keystore::identity_from_entropy(entropy, "42".into()));
+        let mut identity = keystore::identity_from_entropy(entropy, "42".into());
+        identity.discord_snowflake = Some("42".into());
+        *state.identity.lock().unwrap() = Some(identity);
         state
     }
 
@@ -14733,6 +14789,28 @@ mod account_transfer_tests {
         )
         .unwrap();
         serde_json::from_slice(&plaintext).unwrap()
+    }
+
+    fn phrase_for_entropy(entropy: [u8; 16]) -> String {
+        bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
+            .unwrap()
+            .to_string()
+    }
+
+    fn seal_export_bundle(bundle: &serde_json::Value, entropy: [u8; 16]) -> String {
+        let plaintext = serde_json::to_vec(bundle).unwrap();
+        let nonce = crypto::aead::Nonce::from_bytes([46; crypto::aead::NONCE_SIZE]);
+        let ct = crypto::aead::seal(
+            &export_aead_key(&entropy).unwrap(),
+            &nonce,
+            OSL_EXPORT_MAGIC,
+            &plaintext,
+        )
+        .unwrap();
+        let mut raw = OSL_EXPORT_MAGIC.to_vec();
+        raw.extend_from_slice(nonce.as_bytes());
+        raw.extend_from_slice(&ct);
+        STANDARD.encode(raw)
     }
 
     #[test]
@@ -14835,6 +14913,76 @@ mod account_transfer_tests {
             b"{}"
         );
         crate::main_password::set_file_storage_key(None);
+    }
+
+    #[test]
+    fn task_0461_changed_byte_restore_is_refused_before_any_file_is_replaced() {
+        let _guard = crate::test_process_globals::serialize();
+        let _reset = FileKeyReset;
+        let destination_key = [0x46; 32];
+        crate::main_password::set_file_storage_key(Some(destination_key));
+        let dir = TempDir::new().unwrap();
+        let entropy = [46; 16];
+        let phrase = phrase_for_entropy(entropy);
+        let original_peer_map = br#"{"marker":"MAP-0461"}"#;
+        let changed_peer_map = br#"{"marker":"BYTE-0462"}"#;
+        std::fs::write(dir.path().join("peer_map.json"), original_peer_map).unwrap();
+
+        let state = state_with_entropy(entropy);
+        let encoded = cmd_osl_export_data_with_dir(&state, dir.path()).unwrap();
+        let mut bundle = open_export(&encoded, entropy);
+        let original_digest = bundle[OSL_EXPORT_FILES_SHA256_FIELD]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        bundle["files"]["peer_map.json"] =
+            serde_json::Value::String(STANDARD.encode(changed_peer_map));
+        let changed_encoded = seal_export_bundle(&bundle, entropy);
+
+        println!("TASK0461 original_data.readable=MAP-0461");
+        println!("TASK0461 changed_data.readable=BYTE-0462");
+        println!("TASK0461 changed_only=peer_map.json");
+        println!("TASK0461 stale_digest.len={}", original_digest.len());
+        assert_eq!(original_digest.len(), 64);
+
+        let result = cmd_osl_recover_account_from_export_with_dir(
+            &state,
+            changed_encoded,
+            phrase,
+            dir.path(),
+        );
+        let live_after = std::fs::read(dir.path().join("peer_map.json")).unwrap();
+        let live_plain_after = if crate::main_password::has_enc_magic(&live_after) {
+            crate::main_password::decrypt_at_rest(&live_after, &destination_key).unwrap()
+        } else {
+            live_after.clone()
+        };
+        let accepted_changed_data = result.is_ok() && live_plain_after == changed_peer_map;
+        println!("TASK0461 changed_data.accepted={accepted_changed_data}");
+        println!(
+            "TASK0461 live_after_marker={}",
+            if live_plain_after == original_peer_map {
+                "MAP-0461"
+            } else if live_plain_after == changed_peer_map {
+                "BYTE-0462"
+            } else {
+                "unknown"
+            }
+        );
+        match &result {
+            Ok(()) => println!("TASK0461 restore_result=ok"),
+            Err(error) => println!("TASK0461 restore_error={error}"),
+        }
+
+        assert!(
+            !accepted_changed_data,
+            "changed data was accepted by account restore"
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "OSL: import: export file integrity mismatch"
+        );
+        assert_eq!(live_plain_after, original_peer_map);
     }
 
     #[test]
