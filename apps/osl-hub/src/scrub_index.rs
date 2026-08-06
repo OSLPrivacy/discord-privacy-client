@@ -667,6 +667,7 @@ fn load_persisted_scan(
     let mut output = LocalPrivacyScanResult {
         findings: Vec::new(),
         email_protection_checks: Vec::new(),
+        email_burn_target_lists: Vec::new(),
         messages_scanned: 0,
         messages_rejected: 0,
         truncated: false,
@@ -883,6 +884,8 @@ mod tests {
             reply_recipient: None,
             visible_recipients: Vec::new(),
             hidden_recipients: Vec::new(),
+            email_thread_identity: None,
+            email_folder_identity: None,
             attachments: Vec::new(),
         }
     }

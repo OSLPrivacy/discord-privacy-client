@@ -38,6 +38,8 @@ pub fn before_unencrypted_send(
         reply_recipient: None,
         visible_recipients: Vec::new(),
         hidden_recipients: Vec::new(),
+        email_thread_identity: None,
+        email_folder_identity: None,
         attachments: Vec::new(),
     }]);
 

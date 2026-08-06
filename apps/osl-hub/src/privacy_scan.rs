@@ -6,7 +6,7 @@
 //! those inputs encrypted and deterministically reproduce findings from disk.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::attachment_scan::{
     scan_attachments, AttachmentAnalyzers, LocalAttachmentCandidate, UninspectedAttachment,
@@ -19,6 +19,7 @@ const MAX_LOCATOR_BYTES: usize = 256;
 const MAX_PREVIEW_CHARS: usize = 120;
 const MAX_EMAIL_RECIPIENTS: usize = 64;
 const MAX_EMAIL_RECIPIENT_BYTES: usize = 256;
+const MAX_EMAIL_BURN_ID_BYTES: usize = 256;
 const MAX_ATTACHMENT_ID_BYTES: usize = 128;
 const MAX_ATTACHMENT_DISPLAY_NAME_BYTES: usize = 256;
 const MAX_ATTACHMENT_ENCODED_BYTES: usize = MAX_ATTACHMENT_BYTES.div_ceil(3) * 4;
@@ -41,6 +42,10 @@ pub struct LocalMessageCandidate {
     pub visible_recipients: Vec<String>,
     #[serde(default)]
     pub hidden_recipients: Vec<String>,
+    #[serde(default)]
+    pub email_thread_identity: Option<String>,
+    #[serde(default)]
+    pub email_folder_identity: Option<String>,
     #[serde(default)]
     pub attachments: Vec<LocalAttachmentCandidate>,
 }
@@ -83,6 +88,7 @@ pub struct LocalPrivacyFinding {
 pub struct LocalPrivacyScanResult {
     pub findings: Vec<LocalPrivacyFinding>,
     pub email_protection_checks: Vec<EmailProtectionCheckDisplay>,
+    pub email_burn_target_lists: Vec<EmailBurnTargetListDisplay>,
     pub messages_scanned: usize,
     pub messages_rejected: usize,
     pub truncated: bool,
@@ -103,6 +109,21 @@ pub struct EmailProtectionCheckDisplay {
     pub reply_all_recipients: Vec<String>,
     pub visible_recipients: Vec<String>,
     pub distinct_recipient_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmailBurnScope {
+    Thread,
+    Folder,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmailBurnTargetListDisplay {
+    pub scope: EmailBurnScope,
+    pub identity: String,
+    pub message_locators: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -176,6 +197,8 @@ pub fn scan_local_messages_with_analyzers(
 ) -> LocalPrivacyScanResult {
     let mut findings = Vec::new();
     let mut email_protection_checks = Vec::new();
+    let mut thread_burn_targets = BTreeMap::<String, Vec<String>>::new();
+    let mut folder_burn_targets = BTreeMap::<String, Vec<String>>::new();
     let mut messages_scanned = 0usize;
     let mut messages_rejected = messages.len().saturating_sub(MAX_MESSAGES);
     let mut truncated = messages.len() > MAX_MESSAGES;
@@ -192,6 +215,7 @@ pub fn scan_local_messages_with_analyzers(
         if let Some(check) = email_protection_check(&message) {
             email_protection_checks.push(check.display);
         }
+        collect_email_burn_targets(&message, &mut thread_burn_targets, &mut folder_burn_targets);
         let mut categories = HashSet::new();
         for (category, confidence, reason) in classify(&message.text) {
             if !categories.insert((category, None::<String>)) {
@@ -288,6 +312,7 @@ pub fn scan_local_messages_with_analyzers(
     LocalPrivacyScanResult {
         findings,
         email_protection_checks,
+        email_burn_target_lists: email_burn_target_lists(thread_burn_targets, folder_burn_targets),
         messages_scanned,
         messages_rejected,
         truncated,
@@ -328,6 +353,62 @@ fn email_protection_check(message: &LocalMessageCandidate) -> Option<EmailProtec
             distinct_recipient_count: distinct_recipients.len(),
         },
     })
+}
+
+fn collect_email_burn_targets(
+    message: &LocalMessageCandidate,
+    thread_burn_targets: &mut BTreeMap<String, Vec<String>>,
+    folder_burn_targets: &mut BTreeMap<String, Vec<String>>,
+) {
+    if message.service_id != "email" {
+        return;
+    }
+
+    if let Some(thread_identity) = &message.email_thread_identity {
+        push_unique_locator(
+            thread_burn_targets
+                .entry(thread_identity.clone())
+                .or_default(),
+            &message.message_locator,
+        );
+    }
+    if let Some(folder_identity) = &message.email_folder_identity {
+        push_unique_locator(
+            folder_burn_targets
+                .entry(folder_identity.clone())
+                .or_default(),
+            &message.message_locator,
+        );
+    }
+}
+
+fn push_unique_locator(targets: &mut Vec<String>, locator: &str) {
+    if !targets.iter().any(|existing| existing == locator) {
+        targets.push(locator.to_owned());
+    }
+}
+
+fn email_burn_target_lists(
+    thread_burn_targets: BTreeMap<String, Vec<String>>,
+    folder_burn_targets: BTreeMap<String, Vec<String>>,
+) -> Vec<EmailBurnTargetListDisplay> {
+    thread_burn_targets
+        .into_iter()
+        .map(|(identity, message_locators)| EmailBurnTargetListDisplay {
+            scope: EmailBurnScope::Thread,
+            identity,
+            message_locators,
+        })
+        .chain(
+            folder_burn_targets
+                .into_iter()
+                .map(|(identity, message_locators)| EmailBurnTargetListDisplay {
+                    scope: EmailBurnScope::Folder,
+                    identity,
+                    message_locators,
+                }),
+        )
+        .collect()
 }
 
 pub fn create_protected_email_reply_draft(
@@ -384,8 +465,22 @@ fn valid_candidate(message: &LocalMessageCandidate) -> bool {
             .is_none_or(|recipient| valid_recipient_display_value(recipient))
         && valid_recipient_list(&message.visible_recipients)
         && valid_recipient_list(&message.hidden_recipients)
+        && message
+            .email_thread_identity
+            .as_ref()
+            .is_none_or(|identity| valid_email_burn_identity(identity))
+        && message
+            .email_folder_identity
+            .as_ref()
+            .is_none_or(|identity| valid_email_burn_identity(identity))
         && message.attachments.len() <= MAX_ATTACHMENTS_PER_MESSAGE
         && message.attachments.iter().all(valid_attachment_input)
+}
+
+fn valid_email_burn_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_EMAIL_BURN_ID_BYTES
+        && !value.chars().any(unsafe_attachment_metadata_char)
 }
 
 fn valid_recipient_list(recipients: &[String]) -> bool {
@@ -728,6 +823,8 @@ mod tests {
             reply_recipient: None,
             visible_recipients: Vec::new(),
             hidden_recipients: Vec::new(),
+            email_thread_identity: None,
+            email_folder_identity: None,
             attachments: Vec::new(),
         }
     }
@@ -1024,5 +1121,81 @@ mod tests {
             .recipients
             .iter()
             .any(|recipient| recipient == bcc_recipient));
+    }
+
+    #[test]
+    fn task1226_direct_command_produces_separate_thread_and_folder_burn_target_lists() {
+        let thread_identity = "email-thread-1225-stable";
+        let folder_identity = "email-folder-1225-inbox";
+        let mut open_message = message("password: task1226 burn scope seed");
+        open_message.service_id = "email".to_owned();
+        open_message.message_locator = "task1226-open-message".to_owned();
+        open_message.email_thread_identity = Some(thread_identity.to_owned());
+        open_message.email_folder_identity = Some(folder_identity.to_owned());
+
+        let mut same_thread_message = message("secret: same thread, archived");
+        same_thread_message.service_id = "email".to_owned();
+        same_thread_message.message_locator = "task1226-same-thread-message".to_owned();
+        same_thread_message.email_thread_identity = Some(thread_identity.to_owned());
+
+        let mut same_folder_message = message("token: same folder, different thread");
+        same_folder_message.service_id = "email".to_owned();
+        same_folder_message.message_locator = "task1226-same-folder-message".to_owned();
+        same_folder_message.email_folder_identity = Some(folder_identity.to_owned());
+
+        let result =
+            scan_local_messages(vec![open_message, same_thread_message, same_folder_message]);
+        let thread_lists = result
+            .email_burn_target_lists
+            .iter()
+            .filter(|list| list.scope == EmailBurnScope::Thread)
+            .collect::<Vec<_>>();
+        let folder_lists = result
+            .email_burn_target_lists
+            .iter()
+            .filter(|list| list.scope == EmailBurnScope::Folder)
+            .collect::<Vec<_>>();
+        let thread_list = thread_lists
+            .first()
+            .expect("thread burn target list is emitted");
+        let folder_list = folder_lists
+            .first()
+            .expect("folder burn target list is emitted");
+        let target_lists_separate = thread_list.scope != folder_list.scope
+            && thread_list.identity != folder_list.identity
+            && thread_list.message_locators != folder_list.message_locators;
+
+        println!(
+            "TASK1226 email_burn_scopes direct_command=scan_local_messages thread_target_list_count={} thread_identity={} thread_targets_count={} thread_targets={} folder_target_list_count={} folder_identity={} folder_targets_count={} folder_targets={} target_lists_separate={}",
+            thread_lists.len(),
+            thread_list.identity,
+            thread_list.message_locators.len(),
+            thread_list.message_locators.join(","),
+            folder_lists.len(),
+            folder_list.identity,
+            folder_list.message_locators.len(),
+            folder_list.message_locators.join(","),
+            target_lists_separate,
+        );
+
+        assert_eq!(thread_lists.len(), 1);
+        assert_eq!(thread_list.identity, thread_identity);
+        assert_eq!(
+            thread_list.message_locators,
+            vec![
+                "task1226-open-message".to_owned(),
+                "task1226-same-thread-message".to_owned()
+            ]
+        );
+        assert_eq!(folder_lists.len(), 1);
+        assert_eq!(folder_list.identity, folder_identity);
+        assert_eq!(
+            folder_list.message_locators,
+            vec![
+                "task1226-open-message".to_owned(),
+                "task1226-same-folder-message".to_owned()
+            ]
+        );
+        assert!(target_lists_separate);
     }
 }
