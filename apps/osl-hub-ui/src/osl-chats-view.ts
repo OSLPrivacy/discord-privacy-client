@@ -300,6 +300,10 @@ export function oslChatHandshakeWarning(friend: OslChatFriend): string {
   return `Nothing has ever arrived from ${friend.nickname}, so OSL cannot tell whether they finished their half. Until they add your invite, verify you and turn this chat on, what you send here cannot be opened on their device. Both people must complete every step.`;
 }
 
+function oslChatMutualReadiness(friend: OslChatFriend): boolean {
+  return friend.verified && friend.ready && friend.handshakeConfirmed === true;
+}
+
 function messageRow(message: OslChatMessage, friend: OslChatFriend): string {
   const label = deliveryLabel(message.state);
   const unreadable = oslChatMessageUnreadableNote(message, friend.handshakeConfirmed === true);
@@ -349,11 +353,15 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
   const bytes = oslChatDraftBytes(model.draft);
   const withinLimit = bytes <= OSL_CHAT_MAX_DRAFT_BYTES;
   const hasDraft = model.draft.trim().length > 0;
-  const canSend = friend.verified && friend.ready && hasDraft && withinLimit && !model.busy;
+  const mutualReady = oslChatMutualReadiness(friend);
+  const peerState = mutualReady ? "mutual" : "one-way";
+  const canSend = mutualReady && hasDraft && withinLimit && !model.busy;
   const readiness = !friend.verified
     ? "Verify this friend to chat."
     : !friend.ready
       ? "Chat is not ready."
+      : !mutualReady
+        ? "Chat needs both people to answer before sending."
       : "";
   const messages = model.messages.length
     ? model.messages.map((message) => messageRow(message, friend)).join("")
@@ -369,7 +377,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     ${deletionUnconfirmedRow(model.deletionUnconfirmed ?? 0)}
     <form class="osl-chat-composer" data-osl-chat-compose="${escapeHtml(friend.personId)}">
       <label for="osl-chat-draft">Message</label>
-      <div class="osl-chat-composer-bar"><label class="osl-chat-view-once" title="View once"><input id="osl-chat-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${onceIcon}<span><strong>View once</strong><small>Kept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that.</small></span></label><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-send-context="${friend.verified && friend.ready && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
+      <div class="osl-chat-composer-bar"><label class="osl-chat-view-once" title="View once"><input id="osl-chat-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""} ${model.busy ? "disabled" : ""}/>${onceIcon}<span><strong>View once</strong><small>Kept out of OSL history. OSL asks for the sent copy to be deleted once it is opened, and says here when it cannot confirm that.</small></span></label><textarea id="osl-chat-draft" rows="1" placeholder="Message ${escapeHtml(friend.nickname)}" autocomplete="off" spellcheck="true" aria-describedby="osl-chat-draft-count osl-chat-readiness">${escapeHtml(model.draft)}</textarea><button class="osl-chat-send" type="submit" aria-label="${model.busy ? "Sending" : "Send"}" data-osl-chat-peer-state="${peerState}" data-osl-chat-send-context="${mutualReady && !model.busy ? "1" : "0"}" ${canSend ? "" : "disabled"}>${sendIcon}<span>${model.busy ? "Sending…" : "Send"}</span></button></div>
       <div class="osl-chat-composer-meta"><span id="osl-chat-readiness" class="osl-chat-readiness">${readiness}</span><output id="osl-chat-draft-count" class="osl-chat-byte-count${withinLimit ? "" : " is-over"}">${bytes.toLocaleString("en-US")} / ${OSL_CHAT_MAX_DRAFT_BYTES.toLocaleString("en-US")}</output></div>
     </form>
   </section>`;
