@@ -1,11 +1,11 @@
 #![cfg(feature = "core")]
 
 use osl_privacy_hub::runtime_switches::{
-    resolve_test_only_runtime_switches, test_only_runtime_switch_list,
-    validate_runtime_switch_list_name, RunTimeSwitchError, PASSWORD_SCREEN_ACCESS_REQUIRED,
-    PASSWORD_SCREEN_ACCESS_SKIP_FOR_TEST, PASSWORD_SCREEN_ACCESS_SWITCH,
-    SAFE_SENDING_DRY_RUN_FOR_TEST, SAFE_SENDING_LIVE_AUTHORITY_REQUIRED, SAFE_SENDING_SWITCH,
-    TEST_ONLY_RUNTIME_SWITCH_LIST_NAME,
+    read_test_only_runtime_switches, resolve_test_only_runtime_switches,
+    test_only_runtime_switch_list, validate_runtime_switch_list_name, RunTimeSwitchError,
+    PASSWORD_SCREEN_ACCESS_REQUIRED, PASSWORD_SCREEN_ACCESS_SKIP_FOR_TEST,
+    PASSWORD_SCREEN_ACCESS_SWITCH, SAFE_SENDING_DRY_RUN_FOR_TEST,
+    SAFE_SENDING_LIVE_AUTHORITY_REQUIRED, SAFE_SENDING_SWITCH, TEST_ONLY_RUNTIME_SWITCH_LIST_NAME,
 };
 
 #[test]
@@ -110,4 +110,30 @@ fn allowed_runtime_switch_overrides_resolve_and_unknown_values_are_rejected() {
     assert!(rejected.contains(SAFE_SENDING_SWITCH));
     assert!(rejected.contains(TEST_ONLY_RUNTIME_SWITCH_LIST_NAME));
     println!("UNKNOWN VALUE REJECTED: {rejected}");
+}
+
+#[test]
+fn reader_uses_safe_defaults_and_rejects_bad_switch_names() {
+    let defaults = read_test_only_runtime_switches([]).expect("empty reader input uses defaults");
+    assert_eq!(
+        defaults.password_screen_access,
+        PASSWORD_SCREEN_ACCESS_REQUIRED
+    );
+    assert_eq!(defaults.safe_sending, SAFE_SENDING_LIVE_AUTHORITY_REQUIRED);
+    println!(
+        "READER DEFAULT SET: {}={} {}={}",
+        PASSWORD_SCREEN_ACCESS_SWITCH,
+        defaults.password_screen_access,
+        SAFE_SENDING_SWITCH,
+        defaults.safe_sending
+    );
+
+    let rejected =
+        read_test_only_runtime_switches(["bad_switch_name=skip-password-screen-for-test"])
+            .expect_err("unknown switch names must be rejected");
+    assert!(matches!(rejected, RunTimeSwitchError::UnknownSwitch { .. }));
+    let rejected = rejected.to_string();
+    assert!(rejected.contains("unknown switch \"bad_switch_name\""));
+    assert!(rejected.contains(TEST_ONLY_RUNTIME_SWITCH_LIST_NAME));
+    println!("BAD SWITCH NAME REJECTED: {rejected}");
 }

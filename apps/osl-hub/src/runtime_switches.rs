@@ -33,6 +33,9 @@ pub enum RunTimeSwitchError {
         value: String,
         allowed_values: &'static [&'static str],
     },
+    InvalidSwitchAssignment {
+        assignment: String,
+    },
 }
 
 impl std::fmt::Display for RunTimeSwitchError {
@@ -53,6 +56,10 @@ impl std::fmt::Display for RunTimeSwitchError {
                 formatter,
                 "unknown value {value:?} for switch {switch:?} in list {list:?}; allowed: {}",
                 allowed_values.join(", ")
+            ),
+            Self::InvalidSwitchAssignment { assignment } => write!(
+                formatter,
+                "invalid switch assignment {assignment:?}; expected switch=value"
             ),
         }
     }
@@ -119,6 +126,27 @@ pub fn resolve_test_only_runtime_switches(
         password_screen_access,
         safe_sending,
     })
+}
+
+pub fn read_test_only_runtime_switches<'a>(
+    assignments: impl IntoIterator<Item = &'a str>,
+) -> Result<ResolvedTestOnlyRunTimeSwitches, RunTimeSwitchError> {
+    let mut overrides = Vec::new();
+    for assignment in assignments {
+        let Some((switch, value)) = assignment.split_once('=') else {
+            return Err(RunTimeSwitchError::InvalidSwitchAssignment {
+                assignment: assignment.to_owned(),
+            });
+        };
+        if switch.is_empty() || value.is_empty() {
+            return Err(RunTimeSwitchError::InvalidSwitchAssignment {
+                assignment: assignment.to_owned(),
+            });
+        }
+        overrides.push((switch, value));
+    }
+
+    resolve_test_only_runtime_switches(&overrides)
 }
 
 pub fn validate_test_only_runtime_switch_value(
