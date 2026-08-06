@@ -189,6 +189,13 @@ pub struct AppNotificationChoiceRecord {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LookChoiceRecord {
+    pub name: String,
+    pub value: String,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct AppNotificationNoticeRecord {
     pub id: String,
@@ -582,6 +589,11 @@ struct SecurityPreferences {
     /// opt-in before any notice for that app is made.
     #[serde(default)]
     app_notification_choices: BTreeMap<String, bool>,
+    /// Device-local visual look choices keyed by the only names the product
+    /// understands. Missing is not a stored choice; unknown names are refused
+    /// before mutation so typos cannot become durable settings.
+    #[serde(default)]
+    look_choices: BTreeMap<String, String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -1313,6 +1325,42 @@ pub fn list_app_notification_choices(
     require_unlocked()?;
     let prefs = load_security_preferences()?;
     Ok(app_notification_choice_records(&prefs))
+}
+
+pub fn set_look_choice(
+    security: &HubSecurityState,
+    name: String,
+    value: String,
+) -> Result<LookChoiceRecord, String> {
+    require_unlocked()?;
+    validate_look_choice_name(&name)?;
+    validate_look_choice_value(&value)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL look choice state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs.look_choices.insert(name.clone(), value.clone());
+    write_encrypted_json(&path, &prefs)?;
+    Ok(LookChoiceRecord { name, value })
+}
+
+pub fn look_choice_value(
+    _security: &HubSecurityState,
+    name: String,
+) -> Result<Option<String>, String> {
+    require_unlocked()?;
+    validate_look_choice_name(&name)?;
+    let prefs = load_security_preferences()?;
+    Ok(prefs.look_choices.get(&name).cloned())
+}
+
+pub fn list_look_choices(_security: &HubSecurityState) -> Result<Vec<LookChoiceRecord>, String> {
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    Ok(look_choice_records(&prefs))
 }
 
 pub fn app_notification_enabled_before_notice(
@@ -4077,6 +4125,17 @@ fn app_notification_choice_enabled(prefs: &SecurityPreferences, app_id: &str) ->
         .unwrap_or(false)
 }
 
+fn look_choice_records(prefs: &SecurityPreferences) -> Vec<LookChoiceRecord> {
+    prefs
+        .look_choices
+        .iter()
+        .map(|(name, value)| LookChoiceRecord {
+            name: name.clone(),
+            value: value.clone(),
+        })
+        .collect()
+}
+
 fn manual_approved_scopes_for_person(
     prefs: &SecurityPreferences,
     person_id: &str,
@@ -4269,6 +4328,26 @@ fn validate_app_notification_id(value: &str) -> Result<(), String> {
             .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
     {
         return Err("OSL app notification identifier is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_look_choice_name(value: &str) -> Result<(), String> {
+    if !matches!(
+        value,
+        "theme" | "named-look" | "accent" | "corners" | "glow" | "text" | "spacing" | "see-through"
+    ) {
+        return Err("OSL look choice name is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_look_choice_value(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || value.chars().any(|character| character.is_control())
+    {
+        return Err("OSL look choice value is invalid".to_owned());
     }
     Ok(())
 }
@@ -5072,6 +5151,60 @@ mod tests {
         assert!(choices[0].enabled);
         assert_eq!(choices[1].app_id, "telegram");
         assert!(!choices[1].enabled);
+    }
+
+    #[test]
+    fn saved_look_choices_survive_restart_and_unknown_ninth_name_is_refused() {
+        let _harness = FileBackedSecurityHarness::new("look-choices-0768");
+        let security = HubSecurityState::default();
+        let saved = [
+            ("theme", "theme-0768-obsidian"),
+            ("named-look", "named-look-0768-signal"),
+            ("accent", "accent-0768-cyan"),
+            ("corners", "corners-0768-square"),
+            ("glow", "glow-0768-high"),
+            ("text", "text-0768-large"),
+            ("spacing", "spacing-0768-roomy"),
+            ("see-through", "see-through-0768-on"),
+        ];
+
+        for (name, value) in saved {
+            let record = set_look_choice(&security, name.to_owned(), value.to_owned()).unwrap();
+            assert_eq!(record.name, name);
+            assert_eq!(record.value, value);
+        }
+
+        let restarted_security = HubSecurityState::default();
+        let direct_reads = saved
+            .into_iter()
+            .map(|(name, expected)| {
+                let actual = look_choice_value(&restarted_security, name.to_owned())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(actual, expected);
+                format!("{name}={actual}")
+            })
+            .collect::<Vec<_>>();
+
+        let unknown_refusal = set_look_choice(
+            &restarted_security,
+            "outline".to_owned(),
+            "outline-0768-unknown".to_owned(),
+        )
+        .unwrap_err();
+        let after_refusal = list_look_choices(&restarted_security).unwrap();
+
+        println!(
+            "look_choice_restart_reads count={} {} unknown_ninth_refused={} stored_after_refusal={}",
+            direct_reads.len(),
+            direct_reads.join(" "),
+            unknown_refusal,
+            after_refusal.len()
+        );
+        assert_eq!(direct_reads.len(), 8);
+        assert_eq!(after_refusal.len(), 8);
+        assert_eq!(unknown_refusal, "OSL look choice name is invalid");
+        assert!(look_choice_value(&restarted_security, "outline".to_owned()).is_err());
     }
 
     #[test]

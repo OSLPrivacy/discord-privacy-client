@@ -537,6 +537,9 @@ macro_rules! hub_tauri_commands {
             set_hub_notifications_enabled,
             set_hub_app_notification_choice,
             list_hub_app_notification_choices,
+            set_hub_look_choice,
+            get_hub_look_choice,
+            list_hub_look_choices,
             set_hub_screenshot_protection,
             save_onboarding_preferences,
             save_scrub_setup,
@@ -705,6 +708,9 @@ macro_rules! hub_tauri_commands {
             list_group_member_permissions,
             set_hub_app_notification_choice,
             list_hub_app_notification_choices,
+            set_hub_look_choice,
+            get_hub_look_choice,
+            list_hub_look_choices,
             set_hub_friend_account_reach_choice,
             list_hub_friend_account_reach_choices,
             set_active_hub_friend_permission,
@@ -2065,6 +2071,21 @@ mod tauri_registration_surface_tests {
             &[
                 "set_hub_app_notification_choice",
                 "list_hub_app_notification_choices",
+            ],
+        );
+    }
+
+    #[test]
+    fn look_choice_commands_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "set_hub_look_choice",
+                "get_hub_look_choice",
+                "list_hub_look_choices",
             ],
         );
     }

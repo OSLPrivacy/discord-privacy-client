@@ -199,6 +199,21 @@ description = "List the saved per-app OSL activity notification choices for this
 commands.allow = ["list_hub_app_notification_choices"]
 
 [[permission]]
+identifier = "allow-set-hub-look-choice"
+description = "Persist one bounded local OSL visual look choice for this device."
+commands.allow = ["set_hub_look_choice"]
+
+[[permission]]
+identifier = "allow-get-hub-look-choice"
+description = "Read one saved bounded local OSL visual look choice for this device."
+commands.allow = ["get_hub_look_choice"]
+
+[[permission]]
+identifier = "allow-list-hub-look-choices"
+description = "List the saved bounded local OSL visual look choices for this device."
+commands.allow = ["list_hub_look_choices"]
+
+[[permission]]
 identifier = "allow-save-onboarding-preferences"
 description = "Save the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["save_onboarding_preferences"]

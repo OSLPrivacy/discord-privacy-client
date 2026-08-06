@@ -97,7 +97,7 @@ use osl_privacy_hub::scrub_setup_store::{ScrubSetupCommand, ScrubSetupState, Scr
 use osl_privacy_hub::security::{
     self, AddFriendResult, AppNotificationChoiceRecord, FriendAccountReachChoiceRecord,
     FriendCodeExport, GroupMemberPermissionRecord, HubRevocationStatusDto, HubScopeBurnResult,
-    HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
+    HubSecurityState, LookChoiceRecord, PersonDto, RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -1928,6 +1928,36 @@ async fn list_hub_app_notification_choices(
 ) -> Result<Vec<AppNotificationChoiceRecord>, String> {
     let _session = session.transition.lock().await;
     security::list_app_notification_choices(&security_state)
+}
+
+#[tauri::command]
+async fn set_hub_look_choice(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    name: String,
+    value: String,
+) -> Result<LookChoiceRecord, String> {
+    let _session = session.transition.lock().await;
+    security::set_look_choice(&security_state, name, value)
+}
+
+#[tauri::command]
+async fn get_hub_look_choice(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    name: String,
+) -> Result<Option<String>, String> {
+    let _session = session.transition.lock().await;
+    security::look_choice_value(&security_state, name)
+}
+
+#[tauri::command]
+async fn list_hub_look_choices(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<LookChoiceRecord>, String> {
+    let _session = session.transition.lock().await;
+    security::list_look_choices(&security_state)
 }
 
 #[tauri::command]
