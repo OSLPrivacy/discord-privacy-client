@@ -38,6 +38,9 @@
       "webviewInstallMode": {
         "type": "downloadBootstrapper",
         "silent": true
+      },
+      "nsis": {
+        "installerHooks": "windows/remove-program-uninstall-hooks.nsh"
       }
     },
     "icon": [

@@ -60,6 +60,10 @@ pub struct HubFullCleanupResult {
     pub original_discord_data_untouched: bool,
 }
 
+pub const WINDOWS_REMOVE_PROGRAM_UNINSTALL_ARG: &str =
+    "--osl-windows-remove-program-uninstall-step";
+pub const WINDOWS_REMOVE_PROGRAM_UNINSTALL_STEP: &str = "windows-remove-program-uninstall";
+
 struct CleanupTarget {
     id: &'static str,
     path: PathBuf,
@@ -353,6 +357,71 @@ pub fn execute_full_hub_cleanup(
         service_hosts_shutdown,
         &KeyMaterialWipe::production(),
     )
+}
+
+/// Run the local uninstall cleanup used by Windows Add/Remove Programs.
+///
+/// This path is deliberately local-only. The Windows uninstaller may run after
+/// the user has removed the app without unlocking OSL, so it cannot make remote
+/// unregister promises. It still uses the same fixed cleanup target registry
+/// and residue sweep as the in-app full cleanup, then NSIS removes the program
+/// files and the uninstall registry entry.
+pub fn execute_windows_remove_program_uninstall(
+    app_config_dir: &Path,
+    app_local_data_dir: &Path,
+) -> Result<HubFullCleanupResult, String> {
+    validate_windows_remove_program_roots(app_config_dir, app_local_data_dir)?;
+    keystore::set_active_account_dir(None);
+    keystore::set_base_dir_override(Some(app_config_dir.join(HUB_CORE_DIR)));
+    let core = HubCoreState::default();
+    identity_registry::reset_account_scoped_state(&core.osl);
+    ipc::main_password::set_file_storage_key(None);
+
+    let (mut removed_targets, mut failed_targets) =
+        purge_fixed_targets(app_config_dir, app_local_data_dir);
+    failed_targets.extend(residual_local_state(app_config_dir, app_local_data_dir));
+    dedupe_in_place(&mut removed_targets);
+    dedupe_in_place(&mut failed_targets);
+    Ok(HubFullCleanupResult {
+        local_cleanup_complete: failed_targets.is_empty(),
+        removed_targets,
+        failed_targets,
+        remote_unregister: RemoteUnregisterSummary::default(),
+        restart_required: false,
+        original_discord_data_untouched: true,
+    })
+}
+
+pub fn execute_windows_remove_program_uninstall_from_env() -> Result<HubFullCleanupResult, String> {
+    let appdata = std::env::var_os("APPDATA")
+        .ok_or_else(|| "APPDATA is required for OSL Windows uninstall cleanup".to_owned())?;
+    let local_appdata = std::env::var_os("LOCALAPPDATA")
+        .ok_or_else(|| "LOCALAPPDATA is required for OSL Windows uninstall cleanup".to_owned())?;
+    execute_windows_remove_program_uninstall(
+        &PathBuf::from(appdata).join("org.oslprivacy.hub"),
+        &PathBuf::from(local_appdata).join("org.oslprivacy.hub"),
+    )
+}
+
+fn validate_windows_remove_program_roots(
+    app_config_dir: &Path,
+    app_local_data_dir: &Path,
+) -> Result<(), String> {
+    if !app_config_dir.is_absolute() || !app_local_data_dir.is_absolute() {
+        return Err("OSL Windows uninstall roots must be absolute application paths".to_owned());
+    }
+    if app_config_dir.file_name().and_then(|name| name.to_str()) != Some("org.oslprivacy.hub")
+        || app_local_data_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some("org.oslprivacy.hub")
+    {
+        return Err("OSL Windows uninstall refused a non-OSL application root".to_owned());
+    }
+    if app_config_dir.parent().is_none() || app_local_data_dir.parent().is_none() {
+        return Err("OSL Windows uninstall refused a filesystem root".to_owned());
+    }
+    Ok(())
 }
 
 fn execute_full_hub_cleanup_with_key_material_wipe(

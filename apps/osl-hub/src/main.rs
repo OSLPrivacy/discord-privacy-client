@@ -9468,6 +9468,37 @@ fn main() {
 
 #[cfg(not(feature = "signal-qa-shell"))]
 fn main() {
+    #[cfg(feature = "core")]
+    if std::env::args_os()
+        .any(|arg| arg == std::ffi::OsStr::new(cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_ARG))
+    {
+        match cleanup::execute_windows_remove_program_uninstall_from_env() {
+            Ok(report) if report.local_cleanup_complete => {
+                println!(
+                    "OSL uninstall step {} complete: removed_targets={} failed_targets=0",
+                    cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_STEP,
+                    report.removed_targets.len()
+                );
+                std::process::exit(0);
+            }
+            Ok(report) => {
+                eprintln!(
+                    "OSL uninstall step {} incomplete: failed_targets={:?}",
+                    cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_STEP,
+                    report.failed_targets
+                );
+                std::process::exit(1);
+            }
+            Err(error) => {
+                eprintln!(
+                    "OSL uninstall step {} failed: {error}",
+                    cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_STEP
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
     #[cfg(feature = "discord-qa-shell")]
     {
         // This is deliberately before the guardian, breadcrumbs, plugins,
