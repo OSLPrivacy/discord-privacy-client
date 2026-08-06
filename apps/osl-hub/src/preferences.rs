@@ -86,6 +86,14 @@ pub struct DiscordScrubConsentFactsRead {
     pub facts: DiscordScrubConsentFacts,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscordScrubRiskAgreementRead {
+    pub account_ids: Vec<String>,
+    pub agreed_account_ids: Vec<String>,
+    pub may_continue: bool,
+}
+
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredScrubAccountPermissions {
@@ -392,6 +400,58 @@ impl PreviewState {
         Ok(DiscordScrubConsentFactsRead {
             account_id: account_id.to_owned(),
             facts,
+        })
+    }
+
+    pub fn continue_discord_scrub_after_risk_agreement(
+        &self,
+        owner_user_id: &str,
+    ) -> Result<DiscordScrubRiskAgreementRead, String> {
+        let owner_user_id = validate_owner_key(owner_user_id)?;
+        let current = self
+            .scrub_account_permissions_by_user
+            .lock()
+            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?;
+        let permissions = current
+            .get(&owner_user_id)
+            .cloned()
+            .ok_or_else(|| "Choose a Discord account before continuing".to_owned())
+            .and_then(sanitize_scrub_account_permissions)?;
+        if permissions.account_ids.is_empty() {
+            return Err("Choose a Discord account before continuing".to_owned());
+        }
+
+        let agreed_account_ids = permissions
+            .account_ids
+            .iter()
+            .filter(|account_id| {
+                permissions
+                    .discord_consent_facts_by_account_id
+                    .contains_key(*account_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let missing_account_ids = permissions
+            .account_ids
+            .iter()
+            .filter(|account_id| {
+                !permissions
+                    .discord_consent_facts_by_account_id
+                    .contains_key(*account_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing_account_ids.is_empty() {
+            return Err(format!(
+                "Risk agreement is required for every selected Discord account before continuing: missing={}",
+                missing_account_ids.join(",")
+            ));
+        }
+
+        Ok(DiscordScrubRiskAgreementRead {
+            account_ids: permissions.account_ids,
+            agreed_account_ids,
+            may_continue: true,
         })
     }
 

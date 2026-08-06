@@ -27,8 +27,8 @@ use crate::native_discord_adapter::{
     guided_deletion, DiscordCarrierLayout, NativeDiscordComposerState,
 };
 use crate::preferences::{
-    DiscordScrubConsentFactsInput, DiscordScrubConsentFactsRead, PreviewState,
-    ScrubAccountPermissionInput, ScrubAccountPermissionRead,
+    DiscordScrubConsentFactsInput, DiscordScrubConsentFactsRead, DiscordScrubRiskAgreementRead,
+    PreviewState, ScrubAccountPermissionInput, ScrubAccountPermissionRead,
 };
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
@@ -94,6 +94,13 @@ pub fn get_discord_scrub_consent_facts_command(
     account_id: &str,
 ) -> Result<DiscordScrubConsentFactsRead, String> {
     state.get_discord_scrub_consent_facts(owner_user_id, account_id)
+}
+
+pub fn continue_discord_scrub_after_risk_agreement_command(
+    state: &PreviewState,
+    owner_user_id: &str,
+) -> Result<DiscordScrubRiskAgreementRead, String> {
+    state.continue_discord_scrub_after_risk_agreement(owner_user_id)
 }
 
 pub fn require_review_ui_identity_binding_from_verifier(
@@ -544,6 +551,7 @@ macro_rules! hub_tauri_commands {
             get_scrub_account_permissions,
             save_discord_scrub_consent_facts,
             get_discord_scrub_consent_facts,
+            continue_discord_scrub_after_risk_agreement,
             list_linked_services,
             get_core_readiness,
             list_core_features,
@@ -714,6 +722,7 @@ macro_rules! hub_tauri_commands {
 #[cfg(test)]
 mod scrub_account_permission_command_tests {
     use super::{
+        continue_discord_scrub_after_risk_agreement_command,
         get_discord_scrub_consent_facts_command, get_scrub_account_permissions_command,
         save_discord_scrub_consent_facts_command, save_scrub_account_permissions_command,
     };
@@ -840,6 +849,103 @@ mod scrub_account_permission_command_tests {
         assert_eq!(saved, read);
         assert_eq!(read.account_id, chosen);
         assert_eq!(read.facts, consent_facts_1405());
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("temp parent"));
+    }
+
+    #[test]
+    fn task_1407_continue_requires_risk_agreement_for_every_selected_account() {
+        let path = temporary_file();
+        let owner = "owner-task-1407";
+        let first = "discord-account-alpha-1407";
+        let second = "discord-account-beta-1407";
+        save_scrub_account_permissions_command(
+            &PreviewState::load(path.clone()),
+            owner,
+            ScrubAccountPermissionInput {
+                available_account_ids: vec![first.to_owned(), second.to_owned()],
+                selected_account_ids: vec![first.to_owned(), second.to_owned()],
+            },
+        )
+        .expect("direct permission command stores both selected Discord accounts");
+
+        let no_agreement_error = continue_discord_scrub_after_risk_agreement_command(
+            &PreviewState::load(path.clone()),
+            owner,
+        )
+        .expect_err("continue must fail before any selected account has risk agreement");
+        println!(
+            "TASK1407_CONTINUE_WITHOUT_AGREEMENT command=continue_discord_scrub_after_risk_agreement selected_count=2 agreed_count=0 result=ERR error=\"{}\"",
+            no_agreement_error
+        );
+
+        let first_agreement = save_discord_scrub_consent_facts_command(
+            &PreviewState::load(path.clone()),
+            owner,
+            DiscordScrubConsentFactsInput {
+                account_id: first.to_owned(),
+                facts: consent_facts_1405(),
+            },
+        )
+        .expect("direct consent command stores risk agreement for the first selected account");
+        println!(
+            "TASK1407_SAVE_FIRST_AGREEMENT command=save_discord_scrub_consent_facts account_id={} agreed_count=1 ban_risk=\"{}\" result=OK",
+            first_agreement.account_id, first_agreement.facts.ban_risk
+        );
+        let partial_agreement_error = continue_discord_scrub_after_risk_agreement_command(
+            &PreviewState::load(path.clone()),
+            owner,
+        )
+        .expect_err("continue must fail until every selected account has risk agreement");
+        println!(
+            "TASK1407_CONTINUE_WITH_PARTIAL_AGREEMENT command=continue_discord_scrub_after_risk_agreement selected_count=2 agreed_count=1 result=ERR error=\"{}\"",
+            partial_agreement_error
+        );
+
+        let second_agreement = save_discord_scrub_consent_facts_command(
+            &PreviewState::load(path.clone()),
+            owner,
+            DiscordScrubConsentFactsInput {
+                account_id: second.to_owned(),
+                facts: consent_facts_1405(),
+            },
+        )
+        .expect("direct consent command stores risk agreement for the second selected account");
+        println!(
+            "TASK1407_SAVE_SECOND_AGREEMENT command=save_discord_scrub_consent_facts account_id={} agreed_count=2 ban_risk=\"{}\" result=OK",
+            second_agreement.account_id, second_agreement.facts.ban_risk
+        );
+        let continued = continue_discord_scrub_after_risk_agreement_command(
+            &PreviewState::load(path.clone()),
+            owner,
+        )
+        .expect("continue succeeds after every selected account has risk agreement");
+        println!(
+            "TASK1407_CONTINUE_AFTER_AGREEMENT command=continue_discord_scrub_after_risk_agreement selected_ids={} selected_count={} agreed_ids={} agreed_count={} may_continue={} result=OK",
+            continued.account_ids.join(","),
+            continued.account_ids.len(),
+            continued.agreed_account_ids.join(","),
+            continued.agreed_account_ids.len(),
+            continued.may_continue
+        );
+
+        assert_eq!(
+            no_agreement_error,
+            "Risk agreement is required for every selected Discord account before continuing: missing=discord-account-alpha-1407,discord-account-beta-1407"
+        );
+        assert_eq!(
+            partial_agreement_error,
+            "Risk agreement is required for every selected Discord account before continuing: missing=discord-account-beta-1407"
+        );
+        assert_eq!(
+            continued.account_ids,
+            vec![first.to_owned(), second.to_owned()]
+        );
+        assert_eq!(
+            continued.agreed_account_ids,
+            vec![first.to_owned(), second.to_owned()]
+        );
+        assert!(continued.may_continue);
 
         let _ = std::fs::remove_dir_all(path.parent().expect("temp parent"));
     }
