@@ -28,6 +28,9 @@ pub(crate) const MAX_FINDINGS: usize = 1_000;
 pub const GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 25;
 pub const GMAIL_ORDINARY_ATTACHMENT_LIMIT_BYTES: u64 =
     GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB * 1024 * 1024;
+pub const MAIL_DOT_COM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 30;
+pub const MAIL_DOT_COM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 100;
+pub const EXCHANGE_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 150;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -170,6 +173,39 @@ pub struct EmailDraftAttachment {
     pub display_name: String,
     pub size_bytes: u64,
     pub storage: EmailDraftAttachmentStorage,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EmailDraftMailLimitProfile {
+    Gmail,
+    MailDotComFree,
+    MailDotComPremium,
+    Exchange,
+}
+
+impl EmailDraftMailLimitProfile {
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Gmail => "Gmail",
+            Self::MailDotComFree => "Mail.com free",
+            Self::MailDotComPremium => "Mail.com premium",
+            Self::Exchange => "Exchange",
+        }
+    }
+
+    fn ordinary_attachment_limit_mb(self) -> u64 {
+        match self {
+            Self::Gmail => GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB,
+            Self::MailDotComFree => MAIL_DOT_COM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB,
+            Self::MailDotComPremium => MAIL_DOT_COM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB,
+            Self::Exchange => EXCHANGE_ORDINARY_ATTACHMENT_LIMIT_MB,
+        }
+    }
+
+    fn ordinary_attachment_limit_bytes(self) -> u64 {
+        self.ordinary_attachment_limit_mb() * 1024 * 1024
+    }
 }
 
 /// Scan bounded caller-provided text entirely in process memory.
@@ -443,6 +479,20 @@ pub fn create_protected_email_reply_draft_with_attachments(
     action: ProtectedEmailReplyAction,
     attachments: &[EmailDraftAttachment],
 ) -> Result<ProtectedEmailReplyDraft, String> {
+    create_protected_email_reply_draft_with_attachments_for_profile(
+        check,
+        action,
+        attachments,
+        EmailDraftMailLimitProfile::Gmail,
+    )
+}
+
+pub fn create_protected_email_reply_draft_with_attachments_for_profile(
+    check: &EmailProtectionCheckDisplay,
+    action: ProtectedEmailReplyAction,
+    attachments: &[EmailDraftAttachment],
+    mail_limit_profile: EmailDraftMailLimitProfile,
+) -> Result<ProtectedEmailReplyDraft, String> {
     let recipients = match action {
         ProtectedEmailReplyAction::Reply => check.reply_recipients.clone(),
         ProtectedEmailReplyAction::ReplyAll => check.reply_all_recipients.clone(),
@@ -450,7 +500,7 @@ pub fn create_protected_email_reply_draft_with_attachments(
     if recipients.is_empty() || !valid_recipient_list(&recipients) {
         return Err("Protected email reply draft recipients are invalid".to_owned());
     }
-    let attachment_bytes = gmail_draft_attachment_bytes(attachments)?;
+    let attachment_bytes = email_draft_attachment_bytes(attachments, mail_limit_profile)?;
     Ok(ProtectedEmailReplyDraft {
         draft_id: format!(
             "protected-email-{}-{}",
@@ -467,15 +517,16 @@ pub fn create_protected_email_reply_draft_with_attachments(
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct GmailDraftAttachmentBytes {
+struct EmailDraftAttachmentBytes {
     ordinary: u64,
     osl_stored: u64,
 }
 
-fn gmail_draft_attachment_bytes(
+fn email_draft_attachment_bytes(
     attachments: &[EmailDraftAttachment],
-) -> Result<GmailDraftAttachmentBytes, String> {
-    let mut bytes = GmailDraftAttachmentBytes::default();
+    mail_limit_profile: EmailDraftMailLimitProfile,
+) -> Result<EmailDraftAttachmentBytes, String> {
+    let mut bytes = EmailDraftAttachmentBytes::default();
     for attachment in attachments {
         if attachment.display_name.is_empty()
             || attachment.display_name.len() > MAX_ATTACHMENT_DISPLAY_NAME_BYTES
@@ -492,11 +543,12 @@ fn gmail_draft_attachment_bytes(
                 bytes.ordinary = bytes
                     .ordinary
                     .checked_add(attachment.size_bytes)
-                    .ok_or_else(gmail_attachment_over_limit_message)?;
-                if bytes.ordinary > GMAIL_ORDINARY_ATTACHMENT_LIMIT_BYTES {
+                    .ok_or_else(|| mail_attachment_over_limit_message(mail_limit_profile))?;
+                if bytes.ordinary > mail_limit_profile.ordinary_attachment_limit_bytes() {
                     return Err(format!(
-                        "Gmail refuses ordinary attachments over {} MB: {} makes the ordinary attachment set {} MB",
-                        GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB,
+                        "{} refuses ordinary attachments over {} MB: {} makes the ordinary attachment set {} MB",
+                        mail_limit_profile.display_name(),
+                        mail_limit_profile.ordinary_attachment_limit_mb(),
                         attachment.display_name,
                         bytes_to_whole_mb(bytes.ordinary),
                     ));
@@ -515,10 +567,11 @@ fn gmail_draft_attachment_bytes(
     Ok(bytes)
 }
 
-fn gmail_attachment_over_limit_message() -> String {
+fn mail_attachment_over_limit_message(mail_limit_profile: EmailDraftMailLimitProfile) -> String {
     format!(
-        "Gmail refuses ordinary attachments over {} MB",
-        GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB
+        "{} refuses ordinary attachments over {} MB",
+        mail_limit_profile.display_name(),
+        mail_limit_profile.ordinary_attachment_limit_mb()
     )
 }
 
@@ -1315,6 +1368,119 @@ mod tests {
         assert!(refused_ordinary_26.contains("26 MB"));
         assert_eq!(accepted_osl_stored_26.osl_stored_file_bytes, 26 * MB);
         assert_eq!(accepted_osl_stored_26.ordinary_attachment_bytes, 0);
+    }
+
+    #[test]
+    fn task3762_two_hundred_mb_osl_stored_files_ignore_mail_attachment_limits() {
+        const MB: u64 = 1024 * 1024;
+        const FILE_MB: u64 = 200;
+
+        fn draft_attachment(
+            display_name: &str,
+            storage: EmailDraftAttachmentStorage,
+        ) -> EmailDraftAttachment {
+            EmailDraftAttachment {
+                display_name: display_name.to_owned(),
+                size_bytes: FILE_MB * MB,
+                storage,
+            }
+        }
+
+        let mut candidate = message("password: protected 200 MB mail limit draft");
+        candidate.service_id = "email".to_owned();
+        candidate.message_locator = "task3762-mail-limit-draft".to_owned();
+        candidate.reply_recipient = Some("from-task3762@oslprivacy.com".to_owned());
+        candidate.visible_recipients = vec!["to-task3762@oslprivacy.com".to_owned()];
+
+        let result = scan_local_messages(vec![candidate]);
+        let check = result
+            .email_protection_checks
+            .first()
+            .expect("email protection check returns mail-limit draft recipients");
+
+        let profiles = [
+            (
+                "gmail",
+                EmailDraftMailLimitProfile::Gmail,
+                GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB,
+            ),
+            (
+                "maildotcom-free",
+                EmailDraftMailLimitProfile::MailDotComFree,
+                MAIL_DOT_COM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB,
+            ),
+            (
+                "maildotcom-premium",
+                EmailDraftMailLimitProfile::MailDotComPremium,
+                MAIL_DOT_COM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB,
+            ),
+            (
+                "exchange",
+                EmailDraftMailLimitProfile::Exchange,
+                EXCHANGE_ORDINARY_ATTACHMENT_LIMIT_MB,
+            ),
+        ];
+
+        let mut accepted_profiles = Vec::new();
+        let mut refused_by_name = Vec::new();
+        let mut limit_numbers = Vec::new();
+
+        for (slug, profile, expected_limit_mb) in profiles {
+            let osl_stored_name = format!("task3762-{slug}-osl-stored-200mb.bin");
+            let ordinary_name = format!("task3762-{slug}-ordinary-200mb.bin");
+            let osl_stored = [draft_attachment(
+                &osl_stored_name,
+                EmailDraftAttachmentStorage::OslStored,
+            )];
+            let ordinary = [draft_attachment(
+                &ordinary_name,
+                EmailDraftAttachmentStorage::Ordinary,
+            )];
+
+            let accepted_osl_stored =
+                create_protected_email_reply_draft_with_attachments_for_profile(
+                    check,
+                    ProtectedEmailReplyAction::Reply,
+                    &osl_stored,
+                    profile,
+                )
+                .expect("200 MB OSL-stored file is accepted regardless of mail limit");
+            let refused_ordinary = create_protected_email_reply_draft_with_attachments_for_profile(
+                check,
+                ProtectedEmailReplyAction::Reply,
+                &ordinary,
+                profile,
+            )
+            .expect_err("200 MB ordinary attachment is refused by provider limit");
+
+            assert_eq!(profile.ordinary_attachment_limit_mb(), expected_limit_mb);
+            assert_eq!(accepted_osl_stored.osl_stored_file_bytes, FILE_MB * MB);
+            assert_eq!(accepted_osl_stored.ordinary_attachment_bytes, 0);
+            assert!(refused_ordinary.contains(profile.display_name()));
+            assert!(refused_ordinary.contains(&ordinary_name));
+            assert!(refused_ordinary.contains(&format!("{expected_limit_mb} MB")));
+            assert!(refused_ordinary.contains("200 MB"));
+
+            accepted_profiles.push(profile.display_name());
+            refused_by_name.push(format!("{}:{ordinary_name}", profile.display_name()));
+            limit_numbers.push(format!("{}={expected_limit_mb}", profile.display_name()));
+        }
+
+        println!(
+            "TASK3762 mail_size_limits osl_stored_file_mb={FILE_MB} ordinary_attachment_mb={FILE_MB} osl_stored_acceptances={} ordinary_refusals_by_name={} accepted_profiles=\"{}\" refused_by_name=\"{}\" limits_mb=\"{}\"",
+            accepted_profiles.len(),
+            refused_by_name.len(),
+            accepted_profiles.join("|"),
+            refused_by_name.join("|"),
+            limit_numbers.join("|"),
+        );
+
+        assert_eq!(
+            accepted_profiles,
+            vec!["Gmail", "Mail.com free", "Mail.com premium", "Exchange"]
+        );
+        assert_eq!(accepted_profiles.len(), 4);
+        assert_eq!(refused_by_name.len(), 4);
     }
 
     #[test]
