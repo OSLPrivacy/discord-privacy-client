@@ -16167,9 +16167,17 @@ pub struct AutoWhitelistRuleChoiceDto {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AutoWhitelistAllowedPlaceDto {
+    pub app: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct AutoWhitelistRuleDto {
     pub app_kind: String,
     pub choice: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_place: Option<AutoWhitelistAllowedPlaceDto>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -16183,6 +16191,22 @@ pub struct SignalWhitelistKindDto {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct SignalAutoWhitelistRuleDto {
     pub signal_kind: String,
+    pub auto_rule_app_kind: String,
+    pub allowed_place: crate::allowed_places::AllowedPlaceRecord,
+    pub choice: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct WhatsAppWhitelistKindDto {
+    pub id: String,
+    pub name: String,
+    pub auto_rule_app_kind: String,
+    pub allowed_place_kind: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct WhatsAppAutoWhitelistRuleDto {
+    pub whatsapp_kind: String,
     pub auto_rule_app_kind: String,
     pub allowed_place: crate::allowed_places::AllowedPlaceRecord,
     pub choice: String,
@@ -16222,6 +16246,7 @@ pub fn cmd_osl_save_auto_whitelist_rule(
         }
     }
     Ok(AutoWhitelistRuleDto {
+        allowed_place: auto_whitelist_allowed_place(&app_kind),
         app_kind,
         choice: choice.label().to_string(),
     })
@@ -16242,8 +16267,18 @@ pub fn cmd_osl_read_auto_whitelist_rule(
         .copied()
         .unwrap_or_default();
     Ok(AutoWhitelistRuleDto {
+        allowed_place: auto_whitelist_allowed_place(&app_kind),
         app_kind,
         choice: choice.label().to_string(),
+    })
+}
+
+fn auto_whitelist_allowed_place(app_kind: &str) -> Option<AutoWhitelistAllowedPlaceDto> {
+    crate::auto_whitelist_rules::whatsapp_allowed_place_kind_for_rule_key(app_kind).map(|kind| {
+        AutoWhitelistAllowedPlaceDto {
+            app: "whatsapp".to_owned(),
+            kind: kind.to_owned(),
+        }
     })
 }
 
@@ -16258,6 +16293,23 @@ pub fn cmd_osl_list_signal_whitelist_kinds() -> Result<Vec<SignalWhitelistKindDt
             allowed_place_kind: kind.allowed_place_kind(),
         })
         .collect())
+}
+
+pub fn cmd_osl_list_whatsapp_whitelist_kinds() -> Result<Vec<WhatsAppWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::WhatsAppWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| WhatsAppWhitelistKindDto {
+            id: kind.id().to_owned(),
+            name: kind.name().to_owned(),
+            auto_rule_app_kind: kind.auto_rule_app_kind().to_owned(),
+            allowed_place_kind: kind.allowed_place_kind().to_owned(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_get_whatsapp_whitelist_kinds() -> Result<Vec<WhatsAppWhitelistKindDto>, String> {
+    cmd_osl_list_whatsapp_whitelist_kinds()
 }
 
 pub fn cmd_osl_save_signal_auto_whitelist_rule(
@@ -16319,6 +16371,69 @@ fn signal_rule_lookup(
         signal_kind: kind.id().to_owned(),
         auto_rule_app_kind: kind.auto_rule_app_kind().to_owned(),
         allowed_place: crate::allowed_places::AllowedPlaceRecord::signal(account, kind, place),
+        choice: choice.label().to_owned(),
+    }
+}
+
+pub fn cmd_osl_save_whatsapp_auto_whitelist_rule(
+    state: &AppState,
+    whatsapp_kind: String,
+    account: String,
+    place: String,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<WhatsAppAutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let kind = crate::auto_whitelist_rules::parse_whatsapp_whitelist_kind(&whatsapp_kind)?;
+    let choice = crate::auto_whitelist_rules::parse_auto_whitelist_choice(&choice)?;
+    let auto_rule_app_kind = kind.auto_rule_app_kind().to_owned();
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs
+            .auto_whitelist_rules
+            .insert(auto_rule_app_kind.clone(), choice);
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(whatsapp_rule_lookup(kind, account, place, choice))
+}
+
+pub fn cmd_osl_read_whatsapp_auto_whitelist_rule(
+    state: &AppState,
+    whatsapp_kind: String,
+    account: String,
+    place: String,
+) -> Result<WhatsAppAutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let kind = crate::auto_whitelist_rules::parse_whatsapp_whitelist_kind(&whatsapp_kind)?;
+    let auto_rule_app_kind = kind.auto_rule_app_kind().to_owned();
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .auto_whitelist_rules
+        .get(&auto_rule_app_kind)
+        .copied()
+        .unwrap_or_default();
+    Ok(whatsapp_rule_lookup(kind, account, place, choice))
+}
+
+fn whatsapp_rule_lookup(
+    kind: crate::auto_whitelist_rules::WhatsAppWhitelistKind,
+    account: String,
+    place: String,
+    choice: crate::auto_whitelist_rules::AutoWhitelistChoice,
+) -> WhatsAppAutoWhitelistRuleDto {
+    WhatsAppAutoWhitelistRuleDto {
+        whatsapp_kind: kind.id().to_owned(),
+        auto_rule_app_kind: kind.auto_rule_app_kind().to_owned(),
+        allowed_place: crate::allowed_places::AllowedPlaceRecord::whatsapp(account, kind, place),
         choice: choice.label().to_owned(),
     }
 }

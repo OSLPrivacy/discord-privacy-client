@@ -44,6 +44,22 @@ impl AllowedPlaceRecord {
             kind: kind.to_owned(),
         }
     }
+
+    pub fn whatsapp(
+        account: impl Into<String>,
+        kind: crate::auto_whitelist_rules::WhatsAppWhitelistKind,
+        place: impl Into<String>,
+    ) -> Self {
+        let account = account.into();
+        let place = place.into();
+        let kind = kind.allowed_place_kind();
+        Self {
+            app: "whatsapp".to_owned(),
+            stable_id: format!("whatsapp:{account}:{kind}:{place}"),
+            account,
+            kind: kind.to_owned(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
