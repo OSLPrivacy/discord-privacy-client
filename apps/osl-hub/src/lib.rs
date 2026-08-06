@@ -47,6 +47,7 @@ pub mod burn_contract;
 pub mod burn_dispatch;
 #[cfg(feature = "core")]
 pub mod burn_journal_bridge;
+pub mod burn_review_state;
 #[cfg(feature = "core")]
 pub mod burn_server;
 pub mod carrier_placement;

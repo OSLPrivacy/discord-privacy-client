@@ -943,6 +943,9 @@ macro_rules! hub_tauri_commands {
             set_hub_notifications_enabled,
             set_hub_screenshot_protection,
             save_onboarding_preferences,
+            save_burn_review_state,
+            get_burn_review_state,
+            back_burn_review,
             set_tor_preference,
             scan_local_privacy,
             open_hosted_session_scan,
@@ -2253,6 +2256,43 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["view_hub_recovery_phrase"],
+        );
+    }
+
+    #[test]
+    fn recovery_word_retype_check_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["check_hub_recovery_word_retype"],
+        );
+    }
+
+    #[test]
+    fn live_server_revision_report_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["get_live_server_revision_report"],
+        );
+    }
+
+    #[test]
+    fn burn_review_state_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "save_burn_review_state",
+                "get_burn_review_state",
+                "back_burn_review",
+            ],
         );
     }
 
