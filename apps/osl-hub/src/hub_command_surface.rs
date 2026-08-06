@@ -311,6 +311,49 @@ pub struct NativeDiscordProductSendAuthority {
     pub carrier: String,
 }
 
+pub const ALLOWED_PLACE_CHECK_STAGE: &str = "allowed-place-check";
+pub const ALLOWED_PLACE_CONFIRMED_STAGE: &str = "allowed-place-confirmed";
+pub const PROTECTED_MESSAGE_PATH_STAGE: &str = "protected-message-path";
+
+fn with_allowed_place_before_protected_message_action<Allowed, Output, CheckAllowed, Protected>(
+    trace: &mut Vec<&'static str>,
+    action_stage: &'static str,
+    check_allowed_place: CheckAllowed,
+    protected_message_path: Protected,
+) -> Result<Output, String>
+where
+    CheckAllowed: FnOnce() -> Result<Allowed, String>,
+    Protected: FnOnce(Allowed) -> Result<Output, String>,
+{
+    trace.push(ALLOWED_PLACE_CHECK_STAGE);
+    let allowed = check_allowed_place()?;
+    trace.push(ALLOWED_PLACE_CONFIRMED_STAGE);
+    trace.push(action_stage);
+    protected_message_path(allowed)
+}
+
+pub fn with_allowed_place_before_protected_message_path<
+    Allowed,
+    Output,
+    CheckAllowed,
+    Protected,
+>(
+    trace: &mut Vec<&'static str>,
+    check_allowed_place: CheckAllowed,
+    protected_message_path: Protected,
+) -> Result<Output, String>
+where
+    CheckAllowed: FnOnce() -> Result<Allowed, String>,
+    Protected: FnOnce(Allowed) -> Result<Output, String>,
+{
+    with_allowed_place_before_protected_message_action(
+        trace,
+        PROTECTED_MESSAGE_PATH_STAGE,
+        check_allowed_place,
+        protected_message_path,
+    )
+}
+
 pub fn require_native_discord_product_send_authority(
     composer: &NativeDiscordComposerState,
     scope_binding: &str,

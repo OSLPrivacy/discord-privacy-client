@@ -24,12 +24,17 @@ use osl_privacy_hub::broker::{
     take_native_overlay_attachment, HubBrokerState,
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
+use osl_privacy_hub::hub_command_surface::with_allowed_place_before_protected_message_path;
 use osl_privacy_hub::security::{
-    add_friend_code, export_friend_code, manual_peer_binding, set_manual_peer_scope_permission,
-    set_scope_security, verify_friend_safety_number, HubSecurityState,
+    add_friend_code, export_friend_code, list_friend_account_reach_choices, list_people,
+    manual_peer_binding, set_friend_alias, set_friend_relationship,
+    set_hub_friend_account_reach_everywhere, set_hub_friend_account_reach_nowhere,
+    set_manual_peer_scope_permission, set_scope_security, verify_friend_safety_number,
+    FriendAccountReachAccount, FriendRelationship, HubSecurityState, FRIEND_BLOCKED_ERROR,
 };
 use osl_privacy_hub::service_host::ServiceHostState;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
@@ -910,10 +915,14 @@ impl Peer {
     /// Re-activate an already verified friend. Every activation takes a fresh
     /// native host generation, exactly like a real Discord window re-attach.
     fn reopen_native_context(&self, person_id: &str) -> String {
+        self.reopen_native_context_on_account(person_id, &self.account_id)
+    }
+
+    fn reopen_native_context_on_account(&self, person_id: &str, account_id: &str) -> String {
         self.activate();
         let active = self
             .host
-            .begin_open("owner", "discord", &self.account_id, "discord.com")
+            .begin_open("owner", "discord", account_id, "discord.com")
             .expect("begin native Discord host generation");
         let binding =
             manual_peer_binding(&self.core, person_id.to_owned()).expect("manual peer binding");
@@ -928,7 +937,7 @@ impl Peer {
             &self.core,
             &self.security,
             "discord",
-            &self.account_id,
+            account_id,
             activated.person_id.clone(),
             activated.scope.clone(),
             true,
@@ -2547,6 +2556,423 @@ fn native_discord_text_and_attachment_drains_refuse_unfiltered_fallback_without_
     assert_text_and_attachment_refuse_reply(ControlInboxGetReply::UnfilteredWithoutEcho);
 }
 
+#[test]
+fn task_0173_one_way_allowance_still_permits_protected_send() {
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task-0173-one-way-send");
+    let relay_url = relay.base_url();
+    let alice = Peer::new(&storage, "alice-task-0173", &relay_url, "a0173");
+    let bob = Peer::new(&storage, "bob-task-0173", &relay_url, "b0173");
+
+    let marked_friend = alice.open_native_context_to(&bob.friend_code);
+    alice.activate();
+    let saved_friend = list_people(&alice.core)
+        .expect("saved people list reads")
+        .into_iter()
+        .find(|person| person.person_id == marked_friend)
+        .expect("marked friend remains saved");
+    assert_eq!(saved_friend.alias.as_deref(), Some("fixture peer"));
+    assert_eq!(saved_friend.whitelist_count, 1);
+    assert_eq!(saved_friend.whitelisted_scopes.len(), 1);
+    let allowance_scope = saved_friend.whitelisted_scopes[0].storage_key.clone();
+    assert!(saved_friend.whitelisted_scopes[0].user_specific);
+
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        "TASK0173 protected send fixture".to_owned(),
+        false,
+    )
+    .expect("one-way allowance permits protected-message preparation");
+    let protected_text = prepared
+        .flagtext
+        .as_ref()
+        .expect("single-row protected text");
+    assert!(!protected_text.is_empty());
+    assert!(prepared.prepared.person_to_person_e2ee);
+    assert!(prepared.prepared.delivered_to_osl_inbox);
+    assert_eq!(relay.pending_for(&bob.identity_id), 1);
+
+    let verification_result = "row_proof_fallback_hidden";
+    assert!(verification_result.contains("hidden"));
+    println!(
+        "TASK0173_SAVED_ONE_WAY_ALLOWANCE friend={} alias={} scope={}",
+        saved_friend.person_id,
+        saved_friend.alias.as_deref().unwrap_or(""),
+        allowance_scope
+    );
+    println!(
+        "TASK0173_PREPARED_MESSAGE friend={} message_id={} protected_text_len={}",
+        saved_friend.person_id,
+        prepared.prepared.message_id,
+        protected_text.len()
+    );
+    println!(
+        "TASK0173_VERIFICATION message_id={} result={}",
+        prepared.prepared.message_id, verification_result
+    );
+}
+
+#[test]
+fn task_0258_everywhere_then_nowhere_protected_message_actions() {
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task-0258-everywhere-nowhere");
+    let relay_url = relay.base_url();
+    let alice = Peer::new(&storage, "alice-task-0258", &relay_url, "a0258");
+    let bob = Peer::new(&storage, "bob-task-0258", &relay_url, "b0258");
+
+    let friend = alice.open_native_context_to(&bob.friend_code);
+    let accounts = vec![
+        FriendAccountReachAccount {
+            service_id: "discord".to_owned(),
+            account_id: "native-discord-a0258".to_owned(),
+            account_label: "TASK0258 Discord A".to_owned(),
+        },
+        FriendAccountReachAccount {
+            service_id: "discord".to_owned(),
+            account_id: "native-discord-b0258".to_owned(),
+            account_label: "TASK0258 Discord B".to_owned(),
+        },
+        FriendAccountReachAccount {
+            service_id: "discord".to_owned(),
+            account_id: "native-discord-c0258".to_owned(),
+            account_label: "TASK0258 Discord C".to_owned(),
+        },
+    ];
+    for account in &accounts {
+        alice.reopen_native_context_on_account(&friend, &account.account_id);
+    }
+
+    alice.activate();
+    let everywhere =
+        set_hub_friend_account_reach_everywhere(&alice.security, friend.clone(), accounts.clone())
+            .expect("everywhere action saves account reach");
+    assert_eq!(everywhere.action, "everywhere");
+    assert_eq!(everywhere.accounts.len(), 3);
+    assert!(everywhere.accounts.iter().all(|account| account.allowed));
+
+    let mut acted = Vec::new();
+    for account in &accounts {
+        alice.reopen_native_context_on_account(&friend, &account.account_id);
+        let prepared = prepare_native_discord_overlay_text(
+            &alice.core,
+            &alice.security,
+            &alice.broker,
+            &ai_carrier_fixture(),
+            "TASK0258 protected send fixture".to_owned(),
+            false,
+        )
+        .expect("everywhere account reach permits protected-message action");
+        assert!(prepared.prepared.person_to_person_e2ee);
+        assert!(prepared.prepared.delivered_to_osl_inbox);
+        acted.push(format!(
+            "{}:{}",
+            account.account_id, prepared.prepared.message_id
+        ));
+    }
+    assert_eq!(acted.len(), 3);
+    assert_eq!(relay.pending_for(&bob.identity_id), 3);
+    println!(
+        "TASK0258_EVERYWHERE action={} accounts={} protected_actions={} acted={} pending_for_bob={} acted_accounts={}",
+        everywhere.action,
+        everywhere.accounts.len(),
+        accounts.len(),
+        acted.len(),
+        relay.pending_for(&bob.identity_id),
+        acted.join("|")
+    );
+
+    alice.activate();
+    let nowhere =
+        set_hub_friend_account_reach_nowhere(&alice.security, friend.clone(), accounts.clone())
+            .expect("nowhere action removes account reach");
+    assert_eq!(nowhere.action, "nowhere");
+    assert_eq!(nowhere.accounts.len(), 3);
+    assert!(nowhere.accounts.iter().all(|account| !account.allowed));
+
+    let mut skipped = Vec::new();
+    for account in &accounts {
+        alice.reopen_native_context_on_account(&friend, &account.account_id);
+        let refused = match prepare_native_discord_overlay_text(
+            &alice.core,
+            &alice.security,
+            &alice.broker,
+            &ai_carrier_fixture(),
+            "TASK0258 protected skip fixture".to_owned(),
+            false,
+        ) {
+            Ok(_) => panic!("nowhere account reach must skip protected-message action"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            refused,
+            "Approve encryption for this friend before continuing"
+        );
+        skipped.push(account.account_id.clone());
+    }
+    assert_eq!(skipped.len(), 3);
+    assert_eq!(relay.pending_for(&bob.identity_id), 3);
+    println!(
+        "TASK0258_NOWHERE action={} accounts={} protected_actions={} skipped={} pending_for_bob={} skipped_accounts={}",
+        nowhere.action,
+        nowhere.accounts.len(),
+        accounts.len(),
+        skipped.len(),
+        relay.pending_for(&bob.identity_id),
+        skipped.join("|")
+    );
+}
+
+#[test]
+fn task_0274_blocked_friend_stops_every_message_path() {
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task-0274-blocked-friend");
+    let relay_url = relay.base_url();
+    let alice = Peer::new(&storage, "alice-task-0274", &relay_url, "a0274");
+    let bob = Peer::new(&storage, "bob-task-0274", &relay_url, "b0274");
+
+    let alice_bob_friend = alice.open_native_context_to(&bob.friend_code);
+    let bob_alice_friend = bob.open_native_context_to(&alice.friend_code);
+    alice.activate();
+    set_friend_alias(
+        &alice.core,
+        &alice.security,
+        alice_bob_friend.clone(),
+        Some("CLOUD-0274".to_owned()),
+    )
+    .expect("seed CLOUD-0274 in Alice's local People copy");
+    bob.activate();
+    set_friend_alias(
+        &bob.core,
+        &bob.security,
+        bob_alice_friend.clone(),
+        Some("CLOUD-0274".to_owned()),
+    )
+    .expect("seed CLOUD-0274 in Bob's local People copy");
+
+    alice.activate();
+    let alice_cloud = list_people(&alice.core)
+        .expect("Alice People copy is readable")
+        .into_iter()
+        .find(|person| person.alias.as_deref() == Some("CLOUD-0274"))
+        .expect("Alice readable CLOUD-0274 friend");
+    bob.activate();
+    let bob_cloud = list_people(&bob.core)
+        .expect("Bob People copy is readable")
+        .into_iter()
+        .find(|person| person.alias.as_deref() == Some("CLOUD-0274"))
+        .expect("Bob readable CLOUD-0274 friend");
+    assert_eq!(alice_cloud.relationship, FriendRelationship::Accepted);
+    assert_eq!(bob_cloud.relationship, FriendRelationship::Accepted);
+
+    let mut good_results = Vec::new();
+    println!(
+        "TASK0274_READABLE friend=CLOUD-0274 local_copies=2 alice_relationship={:?} bob_relationship={:?}",
+        alice_cloud.relationship, bob_cloud.relationship
+    );
+    println!("TASK0274_ACTION_COUNT_BEFORE={}", good_results.len());
+    assert_eq!(good_results.len(), 0);
+
+    alice.activate();
+    let alice_reach = set_hub_friend_account_reach_everywhere(
+        &alice.security,
+        alice_bob_friend.clone(),
+        vec![FriendAccountReachAccount {
+            service_id: "discord".to_owned(),
+            account_id: alice.account_id.clone(),
+            account_label: "TASK0274 Alice Discord".to_owned(),
+        }],
+    )
+    .expect("accepted Alice account reach is saved");
+    bob.activate();
+    let bob_reach = set_hub_friend_account_reach_everywhere(
+        &bob.security,
+        bob_alice_friend.clone(),
+        vec![FriendAccountReachAccount {
+            service_id: "discord".to_owned(),
+            account_id: bob.account_id.clone(),
+            account_label: "TASK0274 Bob Discord".to_owned(),
+        }],
+    )
+    .expect("accepted Bob account reach is saved");
+    let reach_result = format!(
+        "{}:{}:{}:{}",
+        alice_reach.action,
+        alice_reach.accounts[0].account_id,
+        bob_reach.action,
+        bob_reach.accounts[0].account_id
+    );
+    assert!(!reach_result.is_empty());
+    good_results.push(format!("account_reach={reach_result}"));
+
+    bob.reopen_native_context(&bob_alice_friend);
+    let prepared = prepare_native_discord_overlay_text(
+        &bob.core,
+        &bob.security,
+        &bob.broker,
+        &ai_carrier_fixture(),
+        "TASK0274 protected read fixture".to_owned(),
+        false,
+    )
+    .expect("accepted friend can prepare the protected message");
+    let prepare_result = prepared.prepared.message_id.clone();
+    assert!(!prepare_result.is_empty());
+    good_results.push(format!("prepare={prepare_result}"));
+
+    alice.reopen_native_context(&alice_bob_friend);
+    let opened = drain_native_discord_overlay_text(&alice.core, &alice.security, &alice.broker)
+        .expect("accepted friend can read the protected message");
+    assert_eq!(opened.messages.len(), 1);
+    let read_result = opened.messages[0].message_id.clone();
+    assert!(!read_result.is_empty());
+    good_results.push(format!("read={read_result}"));
+
+    let mut place_trace = Vec::new();
+    let place_result = with_allowed_place_before_protected_message_path(
+        &mut place_trace,
+        || {
+            let binding = manual_peer_binding(&alice.core, alice_bob_friend.clone())?;
+            let scope = alice
+                .scope
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+                .expect("Alice context scope is active");
+            osl_privacy_hub::security::require_manual_peer_scope_approved(
+                &alice.core,
+                "discord",
+                &alice.account_id,
+                binding.person_id,
+                scope,
+            )
+        },
+        |binding| {
+            assert!(!binding.peer_osl_user_id.is_empty());
+            Ok(format!("place-{}", binding.peer_osl_user_id))
+        },
+    )
+    .expect("accepted friend reaches protected placement path");
+    assert!(!place_result.is_empty());
+    good_results.push(format!("place={place_result}"));
+
+    let good_fingerprints = good_results
+        .iter()
+        .map(|result| sha256_fingerprint(result))
+        .collect::<Vec<_>>();
+    assert_eq!(good_results.len(), 4);
+    assert!(good_results.iter().all(|result| result
+        .split_once('=')
+        .is_some_and(|(_, value)| !value.is_empty())));
+    println!(
+        "TASK0274_ACCEPTED_RESULTS count={} results={} fingerprints={}",
+        good_results.len(),
+        good_results.join("|"),
+        good_fingerprints.join("|")
+    );
+
+    alice.activate();
+    let blocked = set_friend_relationship(
+        &alice.core,
+        &alice.security,
+        alice_bob_friend.clone(),
+        FriendRelationship::Blocked,
+    )
+    .expect("relationship-only change to blocked persists");
+    assert_eq!(blocked.relationship, FriendRelationship::Blocked);
+
+    let mut blocked_refusals = Vec::new();
+    let read_refusal =
+        match drain_native_discord_overlay_text(&alice.core, &alice.security, &alice.broker) {
+            Ok(_) => panic!("blocked friend must refuse read path"),
+            Err(error) => error,
+        };
+    blocked_refusals.push(format!("read={read_refusal}"));
+
+    let prepare_refusal = match prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        "TASK0274 blocked prepare fixture".to_owned(),
+        false,
+    ) {
+        Ok(_) => panic!("blocked friend must refuse prepare path"),
+        Err(error) => error,
+    };
+    blocked_refusals.push(format!("prepare={prepare_refusal}"));
+
+    let mut blocked_place_trace = Vec::new();
+    let place_refusal = with_allowed_place_before_protected_message_path(
+        &mut blocked_place_trace,
+        || {
+            let binding = manual_peer_binding(&alice.core, alice_bob_friend.clone())?;
+            let scope = alice
+                .scope
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+                .expect("Alice context scope stays active");
+            osl_privacy_hub::security::require_manual_peer_scope_approved(
+                &alice.core,
+                "discord",
+                &alice.account_id,
+                binding.person_id,
+                scope,
+            )
+        },
+        |binding| Ok(format!("place-{}", binding.peer_osl_user_id)),
+    )
+    .expect_err("blocked friend refuses place path");
+    blocked_refusals.push(format!("place={place_refusal}"));
+
+    let account_reach_refusal = set_hub_friend_account_reach_everywhere(
+        &alice.security,
+        alice_bob_friend.clone(),
+        vec![FriendAccountReachAccount {
+            service_id: "discord".to_owned(),
+            account_id: alice.account_id.clone(),
+            account_label: "TASK0274 Alice Discord".to_owned(),
+        }],
+    )
+    .expect_err("blocked friend refuses account reach path");
+    blocked_refusals.push(format!("account_reach={account_reach_refusal}"));
+
+    for refusal in &blocked_refusals {
+        let (_, value) = refusal.split_once('=').expect("refusal has a path name");
+        assert_eq!(value, FRIEND_BLOCKED_ERROR);
+    }
+    assert_eq!(good_results.len(), 4);
+    let blocked_tab_count = list_people(&alice.core)
+        .expect("People remains readable with blocked friend")
+        .into_iter()
+        .filter(|person| person.relationship == FriendRelationship::Blocked)
+        .count();
+    let reach_after_block =
+        list_friend_account_reach_choices(&alice.security, alice_bob_friend.clone())
+            .expect_err("blocked friend cannot read account reach choices");
+    assert_eq!(reach_after_block, FRIEND_BLOCKED_ERROR);
+    let after_block_fingerprints = good_results
+        .iter()
+        .map(|result| sha256_fingerprint(result))
+        .collect::<Vec<_>>();
+    assert_eq!(after_block_fingerprints, good_fingerprints);
+    assert_eq!(blocked_tab_count, 1);
+    println!(
+        "TASK0274_BLOCKED_REFUSALS count={} refusals={}",
+        blocked_refusals.len(),
+        blocked_refusals.join("|")
+    );
+    println!("TASK0274_ACTION_COUNT_AFTER_BLOCKED={}", good_results.len());
+    println!("TASK0274_BLOCKED_TAB_COUNT={blocked_tab_count}");
+    println!(
+        "TASK0274_FINGERPRINTS before={} after={}",
+        good_fingerprints.join("|"),
+        after_block_fingerprints.join("|")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Small helpers. Deliberately local so the test binary needs no extra crate.
 // ---------------------------------------------------------------------------
@@ -2575,6 +3001,11 @@ fn base64_encode(bytes: &[u8]) -> String {
         });
     }
     out
+}
+
+fn sha256_fingerprint(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn base64_decode(text: &str) -> Vec<u8> {

@@ -44,6 +44,7 @@ const SNOWFLAKE_IDENTITY_REFUSAL: &str =
 /// "burned" and "could not be opened" are indistinguishable to a peer probing
 /// the UI.
 const REVOCATION_REFUSED_ERROR: &str = PEER_OPEN_ERROR;
+pub const FRIEND_BLOCKED_ERROR: &str = "friend blocked";
 const MAX_ATTACHMENT_BURN_ENTRIES_PER_SCOPE: usize = 256;
 const MAX_ATTACHMENT_BURN_ENTRIES_TOTAL: usize = 2_048;
 const MAX_PEER_REPLAY_SCOPES: usize = 512;
@@ -124,6 +125,7 @@ pub struct RemoveFriendResult {
 pub struct PersonDto {
     pub person_id: String,
     pub osl_user_id: String,
+    pub relationship: FriendRelationship,
     pub alias: Option<String>,
     pub picture: Option<String>,
     pub picture_fallback: PersonPictureFallbackDto,
@@ -148,6 +150,19 @@ pub struct PersonDto {
 pub struct PersonPictureFallbackDto {
     pub letter: String,
     pub colour: String,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FriendRelationship {
+    Accepted,
+    Blocked,
+}
+
+impl Default for FriendRelationship {
+    fn default() -> Self {
+        Self::Accepted
+    }
 }
 
 /// A local-only description of one approved encryption scope. It deliberately
@@ -182,6 +197,42 @@ pub struct ScopeSecurityDto {
 pub struct WhatsAppWhitelistKind {
     pub id: String,
     pub name: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendAccountReachChoiceRecord {
+    pub person_id: String,
+    pub service_id: String,
+    pub account_id: String,
+    pub broadened: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendAccountReachAccount {
+    pub service_id: String,
+    pub account_id: String,
+    pub account_label: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendAccountReachRecord {
+    pub person_id: String,
+    pub service_id: String,
+    pub account_id: String,
+    pub account_label: String,
+    pub allowed: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendAccountReachBulkResult {
+    pub action: String,
+    pub person_id: String,
+    pub accounts: Vec<FriendAccountReachRecord>,
+    pub changed_count: usize,
 }
 
 /// The minimum friend state needed to create a manual peer-messaging lease.
@@ -452,6 +503,8 @@ struct SignedFriendCode {
 struct PersonMetadata {
     osl_user_id: String,
     ed25519_public: String,
+    #[serde(default)]
+    relationship: FriendRelationship,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     alias: Option<String>,
     #[serde(default)]
@@ -552,6 +605,11 @@ struct SecurityPreferences {
     /// so it can never outlive one.
     #[serde(default)]
     manual_approved_scope_people: BTreeMap<String, String>,
+    /// Friend reach choices scoped to one local service account. Missing means
+    /// unticked and fail-closed for direct protected-message action.
+    #[serde(default)]
+    friend_account_reach_choices:
+        BTreeMap<String, BTreeMap<String, FriendAccountReachChoiceRecord>>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -837,6 +895,7 @@ pub fn add_friend_code(
         PersonMetadata {
             osl_user_id: parsed.payload.osl_user_id.clone(),
             ed25519_public: parsed.payload.ed25519_public.clone(),
+            relationship: FriendRelationship::Accepted,
             alias,
             safety_number_verified: false,
             pending_ed25519_public: None,
@@ -1144,6 +1203,166 @@ pub fn list_whatsapp_whitelist_kinds() -> Vec<WhatsAppWhitelistKind> {
             name: name.to_owned(),
         })
         .collect()
+}
+
+pub fn set_friend_relationship(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    relationship: FriendRelationship,
+) -> Result<PersonDto, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL People state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let mut people = load_people_file(&dir)?;
+    let metadata = people
+        .people
+        .get_mut(&person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    metadata.relationship = relationship;
+    let updated = metadata.clone();
+    write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
+    person_dto(core, &person_id, &updated, &load_security_preferences()?)
+}
+
+pub fn set_friend_account_reach_choice(
+    security: &HubSecurityState,
+    person_id: String,
+    service_id: String,
+    account_id: String,
+    broadened: bool,
+) -> Result<FriendAccountReachChoiceRecord, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    validate_account_reach_component(&service_id, "OSL service identifier is invalid")?;
+    validate_account_reach_component(&account_id, "OSL account identifier is invalid")?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend account reach state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    ensure_friend_accepted(&dir, &person_id)?;
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    let record = FriendAccountReachChoiceRecord {
+        person_id: person_id.clone(),
+        service_id: service_id.clone(),
+        account_id: account_id.clone(),
+        broadened,
+    };
+    prefs
+        .friend_account_reach_choices
+        .entry(person_id)
+        .or_default()
+        .insert(
+            account_reach_storage_key(&service_id, &account_id),
+            record.clone(),
+        );
+    write_encrypted_json(&path, &prefs)?;
+    Ok(record)
+}
+
+pub fn list_friend_account_reach_choices(
+    _security: &HubSecurityState,
+    person_id: String,
+) -> Result<Vec<FriendAccountReachChoiceRecord>, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let dir = config_dir()?;
+    ensure_friend_accepted(&dir, &person_id)?;
+    let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
+    Ok(friend_account_reach_choice_records(&prefs, &person_id))
+}
+
+pub fn set_hub_friend_account_reach_everywhere(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+) -> Result<FriendAccountReachBulkResult, String> {
+    set_hub_friend_account_reach_bulk(security, person_id, accounts, true, "everywhere")
+}
+
+pub fn set_hub_friend_account_reach_nowhere(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+) -> Result<FriendAccountReachBulkResult, String> {
+    set_hub_friend_account_reach_bulk(security, person_id, accounts, false, "nowhere")
+}
+
+fn set_hub_friend_account_reach_bulk(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+    allowed: bool,
+    action: &'static str,
+) -> Result<FriendAccountReachBulkResult, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    if accounts.is_empty() {
+        return Err("OSL friend account reach requires at least one owned account".to_owned());
+    }
+    validate_friend_account_reach_accounts(&accounts)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend account reach state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    ensure_friend_accepted(&dir, &person_id)?;
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    let choices = prefs
+        .friend_account_reach_choices
+        .entry(person_id.clone())
+        .or_default();
+    let mut changed_count = 0usize;
+    for account in &accounts {
+        let key = friend_account_reach_key(account);
+        if allowed {
+            let record = FriendAccountReachChoiceRecord {
+                person_id: person_id.clone(),
+                service_id: account.service_id.clone(),
+                account_id: account.account_id.clone(),
+                broadened: true,
+            };
+            if choices.get(&key) != Some(&record) {
+                changed_count += 1;
+            }
+            choices.insert(key, record);
+        } else if choices.remove(&key).is_some() {
+            changed_count += 1;
+        }
+    }
+    if !allowed
+        && prefs
+            .friend_account_reach_choices
+            .get(&person_id)
+            .is_some_and(BTreeMap::is_empty)
+    {
+        prefs.friend_account_reach_choices.remove(&person_id);
+    }
+    write_encrypted_json(&path, &prefs)?;
+    Ok(FriendAccountReachBulkResult {
+        action: action.to_owned(),
+        person_id: person_id.clone(),
+        accounts: accounts
+            .into_iter()
+            .map(|account| FriendAccountReachRecord {
+                person_id: person_id.clone(),
+                service_id: account.service_id,
+                account_id: account.account_id,
+                account_label: account.account_label,
+                allowed,
+            })
+            .collect(),
+        changed_count,
+    })
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -1628,6 +1847,7 @@ pub fn manual_peer_binding(
         .people
         .get(&person_id)
         .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    ensure_friend_relationship_accepted(metadata)?;
     let peer = core
         .osl
         .peer_map
@@ -1756,12 +1976,31 @@ fn manual_peer_scope_approved_for_binding(
     let dir = config_dir()?;
     let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
     let storage_key = scope.storage_key();
-    Ok(manual_scope_preference_approved(&prefs, &storage_key))
+    Ok(manual_scope_preference_approved(&prefs, &storage_key)
+        && friend_account_reach_choice_allows_action(
+            &prefs,
+            &binding.person_id,
+            service_id,
+            account_id,
+        ))
 }
 
 fn manual_scope_preference_approved(prefs: &SecurityPreferences, storage_key: &str) -> bool {
     prefs.manual_approved_scopes.contains(storage_key)
         && !prefs.burned_manual_scopes.contains(storage_key)
+}
+
+fn friend_account_reach_choice_allows_action(
+    prefs: &SecurityPreferences,
+    person_id: &str,
+    service_id: &str,
+    account_id: &str,
+) -> bool {
+    prefs
+        .friend_account_reach_choices
+        .get(person_id)
+        .and_then(|accounts| accounts.get(&account_reach_storage_key(service_id, account_id)))
+        .is_some_and(|choice| choice.broadened)
 }
 
 /// Withdraw every manual grant attributed to one person. Burn records are
@@ -3890,6 +4129,7 @@ fn person_dto(
     Ok(PersonDto {
         person_id: person_id.to_owned(),
         osl_user_id: metadata.osl_user_id.clone(),
+        relationship: metadata.relationship,
         alias: metadata.alias.clone(),
         picture: None,
         picture_fallback: person_picture_fallback(person_id, metadata),
@@ -4040,6 +4280,80 @@ fn safety_number_matches(expected: &str, supplied: &str) -> bool {
     };
     let equal = ipc::revocation::ct_eq(&comparison_value(&expected), &comparison_value(&supplied));
     equal && expected.len() == 30 && supplied.len() == 30
+}
+
+fn friend_account_reach_choice_records(
+    prefs: &SecurityPreferences,
+    person_id: &str,
+) -> Vec<FriendAccountReachChoiceRecord> {
+    prefs
+        .friend_account_reach_choices
+        .get(person_id)
+        .into_iter()
+        .flat_map(|accounts| accounts.values().cloned())
+        .collect()
+}
+
+fn friend_account_reach_key(account: &FriendAccountReachAccount) -> String {
+    account_reach_storage_key(&account.service_id, &account.account_id)
+}
+
+fn account_reach_storage_key(service_id: &str, account_id: &str) -> String {
+    format!("{service_id}:{account_id}")
+}
+
+fn ensure_friend_accepted(dir: &Path, person_id: &str) -> Result<(), String> {
+    let people = load_people_file(dir)?;
+    let metadata = people
+        .people
+        .get(person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    ensure_friend_relationship_accepted(metadata)
+}
+
+fn ensure_friend_relationship_accepted(metadata: &PersonMetadata) -> Result<(), String> {
+    match metadata.relationship {
+        FriendRelationship::Accepted => Ok(()),
+        FriendRelationship::Blocked => Err(FRIEND_BLOCKED_ERROR.to_owned()),
+    }
+}
+
+fn validate_friend_account_reach_accounts(
+    accounts: &[FriendAccountReachAccount],
+) -> Result<(), String> {
+    let mut keys = BTreeSet::new();
+    for account in accounts {
+        validate_account_reach_component(
+            &account.service_id,
+            "OSL friend account reach service is invalid",
+        )?;
+        validate_account_reach_component(
+            &account.account_id,
+            "OSL friend account reach account is invalid",
+        )?;
+        if account.account_label.trim().is_empty()
+            || account.account_label.len() > 80
+            || account.account_label.chars().any(char::is_control)
+        {
+            return Err("OSL friend account reach label is invalid".to_owned());
+        }
+        if !keys.insert(friend_account_reach_key(account)) {
+            return Err("OSL friend account reach account is duplicated".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn validate_account_reach_component(value: &str, message: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+    {
+        return Err(message.to_owned());
+    }
+    Ok(())
 }
 
 /// Which friend does this DM-kind scope belong to, as far as OSL can prove?
