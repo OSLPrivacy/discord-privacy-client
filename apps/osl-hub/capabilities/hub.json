@@ -43,6 +43,8 @@
     "allow-start-autoscrub-reviewed-run",
     "allow-request-autoscrub-run-action",
     "allow-request-autoscrub-global-stop",
+    "allow-read-icloud-mailbox-for-scrub",
+    "allow-read-icloud-mailbox-pages-for-scrub",
     "allow-list-linked-services",
     "allow-get-core-readiness",
     "allow-list-core-features",

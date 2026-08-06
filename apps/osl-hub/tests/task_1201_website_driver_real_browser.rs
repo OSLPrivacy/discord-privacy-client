@@ -1,7 +1,9 @@
 use osl_privacy_hub::{
     hub_command_surface::{
+        read_icloud_mailbox_for_scrub_with_driver, read_icloud_mailbox_pages_for_scrub_with_driver,
         read_ordinary_send_progress, read_protected_email_open_message_with_driver,
         read_proton_mailbox_for_scrub_with_driver, send_ordinary_message_with_progress,
+        IcloudMailboxForScrubReadRequest, IcloudMailboxPagingReadRequest, MailPagingStopReason,
         OrdinarySendProgress, OrdinarySendProgressRequest, ProtectedEmailOpenMessageReadRequest,
         ProtonMailboxForScrubReadRequest,
     },
@@ -33,6 +35,11 @@ const TASK_1214_COVER_MESSAGE: &str =
 const TASK_1214_THREAD_ID: &str = "email-thread-1214-stable";
 const TASK_3056_TITLE: &str = "OSL Task 3056 Seeded Proton Mailbox";
 const TASK_3056_FOLDERS: [&str; 4] = ["Inbox", "Sent", "Archive", "Trash"];
+const TASK_3072_TITLE: &str = "OSL Task 3072 Seeded iCloud Mailbox Paging";
+const TASK_3072_FOLDERS: [&str; 4] = ["Inbox", "Sent", "Archive", "Trash"];
+const TASK_3072_MESSAGE_COUNT: usize = 120;
+const TASK_3072_PAGE_SIZE: usize = 30;
+const TASK_3072_SET_PAUSE_MS: u64 = 5;
 const TASK_1426_TITLE: &str = "OSL Task 1426 Live Run Progress";
 const TASK_1426_ACCOUNT: &str = "fixture-account-1426@example.invalid";
 const TASK_3603_TITLE: &str = "OSL Task 3603 Ordinary Send Progress";
@@ -337,6 +344,124 @@ fn task_3056_seeded_proton_mailbox_returns_folders_sent_messages_and_ownership()
 }
 
 #[test]
+fn task_3072_icloud_mailbox_pages_with_shared_pause_and_stop() {
+    let server = LocalTestPage::spawn_body(TASK_3072_TITLE, task_3072_icloud_fixture_body());
+
+    let mut full_driver = RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
+    let seeded = read_icloud_mailbox_for_scrub_with_driver(
+        &mut full_driver,
+        IcloudMailboxForScrubReadRequest {
+            page_url: server.url(),
+        },
+    )
+    .expect("direct iCloud mailbox reader returns the first seeded page");
+    assert_eq!(seeded.folders, TASK_3072_FOLDERS);
+    assert_eq!(seeded.sent.len(), TASK_3072_PAGE_SIZE);
+    assert!(seeded
+        .sent
+        .iter()
+        .any(|message| message.owner_marker == "SCRUB-IC-MINE" && message.yours));
+
+    let full = read_icloud_mailbox_pages_for_scrub_with_driver(
+        &mut full_driver,
+        IcloudMailboxPagingReadRequest {
+            page_url: server.url(),
+            folder_id: "Sent".to_owned(),
+            set_pause_ms: TASK_3072_SET_PAUSE_MS,
+            stop_during_page: None,
+        },
+    )
+    .expect("direct iCloud page reader reads the seeded folder");
+    assert_eq!(full.folder_id, "Sent");
+    assert_eq!(full.message_count, TASK_3072_MESSAGE_COUNT);
+    assert!(full.page_count >= 3);
+    assert_eq!(full.stop_reason, MailPagingStopReason::EndOfPlace);
+    assert!(full
+        .inter_action_gaps_ms
+        .iter()
+        .all(|gap| *gap >= TASK_3072_SET_PAUSE_MS));
+    assert_eq!(full.one_screen_scrolls, full.page_count - 1);
+
+    let mut stopped_driver =
+        RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
+    let stopped = read_icloud_mailbox_pages_for_scrub_with_driver(
+        &mut stopped_driver,
+        IcloudMailboxPagingReadRequest {
+            page_url: server.url(),
+            folder_id: "Sent".to_owned(),
+            set_pause_ms: TASK_3072_SET_PAUSE_MS,
+            stop_during_page: Some(2),
+        },
+    )
+    .expect("direct iCloud page reader stops after page two");
+    assert_eq!(stopped.stop_reason, MailPagingStopReason::StopRequested);
+    assert_eq!(stopped.stop_requested_during_page, Some(2));
+    assert_eq!(stopped.stopped_on_page_number, Some(2));
+    assert!(stopped.stop_requested_during_run);
+    assert!(
+        (40..=80).contains(&stopped.message_count),
+        "stop read {} messages",
+        stopped.message_count
+    );
+
+    println!("TASK3072 direct_reader=read_icloud_mailbox_pages_for_scrub");
+    println!("TASK3072 shared_reader=shared_mail_folder_page_reader");
+    println!("TASK3072 provider=iCloud Mail");
+    println!("TASK3072 folder_id={}", full.folder_id);
+    println!("TASK3072 folder_message_count={TASK_3072_MESSAGE_COUNT}");
+    println!("TASK3072 first_page_sent_count={}", seeded.sent.len());
+    println!("TASK3072 first_page_owner_marker=SCRUB-IC-MINE");
+    println!(
+        "TASK3072 first_page_owner_label={}",
+        seeded
+            .sent
+            .iter()
+            .find(|message| message.owner_marker == "SCRUB-IC-MINE")
+            .map(|message| if message.yours { "yours" } else { "not_yours" })
+            .unwrap_or("missing")
+    );
+    println!("TASK3072 set_pause_ms={}", full.set_pause_ms);
+    println!("TASK3072 full_read_message_count={}", full.message_count);
+    println!("TASK3072 full_page_count={}", full.page_count);
+    println!("TASK3072 full_stop_reason={:?}", full.stop_reason);
+    println!(
+        "TASK3072 full_one_screen_scrolls={}",
+        full.one_screen_scrolls
+    );
+    println!("TASK3072 full_action_count={}", full.action_names.len());
+    println!("TASK3072 full_action_names={}", full.action_names.join(","));
+    println!(
+        "TASK3072 full_inter_action_gaps_ms={:?}",
+        full.inter_action_gaps_ms
+    );
+    println!(
+        "TASK3072 full_every_inter_action_gap_at_least_set_pause={}",
+        full.inter_action_gaps_ms
+            .iter()
+            .all(|gap| *gap >= TASK_3072_SET_PAUSE_MS)
+    );
+    println!(
+        "TASK3072 stop_requested_during_page={}",
+        stopped.stop_requested_during_page.unwrap_or_default()
+    );
+    println!(
+        "TASK3072 stop_requested_during_run={}",
+        stopped.stop_requested_during_run
+    );
+    println!("TASK3072 stop_reason={:?}", stopped.stop_reason);
+    println!(
+        "TASK3072 stopped_on_page_number={}",
+        stopped.stopped_on_page_number.unwrap_or_default()
+    );
+    println!("TASK3072 stop_read_message_count={}", stopped.message_count);
+    println!("TASK3072 stop_page_count={}", stopped.page_count);
+    println!(
+        "TASK3072 stop_message_count_between_40_and_80={}",
+        (40..=80).contains(&stopped.message_count)
+    );
+}
+
+#[test]
 fn task_1426_direct_progress_command_changes_after_each_fixture_action() {
     let server = LocalTestPage::spawn_body(
         TASK_1426_TITLE,
@@ -575,6 +700,68 @@ struct LocalTestPage {
     worker: Option<thread::JoinHandle<()>>,
 }
 
+fn task_3072_icloud_fixture_body() -> String {
+    let mut rows = String::new();
+    for index in 0..TASK_3072_MESSAGE_COUNT {
+        let marker = if index == 0 {
+            r#" data-osl-scrub-owner-marker="SCRUB-IC-MINE""#
+        } else {
+            ""
+        };
+        rows.push_str(&format!(
+            r#"<article
+                  data-osl-mail-message
+                  data-osl-folder="Sent"
+                  data-osl-subject="iCloud scrub fixture message {number:03}"
+                  data-osl-time="2026-08-06 12:{minute:02}"
+                  data-osl-sender="scrub-owner@icloud.test"{marker}>
+                  <h2 data-osl-mail-subject>iCloud scrub fixture message {number:03}</h2>
+                  <span data-osl-mail-time>2026-08-06 12:{minute:02}</span>
+                  <span data-osl-mail-sender>scrub-owner@icloud.test</span>
+                </article>"#,
+            number = index + 1,
+            minute = index % 60,
+            marker = marker,
+        ));
+    }
+
+    format!(
+        r#"
+            <main>
+              <nav aria-label="iCloud folders">
+                <button type="button" data-osl-mail-folder="Inbox">Inbox</button>
+                <button type="button" data-osl-mail-folder="Sent">Sent</button>
+                <button type="button" data-osl-mail-folder="Archive">Archive</button>
+                <button type="button" data-osl-mail-folder="Trash">Trash</button>
+              </nav>
+              <section id="mailbox" aria-label="Seeded iCloud messages">
+                {rows}
+              </section>
+              <button type="button" id="next-page">Next page</button>
+              <script>
+                const pageSize = {page_size};
+                let page = 0;
+                const rows = Array.from(document.querySelectorAll('[data-osl-mail-message]'));
+                const next = document.getElementById('next-page');
+                const render = () => {{
+                  rows.forEach((row, index) => {{
+                    row.hidden = index < page * pageSize || index >= (page + 1) * pageSize;
+                  }});
+                  next.hidden = (page + 1) * pageSize >= rows.length;
+                }};
+                next.addEventListener('click', () => {{
+                  page += 1;
+                  render();
+                }});
+                render();
+              </script>
+            </main>
+        "#,
+        rows = rows,
+        page_size = TASK_3072_PAGE_SIZE,
+    )
+}
+
 fn run_task_3603_send(
     server: &LocalTestPage,
     progress_path: &std::path::Path,
@@ -677,7 +864,9 @@ impl LocalTestPage {
         Self::spawn_body(title, "")
     }
 
-    fn spawn_body(title: &'static str, body: &'static str) -> Self {
+    fn spawn_body(title: impl Into<String>, body: impl Into<String>) -> Self {
+        let title = title.into();
+        let body = body.into();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test page");
         listener
             .set_nonblocking(true)
@@ -691,7 +880,7 @@ impl LocalTestPage {
         let worker = thread::spawn(move || {
             while worker_running.load(Ordering::SeqCst) {
                 match listener.accept() {
-                    Ok((stream, _)) => serve_page(stream, title, body),
+                    Ok((stream, _)) => serve_page(stream, &title, &body),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(10));
                     }

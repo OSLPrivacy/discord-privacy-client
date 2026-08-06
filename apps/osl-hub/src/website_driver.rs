@@ -897,7 +897,7 @@ const MAILBOX_READ_EXPRESSION: &str = r#"
       time,
       sender,
       ownerMarker,
-      yours: ownerMarker === 'SCRUB-PR-MINE'
+      yours: /^(SCRUB-PR-MINE|SCRUB-IC-MINE)$/.test(ownerMarker)
     });
   }
   if (!folders.length) return null;

@@ -34,7 +34,7 @@ use crate::website_driver::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{path::PathBuf, sync::Mutex};
+use std::{path::PathBuf, sync::Mutex, thread, time::Duration};
 
 pub fn build_review_ui_identity_binding_verifier(
     core: &HubCoreState,
@@ -99,6 +99,47 @@ pub struct ProtonMailboxForScrubRead {
     pub folders: Vec<String>,
     pub sent: Vec<ProtonMailboxForScrubMessage>,
     pub inbox: Vec<ProtonMailboxForScrubMessage>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IcloudMailboxForScrubReadRequest {
+    pub page_url: String,
+}
+
+pub type IcloudMailboxForScrubMessage = ProtonMailboxForScrubMessage;
+pub type IcloudMailboxForScrubRead = ProtonMailboxForScrubRead;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IcloudMailboxPagingReadRequest {
+    pub page_url: String,
+    pub folder_id: String,
+    pub set_pause_ms: u64,
+    pub stop_during_page: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum MailPagingStopReason {
+    EndOfPlace,
+    StopRequested,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IcloudMailboxPagingRead {
+    pub folder_id: String,
+    pub message_count: usize,
+    pub page_count: usize,
+    pub stop_reason: MailPagingStopReason,
+    pub set_pause_ms: u64,
+    pub action_names: Vec<String>,
+    pub inter_action_gaps_ms: Vec<u64>,
+    pub stop_requested_during_run: bool,
+    pub stop_requested_during_page: Option<usize>,
+    pub stopped_on_page_number: Option<usize>,
+    pub one_screen_scrolls: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -375,13 +416,13 @@ where
     let sent = mailbox
         .messages
         .iter()
-        .filter(|message| proton_folder_eq(&message.folder, "Sent"))
+        .filter(|message| mail_folder_eq(&message.folder, "Sent"))
         .map(proton_message_from_website)
         .collect();
     let inbox = mailbox
         .messages
         .iter()
-        .filter(|message| proton_folder_eq(&message.folder, "Inbox"))
+        .filter(|message| mail_folder_eq(&message.folder, "Inbox"))
         .map(proton_message_from_website)
         .collect();
 
@@ -392,11 +433,161 @@ where
     })
 }
 
-fn proton_folder_eq(actual: &str, expected: &str) -> bool {
+pub fn read_icloud_mailbox_for_scrub_with_driver<D>(
+    driver: &mut D,
+    request: IcloudMailboxForScrubReadRequest,
+) -> Result<IcloudMailboxForScrubRead, String>
+where
+    D: WebsiteDriver,
+{
+    if request.page_url.trim().is_empty() {
+        return Err("iCloud mailbox reader requires an open service page".to_owned());
+    }
+
+    let page = driver
+        .find_page(WebsitePageRequest {
+            url: request.page_url,
+        })
+        .map_err(|error| error.to_string())?;
+    let mailbox = driver
+        .read_mailbox(&page)
+        .map_err(|error| error.to_string())?;
+
+    let sent = mailbox
+        .messages
+        .iter()
+        .filter(|message| mail_folder_eq(&message.folder, "Sent"))
+        .map(mail_message_from_website)
+        .collect();
+    let inbox = mailbox
+        .messages
+        .iter()
+        .filter(|message| mail_folder_eq(&message.folder, "Inbox"))
+        .map(mail_message_from_website)
+        .collect();
+
+    Ok(IcloudMailboxForScrubRead {
+        folders: mailbox.folders,
+        sent,
+        inbox,
+    })
+}
+
+pub fn read_icloud_mailbox_pages_for_scrub_with_driver<D>(
+    driver: &mut D,
+    request: IcloudMailboxPagingReadRequest,
+) -> Result<IcloudMailboxPagingRead, String>
+where
+    D: WebsiteDriver,
+{
+    if request.page_url.trim().is_empty() {
+        return Err("iCloud mailbox paging requires an open service page".to_owned());
+    }
+    if request.folder_id.trim().is_empty() {
+        return Err("iCloud mailbox paging requires a folder".to_owned());
+    }
+
+    let page = driver
+        .find_page(WebsitePageRequest {
+            url: request.page_url,
+        })
+        .map_err(|error| error.to_string())?;
+    let mut action_names = Vec::new();
+    let mut inter_action_gaps_ms = Vec::new();
+    let mut message_count = 0usize;
+    let mut page_count = 0usize;
+    let mut one_screen_scrolls = 0usize;
+
+    loop {
+        pace_shared_mail_action(
+            &action_names,
+            &mut inter_action_gaps_ms,
+            request.set_pause_ms,
+        );
+        action_names.push("open".to_owned());
+        let mailbox = driver
+            .read_mailbox(&page)
+            .map_err(|error| error.to_string())?;
+        page_count += 1;
+        message_count += mailbox
+            .messages
+            .iter()
+            .filter(|message| mail_folder_eq(&message.folder, &request.folder_id))
+            .count();
+
+        if request.stop_during_page == Some(page_count) {
+            return Ok(IcloudMailboxPagingRead {
+                folder_id: request.folder_id,
+                message_count,
+                page_count,
+                stop_reason: MailPagingStopReason::StopRequested,
+                set_pause_ms: request.set_pause_ms,
+                action_names,
+                inter_action_gaps_ms,
+                stop_requested_during_run: true,
+                stop_requested_during_page: Some(page_count),
+                stopped_on_page_number: Some(page_count),
+                one_screen_scrolls,
+            });
+        }
+
+        let controls = driver
+            .read_page(&page)
+            .map_err(|error| error.to_string())?
+            .controls;
+        if !controls.buttons.iter().any(|button| button == "Next page") {
+            return Ok(IcloudMailboxPagingRead {
+                folder_id: request.folder_id,
+                message_count,
+                page_count,
+                stop_reason: MailPagingStopReason::EndOfPlace,
+                set_pause_ms: request.set_pause_ms,
+                action_names,
+                inter_action_gaps_ms,
+                stop_requested_during_run: false,
+                stop_requested_during_page: request.stop_during_page,
+                stopped_on_page_number: None,
+                one_screen_scrolls,
+            });
+        }
+
+        pace_shared_mail_action(
+            &action_names,
+            &mut inter_action_gaps_ms,
+            request.set_pause_ms,
+        );
+        action_names.push("scroll".to_owned());
+        driver
+            .press_named_control(WebsiteNamedControl {
+                page: page.clone(),
+                name: "Next page".to_owned(),
+            })
+            .map_err(|error| error.to_string())?;
+        one_screen_scrolls += 1;
+    }
+}
+
+fn pace_shared_mail_action(
+    action_names: &[String],
+    inter_action_gaps_ms: &mut Vec<u64>,
+    set_pause_ms: u64,
+) {
+    if action_names.is_empty() {
+        return;
+    }
+    thread::sleep(Duration::from_millis(set_pause_ms));
+    inter_action_gaps_ms.push(set_pause_ms);
+}
+
+fn mail_folder_eq(actual: &str, expected: &str) -> bool {
     actual.trim().eq_ignore_ascii_case(expected)
 }
 
 fn proton_message_from_website(message: &WebsiteMailboxMessage) -> ProtonMailboxForScrubMessage {
+    mail_message_from_website(message)
+}
+
+fn mail_message_from_website(message: &WebsiteMailboxMessage) -> ProtonMailboxForScrubMessage {
     ProtonMailboxForScrubMessage {
         subject: message.subject.clone(),
         time: message.time.clone(),
@@ -956,6 +1147,8 @@ macro_rules! hub_tauri_commands {
             detach_default_browser_companion,
             read_protected_email_open_message,
             read_proton_mailbox_for_scrub,
+            read_icloud_mailbox_for_scrub,
+            read_icloud_mailbox_pages_for_scrub,
             read_protected_email_live_run_progress,
             host_native_app_window,
             native_app_takeover_requires_consent,
@@ -2133,6 +2326,8 @@ mod tauri_registration_surface_tests {
             &[
                 "read_protected_email_open_message",
                 "read_proton_mailbox_for_scrub",
+                "read_icloud_mailbox_for_scrub",
+                "read_icloud_mailbox_pages_for_scrub",
                 "read_protected_email_live_run_progress",
             ],
         );

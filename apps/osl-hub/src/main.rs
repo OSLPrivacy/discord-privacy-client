@@ -198,6 +198,7 @@ use native_discord_overlay::OverlaySessionState;
 use osl_privacy_hub::hub_command_surface::{
     build_review_ui_identity_binding_verifier, checked_browser_footprint_binding,
     checked_hosted_session_scan_flow, compose_erasure_request_for_user,
+    read_icloud_mailbox_for_scrub_with_driver, read_icloud_mailbox_pages_for_scrub_with_driver,
     read_protected_email_live_run_progress_with_driver,
     read_protected_email_open_message_with_driver, read_proton_mailbox_for_scrub_with_driver,
     require_native_discord_product_send_authority,
@@ -205,7 +206,8 @@ use osl_privacy_hub::hub_command_surface::{
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
     start_autoscrub_reviewed_run_inner, with_allowed_place_before_incoming_read,
     with_native_discord_product_send_authority, BrowserFootprintConsentRequest, CheckedHost,
-    DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
+    DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput, IcloudMailboxForScrubRead,
+    IcloudMailboxForScrubReadRequest, IcloudMailboxPagingRead, IcloudMailboxPagingReadRequest,
     NativeDiscordProductSendAuthority, ProtectedEmailLiveRunProgressRequest,
     ProtectedEmailOpenMessageRead, ProtectedEmailOpenMessageReadRequest, ProtonMailboxForScrubRead,
     ProtonMailboxForScrubReadRequest,
@@ -2397,6 +2399,46 @@ async fn read_proton_mailbox_for_scrub(
     })
     .await
     .map_err(|_| "The Proton mailbox reader was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn read_icloud_mailbox_for_scrub(
+    caller: tauri::WebviewWindow,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    request: IcloudMailboxForScrubReadRequest,
+) -> Result<IcloudMailboxForScrubRead, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read iCloud mailbox summaries".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut driver = RealBrowserWebsiteDriver::launch().map_err(|error| error.to_string())?;
+        read_icloud_mailbox_for_scrub_with_driver(&mut driver, request)
+    })
+    .await
+    .map_err(|_| "The iCloud mailbox reader was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn read_icloud_mailbox_pages_for_scrub(
+    caller: tauri::WebviewWindow,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    request: IcloudMailboxPagingReadRequest,
+) -> Result<IcloudMailboxPagingRead, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read iCloud mailbox pages".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut driver = RealBrowserWebsiteDriver::launch().map_err(|error| error.to_string())?;
+        read_icloud_mailbox_pages_for_scrub_with_driver(&mut driver, request)
+    })
+    .await
+    .map_err(|_| "The iCloud mailbox page reader was interrupted".to_owned())?
 }
 
 #[tauri::command]
