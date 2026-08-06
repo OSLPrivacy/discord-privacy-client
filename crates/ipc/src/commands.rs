@@ -11,7 +11,7 @@ use crate::{IpcError, IpcResult};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use crypto::{aead, ed25519, hkdf, random, x25519};
-use keystore::{generate_identity, select_best_sealer, KeyServerClient};
+use keystore::{generate_identity, select_best_sealer, BurnScope, KeyServerClient};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -3799,8 +3799,34 @@ pub fn cmd_osl_burn_sender_message_records_both_sides(
 ) -> Result<BurnSenderMessageRecordsBothSidesDto, String> {
     record_activity_on_command_entry();
     validate_selected_sender_message_records(&discord_message_ids)?;
+    let identity = state
+        .identity_slot()
+        .clone()
+        .ok_or_else(|| "OSL: both-sides burn requires an installed identity".to_string())?;
+    let keyserver = state
+        .keyserver_slot()
+        .clone()
+        .ok_or_else(|| "OSL: both-sides burn requires keyserver authority".to_string())?;
     let local = remove_sender_message_records(state, &discord_message_ids)?;
-    let remote_removal_count = 0usize;
+    let mut remote_removal_count = 0usize;
+    for message_id in &discord_message_ids {
+        let response = keyserver
+            .burn(
+                &identity,
+                &BurnScope::Single {
+                    content_id: message_id.clone(),
+                },
+            )
+            .map_err(|error| format!("OSL: wrapped-key burn: {error}"))?;
+        if response.scope != "single" {
+            return Err(format!(
+                "OSL: wrapped-key burn returned unexpected scope: {}",
+                response.scope
+            ));
+        }
+        remote_removal_count = remote_removal_count
+            .saturating_add(usize::try_from(response.deleted_count).unwrap_or(usize::MAX));
+    }
 
     Ok(BurnSenderMessageRecordsBothSidesDto {
         requested_count: local.requested_count,
