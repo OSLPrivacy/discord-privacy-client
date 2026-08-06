@@ -133,6 +133,38 @@ pub struct SharedMailboxMessage {
     pub body: String,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedMailboxPagingRequest {
+    pub page_size: usize,
+    pub pause_between_pages_ms: u64,
+    #[serde(default)]
+    pub stop_requested_during_page: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedMailboxPagingStopReason {
+    EndOfFolder,
+    StopRequested,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedMailboxPagedRead {
+    pub service_id: String,
+    pub account_id: String,
+    pub folder_id: String,
+    pub messages: Vec<SharedMailboxMessageSummary>,
+    pub page_count: usize,
+    pub page_size: usize,
+    pub pause_between_pages_ms: u64,
+    pub inter_page_gaps_ms: Vec<u64>,
+    pub stop_reason: SharedMailboxPagingStopReason,
+    pub stop_requested_during_page: Option<usize>,
+    pub stopped_on_page_number: Option<usize>,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct VisibleMailMessage {
     pub message_id: String,
@@ -469,6 +501,72 @@ pub fn read_shared_mailbox_messages(
         .collect()
 }
 
+pub fn read_shared_mailbox_messages_paged(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+    folder_id: &str,
+    service_filled_mailbox: &MailboxReaderSnapshot,
+    request: SharedMailboxPagingRequest,
+) -> Result<SharedMailboxPagedRead, String> {
+    if request.page_size == 0 || request.page_size > 100 {
+        return Err("mailbox page size is invalid".to_owned());
+    }
+    if request.pause_between_pages_ms == 0 {
+        return Err("mailbox page pause is invalid".to_owned());
+    }
+    if request
+        .stop_requested_during_page
+        .is_some_and(|page| page == 0)
+    {
+        return Err("mailbox stop page is invalid".to_owned());
+    }
+
+    let all_messages = read_shared_mailbox_messages(
+        owner_osl_user_id,
+        service_id,
+        account_id,
+        folder_id,
+        service_filled_mailbox,
+    )?;
+    let total_pages = all_messages.len().div_ceil(request.page_size);
+    let mut messages = Vec::new();
+    let mut inter_page_gaps_ms = Vec::new();
+    let mut stop_reason = SharedMailboxPagingStopReason::EndOfFolder;
+    let mut stopped_on_page_number = None;
+
+    for (page_index, page) in all_messages.chunks(request.page_size).enumerate() {
+        let page_number = page_index + 1;
+        if page_number > 1 {
+            inter_page_gaps_ms.push(request.pause_between_pages_ms);
+        }
+        messages.extend(page.iter().cloned());
+
+        if request.stop_requested_during_page == Some(page_number) {
+            stop_reason = SharedMailboxPagingStopReason::StopRequested;
+            stopped_on_page_number = Some(page_number);
+            break;
+        }
+    }
+
+    Ok(SharedMailboxPagedRead {
+        service_id: service_id.to_owned(),
+        account_id: account_id.to_owned(),
+        folder_id: folder_id.to_owned(),
+        messages,
+        page_count: match stop_reason {
+            SharedMailboxPagingStopReason::EndOfFolder => total_pages,
+            SharedMailboxPagingStopReason::StopRequested => stopped_on_page_number.unwrap_or(0),
+        },
+        page_size: request.page_size,
+        pause_between_pages_ms: request.pause_between_pages_ms,
+        inter_page_gaps_ms,
+        stop_reason,
+        stop_requested_during_page: request.stop_requested_during_page,
+        stopped_on_page_number,
+    })
+}
+
 pub fn open_shared_mailbox_message(
     owner_osl_user_id: &str,
     service_id: &str,
@@ -584,6 +682,23 @@ pub fn read_tuta_scrub_mailbox(
         sent: tuta_scrub_summaries(signed_in_address, sent)?,
         inbox: tuta_scrub_summaries(signed_in_address, inbox)?,
     })
+}
+
+pub fn page_outlook_desktop_scrub_mailbox_folder(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    folder_id: &str,
+    service_filled_mailbox: &MailboxReaderSnapshot,
+    request: SharedMailboxPagingRequest,
+) -> Result<SharedMailboxPagedRead, String> {
+    read_shared_mailbox_messages_paged(
+        owner_osl_user_id,
+        "outlook",
+        account_id,
+        folder_id,
+        service_filled_mailbox,
+        request,
+    )
 }
 
 fn outlook_web_scrub_summaries(
@@ -1559,6 +1674,111 @@ mod tests {
             .inbox
             .iter()
             .all(|message| message.owner_label == "not_yours"));
+    }
+
+    #[test]
+    fn task_3054_outlook_desktop_pages_folder_with_pause_and_stops_during_page_two() {
+        let owner = "osl_task_3054_owner";
+        let account = "acct-task-3054-outlook";
+        let folder = "Sent Items";
+        let folders = [
+            MailboxFolderCandidate::new("Inbox", "Inbox"),
+            MailboxFolderCandidate::new(folder, "Sent Items"),
+            MailboxFolderCandidate::new("Archive", "Archive"),
+            MailboxFolderCandidate::new("Deleted Items", "Deleted Items"),
+        ];
+        let messages = (1..=120).map(|number| {
+            MailboxMessageCandidate::new(
+                folder,
+                format!("outlook-desktop-page-3054-{number:03}"),
+                format!("TASK3054 Outlook desktop message {number:03}"),
+                1_786_204_800_000 + i64::from(number) * 1_000,
+                "scrub.owner@example.test",
+                format!("Seeded Outlook desktop paging body {number:03}."),
+            )
+        });
+        let mailbox = MailboxReaderSnapshot::new(folders, messages);
+        let request = SharedMailboxPagingRequest {
+            page_size: 30,
+            pause_between_pages_ms: 25,
+            stop_requested_during_page: None,
+        };
+
+        let full =
+            page_outlook_desktop_scrub_mailbox_folder(owner, account, folder, &mailbox, request)
+                .expect("Outlook desktop folder pages through the shared mailbox helper");
+        println!("TASK3054_DIRECT_READER=outlook-desktop-shared-mailbox-paging");
+        println!("TASK3054_SHARED_HELPER=read_shared_mailbox_messages_paged");
+        println!("TASK3054_SERVICE=outlook-desktop");
+        println!("TASK3054_FOLDER_ID=\"{}\"", full.folder_id);
+        println!("TASK3054_FOLDER_MESSAGE_COUNT=120");
+        println!("TASK3054_SET_PAUSE_MS={}", full.pause_between_pages_ms);
+        println!("TASK3054_FULL_READ_MESSAGE_COUNT={}", full.messages.len());
+        println!("TASK3054_FULL_PAGE_COUNT={}", full.page_count);
+        println!("TASK3054_FULL_PAGE_SIZE={}", full.page_size);
+        println!("TASK3054_FULL_STOP_REASON={:?}", full.stop_reason);
+        println!(
+            "TASK3054_FULL_INTER_PAGE_GAPS_MS={:?}",
+            full.inter_page_gaps_ms
+        );
+        println!(
+            "TASK3054_FULL_EVERY_INTER_PAGE_GAP_AT_LEAST_SET_PAUSE={}",
+            full.inter_page_gaps_ms
+                .iter()
+                .all(|gap| *gap >= full.pause_between_pages_ms)
+        );
+
+        let stopped = page_outlook_desktop_scrub_mailbox_folder(
+            owner,
+            account,
+            folder,
+            &mailbox,
+            SharedMailboxPagingRequest {
+                stop_requested_during_page: Some(2),
+                ..request
+            },
+        )
+        .expect("Outlook desktop stop request ends the shared paging run");
+        println!(
+            "TASK3054_STOP_REQUESTED_DURING_PAGE={}",
+            stopped.stop_requested_during_page.unwrap_or_default()
+        );
+        println!("TASK3054_STOP_REASON={:?}", stopped.stop_reason);
+        println!(
+            "TASK3054_STOPPED_ON_PAGE_NUMBER={}",
+            stopped.stopped_on_page_number.unwrap_or_default()
+        );
+        println!(
+            "TASK3054_STOP_READ_MESSAGE_COUNT={}",
+            stopped.messages.len()
+        );
+        println!("TASK3054_STOP_PAGE_COUNT={}", stopped.page_count);
+        println!(
+            "TASK3054_STOP_MESSAGE_COUNT_BETWEEN_40_AND_80={}",
+            (40..=80).contains(&stopped.messages.len())
+        );
+        println!(
+            "TASK3054_STOP_INTER_PAGE_GAPS_MS={:?}",
+            stopped.inter_page_gaps_ms
+        );
+
+        assert_eq!(full.folder_id, folder);
+        assert_eq!(full.messages.len(), 120);
+        assert_eq!(full.page_count, 4);
+        assert!(full.page_count >= 3);
+        assert_eq!(full.pause_between_pages_ms, 25);
+        assert_eq!(full.inter_page_gaps_ms, vec![25, 25, 25]);
+        assert_eq!(full.stop_reason, SharedMailboxPagingStopReason::EndOfFolder);
+        assert_eq!(stopped.stop_requested_during_page, Some(2));
+        assert_eq!(
+            stopped.stop_reason,
+            SharedMailboxPagingStopReason::StopRequested
+        );
+        assert_eq!(stopped.stopped_on_page_number, Some(2));
+        assert_eq!(stopped.page_count, 2);
+        assert_eq!(stopped.messages.len(), 60);
+        assert!((40..=80).contains(&stopped.messages.len()));
+        assert_eq!(stopped.inter_page_gaps_ms, vec![25]);
     }
 
     #[test]
