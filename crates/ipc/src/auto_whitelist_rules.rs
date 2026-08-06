@@ -38,7 +38,7 @@ impl FromStr for AutoWhitelistRule {
             "always" => Ok(Self::Always),
             "only if a friend" => Ok(Self::OnlyIfFriend),
             _ => Err(format!(
-                "OSL: unknown auto-whitelist rule {raw:?}; valid choices: {}",
+                "OSL: unknown auto-rule choice {raw:?}; valid choices: {}",
                 Self::VALID_CHOICES
                     .iter()
                     .map(|rule| rule.as_label())
