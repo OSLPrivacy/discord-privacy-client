@@ -177,7 +177,7 @@ import {
   type OslMailStatus,
   type OslMailThreadSummary,
 } from "./osl-mail-adapter";
-import { oslMailViewMarkup, type OslMailPane } from "./osl-mail-view";
+import { oslMailViewMarkup, type OslMailComposeDraft, type OslMailPane } from "./osl-mail-view";
 import { oslServersViewMarkup } from "./osl-servers-view";
 export {
   autoscrubUnattendedContractGate,
@@ -573,12 +573,14 @@ let oslMailStatus: OslMailStatus | null = null;
 let oslMailThreads: OslMailThreadSummary[] = [];
 let oslMailActiveThread: OslMailRetrievedThread | null = null;
 let oslMailPane: OslMailPane = "inbox";
+let oslMailComposeDraft: OslMailComposeDraft = { to: "", subject: "", body: "" };
 let oslMailNotifications = localStorage.getItem(oslMailNotificationsStorageKey) !== "false";
 let oslMailDeleteReceipt: OslMailDeleteReceipt | null = null;
 let oslMailSendReceipt: OslMailSendReceipt | null = null;
 let oslMailBurnReceipt: OslMailBurnReceipt | null = null;
 let oslMailError: string | null = null;
 let oslMailThreadSyncUnavailable = false;
+let escapeAuditSendAttempts = 0;
 let appNotifications: AppNotification[] | null = null;
 let notificationsEnabled = false;
 let notificationAppPreferences: Partial<Record<ServiceId, boolean>> = {};
@@ -5121,6 +5123,7 @@ function oslMailContent(): string {
     burnReceipt: oslMailBurnReceipt,
     error: oslMailError,
     threadSyncUnavailable: oslMailThreadSyncUnavailable,
+    composeDraft: oslMailComposeDraft,
   });
 }
 
@@ -5157,9 +5160,11 @@ async function provisionOslMailFromProfile(): Promise<void> {
 }
 
 async function sendOslMailForm(form: HTMLFormElement): Promise<void> {
+  escapeAuditSendAttempts += 1;
   const recipient = form.querySelector<HTMLInputElement>("#osl-mail-to")?.value ?? "";
   const subject = form.querySelector<HTMLInputElement>("#osl-mail-subject")?.value ?? "";
   const body = form.querySelector<HTMLTextAreaElement>("#osl-mail-body")?.value ?? "";
+  oslMailComposeDraft = { to: recipient, subject, body };
   if (!recipient.endsWith("@oslprivacy.com")) {
     oslMailError = "External outbound mail is unavailable in v1";
     render();
@@ -5167,6 +5172,7 @@ async function sendOslMailForm(form: HTMLFormElement): Promise<void> {
   }
   oslMailSendReceipt = await sendOslMail(recipient, subject, body);
   oslMailError = oslMailSendReceipt ? null : "Send was refused";
+  if (oslMailSendReceipt) oslMailComposeDraft = { to: "", subject: "", body: "" };
   if (route === "osl-mail") render();
 }
 
@@ -6372,6 +6378,49 @@ function closeOwnedConfirmation(): void {
   render();
 }
 
+function closeTopmostClosableLayerForEscape(): string | null {
+  if (ownedConfirmation) {
+    closeOwnedConfirmation();
+    return "owned-confirmation-dialog";
+  }
+  if (burnDialogOpen) {
+    closeBurnDialog();
+    return "burn-dialog";
+  }
+  if (scrubReviewOpen) {
+    scrubReviewOpen = false;
+    render();
+    return "scrub-review-dialog";
+  }
+  if (whitelistRosterOpen) {
+    whitelistRosterOpen = false;
+    render();
+    return "whitelist-roster-dialog";
+  }
+  if (nativeProtectPickerOpen) {
+    nativeProtectPickerOpen = false;
+    render();
+    return "native-protect-friend-dialog";
+  }
+  if (oslChatSettingsPersonId) {
+    oslChatSettingsPersonId = null;
+    render();
+    return "osl-chat-settings-dialog";
+  }
+  if (friendsDialogOpen) {
+    friendsDialogOpen = false;
+    friendsDialogPage = 0;
+    render();
+    return "friends-dialog";
+  }
+  const dialog = document.querySelector<HTMLDialogElement>("dialog[open]");
+  if (dialog) {
+    dialog.close();
+    return dialog.id || "dialog";
+  }
+  return null;
+}
+
 function bindOwnedConfirmation(): void {
   if (!ownedConfirmation) return;
   document.querySelectorAll<HTMLButtonElement>("[data-close-owned-confirmation]").forEach((button) => button.addEventListener("click", closeOwnedConfirmation));
@@ -7573,6 +7622,16 @@ function bindWorkspace(): void {
     event.preventDefault();
     void sendOslMailForm(event.currentTarget as HTMLFormElement);
   });
+  const syncOslMailComposeDraft = (): void => {
+    oslMailComposeDraft = {
+      to: document.querySelector<HTMLInputElement>("#osl-mail-to")?.value ?? oslMailComposeDraft.to,
+      subject: document.querySelector<HTMLInputElement>("#osl-mail-subject")?.value ?? oslMailComposeDraft.subject,
+      body: document.querySelector<HTMLTextAreaElement>("#osl-mail-body")?.value ?? oslMailComposeDraft.body,
+    };
+  };
+  document.querySelector<HTMLInputElement>("#osl-mail-to")?.addEventListener("input", syncOslMailComposeDraft);
+  document.querySelector<HTMLInputElement>("#osl-mail-subject")?.addEventListener("input", syncOslMailComposeDraft);
+  document.querySelector<HTMLTextAreaElement>("#osl-mail-body")?.addEventListener("input", syncOslMailComposeDraft);
   document.querySelector<HTMLFormElement>("#osl-mail-burn-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget as HTMLFormElement;
@@ -8578,6 +8637,7 @@ async function openPendingOslChatAttachment(attachmentId: string): Promise<void>
 
 async function sendOslChat(event: SubmitEvent): Promise<void> {
   event.preventDefault();
+  escapeAuditSendAttempts += 1;
   const context = activeOslChatContext;
   const personId = activeOslChatPersonId;
   const draft = oslChatDraft;
@@ -9929,6 +9989,10 @@ if (!runningUnderVitest) {
     event.preventDefault();
     runDesktopShortcutAction();
   });
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (closeTopmostClosableLayerForEscape()) event.preventDefault();
+  });
 }
 let nativeHostResizeFrame = 0;
 
@@ -10166,6 +10230,8 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   oslMailDeleteReceipt = null;
   oslMailSendReceipt = null;
   oslMailBurnReceipt = null;
+  oslMailComposeDraft = { to: "", subject: "", body: "" };
+  escapeAuditSendAttempts = 0;
   services = patch.services ?? [];
   linkedServicesChecked = patch.servicesChecked ?? patch.services !== undefined;
   hubPeople = (patch.hubPeople ?? []).map(testHubPerson);
@@ -10343,6 +10409,131 @@ export const __oslHubUiTest = {
   },
   handleUnhandledRejection(event: PromiseRejectionEvent): void {
     handleUnhandledRejection(event);
+  },
+  escapeAuditComposerScreens(): readonly string[] {
+    return ["osl-chat", "osl-mail-compose"];
+  },
+  escapeAuditDialogs(): readonly string[] {
+    return [
+      "friends-dialog",
+      "osl-chat-settings-dialog",
+      "whitelist-roster-dialog",
+      "native-protect-friend-dialog",
+      "scrub-review-dialog",
+      "burn-dialog",
+      "owned-confirmation-dialog",
+      "update-dialog",
+    ];
+  },
+  escapeAuditTypeHalfMessage(screen: "osl-chat" | "osl-mail-compose", halfMessage: string): void {
+    if (screen === "osl-chat") {
+      const person = testHubPerson({
+        personId: "escape-audit-peer",
+        alias: "Escape Audit Peer",
+        oslUserId: "escape-audit-osl-user",
+        safetyNumber: "1111 2222",
+        safetyNumberVerified: true,
+      });
+      route = "osl-chat";
+      hubPeople = [person];
+      activeOslChatPersonId = person.personId;
+      activeOslChatContext = {
+        contextToken: "escape-audit-chat-context",
+        serviceId: "osl-chat",
+        accountId: "local",
+        personId: person.personId,
+        peerOslUserId: person.oslUserId,
+        scopeApproved: true,
+      };
+      oslChatMessages.clear();
+      setOslChatDraft(halfMessage);
+      return;
+    }
+    route = "osl-mail";
+    oslMailPane = "compose";
+    oslMailLoading = false;
+    oslMailStatus = {
+      available: true,
+      provisioned: true,
+      address: "escape-audit@oslprivacy.com",
+      unreadCount: 0,
+      retentionSeconds: 86_400,
+    };
+    oslMailComposeDraft = {
+      to: "reader@oslprivacy.com",
+      subject: "Escape audit",
+      body: halfMessage,
+    };
+  },
+  escapeAuditDraft(screen: "osl-chat" | "osl-mail-compose"): string {
+    return screen === "osl-chat" ? oslChatDraft : oslMailComposeDraft.body;
+  },
+  escapeAuditOpenDialog(dialog: string): void {
+    if (!hubPeople.length) {
+      hubPeople = [testHubPerson({
+        personId: "escape-audit-peer",
+        alias: "Escape Audit Peer",
+        oslUserId: "escape-audit-osl-user",
+        safetyNumber: "1111 2222",
+        safetyNumberVerified: true,
+      })];
+    }
+    const person = hubPeople[0];
+    if (dialog === "friends-dialog") {
+      friendsDialogOpen = true;
+      friendsDialogPage = 0;
+    } else if (dialog === "osl-chat-settings-dialog") {
+      route = "osl-chat";
+      oslChatSettingsPersonId = person.personId;
+    } else if (dialog === "whitelist-roster-dialog") {
+      whitelistRosterOpen = true;
+    } else if (dialog === "native-protect-friend-dialog") {
+      activeNativeHostId = "discord";
+      activeNativeHostMode = "dedicated";
+      nativeProtectPickerOpen = true;
+    } else if (dialog === "scrub-review-dialog") {
+      scrubReviewOpen = true;
+      scrubReviewPage = 0;
+    } else if (dialog === "burn-dialog") {
+      burnDialogOpen = true;
+      burnScope = "chat";
+      burnResult = null;
+    } else if (dialog === "owned-confirmation-dialog") {
+      ownedConfirmation = { kind: "verifyFriend", personId: person.personId };
+      ownedConfirmationBusy = false;
+      ownedConfirmationError = "";
+    } else if (dialog === "update-dialog") {
+      updateStatus = { state: "available", current: "0.0.0", next: "0.0.1", notes: "Escape audit" };
+    } else {
+      throw new Error(`unknown Escape audit dialog: ${dialog}`);
+    }
+  },
+  escapeAuditPressEscape(): string | null {
+    return closeTopmostClosableLayerForEscape();
+  },
+  escapeAuditState(): {
+    route: Route;
+    oslChatDraft: string;
+    oslMailBody: string;
+    openLayers: string[];
+    sendAttempts: number;
+  } {
+    const openLayers = [
+      friendsDialogOpen ? "friends-dialog" : "",
+      oslChatSettingsPersonId ? "osl-chat-settings-dialog" : "",
+      whitelistRosterOpen ? "whitelist-roster-dialog" : "",
+      nativeProtectPickerOpen ? "native-protect-friend-dialog" : "",
+      scrubReviewOpen ? "scrub-review-dialog" : "",
+      burnDialogOpen ? "burn-dialog" : "",
+      ownedConfirmation ? "owned-confirmation-dialog" : "",
+    ].filter(Boolean);
+    return {
+      route,
+      oslChatDraft,
+      oslMailBody: oslMailComposeDraft.body,
+      openLayers,
+      sendAttempts: escapeAuditSendAttempts,
+    };
   },
   /** Run one OSL Chat delivery tick, exactly as the cadence would. */
   deliverOslChats(): Promise<void> {
