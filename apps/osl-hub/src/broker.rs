@@ -1027,6 +1027,17 @@ pub struct HubContextBurnChoice {
     pub scope: ScopeInput,
 }
 
+pub const OSL_CHAT_BOTH_SIDES_BURN_CHOICE: &str = "Both Sides";
+pub const OSL_CHAT_BOTH_SIDES_BURNED: &str = "burned";
+pub const OSL_CHAT_BOTH_SIDES_ALREADY_GONE: &str = "already gone";
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct OslChatBothSidesBurnResult {
+    pub choice: &'static str,
+    pub rows_destroyed: usize,
+    pub status: &'static str,
+}
+
 impl core::fmt::Debug for ManualPeerBurnTarget {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ManualPeerBurnTarget")
@@ -5615,6 +5626,43 @@ pub fn load_osl_chat_history(
         scope_storage_key(&manual.scope)?,
         Some(200),
     )
+}
+
+pub fn burn_active_osl_chat_both_sides(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    context_token: &str,
+) -> Result<OslChatBothSidesBurnResult, String> {
+    if broker.active_osl_chat_context_token()? != context_token {
+        return Err("OSL Chat burn requires the active conversation".to_owned());
+    }
+    let manual = broker.manual_peer_for(context_token)?;
+    if manual.service_id != "osl-chat" || manual.account_id != "osl-main" {
+        return Err("OSL Chat burn requires a first-party OSL Chat conversation".to_owned());
+    }
+    let channel_id = scope_storage_key(&manual.scope)?;
+    let rows_destroyed = core
+        .osl
+        .message_store
+        .lock()
+        .map_err(|_| "OSL message store is unavailable".to_owned())?
+        .as_ref()
+        .map(|store| {
+            store
+                .delete_messages_in_channel(&channel_id)
+                .map_err(|_| "OSL Chat history could not be securely deleted".to_owned())
+        })
+        .transpose()?
+        .unwrap_or(0);
+    Ok(OslChatBothSidesBurnResult {
+        choice: OSL_CHAT_BOTH_SIDES_BURN_CHOICE,
+        rows_destroyed,
+        status: if rows_destroyed == 0 {
+            OSL_CHAT_BOTH_SIDES_ALREADY_GONE
+        } else {
+            OSL_CHAT_BOTH_SIDES_BURNED
+        },
+    })
 }
 
 pub fn begin_native_overlay_attachment(

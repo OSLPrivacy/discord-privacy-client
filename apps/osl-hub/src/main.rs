@@ -7198,14 +7198,23 @@ async fn burn_active_hub_context(
         let core = app.state::<HubCoreState>();
         let _active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
         let result = if let Some(manual) = broker_state.manual_burn_target(&context_token)? {
-            security::burn_manual_peer_scope(
+            let is_osl_chat = manual.service_id == "osl-chat" && manual.account_id == "osl-main";
+            let mut result = security::burn_manual_peer_scope(
                 &core,
                 &app.state::<HubSecurityState>(),
                 &manual.service_id,
                 &manual.account_id,
                 &manual.person_id,
                 manual.scope,
-            )?
+            )?;
+            if is_osl_chat {
+                let chat_burn =
+                    broker::burn_active_osl_chat_both_sides(&core, &broker_state, &context_token)?;
+                result.rows_destroyed = result
+                    .rows_destroyed
+                    .saturating_add(chat_burn.rows_destroyed);
+            }
+            result
         } else {
             let scope_input = broker_state.scope_for_context(&context_token)?;
             let known_channel_ids = scope_input.channel_id.clone().into_iter().collect();
