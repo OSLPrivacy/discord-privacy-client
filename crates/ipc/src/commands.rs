@@ -3276,6 +3276,8 @@ fn persist_decrypted(
         sender_osl_user_id,
         plaintext: plaintext.to_string(),
         decrypted_at: now,
+        reply_parent_id: None,
+        edit_revision: 1,
         burned: false,
     };
     if let Err(e) = store.put(&msg) {
@@ -3361,7 +3363,8 @@ pub fn cmd_osl_persist_outbound(
     channel_id: String,
     discord_message_id: String,
     plaintext: String,
-) -> Result<(), String> {
+    reply_parent_id: Option<String>,
+) -> Result<Option<StoredMessageDto>, String> {
     record_activity_on_command_entry();
     let self_id = {
         let guard = state.identity_slot();
@@ -3372,7 +3375,7 @@ pub fn cmd_osl_persist_outbound(
                     discord_message_id = %crate::log_id::log_id(&discord_message_id),
                     "OSL: persist_outbound: identity not loaded; skipping"
                 );
-                return Ok(());
+                return Ok(None);
             }
         }
     };
@@ -3385,7 +3388,7 @@ pub fn cmd_osl_persist_outbound(
             discord_message_id = %crate::log_id::log_id(&discord_message_id),
             "OSL: persist_outbound: message_store disabled; skipping"
         );
-        return Ok(());
+        return Ok(None);
     };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -3398,6 +3401,8 @@ pub fn cmd_osl_persist_outbound(
         sender_osl_user_id: self_id,
         plaintext,
         decrypted_at: now,
+        reply_parent_id,
+        edit_revision: 1,
         burned: false,
     };
     if let Err(e) = store.put(&msg) {
@@ -3406,8 +3411,12 @@ pub fn cmd_osl_persist_outbound(
             error = %e,
             "OSL: persist_outbound: store.put failed (non-fatal)"
         );
+        return Ok(None);
     }
-    Ok(())
+    store
+        .get(&discord_message_id)
+        .map(|row| row.map(StoredMessageDto::from))
+        .map_err(|e| format!("OSL: persist_outbound get: {e}"))
 }
 
 /// Persist plaintext already authenticated by a trusted first-party OSL Chat
@@ -3450,6 +3459,8 @@ pub fn cmd_osl_persist_inbound(
             sender_osl_user_id,
             plaintext,
             decrypted_at: now,
+            reply_parent_id: None,
+            edit_revision: 1,
             burned: false,
         })
         .map_err(|error| format!("OSL: first-party chat history: {error}"))
@@ -3467,6 +3478,8 @@ pub struct StoredMessageDto {
     pub sender_osl_user_id: String,
     pub plaintext: String,
     pub decrypted_at: i64,
+    pub reply_parent_id: Option<String>,
+    pub edit_revision: i64,
     pub burned: bool,
 }
 
@@ -3479,6 +3492,8 @@ impl From<StoredMessage> for StoredMessageDto {
             sender_osl_user_id: m.sender_osl_user_id,
             plaintext: m.plaintext,
             decrypted_at: m.decrypted_at,
+            reply_parent_id: m.reply_parent_id,
+            edit_revision: m.edit_revision,
             burned: m.burned,
         }
     }
@@ -3638,16 +3653,16 @@ pub struct AttachmentCacheDto {
 /// 4. Load listener calls this IPC with the *plaintext the
 ///    user typed* and the message_id from the URL.
 ///
-/// On a known id: looks up the existing row to preserve
-/// channel_id + sender_discord_id + sender_osl_user_id, then
-/// upserts with `new_plaintext` and a fresh `decrypted_at`
-/// (treating the edit time as the new "decrypted at" since
-/// that's the moment the local store learned this plaintext).
+/// On a known id owned by the loaded sender identity: looks up the existing
+/// row to preserve channel_id + sender_discord_id + sender_osl_user_id, then
+/// upserts with `new_plaintext` and a fresh `decrypted_at` (treating the edit
+/// time as the new "decrypted at" since that's the moment the local store
+/// learned this plaintext).
 /// `burned` is preserved as `false` — burned rows are filtered
 /// from `store.get` so we'd already be on the unknown-id path
 /// for those.
 ///
-/// On an unknown id: idempotent no-op returning `Ok(())`. The
+/// On an unknown id: idempotent no-op returning `Ok(None)`. The
 /// 2-arg signature can't construct a complete row without
 /// channel/sender metadata, and the receive observer's normal
 /// decrypt-and-persist path handles edit-before-decrypt
@@ -3658,21 +3673,25 @@ pub struct AttachmentCacheDto {
 /// to persist the same edit through the regular path.
 ///
 /// Persistence is disabled when `state.message_store` is
-/// `None`; we return `Ok(())` for the same reason
+/// `None`; we return `Ok(None)` for the same reason
 /// `cmd_osl_burn_message` does.
 pub fn cmd_osl_persist_edit(
     state: &AppState,
     discord_message_id: String,
     new_plaintext: String,
     channel_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<Option<StoredMessageDto>, String> {
     record_activity_on_command_entry();
+    let self_id = {
+        let guard = state.identity_slot();
+        guard.as_ref().map(|id| id.user_id.clone())
+    };
     let guard = state
         .message_store
         .lock()
         .expect("message_store mutex poisoned");
     let Some(store) = guard.as_ref() else {
-        return Ok(());
+        return Ok(None);
     };
     let existing = store
         .get(&discord_message_id)
@@ -3682,15 +3701,25 @@ pub fn cmd_osl_persist_edit(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let updated = match existing {
-        Some(prior) => StoredMessage {
-            discord_message_id: prior.discord_message_id,
-            channel_id: prior.channel_id,
-            sender_discord_id: prior.sender_discord_id,
-            sender_osl_user_id: prior.sender_osl_user_id,
-            plaintext: new_plaintext,
-            decrypted_at: now,
-            burned: false,
-        },
+        Some(prior) => {
+            let Some(self_id) = self_id.as_deref() else {
+                return Ok(None);
+            };
+            if prior.sender_discord_id != self_id {
+                return Ok(None);
+            }
+            StoredMessage {
+                discord_message_id: prior.discord_message_id,
+                channel_id: prior.channel_id,
+                sender_discord_id: prior.sender_discord_id,
+                sender_osl_user_id: prior.sender_osl_user_id,
+                plaintext: new_plaintext,
+                decrypted_at: now,
+                reply_parent_id: prior.reply_parent_id,
+                edit_revision: prior.edit_revision,
+                burned: false,
+            }
+        }
         None => {
             // Probe-2 fix: was a silent no-op when row missing, which
             // bricked editing of any outbound message whose row had
@@ -3701,14 +3730,10 @@ pub fn cmd_osl_persist_edit(
             // Without `channel_id` we lack a complete row — preserve
             // the historical idempotent no-op.
             let Some(channel_id) = channel_id else {
-                return Ok(());
+                return Ok(None);
             };
-            let self_id = {
-                let id_guard = state.identity_slot();
-                let Some(id) = id_guard.as_ref() else {
-                    return Ok(());
-                };
-                id.user_id.clone()
+            let Some(self_id) = self_id.clone() else {
+                return Ok(None);
             };
             StoredMessage {
                 discord_message_id: discord_message_id.clone(),
@@ -3717,6 +3742,8 @@ pub fn cmd_osl_persist_edit(
                 sender_osl_user_id: self_id,
                 plaintext: new_plaintext,
                 decrypted_at: now,
+                reply_parent_id: None,
+                edit_revision: 1,
                 burned: false,
             }
         }
@@ -3724,7 +3751,10 @@ pub fn cmd_osl_persist_edit(
     store
         .put(&updated)
         .map_err(|e| format!("OSL: persist_edit put: {e}"))?;
-    Ok(())
+    store
+        .get(&discord_message_id)
+        .map(|row| row.map(StoredMessageDto::from))
+        .map_err(|e| format!("OSL: persist_edit get updated: {e}"))
 }
 
 /// Layer 10 / Phase 5b2 IPC entry point: mark a message burned
@@ -10314,6 +10344,8 @@ mod burn_wrapped_key_command_tests {
                 sender_osl_user_id: "self-osl".to_string(),
                 plaintext: "this must be shredded".to_string(),
                 decrypted_at: 1,
+                reply_parent_id: None,
+                edit_revision: 1,
                 burned: false,
             })
             .expect("store message");

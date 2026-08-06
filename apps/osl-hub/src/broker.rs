@@ -75,6 +75,8 @@ fn persist_osl_chat_inbound(
             sender_osl_user_id,
             plaintext,
             decrypted_at: created_at,
+            reply_parent_id: None,
+            edit_revision: 1,
             burned: false,
         })
         .map_err(|error| format!("OSL: first-party chat history: {error}"))
@@ -4423,6 +4425,7 @@ fn prepare_peer_inbox_text_with_route_clients(
             context.conversation_id.clone(),
             logical_message_id.clone(),
             history_plaintext,
+            None,
         )?;
     }
     Ok(PreparedNativeOverlayCarrier {

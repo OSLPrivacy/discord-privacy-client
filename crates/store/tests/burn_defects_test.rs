@@ -44,6 +44,8 @@ fn sample(msg_id: &str, channel_id: &str, sender_did: &str, plaintext: &str) -> 
         sender_osl_user_id: "alice".to_string(),
         plaintext: plaintext.to_string(),
         decrypted_at: 1,
+        reply_parent_id: None,
+        edit_revision: 1,
         burned: false,
     }
 }

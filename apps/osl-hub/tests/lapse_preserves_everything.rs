@@ -167,6 +167,7 @@ fn expired_pro_cache_leaves_identity_peers_history_and_notes_byte_identical() {
         CHANNEL.to_owned(),
         "post-lapse-outbound-00000000000001".to_owned(),
         "sent after lapse".to_owned(),
+        None,
     )
     .expect("text sending stays available after lapse");
     ipc::commands::cmd_osl_persist_inbound(

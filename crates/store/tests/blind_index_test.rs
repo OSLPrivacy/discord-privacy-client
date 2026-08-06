@@ -65,6 +65,8 @@ fn sample(
         sender_osl_user_id: sender_osl.to_string(),
         plaintext: plaintext.to_string(),
         decrypted_at,
+        reply_parent_id: None,
+        edit_revision: 1,
         burned: false,
     }
 }

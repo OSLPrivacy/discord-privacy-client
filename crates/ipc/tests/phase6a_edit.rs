@@ -3,10 +3,10 @@
 //! Verifies the `cmd_osl_persist_edit` IPC behaves correctly for
 //! the two semantics callers care about:
 //!
-//! - Known id: row is upserted with the new plaintext, the
-//!   non-plaintext metadata (channel_id, sender ids) survives,
-//!   `decrypted_at` advances to the edit time.
-//! - Unknown id: idempotent no-op (returns `Ok(())`). See the
+//! - Known own id: row is upserted with the new plaintext, the
+//!   non-plaintext metadata (channel_id, sender ids, reply parent) survives,
+//!   `decrypted_at` advances to the edit time, and the edit revision advances.
+//! - Unknown id: idempotent no-op (returns `Ok(None)`). See the
 //!   fn-doc on `cmd_osl_persist_edit` for why we don't
 //!   synthesize a row from just `(message_id, plaintext)`.
 //!
@@ -23,10 +23,8 @@ use tempfile::TempDir;
 const SECRET: &[u8; 32] = &[7u8; 32];
 
 /// Build an `AppState` with a fresh `MessageStore` at `dir`.
-/// The keystore identity / peer_map / pubkey cache are NOT
-/// populated — `cmd_osl_persist_edit` does not consult them
-/// (it only goes through the store), so the test stays a
-/// store-only integration test.
+/// The peer_map / pubkey cache are NOT populated. Tests that edit known rows
+/// seed only the keystore identity required to prove sender ownership.
 fn fresh_state(dir: &std::path::Path) -> AppState {
     let state = AppState::new();
     let store = MessageStore::open(dir, SECRET).expect("open store");
@@ -45,6 +43,12 @@ fn put_row(state: &AppState, msg: &StoredMessage) {
 fn persist_edit_overwrites_existing_row() {
     let tmp = TempDir::new().unwrap();
     let state = fresh_state(tmp.path());
+    {
+        let mut guard = state.identity.lock().unwrap();
+        *guard = Some(keystore::generate_identity(
+            "900000000000000003".to_string(),
+        ));
+    }
 
     // Seed a row with a fixed-old `decrypted_at` so we can
     // assert the edit path advances it (vs racing wall clock).
@@ -55,17 +59,21 @@ fn persist_edit_overwrites_existing_row() {
         sender_osl_user_id: "liam".to_string(),
         plaintext: "before edit".to_string(),
         decrypted_at: 1_000_000_000, // 2001-09-09; well in the past
+        reply_parent_id: None,
+        edit_revision: 1,
         burned: false,
     };
     put_row(&state, &original);
 
-    cmd_osl_persist_edit(
+    let edited = cmd_osl_persist_edit(
         &state,
         "msg-edit-1".to_string(),
         "after edit (fresh plaintext)".to_string(),
         None,
     )
-    .expect("persist_edit on known id");
+    .expect("persist_edit on known id")
+    .expect("own message edit returns updated row");
+    assert_eq!(edited.edit_revision, 2);
 
     let history =
         cmd_osl_load_channel_history(&state, "ch-edit".to_string(), None).expect("history");
@@ -87,6 +95,45 @@ fn persist_edit_overwrites_existing_row() {
         original.decrypted_at,
         row.decrypted_at
     );
+}
+
+#[test]
+fn task_1359_direct_commands_return_reply_parent_id_and_sender_edit_revision() {
+    let tmp = TempDir::new().unwrap();
+    let state = fresh_state(tmp.path());
+    {
+        let mut guard = state.identity.lock().unwrap();
+        *guard = Some(keystore::generate_identity("sender-1359".to_string()));
+    }
+
+    let written = ipc::commands::cmd_osl_persist_outbound(
+        &state,
+        "channel-1359".to_string(),
+        "message-1359".to_string(),
+        "reply plaintext".to_string(),
+        Some("parent-1359".to_string()),
+    )
+    .expect("reply command succeeds")
+    .expect("reply command returns stored row");
+
+    let reply_parent_id = written.reply_parent_id.as_deref().unwrap_or("");
+    assert_eq!(reply_parent_id, "parent-1359");
+    println!("task_1359_reply_parent_id_count=1");
+    println!("task_1359_reply_parent_id={reply_parent_id}");
+
+    let edited = cmd_osl_persist_edit(
+        &state,
+        "message-1359".to_string(),
+        "sender edit plaintext".to_string(),
+        None,
+    )
+    .expect("sender edit command succeeds")
+    .expect("sender edit command returns stored row");
+
+    assert_eq!(edited.sender_discord_id, "sender-1359");
+    assert_eq!(edited.edit_revision, 2);
+    println!("task_1359_sender_edit_revision_count=1");
+    println!("task_1359_sender_edit_revision={}", edited.edit_revision);
 }
 
 #[test]
@@ -191,6 +238,8 @@ fn persist_edit_after_burn_is_no_op() {
             sender_osl_user_id: "uid".to_string(),
             plaintext: "before burn".to_string(),
             decrypted_at: 1,
+            reply_parent_id: None,
+            edit_revision: 1,
             burned: false,
         },
     );

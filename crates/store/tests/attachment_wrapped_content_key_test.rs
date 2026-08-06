@@ -55,6 +55,8 @@ fn message(id: &str, channel: &str, body: &str) -> StoredMessage {
         sender_osl_user_id: format!("osl-{id}"),
         plaintext: body.to_string(),
         decrypted_at: 1,
+        reply_parent_id: None,
+        edit_revision: 1,
         burned: false,
     }
 }

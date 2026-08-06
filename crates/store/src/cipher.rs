@@ -759,6 +759,7 @@ pub(crate) struct MessageMeta {
     pub sender_discord_id: String,
     pub sender_osl_user_id: String,
     pub decrypted_at: i64,
+    pub reply_parent_id: Option<String>,
 }
 
 pub(crate) fn encode_message_meta(m: &MessageMeta) -> Vec<u8> {
@@ -768,6 +769,7 @@ pub(crate) fn encode_message_meta(m: &MessageMeta) -> Vec<u8> {
     push_str(&mut out, &m.sender_discord_id);
     push_str(&mut out, &m.sender_osl_user_id);
     out.extend_from_slice(&m.decrypted_at.to_le_bytes());
+    push_opt(&mut out, m.reply_parent_id.as_deref());
     out
 }
 
@@ -779,6 +781,11 @@ pub(crate) fn decode_message_meta(buf: &[u8]) -> Result<MessageMeta, StoreError>
         sender_discord_id: r.str()?,
         sender_osl_user_id: r.str()?,
         decrypted_at: r.i64()?,
+        reply_parent_id: if r.at == r.buf.len() {
+            None
+        } else {
+            r.opt_str()?
+        },
     };
     r.end()?;
     Ok(out)

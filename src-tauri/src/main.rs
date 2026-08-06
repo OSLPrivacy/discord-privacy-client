@@ -435,7 +435,7 @@ async fn osl_persist_edit(
     discord_message_id: String,
     new_plaintext: String,
     channel_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<Option<StoredMessageDto>, String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
@@ -456,7 +456,8 @@ async fn osl_persist_outbound(
     channel_id: String,
     discord_message_id: String,
     plaintext: String,
-) -> Result<(), String> {
+    reply_parent_id: Option<String>,
+) -> Result<Option<StoredMessageDto>, String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
@@ -465,6 +466,7 @@ async fn osl_persist_outbound(
             channel_id,
             discord_message_id,
             plaintext,
+            reply_parent_id,
         )
     })
     .await

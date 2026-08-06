@@ -119,6 +119,8 @@ fn message(id: &str, body: &str) -> StoredMessage {
         sender_osl_user_id: "anchor-service".to_string(),
         plaintext: body.to_string(),
         decrypted_at: 42,
+        reply_parent_id: None,
+        edit_revision: 1,
         burned: false,
     }
 }
