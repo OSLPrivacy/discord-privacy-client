@@ -1127,6 +1127,10 @@ export function rnWirePolicyState(requested: boolean, buildEnabled = false): RnW
   return { requested, buildEnabled, effectiveEnabled: true, refusal: null };
 }
 
+export function readRnWirePolicyRequested(storage: Pick<Storage, "getItem"> = localStorage): boolean {
+  return storage.getItem(rnWirePolicyStorageKey) === "true";
+}
+
 export function rnWirePolicySettingsMarkup(state: RnWirePolicyState): string {
   const checked = state.effectiveEnabled ? "checked" : "";
   const disabled = state.buildEnabled ? "" : "disabled";
@@ -1413,7 +1417,7 @@ export async function loadUiPreferences(): Promise<void> {
   notificationSecurityActivity = localStorage.getItem(notificationSecurityStorageKey) !== "false";
   protectionPreset = loadProtectionPreset();
   oslMailNotifications = localStorage.getItem(oslMailNotificationsStorageKey) !== "false";
-  rnWirePolicyRequested = localStorage.getItem(rnWirePolicyStorageKey) === "true";
+  rnWirePolicyRequested = readRnWirePolicyRequested();
   await ensureOslChatSecureLocalStore();
   await loadOslChatSensitiveStateFromSecureStore();
   const notices = await loadMigratedOslChatNotifications(oslChatSecureStore, localStorage);

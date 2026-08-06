@@ -44,19 +44,27 @@ afterAll(() => {
 
 describe("RN wire policy UI", () => {
   it("expose RN wire-in policy toggle in Tauri settings/UI", () => {
-    const { rnWirePolicySettingsMarkup, rnWirePolicyState } = ui;
+    const { readRnWirePolicyRequested, rnWirePolicySettingsMarkup, rnWirePolicyState } = ui;
+    const savedOn = new Map([["osl-rn-wire-policy-requested-v1", "true"]]);
+    const storage = {
+      getItem: vi.fn((key: string) => savedOn.get(key) ?? null),
+    };
+    const requested = readRnWirePolicyRequested(storage as Pick<Storage, "getItem">);
 
-    const disabled = rnWirePolicyState(true, false);
+    const disabled = rnWirePolicyState(requested, false);
     expect(disabled).toEqual({
       requested: true,
       buildEnabled: false,
       effectiveEnabled: false,
       refusal: "build-disabled",
     });
+    expect(storage.getItem).toHaveBeenCalledWith("osl-rn-wire-policy-requested-v1");
     const markup = rnWirePolicySettingsMarkup(disabled);
     expect(markup).toContain('id="rn-wire-policy-toggle"');
     expect(markup).toContain("disabled");
     expect(markup).not.toContain("checked");
+    expect(markup).toContain("Unavailable in this build");
+    expect(markup).not.toContain("<small>Off</small>");
 
     expect(rnWirePolicyState(true, true)).toMatchObject({ effectiveEnabled: true, refusal: null });
   });
