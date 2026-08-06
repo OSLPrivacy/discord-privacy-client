@@ -256,6 +256,7 @@ pub mod server_records;
 #[cfg(not(task3982_focused))]
 pub mod service_connections;
 pub mod service_host;
+pub mod shared_conversation_scroll;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod services;

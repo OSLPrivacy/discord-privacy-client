@@ -249,6 +249,30 @@ impl DiscordGuidedDeletionPlanState {
     }
 }
 
+impl crate::shared_conversation_scroll::SharedConversationScrollGate
+    for DiscordGuidedDeletionPlanState
+{
+    fn state_between_pages(
+        &self,
+    ) -> Result<crate::shared_conversation_scroll::SharedConversationScrollGateState, String> {
+        let producer = self
+            .inner
+            .lock()
+            .map_err(|_| "Discord guided-deletion plan state is unavailable".to_owned())?;
+        Ok(match producer.saved_state {
+            Some(GuidedDeletionSavedStateKind::PauseAfterCurrentScreen) => {
+                crate::shared_conversation_scroll::SharedConversationScrollGateState::PauseAfterCurrentPage
+            }
+            Some(GuidedDeletionSavedStateKind::StopAfterCurrentSafeStep) => {
+                crate::shared_conversation_scroll::SharedConversationScrollGateState::StopAfterCurrentPage
+            }
+            None => {
+                crate::shared_conversation_scroll::SharedConversationScrollGateState::Running
+            }
+        })
+    }
+}
+
 fn guided_deletion_run_authority(
     input: GuidedDeletionRunAuthorityInput,
     expected_plan_digest: &str,
@@ -713,6 +737,12 @@ mod discord_guided_deletion_plan_producer_tests {
     use crate::native_discord_adapter::guided_deletion::{
         DeletionPreview, DeletionScan, RowShape, ScannedRow, WalkCompleteness,
     };
+    use crate::shared_conversation_scroll::{
+        read_shared_conversation_messages_one_page_at_a_time_with_gate,
+        SharedConversationScrollGateState, SharedConversationScrollStop,
+        SharedConversationScrollablePlace, SharedPlaceMessage,
+    };
+    use std::cell::Cell;
 
     fn row(scan_ordinal: usize) -> ScannedRow {
         ScannedRow {
@@ -746,6 +776,58 @@ mod discord_guided_deletion_plan_producer_tests {
             generation: preview.generation,
             plan_digest: preview.plan_digest.clone(),
             mode: "attended_delete_run_v1".to_owned(),
+        }
+    }
+
+    struct StopDuringFirstPagePlace<'a> {
+        state: &'a DiscordGuidedDeletionPlanState,
+        messages: Vec<SharedPlaceMessage>,
+        page_size: usize,
+        current_page: usize,
+        stop_requested: Cell<bool>,
+        scrolls: usize,
+    }
+
+    impl<'a> StopDuringFirstPagePlace<'a> {
+        fn new(state: &'a DiscordGuidedDeletionPlanState) -> Self {
+            Self {
+                state,
+                messages: (1..=120)
+                    .map(|index| {
+                        SharedPlaceMessage::new(
+                            format!("task-3005-message-{index:03}"),
+                            format!("task 3005 message {index:03}"),
+                        )
+                    })
+                    .collect(),
+                page_size: 40,
+                current_page: 0,
+                stop_requested: Cell::new(false),
+                scrolls: 0,
+            }
+        }
+    }
+
+    impl SharedConversationScrollablePlace for StopDuringFirstPagePlace<'_> {
+        fn read_current_screen(&self) -> Result<Vec<SharedPlaceMessage>, String> {
+            if !self.stop_requested.replace(true) {
+                self.state.stop_after_current_safe_step()?;
+            }
+            let start = self.current_page.saturating_mul(self.page_size);
+            let end = start
+                .saturating_add(self.page_size)
+                .min(self.messages.len());
+            Ok(self.messages[start..end].to_vec())
+        }
+
+        fn scroll_one_screen(&mut self) -> Result<bool, String> {
+            let next_start = (self.current_page + 1).saturating_mul(self.page_size);
+            if next_start >= self.messages.len() {
+                return Ok(false);
+            }
+            self.current_page += 1;
+            self.scrolls += 1;
+            Ok(true)
         }
     }
 
@@ -818,6 +900,95 @@ mod discord_guided_deletion_plan_producer_tests {
             Err("Preview the exact Discord deletion plan before confirming it".to_owned()),
             "confirmation consumes the preview; a retry must preview and confirm again"
         );
+    }
+
+    #[test]
+    fn task_1432_direct_pause_and_stop_commands_return_saved_state_and_match_count() {
+        let state = DiscordGuidedDeletionPlanState::default();
+        state
+            .record_scan(scan(vec![row(1), row(2), row(3)]))
+            .expect("scan is stored");
+
+        let pause = state
+            .pause_after_current_screen()
+            .expect("pause command saves current-screen state");
+        assert_eq!(pause.saved_state, "pause_after_current_screen");
+        assert_eq!(pause.match_count, 3);
+        let pause_preview = state
+            .build_preview(&[1], true)
+            .expect("pause retains found scan results for preview");
+        assert_eq!(pause_preview.rows.len(), 1);
+        println!(
+            "TASK1432 direct_pause_command=pause_after_current_screen saved_state={} match_count={} retained_preview_rows={}",
+            pause.saved_state,
+            pause.match_count,
+            pause_preview.rows.len()
+        );
+
+        let stop = state
+            .stop_after_current_safe_step()
+            .expect("stop command saves safe-step state");
+        assert_eq!(stop.saved_state, "stop_after_current_safe_step");
+        assert_eq!(stop.match_count, 3);
+        let stop_preview = state
+            .build_preview(&[2, 3], true)
+            .expect("stop retains found scan results for preview");
+        assert_eq!(stop_preview.rows.len(), 2);
+        println!(
+            "TASK1432 direct_stop_command=stop_after_current_safe_step saved_state={} match_count={} retained_preview_rows={}",
+            stop.saved_state,
+            stop.match_count,
+            stop_preview.rows.len()
+        );
+    }
+
+    #[test]
+    fn task_3005_shared_reader_stop_asked_during_run_ends_inside_one_page_and_logs_page() {
+        let state = DiscordGuidedDeletionPlanState::default();
+        state
+            .record_scan(scan(vec![row(1), row(2), row(3)]))
+            .expect("scan is stored");
+        let mut place = StopDuringFirstPagePlace::new(&state);
+
+        let read =
+            read_shared_conversation_messages_one_page_at_a_time_with_gate(&mut place, 10, &state)
+                .expect("shared reader should honor the existing stop state");
+
+        println!(
+            "TASK3005_SHARED_READER=read_shared_conversation_messages_one_page_at_a_time_with_gate"
+        );
+        println!("TASK3005_STOP_SOURCE=stop_after_current_safe_step");
+        println!("TASK3005_STOP_ASKED_DURING_RUN=true");
+        println!("TASK3005_STOP_REASON={:?}", read.stop_reason);
+        println!("TASK3005_PAGE_COUNT={}", read.page_count());
+        println!("TASK3005_MESSAGE_COUNT={}", read.message_count());
+        println!(
+            "TASK3005_STOPPED_ON_PAGE_NUMBER={}",
+            read.stopped_on_page_number.unwrap_or_default()
+        );
+        println!(
+            "TASK3005_LOG_RECORDED_STOP_PAGE={}",
+            read.page_log[0].page_number
+        );
+        println!(
+            "TASK3005_GATE_AFTER_PAGE={:?}",
+            read.page_log[0].gate_after_page
+        );
+        println!("TASK3005_SCROLLS_AFTER_STOP={}", place.scrolls);
+
+        assert_eq!(
+            read.stop_reason,
+            SharedConversationScrollStop::StopRequested
+        );
+        assert_eq!(read.page_count(), 1);
+        assert_eq!(read.message_count(), 40);
+        assert_eq!(read.stopped_on_page_number, Some(1));
+        assert_eq!(read.page_log[0].page_number, 1);
+        assert_eq!(
+            read.page_log[0].gate_after_page,
+            SharedConversationScrollGateState::StopAfterCurrentPage
+        );
+        assert_eq!(place.scrolls, 0);
     }
 }
 
