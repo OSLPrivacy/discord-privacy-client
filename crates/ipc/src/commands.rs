@@ -15661,6 +15661,12 @@ pub struct ServerChannelDto {
     pub channel_id: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct OslChatServerChannelSelectionDto {
+    pub selected: ServerChannelDto,
+    pub servers: Vec<GuildDto>,
+}
+
 /// 9-C2: boot.js pushes the user's friend-ids snapshot here on
 /// each gateway READY. Ephemeral — not persisted; repopulated on
 /// reconnect. Read via [`cmd_osl_get_friend_ids`].
@@ -15955,6 +15961,22 @@ pub fn cmd_osl_create_server_channel(
         server_id,
         channel_id,
     })
+}
+
+/// Select one OSL Chats server channel and return the refreshed server list.
+///
+/// Selection is also discovery: a direct user action against a server/channel
+/// identity records that channel under its server before Chats renders the
+/// selectable channel list.
+pub fn cmd_osl_select_chat_server_channel(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+) -> Result<OslChatServerChannelSelectionDto, String> {
+    record_activity_on_command_entry();
+    let selected = cmd_osl_create_server_channel(state, server_id, channel_id)?;
+    let servers = cmd_osl_get_guild_list(state)?;
+    Ok(OslChatServerChannelSelectionDto { selected, servers })
 }
 
 /// 9-C2: bulk-whitelist N peers under DM scope (one DM scope per
