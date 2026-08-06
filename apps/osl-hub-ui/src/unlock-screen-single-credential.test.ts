@@ -30,6 +30,8 @@ const MODULE_RELOAD_BUDGET_MS = 30_000;
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
 vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
+vi.mock("@fontsource-variable/onest/wght.css", () => ({}));
+vi.mock("@fontsource-variable/source-sans-3/wght.css", () => ({}));
 vi.mock("./logos", () => ({ browserLogo: (id: string) => `<span>${id}</span>`, providerLogo: (id: string) => `<span>${id}</span>`, serviceLogo: (id: string) => `<span>${id}</span>` }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
@@ -47,17 +49,24 @@ interface FakeElement {
   tagName: string;
   id: string;
   value: string;
+  type: string;
   disabled: boolean;
   textContent: string;
+  innerHTML: string;
   dataset: Record<string, string>;
   attributes: Map<string, string>;
   handlers: Map<string, ((event: unknown) => unknown)[]>;
   focusCount: number;
+  classList: { add(name: string): void; toggle(name: string, force?: boolean): boolean };
   addEventListener(type: string, handler: (event: unknown) => unknown): void;
   setAttribute(name: string, value: string): void;
   removeAttribute(name: string): void;
   getAttribute(name: string): string | null;
   focus(): void;
+  click(): Promise<void>;
+  dispatch(type: string): Promise<void>;
+  querySelector(selector: string): FakeElement | null;
+  querySelectorAll(selector: string): FakeElement[];
 }
 
 function fakeElement(tagName: string, id = ""): FakeElement {
@@ -65,12 +74,15 @@ function fakeElement(tagName: string, id = ""): FakeElement {
     tagName,
     id,
     value: "",
+    type: tagName === "INPUT" ? "text" : "",
     disabled: false,
     textContent: "",
+    innerHTML: "",
     dataset: {},
     attributes: new Map(),
     handlers: new Map(),
     focusCount: 0,
+    classList: { add: () => undefined, toggle: () => false },
     addEventListener(type, handler) {
       const list = this.handlers.get(type) ?? [];
       list.push(handler);
@@ -80,17 +92,28 @@ function fakeElement(tagName: string, id = ""): FakeElement {
     removeAttribute(name) { this.attributes.delete(name); },
     getAttribute(name) { return this.attributes.get(name) ?? null; },
     focus() { this.focusCount += 1; },
+    async click(): Promise<void> { await this.dispatch("click"); },
+    async dispatch(type: string): Promise<void> {
+      for (const handler of this.handlers.get(type) ?? []) await handler({ preventDefault: () => undefined, currentTarget: this });
+    },
+    querySelector: () => null,
+    querySelectorAll: () => [],
   };
 }
 
 interface UnlockHarness {
   form: FakeElement;
   password: FakeElement;
+  eyeButton: FakeElement;
   submitButton: FakeElement;
+  forgotButton: FakeElement;
+  backButton: FakeElement;
   error: FakeElement;
   nodes: Map<string, FakeElement>;
+  allNodes: FakeElement[];
   /** Everything `showToast` (or anything else) appended to the document. */
   appended: FakeElement[];
+  storage: Map<string, string>;
   submit(): Promise<void>;
 }
 
@@ -98,8 +121,17 @@ function buildUnlockHarness(): UnlockHarness {
   const form = fakeElement("FORM", "identity-password-form");
   form.dataset.passwordMode = "unlock";
   const password = fakeElement("INPUT", "identity-password");
+  password.type = "password";
+  const eyeButton = fakeElement("BUTTON");
+  eyeButton.dataset.passwordToggle = "identity-password";
   const submitButton = fakeElement("BUTTON", "identity-password-submit");
   submitButton.textContent = "Unlock";
+  const forgotButton = fakeElement("BUTTON");
+  forgotButton.dataset.onboarding = "account-recovery";
+  forgotButton.textContent = "Forgot password?";
+  const backButton = fakeElement("BUTTON");
+  backButton.dataset.onboarding = "welcome";
+  backButton.textContent = "Back";
   const error = fakeElement("P", "password-error");
 
   const nodes = new Map<string, FakeElement>([
@@ -109,13 +141,19 @@ function buildUnlockHarness(): UnlockHarness {
     ["#password-error", error],
   ]);
 
+  const allNodes = [form, password, eyeButton, submitButton, forgotButton, backButton, error];
   return {
     form,
     password,
+    eyeButton,
     submitButton,
+    forgotButton,
+    backButton,
     error,
     nodes,
+    allNodes,
     appended: [],
+    storage: new Map(),
     async submit(): Promise<void> {
       const handlers = form.handlers.get("submit") ?? [];
       expect(handlers.length, "the unlock form was never bound").toBe(1);
@@ -126,16 +164,22 @@ function buildUnlockHarness(): UnlockHarness {
 
 async function loadUi(harness: UnlockHarness) {
   vi.resetModules();
-  const store = new Map<string, string>();
+  const store = harness.storage;
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => store.get(key) ?? null,
     setItem: (key: string, value: string) => { store.set(key, value); },
     removeItem: (key: string) => { store.delete(key); },
     clear: () => { store.clear(); },
   });
+  const querySelectorAll = vi.fn((selector: string) => {
+    if (selector === "[data-password-toggle]") return [harness.eyeButton];
+    if (selector === "[data-onboarding]") return [harness.forgotButton, harness.backButton];
+    return [];
+  });
   vi.stubGlobal("document", {
     querySelector: vi.fn((selector: string) => harness.nodes.get(selector) ?? null),
-    querySelectorAll: vi.fn(() => []),
+    querySelectorAll,
+    getElementById: vi.fn((id: string) => harness.allNodes.find((node) => node.id === id) ?? null),
     createElement: vi.fn((tag: string) => fakeElement(String(tag).toUpperCase())),
     // `showToast` builds a div and appends it here. Recording the appends is
     // how the "announces nothing" test below can tell a silent branch from a
@@ -143,12 +187,17 @@ async function loadUi(harness: UnlockHarness) {
     body: { append: (node: FakeElement) => { harness.appended.push(node); } },
     documentElement: { classList: { add: vi.fn() }, dataset: {} },
     addEventListener: vi.fn(),
+    activeElement: null,
     visibilityState: "visible",
   });
+  vi.stubGlobal("HTMLElement", Object);
+  vi.stubGlobal("HTMLInputElement", Object);
+  vi.stubGlobal("HTMLTextAreaElement", Object);
+  vi.stubGlobal("HTMLSelectElement", Object);
   // `isTauriRuntime()` is a `"__TAURI_INTERNALS__" in window` probe. Without it
   // `unlockHubPasswordGate` throws before it ever reaches the gate.
   vi.stubGlobal("window", { __TAURI_INTERNALS__: {}, addEventListener: vi.fn(), matchMedia: vi.fn(() => ({ matches: false, addEventListener: vi.fn() })), setTimeout, confirm: vi.fn(() => false) });
-  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 1; });
   vi.stubGlobal("cancelAnimationFrame", () => undefined);
   return import("./main");
 }
@@ -316,7 +365,138 @@ describe("D80 unlock screen renders one credential input", () => {
 
     expect(unlock).toContain('data-onboarding="account-recovery"');
     expect(recovery).toContain('data-account-recovery-phrase');
-    expect(recovery).toContain("Forgot password?");
+    expect(recovery).toContain("Password reset");
+  }, MODULE_RELOAD_BUDGET_MS);
+
+  it("records show, unlock, forgot, back, and wrong-password results with one saved account", async () => {
+    const savedAccountKey = "osl-saved-native-apps-v1";
+    const harness = buildUnlockHarness();
+    harness.storage.set("osl-saved-account-mode-v1", "use");
+    harness.storage.set(savedAccountKey, JSON.stringify(["discord"]));
+    const { __oslHubUiTest } = await loadUi(harness);
+    await __oslHubUiTest.reset({ route: "onboarding", onboardingRoute: "unlock", onboardingComplete: true, coreReady: false, bootstrapStatus: "passwordRequired" });
+    await __oslHubUiTest.bindOnboarding();
+
+    harness.password.value = "saved-password";
+    await harness.eyeButton.click();
+    const firstShowResult = { type: harness.password.type, value: harness.password.value, label: harness.eyeButton.getAttribute("aria-label") };
+    await harness.eyeButton.click();
+    const secondShowResult = { type: harness.password.type, value: harness.password.value, label: harness.eyeButton.getAttribute("aria-label") };
+
+    await harness.forgotButton.click();
+    const forgotSnapshot = __oslHubUiTest.snapshot();
+    const forgotMarkup = __oslHubUiTest.renderOnboardingRoute("account-recovery");
+
+    __oslHubUiTest.renderOnboardingRoute("unlock");
+    await __oslHubUiTest.bindOnboarding();
+    await harness.backButton.click();
+    const backSnapshot = __oslHubUiTest.snapshot();
+    const backMarkup = __oslHubUiTest.renderOnboardingRoute("welcome");
+
+    __oslHubUiTest.renderOnboardingRoute("unlock");
+    harness.form.handlers.clear();
+    __oslHubUiTest.bindUnlockForm();
+    mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "unlock_hub_password_gate") {
+        expect(args).toEqual({ password: "wrong-password" });
+        return gateResult("wrong");
+      }
+      throw new Error(`unexpected command in wrong-password check: ${command}`);
+    });
+    harness.password.value = "wrong-password";
+    harness.submitButton.disabled = false;
+    await harness.submit();
+    const wrongSnapshot = __oslHubUiTest.snapshot();
+    const wrongResult = {
+      error: harness.error.textContent,
+      route: wrongSnapshot.route,
+      onboardingRoute: wrongSnapshot.onboardingRoute,
+      savedAccounts: JSON.parse(harness.storage.get(savedAccountKey) ?? "[]").length,
+      submitText: harness.submitButton.textContent,
+      inputDisabled: harness.password.disabled,
+    };
+
+    mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "unlock_hub_password_gate") {
+        expect(args).toEqual({ password: "saved-password" });
+        return gateResult("unlocked", {
+          readiness: {
+            originalCoreLinked: true,
+            identityLoaded: true,
+            keyserverInitialised: true,
+            groupSenderKeysEnabled: true,
+            remoteServiceHasNativeAccess: true,
+            bootstrapAttempted: true,
+            passwordGateRequired: false,
+            unlocked: true,
+            activeOslUserId: "test-osl-user",
+            bootstrapStatus: "ready",
+            cloudRegistrationState: "registered",
+            storageMethod: "os-keyring",
+          },
+        });
+      }
+      if (command === "get_core_readiness") {
+        return {
+          originalCoreLinked: true,
+          identityLoaded: true,
+          keyserverInitialised: true,
+          groupSenderKeysEnabled: true,
+          remoteServiceHasNativeAccess: true,
+          bootstrapAttempted: true,
+          passwordGateRequired: false,
+          unlocked: true,
+          activeOslUserId: "test-osl-user",
+          bootstrapStatus: "ready",
+          cloudRegistrationState: "registered",
+          storageMethod: "os-keyring",
+        };
+      }
+      if (command === "list_linked_services") return [];
+      if (command === "get_hub_password_role_status") {
+        return {
+          mainPasswordSet: true,
+          stealthPasswordSet: false,
+          burnPasswordSet: false,
+          unlocked: true,
+          stealthActionWired: true,
+          burnActionWired: true,
+        };
+      }
+      throw new Error(`unexpected command in saved-password check: ${command}`);
+    });
+    harness.password.value = "saved-password";
+    harness.submitButton.disabled = false;
+    await harness.submit();
+    const unlockSnapshot = __oslHubUiTest.snapshot();
+    const recorded = {
+      savedAccountCount: JSON.parse(harness.storage.get(savedAccountKey) ?? "[]").length,
+      showFirst: firstShowResult,
+      showSecond: secondShowResult,
+      forgot: { route: forgotSnapshot.route, onboardingRoute: forgotSnapshot.onboardingRoute, heading: "Password reset" },
+      back: { route: backSnapshot.route, onboardingRoute: backSnapshot.onboardingRoute, control: "Sign in" },
+      wrong: wrongResult,
+      unlock: { route: unlockSnapshot.route },
+    };
+    console.info(`OSL-0327 ${JSON.stringify(recorded)}`);
+
+    expect(JSON.parse(harness.storage.get(savedAccountKey) ?? "[]")).toEqual(["discord"]);
+    expect(firstShowResult).toEqual({ type: "text", value: "saved-password", label: "Hide password" });
+    expect(secondShowResult).toEqual({ type: "password", value: "saved-password", label: "Show password" });
+    expect(forgotSnapshot).toMatchObject({ route: "onboarding", onboardingRoute: "account-recovery" });
+    expect(forgotMarkup).toContain("Password reset");
+    expect(backSnapshot).toMatchObject({ route: "onboarding", onboardingRoute: "welcome" });
+    expect(backMarkup).toContain('data-onboarding="unlock"');
+    expect(backMarkup).toContain("Sign in");
+    expect(wrongResult).toEqual({
+      error: "Password not recognized.",
+      route: "onboarding",
+      onboardingRoute: "unlock",
+      savedAccounts: 1,
+      submitText: "Unlock",
+      inputDisabled: false,
+    });
+    expect(unlockSnapshot.route).toBe("home");
   }, MODULE_RELOAD_BUDGET_MS);
 
   it("exposes nothing in the markup or the accessibility tree that names an alternate credential", async () => {

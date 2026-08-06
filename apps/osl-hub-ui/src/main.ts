@@ -10042,6 +10042,7 @@ function scheduleOslChatBackgroundSync(delayMs = 30_000): void {
 type OslHubUiTestStatePatch = {
   route?: Route;
   onboardingRoute?: OnboardingRoute;
+  onboardingComplete?: boolean;
   setup?: Partial<SetupState>;
   coreReady?: boolean;
   storageMethod?: string | null;
@@ -10100,6 +10101,7 @@ function applyTestCoreState(ready: boolean, storageMethod: string | null, bootst
 function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   route = patch.route ?? "home";
   onboardingRoute = patch.onboardingRoute ?? "welcome";
+  onboardingComplete = patch.onboardingComplete ?? false;
   setup = { ...defaultSetup, ...patch.setup };
   settingsSection = "account";
   activeService = null;
