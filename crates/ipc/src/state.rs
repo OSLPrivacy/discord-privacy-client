@@ -349,6 +349,10 @@ pub struct AppState {
     /// removal, member removal, and server changes.
     pub server_permissions: Mutex<crate::server_membership::ServerPermissionStore>,
 
+    /// Explicit channel access plus thread records. Threads do not own a
+    /// broader access list; reads are resolved through the parent channel.
+    pub server_thread_permissions: Mutex<crate::server_membership::ServerThreadPermissionStore>,
+
     /// 9-TD1.4: most-recent disk-persist failure message. Pre-TD1
     /// every `persist_*_now` swallowed errors silently with a
     /// `tracing::warn!`; the user thought their whitelist / burn /
@@ -431,6 +435,9 @@ impl Default for AppState {
             ),
             server_permissions: Mutex::new(
                 crate::server_membership::ServerPermissionStore::default(),
+            ),
+            server_thread_permissions: Mutex::new(
+                crate::server_membership::ServerThreadPermissionStore::default(),
             ),
             last_persist_error: Mutex::new(None),
             license_state: Mutex::new(keystore::LicenseStateDto::default()),

@@ -169,6 +169,45 @@ mod command_activity_tests {
                 crate::server_membership::ServerPermission::Read,
             );
         });
+        let _ = cmd_osl_set_limited_channel_members(
+            &state,
+            "activity-server".to_owned(),
+            "activity-channel".to_owned(),
+            vec!["Activity Owner".to_owned()],
+        );
+        let _ = cmd_osl_create_thread(
+            &state,
+            "activity-server".to_owned(),
+            "activity-channel".to_owned(),
+            "activity-thread".to_owned(),
+        );
+        let _ = cmd_osl_add_thread_message(
+            &state,
+            "activity-server".to_owned(),
+            "activity-channel".to_owned(),
+            "activity-thread".to_owned(),
+            "activity-message".to_owned(),
+            "activity body".to_owned(),
+            true,
+        );
+        assert_command_marks_activity("cmd_osl_read_thread", || {
+            let _ = cmd_osl_read_thread(
+                &state,
+                "activity-server".to_owned(),
+                "activity-channel".to_owned(),
+                "activity-thread".to_owned(),
+                "Activity Owner".to_owned(),
+            );
+        });
+        assert_command_marks_activity("cmd_osl_set_thread_permissions", || {
+            let _ = cmd_osl_set_thread_permissions(
+                &state,
+                "activity-server".to_owned(),
+                "activity-channel".to_owned(),
+                "activity-thread".to_owned(),
+                vec!["Activity Owner".to_owned()],
+            );
+        });
         assert_command_marks_activity("cmd_osl_get_server_defaults", || {
             let _ = cmd_osl_get_server_defaults(&state);
         });
@@ -16124,6 +16163,170 @@ pub fn cmd_osl_check_server_person_allowed(
         permission_name: permission.name().to_owned(),
         allowed: true,
     })
+}
+
+/// Set a server channel to a limited list of named server members.
+pub fn cmd_osl_set_limited_channel_members(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    person_names: Vec<String>,
+) -> Result<crate::server_membership::ServerChannelAccessRecord, String> {
+    record_activity_on_command_entry();
+    let members = {
+        let lists = state
+            .server_member_lists
+            .lock()
+            .expect("server_member_lists mutex poisoned");
+        lists.list(&server_id).map_err(|error| error.to_string())?
+    };
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .set_limited_channel(&members, channel_id, person_names)
+        .map_err(|error| error.to_string())
+}
+
+/// Set a server channel to everyone in the server member list.
+pub fn cmd_osl_set_open_channel_members(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+) -> Result<crate::server_membership::ServerChannelAccessRecord, String> {
+    record_activity_on_command_entry();
+    let members = {
+        let lists = state
+            .server_member_lists
+            .lock()
+            .expect("server_member_lists mutex poisoned");
+        lists.list(&server_id).map_err(|error| error.to_string())?
+    };
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .set_open_channel(&members, channel_id)
+        .map_err(|error| error.to_string())
+}
+
+/// Create a thread under an existing channel. The thread inherits that
+/// channel's read boundary.
+pub fn cmd_osl_create_thread(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    thread_id: String,
+) -> Result<crate::server_membership::ServerThreadRecord, String> {
+    record_activity_on_command_entry();
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .create_thread(server_id, channel_id, thread_id)
+        .map_err(|error| error.to_string())
+}
+
+/// Add one testable thread message record. Production encrypted-message
+/// storage stays in the message store; this direct command models the
+/// thread-permission read boundary.
+pub fn cmd_osl_add_thread_message(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    thread_id: String,
+    message_id: String,
+    body: String,
+    marked: bool,
+) -> Result<usize, String> {
+    record_activity_on_command_entry();
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .add_thread_message(server_id, channel_id, thread_id, message_id, body, marked)
+        .map_err(|error| error.to_string())
+}
+
+/// Read the marked messages in a thread only when the reader can read the
+/// parent channel.
+pub fn cmd_osl_read_thread(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    thread_id: String,
+    person_name: String,
+) -> Result<crate::server_membership::ServerThreadRead, String> {
+    record_activity_on_command_entry();
+    let members = {
+        let lists = state
+            .server_member_lists
+            .lock()
+            .expect("server_member_lists mutex poisoned");
+        lists.list(&server_id).map_err(|error| error.to_string())?
+    };
+    let threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .read_thread(&members, &channel_id, &thread_id, &person_name)
+        .map_err(|error| error.to_string())
+}
+
+/// Return the thread's effective readers, which are inherited from the parent
+/// channel.
+pub fn cmd_osl_list_thread_effective_readers(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    thread_id: String,
+) -> Result<Vec<String>, String> {
+    record_activity_on_command_entry();
+    let members = {
+        let lists = state
+            .server_member_lists
+            .lock()
+            .expect("server_member_lists mutex poisoned");
+        lists.list(&server_id).map_err(|error| error.to_string())?
+    };
+    let threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .effective_thread_readers(&members, &channel_id, &thread_id)
+        .map_err(|error| error.to_string())
+}
+
+/// Refuse attempts to make a thread readable by people who cannot read its
+/// parent channel. Threads store no independent wider read ACL.
+pub fn cmd_osl_set_thread_permissions(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    thread_id: String,
+    person_names: Vec<String>,
+) -> Result<usize, String> {
+    record_activity_on_command_entry();
+    let members = {
+        let lists = state
+            .server_member_lists
+            .lock()
+            .expect("server_member_lists mutex poisoned");
+        lists.list(&server_id).map_err(|error| error.to_string())?
+    };
+    let mut threads = state
+        .server_thread_permissions
+        .lock()
+        .expect("server_thread_permissions mutex poisoned");
+    threads
+        .set_thread_permissions(&members, &channel_id, &thread_id, person_names)
+        .map_err(|error| error.to_string())
 }
 
 /// 9-C2: bulk-whitelist N peers under DM scope (one DM scope per
