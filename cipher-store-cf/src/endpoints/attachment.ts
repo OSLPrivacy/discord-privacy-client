@@ -154,8 +154,8 @@ function unsignedLength(raw: string | null, max: number): number | Response | nu
 /// path for both.
 ///
 /// The ceiling is the caller's existing bound: 8 MiB for one multipart part,
-/// 26 MiB for a direct upload. A 512 MiB attachment is still never held in
-/// memory — it arrives as up to 65 separately bounded parts.
+/// 25 MiB for a direct upload. A 1 GiB attachment is still never held in
+/// memory; it arrives as up to 128 separately bounded parts.
 export async function readBoundedAttachmentBody(
   source: ReadableStream<Uint8Array>,
   maxBytes: number,

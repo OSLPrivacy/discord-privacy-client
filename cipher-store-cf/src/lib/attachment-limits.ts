@@ -1,7 +1,94 @@
-export const MAX_DIRECT_ATTACHMENT_BYTES = 26 * 1024 * 1024;
-// Leaves a bounded allowance for chunk framing and AEAD tags without asking
-// the store to infer plaintext size from opaque ciphertext.
-export const MAX_SEALED_ATTACHMENT_BYTES = 513 * 1024 * 1024;
+export type AttachmentTier = "free" | "pro";
+
+export interface AttachmentTierLimit {
+  readonly label: string;
+  readonly maxBytesPerFile: number;
+  readonly maxFilesPerMessage: number;
+  readonly perFileLabel: string;
+}
+
+export interface AttachmentLimitCheck {
+  readonly accepted: boolean;
+  readonly tier: AttachmentTier;
+  readonly tierLabel: string;
+  readonly sizeBytes: number;
+  readonly fileCount: number;
+  readonly maxBytesPerFile: number;
+  readonly maxFilesPerMessage: number;
+  readonly reason: "accepted" | "file_too_large" | "too_many_files";
+  readonly firstRejectedFile: number | null;
+}
+
+export const ATTACHMENT_TIER_LIMITS: Record<AttachmentTier, AttachmentTierLimit> = {
+  free: {
+    label: "Free",
+    maxBytesPerFile: 25 * 1024 * 1024,
+    maxFilesPerMessage: 16,
+    perFileLabel: "25 MB",
+  },
+  pro: {
+    label: "Pro",
+    maxBytesPerFile: 1024 * 1024 * 1024,
+    maxFilesPerMessage: 16,
+    perFileLabel: "1 GB",
+  },
+};
+
+export function attachmentTierLimit(tier: string): AttachmentTierLimit | null {
+  return Object.hasOwn(ATTACHMENT_TIER_LIMITS, tier)
+    ? ATTACHMENT_TIER_LIMITS[tier as AttachmentTier]
+    : null;
+}
+
+export function checkAttachmentTierLimit(
+  tier: AttachmentTier,
+  sizeBytes: number,
+  fileCount: number,
+): AttachmentLimitCheck {
+  const limit = ATTACHMENT_TIER_LIMITS[tier];
+  if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0 || sizeBytes > limit.maxBytesPerFile) {
+    return {
+      accepted: false,
+      tier,
+      tierLabel: limit.label,
+      sizeBytes,
+      fileCount,
+      maxBytesPerFile: limit.maxBytesPerFile,
+      maxFilesPerMessage: limit.maxFilesPerMessage,
+      reason: "file_too_large",
+      firstRejectedFile: null,
+    };
+  }
+  if (!Number.isSafeInteger(fileCount) || fileCount <= 0 || fileCount > limit.maxFilesPerMessage) {
+    return {
+      accepted: false,
+      tier,
+      tierLabel: limit.label,
+      sizeBytes,
+      fileCount,
+      maxBytesPerFile: limit.maxBytesPerFile,
+      maxFilesPerMessage: limit.maxFilesPerMessage,
+      reason: "too_many_files",
+      firstRejectedFile: Number.isSafeInteger(fileCount) && fileCount > limit.maxFilesPerMessage
+        ? limit.maxFilesPerMessage + 1
+        : null,
+    };
+  }
+  return {
+    accepted: true,
+    tier,
+    tierLabel: limit.label,
+    sizeBytes,
+    fileCount,
+    maxBytesPerFile: limit.maxBytesPerFile,
+    maxFilesPerMessage: limit.maxFilesPerMessage,
+    reason: "accepted",
+    firstRejectedFile: null,
+  };
+}
+
+export const MAX_DIRECT_ATTACHMENT_BYTES = ATTACHMENT_TIER_LIMITS.free.maxBytesPerFile;
+export const MAX_SEALED_ATTACHMENT_BYTES = ATTACHMENT_TIER_LIMITS.pro.maxBytesPerFile;
 export const MAX_ATTACHMENT_PART_BYTES = 8 * 1024 * 1024;
 export const MAX_ATTACHMENT_PARTS = Math.ceil(
   MAX_SEALED_ATTACHMENT_BYTES / MAX_ATTACHMENT_PART_BYTES,
@@ -29,7 +116,7 @@ export const MAX_LIVE_ATTACHMENT_BYTES = 8 * 1024 * 1024 * 1024;
 export const INCOMPLETE_SESSION_TTL_SECONDS = 15 * 60;
 
 /// Reservation-pool ceilings, applied only to rows whose state is not `ready`.
-/// Four concurrent full-size (512 MiB) uploads fit; the global backstop above
+/// Two concurrent full-size (1 GiB) uploads fit; the global backstop above
 /// still applies on top.
 export const MAX_INCOMPLETE_SESSION_ROWS = 64;
 export const MAX_INCOMPLETE_SESSION_BYTES = 2 * 1024 * 1024 * 1024;

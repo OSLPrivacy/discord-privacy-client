@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Env } from "../src/env.js";
+import { handleAttachmentSessionCreate } from "../src/endpoints/attachment.js";
 import worker from "../src/index.js";
 import {
   d1Count,
@@ -66,6 +67,15 @@ function freeMultipartRequest(sizeBytes: number): Request {
   });
 }
 
+function proMultipartRequest(sizeBytes: number): Request {
+  return request("/v1/attachment/session", "POST", undefined, {
+    "x-osl-ttl-seconds": "3600",
+    "x-osl-fetch-token": TOKEN,
+    "x-osl-size-bytes": String(sizeBytes),
+    "x-osl-account-tier": "pro",
+  });
+}
+
 async function uploadDirect(
   env: Env,
   bytes: Uint8Array,
@@ -115,6 +125,84 @@ async function createMultipart(
 }
 
 describe("registered attachment storage boundary", () => {
+  it("Pro boundary accepts exactly 1 GB", async () => {
+    const oneGib = 1024 * 1024 * 1024;
+
+    const real = workerEnv();
+    const createMultipartUpload = vi.fn(async () => ({
+      uploadId: "task1332-upload",
+      abort: vi.fn(),
+    } as unknown as R2MultipartUpload));
+    const acceptedEnv = workerEnv({
+      ATTACHMENTS: boundBucket(real.ATTACHMENTS, { createMultipartUpload }),
+    });
+    const accepted = await handleAttachmentSessionCreate(proMultipartRequest(oneGib), acceptedEnv);
+    const acceptedBody = await accepted.json() as {
+      id: string;
+      size_bytes: number;
+      max_parts: number;
+    };
+    const acceptedRows = await d1Count("SELECT COUNT(*) AS c FROM attachment_objects");
+    const acceptedRow = await d1First<AttachmentRow>(
+      "SELECT object_key, state, upload_id FROM attachment_objects WHERE id = ?",
+      acceptedBody.id,
+    );
+    console.log(
+      [
+        "task1332",
+        "route=session",
+        "tier=pro",
+        `size_bytes=${oneGib}`,
+        `status=${accepted.status}`,
+        `returned_size_bytes=${acceptedBody.size_bytes}`,
+        `max_parts=${acceptedBody.max_parts}`,
+        `upload_records=${acceptedRows}`,
+        `multipart_uploads=${createMultipartUpload.mock.calls.length}`,
+        `upload_state=${acceptedRow.state}`,
+        `upload_id_present=${acceptedRow.upload_id !== null}`,
+      ].join(" "),
+    );
+    expect(accepted.status).toBe(201);
+    expect(acceptedBody.size_bytes).toBe(oneGib);
+    expect(acceptedBody.max_parts).toBe(128);
+    expect(acceptedRows).toBe(1);
+    expect(createMultipartUpload).toHaveBeenCalledOnce();
+    expect(acceptedRow.state).toBe("uploading");
+    expect(acceptedRow.upload_id).not.toBeNull();
+  });
+
+  it("Pro boundary refuses one byte over before upload state", async () => {
+    const oneByteOver = 1024 * 1024 * 1024 + 1;
+    const rejectedReal = workerEnv();
+    const rejectedCreateMultipartUpload = vi.fn(
+      rejectedReal.ATTACHMENTS.createMultipartUpload.bind(rejectedReal.ATTACHMENTS),
+    );
+    const rejectedEnv = workerEnv({
+      ATTACHMENTS: boundBucket(rejectedReal.ATTACHMENTS, {
+        createMultipartUpload: rejectedCreateMultipartUpload,
+      }),
+    });
+    const rejected = await handleAttachmentSessionCreate(proMultipartRequest(oneByteOver), rejectedEnv);
+    const rejectedBody = await rejected.json() as { error: string; message: string };
+    const rejectedRows = await d1Count("SELECT COUNT(*) AS c FROM attachment_objects");
+    console.log(
+      [
+        "task1332",
+        "route=session",
+        "tier=pro",
+        `size_bytes=${oneByteOver}`,
+        `status=${rejected.status}`,
+        `error=${rejectedBody.error}`,
+        `upload_records=${rejectedRows}`,
+        `multipart_uploads=${rejectedCreateMultipartUpload.mock.calls.length}`,
+      ].join(" "),
+    );
+    expect(rejected.status).toBe(413);
+    expect(rejectedBody.error).toBe("too_large");
+    expect(rejectedRows).toBe(0);
+    expect(rejectedCreateMultipartUpload).not.toHaveBeenCalled();
+  });
+
   it("refuses a 26 MB Free chat file before any upload record exists", async () => {
     const real = workerEnv();
     const createMultipartUpload = vi.fn(real.ATTACHMENTS.createMultipartUpload.bind(real.ATTACHMENTS));
