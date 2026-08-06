@@ -15,6 +15,162 @@ use crate::burn_authorize::{
 };
 use crate::burn_contract::{BurnSignatureVerifier, RemoteFriendBurnPlan, RemoteFriendBurnRequest};
 
+/// A named server member permission stored in the local server roster.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ServerMemberRight {
+    ReadOnly,
+    ReadAndSend,
+    RemovePeople,
+}
+
+impl ServerMemberRight {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::ReadAndSend => "read-and-send",
+            Self::RemovePeople => "remove-people",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PermissionChangeRoute {
+    Screens,
+    DirectCommand,
+}
+
+impl PermissionChangeRoute {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Screens => "screens",
+            Self::DirectCommand => "direct command",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServerMemberPermissionList {
+    owner_name: String,
+    members: BTreeMap<String, BTreeSet<ServerMemberRight>>,
+    self_change_routes: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ServerMemberPermissionError {
+    UnknownMember(String),
+    OnlyOwnerMayChangePermissions {
+        actor_name: String,
+    },
+    SelfChangeRefused {
+        member_name: String,
+        attempted_right: ServerMemberRight,
+        route: PermissionChangeRoute,
+    },
+}
+
+impl std::fmt::Display for ServerMemberPermissionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownMember(member_name) => write!(f, "{member_name} is not on the server"),
+            Self::OnlyOwnerMayChangePermissions { actor_name } => {
+                write!(f, "{actor_name} is not the server owner")
+            }
+            Self::SelfChangeRefused {
+                member_name,
+                attempted_right,
+                route,
+            } => write!(
+                f,
+                "{member_name} cannot add {} to themselves through {}",
+                attempted_right.name(),
+                route.name()
+            ),
+        }
+    }
+}
+
+impl ServerMemberPermissionList {
+    pub fn new(owner_name: impl Into<String>) -> Self {
+        let owner_name = owner_name.into();
+        Self {
+            owner_name: owner_name.clone(),
+            members: BTreeMap::from([(
+                owner_name,
+                BTreeSet::from([
+                    ServerMemberRight::ReadOnly,
+                    ServerMemberRight::ReadAndSend,
+                    ServerMemberRight::RemovePeople,
+                ]),
+            )]),
+            self_change_routes: 0,
+        }
+    }
+
+    pub fn add_read_only_member(&mut self, member_name: impl Into<String>) {
+        self.members.insert(
+            member_name.into(),
+            BTreeSet::from([ServerMemberRight::ReadOnly]),
+        );
+    }
+
+    pub fn grant_right(
+        &mut self,
+        actor_name: &str,
+        target_name: &str,
+        right: ServerMemberRight,
+        route: PermissionChangeRoute,
+    ) -> Result<Vec<&'static str>, ServerMemberPermissionError> {
+        if !self.members.contains_key(target_name) {
+            return Err(ServerMemberPermissionError::UnknownMember(
+                target_name.to_owned(),
+            ));
+        }
+        if actor_name == target_name {
+            return Err(ServerMemberPermissionError::SelfChangeRefused {
+                member_name: target_name.to_owned(),
+                attempted_right: right,
+                route,
+            });
+        }
+        if actor_name != self.owner_name {
+            return Err(ServerMemberPermissionError::OnlyOwnerMayChangePermissions {
+                actor_name: actor_name.to_owned(),
+            });
+        }
+
+        let rights = self
+            .members
+            .get_mut(target_name)
+            .expect("membership was checked before mutation");
+        rights.insert(right);
+        Ok(rights
+            .iter()
+            .copied()
+            .map(ServerMemberRight::name)
+            .collect())
+    }
+
+    pub fn saved_right_names(
+        &self,
+        member_name: &str,
+    ) -> Result<Vec<&'static str>, ServerMemberPermissionError> {
+        self.members
+            .get(member_name)
+            .map(|rights| {
+                rights
+                    .iter()
+                    .copied()
+                    .map(ServerMemberRight::name)
+                    .collect()
+            })
+            .ok_or_else(|| ServerMemberPermissionError::UnknownMember(member_name.to_owned()))
+    }
+
+    pub const fn self_change_routes(&self) -> usize {
+        self.self_change_routes
+    }
+}
+
 /// A sender-side cooldown for one Space.
 ///
 /// This is intentionally local advisory state, not a relay policy.  The relay
@@ -613,5 +769,88 @@ mod tests {
             modified_client.decision_at(10_250),
             ClientSlowmodeDecision::MaySend
         );
+    }
+
+    #[test]
+    fn task_1381_member_cannot_raise_their_own_remove_people_permission() {
+        const OWNER: &str = "SERVER-OWNER-1381";
+        const MEMBER: &str = "MEMBER-1381";
+
+        let mut saved_list = ServerMemberPermissionList::new(OWNER);
+        saved_list.add_read_only_member(MEMBER);
+
+        let owner_first_save = saved_list
+            .grant_right(
+                OWNER,
+                MEMBER,
+                ServerMemberRight::ReadAndSend,
+                PermissionChangeRoute::Screens,
+            )
+            .expect("server owner can make MEMBER-1381 read-and-send");
+        println!(
+            "owner first changes MEMBER-1381 saved rights: {}",
+            owner_first_save.join(", ")
+        );
+        assert_eq!(owner_first_save, vec!["read-only", "read-and-send"]);
+
+        let screen_refusal = saved_list
+            .grant_right(
+                MEMBER,
+                MEMBER,
+                ServerMemberRight::RemovePeople,
+                PermissionChangeRoute::Screens,
+            )
+            .expect_err("screen self-escalation must be refused");
+        println!("screen attempt refused: {screen_refusal}");
+        assert_eq!(
+            screen_refusal.to_string(),
+            "MEMBER-1381 cannot add remove-people to themselves through screens"
+        );
+        assert_eq!(
+            saved_list.saved_right_names(MEMBER).unwrap(),
+            vec!["read-only", "read-and-send"]
+        );
+
+        let direct_refusal = saved_list
+            .grant_right(
+                MEMBER,
+                MEMBER,
+                ServerMemberRight::RemovePeople,
+                PermissionChangeRoute::DirectCommand,
+            )
+            .expect_err("direct self-escalation must be refused");
+        println!("direct attempt refused: {direct_refusal}");
+        assert_eq!(
+            direct_refusal.to_string(),
+            "MEMBER-1381 cannot add remove-people to themselves through direct command"
+        );
+        let after_self_attempts = saved_list.saved_right_names(MEMBER).unwrap();
+        println!(
+            "after self attempts MEMBER-1381 saved rights: {}",
+            after_self_attempts.join(", ")
+        );
+        assert_eq!(after_self_attempts, vec!["read-only", "read-and-send"]);
+
+        let owner_final_save = saved_list
+            .grant_right(
+                OWNER,
+                MEMBER,
+                ServerMemberRight::RemovePeople,
+                PermissionChangeRoute::Screens,
+            )
+            .expect("server owner can add remove-people");
+        println!(
+            "owner adds remove-people saved rights: {}",
+            owner_final_save.join(", ")
+        );
+        assert_eq!(
+            owner_final_save,
+            vec!["read-only", "read-and-send", "remove-people"]
+        );
+        println!(
+            "self-change routes remain {}",
+            saved_list.self_change_routes()
+        );
+        assert_eq!(saved_list.self_change_routes(), 0);
     }
 }
