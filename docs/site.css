@@ -1,6 +1,6 @@
 /* Layout for the public documentation pages listed in
-   data/public-surface-manifest.json: docs/compare.html, docs/download.html and
-   docs/faq.html. Before this file those pages carried no stylesheet at all and
+   data/public-surface-manifest.json: docs/compare.html, docs/download.html,
+   docs/faq.html, and docs/how-it-works.html. Before this file those pages carried no stylesheet at all and
    rendered entirely from user-agent defaults.
 
    This is an external, same-origin stylesheet on purpose. The shipped policy is
