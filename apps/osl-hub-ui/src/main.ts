@@ -441,8 +441,9 @@ let coverInsertion: CoverInsertionChoice = initialCoverInsertionChoice();
 // nothing reads them at send time yet.
 let beforeSendChecks: BeforeSendChecks = initialBeforeSendChecks();
 // What OSL is allowed to delete on this device. Both start off; nothing is
-// deleted unless it is turned on here.
-let deleteChoices: DeleteChoices = initialDeleteChoices();
+// deleted unless it is turned on here. If this record is ever missing, the
+// review step fails closed instead of advancing on implied defaults.
+let deleteChoices: DeleteChoices | null = initialDeleteChoices();
 let forwardSecrecyOnboarding: ForwardSecrecyOnboardingState = initialForwardSecrecyOnboardingState();
 let forwardSecrecyMode: "protectPast" | "keepGroupDelivery" = "keepGroupDelivery";
 // A cache only. The authority is encrypted account state in the native hub;
@@ -2965,7 +2966,11 @@ export function sendingSetupContent(): string {
  * person can reason about.
  */
 export function reviewDefaultsOnboardingContent(): string {
-  return onboardingDeleteMarkup(deleteChoices);
+  const missing = deleteChoices === null;
+  const warning = missing
+    ? `<p class="del-quiet" id="defaults-record-missing" role="alert">Review defaults could not be loaded. Choose what OSL may delete before continuing.</p>`
+    : "";
+  return onboardingDeleteMarkup(deleteChoices ?? initialDeleteChoices()).replace("</section>", `${warning}</section>`);
 }
 
 function coverDraftSetupContent(): string {
@@ -3260,7 +3265,14 @@ function bindOnboarding(): void {
     onboardingRoute = "cover";
     render();
   });
-  document.querySelector("#continue-defaults-review")?.addEventListener("click", () => { onboardingRoute = "tor"; render(); });
+  document.querySelector("#continue-defaults-review")?.addEventListener("click", () => {
+    if (deleteChoices === null) {
+      showToast("Review defaults could not be loaded. Nothing changed.");
+      return;
+    }
+    onboardingRoute = "tor";
+    render();
+  });
   document.querySelectorAll<HTMLInputElement>('input[name="tor-route"]').forEach((input) => input.addEventListener("change", () => {
     if (input.checked && (input.value === "tor" || input.value === "direct")) {
       torOnboarding = chooseTorRoute(torOnboarding, input.value);
@@ -3300,11 +3312,11 @@ function bindOnboarding(): void {
     }
   }));
   document.querySelector<HTMLInputElement>("#delete-drafts")?.addEventListener("change", (event) => {
-    deleteChoices = { ...deleteChoices, deleteDrafts: (event.currentTarget as HTMLInputElement).checked };
+    deleteChoices = { ...(deleteChoices ?? initialDeleteChoices()), deleteDrafts: (event.currentTarget as HTMLInputElement).checked };
     render();
   });
   document.querySelector<HTMLInputElement>("#delete-old-messages")?.addEventListener("change", (event) => {
-    deleteChoices = { ...deleteChoices, deleteOldMessages: (event.currentTarget as HTMLInputElement).checked };
+    deleteChoices = { ...(deleteChoices ?? initialDeleteChoices()), deleteOldMessages: (event.currentTarget as HTMLInputElement).checked };
     render();
   });
   document.querySelector<HTMLInputElement>("#warn-unprotected")?.addEventListener("change", (event) => {
@@ -10101,6 +10113,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   route = patch.route ?? "home";
   onboardingRoute = patch.onboardingRoute ?? "welcome";
   setup = { ...defaultSetup, ...patch.setup };
+  deleteChoices = initialDeleteChoices();
   settingsSection = "account";
   activeService = null;
   activeHomeAppId = null;
@@ -10270,6 +10283,9 @@ export const __oslHubUiTest = {
   /** Seed detected browser areas before rendering the consent route in UI tests. */
   setBrowserProfilesForTest(profiles: BrowserProfileDescriptor[]): void {
     setBrowserProfiles(profiles);
+  },
+  setDeleteChoicesForTest(choices: DeleteChoices | null): void {
+    deleteChoices = choices;
   },
   /** D80: binds the real unlock form handler against a caller-supplied DOM so
    * the credential path can be driven end to end rather than string-matched. */
