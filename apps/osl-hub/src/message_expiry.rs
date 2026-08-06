@@ -748,6 +748,249 @@ pub fn prune_receipt_dedup_at_path(path: &Path, key: &[u8; 32], now: i64) -> Res
 }
 
 // ---------------------------------------------------------------------------
+// Durable timed-delete records for native service messages
+// ---------------------------------------------------------------------------
+
+const TIMED_DELETE_FILE: &str = "timed_delete_records.json";
+const TIMED_DELETE_LABEL: &str = "OSL timed-delete record ledger";
+const MAX_TIMED_DELETE_BYTES: u64 = 1024 * 1024;
+const MAX_TIMED_DELETE_APPS: usize = 32;
+const MAX_TIMED_DELETE_CONVERSATIONS_PER_APP: usize = 512;
+const MAX_TIMED_DELETE_RECORDS_PER_CONVERSATION: usize = 512;
+const MAX_TIMED_DELETE_RECORDS_TOTAL: usize = 4_096;
+const MAX_TIMED_DELETE_ID_LEN: usize = 256;
+
+/// Whether the native row scheduled for deletion carried OSL protected content.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimedDeleteProtection {
+    Protected,
+    Ordinary,
+}
+
+impl TimedDeleteProtection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Protected => "protected",
+            Self::Ordinary => "ordinary",
+        }
+    }
+}
+
+/// Everything OSL must remember to find and delete one native-service message.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TimedDeleteRecord {
+    pub app_id: String,
+    pub conversation_id: String,
+    pub message_locator: String,
+    pub sent_at_unix_seconds: i64,
+    pub delete_at_unix_seconds: i64,
+    pub protection: TimedDeleteProtection,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TimedDeleteLedger {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    apps: BTreeMap<String, BTreeMap<String, BTreeMap<String, TimedDeleteRecord>>>,
+}
+
+impl TimedDeleteLedger {
+    fn total_conversations(&self) -> usize {
+        self.apps.values().map(BTreeMap::len).sum()
+    }
+
+    fn total_records(&self) -> usize {
+        self.apps
+            .values()
+            .flat_map(BTreeMap::values)
+            .map(BTreeMap::len)
+            .sum()
+    }
+}
+
+fn valid_timed_delete_component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_TIMED_DELETE_ID_LEN
+        && value.bytes().all(|byte| !byte.is_ascii_control())
+}
+
+fn validate_timed_delete_record(record: &TimedDeleteRecord) -> Result<(), String> {
+    if !valid_timed_delete_component(&record.app_id) {
+        return Err("OSL timed-delete record missing app".to_owned());
+    }
+    if !valid_timed_delete_component(&record.conversation_id) {
+        return Err("OSL timed-delete record missing conversation".to_owned());
+    }
+    if !valid_timed_delete_component(&record.message_locator) {
+        return Err("OSL timed-delete record missing message locator".to_owned());
+    }
+    if record.sent_at_unix_seconds < 0
+        || record.delete_at_unix_seconds <= record.sent_at_unix_seconds
+        || record.delete_at_unix_seconds
+            > record
+                .sent_at_unix_seconds
+                .saturating_add(i64::from(MAX_ABSOLUTE_TTL_SECONDS))
+    {
+        return Err("OSL timed-delete record has invalid timing".to_owned());
+    }
+    Ok(())
+}
+
+fn load_timed_delete_ledger(path: &Path, key: &[u8; 32]) -> Result<TimedDeleteLedger, String> {
+    let Some(bytes) = crate::atomic_file::read_recoverable_bounded(
+        path,
+        MAX_TIMED_DELETE_BYTES,
+        TIMED_DELETE_LABEL,
+    )?
+    else {
+        return Ok(TimedDeleteLedger::default());
+    };
+    if !ipc::main_password::has_enc_magic(&bytes) {
+        return Err(format!("{TIMED_DELETE_LABEL} is not encrypted"));
+    }
+    let plain = Zeroizing::new(
+        ipc::main_password::decrypt_at_rest(&bytes, key)
+            .map_err(|_| format!("{TIMED_DELETE_LABEL} could not be opened"))?,
+    );
+    let ledger: TimedDeleteLedger =
+        serde_json::from_slice(&plain).map_err(|_| format!("{TIMED_DELETE_LABEL} is malformed"))?;
+    if !matches!(ledger.version, 0 | 1)
+        || ledger.apps.len() > MAX_TIMED_DELETE_APPS
+        || ledger.total_conversations()
+            > MAX_TIMED_DELETE_APPS.saturating_mul(MAX_TIMED_DELETE_CONVERSATIONS_PER_APP)
+        || ledger.total_records() > MAX_TIMED_DELETE_RECORDS_TOTAL
+    {
+        return Err(format!("{TIMED_DELETE_LABEL} is malformed"));
+    }
+    for (app_id, conversations) in &ledger.apps {
+        if !valid_timed_delete_component(app_id)
+            || conversations.len() > MAX_TIMED_DELETE_CONVERSATIONS_PER_APP
+        {
+            return Err(format!("{TIMED_DELETE_LABEL} is malformed"));
+        }
+        for (conversation_id, messages) in conversations {
+            if !valid_timed_delete_component(conversation_id)
+                || messages.len() > MAX_TIMED_DELETE_RECORDS_PER_CONVERSATION
+            {
+                return Err(format!("{TIMED_DELETE_LABEL} is malformed"));
+            }
+            for (message_locator, record) in messages {
+                if !valid_timed_delete_component(message_locator)
+                    || record.app_id != *app_id
+                    || record.conversation_id != *conversation_id
+                    || record.message_locator != *message_locator
+                {
+                    return Err(format!("{TIMED_DELETE_LABEL} is malformed"));
+                }
+                validate_timed_delete_record(record)?;
+            }
+        }
+    }
+    Ok(ledger)
+}
+
+fn store_timed_delete_ledger(
+    path: &Path,
+    ledger: &TimedDeleteLedger,
+    key: &[u8; 32],
+) -> Result<(), String> {
+    let body = Zeroizing::new(
+        serde_json::to_vec(ledger)
+            .map_err(|_| format!("{TIMED_DELETE_LABEL} could not be encoded"))?,
+    );
+    let sealed = ipc::main_password::encrypt_at_rest(&body, key)
+        .map_err(|_| format!("{TIMED_DELETE_LABEL} could not be encrypted"))?;
+    if sealed.len() as u64 > MAX_TIMED_DELETE_BYTES {
+        return Err(format!("{TIMED_DELETE_LABEL} exceeds its storage limit"));
+    }
+    crate::atomic_file::write_recoverable(path, &sealed, TIMED_DELETE_LABEL)
+}
+
+/// Direct command boundary for scheduling a native-service message deletion.
+pub fn cmd_record_timed_delete_at_path(
+    path: &Path,
+    key: &[u8; 32],
+    record: TimedDeleteRecord,
+) -> Result<TimedDeleteRecord, String> {
+    validate_timed_delete_record(&record)?;
+    let mut ledger = load_timed_delete_ledger(path, key)?;
+    let app_is_new = !ledger.apps.contains_key(&record.app_id);
+    let conversation_is_new = ledger
+        .apps
+        .get(&record.app_id)
+        .is_none_or(|conversations| !conversations.contains_key(&record.conversation_id));
+    let conversation_records = ledger
+        .apps
+        .get(&record.app_id)
+        .and_then(|conversations| conversations.get(&record.conversation_id))
+        .map_or(0, BTreeMap::len);
+    if (app_is_new && ledger.apps.len() >= MAX_TIMED_DELETE_APPS)
+        || (conversation_is_new
+            && ledger
+                .apps
+                .get(&record.app_id)
+                .is_some_and(|conversations| {
+                    conversations.len() >= MAX_TIMED_DELETE_CONVERSATIONS_PER_APP
+                }))
+        || conversation_records >= MAX_TIMED_DELETE_RECORDS_PER_CONVERSATION
+        || ledger.total_records() >= MAX_TIMED_DELETE_RECORDS_TOTAL
+    {
+        return Err("OSL timed-delete record ledger reached its safe limit".to_owned());
+    }
+    if let Some(existing) = ledger
+        .apps
+        .get(&record.app_id)
+        .and_then(|conversations| conversations.get(&record.conversation_id))
+        .and_then(|messages| messages.get(&record.message_locator))
+    {
+        return if existing == &record {
+            Ok(record)
+        } else {
+            Err("OSL already holds a different timed-delete record for this message".to_owned())
+        };
+    }
+    ledger.version = 1;
+    ledger
+        .apps
+        .entry(record.app_id.clone())
+        .or_default()
+        .entry(record.conversation_id.clone())
+        .or_default()
+        .insert(record.message_locator.clone(), record.clone());
+    store_timed_delete_ledger(path, &ledger, key)?;
+    Ok(record)
+}
+
+/// Fresh-read lookup for the exact native-service message scheduled to go.
+pub fn find_timed_delete_record_at_path(
+    path: &Path,
+    key: &[u8; 32],
+    app_id: &str,
+    conversation_id: &str,
+    message_locator: &str,
+) -> Result<Option<TimedDeleteRecord>, String> {
+    if !valid_timed_delete_component(app_id) {
+        return Err("OSL timed-delete record missing app".to_owned());
+    }
+    if !valid_timed_delete_component(conversation_id) {
+        return Err("OSL timed-delete record missing conversation".to_owned());
+    }
+    if !valid_timed_delete_component(message_locator) {
+        return Err("OSL timed-delete record missing message locator".to_owned());
+    }
+    Ok(load_timed_delete_ledger(path, key)?
+        .apps
+        .get(app_id)
+        .and_then(|conversations| conversations.get(conversation_id))
+        .and_then(|messages| messages.get(message_locator))
+        .cloned())
+}
+
+// ---------------------------------------------------------------------------
 // Abandoned decrypted staging files
 // ---------------------------------------------------------------------------
 
@@ -879,6 +1122,12 @@ fn receipt_dedup_path() -> Result<PathBuf, String> {
         .join(RECEIPT_DEDUP_FILE))
 }
 
+fn timed_delete_path() -> Result<PathBuf, String> {
+    Ok(keystore::osl_config_dir()
+        .map_err(|_| "OSL account storage is unavailable".to_owned())?
+        .join(TIMED_DELETE_FILE))
+}
+
 /// The deadline in force for one message, using the active account's ledger.
 ///
 /// [`ExpiryVerdict::Expired`] while OSL is locked: without the file storage key
@@ -926,6 +1175,32 @@ pub fn record_receipt_sent(message_id: &str, retain_until: i64, now: i64) -> Res
     let key = ipc::main_password::get_file_storage_key()
         .ok_or_else(|| "OSL must be unlocked to record a receipt".to_owned())?;
     record_receipt_sent_at_path(&receipt_dedup_path()?, &key, message_id, retain_until, now)
+}
+
+/// Direct command boundary for scheduling a native-service message deletion,
+/// using the active account's sealed ledger.
+pub fn cmd_record_timed_delete(record: TimedDeleteRecord) -> Result<TimedDeleteRecord, String> {
+    let key = ipc::main_password::get_file_storage_key()
+        .ok_or_else(|| "OSL must be unlocked to record a timed delete".to_owned())?;
+    cmd_record_timed_delete_at_path(&timed_delete_path()?, &key, record)
+}
+
+/// Find a scheduled native-service message deletion in the active account's
+/// sealed ledger.
+pub fn find_timed_delete_record(
+    app_id: &str,
+    conversation_id: &str,
+    message_locator: &str,
+) -> Result<Option<TimedDeleteRecord>, String> {
+    let key = ipc::main_password::get_file_storage_key()
+        .ok_or_else(|| "OSL must be unlocked to read timed deletes".to_owned())?;
+    find_timed_delete_record_at_path(
+        &timed_delete_path()?,
+        &key,
+        app_id,
+        conversation_id,
+        message_locator,
+    )
 }
 
 /// Run one bounded lifecycle sweep.
@@ -1010,6 +1285,10 @@ mod tests {
 
     fn ledger_path(label: &str) -> PathBuf {
         root(label).join(OPEN_CLOCK_FILE)
+    }
+
+    fn timed_delete_path(label: &str) -> PathBuf {
+        root(label).join(TIMED_DELETE_FILE)
     }
 
     fn parts() -> Vec<AcceptedPart> {
@@ -1437,6 +1716,91 @@ mod tests {
             MESSAGE,
             now + 3_600
         ));
+    }
+
+    // ---- timed-delete native message records ----
+
+    #[test]
+    fn task_3306_direct_command_writes_protected_and_ordinary_timed_delete_records() {
+        let path = timed_delete_path("task-3306");
+        let protected = TimedDeleteRecord {
+            app_id: "discord".to_owned(),
+            conversation_id: "dm:task-3306".to_owned(),
+            message_locator: "discord-message-3306-protected".to_owned(),
+            sent_at_unix_seconds: 1_900_000_000,
+            delete_at_unix_seconds: 1_900_003_600,
+            protection: TimedDeleteProtection::Protected,
+        };
+        let ordinary = TimedDeleteRecord {
+            app_id: "whatsapp".to_owned(),
+            conversation_id: "chat:task-3306".to_owned(),
+            message_locator: "whatsapp-message-3306-ordinary".to_owned(),
+            sent_at_unix_seconds: 1_900_010_000,
+            delete_at_unix_seconds: 1_900_096_400,
+            protection: TimedDeleteProtection::Ordinary,
+        };
+
+        let protected_written =
+            cmd_record_timed_delete_at_path(&path, &KEY, protected.clone()).unwrap();
+        let ordinary_written =
+            cmd_record_timed_delete_at_path(&path, &KEY, ordinary.clone()).unwrap();
+        println!("task_3306_direct_command=cmd_record_timed_delete_at_path");
+        println!(
+            "task_3306_written_protected app={} conversation={} locator={} sent_at={} delete_at={} protection={}",
+            protected_written.app_id,
+            protected_written.conversation_id,
+            protected_written.message_locator,
+            protected_written.sent_at_unix_seconds,
+            protected_written.delete_at_unix_seconds,
+            protected_written.protection.as_str()
+        );
+        println!(
+            "task_3306_written_ordinary app={} conversation={} locator={} sent_at={} delete_at={} protection={}",
+            ordinary_written.app_id,
+            ordinary_written.conversation_id,
+            ordinary_written.message_locator,
+            ordinary_written.sent_at_unix_seconds,
+            ordinary_written.delete_at_unix_seconds,
+            ordinary_written.protection.as_str()
+        );
+
+        let found_protected = find_timed_delete_record_at_path(
+            &path,
+            &KEY,
+            "discord",
+            "dm:task-3306",
+            "discord-message-3306-protected",
+        )
+        .unwrap();
+        let found_ordinary = find_timed_delete_record_at_path(
+            &path,
+            &KEY,
+            "whatsapp",
+            "chat:task-3306",
+            "whatsapp-message-3306-ordinary",
+        )
+        .unwrap();
+        assert_eq!(found_protected, Some(protected.clone()));
+        assert_eq!(found_ordinary, Some(ordinary.clone()));
+        let fresh_read_found_count =
+            usize::from(found_protected.is_some()) + usize::from(found_ordinary.is_some());
+        println!("task_3306_fresh_read_found_count={fresh_read_found_count}");
+        println!(
+            "task_3306_fresh_read_protected_locator={}",
+            found_protected.unwrap().message_locator
+        );
+        println!(
+            "task_3306_fresh_read_ordinary_locator={}",
+            found_ordinary.unwrap().message_locator
+        );
+
+        let mut missing_conversation = protected;
+        missing_conversation.message_locator = "discord-message-3306-missing-conversation".into();
+        missing_conversation.conversation_id.clear();
+        let refused =
+            cmd_record_timed_delete_at_path(&path, &KEY, missing_conversation).unwrap_err();
+        assert_eq!(refused, "OSL timed-delete record missing conversation");
+        println!("task_3306_missing_conversation_refused={refused}");
     }
 
     // ---- staging sweep ----
