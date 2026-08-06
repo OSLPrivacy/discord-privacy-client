@@ -23,6 +23,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 
+pub const DEFAULT_LANGUAGE_CHOICE: &str = "en";
+
+pub fn default_language_choice() -> String {
+    DEFAULT_LANGUAGE_CHOICE.to_string()
+}
+
 /// Active stego envelope. Mode 0 is the production `DPC0::<b64>`
 /// path; Mode 1 is the multi-message `DPC1::<sentences>` cover
 /// added in 9-B1.
@@ -174,7 +180,7 @@ impl FromStr for NewFriendVerificationWarnings {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
     pub version: u32,
@@ -194,9 +200,28 @@ pub struct AppPreferences {
     pub new_friend_verification_warnings: NewFriendVerificationWarnings,
     #[serde(default)]
     pub start_with_windows: StartWithWindowsChoice,
+    #[serde(default = "default_language_choice")]
+    pub language: String,
 }
 
-pub const APP_PREFERENCES_VERSION: u32 = 3;
+impl Default for AppPreferences {
+    fn default() -> Self {
+        Self {
+            version: 0,
+            stego_mode: StegoMode::default(),
+            tour: TourState::default(),
+            update_channel: UpdateChannel::default(),
+            auto_whitelist_rules: HashMap::new(),
+            new_friend_account_reach: NewFriendAccountReach::default(),
+            new_friend_auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistRule::default(),
+            new_friend_verification_warnings: NewFriendVerificationWarnings::default(),
+            start_with_windows: StartWithWindowsChoice::default(),
+            language: default_language_choice(),
+        }
+    }
+}
+
+pub const APP_PREFERENCES_VERSION: u32 = 4;
 
 pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {

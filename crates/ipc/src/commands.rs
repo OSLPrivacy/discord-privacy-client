@@ -223,6 +223,15 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_save_start_with_windows_choice", || {
             let _ = cmd_osl_save_start_with_windows_choice(&state, "on".to_owned(), None);
         });
+        assert_command_marks_activity("cmd_osl_get_language_choice", || {
+            let _ = cmd_osl_get_language_choice(&state);
+        });
+        assert_command_marks_activity("cmd_osl_save_language_choice", || {
+            let _ = cmd_osl_save_language_choice(&state, "en".to_owned(), None);
+        });
+        assert_command_marks_activity("cmd_osl_read_screen_words", || {
+            let _ = cmd_osl_read_screen_words(&state, "welcome".to_owned());
+        });
         assert_command_marks_activity("cmd_osl_get_self_user_id", || {
             let _ = cmd_osl_get_self_user_id(&state);
         });
@@ -16811,6 +16820,51 @@ pub fn cmd_osl_save_start_with_windows_choice(
     }
     persist_app_preferences_now(state, config_dir);
     Ok(choice.as_value().to_string())
+}
+
+// ---- Language choice and screen words ----
+
+pub fn cmd_osl_get_language_choice(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    crate::screen_words::normalize_language(&prefs.language).map(|language| language.to_string())
+}
+
+pub fn cmd_osl_save_language_choice(
+    state: &AppState,
+    language: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let language = crate::screen_words::normalize_language(&language)?.to_string();
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.language = language.clone();
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(language)
+}
+
+pub fn cmd_osl_read_screen_words(
+    state: &AppState,
+    screen: String,
+) -> Result<crate::screen_words::ScreenWords, String> {
+    record_activity_on_command_entry();
+    let language = {
+        let prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.language.clone()
+    };
+    crate::screen_words::load_screen_words(&language, &screen)
 }
 
 // ---- Phase 9-D: onboarding tour + VPN warning ----

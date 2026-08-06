@@ -77,6 +77,7 @@ pub mod revocation;
 pub mod scope;
 pub mod scope_blobs_file;
 pub mod scope_ttl_file;
+pub mod screen_words;
 pub mod server_membership;
 pub mod space_roster;
 // Unit a45: encrypted UI-side storage contract (checklist A6). Defines the
