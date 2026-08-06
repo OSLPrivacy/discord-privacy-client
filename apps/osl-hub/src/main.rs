@@ -2,6 +2,9 @@
 
 #[cfg(feature = "whatsapp-qa-identity")]
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use osl_privacy_hub::account_burn_selection::{
+    select_account_burn_selection, AccountBurnSelection,
+};
 use osl_privacy_hub::account_recovery;
 use osl_privacy_hub::ai_carrier::{
     ai_carrier_status_for, set_ai_carrier_preview_enabled_for, AiCarrierState,
@@ -6838,6 +6841,8 @@ struct HubServiceBurnReadiness {
 #[serde(rename_all = "camelCase")]
 struct HubServiceBurnResult {
     burn_id: String,
+    current_account_id: String,
+    selected_total: usize,
     scopes_burned: usize,
     rows_destroyed: usize,
     whitelist_entries_removed: usize,
@@ -6860,6 +6865,39 @@ fn require_owned_service_account(
         .ok_or_else(|| "unknown service".to_owned())?;
     registry.require_owned(&owner, kind, account_id)?;
     Ok(owner)
+}
+
+fn load_current_account_burn_selection(
+    owner_osl_user_id: &str,
+    account_id: &str,
+) -> Result<AccountBurnSelection, String> {
+    let db_path = keystore::osl_config_dir()
+        .map_err(|_| "OSL account storage is unavailable".to_owned())?
+        .join("store")
+        .join("messages.sqlite");
+    if !db_path.exists() {
+        return Ok(AccountBurnSelection::empty(account_id));
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| format!("OSL account burn selection could not open local index: {error}"))?;
+    let has_selection_table: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'provider_sender_messages'
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("OSL account burn selection index is unreadable: {error}"))?;
+    if !has_selection_table {
+        return Ok(AccountBurnSelection::empty(account_id));
+    }
+    select_account_burn_selection(&conn, owner_osl_user_id, account_id)
+        .map_err(|error| format!("OSL account burn selection failed: {error}"))
 }
 
 #[tauri::command]
@@ -6900,6 +6938,7 @@ async fn burn_hub_service_account(
         let registry = app.state::<ServiceRegistryState>();
         let index = app.state::<ServiceScopeIndexState>();
         let owner = require_owned_service_account(&core, &registry, &service_id, &account_id)?;
+        let account_selection = load_current_account_burn_selection(&owner, &account_id)?;
         let preview = index.preview_complete_manifest(&owner, &service_id, &account_id)?;
         if confirmed_burn_id != bytes_hex(&preview.burn_id) {
             return Err(
@@ -6910,7 +6949,7 @@ async fn burn_hub_service_account(
         if manifest.burn_id != preview.burn_id {
             return Err("The service burn scope changed before it could be frozen".to_owned());
         }
-        burn_indexed_service_manifest(&app, &index, &manifest)
+        burn_indexed_service_manifest(&app, &index, &manifest, &account_selection)
     })
     .await
     .map_err(|_| "OSL service burn worker failed".to_owned())?
@@ -6920,6 +6959,7 @@ fn burn_indexed_service_manifest(
     app: &tauri::AppHandle,
     index: &ServiceScopeIndexState,
     manifest: &ImmutableServiceBurnManifest,
+    account_selection: &AccountBurnSelection,
 ) -> Result<HubServiceBurnResult, String> {
     let mut scopes_burned = 0usize;
     let mut rows_destroyed = 0usize;
@@ -6943,7 +6983,7 @@ fn burn_indexed_service_manifest(
                 indexed.scope.clone(),
                 indexed.canonical_channel_ids.clone(),
                 true,
-                Vec::new(),
+                account_selection.selected_message_ids.clone(),
             )?
         };
         broker::burn_indexed_local_protected_binding(
@@ -6964,6 +7004,8 @@ fn burn_indexed_service_manifest(
     app.state::<HubBrokerState>().clear()?;
     Ok(HubServiceBurnResult {
         burn_id: bytes_hex(&manifest.burn_id),
+        current_account_id: account_selection.current_account_id.clone(),
+        selected_total: account_selection.selected_total(),
         scopes_burned,
         rows_destroyed,
         whitelist_entries_removed,

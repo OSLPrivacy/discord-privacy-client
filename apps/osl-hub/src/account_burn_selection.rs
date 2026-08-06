@@ -17,6 +17,25 @@ pub struct AccountBurnSenderMessageRecord {
     pub service_message_id: String,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AccountBurnSelection {
+    pub current_account_id: String,
+    pub selected_message_ids: Vec<String>,
+}
+
+impl AccountBurnSelection {
+    pub fn empty(current_account_id: impl Into<String>) -> Self {
+        Self {
+            current_account_id: current_account_id.into(),
+            selected_message_ids: Vec::new(),
+        }
+    }
+
+    pub fn selected_total(&self) -> usize {
+        self.selected_message_ids.len()
+    }
+}
+
 pub fn select_account_burn_sender_messages(
     conn: &Connection,
     owner_osl_user_id: &str,
@@ -32,6 +51,21 @@ pub fn select_account_burn_sender_messages(
         })
     })?;
     rows.collect()
+}
+
+pub fn select_account_burn_selection(
+    conn: &Connection,
+    owner_osl_user_id: &str,
+    account_id: &str,
+) -> rusqlite::Result<AccountBurnSelection> {
+    let records = select_account_burn_sender_messages(conn, owner_osl_user_id, account_id)?;
+    Ok(AccountBurnSelection {
+        current_account_id: account_id.to_owned(),
+        selected_message_ids: records
+            .into_iter()
+            .map(|record| record.service_message_id)
+            .collect(),
+    })
 }
 
 #[cfg(test)]
@@ -149,6 +183,75 @@ mod tests {
         println!(
             "TASK0537 direct_query=SELECT_ACCOUNT_BURN_SENDER_MESSAGES_SQL account=current-account current_account_records={} other_account_records={} ids={:?}",
             current_account_records, other_account_records, selected_ids
+        );
+    }
+
+    #[test]
+    fn account_burn_action_result_reports_current_account_id_and_selected_total() {
+        let conn = Connection::open_in_memory().expect("open in-memory account burn db");
+        conn.execute_batch(
+            "CREATE TABLE provider_sender_messages (
+                owner_osl_user_id TEXT NOT NULL,
+                service_id TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                service_message_id TEXT NOT NULL,
+                authored_by_self INTEGER NOT NULL
+            );",
+        )
+        .expect("create provider sender message table");
+
+        let owner = "identity-current";
+        for (service, message_id) in [
+            ("discord", "current-discord-1"),
+            ("discord", "current-discord-2"),
+            ("telegram", "current-telegram-1"),
+            ("telegram", "current-telegram-2"),
+            ("signal", "current-signal-1"),
+            ("whatsapp", "current-whatsapp-1"),
+        ] {
+            seed(&conn, owner, service, "current-account", message_id, true);
+        }
+        for (service, message_id) in [
+            ("discord", "other-discord-1"),
+            ("telegram", "other-telegram-1"),
+            ("signal", "other-signal-1"),
+        ] {
+            seed(&conn, owner, service, "other-account", message_id, true);
+        }
+        seed(
+            &conn,
+            owner,
+            "discord",
+            "current-account",
+            "current-received-1",
+            false,
+        );
+
+        let selection = select_account_burn_selection(&conn, owner, "current-account").unwrap();
+
+        assert_eq!(selection.current_account_id, "current-account");
+        assert_eq!(selection.selected_total(), 6);
+        assert_eq!(
+            selection.selected_message_ids,
+            vec![
+                "current-discord-1",
+                "current-discord-2",
+                "current-signal-1",
+                "current-telegram-1",
+                "current-telegram-2",
+                "current-whatsapp-1",
+            ]
+        );
+        assert!(!selection
+            .selected_message_ids
+            .iter()
+            .any(|id| id.contains("other") || id.contains("received")));
+
+        println!(
+            "TASK0538 result current_account_id={} selected_total={} selected_message_ids={:?}",
+            selection.current_account_id,
+            selection.selected_total(),
+            selection.selected_message_ids
         );
     }
 }

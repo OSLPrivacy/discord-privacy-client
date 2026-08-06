@@ -169,6 +169,8 @@ export interface HubServiceBurnReadiness {
 }
 export interface HubServiceBurnResult {
   burnId: string;
+  currentAccountId: string;
+  selectedTotal: number;
   scopesBurned: number;
   rowsDestroyed: number;
   whitelistEntriesRemoved: number;
@@ -1278,8 +1280,8 @@ export function parseHubServiceBurnReadiness(raw: unknown): HubServiceBurnReadin
 }
 
 export function parseHubServiceBurnResult(raw: unknown): HubServiceBurnResult | null {
-  if (!isRecord(raw) || !exact(raw, ["burnId", "scopesBurned", "rowsDestroyed", "whitelistEntriesRemoved", "remoteBlobsDeleted", "remoteBlobDeletionsFailed", "localCleanupComplete", "remoteCleanupComplete", "loginProfileUntouched", "nativeHistoryUntouched"])) return null;
-  if (!/^[a-f0-9]{64}$/.test(String(raw.burnId)) || ![raw.scopesBurned, raw.rowsDestroyed, raw.whitelistEntriesRemoved, raw.remoteBlobsDeleted, raw.remoteBlobDeletionsFailed].every(boundedCount) || typeof raw.localCleanupComplete !== "boolean" || typeof raw.remoteCleanupComplete !== "boolean" || raw.loginProfileUntouched !== true || raw.nativeHistoryUntouched !== true) return null;
+  if (!isRecord(raw) || !exact(raw, ["burnId", "currentAccountId", "selectedTotal", "scopesBurned", "rowsDestroyed", "whitelistEntriesRemoved", "remoteBlobsDeleted", "remoteBlobDeletionsFailed", "localCleanupComplete", "remoteCleanupComplete", "loginProfileUntouched", "nativeHistoryUntouched"])) return null;
+  if (!/^[a-f0-9]{64}$/.test(String(raw.burnId)) || !safePlaintext(raw.currentAccountId, 128) || ![raw.selectedTotal, raw.scopesBurned, raw.rowsDestroyed, raw.whitelistEntriesRemoved, raw.remoteBlobsDeleted, raw.remoteBlobDeletionsFailed].every(boundedCount) || typeof raw.localCleanupComplete !== "boolean" || typeof raw.remoteCleanupComplete !== "boolean" || raw.loginProfileUntouched !== true || raw.nativeHistoryUntouched !== true) return null;
   return raw as unknown as HubServiceBurnResult;
 }
 
