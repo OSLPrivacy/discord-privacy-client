@@ -13073,6 +13073,21 @@ pub struct WhitelistRowDto {
     pub broadened: bool,
 }
 
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct SignalWhitelistKindDto {
+    pub name: &'static str,
+}
+
+pub fn cmd_osl_list_signal_whitelist_kinds() -> Result<Vec<SignalWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(vec![
+        SignalWhitelistKindDto {
+            name: "direct message",
+        },
+        SignalWhitelistKindDto { name: "group chat" },
+    ])
+}
+
 /// 7d-A: flatten every peer's outgoing_whitelists into a single
 /// list of DTOs for the settings-menu Whitelist Manager. Order
 /// is stable: peers sorted by Discord snowflake (string), then
