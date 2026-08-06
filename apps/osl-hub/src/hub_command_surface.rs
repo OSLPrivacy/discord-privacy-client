@@ -490,6 +490,7 @@ macro_rules! hub_tauri_commands {
             ai_carrier_status,
             set_ai_carrier_preview_enabled,
             build_integrity_status,
+            verify_peer_build_integrity,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
             set_hub_screenshot_protection,
@@ -1654,6 +1655,17 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["query_osl_chat_visible_records"],
+        );
+    }
+
+    #[test]
+    fn peer_build_integrity_command_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "verify_peer_build_integrity",
         );
     }
 

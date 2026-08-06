@@ -23,7 +23,9 @@ use osl_privacy_hub::browser_profile_scan::{
     BrowserProfileConsentGrant, BrowserProfileDescriptor, BrowserProfileRoots,
     BrowserProfileScanReceipt, BrowserProfileScanState,
 };
-use osl_privacy_hub::build_integrity::{check_current, BuildIntegrity};
+use osl_privacy_hub::build_integrity::{
+    check_current, verify_peer_build_from_hex, BuildIntegrity, PeerBuildCheck,
+};
 use osl_privacy_hub::chat_capture_protection::{
     ChatCaptureProtectionState, ConsentTransition, EffectiveCaptureProtection,
 };
@@ -9481,6 +9483,11 @@ fn build_integrity_status(state: tauri::State<'_, BuildIntegrity>) -> BuildInteg
     *state.inner()
 }
 
+#[tauri::command]
+fn verify_peer_build_integrity(peer_exe_sha256: String) -> Result<PeerBuildCheck, String> {
+    verify_peer_build_from_hex(&peer_exe_sha256)
+}
+
 macro_rules! hub_tauri_generate_handler {
     ($($(#[$meta:meta])* $command:ident),* $(,)?) => {
         tauri::generate_handler![$($(#[$meta])* $command,)*]
@@ -10523,7 +10530,10 @@ mod tauri_command_acl_tests {
 
     #[test]
     fn t10_t9_build_integrity_is_checked_at_startup_and_exposed_to_the_shipping_ui() {
-        assert_registered_and_acl_granted(&["build_integrity_status"]);
+        assert_registered_and_acl_granted(&[
+            "build_integrity_status",
+            "verify_peer_build_integrity",
+        ]);
         let source = include_str!("main.rs");
         assert!(source.contains("app.manage(check_current());"));
     }
