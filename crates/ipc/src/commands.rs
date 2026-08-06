@@ -16483,6 +16483,144 @@ pub struct OpenedChannelMessageThreadDto {
     pub parent_message: ChannelMessageDto,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ServerChannelMessageDto {
+    pub server_id: String,
+    pub channel_id: String,
+    pub message_id: String,
+    pub plaintext: String,
+    pub channel_message_count: usize,
+}
+
+/// Store one first-party OSL Chats message under an explicitly selected server
+/// channel.
+///
+/// The server/channel pair is checked against the discovered guild snapshot
+/// before any message id is inspected, so replaying a send while changing only
+/// the server cannot overwrite a valid message in the original channel.
+pub fn cmd_osl_post_server_channel_message(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    message_id: String,
+    plaintext: String,
+) -> Result<ServerChannelMessageDto, String> {
+    record_activity_on_command_entry();
+    let server_id = normalize_channel_thread_field("server_id", server_id)?;
+    let channel_id = normalize_channel_thread_field("channel_id", channel_id)?;
+    let message_id = normalize_channel_thread_field("message_id", message_id)?;
+    let plaintext = normalize_server_channel_plaintext(plaintext)?;
+    require_known_server_channel(state, &server_id, &channel_id)?;
+
+    let mut messages = state
+        .channel_messages
+        .lock()
+        .expect("channel_messages mutex poisoned");
+
+    match messages.get_mut(&message_id) {
+        Some(existing) => {
+            if existing
+                .server_id
+                .as_deref()
+                .is_some_and(|known| known != server_id)
+                || existing.channel_id != channel_id
+            {
+                return Err(format!(
+                    "OSL: message '{}' already belongs to server '{}' channel '{}'",
+                    message_id,
+                    existing.server_id.as_deref().unwrap_or("<unknown>"),
+                    existing.channel_id
+                ));
+            }
+            existing.server_id = Some(server_id.clone());
+            existing.plaintext = Some(plaintext.clone());
+        }
+        None => {
+            messages.insert(
+                message_id.clone(),
+                crate::state::ChannelMessageRecord {
+                    server_id: Some(server_id.clone()),
+                    message_id: message_id.clone(),
+                    channel_id: channel_id.clone(),
+                    plaintext: Some(plaintext.clone()),
+                    thread_ids: Vec::new(),
+                },
+            );
+        }
+    }
+
+    Ok(ServerChannelMessageDto {
+        channel_message_count: count_server_channel_messages(&messages, &server_id, &channel_id),
+        server_id,
+        channel_id,
+        message_id,
+        plaintext,
+    })
+}
+
+/// Read one stored first-party OSL Chats server-channel message.
+pub fn cmd_osl_read_server_channel_message(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+    message_id: String,
+) -> Result<ServerChannelMessageDto, String> {
+    record_activity_on_command_entry();
+    let server_id = normalize_channel_thread_field("server_id", server_id)?;
+    let channel_id = normalize_channel_thread_field("channel_id", channel_id)?;
+    let message_id = normalize_channel_thread_field("message_id", message_id)?;
+    require_known_server_channel(state, &server_id, &channel_id)?;
+
+    let messages = state
+        .channel_messages
+        .lock()
+        .expect("channel_messages mutex poisoned");
+    let message = messages
+        .get(&message_id)
+        .ok_or_else(|| format!("OSL: message '{message_id}' does not exist"))?;
+    if message.server_id.as_deref() != Some(server_id.as_str()) || message.channel_id != channel_id
+    {
+        return Err(format!(
+            "OSL: message '{}' does not belong to server '{}' channel '{}'",
+            message_id, server_id, channel_id
+        ));
+    }
+    let plaintext = message
+        .plaintext
+        .clone()
+        .ok_or_else(|| format!("OSL: message '{message_id}' has no stored plaintext"))?;
+
+    Ok(ServerChannelMessageDto {
+        channel_message_count: count_server_channel_messages(&messages, &server_id, &channel_id),
+        server_id,
+        channel_id,
+        message_id,
+        plaintext,
+    })
+}
+
+/// Count stored first-party OSL Chats messages under one server channel.
+pub fn cmd_osl_count_server_channel_messages(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+) -> Result<usize, String> {
+    record_activity_on_command_entry();
+    let server_id = normalize_channel_thread_field("server_id", server_id)?;
+    let channel_id = normalize_channel_thread_field("channel_id", channel_id)?;
+    require_known_server_channel(state, &server_id, &channel_id)?;
+
+    let messages = state
+        .channel_messages
+        .lock()
+        .expect("channel_messages mutex poisoned");
+    Ok(count_server_channel_messages(
+        &messages,
+        &server_id,
+        &channel_id,
+    ))
+}
+
 /// Create one local thread attached to a parent channel message.
 ///
 /// The parent message is recorded in the same command so the thread cannot
@@ -16510,8 +16648,10 @@ pub fn cmd_osl_create_channel_message_thread(
     let parent = messages
         .entry(parent_message_id.clone())
         .or_insert_with(|| crate::state::ChannelMessageRecord {
+            server_id: None,
             message_id: parent_message_id.clone(),
             channel_id: channel_id.clone(),
+            plaintext: None,
             thread_ids: Vec::new(),
         });
     if parent.channel_id != channel_id {
@@ -16630,6 +16770,44 @@ fn normalize_channel_thread_field(field: &str, value: String) -> Result<String, 
         return Err(format!("OSL: invalid {field}"));
     }
     Ok(value.to_owned())
+}
+
+fn normalize_server_channel_plaintext(value: String) -> Result<String, String> {
+    if value.is_empty() || value.len() > 4096 {
+        return Err("OSL: invalid server-channel message plaintext".to_owned());
+    }
+    Ok(value)
+}
+
+fn require_known_server_channel(
+    state: &AppState,
+    server_id: &str,
+    channel_id: &str,
+) -> Result<(), String> {
+    let guilds = state.guild_list.lock().expect("guild_list mutex poisoned");
+    let channel_belongs_to_server = guilds
+        .iter()
+        .find(|guild| guild.id == server_id)
+        .is_some_and(|guild| guild.channel_ids.iter().any(|known| known == channel_id));
+    if !channel_belongs_to_server {
+        return Err(format!(
+            "OSL: channel '{channel_id}' does not belong to server '{server_id}'"
+        ));
+    }
+    Ok(())
+}
+
+fn count_server_channel_messages(
+    messages: &std::collections::HashMap<String, crate::state::ChannelMessageRecord>,
+    server_id: &str,
+    channel_id: &str,
+) -> usize {
+    messages
+        .values()
+        .filter(|message| {
+            message.server_id.as_deref() == Some(server_id) && message.channel_id == channel_id
+        })
+        .count()
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]

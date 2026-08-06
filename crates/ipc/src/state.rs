@@ -176,8 +176,10 @@ pub struct KeyChangeAlert {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelMessageRecord {
+    pub server_id: Option<String>,
     pub message_id: String,
     pub channel_id: String,
+    pub plaintext: Option<String>,
     pub thread_ids: Vec<String>,
 }
 
