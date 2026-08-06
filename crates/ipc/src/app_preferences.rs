@@ -19,7 +19,7 @@
 //! legacy files carrying it still load (unknown keys are ignored).
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 /// Active stego envelope. Mode 0 is the production `DPC0::<b64>`
@@ -297,6 +297,8 @@ pub struct AppPreferences {
     pub update_channel: UpdateChannel,
     #[serde(default)]
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
+    #[serde(default)]
+    pub allowed_place_records: BTreeMap<String, crate::allowed_places::AllowedPlaceRecord>,
     #[serde(default)]
     pub privacy_level: PrivacyLevel,
     #[serde(default)]

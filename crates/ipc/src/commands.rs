@@ -27,6 +27,61 @@ pub fn cmd_osl_list_telegram_whitelist_kinds() -> Vec<crate::allowed_places::All
     crate::allowed_places::telegram_whitelist_kinds()
 }
 
+pub fn cmd_osl_add_allowed_place_record(
+    state: &AppState,
+    app: String,
+    account: String,
+    kind: String,
+    stable_id: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<crate::allowed_places::AllowedPlaceRecord, String> {
+    record_activity_on_command_entry();
+    let record = crate::allowed_places::AllowedPlaceRecord {
+        app,
+        account,
+        kind,
+        stable_id,
+    };
+    crate::allowed_places::validate_allowed_place_record(&record)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        if let Some(existing) = prefs.allowed_place_records.get(&record.stable_id) {
+            if existing != &record {
+                return Err(
+                    "OSL: allowed-place stable ID already belongs to a different record"
+                        .to_string(),
+                );
+            }
+        }
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs
+            .allowed_place_records
+            .insert(record.stable_id.clone(), record.clone());
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(record)
+}
+
+pub fn cmd_osl_list_allowed_place_records(
+    state: &AppState,
+) -> Result<Vec<crate::allowed_places::AllowedPlaceRecord>, String> {
+    record_activity_on_command_entry();
+    Ok(state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .allowed_place_records
+        .values()
+        .cloned()
+        .collect())
+}
+
 // 9-TD2.3: F0-FIX3 trace logs.
 //
 // Set the `OSL_TRACE` env var (any value) to surface the snowflake

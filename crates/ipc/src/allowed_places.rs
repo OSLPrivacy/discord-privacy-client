@@ -58,6 +58,28 @@ impl AllowedPlaceRecord {
     }
 }
 
+pub fn validate_allowed_place_record(record: &AllowedPlaceRecord) -> Result<(), String> {
+    validate_allowed_place_field(&record.app, "app")?;
+    validate_allowed_place_field(&record.account, "account")?;
+    validate_allowed_place_field(&record.kind, "kind")?;
+    validate_allowed_place_field(&record.stable_id, "stable ID")?;
+
+    let expected_prefix = format!("{}:{}:{}:", record.app, record.account, record.kind);
+    if !record.stable_id.starts_with(&expected_prefix) {
+        return Err(
+            "OSL: allowed-place stable ID does not match app, account, and kind".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_allowed_place_field(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > 512 || value.contains('\0') {
+        return Err(format!("OSL: allowed-place {label} is invalid"));
+    }
+    Ok(())
+}
+
 pub fn telegram_whitelist_kinds() -> Vec<AllowedPlaceKind> {
     [
         KIND_DIRECT_MESSAGE,
