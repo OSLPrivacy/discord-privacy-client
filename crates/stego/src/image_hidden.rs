@@ -181,7 +181,6 @@ fn frame_bytes(payload: ImageHiddenPointer) -> [u8; FRAME_BYTES] {
     let pointer_start = MAGIC.len();
     let check_start = pointer_start + IMAGE_HIDDEN_POINTER_BYTES;
     frame[pointer_start..check_start].copy_from_slice(&payload.pointer);
-    frame[check_start..].copy_from_slice(&payload.check_mark);
     frame
 }
 
