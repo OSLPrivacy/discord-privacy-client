@@ -6878,6 +6878,265 @@ key"
         );
     }
 
+    #[derive(Debug, Clone)]
+    struct Task1353Mark {
+        copy: &'static str,
+        bucket: &'static str,
+        channel_id: String,
+        mark: String,
+    }
+
+    fn task_1353_read_plaintexts(core: &HubCoreState, channel_id: &str) -> Vec<String> {
+        ipc::commands::cmd_osl_load_channel_history(&core.osl, channel_id.to_owned(), Some(20))
+            .expect("read task 1353 channel history")
+            .into_iter()
+            .map(|message| message.plaintext)
+            .collect()
+    }
+
+    fn task_1353_count_exact(
+        core: &HubCoreState,
+        seeded: &[Task1353Mark],
+        copy: &str,
+        bucket: &str,
+    ) -> usize {
+        let Some(channel_id) = seeded
+            .iter()
+            .find(|mark| mark.copy == copy && mark.bucket == bucket)
+            .map(|mark| mark.channel_id.as_str())
+        else {
+            return 0;
+        };
+        let history = task_1353_read_plaintexts(core, channel_id);
+        seeded
+            .iter()
+            .filter(|mark| mark.copy == copy && mark.bucket == bucket)
+            .filter(|mark| history.iter().any(|plaintext| plaintext == &mark.mark))
+            .count()
+    }
+
+    fn task_1353_print_counts(
+        stage: &str,
+        copy: &str,
+        core: &HubCoreState,
+        seeded: &[Task1353Mark],
+    ) -> (usize, usize, usize, usize) {
+        let selected_thread = task_1353_count_exact(core, seeded, copy, "selected_thread");
+        let sibling_thread = task_1353_count_exact(core, seeded, copy, "sibling_thread");
+        let selected_channel = task_1353_count_exact(core, seeded, copy, "selected_channel");
+        let other_channel = task_1353_count_exact(core, seeded, copy, "other_channel");
+        println!(
+            "TASK1353_{stage}_COUNTS copy={copy} selected_thread={selected_thread} sibling_thread={sibling_thread} selected_channel={selected_channel} other_channel={other_channel} total={}",
+            selected_thread + sibling_thread + selected_channel + other_channel
+        );
+        (
+            selected_thread,
+            sibling_thread,
+            selected_channel,
+            other_channel,
+        )
+    }
+
+    fn task_1353_assert_readable(
+        stage: &str,
+        copy: &str,
+        core: &HubCoreState,
+        seeded: &[Task1353Mark],
+        buckets: &[&str],
+    ) {
+        for bucket in buckets {
+            let Some(channel_id) = seeded
+                .iter()
+                .find(|mark| mark.copy == copy && mark.bucket == *bucket)
+                .map(|mark| mark.channel_id.as_str())
+            else {
+                panic!("missing task 1353 bucket {bucket} for {copy}");
+            };
+            let history = task_1353_read_plaintexts(core, channel_id);
+            for mark in seeded
+                .iter()
+                .filter(|mark| mark.copy == copy && mark.bucket == *bucket)
+            {
+                let readable = history.iter().any(|plaintext| plaintext == &mark.mark);
+                println!(
+                    "TASK1353_{stage}_READABLE copy={} bucket={} mark={} readable={}",
+                    mark.copy, mark.bucket, mark.mark, readable
+                );
+                assert!(
+                    readable,
+                    "TASK1353 {stage}: exact mark was not readable before burn: {:?}",
+                    mark
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn task_1353_burn_scopes_cannot_over_delete_threads_or_channels_on_either_copy() {
+        let harness = FileBackedSecurityHarness::new("task-1353-burn-scope-overdelete");
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+        write_scope_blobs(
+            &harness.path().join("scope_blobs.json"),
+            &ipc::scope_blobs_file::ScopeBlobsFile::default(),
+        )
+        .unwrap();
+
+        let copy_a = HubCoreState::default();
+        let copy_b = HubCoreState::default();
+        let security = HubSecurityState::default();
+        let random_suffix = lower_hex(&rand::random::<[u8; 32]>());
+        let nonce = format!("{}-{random_suffix}", std::process::id());
+        let server_id = format!("task1353-server-{nonce}");
+        let selected_thread = format!("task1353-selected-thread-{nonce}");
+        let sibling_thread = format!("task1353-sibling-thread-{nonce}");
+        let selected_channel = format!("task1353-selected-channel-{nonce}");
+        let other_channel = format!("task1353-other-channel-{nonce}");
+        let buckets = [
+            ("selected_thread", selected_thread.as_str()),
+            ("sibling_thread", sibling_thread.as_str()),
+            ("selected_channel", selected_channel.as_str()),
+            ("other_channel", other_channel.as_str()),
+        ];
+        let mut seeded = Vec::new();
+
+        for (copy_label, core, dir_name) in [
+            ("copy_a", &copy_a, "copy-a-history"),
+            ("copy_b", &copy_b, "copy-b-history"),
+        ] {
+            let history = store::MessageStore::open(&harness.path().join(dir_name), &TEST_FILE_KEY)
+                .expect("open task 1353 history store");
+            for (bucket_index, &(bucket, channel_id)) in buckets.iter().enumerate() {
+                for mark_index in 0..2 {
+                    let mark = format!(
+                        "TASK1353_MARK copy={copy_label} bucket={bucket} index={mark_index} nonce={nonce}"
+                    );
+                    let message_id = format!("task1353-{copy_label}-{bucket}-{mark_index}-{nonce}");
+                    history
+                        .put(&store::StoredMessage {
+                            discord_message_id: message_id,
+                            channel_id: channel_id.to_owned(),
+                            sender_discord_id: format!("task1353-sender-{copy_label}"),
+                            sender_osl_user_id: format!("task1353-sender-{copy_label}"),
+                            plaintext: mark.clone(),
+                            decrypted_at: 1_901_353_000
+                                + (bucket_index as i64 * 10)
+                                + mark_index as i64,
+                            burned: false,
+                        })
+                        .expect("seed task 1353 message");
+                    seeded.push(Task1353Mark {
+                        copy: copy_label,
+                        bucket,
+                        channel_id: channel_id.to_owned(),
+                        mark,
+                    });
+                }
+            }
+            *core.osl.message_store.lock().unwrap() = Some(history);
+        }
+
+        for (copy_label, core) in [("copy_a", &copy_a), ("copy_b", &copy_b)] {
+            task_1353_assert_readable(
+                "BEFORE_THREAD_BURN",
+                copy_label,
+                core,
+                &seeded,
+                &[
+                    "selected_thread",
+                    "sibling_thread",
+                    "selected_channel",
+                    "other_channel",
+                ],
+            );
+            assert_eq!(
+                task_1353_print_counts("BEFORE_THREAD_BURN", copy_label, core, &seeded),
+                (2, 2, 2, 2)
+            );
+        }
+
+        for (copy_label, core) in [("copy_a", &copy_a), ("copy_b", &copy_b)] {
+            let thread_result = burn_scope(
+                core,
+                &security,
+                ScopeInput::from(&Scope::server_channel(
+                    server_id.clone(),
+                    selected_thread.clone(),
+                )),
+                Vec::new(),
+                true,
+                Vec::new(),
+            )
+            .expect("selected thread burn runs");
+            println!(
+                "TASK1353_THREAD_BURN_RESULT copy={copy_label} storage_key={} channels_destroyed={} rows_destroyed={}",
+                thread_result.storage_key,
+                thread_result.channels_destroyed,
+                thread_result.rows_destroyed
+            );
+            assert_eq!(thread_result.channels_destroyed, 1);
+            assert_eq!(thread_result.rows_destroyed, 2);
+        }
+
+        for (copy_label, core) in [("copy_a", &copy_a), ("copy_b", &copy_b)] {
+            let after_thread =
+                task_1353_print_counts("AFTER_THREAD_BURN", copy_label, core, &seeded);
+            assert_eq!(after_thread, (0, 2, 2, 2));
+            task_1353_assert_readable(
+                "BEFORE_CHANNEL_BURN",
+                copy_label,
+                core,
+                &seeded,
+                &["sibling_thread", "selected_channel", "other_channel"],
+            );
+        }
+
+        for (copy_label, core) in [("copy_a", &copy_a), ("copy_b", &copy_b)] {
+            let channel_result = burn_scope(
+                core,
+                &security,
+                ScopeInput::from(&Scope::server_channel(
+                    server_id.clone(),
+                    selected_channel.clone(),
+                )),
+                Vec::new(),
+                true,
+                Vec::new(),
+            )
+            .expect("selected channel burn runs");
+            println!(
+                "TASK1353_CHANNEL_BURN_RESULT copy={copy_label} storage_key={} channels_destroyed={} rows_destroyed={}",
+                channel_result.storage_key,
+                channel_result.channels_destroyed,
+                channel_result.rows_destroyed
+            );
+            assert_eq!(channel_result.channels_destroyed, 1);
+            assert_eq!(channel_result.rows_destroyed, 2);
+        }
+
+        for (copy_label, core) in [("copy_a", &copy_a), ("copy_b", &copy_b)] {
+            assert_eq!(
+                task_1353_print_counts("AFTER_CHANNEL_BURN", copy_label, core, &seeded),
+                (0, 2, 0, 2)
+            );
+            task_1353_assert_readable(
+                "AFTER_CHANNEL_BURN_SURVIVORS",
+                copy_label,
+                core,
+                &seeded,
+                &["sibling_thread", "other_channel"],
+            );
+        }
+
+        println!("TASK1353_SELECTED_THREAD={selected_thread}");
+        println!("TASK1353_SIBLING_THREAD={sibling_thread}");
+        println!("TASK1353_SELECTED_CHANNEL={selected_channel}");
+        println!("TASK1353_OTHER_CHANNEL={other_channel}");
+    }
+
     #[test]
     fn t1_t63_scope_burn_enters_dispatch_before_remote_effects() {
         let harness = FileBackedSecurityHarness::new("t1-63-burn-dispatch");
