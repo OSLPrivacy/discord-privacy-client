@@ -659,6 +659,16 @@ description = "Request one read-only scan of the exact checked native-hosted Dis
 commands.allow = ["request_hosted_session_scan_command"]
 
 [[permission]]
+identifier = "allow-request-discord-guided-deletion-pause-after-current-screen"
+description = "Persist a pause-after-current-screen request against the last native-held Discord guided-deletion scan while retaining its content-free found row metadata."
+commands.allow = ["request_discord_guided_deletion_pause_after_current_screen"]
+
+[[permission]]
+identifier = "allow-request-discord-guided-deletion-stop-after-current-safe-step"
+description = "Persist a stop-after-current-safe-step request against the last native-held Discord guided-deletion scan while retaining its content-free found row metadata."
+commands.allow = ["request_discord_guided_deletion_stop_after_current_safe_step"]
+
+[[permission]]
 identifier = "allow-scan-discord-own-messages-for-deletion"
 description = "Request one read-only native Discord guided-deletion scan and store its content-free row metadata as the only source from which a later exact preview may be built; accepts no account, handle, credential, profile, path, URL, conversation, row, deletion, navigation, or network authority."
 commands.allow = ["scan_discord_own_messages_for_deletion"]

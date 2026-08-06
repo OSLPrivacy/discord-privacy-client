@@ -132,6 +132,8 @@
     "allow-open-hosted-session-scan",
     "allow-request-hosted-session-scan",
     "allow-request-hosted-session-scan-command",
+    "allow-request-discord-guided-deletion-pause-after-current-screen",
+    "allow-request-discord-guided-deletion-stop-after-current-safe-step",
     "allow-scan-discord-own-messages-for-deletion",
     "allow-preview-discord-guided-deletion",
     "allow-execute-discord-guided-deletion",

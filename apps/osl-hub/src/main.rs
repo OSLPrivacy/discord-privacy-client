@@ -788,6 +788,20 @@ async fn request_hosted_session_scan_command(
 }
 
 #[tauri::command]
+fn request_discord_guided_deletion_pause_after_current_screen(
+    plans: State<'_, DiscordGuidedDeletionPlanState>,
+) -> Result<osl_privacy_hub::hub_command_surface::GuidedDeletionSavedStateDto, String> {
+    plans.pause_after_current_screen()
+}
+
+#[tauri::command]
+fn request_discord_guided_deletion_stop_after_current_safe_step(
+    plans: State<'_, DiscordGuidedDeletionPlanState>,
+) -> Result<osl_privacy_hub::hub_command_surface::GuidedDeletionSavedStateDto, String> {
+    plans.stop_after_current_safe_step()
+}
+
+#[tauri::command]
 async fn scan_discord_own_messages_for_deletion(
     caller: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -10548,6 +10562,8 @@ mod tauri_command_acl_tests {
             "open_hosted_session_scan",
             "request_hosted_session_scan",
             "request_hosted_session_scan_command",
+            "request_discord_guided_deletion_pause_after_current_screen",
+            "request_discord_guided_deletion_stop_after_current_safe_step",
             "scan_discord_own_messages_for_deletion",
             "preview_discord_guided_deletion",
             "execute_discord_guided_deletion",
