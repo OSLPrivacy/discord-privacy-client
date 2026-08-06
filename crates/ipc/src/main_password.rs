@@ -293,6 +293,14 @@ fn marker_path(dir: &Path) -> PathBuf {
     dir.join(MARKER_FILENAME)
 }
 
+fn marker_temporary_path(dir: &Path) -> PathBuf {
+    marker_path(dir).with_extension("tmp")
+}
+
+fn marker_backup_path(dir: &Path) -> PathBuf {
+    marker_path(dir).with_extension("bak")
+}
+
 fn lockout_path(dir: &Path) -> PathBuf {
     dir.join(LOCKOUT_FILENAME)
 }
@@ -304,7 +312,7 @@ fn device_bound_fallback_key_path(dir: &Path) -> PathBuf {
 /// Reports whether a main password is configured (the marker file
 /// exists). Does not validate the file's contents.
 pub fn marker_exists(dir: &Path) -> bool {
-    marker_path(dir).exists()
+    marker_path(dir).exists() || marker_backup_path(dir).exists()
 }
 
 // =====================================================================
@@ -456,7 +464,19 @@ pub fn reset_device_bound_mint_refusals() {
 
 fn read_marker(dir: &Path) -> Result<PasswordMarker, String> {
     let path = marker_path(dir);
-    let bytes = std::fs::read(&path).map_err(|e| format!("OSL: read {}: {e}", path.display()))?;
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let backup = marker_backup_path(dir);
+            let bytes =
+                std::fs::read(&backup).map_err(|e| format!("OSL: read {}: {e}", path.display()))?;
+            std::fs::copy(&backup, &path)
+                .map_err(|e| format!("OSL: recover {} from backup: {e}", path.display()))?;
+            let _ = std::fs::remove_file(&backup);
+            bytes
+        }
+        Err(error) => return Err(format!("OSL: read {}: {error}", path.display())),
+    };
     let marker: PasswordMarker = serde_json::from_slice(&bytes)
         .map_err(|e| format!("OSL: parse password_marker.json: {e}"))?;
     // 7d-B2: accept both v1 and v2 markers. v1 markers parse fine
@@ -477,15 +497,54 @@ fn write_marker(dir: &Path, marker: &PasswordMarker) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("OSL: mkdir {}: {e}", dir.display()))?;
     }
     let path = marker_path(dir);
+    let temporary = marker_temporary_path(dir);
+    let backup = marker_backup_path(dir);
     let bytes = serde_json::to_vec_pretty(marker)
         .map_err(|e| format!("OSL: serialize password_marker: {e}"))?;
-    std::fs::write(&path, &bytes).map_err(|e| format!("OSL: write {}: {e}", path.display()))
+    let _ = std::fs::remove_file(&temporary);
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::File::create(&temporary)
+            .map_err(|e| format!("OSL: create {}: {e}", temporary.display()))?;
+        file.write_all(&bytes)
+            .map_err(|e| format!("OSL: write {}: {e}", temporary.display()))?;
+        file.sync_all()
+            .map_err(|e| format!("OSL: sync {}: {e}", temporary.display()))?;
+    }
+
+    if backup.exists() {
+        std::fs::remove_file(&backup)
+            .map_err(|e| format!("OSL: remove stale {}: {e}", backup.display()))?;
+    }
+    let had_previous = path.exists();
+    if had_previous {
+        std::fs::rename(&path, &backup)
+            .map_err(|e| format!("OSL: preserve {}: {e}", path.display()))?;
+    }
+    if let Err(error) = std::fs::rename(&temporary, &path) {
+        if had_previous {
+            let _ = std::fs::rename(&backup, &path);
+        }
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!("OSL: commit {}: {error}", path.display()));
+    }
+    if had_previous {
+        let _ = std::fs::remove_file(&backup);
+    }
+    Ok(())
 }
 
 fn delete_marker(dir: &Path) -> Result<(), String> {
-    let path = marker_path(dir);
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|e| format!("OSL: remove {}: {e}", path.display()))?;
+    for path in [
+        marker_path(dir),
+        marker_temporary_path(dir),
+        marker_backup_path(dir),
+    ] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("OSL: remove {}: {error}", path.display())),
+        }
     }
     Ok(())
 }
