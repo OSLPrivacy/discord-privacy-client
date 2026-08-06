@@ -29,6 +29,7 @@ const MAX_SECURITY_STATE_BYTES: u64 = 8 * 1024 * 1024;
 const PEOPLE_FILE: &str = "hub_people.json";
 const SECURITY_PREFS_FILE: &str = "hub_security_preferences.json";
 const PEER_REPLAY_FILE: &str = "hub_peer_replay.json";
+const PRIVATE_CONTACT_LINKS_FILE: &str = "hub_private_contact_links.json";
 const ATTACHMENT_BURN_FILE: &str = "scope_attachments.json";
 /// Receiver-side bilateral-burn replay state. Encrypted at rest, and keyed
 /// entirely by pair-specific commitments — it contains no scope name, service
@@ -67,6 +68,10 @@ const RATCHET_PUBLIC_BYTES: usize = 32;
 const SAFETY_NUMBER_BUNDLE_REFUSAL: &str = "OSL friend key bundle is invalid";
 const SAFETY_NUMBER_MISMATCH_REFUSAL: &str = "OSL safety number does not match";
 const PENDING_KEY_CHANGE_REFUSAL: &str = "OSL friend key change state is incomplete";
+const PRIVATE_CONTACT_LINK_PREFIX: &str = "OSLPC1.";
+const PRIVATE_CONTACT_LINK_VERSION: u32 = 1;
+const MAX_PRIVATE_CONTACT_LINK_BYTES: usize = 16 * 1024;
+const PRIVATE_CONTACT_LINK_USES_ALLOWED: u32 = 1;
 
 #[derive(Debug, Default)]
 pub struct HubSecurityState {
@@ -85,6 +90,24 @@ pub struct HubSecurityState {
 pub struct FriendCodeExport {
     pub friend_code: String,
     pub osl_user_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivateContactLinkExport {
+    pub link: String,
+    pub osl_user_id: String,
+    pub uses_allowed: u32,
+    pub uses_remaining: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivateContactLinkStatus {
+    pub osl_user_id: String,
+    pub uses_allowed: u32,
+    pub uses_remaining: u32,
+    pub consumed: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -429,6 +452,23 @@ struct SignedFriendCode {
     signature: String,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivateContactLinkEntry {
+    osl_user_id: String,
+    friend_code: String,
+    uses_allowed: u32,
+    uses_remaining: u32,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivateContactLinksFile {
+    version: u32,
+    #[serde(default)]
+    links: BTreeMap<String, PrivateContactLinkEntry>,
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct PersonMetadata {
     osl_user_id: String,
@@ -678,6 +718,89 @@ pub fn export_friend_code(core: &HubCoreState) -> Result<FriendCodeExport, Strin
         // the export gets a copy and the original is still wiped on the way out.
         osl_user_id: identity.user_id.clone(),
     })
+}
+
+pub fn create_private_contact_link(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+) -> Result<PrivateContactLinkExport, String> {
+    require_unlocked()?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL private contact link state is unavailable".to_owned())?;
+    let export = export_friend_code(core)?;
+    let token = URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32));
+    let link = format!("{PRIVATE_CONTACT_LINK_PREFIX}{token}");
+    let dir = config_dir()?;
+    let path = dir.join(PRIVATE_CONTACT_LINKS_FILE);
+    let mut ledger = load_private_contact_links(&path)?;
+    ledger.links.insert(
+        token,
+        PrivateContactLinkEntry {
+            osl_user_id: export.osl_user_id.clone(),
+            friend_code: export.friend_code,
+            uses_allowed: PRIVATE_CONTACT_LINK_USES_ALLOWED,
+            uses_remaining: PRIVATE_CONTACT_LINK_USES_ALLOWED,
+        },
+    );
+    ledger.version = PRIVATE_CONTACT_LINK_VERSION;
+    write_encrypted_json(&path, &ledger)?;
+    Ok(PrivateContactLinkExport {
+        link,
+        osl_user_id: export.osl_user_id,
+        uses_allowed: PRIVATE_CONTACT_LINK_USES_ALLOWED,
+        uses_remaining: PRIVATE_CONTACT_LINK_USES_ALLOWED,
+    })
+}
+
+pub fn private_contact_link_status(link: &str) -> Result<PrivateContactLinkStatus, String> {
+    require_unlocked()?;
+    let token = parse_private_contact_link(link)?;
+    let path = config_dir()?.join(PRIVATE_CONTACT_LINKS_FILE);
+    let ledger = load_private_contact_links(&path)?;
+    let entry = ledger
+        .links
+        .get(&token)
+        .ok_or_else(|| "OSL private contact link is unknown".to_owned())?;
+    Ok(PrivateContactLinkStatus {
+        osl_user_id: entry.osl_user_id.clone(),
+        uses_allowed: entry.uses_allowed,
+        uses_remaining: entry.uses_remaining,
+        consumed: entry.uses_remaining == 0,
+    })
+}
+
+pub fn add_private_contact_link(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    link: String,
+    alias: Option<String>,
+) -> Result<AddFriendResult, String> {
+    require_unlocked()?;
+    let alias = normalise_alias(alias.as_deref())?;
+    let token = parse_private_contact_link(&link)?;
+    let friend_code = {
+        let _transition = security
+            .transition
+            .lock()
+            .map_err(|_| "OSL private contact link state is unavailable".to_owned())?;
+        let dir = config_dir()?;
+        let path = dir.join(PRIVATE_CONTACT_LINKS_FILE);
+        let mut ledger = load_private_contact_links(&path)?;
+        let entry = ledger
+            .links
+            .get_mut(&token)
+            .ok_or_else(|| "OSL private contact link is unknown".to_owned())?;
+        if entry.uses_remaining != PRIVATE_CONTACT_LINK_USES_ALLOWED {
+            return Err("OSL private contact link is already used".to_owned());
+        }
+        entry.uses_remaining = 0;
+        let friend_code = entry.friend_code.clone();
+        write_encrypted_json(&path, &ledger)?;
+        friend_code
+    };
+    add_friend_code(core, security, friend_code, alias)
 }
 
 pub fn add_friend_code(
@@ -3632,6 +3755,40 @@ fn lower_hex(bytes: &[u8; 32]) -> String {
     out
 }
 
+fn load_private_contact_links(path: &Path) -> Result<PrivateContactLinksFile, String> {
+    let ledger = load_encrypted_json::<PrivateContactLinksFile>(path)?;
+    if ledger.version > PRIVATE_CONTACT_LINK_VERSION
+        || ledger.links.values().any(|entry| {
+            entry.osl_user_id.is_empty()
+                || entry.osl_user_id.len() > 160
+                || entry.uses_allowed != PRIVATE_CONTACT_LINK_USES_ALLOWED
+                || entry.uses_remaining > PRIVATE_CONTACT_LINK_USES_ALLOWED
+                || parse_friend_code(&entry.friend_code).is_err()
+        })
+    {
+        return Err("OSL private contact link state is malformed".to_owned());
+    }
+    Ok(ledger)
+}
+
+fn parse_private_contact_link(value: &str) -> Result<String, String> {
+    if value.len() > MAX_PRIVATE_CONTACT_LINK_BYTES {
+        return Err("OSL private contact link is too large".to_owned());
+    }
+    let token = value
+        .strip_prefix(PRIVATE_CONTACT_LINK_PREFIX)
+        .ok_or_else(|| "OSL private contact link has an unsupported version".to_owned())?;
+    if token.is_empty()
+        || token.len() > 96
+        || !token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err("OSL private contact link payload is invalid".to_owned());
+    }
+    Ok(token.to_owned())
+}
+
 fn parse_friend_code(value: &str) -> Result<SignedFriendCode, String> {
     if value.len() > MAX_FRIEND_CODE_BYTES {
         return Err("OSL friend code is too large".to_owned());
@@ -5057,6 +5214,54 @@ mod tests {
         assert!(peers
             .values()
             .any(|peer| peer.osl_user_id.as_deref() == Some(friend_osl_user_id.as_str())));
+    }
+
+    #[test]
+    fn task_0310_private_contact_links_are_one_use() {
+        let harness = FileBackedSecurityHarness::new("task-0310-private-contact-links");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core);
+
+        let first = create_private_contact_link(&core, &security).unwrap();
+        let second = create_private_contact_link(&core, &security).unwrap();
+        let first_status = private_contact_link_status(&first.link).unwrap();
+        let second_status = private_contact_link_status(&second.link).unwrap();
+
+        assert_eq!(first.osl_user_id, second.osl_user_id);
+        assert_ne!(first.link, second.link);
+        assert_eq!(first_status.uses_allowed, 1);
+        assert_eq!(second_status.uses_allowed, 1);
+        assert_eq!(first_status.uses_remaining, 1);
+        assert_eq!(second_status.uses_remaining, 1);
+        assert!(!first_status.consumed);
+        assert!(!second_status.consumed);
+        assert!(
+            !harness.path().join("hub_profile.json").exists(),
+            "private contact links must not create the public username profile"
+        );
+
+        println!(
+            "TASK0310 same_person={}",
+            first.osl_user_id == second.osl_user_id
+        );
+        println!("TASK0310 link1={}", first.link);
+        println!("TASK0310 link2={}", second.link);
+        println!("TASK0310 links_different={}", first.link != second.link);
+        println!("TASK0310 link1_uses_allowed={}", first_status.uses_allowed);
+        println!("TASK0310 link2_uses_allowed={}", second_status.uses_allowed);
+        println!(
+            "TASK0310 link1_uses_remaining={}",
+            first_status.uses_remaining
+        );
+        println!(
+            "TASK0310 link2_uses_remaining={}",
+            second_status.uses_remaining
+        );
+        println!(
+            "TASK0310 public_username_created={}",
+            harness.path().join("hub_profile.json").exists()
+        );
     }
 
     #[test]

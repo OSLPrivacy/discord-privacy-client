@@ -640,6 +640,9 @@ macro_rules! hub_tauri_commands {
             open_hub_attachment,
             export_hub_friend_code,
             copy_hub_friend_invite,
+            create_hub_private_contact_link,
+            get_hub_private_contact_link_status,
+            add_hub_private_contact_link,
             add_hub_friend,
             claim_hub_username,
             get_hub_username_status,
@@ -1637,6 +1640,21 @@ mod tauri_registration_surface_tests {
             &[
                 "get_hub_recovery_kit_unsaved",
                 "set_hub_recovery_kit_unsaved",
+            ],
+        );
+    }
+
+    #[test]
+    fn private_contact_link_commands_are_registered_and_granted_locally() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "create_hub_private_contact_link",
+                "get_hub_private_contact_link_status",
+                "add_hub_private_contact_link",
             ],
         );
     }

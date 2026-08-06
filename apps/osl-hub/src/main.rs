@@ -88,7 +88,8 @@ use osl_privacy_hub::scrub_index::{
 };
 use osl_privacy_hub::security::{
     self, AddFriendResult, FriendCodeExport, HubRevocationStatusDto, HubScopeBurnResult,
-    HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
+    HubSecurityState, PersonDto, PrivateContactLinkExport, PrivateContactLinkStatus,
+    RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -6006,6 +6007,37 @@ fn write_windows_clipboard_text(value: &str) -> Result<(), String> {
         return Err("The friend invite could not be copied".to_owned());
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn create_hub_private_contact_link(
+    core: State<'_, HubCoreState>,
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<PrivateContactLinkExport, String> {
+    let _session = session.transition.lock().await;
+    security::create_private_contact_link(&core, &security_state)
+}
+
+#[tauri::command]
+async fn get_hub_private_contact_link_status(
+    session: State<'_, HubAccountSessionState>,
+    link: String,
+) -> Result<PrivateContactLinkStatus, String> {
+    let _session = session.transition.lock().await;
+    security::private_contact_link_status(&link)
+}
+
+#[tauri::command]
+async fn add_hub_private_contact_link(
+    core: State<'_, HubCoreState>,
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    link: String,
+    alias: Option<String>,
+) -> Result<AddFriendResult, String> {
+    let _session = session.transition.lock().await;
+    security::add_private_contact_link(&core, &security_state, link, alias)
 }
 
 #[tauri::command]
