@@ -5219,6 +5219,7 @@ struct NativeDiscordOverlayBurnResult {
     channels_destroyed: usize,
     whitelist_entries_removed: usize,
     local_protected_rows_destroyed: usize,
+    sender_message_ids: Vec<String>,
     remote_blobs_deleted: usize,
     remote_blob_deletions_failed: usize,
     local_cleanup_complete: bool,
@@ -5238,6 +5239,7 @@ async fn burn_native_discord_overlay_chat(
     }
     let _session = session.transition.lock().await;
     let cover_scope = native_discord_scope_binding(&app)?;
+    let burn_scope_binding = cover_scope.clone();
     let burn_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let (context_epoch, host) = require_overlay_context_snapshot(&burn_app)?;
@@ -5252,6 +5254,15 @@ async fn burn_native_discord_overlay_chat(
                 let manual = broker_state
                     .manual_burn_target(context_token)?
                     .ok_or_else(|| "The native Discord friend context is unavailable".to_owned())?;
+                let owner_osl_user_id = active_unlocked_osl_user_id(&core)?;
+                let sender_message_ids =
+                    osl_privacy_hub::native_discord_adapter::chat_burn_sender_message_ids(
+                        &burn_app.state::<NativeWindowHostState>(),
+                        &owner_osl_user_id,
+                        &burn_scope_binding,
+                        stored_host.generation,
+                    )?
+                    .sender_message_ids;
                 let scope_result = security::burn_manual_peer_scope(
                     &core,
                     &burn_app.state::<HubSecurityState>(),
@@ -5271,6 +5282,7 @@ async fn burn_native_discord_overlay_chat(
                     channels_destroyed: scope_result.channels_destroyed,
                     whitelist_entries_removed: scope_result.whitelist_entries_removed,
                     local_protected_rows_destroyed,
+                    sender_message_ids,
                     remote_blobs_deleted: scope_result.remote_blobs_deleted,
                     remote_blob_deletions_failed: scope_result.remote_blob_deletions_failed,
                     local_cleanup_complete: scope_result.local_cleanup_complete

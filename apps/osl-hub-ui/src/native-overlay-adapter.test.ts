@@ -287,6 +287,7 @@ describe("native overlay narrow adapter", () => {
       channelsDestroyed: 1,
       whitelistEntriesRemoved: 0,
       localProtectedRowsDestroyed: 2,
+      senderMessageIds: ["333333333333333333"],
       remoteBlobsDeleted: 3,
       remoteBlobDeletionsFailed: 1,
       localCleanupComplete: true,
