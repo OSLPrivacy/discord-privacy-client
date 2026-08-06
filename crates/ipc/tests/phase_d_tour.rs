@@ -119,11 +119,11 @@ fn tour_reset_clears_state() {
     assert_eq!(on_disk.tour, TourState::default());
 }
 
-/// 9-D version bump: writing through any of the new commands stamps
-/// version=2 on disk. Legacy v1 files keep their stego_mode but get
+/// Version bump: writing through any of the app-preference commands stamps
+/// the current schema version on disk. Legacy v1 files keep their stego_mode but get
 /// the version field bumped on next mutation.
 #[test]
-fn writes_stamp_version_2() {
+fn writes_stamp_current_app_preferences_version() {
     use ipc::app_preferences::APP_PREFERENCES_VERSION;
     use ipc::main_password::set_file_storage_key;
     let _g = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -132,7 +132,7 @@ fn writes_stamp_version_2() {
     // and the on-disk assertions below read defaults back.
     ipc::main_password::set_file_storage_key_after_main_password_unlock([7u8; 32]);
 
-    assert_eq!(APP_PREFERENCES_VERSION, 2);
+    assert_eq!(APP_PREFERENCES_VERSION, 3);
 
     let state = AppState::new();
     let dir = tempdir().unwrap();

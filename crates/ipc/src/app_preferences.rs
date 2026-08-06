@@ -17,6 +17,9 @@
 //! 9-D added `tour` (onboarding tour resume/complete state). The
 //! W4 removal dropped the old `vpn_warning_dismissed_forever` field;
 //! legacy files carrying it still load (unknown keys are ignored).
+//!
+//! 0247 added `new_friend_defaults`. Missing fields load to the
+//! fail-closed defaults used for newly added friends.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -75,6 +78,49 @@ impl UpdateChannel {
     }
 }
 
+/// Default reach granted when a new friend is added.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NewFriendAccountReach {
+    #[default]
+    ApprovedChatsOnly,
+}
+
+impl NewFriendAccountReach {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::ApprovedChatsOnly => "approved_chats_only",
+        }
+    }
+}
+
+/// Default verification-warning posture for a newly added friend.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NewFriendVerificationWarnings {
+    #[default]
+    Enabled,
+}
+
+impl NewFriendVerificationWarnings {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+        }
+    }
+}
+
+/// Saved defaults applied by friend-onboarding flows.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewFriendDefaults {
+    #[serde(default)]
+    pub account_reach: NewFriendAccountReach,
+    #[serde(default)]
+    pub auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistChoice,
+    #[serde(default)]
+    pub verification_warnings: NewFriendVerificationWarnings,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -87,9 +133,11 @@ pub struct AppPreferences {
     pub update_channel: UpdateChannel,
     #[serde(default)]
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
+    #[serde(default)]
+    pub new_friend_defaults: NewFriendDefaults,
 }
 
-pub const APP_PREFERENCES_VERSION: u32 = 2;
+pub const APP_PREFERENCES_VERSION: u32 = 3;
 
 pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {

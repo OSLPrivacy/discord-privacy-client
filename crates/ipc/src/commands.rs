@@ -152,6 +152,9 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_get_app_preferences", || {
             let _ = cmd_osl_get_app_preferences(&state);
         });
+        assert_command_marks_activity("cmd_osl_get_new_friend_defaults", || {
+            let _ = cmd_osl_get_new_friend_defaults(&state);
+        });
         assert_command_marks_activity("cmd_osl_get_self_user_id", || {
             let _ = cmd_osl_get_self_user_id(&state);
         });
@@ -15825,6 +15828,13 @@ pub struct AutoWhitelistRuleDto {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NewFriendDefaultsDto {
+    pub account_reach: String,
+    pub auto_whitelist: String,
+    pub verification_warnings: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct InstagramWhitelistKindDto {
     pub id: String,
     pub name: String,
@@ -15851,6 +15861,20 @@ pub fn cmd_osl_get_instagram_whitelist_kinds() -> Result<Vec<InstagramWhitelistK
             name: kind.name().to_string(),
         })
         .collect())
+}
+
+pub fn cmd_osl_get_new_friend_defaults(state: &AppState) -> Result<NewFriendDefaultsDto, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    let defaults = prefs.new_friend_defaults;
+    Ok(NewFriendDefaultsDto {
+        account_reach: defaults.account_reach.id().to_string(),
+        auto_whitelist: defaults.auto_whitelist.label().to_string(),
+        verification_warnings: defaults.verification_warnings.id().to_string(),
+    })
 }
 
 pub fn cmd_osl_save_auto_whitelist_rule(
