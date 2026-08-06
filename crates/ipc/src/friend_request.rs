@@ -23,6 +23,7 @@ const FRIEND_REQUEST_STATE_SCHEMA_VERSION: u32 = 1;
 const FRIEND_REQUEST_STATE_VERSION: u32 = 1;
 const FRIEND_REQUEST_STATE_NAMESPACE: &str = "friend-request-state";
 const FRIEND_REQUEST_STATE_KEY: &str = "main-password-v1";
+const MAX_FRIEND_DISPLAY_NAME_BYTES: usize = 128;
 
 /// Errors that can reject a friend-request operation.
 ///
@@ -320,29 +321,82 @@ impl fmt::Debug for FriendRequest {
 #[serde(deny_unknown_fields)]
 pub struct StoredFriendRequestFileEntry {
     pub request_id: String,
+    #[serde(default)]
+    pub relationship_id: String,
     pub requester_id: String,
     pub target_id: String,
     pub scope_key: String,
+    #[serde(default = "default_invite_redemption_count")]
+    pub invite_redemption_count: u32,
     pub received_at_ms: u64,
     pub expires_at_ms: u64,
+}
+
+fn default_invite_redemption_count() -> u32 {
+    1
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredFriendState {
+    None,
+    Pending,
+    Accepted,
+    Declined,
+}
+
+impl Default for StoredFriendState {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredFriendBlockState {
+    NotBlocked,
+    BlockedByLocal,
+}
+
+impl Default for StoredFriendBlockState {
+    fn default() -> Self {
+        Self::NotBlocked
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredFriendRecord {
+    pub record_id: String,
+    pub local_identity_id: String,
+    pub remote_identity_id: String,
+    pub state: StoredFriendState,
+    pub display_name: String,
+    pub block_state: StoredFriendBlockState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FriendRequestFileState {
     pub schema_version: u32,
+    #[serde(default)]
+    pub friends: Vec<StoredFriendRecord>,
     pub pending: Vec<StoredFriendRequestFileEntry>,
     pub accepted: Vec<StoredFriendRequestFileEntry>,
     pub declined_or_revoked: Vec<StoredFriendRequestFileEntry>,
+    #[serde(default)]
+    pub blocked: Vec<StoredFriendRequestFileEntry>,
 }
 
 impl FriendRequestFileState {
     pub fn new() -> Self {
         Self {
             schema_version: FRIEND_REQUEST_STATE_SCHEMA_VERSION,
+            friends: Vec::new(),
             pending: Vec::new(),
             accepted: Vec::new(),
             declined_or_revoked: Vec::new(),
+            blocked: Vec::new(),
         }
     }
 
@@ -350,11 +404,15 @@ impl FriendRequestFileState {
         if self.schema_version != FRIEND_REQUEST_STATE_SCHEMA_VERSION {
             return Err(FriendRequestError::InvalidRequest);
         }
+        for friend in &self.friends {
+            validate_stored_friend_record(friend)?;
+        }
         for request in self
             .pending
             .iter()
             .chain(self.accepted.iter())
             .chain(self.declined_or_revoked.iter())
+            .chain(self.blocked.iter())
         {
             validate_stored_request_file_entry(request)?;
         }
@@ -515,6 +573,20 @@ fn validate_stored_request_file_entry(
         || request.target_id.is_empty()
         || Scope::parse(&request.scope_key).is_none()
         || request.expires_at_ms <= request.received_at_ms
+    {
+        return Err(FriendRequestError::InvalidRequest);
+    }
+    Ok(())
+}
+
+fn validate_stored_friend_record(friend: &StoredFriendRecord) -> Result<(), FriendRequestError> {
+    let display_name = friend.display_name.trim();
+    if friend.record_id.is_empty()
+        || friend.local_identity_id.is_empty()
+        || friend.remote_identity_id.is_empty()
+        || friend.local_identity_id == friend.remote_identity_id
+        || display_name.is_empty()
+        || display_name.len() > MAX_FRIEND_DISPLAY_NAME_BYTES
     {
         return Err(FriendRequestError::InvalidRequest);
     }
@@ -716,9 +788,11 @@ mod tests {
     fn stored_file_request(label: &str, scope: Scope) -> StoredFriendRequestFileEntry {
         StoredFriendRequestFileEntry {
             request_id: format!("request-{label}"),
+            relationship_id: format!("relationship-{label}"),
             requester_id: format!("requester-{label}"),
             target_id: format!("target-{label}"),
             scope_key: scope.storage_key(),
+            invite_redemption_count: 1,
             received_at_ms: 1000,
             expires_at_ms: 2000,
         }
