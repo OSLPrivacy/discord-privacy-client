@@ -7,10 +7,16 @@
 /// encrypted-key mutations authenticate with registered-identity signatures.
 
 import { buildRegMsg } from "../../src/lib/signed-request.js";
+import {
+  ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+  canonicalAccountOwnershipProofBytes,
+} from "../../src/lib/account-ownership-proof.js";
+import type { IssuedAccountOwnershipChallenge } from "../../src/lib/account-ownership-challenge.js";
 
 export const TEST_ADMIN_TOKEN = "test-admin-token-do-not-ship";
 export const TEST_CLIENT_TOKEN = "test-client-token-do-not-ship";
 let registrationIpOctet = 1;
+let publicNameProofIpOctet = 1;
 
 /** Stable bytes for the non-Ed25519 fields the API requires. */
 export const STUB_X25519_PUB_B64 = base64Encode(new Uint8Array(32).fill(0x11));
@@ -60,6 +66,67 @@ export async function signEd25519(
 ): Promise<string> {
   const sigBuf = await crypto.subtle.sign({ name: "Ed25519" }, signingKey, message);
   return base64Encode(new Uint8Array(sigBuf));
+}
+
+function nextPublicNameProofSnowflake(): string {
+  return `91000000000000${String(100_000 + publicNameProofIpOctet++)}`;
+}
+
+export async function publicNameProofFields(
+  self: { fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> },
+  userId: string,
+  signingKey: CryptoKey,
+): Promise<{
+  service: "discord";
+  service_account_id: string;
+  public_name_proof: Record<string, unknown>;
+}> {
+  const service_account_id = nextPublicNameProofSnowflake();
+  const challengeRes = await self.fetch("http://test/v1/account-ownership/challenge", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "cf-connecting-ip": `198.51.100.${(publicNameProofIpOctet++ % 240) + 1}`,
+    },
+    body: JSON.stringify({
+      service: "discord",
+      service_account_id,
+      owner_user_id: userId,
+      consent: true,
+    }),
+  });
+  if (challengeRes.status !== 201) {
+    throw new Error(
+      `publicNameProofFields(${userId}) challenge failed: ${challengeRes.status} ${await challengeRes.text()}`,
+    );
+  }
+  const challenge = (await challengeRes.json()) as IssuedAccountOwnershipChallenge;
+  const signature_b64 = await signEd25519(
+    signingKey,
+    canonicalAccountOwnershipProofBytes({
+      proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+      platform_id: challenge.service_account_id,
+      owner_user_id: challenge.owner_user_id,
+      nonce_b64: challenge.nonce,
+      issued_at_unix_seconds: challenge.issued_at_unix_seconds,
+      expires_at_unix_seconds: challenge.expires_at_unix_seconds,
+    }),
+  );
+  return {
+    service: "discord",
+    service_account_id,
+    public_name_proof: {
+      platform_id: challenge.service_account_id,
+      proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+      e: {
+        owner_user_id: challenge.owner_user_id,
+        nonce_b64: challenge.nonce,
+        issued_at_unix_seconds: challenge.issued_at_unix_seconds,
+        expires_at_unix_seconds: challenge.expires_at_unix_seconds,
+        signature_b64,
+      },
+    },
+  };
 }
 
 /**

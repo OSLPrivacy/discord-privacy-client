@@ -18,7 +18,7 @@
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { usernameClaimMessage } from "../../src/lib/username.js";
-import { base64Encode, registerTestUser, signEd25519 } from "./helpers.js";
+import { base64Encode, publicNameProofFields, registerTestUser, signEd25519 } from "./helpers.js";
 
 let sequence = 0;
 const userId = () => `d162-user-${Date.now()}-${sequence++}`;
@@ -71,11 +71,12 @@ async function claim(
     pair.signingKey,
     usernameClaimMessage({ username, user_id: uid, friend_code, request_id, timestamp_ms }),
   );
+  const proofFields = await publicNameProofFields(SELF, uid, pair.signingKey);
   return SELF.fetch("http://test/v1/usernames/claim", {
     method: "POST",
     headers: { "content-type": "application/json", "cf-connecting-ip": nextIp() },
     body: JSON.stringify({
-      username, user_id: uid, friend_code, request_id, timestamp_ms, signature_b64,
+      username, user_id: uid, friend_code, request_id, timestamp_ms, signature_b64, ...proofFields,
     }),
   });
 }

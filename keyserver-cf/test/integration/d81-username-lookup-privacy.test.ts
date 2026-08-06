@@ -25,6 +25,7 @@ import { USERNAME_LOOKUP_RESPONSE_BYTES } from "../../src/endpoints/usernames.js
 import { usernameClaimMessage } from "../../src/lib/username.js";
 import {
   base64Encode,
+  publicNameProofFields,
   registerTestUser,
   signEd25519,
 } from "./helpers.js";
@@ -75,6 +76,7 @@ async function claim(
     timestamp_ms,
   });
   const signature_b64 = await signEd25519(pair.signingKey, message);
+  const proofFields = await publicNameProofFields(SELF, uid, pair.signingKey);
   return SELF.fetch("http://test/v1/usernames/claim", {
     method: "POST",
     headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.200" },
@@ -85,6 +87,7 @@ async function claim(
       request_id,
       timestamp_ms,
       signature_b64,
+      ...proofFields,
     }),
   });
 }
