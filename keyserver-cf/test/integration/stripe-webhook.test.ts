@@ -676,6 +676,101 @@ describe("POST /v1/stripe/webhook state machine", () => {
     }
   });
 
+  it("TASK3738 counts one activation code only for exact amount and currency at the webhook edge", async () => {
+    const runId = `task3738_${crypto.randomUUID().replace(/-/g, "")}`;
+    const licenseHash = (name: string): string => `license-${runId}-${name}`;
+    const countCodes = async (): Promise<number> => {
+      const row = await env.DB.prepare(
+        `SELECT COUNT(*) AS count FROM licenses
+          WHERE license_hash IN (?, ?, ?)`,
+      ).bind(
+        licenseHash("valid"),
+        licenseHash("wrong_currency"),
+        licenseHash("one_cent_under"),
+      ).first<{ count: number }>();
+      return row?.count ?? 0;
+    };
+    const sendCheckout = async (
+      name: string,
+      amount: number,
+      currency: string,
+    ): Promise<{ kind: string; reason?: string }> => {
+      const sessionId = `cs_live_${runId}_${name}`;
+      const paymentIntentId = `pi_${runId}_${name}`;
+      await insertPendingCheckoutClaim(sessionId, licenseHash(name));
+
+      const response = await postSignedWebhook(SELF, {
+        id: uniqueEventId(),
+        type: "checkout.session.completed",
+        data: {
+          object: {
+            id: sessionId,
+            mode: "payment",
+            metadata: {
+              osl_plan: "pro",
+              osl_purchase: "one-time",
+              osl_fulfillment: "instant-v1",
+            },
+            payment_status: "paid",
+            payment_intent: paymentIntentId,
+            amount_total: amount,
+            currency,
+          },
+        },
+      });
+      expect(response.status).toBe(200);
+      return await response.json() as { kind: string; reason?: string };
+    };
+
+    const before = await countCodes();
+    expect(before).toBe(0);
+    console.log(`TASK3738 before.code_count=${before}`);
+
+    const valid = await sendCheckout(
+      "valid",
+      ONE_TIME_PRO_AMOUNT_CENTS,
+      ONE_TIME_PRO_CURRENCY,
+    );
+    expect(valid).toMatchObject({ kind: "applied" });
+    const afterValid = await countCodes();
+    expect(afterValid).toBe(1);
+    console.log(`TASK3738 valid.amount_cents=${ONE_TIME_PRO_AMOUNT_CENTS}`);
+    console.log(`TASK3738 valid.currency=${ONE_TIME_PRO_CURRENCY}`);
+    console.log(`TASK3738 after_valid.code_count=${afterValid}`);
+
+    const wrongCurrency = await sendCheckout(
+      "wrong_currency",
+      ONE_TIME_PRO_AMOUNT_CENTS,
+      "eur",
+    );
+    expect(wrongCurrency).toMatchObject({
+      kind: "noop",
+      reason: ONE_TIME_PRO_CURRENCY_REFUSAL,
+    });
+    const afterWrongCurrency = await countCodes();
+    expect(afterWrongCurrency).toBe(1);
+    console.log(`TASK3738 wrong_currency.amount_cents=${ONE_TIME_PRO_AMOUNT_CENTS}`);
+    console.log("TASK3738 wrong_currency.currency=eur");
+    console.log(`TASK3738 wrong_currency.refusal=${wrongCurrency.reason}`);
+    console.log(`TASK3738 after_wrong_currency.code_count=${afterWrongCurrency}`);
+
+    const underAmount = await sendCheckout(
+      "one_cent_under",
+      ONE_TIME_PRO_AMOUNT_CENTS - 1,
+      ONE_TIME_PRO_CURRENCY,
+    );
+    expect(underAmount).toMatchObject({
+      kind: "noop",
+      reason: ONE_TIME_PRO_AMOUNT_REFUSAL,
+    });
+    const afterUnderAmount = await countCodes();
+    expect(afterUnderAmount).toBe(1);
+    console.log(`TASK3738 one_cent_under.amount_cents=${ONE_TIME_PRO_AMOUNT_CENTS - 1}`);
+    console.log(`TASK3738 one_cent_under.currency=${ONE_TIME_PRO_CURRENCY}`);
+    console.log(`TASK3738 one_cent_under.refusal=${underAmount.reason}`);
+    console.log(`TASK3738 after_one_cent_under.code_count=${afterUnderAmount}`);
+  });
+
   it("applies an invoice paid observation that arrived before checkout completion", async () => {
     const subId = uniqueSubId();
     const sessionId = `cs_live_order_${crypto.randomUUID().replace(/-/g, "")}`;
