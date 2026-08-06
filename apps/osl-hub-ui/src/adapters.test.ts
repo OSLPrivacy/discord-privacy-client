@@ -85,6 +85,9 @@ describe("optional OSL Privacy adapters", () => {
     // backend that offers one is not the backend this build talks to.
     expect(parseFriendProfile({ ...profile, safetyNumber: "1234 5678" })).toBeNull();
     expect(parseNotifications([{ id: "1", title: "Update", detail: "Ready", createdAt: "2026-07-16" }])).toHaveLength(1);
+    expect(parseNotifications([{ id: "1", title: "Update", detail: "Ready", createdAt: "2026-07-16", appId: "discord" }]))
+      .toEqual([{ id: "1", title: "Update", detail: "Ready", createdAt: "2026-07-16", appId: "discord" }]);
+    expect(parseNotifications([{ id: "1", title: "Update", detail: "Ready", createdAt: "2026-07-16", appId: "unknown" }])).toBeNull();
     expect(parseNotifications([{ id: "1", title: "<script>", detail: "Ready", createdAt: "now" }])).toBeNull();
   });
 

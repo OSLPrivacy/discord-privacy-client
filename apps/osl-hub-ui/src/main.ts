@@ -6188,8 +6188,16 @@ function oslChatNotificationSettings(): string {
   return `<section class="settings-list osl-chat-notification-settings" aria-label="OSL Chat controls"><label class="setting-line interactive"><span><strong>Encrypted chat alerts</strong><small>New-message activity from unmuted OSL friends.</small></span><input id="notification-chat-activity" type="checkbox" ${notificationChatActivity ? "checked" : ""}/></label><label class="setting-line interactive"><span><strong>OSL Chat previews</strong><small>${previewText}</small></span><input id="osl-chat-preview-toggle" type="checkbox" ${previewsChecked ? "checked" : ""}/></label></section>${mutedDetails}`;
 }
 
+function setNotificationAppPreference(id: ServiceId, enabled: boolean): void {
+  notificationAppPreferences[id] = enabled;
+  localStorage.setItem(notificationAppsStorageKey, JSON.stringify(notificationAppPreferences));
+}
+
 function visibleAppNotifications(): AppNotification[] {
-  return (appNotifications ?? []).filter((item) => item.detail === "New encrypted message" ? notificationChatActivity : notificationSecurityActivity);
+  return (appNotifications ?? []).filter((item) => {
+    if (item.appId && notificationAppPreferences[item.appId] === false) return false;
+    return item.detail === "New encrypted message" ? notificationChatActivity : notificationSecurityActivity;
+  });
 }
 
 type IdentityStorageProtection = "device" | "fallback" | "unknown";
@@ -7805,7 +7813,7 @@ function bindWorkspace(): void {
   });
   document.querySelector<HTMLInputElement>("#notification-previews")?.addEventListener("change", (event) => { notificationPreviewContent = (event.currentTarget as HTMLInputElement).checked; localStorage.setItem(notificationPreviewStorageKey, String(notificationPreviewContent)); });
   document.querySelector<HTMLInputElement>("#notification-scope-suggestions")?.addEventListener("change", (event) => { notificationScopeSuggestions = (event.currentTarget as HTMLInputElement).checked; localStorage.setItem(notificationScopeStorageKey, String(notificationScopeSuggestions)); });
-  document.querySelectorAll<HTMLInputElement>("[data-notification-app]").forEach((input) => input.addEventListener("change", () => { const id = input.dataset.notificationApp as ServiceId; notificationAppPreferences[id] = input.checked; localStorage.setItem(notificationAppsStorageKey, JSON.stringify(notificationAppPreferences)); }));
+  document.querySelectorAll<HTMLInputElement>("[data-notification-app]").forEach((input) => input.addEventListener("change", () => { setNotificationAppPreference(input.dataset.notificationApp as ServiceId, input.checked); }));
   document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-unmute]").forEach((button) => button.addEventListener("click", () => {
     oslChatMutedPeople.delete(button.dataset.oslChatUnmute ?? "");
     persistOslChatMutedPeople();
@@ -8366,6 +8374,10 @@ function persistOslChatNotifications(): void {
   void persistSensitiveOslChatJson(oslChatNotificationStorageKey, encodeOslChatNotifications(metadata));
 }
 
+function recordAppNotification(notification: AppNotification): void {
+  appNotifications = [notification, ...(appNotifications ?? [])].slice(0, 20);
+}
+
 function mergePersistedOslChatNotifications(items: AppNotification[] | null): AppNotification[] {
   const chat = (appNotifications ?? []).filter((item) => item.detail === "New encrypted message");
   const merged = [...chat, ...(items ?? [])];
@@ -8384,12 +8396,12 @@ function commitOslChatBatch(personId: string, batch: NativeDiscordOverlayOpenedB
     if (background) {
       oslChatUnread.set(personId, Math.min(10_000, (oslChatUnread.get(personId) ?? 0) + 1));
       if (notificationsEnabled && notificationChatActivity && !oslChatMutedPeople.has(personId)) {
-        appNotifications = [{
+        recordAppNotification({
           id: localMessageId,
           title: "OSL Chat",
           detail: "New encrypted message",
           createdAt: "Now",
-        }, ...(appNotifications ?? [])].slice(0, 20);
+        });
       }
     }
   }
@@ -10143,6 +10155,9 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   identityListRefreshInFlight = false;
   privateEnclaveAudiences = parsedEnclaveAudiences(patch.enclaveAudienceRecords ?? []);
   notificationsEnabled = patch.notificationsEnabled ?? false;
+  notificationAppPreferences = {};
+  notificationChatActivity = true;
+  notificationSecurityActivity = true;
   notificationPreviewContent = patch.notificationPreviewContent ?? true;
   appNotifications = patch.appNotifications ?? [];
   licenseState = { ...unconfiguredLicenseState, access: patch.licenseAccess ?? "free" };
@@ -10304,6 +10319,16 @@ export const __oslHubUiTest = {
   },
   persistOslChatNotifications(): void {
     persistOslChatNotifications();
+  },
+  changeAppNotificationTick(appId: ServiceId, enabled: boolean): void {
+    setNotificationAppPreference(appId, enabled);
+  },
+  sendTestAppActivity(notification: AppNotification): void {
+    recordAppNotification(notification);
+  },
+  localNoticeCount(appId?: ServiceId): number {
+    const notices = visibleAppNotifications();
+    return appId ? notices.filter((item) => item.appId === appId).length : notices.length;
   },
   handleUnhandledRejection(event: PromiseRejectionEvent): void {
     handleUnhandledRejection(event);

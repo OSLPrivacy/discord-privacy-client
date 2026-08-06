@@ -29,7 +29,7 @@ export type { HubRevocationStatus, HubScopeBurnOutcome };
  * friend is added (`HubPerson.safetyNumber`).
  */
 export interface FriendProfile { friendCode: string; oslUserId: string; }
-export interface AppNotification { id: string; title: string; detail: string; createdAt: string; }
+export interface AppNotification { id: string; title: string; detail: string; createdAt: string; appId?: ServiceId; }
 export type SupportMatrixPublicStatus = "available" | "beta" | "coming_soon" | "externally_blocked" | "unsupported";
 export type SupportMatrixInputEvidenceStatus = "qualified_profile" | "runtime_proven" | "qa_foundations_only" | "separate_qa_required" | "externally_blocked" | "unsupported" | "unknown";
 export interface SupportMatrixPresentationInput {
@@ -1756,7 +1756,13 @@ export function parseNotifications(raw: unknown): AppNotification[] | null {
   if (!Array.isArray(raw) || raw.length > 20) return null;
   const parsed: AppNotification[] = [];
   for (const item of raw) {
-    if (!isRecord(item) || !exact(item, ["id", "title", "detail", "createdAt"]) || !safe(item.id, 64) || !safe(item.title, 100) || !safe(item.detail, 240) || !safe(item.createdAt, 40)) return null;
+    if (!isRecord(item)
+      || !exact(item, item.appId === undefined ? ["id", "title", "detail", "createdAt"] : ["id", "title", "detail", "createdAt", "appId"])
+      || !safe(item.id, 64)
+      || !safe(item.title, 100)
+      || !safe(item.detail, 240)
+      || !safe(item.createdAt, 40)
+      || (item.appId !== undefined && !["discord", "telegram", "email", "signal", "whatsapp"].includes(String(item.appId)))) return null;
     parsed.push(item as unknown as AppNotification);
   }
   return parsed;
