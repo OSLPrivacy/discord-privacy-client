@@ -471,8 +471,13 @@ pub enum SelectorKind {
     ConversationTitle,
     MessageList,
     MessageRow,
+    ComposeButton,
     ComposerInput,
+    BodyInput,
     SendButton,
+    FolderList,
+    ThreadView,
+    ReadingPane,
     SentState,
 }
 

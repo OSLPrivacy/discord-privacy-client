@@ -5,8 +5,8 @@
 
 use crate::schema::{
     ActionLevel, AdapterAuthority, AdapterService, AdapterSurface, BindingRequirement, Capability,
-    CapabilityGrant, ProfileDoc, SendOutcomeContract, SignedProfileDoc,
-    PROFILE_DOC_ENVELOPE_VERSION, PROFILE_DOC_VERSION,
+    CapabilityGrant, ProfileDoc, SelectorKind, SelectorStrategy, SendOutcomeContract,
+    SignedProfileDoc, TypedSelector, PROFILE_DOC_ENVELOPE_VERSION, PROFILE_DOC_VERSION,
 };
 use std::collections::BTreeSet;
 
@@ -80,6 +80,69 @@ pub fn capabilities_from_profile(profile: &ProfileDoc) -> BTreeSet<Capability> {
         .unwrap_or_default()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct YahooWebTarget {
+    pub name: &'static str,
+    pub selector: TypedSelector,
+}
+
+/// Data-only targets for Yahoo Mail's reviewed web surface.
+pub fn yahoo_web_mail_targets() -> Vec<YahooWebTarget> {
+    vec![
+        yahoo_accessibility_target(
+            "compose",
+            SelectorKind::ComposeButton,
+            "button",
+            Some("Compose"),
+        ),
+        yahoo_accessibility_target(
+            "body",
+            SelectorKind::BodyInput,
+            "textbox",
+            Some("Message body"),
+        ),
+        yahoo_accessibility_target("Send", SelectorKind::SendButton, "button", Some("Send")),
+        yahoo_accessibility_target(
+            "folders",
+            SelectorKind::FolderList,
+            "navigation",
+            Some("Folders"),
+        ),
+        yahoo_accessibility_target(
+            "thread view",
+            SelectorKind::ThreadView,
+            "list",
+            Some("Messages"),
+        ),
+        yahoo_accessibility_target(
+            "reading pane",
+            SelectorKind::ReadingPane,
+            "region",
+            Some("Reading pane"),
+        ),
+    ]
+}
+
+fn yahoo_accessibility_target(
+    name: &'static str,
+    kind: SelectorKind,
+    role: &'static str,
+    accessible_name: Option<&'static str>,
+) -> YahooWebTarget {
+    YahooWebTarget {
+        name,
+        selector: TypedSelector {
+            kind,
+            strategy: SelectorStrategy::Accessibility {
+                role: role.to_owned(),
+                name: accessible_name.map(str::to_owned),
+                automation_id: None,
+            },
+            required: true,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +163,30 @@ mod tests {
         assert!(grants.contains(&Capability::PlaceProtectedPayload));
         assert!(!grants.contains(&Capability::SendProtectedPayload));
         assert!(!grants.contains(&Capability::VerifySendOutcome));
+    }
+
+    #[test]
+    fn task_1248_yahoo_mapping_contains_all_six_named_targets() {
+        let targets = yahoo_web_mail_targets();
+        let names = targets.iter().map(|target| target.name).collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "compose",
+                "body",
+                "Send",
+                "folders",
+                "thread view",
+                "reading pane"
+            ]
+        );
+        assert!(targets.iter().all(|target| target.selector.required));
+
+        println!(
+            "TASK1248 yahoo_targets={} names={}",
+            targets.len(),
+            names.join("|")
+        );
     }
 }
