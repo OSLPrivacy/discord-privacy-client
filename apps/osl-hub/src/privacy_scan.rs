@@ -6,7 +6,7 @@
 //! those inputs encrypted and deterministically reproduce findings from disk.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use crate::attachment_scan::{
     scan_attachments, AttachmentAnalyzers, LocalAttachmentCandidate, UninspectedAttachment,
@@ -17,6 +17,8 @@ const MAX_MESSAGES: usize = 2_000;
 const MAX_TEXT_BYTES: usize = 8 * 1024;
 const MAX_LOCATOR_BYTES: usize = 256;
 const MAX_PREVIEW_CHARS: usize = 120;
+const MAX_EMAIL_RECIPIENTS: usize = 64;
+const MAX_EMAIL_RECIPIENT_BYTES: usize = 256;
 const MAX_ATTACHMENT_ID_BYTES: usize = 128;
 const MAX_ATTACHMENT_DISPLAY_NAME_BYTES: usize = 256;
 const MAX_ATTACHMENT_ENCODED_BYTES: usize = MAX_ATTACHMENT_BYTES.div_ceil(3) * 4;
@@ -33,6 +35,10 @@ pub struct LocalMessageCandidate {
     pub authored_by_self: bool,
     pub created_at_unix_ms: Option<i64>,
     pub text: String,
+    #[serde(default)]
+    pub visible_recipients: Vec<String>,
+    #[serde(default)]
+    pub hidden_recipients: Vec<String>,
     #[serde(default)]
     pub attachments: Vec<LocalAttachmentCandidate>,
 }
@@ -74,6 +80,7 @@ pub struct LocalPrivacyFinding {
 #[serde(rename_all = "camelCase")]
 pub struct LocalPrivacyScanResult {
     pub findings: Vec<LocalPrivacyFinding>,
+    pub email_protection_checks: Vec<EmailProtectionCheckDisplay>,
     pub messages_scanned: usize,
     pub messages_rejected: usize,
     pub truncated: bool,
@@ -84,6 +91,14 @@ pub struct LocalPrivacyScanResult {
     pub videos_checked: bool,
     pub attachment_types_scanned: Vec<String>,
     pub uninspected_attachments: Vec<UninspectedAttachment>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmailProtectionCheckDisplay {
+    pub message_locator: String,
+    pub visible_recipients: Vec<String>,
+    pub distinct_recipient_count: usize,
 }
 
 /// Scan bounded caller-provided text entirely in process memory.
@@ -130,6 +145,7 @@ pub fn scan_local_messages_with_analyzers(
     analyzers: AttachmentAnalyzers<'_>,
 ) -> LocalPrivacyScanResult {
     let mut findings = Vec::new();
+    let mut email_protection_checks = Vec::new();
     let mut messages_scanned = 0usize;
     let mut messages_rejected = messages.len().saturating_sub(MAX_MESSAGES);
     let mut truncated = messages.len() > MAX_MESSAGES;
@@ -143,6 +159,9 @@ pub fn scan_local_messages_with_analyzers(
             continue;
         }
         messages_scanned += 1;
+        if let Some(check) = email_protection_check(&message) {
+            email_protection_checks.push(check.display);
+        }
         let mut categories = HashSet::new();
         for (category, confidence, reason) in classify(&message.text) {
             if !categories.insert((category, None::<String>)) {
@@ -238,6 +257,7 @@ pub fn scan_local_messages_with_analyzers(
 
     LocalPrivacyScanResult {
         findings,
+        email_protection_checks,
         messages_scanned,
         messages_rejected,
         truncated,
@@ -249,6 +269,33 @@ pub fn scan_local_messages_with_analyzers(
         attachment_types_scanned,
         uninspected_attachments,
     }
+}
+
+struct EmailProtectionCheck {
+    display: EmailProtectionCheckDisplay,
+}
+
+fn email_protection_check(message: &LocalMessageCandidate) -> Option<EmailProtectionCheck> {
+    if message.service_id != "email"
+        || (message.visible_recipients.is_empty() && message.hidden_recipients.is_empty())
+    {
+        return None;
+    }
+
+    let distinct_recipients = message
+        .visible_recipients
+        .iter()
+        .chain(message.hidden_recipients.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+
+    Some(EmailProtectionCheck {
+        display: EmailProtectionCheckDisplay {
+            message_locator: message.message_locator.clone(),
+            visible_recipients: message.visible_recipients.clone(),
+            distinct_recipient_count: distinct_recipients.len(),
+        },
+    })
 }
 
 fn valid_candidate(message: &LocalMessageCandidate) -> bool {
@@ -264,8 +311,25 @@ fn valid_candidate(message: &LocalMessageCandidate) -> bool {
         && (!message.text.is_empty() || !message.attachments.is_empty())
         && message.text.len() <= MAX_TEXT_BYTES
         && !message.text.contains('\0')
+        && valid_recipient_list(&message.visible_recipients)
+        && valid_recipient_list(&message.hidden_recipients)
         && message.attachments.len() <= MAX_ATTACHMENTS_PER_MESSAGE
         && message.attachments.iter().all(valid_attachment_input)
+}
+
+fn valid_recipient_list(recipients: &[String]) -> bool {
+    recipients.len() <= MAX_EMAIL_RECIPIENTS
+        && recipients
+            .iter()
+            .all(|recipient| valid_recipient_display_value(recipient))
+}
+
+fn valid_recipient_display_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_EMAIL_RECIPIENT_BYTES
+        && !value.chars().any(|ch| {
+            ch.is_control() || matches!(ch, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
 }
 
 fn valid_attachment_input(value: &LocalAttachmentCandidate) -> bool {
@@ -590,6 +654,8 @@ mod tests {
             authored_by_self: true,
             created_at_unix_ms: Some(1_700_000_000_000),
             text: text.to_owned(),
+            visible_recipients: Vec::new(),
+            hidden_recipients: Vec::new(),
             attachments: Vec::new(),
         }
     }
@@ -756,5 +822,41 @@ mod tests {
         assert!(!result.images_checked);
         assert_eq!(result.attachments_scanned, 0);
         assert_eq!(result.uninspected_attachments.len(), 1);
+    }
+
+    #[test]
+    fn task1220_email_protection_check_counts_visible_and_hidden_recipients_but_hides_bcc() {
+        let bcc_recipient = "bcc-task1220@oslprivacy.com";
+        let mut candidate = message("password: email draft secret");
+        candidate.service_id = "email".to_owned();
+        candidate.visible_recipients = vec![
+            "to-task1220@oslprivacy.com".to_owned(),
+            "cc-task1220@oslprivacy.com".to_owned(),
+        ];
+        candidate.hidden_recipients = vec![bcc_recipient.to_owned()];
+        let visible_sent = candidate.visible_recipients.len();
+        let hidden_sent = candidate.hidden_recipients.len();
+
+        let result = scan_local_messages(vec![candidate]);
+        let check = result
+            .email_protection_checks
+            .first()
+            .expect("email protection check is emitted for the email draft");
+        let display_output = format!("visibleRecipients={}", check.visible_recipients.join(","));
+
+        println!(
+            "TASK1220 email_protection_check visible_sent={} hidden_sent={} distinct_recipients={} display_output=\"{}\" bcc_hidden_in_display={}",
+            visible_sent,
+            hidden_sent,
+            check.distinct_recipient_count,
+            display_output,
+            !display_output.contains(bcc_recipient),
+        );
+
+        assert_eq!(check.visible_recipients.len(), visible_sent);
+        assert_eq!(hidden_sent, 1);
+        assert_eq!(check.distinct_recipient_count, 3);
+        assert!(!display_output.contains(bcc_recipient));
+        assert_eq!(result.findings.len(), 1);
     }
 }

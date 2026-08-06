@@ -666,6 +666,7 @@ fn load_persisted_scan(
 ) -> Result<LocalPrivacyScanResult, String> {
     let mut output = LocalPrivacyScanResult {
         findings: Vec::new(),
+        email_protection_checks: Vec::new(),
         messages_scanned: 0,
         messages_rejected: 0,
         truncated: false,
@@ -718,6 +719,9 @@ fn load_persisted_scan(
             }
             output.findings.push(finding);
         }
+        output
+            .email_protection_checks
+            .extend(scan.email_protection_checks);
     }
     Ok(output)
 }
@@ -876,6 +880,8 @@ mod tests {
             authored_by_self: true,
             created_at_unix_ms: Some(1_700_000_000_000),
             text: text.into(),
+            visible_recipients: Vec::new(),
+            hidden_recipients: Vec::new(),
             attachments: Vec::new(),
         }
     }

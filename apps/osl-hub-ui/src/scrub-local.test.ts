@@ -38,6 +38,7 @@ const status = (overrides: Partial<ScrubIndexStatus> = {}): ScrubIndexStatus => 
 const scan = (messagesScanned: number, overrides: Partial<PersistedLocalPrivacyScanResult> = {}): PersistedLocalPrivacyScanResult => ({
   findings: [], messagesScanned, messagesRejected: 0, truncated: false,
   analysisLocation: "this_device_only", persisted: true,
+  emailProtectionChecks: [],
   attachmentsScanned: 0, imagesChecked: false, videosChecked: false,
   attachmentTypesScanned: [], uninspectedAttachments: [],
   ...overrides,
