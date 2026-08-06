@@ -376,7 +376,7 @@ async function reconcileTerminalOneTimeObservation(
   );
 }
 
-async function revokeOneTimeLicensesForPayment(
+export async function revokeOneTimeLicensesForPayment(
   db: D1Database,
   paymentIntentId: string,
   reason: "chargeback" | "manual",
@@ -395,16 +395,23 @@ async function revokeOneTimeLicensesForPayment(
     ).bind(now, reason, paymentIntentId),
     db.prepare(
       `UPDATE subscriptions
-          SET status = ?, updated_at = ?
+          SET status = 'REVOKED', updated_at = ?
         WHERE subscription_id IN (
           SELECT licenses.subscription_id
             FROM licenses
             JOIN stripe_checkout_claims
               ON stripe_checkout_claims.license_hash = licenses.license_hash
-           WHERE stripe_checkout_claims.subscription_id = ?
+          WHERE stripe_checkout_claims.subscription_id = ?
         )
           AND status NOT IN ('REVOKED', 'EXPIRED')`,
-    ).bind(reason === "chargeback" ? "REVOKED" : "EXPIRED", now, paymentIntentId),
+    ).bind(now, paymentIntentId),
+    db.prepare(
+      `UPDATE stripe_checkout_claims
+          SET status = 'expired',
+              expires_at = CASE WHEN expires_at > ? THEN ? ELSE expires_at END
+        WHERE subscription_id = ?
+          AND status != 'expired'`,
+    ).bind(now, now, paymentIntentId),
   ]);
 
   // Keep old rows revocable during migration; new prepaid rows never put a

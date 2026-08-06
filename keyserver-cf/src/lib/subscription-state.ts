@@ -23,6 +23,7 @@ import type { Env } from "../env.js";
 import {
   completeOneTimeStripeCheckoutClaim,
   completeStripeCheckoutClaim,
+  revokeOneTimeLicensesForPayment,
 } from "./stripe-checkout-claims.js";
 import {
   applyLatestSubscriptionObservation,
@@ -390,6 +391,9 @@ async function onDisputeOpened(
   });
   if (!accepted) return { kind: "noop", reason: `stale subscription event: ${eventType}` };
   await revokeLicensesForSubscription(env.DB, subscriptionId, "chargeback");
+  if (obj.payment_intent) {
+    await revokeOneTimeLicensesForPayment(env.DB, obj.payment_intent, "chargeback");
+  }
   return { kind: "applied", summary: `sub=${subscriptionId} → REVOKED + license revoked` };
 }
 
@@ -417,6 +421,7 @@ async function onChargeRefunded(
   });
   if (!accepted) return { kind: "noop", reason: `stale refund event: ${eventType}` };
   await revokeLicensesForSubscription(env.DB, obj.payment_intent, "manual");
+  await revokeOneTimeLicensesForPayment(env.DB, obj.payment_intent, "manual");
   return {
     kind: "applied",
     summary: `payment=${obj.payment_intent} → REVOKED after refund`,

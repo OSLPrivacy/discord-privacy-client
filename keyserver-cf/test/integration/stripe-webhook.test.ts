@@ -964,10 +964,9 @@ describe("POST /v1/stripe/webhook state machine", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ session_id: sessionId, claim_token: claimToken }),
     });
-    expect(deliveredClaim.status).toBe(200);
+    expect(deliveredClaim.status).toBe(410);
     await expect(deliveredClaim.json()).resolves.toMatchObject({
-      status: "delivery_ready",
-      encrypted_license: "ciphertext",
+      error: "checkout claim expired",
     });
   });
 });

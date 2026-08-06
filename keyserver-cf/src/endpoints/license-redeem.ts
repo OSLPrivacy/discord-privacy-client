@@ -6,12 +6,15 @@
 
 import type { Env } from "../env.js";
 import { hashLicense, normalizeLicense, validateChecksum } from "../lib/license.js";
+import { revokedLicenseMessage } from "../lib/license-refusal.js";
 import { badRequest, json, serviceUnavailable, tooMany } from "../lib/http.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 
 interface RedemptionRow {
   subscription_id: string;
   revoked_at: number | null;
+  revoked_reason: string | null;
+  terminal_event_type: string | null;
   redeemed_at: number | null;
   expires_at: number | null;
 }
@@ -64,12 +67,29 @@ export async function handleLicenseRedeem(
   ).bind(now, now, licenseHash).run();
 
   const license = await env.DB.prepare(
-    `SELECT subscription_id, revoked_at, redeemed_at, expires_at
+    `SELECT licenses.subscription_id,
+            licenses.revoked_at,
+            licenses.revoked_reason,
+            observations.event_type AS terminal_event_type,
+            licenses.redeemed_at,
+            licenses.expires_at
        FROM licenses
-      WHERE license_hash = ?`,
+       LEFT JOIN stripe_checkout_claims AS claims
+              ON claims.license_hash = licenses.license_hash
+       LEFT JOIN stripe_subscription_observations AS observations
+              ON observations.subscription_id = COALESCE(claims.subscription_id, licenses.subscription_id)
+             AND observations.status IN ('REVOKED', 'EXPIRED')
+      WHERE licenses.license_hash = ?`,
   ).bind(licenseHash).first<RedemptionRow>();
   if (!license) return json({ status: "UNKNOWN", checksum_ok: true });
-  if (license.revoked_at !== null) return json({ status: "REVOKED", checksum_ok: true });
+  if (license.revoked_at !== null) {
+    const message = revokedLicenseMessage(license);
+    return json({
+      status: "REVOKED",
+      checksum_ok: true,
+      ...(message ? { message } : {}),
+    });
+  }
   if (license.redeemed_at === null || license.expires_at === null) {
     return json({ status: "UNKNOWN", checksum_ok: true });
   }
