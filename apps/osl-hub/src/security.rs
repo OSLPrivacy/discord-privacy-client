@@ -7073,6 +7073,70 @@ key"
     }
 
     #[test]
+    fn task_0174_two_way_verification_tick_hides_immediately_after_one_direction_is_removed() {
+        let harness = FileBackedSecurityHarness::new("task0174-two-way-verification-tick");
+        let first_account = "900000000000017400";
+        let second_account = "900000000000017401";
+        let first_to_second =
+            allowed_place_direction_key("discord", first_account, "direct_message", second_account);
+        let second_to_first =
+            allowed_place_direction_key("discord", second_account, "direct_message", first_account);
+        let mut prefs = SecurityPreferences {
+            version: 2,
+            ..SecurityPreferences::default()
+        };
+        prefs
+            .allowed_place_directions
+            .insert(first_to_second.clone());
+        prefs
+            .allowed_place_directions
+            .insert(second_to_first.clone());
+        write_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE), &prefs).unwrap();
+
+        let first_tick = compare_allowed_place_direction_state(
+            "discord".to_owned(),
+            first_account.to_owned(),
+            second_account.to_owned(),
+            "direct_message".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "TASK0174 first_tick.saved_directions={} first_tick.verification_state={} first_tick.two_way_state={}",
+            first_tick.saved_directions, first_tick.verification_state, first_tick.state
+        );
+        assert_eq!(first_tick.saved_directions, 2);
+        assert!(first_tick.first_to_second);
+        assert!(first_tick.second_to_first);
+        assert_eq!(first_tick.state, "two-way");
+        assert_eq!(first_tick.verification_state, "visible");
+
+        let mut persisted: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        assert!(persisted.allowed_place_directions.remove(&second_to_first));
+        write_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE), &persisted).unwrap();
+
+        let second_tick = compare_allowed_place_direction_state(
+            "discord".to_owned(),
+            first_account.to_owned(),
+            second_account.to_owned(),
+            "direct_message".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "TASK0174 second_tick.saved_directions={} second_tick.verification_state={} second_tick.two_way_state={} removed_direction={}",
+            second_tick.saved_directions,
+            second_tick.verification_state,
+            second_tick.state,
+            second_to_first
+        );
+        assert_eq!(second_tick.saved_directions, 1);
+        assert!(second_tick.first_to_second);
+        assert!(!second_tick.second_to_first);
+        assert_eq!(second_tick.state, "one-way");
+        assert_eq!(second_tick.verification_state, "hidden");
+    }
+
+    #[test]
     fn task_0177_group_build_list_returns_one_entry_of_each_build_state() {
         let harness = FileBackedSecurityHarness::new("task0177-group-build-list");
         let local_account = "900000000000017700";
