@@ -5107,7 +5107,7 @@ async fn list_osl_chat_history(
     app: tauri::AppHandle,
     caller: tauri::WebviewWindow,
     session: State<'_, HubAccountSessionState>,
-) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
+) -> Result<Vec<broker::OslChatHistoryRow>, String> {
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may read OSL Chat history".to_owned());
     }
