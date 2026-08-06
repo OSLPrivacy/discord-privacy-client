@@ -264,6 +264,9 @@ async function dispatch(request: Request, env: Env): Promise<Response> {
       return handleFetch(request, env, idHex);
     }
     if (request.method === "DELETE") {
+      if (!request.headers.get("x-osl-delete-grant")?.trim()) {
+        return error(403, "delete_grant_required", "delete grant required");
+      }
       const rl = await rateLimit(env, clientIp(request), "delete");
       if (!rl.allowed) {
         return error(429, "rate_limited", "delete rate limit hit");
