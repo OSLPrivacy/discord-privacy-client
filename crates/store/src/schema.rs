@@ -344,6 +344,19 @@ pub(crate) fn inspect_schema_version(conn: &Connection) -> Result<Option<u32>, S
     read_meta_u32(conn, "schema_version")
 }
 
+/// Remote burn relies on the current authenticated message envelope and
+/// sender/channel blind indexes. A store whose format stamp has moved back
+/// under a live handle may still be readable, but it is not safe to mutate as a
+/// remote-burn target.
+pub(crate) fn require_current_schema_for_remote_burn(conn: &Connection) -> Result<(), StoreError> {
+    match inspect_schema_version(conn)? {
+        Some(SCHEMA_VERSION) => Ok(()),
+        _ => Err(StoreError::Schema(
+            "old message cannot remote burn".to_string(),
+        )),
+    }
+}
+
 /// Whether the existing file has a metadata table.  Anchored open uses this
 /// read-only probe before it is permitted to create `_meta`: an absent table
 /// must be distinguishable from an enrolled database whose anchor record was

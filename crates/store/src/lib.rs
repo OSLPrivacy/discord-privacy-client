@@ -1142,6 +1142,7 @@ impl MessageStore {
         let chan_bi = self.bi(cipher::BI_CHANNEL_ID, scope_id)?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
+        schema::require_current_schema_for_remote_burn(&tx)?;
         let sender_bi = only_sender_discord_id
             .map(|sender| self.bi(cipher::BI_SENDER_ID, sender))
             .transpose()?;
@@ -1565,6 +1566,7 @@ impl MessageStore {
         let chan_bi = self.bi(cipher::BI_CHANNEL_ID, scope_id)?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
+        schema::require_current_schema_for_remote_burn(&tx)?;
         let target_mids: Vec<Vec<u8>> = {
             let sql = if only_sender_discord_id.is_some() {
                 "SELECT mid_bi FROM messages \
