@@ -174,6 +174,20 @@ pub struct KeyChangeAlert {
     pub pending_bundle: crate::tofu::KeyBundle,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelMessageRecord {
+    pub message_id: String,
+    pub channel_id: String,
+    pub thread_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelThreadRecord {
+    pub thread_id: String,
+    pub channel_id: String,
+    pub parent_message_id: String,
+}
+
 pub struct AppState {
     /// Serializes in-process Discord-account switches. The active account
     /// directory is process-global, so two concurrent switch commands must
@@ -307,6 +321,14 @@ pub struct AppState {
     /// SenderChain's snapshot is durable.
     pub channel_members: Mutex<std::collections::HashMap<String, Vec<String>>>,
 
+    /// First-party OSL Chats channel messages that can own local reply
+    /// threads. The persisted message body path stays in `message_store`; this
+    /// table is only the direct command's structural target graph.
+    pub channel_messages: Mutex<HashMap<String, ChannelMessageRecord>>,
+
+    /// First-party OSL Chats local thread records, keyed by thread id.
+    pub channel_threads: Mutex<HashMap<String, ChannelThreadRecord>>,
+
     /// Phase 9-B1: app-wide user preferences (stego mode selector,
     /// Mode 1 preview confirmations). Mirrors
     /// `<config_dir>/app_preferences.json`. Loaded at bootstrap.
@@ -426,6 +448,8 @@ impl Default for AppState {
             sender_key_rotation: Mutex::new(HashMap::new()),
             sender_keys_enabled: AtomicBool::new(true),
             channel_members: Mutex::new(HashMap::new()),
+            channel_messages: Mutex::new(HashMap::new()),
+            channel_threads: Mutex::new(HashMap::new()),
             app_preferences: Mutex::new(crate::app_preferences::AppPreferences::default()),
             friend_ids: Mutex::new(Vec::new()),
             guild_list: Mutex::new(Vec::new()),

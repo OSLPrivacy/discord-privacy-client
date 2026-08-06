@@ -15381,6 +15381,189 @@ pub fn cmd_osl_burn_scope_data(
     })
 }
 
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatBurnTargetScopeKind {
+    DirectMessage,
+    Group,
+    Channel,
+    Server,
+    Thread,
+    Service,
+    Account,
+}
+
+impl ChatBurnTargetScopeKind {
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct_message",
+            Self::Group => "group",
+            Self::Channel => "channel",
+            Self::Server => "server",
+            Self::Thread => "thread",
+            Self::Service => "service",
+            Self::Account => "account",
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatBurnTargetScopeInput {
+    pub scope_kind: ChatBurnTargetScopeKind,
+    pub scope_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatBurnTargetDto {
+    pub target_kind: String,
+    pub target_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatBurnTargetListDto {
+    pub scope_kind: String,
+    pub scope_id: String,
+    pub targets: Vec<ChatBurnTargetDto>,
+}
+
+/// Resolve UI chat scopes into the concrete local burn target namespaces.
+///
+/// The command does not burn anything. It gives the caller a separate, stable
+/// list for each requested scope so confirmation and later destructive work can
+/// name exactly which namespace is about to be affected.
+pub fn cmd_osl_select_chat_burn_targets(
+    scopes: Vec<ChatBurnTargetScopeInput>,
+) -> Result<Vec<ChatBurnTargetListDto>, String> {
+    record_activity_on_command_entry();
+    if scopes.is_empty() {
+        return Err("OSL: select at least one chat burn scope".to_owned());
+    }
+    if scopes.len() > 32 {
+        return Err("OSL: too many chat burn scopes selected".to_owned());
+    }
+    scopes
+        .into_iter()
+        .map(chat_burn_target_list)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+fn chat_burn_target_list(input: ChatBurnTargetScopeInput) -> Result<ChatBurnTargetListDto, String> {
+    let scope_id = normalize_chat_burn_field("scope_id", input.scope_id)?;
+    let targets = match input.scope_kind {
+        ChatBurnTargetScopeKind::DirectMessage => vec![
+            chat_burn_target("direct_message_conversation", &scope_id),
+            chat_burn_target("direct_message_records", &scope_id),
+            chat_burn_target("direct_message_attachments", &scope_id),
+        ],
+        ChatBurnTargetScopeKind::Group => vec![
+            chat_burn_target("group_conversation", &scope_id),
+            chat_burn_target("group_membership", &scope_id),
+            chat_burn_target("group_message_records", &scope_id),
+            chat_burn_target("group_attachments", &scope_id),
+        ],
+        ChatBurnTargetScopeKind::Channel => {
+            let server_id =
+                normalize_chat_burn_optional("server_id", input.server_id)?.unwrap_or_default();
+            let channel_id = normalize_chat_burn_optional("channel_id", input.channel_id)?
+                .unwrap_or_else(|| scope_id.clone());
+            let channel_scope = if server_id.is_empty() {
+                channel_id
+            } else {
+                format!("{server_id}:{channel_id}")
+            };
+            vec![
+                chat_burn_target("channel", &channel_scope),
+                chat_burn_target("channel_message_records", &channel_scope),
+                chat_burn_target("channel_attachments", &channel_scope),
+            ]
+        }
+        ChatBurnTargetScopeKind::Server => {
+            let server_id = normalize_chat_burn_optional("server_id", input.server_id)?
+                .unwrap_or_else(|| scope_id.clone());
+            vec![
+                chat_burn_target("server", &server_id),
+                chat_burn_target("server_channel_index", &server_id),
+                chat_burn_target("server_message_records", &server_id),
+            ]
+        }
+        ChatBurnTargetScopeKind::Thread => {
+            let thread_id = normalize_chat_burn_optional("thread_id", input.thread_id)?
+                .unwrap_or_else(|| scope_id.clone());
+            let parent_message_id =
+                normalize_chat_burn_optional("parent_message_id", input.parent_message_id)?
+                    .unwrap_or_else(|| format!("parent-of-{thread_id}"));
+            vec![
+                chat_burn_target("thread", &thread_id),
+                chat_burn_target("thread_message_records", &thread_id),
+                chat_burn_target("thread_parent_message", &parent_message_id),
+            ]
+        }
+        ChatBurnTargetScopeKind::Service => {
+            let service_id = normalize_chat_burn_optional("service_id", input.service_id)?
+                .unwrap_or_else(|| scope_id.clone());
+            vec![
+                chat_burn_target("service", &service_id),
+                chat_burn_target("service_scope_index", &service_id),
+                chat_burn_target("service_message_records", &service_id),
+            ]
+        }
+        ChatBurnTargetScopeKind::Account => {
+            let account_id = normalize_chat_burn_optional("account_id", input.account_id)?
+                .unwrap_or_else(|| scope_id.clone());
+            vec![
+                chat_burn_target("account", &account_id),
+                chat_burn_target("account_local_state", &account_id),
+                chat_burn_target("account_service_scopes", &account_id),
+            ]
+        }
+    };
+
+    Ok(ChatBurnTargetListDto {
+        scope_kind: input.scope_kind.wire_name().to_owned(),
+        scope_id,
+        targets,
+    })
+}
+
+fn chat_burn_target(kind: &str, id: &str) -> ChatBurnTargetDto {
+    ChatBurnTargetDto {
+        target_kind: kind.to_owned(),
+        target_id: id.to_owned(),
+    }
+}
+
+fn normalize_chat_burn_optional(
+    field: &str,
+    value: Option<String>,
+) -> Result<Option<String>, String> {
+    value
+        .map(|value| normalize_chat_burn_field(field, value))
+        .transpose()
+}
+
+fn normalize_chat_burn_field(field: &str, value: String) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 160 || value.chars().any(char::is_control) {
+        return Err(format!("OSL: invalid chat burn {field}"));
+    }
+    Ok(value.to_owned())
+}
+
 pub fn cmd_osl_mark_scope_burned(
     state: &AppState,
     scope_kind: String,
