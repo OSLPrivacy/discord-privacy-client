@@ -53,6 +53,9 @@ const PEER_OPEN_ERROR: &str = "This encrypted message could not be opened";
 const MAX_ALIAS_BYTES: usize = 80;
 const MAX_ALIAS_CHARS: usize = 48;
 const MAX_VISIBLE_WHITELIST_SCOPES: usize = 512;
+const PERSON_PICTURE_FALLBACK_COLOURS: [&str; 8] = [
+    "#3b82f6", "#14b8a6", "#f97316", "#a855f7", "#ef4444", "#22c55e", "#eab308", "#64748b",
+];
 /// Roster key for the person-level DM approval. `WhitelistEntry::Dm` carries no
 /// conversation id, so it has no `Scope::storage_key`; this sentinel can never
 /// collide with a real key (every real key contains a `:` separator).
@@ -122,6 +125,8 @@ pub struct PersonDto {
     pub person_id: String,
     pub osl_user_id: String,
     pub alias: Option<String>,
+    pub picture: Option<String>,
+    pub picture_fallback: PersonPictureFallbackDto,
     pub safety_number: String,
     pub safety_number_verified: bool,
     pub whitelist_count: usize,
@@ -136,6 +141,13 @@ pub struct PersonDto {
     /// Scope storage keys explicitly taken back from this person; they stay
     /// denied while reach is broadened.
     pub reach_narrowed_scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonPictureFallbackDto {
+    pub letter: String,
+    pub colour: String,
 }
 
 /// A local-only description of one approved encryption scope. It deliberately
@@ -3767,6 +3779,41 @@ fn manual_approved_scopes_for_person(
         .collect()
 }
 
+fn person_picture_fallback(person_id: &str, metadata: &PersonMetadata) -> PersonPictureFallbackDto {
+    PersonPictureFallbackDto {
+        letter: person_picture_fallback_letter(metadata),
+        colour: person_picture_fallback_colour(person_id, metadata),
+    }
+}
+
+fn person_picture_fallback_letter(metadata: &PersonMetadata) -> String {
+    let source = metadata
+        .alias
+        .as_deref()
+        .and_then(first_visible_character)
+        .or_else(|| first_visible_character(&metadata.osl_user_id))
+        .unwrap_or('O');
+    source.to_uppercase().collect()
+}
+
+fn first_visible_character(value: &str) -> Option<char> {
+    value
+        .trim()
+        .chars()
+        .find(|character| !character.is_control() && !character.is_whitespace())
+}
+
+fn person_picture_fallback_colour(person_id: &str, metadata: &PersonMetadata) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"OSL-PERSON-PICTURE-FALLBACK-v1");
+    hash.update(person_id.as_bytes());
+    hash.update(metadata.osl_user_id.as_bytes());
+    hash.update(metadata.ed25519_public.as_bytes());
+    let digest = hash.finalize();
+    let index = usize::from(digest[0]) % PERSON_PICTURE_FALLBACK_COLOURS.len();
+    PERSON_PICTURE_FALLBACK_COLOURS[index].to_owned()
+}
+
 fn person_dto(
     core: &HubCoreState,
     person_id: &str,
@@ -3818,6 +3865,8 @@ fn person_dto(
         person_id: person_id.to_owned(),
         osl_user_id: metadata.osl_user_id.clone(),
         alias: metadata.alias.clone(),
+        picture: None,
+        picture_fallback: person_picture_fallback(person_id, metadata),
         // Ordinarily this is the complete bundle OSL holds and encrypts to. A
         // signed pending transport-key update is shown only while encryption
         // is blocked; successful comparison adopts that exact bundle
@@ -4588,6 +4637,38 @@ mod tests {
             server_id: None,
             channel_id: None,
         }
+    }
+
+    #[test]
+    fn no_picture_friend_returns_stable_coloured_initial_fallback() {
+        let harness = FileBackedSecurityHarness::new("no-picture-fallback-0234");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let (person_id, mut metadata, peer) = test_friend(23);
+        metadata.alias = Some("  Maya No Picture  ".to_owned());
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+
+        let first = list_people(&core)
+            .expect("first no-picture fixture read")
+            .pop()
+            .expect("first read returns the fixture friend");
+        let second = list_people(&core)
+            .expect("second no-picture fixture read")
+            .pop()
+            .expect("second read returns the fixture friend");
+
+        assert_eq!(first.picture, None);
+        assert_eq!(second.picture, None);
+        assert_eq!(first.picture_fallback.letter, "M");
+        assert_eq!(first.picture_fallback, second.picture_fallback);
+        println!(
+            "TASK_0234_NO_PICTURE_FALLBACK first_letter={} first_colour={} second_letter={} second_colour={}",
+            first.picture_fallback.letter,
+            first.picture_fallback.colour,
+            second.picture_fallback.letter,
+            second.picture_fallback.colour
+        );
     }
 
     #[test]
