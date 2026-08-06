@@ -295,6 +295,14 @@ pub enum ServiceReadyLabel {
     Ready,
 }
 
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceReadyDecision {
+    pub service_id: ServiceKind,
+    pub label: Option<ServiceReadyLabel>,
+    pub refusal: Option<String>,
+}
+
 pub const READY_REQUIRES_REAL_TWO_PERSON_CAPABILITY: &str =
     "ready_requires_real_two_person_protected_messaging_capability";
 pub const READY_REQUIRES_MATCHING_DELIVERY_PROOF: &str = "ready_requires_matching_delivery_proof";
@@ -342,6 +350,39 @@ pub fn direct_service_ready_label_for_facts(
         return Err(READY_REQUIRES_MATCHING_DELIVERY_PROOF);
     }
     Ok(ServiceReadyLabel::Ready)
+}
+
+pub fn ready_decisions_from_service_proof_records(
+    proof_records: &[ProtectedDeliveryProof],
+) -> Vec<ServiceReadyDecision> {
+    service_descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.launch_state == ServiceLaunchState::Available)
+        .filter_map(|descriptor| {
+            let facts = service_capability_facts_for_kind(descriptor.id)?;
+            let matching_proof = proof_records
+                .iter()
+                .find(|proof| delivery_proof_matches_ready_rule(descriptor.id, proof));
+            let effective_facts = ServiceCapabilityFacts {
+                real_two_person_protected_messaging: facts.real_two_person_protected_messaging
+                    || matching_proof.is_some(),
+                ..facts
+            };
+            let decision = direct_service_ready_label_for_facts(effective_facts, matching_proof);
+            Some(match decision {
+                Ok(label) => ServiceReadyDecision {
+                    service_id: descriptor.id,
+                    label: Some(label),
+                    refusal: None,
+                },
+                Err(refusal) => ServiceReadyDecision {
+                    service_id: descriptor.id,
+                    label: None,
+                    refusal: Some(refusal.to_owned()),
+                },
+            })
+        })
+        .collect()
 }
 
 fn delivery_proof_matches_ready_rule(
