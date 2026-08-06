@@ -774,6 +774,21 @@ description = "Set or clear a bounded nickname in encrypted device-local People 
 commands.allow = ["set_hub_friend_nickname"]
 
 [[permission]]
+identifier = "allow-add-group-member-permission"
+description = "Save one bounded member permission for one local group or server in encrypted device-local state."
+commands.allow = ["add_group_member_permission"]
+
+[[permission]]
+identifier = "allow-remove-group-member-permission"
+description = "Remove one saved member permission from one local group or server in encrypted device-local state."
+commands.allow = ["remove_group_member_permission"]
+
+[[permission]]
+identifier = "allow-list-group-member-permissions"
+description = "List saved member permissions for one exact local group or server from encrypted device-local state."
+commands.allow = ["list_group_member_permissions"]
+
+[[permission]]
 identifier = "allow-set-active-hub-friend-permission"
 description = "Grant or revoke one verified person's permission for only the exact active hosted context."
 commands.allow = ["set_active_hub_friend_permission"]

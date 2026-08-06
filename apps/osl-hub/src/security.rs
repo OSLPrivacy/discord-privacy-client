@@ -1150,6 +1150,36 @@ pub fn set_group_member_permission(
     })
 }
 
+pub fn remove_group_member_permission(
+    security: &HubSecurityState,
+    group_id: String,
+    member_id: String,
+) -> Result<bool, String> {
+    require_unlocked()?;
+    validate_group_member_permission_id(&group_id, "OSL group identifier is invalid")?;
+    validate_group_member_permission_id(&member_id, "OSL member identifier is invalid")?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL group-member permission state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let removed = if let Some(members) = prefs.group_member_permissions.get_mut(&group_id) {
+        let removed = members.remove(&member_id).is_some();
+        if members.is_empty() {
+            prefs.group_member_permissions.remove(&group_id);
+        }
+        removed
+    } else {
+        false
+    };
+    if removed {
+        prefs.version = 2;
+        write_encrypted_json(&path, &prefs)?;
+    }
+    Ok(removed)
+}
+
 pub fn list_group_member_permissions(
     _security: &HubSecurityState,
 ) -> Result<Vec<GroupMemberPermissionRecord>, String> {
@@ -1157,6 +1187,17 @@ pub fn list_group_member_permissions(
     let prefs =
         load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
     Ok(group_member_permission_records(&prefs))
+}
+
+pub fn list_group_member_permissions_for_group(
+    _security: &HubSecurityState,
+    group_id: String,
+) -> Result<Vec<GroupMemberPermissionRecord>, String> {
+    require_unlocked()?;
+    validate_group_member_permission_id(&group_id, "OSL group identifier is invalid")?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(group_member_permission_records_for_group(&prefs, &group_id))
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -3816,6 +3857,26 @@ fn group_member_permission_records(
         .collect()
 }
 
+fn group_member_permission_records_for_group(
+    prefs: &SecurityPreferences,
+    group_id: &str,
+) -> Vec<GroupMemberPermissionRecord> {
+    prefs
+        .group_member_permissions
+        .get(group_id)
+        .into_iter()
+        .flat_map(|members| {
+            members
+                .iter()
+                .map(move |(member_id, allowed)| GroupMemberPermissionRecord {
+                    group_id: group_id.to_owned(),
+                    member_id: member_id.clone(),
+                    allowed: *allowed,
+                })
+        })
+        .collect()
+}
+
 fn manual_approved_scopes_for_person(
     prefs: &SecurityPreferences,
     person_id: &str,
@@ -4558,6 +4619,66 @@ mod tests {
         assert_eq!(records[0].group_id, "group-0113");
         assert_eq!(records[0].member_id, "member-0113");
         assert!(records[0].allowed);
+    }
+
+    #[test]
+    fn direct_group_member_permission_commands_list_two_saved_members_for_one_group() {
+        let _harness = FileBackedSecurityHarness::new("group-member-permission-commands");
+        let security = HubSecurityState::default();
+        set_group_member_permission(
+            &security,
+            "group-0114".to_owned(),
+            "member-0114-a".to_owned(),
+            true,
+        )
+        .unwrap();
+        set_group_member_permission(
+            &security,
+            "group-0114".to_owned(),
+            "member-0114-b".to_owned(),
+            true,
+        )
+        .unwrap();
+        set_group_member_permission(
+            &security,
+            "group-0114".to_owned(),
+            "member-0114-removed".to_owned(),
+            true,
+        )
+        .unwrap();
+        set_group_member_permission(
+            &security,
+            "other-group-0114".to_owned(),
+            "member-0114-other".to_owned(),
+            true,
+        )
+        .unwrap();
+        assert!(remove_group_member_permission(
+            &security,
+            "group-0114".to_owned(),
+            "member-0114-removed".to_owned(),
+        )
+        .unwrap());
+
+        let records =
+            list_group_member_permissions_for_group(&security, "group-0114".to_owned()).unwrap();
+        let member_ids = records
+            .iter()
+            .map(|record| record.member_id.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "direct_group_member_permission_commands group_id=group-0114 saved_members={} member_ids={}",
+            records.len(),
+            member_ids
+        );
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].group_id, "group-0114");
+        assert_eq!(records[0].member_id, "member-0114-a");
+        assert!(records[0].allowed);
+        assert_eq!(records[1].group_id, "group-0114");
+        assert_eq!(records[1].member_id, "member-0114-b");
+        assert!(records[1].allowed);
     }
 
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {

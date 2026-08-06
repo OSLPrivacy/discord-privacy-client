@@ -652,6 +652,9 @@ macro_rules! hub_tauri_commands {
             remove_hub_friend,
             list_hub_people,
             set_hub_friend_nickname,
+            add_group_member_permission,
+            remove_group_member_permission,
+            list_group_member_permissions,
             set_active_hub_friend_permission,
             set_active_hub_friend_reach,
             revoke_active_hub_friend_scope,
@@ -1923,6 +1926,21 @@ mod tauri_registration_surface_tests {
     fn list_scrub_accounts_is_registered_and_acl_granted() {
         let (handlers, permissions, capability) = registration_inputs();
         assert_registered_and_granted(&handlers, &permissions, &capability, "list_scrub_accounts");
+    }
+
+    #[test]
+    fn group_member_permission_commands_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "add_group_member_permission",
+                "remove_group_member_permission",
+                "list_group_member_permissions",
+            ],
+        );
     }
 
     fn pw3_test_checked_host() -> CheckedHost {
