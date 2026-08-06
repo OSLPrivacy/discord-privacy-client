@@ -52,6 +52,10 @@ export function isPositiveInt(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1;
 }
 
+export function isViewOnceDisplayDurationSeconds(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 60;
+}
+
 export function isNonNegativeInt(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }

@@ -176,6 +176,42 @@ describe("POST /v1/wrapped-keys", () => {
     expect(res.status).toBe(400);
   });
 
+  it("saves only 1 through 60 display seconds for single-use rows", async () => {
+    for (const display_duration_seconds of [1, 60]) {
+      const body = validBody({
+        sender_id: senderId,
+        single_use: true,
+        display_duration_seconds,
+      });
+      const res = await postSignedWrappedKey(body, senderSigningKey);
+      expect(res.status).toBe(201);
+      const row = await testDb
+        .prepare(
+          "SELECT display_duration_seconds FROM wrapped_keys WHERE content_id = ?",
+        )
+        .bind(body.content_id)
+        .first<{ display_duration_seconds: number }>();
+      expect(row?.display_duration_seconds).toBe(display_duration_seconds);
+      console.log(`TASK0561 worker display_duration_seconds=${display_duration_seconds} save`);
+    }
+
+    for (const display_duration_seconds of [0, 61]) {
+      const body = validBody({
+        sender_id: senderId,
+        single_use: true,
+        display_duration_seconds,
+      });
+      const res = await postSignedWrappedKey(body, senderSigningKey);
+      expect(res.status).toBe(400);
+      const row = await testDb
+        .prepare("SELECT COUNT(*) AS count FROM wrapped_keys WHERE content_id = ?")
+        .bind(body.content_id)
+        .first<{ count: number }>();
+      expect(row?.count).toBe(0);
+      console.log(`TASK0561 worker display_duration_seconds=${display_duration_seconds} exit 1`);
+    }
+  });
+
   it("400s display_duration_seconds present when single_use=false", async () => {
     const res = await postSignedWrappedKey(
       validBody({ sender_id: senderId, display_duration_seconds: 5 }),
@@ -280,10 +316,6 @@ describe("POST /v1/wrapped-keys", () => {
     ["session_version", { session_version: 0x1_0000_0000 }],
     ["share_index", { share_index: 0x1_0000_0000 }],
     ["blob_version", { blob_version: 0x1_0000_0000 }],
-    [
-      "display_duration_seconds",
-      { single_use: true, display_duration_seconds: 0x1_0000_0000 },
-    ],
   ] as const) {
     it(`rejects out-of-range canonical u32 field ${field}`, async () => {
       const res = await SELF.fetch("http://test/v1/wrapped-keys", {

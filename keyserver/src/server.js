@@ -66,6 +66,10 @@ function isPlainString(value) {
   return typeof value === 'string' && value.length > 0;
 }
 
+function isViewOnceDisplayDurationSeconds(value) {
+  return Number.isInteger(value) && value >= 1 && value <= 60;
+}
+
 // Constant-time comparison. Hashes both sides to SHA-256 first so the
 // length of `a` (the secret) doesn't leak via the comparator's
 // length precondition. Both digests are 32 bytes regardless of
@@ -370,9 +374,9 @@ are open. OK for localhost dev; DO NOT do this on a public host.'
     if (typeof b.single_use !== 'boolean') {
       return reply.code(400).send({ error: 'single_use must be a boolean' });
     }
-    if (b.single_use && typeof b.display_duration_seconds !== 'number') {
+    if (b.single_use && !isViewOnceDisplayDurationSeconds(b.display_duration_seconds)) {
       return reply.code(400).send({
-        error: 'display_duration_seconds required when single_use=true',
+        error: 'display_duration_seconds must be an integer from 1 through 60 when single_use=true',
       });
     }
     if (!b.single_use && b.display_duration_seconds != null) {

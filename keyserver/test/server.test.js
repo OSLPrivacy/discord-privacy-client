@@ -324,6 +324,47 @@ test('wrapped-keys POST: requires display_duration_seconds when single_use', asy
   await s.close();
 });
 
+test('wrapped-keys POST: accepts only 1 through 60 display seconds for single_use', async () => {
+  for (const display_duration_seconds of [1, 60]) {
+    const s = await newServer();
+    const content_id = `msg-${display_duration_seconds}`;
+    const create = await inject(s, {
+      method: 'POST',
+      url: '/v1/wrapped-keys',
+      payload: validWrappedKey({
+        content_id,
+        single_use: true,
+        display_duration_seconds,
+      }),
+    });
+    assert.equal(create.statusCode, 201);
+    const fetched = await inject(s, {
+      method: 'GET',
+      url: `/v1/wrapped-keys/${content_id}`,
+    });
+    assert.equal(fetched.statusCode, 200);
+    assert.equal(fetched.body.display_duration_seconds, display_duration_seconds);
+    console.log(`TASK0561 node display_duration_seconds=${display_duration_seconds} save`);
+    await s.close();
+  }
+
+  for (const display_duration_seconds of [0, 61]) {
+    const s = await newServer();
+    const r = await inject(s, {
+      method: 'POST',
+      url: '/v1/wrapped-keys',
+      payload: validWrappedKey({
+        content_id: `msg-${display_duration_seconds}`,
+        single_use: true,
+        display_duration_seconds,
+      }),
+    });
+    assert.equal(r.statusCode, 400);
+    console.log(`TASK0561 node display_duration_seconds=${display_duration_seconds} exit 1`);
+    await s.close();
+  }
+});
+
 test('wrapped-keys POST: rejects display_duration_seconds when not single_use', async () => {
   const s = await newServer();
   const r = await inject(s, {
