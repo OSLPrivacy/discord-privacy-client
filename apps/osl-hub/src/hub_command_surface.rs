@@ -29,7 +29,7 @@ use crate::native_discord_adapter::{
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 
 pub fn build_review_ui_identity_binding_verifier(
     core: &HubCoreState,
@@ -117,6 +117,109 @@ pub struct CheckedHost {
     pub active: ActiveServiceHost,
     pub owner_osl_user_id: String,
     pub scope_binding: String,
+}
+
+pub const ACTIVE_ACCOUNT_SCAN_QUEUED_LOG: &str =
+    "active-account-scan queued: service connection action already in flight";
+pub const ACTIVE_ACCOUNT_SCAN_ACTION_STARTED_LOG: &str =
+    "active-account-scan service connection action started";
+pub const ACTIVE_ACCOUNT_SCAN_ACTION_FINISHED_LOG: &str =
+    "active-account-scan service connection action finished";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ActiveAccountScanQueueLog {
+    pub events: Vec<String>,
+    pub queued_requests: usize,
+    pub max_service_connection_actions_in_flight: usize,
+}
+
+#[derive(Default)]
+struct ActiveAccountScanQueueState {
+    service_connection_action_in_flight: bool,
+    service_connection_actions_in_flight: usize,
+    max_service_connection_actions_in_flight: usize,
+    queued_requests: usize,
+    events: Vec<String>,
+}
+
+pub struct ActiveAccountScanQueue {
+    state: Mutex<ActiveAccountScanQueueState>,
+    available: Condvar,
+}
+
+impl Default for ActiveAccountScanQueue {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(ActiveAccountScanQueueState::default()),
+            available: Condvar::new(),
+        }
+    }
+}
+
+impl ActiveAccountScanQueue {
+    pub fn run_service_connection_action<R>(
+        &self,
+        action: impl FnOnce() -> Result<R, String>,
+    ) -> Result<R, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "active account scan queue is unavailable".to_owned())?;
+        if state.service_connection_action_in_flight {
+            state.queued_requests = state.queued_requests.saturating_add(1);
+            state.events.push(ACTIVE_ACCOUNT_SCAN_QUEUED_LOG.to_owned());
+        }
+        while state.service_connection_action_in_flight {
+            state = self
+                .available
+                .wait(state)
+                .map_err(|_| "active account scan queue is unavailable".to_owned())?;
+        }
+        state.service_connection_action_in_flight = true;
+        state.service_connection_actions_in_flight =
+            state.service_connection_actions_in_flight.saturating_add(1);
+        state.max_service_connection_actions_in_flight = state
+            .max_service_connection_actions_in_flight
+            .max(state.service_connection_actions_in_flight);
+        state
+            .events
+            .push(ACTIVE_ACCOUNT_SCAN_ACTION_STARTED_LOG.to_owned());
+        drop(state);
+
+        let _guard = ActiveAccountScanQueueGuard { queue: self };
+        action()
+    }
+
+    pub fn log(&self) -> Result<ActiveAccountScanQueueLog, String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "active account scan queue is unavailable".to_owned())?;
+        Ok(ActiveAccountScanQueueLog {
+            events: state.events.clone(),
+            queued_requests: state.queued_requests,
+            max_service_connection_actions_in_flight: state
+                .max_service_connection_actions_in_flight,
+        })
+    }
+}
+
+struct ActiveAccountScanQueueGuard<'a> {
+    queue: &'a ActiveAccountScanQueue,
+}
+
+impl Drop for ActiveAccountScanQueueGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.queue.state.lock() {
+            state.service_connection_actions_in_flight =
+                state.service_connection_actions_in_flight.saturating_sub(1);
+            state.service_connection_action_in_flight = false;
+            state
+                .events
+                .push(ACTIVE_ACCOUNT_SCAN_ACTION_FINISHED_LOG.to_owned());
+            self.queue.available.notify_one();
+        }
+    }
 }
 
 impl CheckedHost {
@@ -1453,6 +1556,9 @@ mod tauri_registration_surface_tests {
     use crate::identity_binding_verifier::BindingEvidence;
     use std::cell::{Cell, RefCell};
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::{mpsc, Arc};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     fn handler_commands() -> BTreeSet<String> {
         hub_tauri_commands!(hub_tauri_command_names)
@@ -2519,6 +2625,70 @@ mod tauri_registration_surface_tests {
             missing_checked_host_events.into_inner(),
             ["checked-host"],
             "the hosted scan route must build CheckedHost before binding, scanning, or returning success"
+        );
+    }
+
+    #[test]
+    fn task_1429_concurrent_active_account_scans_queue_second_request_without_overlap() {
+        let queue = Arc::new(ActiveAccountScanQueue::default());
+        let first_queue = Arc::clone(&queue);
+        let second_queue = Arc::clone(&queue);
+        let (first_started_tx, first_started_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+
+        let first = thread::spawn(move || {
+            first_queue.run_service_connection_action(|| {
+                first_started_tx.send(()).unwrap();
+                release_first_rx.recv().unwrap();
+                Ok::<_, String>("first")
+            })
+        });
+        first_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("first active account scan action must start");
+
+        let second = thread::spawn(move || {
+            second_queue.run_service_connection_action(|| Ok::<_, String>("second"))
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let log = queue.log().expect("read active account scan queue log");
+            if log.queued_requests == 1 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the second active account scan request was not queued; log={:?}",
+                log.events
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        release_first_tx.send(()).unwrap();
+        assert_eq!(first.join().unwrap().unwrap(), "first");
+        assert_eq!(second.join().unwrap().unwrap(), "second");
+
+        let log = queue
+            .log()
+            .expect("read final active account scan queue log");
+        println!(
+            "TASK1429 second_request_status=queued queued_requests={} max_service_connection_actions_in_flight={} logs={}",
+            log.queued_requests,
+            log.max_service_connection_actions_in_flight,
+            log.events.join(" | ")
+        );
+        assert_eq!(log.queued_requests, 1);
+        assert_eq!(log.max_service_connection_actions_in_flight, 1);
+        assert_eq!(
+            log.events,
+            [
+                ACTIVE_ACCOUNT_SCAN_ACTION_STARTED_LOG,
+                ACTIVE_ACCOUNT_SCAN_QUEUED_LOG,
+                ACTIVE_ACCOUNT_SCAN_ACTION_FINISHED_LOG,
+                ACTIVE_ACCOUNT_SCAN_ACTION_STARTED_LOG,
+                ACTIVE_ACCOUNT_SCAN_ACTION_FINISHED_LOG,
+            ]
         );
     }
 

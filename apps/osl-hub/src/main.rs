@@ -121,7 +121,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Write as _;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Mutex,
+    Mutex, OnceLock,
 };
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
@@ -158,6 +158,12 @@ fn startup_breadcrumb(label: &str) {
 const B6_PREFLIGHT_ONLY_ARG: &str = "--b6-preflight-only";
 #[cfg(feature = "discord-qa-shell")]
 const B6_PREFLIGHT_RECEIPT_FILE: &str = "osl-discord-qa-b6-preflight.v2.json";
+
+static ACTIVE_ACCOUNT_SCAN_QUEUE: OnceLock<ActiveAccountScanQueue> = OnceLock::new();
+
+fn active_account_scan_queue() -> &'static ActiveAccountScanQueue {
+    ACTIVE_ACCOUNT_SCAN_QUEUE.get_or_init(ActiveAccountScanQueue::default)
+}
 
 #[cfg(feature = "discord-qa-shell")]
 #[derive(Serialize)]
@@ -205,8 +211,9 @@ use osl_privacy_hub::hub_command_surface::{
     require_review_ui_identity_binding_from_verifier, service_kind_id, service_terms_address,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
     start_autoscrub_reviewed_run_inner, with_native_discord_product_send_authority,
-    BrowserFootprintConsentRequest, CheckedHost, DiscordGuidedDeletionPlanState,
-    GuidedDeletionRunAuthorityInput, NativeDiscordProductSendAuthority, ServiceTermsAddress,
+    ActiveAccountScanQueue, BrowserFootprintConsentRequest, CheckedHost,
+    DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
+    NativeDiscordProductSendAuthority, ServiceTermsAddress,
 };
 use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
@@ -701,20 +708,22 @@ fn checked_host_for_hosted_session_scan(app: &tauri::AppHandle) -> Result<Checke
 fn run_checked_hosted_session_scan(
     app: tauri::AppHandle,
 ) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan, String> {
-    checked_hosted_session_scan_flow(
-        || checked_host_for_hosted_session_scan(&app),
-        |checked| checked.attended_operator_names(),
-        |checked, operator_names| {
-            osl_privacy_hub::native_discord_adapter::scan_own_messages_for_deletion(
-                &app.state::<NativeWindowHostState>(),
-                &checked.owner_osl_user_id,
-                &checked.scope_binding,
-                checked.active.generation,
-                operator_names,
-            )
-        },
-        |checked| require_same_overlay_context(&app, checked.context_epoch, &checked.active),
-    )
+    active_account_scan_queue().run_service_connection_action(|| {
+        checked_hosted_session_scan_flow(
+            || checked_host_for_hosted_session_scan(&app),
+            |checked| checked.attended_operator_names(),
+            |checked, operator_names| {
+                osl_privacy_hub::native_discord_adapter::scan_own_messages_for_deletion(
+                    &app.state::<NativeWindowHostState>(),
+                    &checked.owner_osl_user_id,
+                    &checked.scope_binding,
+                    checked.active.generation,
+                    operator_names,
+                )
+            },
+            |checked| require_same_overlay_context(&app, checked.context_epoch, &checked.active),
+        )
+    })
 }
 
 /// Open the hosted-session scan surface only after proving the same native
