@@ -87,6 +87,9 @@ export async function handleCryptoSettlement(
   if (evidence.event_id !== expectedEventId) {
     return badRequest("event_id does not match payment proof");
   }
+  if (await paymentMessageAlreadyHandled(env.DB, evidence.event_id)) {
+    return conflict("payment message already handled");
+  }
 
   if (body.invoice_id.startsWith("cdon_")) {
     return await settleCryptoDonation(body as WatcherSettlementEvidence, env, ctx);
@@ -457,6 +460,16 @@ async function claimPaymentReference(
     return conflict("payment reference is already assigned to another invoice");
   }
   return null;
+}
+
+async function paymentMessageAlreadyHandled(
+  db: D1Database,
+  eventId: string,
+): Promise<boolean> {
+  const row = await db.prepare(
+    "SELECT 1 AS present FROM crypto_settlement_events_v2 WHERE event_id = ?",
+  ).bind(eventId).first<{ present: number }>();
+  return row !== null;
 }
 
 export async function sweepAnonymousCryptoInvoices(db: D1Database): Promise<number> {

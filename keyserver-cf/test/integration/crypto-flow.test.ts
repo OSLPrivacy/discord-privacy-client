@@ -393,17 +393,26 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     expect(row?.status).toBe("pending");
   });
 
-  it("deduplicates replay and concurrent callbacks", async () => {
+  it("refuses an exact repeated payment message after issuing one code", async () => {
     const keys = await deliveryKeys();
     const invoice = await quote("btc", keys.publicKey);
     const evidence = await settlementEvidence(invoice, "btc", 2);
     const headers = await settlementHeaders(evidence);
     const send = () => settleReady(evidence, checkoutEnv(), headers);
-    const concurrent = await Promise.all([send(), send()]);
-    expect(concurrent.map((response) => response.status)).toEqual([200, 200]);
+    const first = await send();
+    expect(first.status, await first.clone().text()).toBe(200);
+    const firstCodeCount = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM licenses WHERE subscription_id = ?",
+    ).bind(`crypto_${invoice.invoice_id}`).first<{ count: number }>();
+    expect(firstCodeCount).toEqual({ count: 1 });
+    console.log(`TASK3191_FIRST_MESSAGE_STATUS=${first.status}`);
+    console.log(`TASK3191_FIRST_CODE_COUNT=${firstCodeCount?.count}`);
     const retry = await send();
-    expect(retry.status).toBe(200);
-    await expect(retry.json()).resolves.toMatchObject({ duplicate: true });
+    const retryBody = await retry.json() as { error?: string };
+    expect(retry.status).toBe(409);
+    expect(retryBody).toMatchObject({ error: "payment message already handled" });
+    console.log(`TASK3191_REPEAT_MESSAGE_STATUS=${retry.status}`);
+    console.log(`TASK3191_REPEAT_MESSAGE_ERROR=${retryBody.error}`);
     const alertId = await paymentAlertId("crypto_pro", invoice.invoice_id);
     const counts = await env.DB.prepare(
       `SELECT
@@ -420,6 +429,8 @@ describe("anonymous node-verified lifetime Pro flow", () => {
       licenses: number; events: number; metrics: number; alerts: number;
     }>();
     expect(counts).toEqual({ licenses: 1, events: 1, metrics: 1, alerts: 1 });
+    console.log(`TASK3191_FINAL_CODE_COUNT=${counts?.licenses}`);
+    console.log(`TASK3191_SETTLEMENT_EVENT_COUNT=${counts?.events}`);
     const alert = await env.DB.prepare(
       `SELECT alert_kind, payment_method, amount_usd_cents, status, attempts
          FROM payment_alert_outbox WHERE alert_id = ?`,
