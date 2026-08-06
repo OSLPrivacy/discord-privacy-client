@@ -215,6 +215,7 @@ pub mod realtime_resume;
 pub mod realtime_subscription;
 #[cfg(feature = "core")]
 pub mod receipt_emit;
+pub mod row_who_wrote_it;
 #[cfg(feature = "core")]
 pub mod runtime_switches;
 // Timed deletion and view-once expiry. Needs `ipc` (sealed-at-rest storage) and

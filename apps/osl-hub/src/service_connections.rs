@@ -1,3 +1,4 @@
+use crate::row_who_wrote_it::SharedRowWhoWroteIt;
 use crate::website_driver::{
     WebsiteControlKind, WebsiteDriver, WebsiteDriverError, WebsiteNamedControl,
     WebsiteNamedControlRequest, WebsitePage,
@@ -184,6 +185,7 @@ pub struct SharedMailMessageSummary {
     pub subject: String,
     pub time: i64,
     pub sender: String,
+    pub who_wrote_it: SharedRowWhoWroteIt,
     pub called: String,
 }
 
@@ -195,6 +197,7 @@ pub struct OpenedSharedMailMessage {
     pub time: i64,
     pub sender: String,
     pub body: String,
+    pub who_wrote_it: SharedRowWhoWroteIt,
     pub called: String,
 }
 
@@ -286,6 +289,19 @@ pub fn mail_message_is_owned_by_signed_in_address(
     Ok(sender.eq_ignore_ascii_case(signed_in_address.trim()))
 }
 
+pub fn mail_message_who_wrote_it(
+    signed_in_address: &str,
+    message: &VisibleMailMessage,
+) -> Result<SharedRowWhoWroteIt, MailOwnerCheckError> {
+    Ok(
+        if mail_message_is_owned_by_signed_in_address(signed_in_address, message)? {
+            SharedRowWhoWroteIt::Yours
+        } else {
+            SharedRowWhoWroteIt::Theirs
+        },
+    )
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum SharedMailboxReaderError {
     InvalidGmailMailbox,
@@ -342,13 +358,15 @@ pub fn read_gmail_shared_mailbox_messages(
         .filter(|message| message.label_id == label_id)
         .map(|message| {
             let sender = readable_sender(message)?;
-            let called = owner_call_for_sender(&mailbox.signed_in_address, message)?;
+            let who_wrote_it = who_wrote_it_for_sender(&mailbox.signed_in_address, message)?;
+            let called = legacy_mail_owner_call(who_wrote_it).to_owned();
             Ok(SharedMailMessageSummary {
                 label_id: message.label_id.clone(),
                 message_id: message.message_id.clone(),
                 subject: message.subject.clone(),
                 time: message.time,
                 sender,
+                who_wrote_it,
                 called,
             })
         })
@@ -382,6 +400,7 @@ pub fn open_gmail_shared_mailbox_message(
         time: message.time,
         sender: readable_sender(message)?,
         body: message.body.clone(),
+        who_wrote_it: who_wrote_it_for_sender(&mailbox.signed_in_address, message)?,
         called: owner_call_for_sender(&mailbox.signed_in_address, message)?,
     })
 }
@@ -498,13 +517,15 @@ pub fn read_icloud_shared_mailbox_messages(
         .filter(|message| message.label_id == folder_id)
         .map(|message| {
             let sender = readable_sender(message)?;
-            let called = owner_call_for_sender(&mailbox.signed_in_address, message)?;
+            let who_wrote_it = who_wrote_it_for_sender(&mailbox.signed_in_address, message)?;
+            let called = legacy_mail_owner_call(who_wrote_it).to_owned();
             Ok(SharedMailMessageSummary {
                 label_id: message.label_id.clone(),
                 message_id: message.message_id.clone(),
                 subject: message.subject.clone(),
                 time: message.time,
                 sender,
+                who_wrote_it,
                 called,
             })
         })
@@ -538,6 +559,7 @@ pub fn open_icloud_shared_mailbox_message(
         time: message.time,
         sender: readable_sender(message)?,
         body: message.body.clone(),
+        who_wrote_it: who_wrote_it_for_sender(&mailbox.signed_in_address, message)?,
         called: owner_call_for_sender(&mailbox.signed_in_address, message)?,
     })
 }
@@ -554,17 +576,30 @@ fn readable_sender(message: &SharedMailMessageRecord) -> Result<String, SharedMa
         ))
 }
 
-fn owner_call_for_sender(
+fn who_wrote_it_for_sender(
     signed_in_address: &str,
     message: &SharedMailMessageRecord,
-) -> Result<String, SharedMailboxReaderError> {
+) -> Result<SharedRowWhoWroteIt, SharedMailboxReaderError> {
     let visible = VisibleMailMessage {
         message_id: message.message_id.clone(),
         mailbox: message.label_id.clone(),
         sender_address: message.sender_address.clone(),
     };
-    let owned = mail_message_is_owned_by_signed_in_address(signed_in_address, &visible)?;
-    Ok(if owned { "yours" } else { "not_yours" }.to_owned())
+    Ok(mail_message_who_wrote_it(signed_in_address, &visible)?)
+}
+
+fn legacy_mail_owner_call(who_wrote_it: SharedRowWhoWroteIt) -> &'static str {
+    match who_wrote_it {
+        SharedRowWhoWroteIt::Yours => "yours",
+        SharedRowWhoWroteIt::Theirs | SharedRowWhoWroteIt::NotPublishedByApp => "not_yours",
+    }
+}
+
+fn owner_call_for_sender(
+    signed_in_address: &str,
+    message: &SharedMailMessageRecord,
+) -> Result<String, SharedMailboxReaderError> {
+    Ok(legacy_mail_owner_call(who_wrote_it_for_sender(signed_in_address, message)?).to_owned())
 }
 
 fn shared_mail_message_summary(
@@ -572,13 +607,15 @@ fn shared_mail_message_summary(
     message: &SharedMailMessageRecord,
 ) -> Result<SharedMailMessageSummary, SharedMailboxReaderError> {
     let sender = readable_sender(message)?;
-    let called = owner_call_for_sender(signed_in_address, message)?;
+    let who_wrote_it = who_wrote_it_for_sender(signed_in_address, message)?;
+    let called = legacy_mail_owner_call(who_wrote_it).to_owned();
     Ok(SharedMailMessageSummary {
         label_id: message.label_id.clone(),
         message_id: message.message_id.clone(),
         subject: message.subject.clone(),
         time: message.time,
         sender,
+        who_wrote_it,
         called,
     })
 }
