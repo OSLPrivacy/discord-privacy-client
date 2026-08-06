@@ -33,6 +33,7 @@
 //! work: collapse all rejection paths into a single
 //! `IpcError::Rejected` once the protocol is stable.
 
+pub mod allowed_places;
 pub mod app_preferences;
 pub mod at_rest_boundary;
 pub mod attachment_wire;

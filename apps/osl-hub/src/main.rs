@@ -87,9 +87,9 @@ use osl_privacy_hub::scrub_index::{
     ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
-    self, AddFriendResult, FriendCodeExport, GroupMemberPermissionRecord, HubRevocationStatusDto,
-    HubScopeBurnResult, HubSecurityState, OneUseInviteLink, PersonDto, RemoveFriendResult,
-    ScopeSecurityDto, WhatsAppWhitelistKind,
+    self, AddFriendResult, AllowedPlaceRecord, FriendCodeExport, GroupMemberPermissionRecord,
+    HubRevocationStatusDto, HubScopeBurnResult, HubSecurityState, OneUseInviteLink, PersonDto,
+    RemoveFriendResult, ScopeSecurityDto, WhatsAppWhitelistKind,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -6293,6 +6293,36 @@ async fn list_group_member_permissions(
 ) -> Result<Vec<GroupMemberPermissionRecord>, String> {
     let _session = session.transition.lock().await;
     security::list_group_member_permissions_for_group(&security_state, group_id)
+}
+
+#[tauri::command]
+async fn add_allowed_place_record(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    record: AllowedPlaceRecord,
+) -> Result<AllowedPlaceRecord, String> {
+    let _session = session.transition.lock().await;
+    security::add_allowed_place_record(&security_state, record)
+}
+
+#[tauri::command]
+async fn remove_allowed_place_record(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    stable_id: String,
+) -> Result<bool, String> {
+    let _session = session.transition.lock().await;
+    security::remove_allowed_place_record(&security_state, stable_id)
+}
+
+#[tauri::command]
+async fn query_allowed_place_record(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    stable_id: String,
+) -> Result<Option<AllowedPlaceRecord>, String> {
+    let _session = session.transition.lock().await;
+    security::query_allowed_place_record(&security_state, stable_id)
 }
 
 #[tauri::command]
