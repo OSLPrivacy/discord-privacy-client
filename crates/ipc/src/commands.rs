@@ -3790,6 +3790,7 @@ pub fn cmd_osl_remove_sender_message_records(
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 pub struct BurnSenderMessageRecordsBothSidesDto {
+    pub burn_id: String,
     pub requested_count: usize,
     pub local_removal_count: usize,
     pub remote_removal_count: usize,
@@ -3829,31 +3830,67 @@ pub fn cmd_osl_burn_sender_message_records_both_sides(
         .as_ref()
         .cloned()
         .ok_or_else(|| "OSL: both-sides burn needs a key server".to_string())?;
+    let burn_id =
+        sender_message_records_both_sides_burn_id(&identity.user_id, &discord_message_ids);
 
-    let local = remove_sender_message_records(state, &discord_message_ids)?;
-    let mut remote_removal_count = 0usize;
-    for message_id in &discord_message_ids {
-        let response = client
-            .burn(
-                &identity,
-                &BurnScope::Single {
-                    content_id: message_id.clone(),
-                },
-            )
-            .map_err(|error| format!("OSL: remote wrapped-key removal failed: {error}"))?;
-        remote_removal_count = remote_removal_count
-            .checked_add(usize::try_from(response.deleted_count).map_err(|_| {
-                "OSL: remote wrapped-key removal count overflowed this platform".to_string()
-            })?)
-            .ok_or_else(|| "OSL: remote wrapped-key removal count overflowed".to_string())?;
+    let Some(steps) = begin_sender_message_burn(state, &burn_id, &discord_message_ids)? else {
+        let local = remove_sender_message_records(state, &discord_message_ids)?;
+        let mut remote_removal_count = 0usize;
+        for message_id in &discord_message_ids {
+            let response = client
+                .burn(
+                    &identity,
+                    &BurnScope::Single {
+                        content_id: message_id.clone(),
+                    },
+                )
+                .map_err(|error| format!("OSL: remote wrapped-key removal failed: {error}"))?;
+            remote_removal_count = remote_removal_count
+                .checked_add(usize::try_from(response.deleted_count).map_err(|_| {
+                    "OSL: remote wrapped-key removal count overflowed this platform".to_string()
+                })?)
+                .ok_or_else(|| "OSL: remote wrapped-key removal count overflowed".to_string())?;
+        }
+
+        return Ok(BurnSenderMessageRecordsBothSidesDto {
+            burn_id,
+            requested_count: local.requested_count,
+            local_removal_count: local.removed_count,
+            remote_removal_count,
+            remaining_local_count: local.remaining_local_count,
+            equal_removal_counts: local.removed_count == remote_removal_count,
+        });
+    };
+
+    for step in steps {
+        if !step.local_done {
+            delete_sender_message_burn_step_locally(state, &burn_id, &step.message_id)?;
+        }
+        if !step.remote_done {
+            client
+                .burn(
+                    &identity,
+                    &BurnScope::Single {
+                        content_id: step.message_id.clone(),
+                    },
+                )
+                .map_err(|error| format!("OSL: remote wrapped-key removal failed: {error}"))?;
+            mark_sender_message_burn_remote_done(state, &burn_id, &step.message_id)?;
+        }
     }
+    let final_steps = begin_sender_message_burn(state, &burn_id, &discord_message_ids)?
+        .ok_or_else(|| "OSL: both-sides burn journal disappeared".to_string())?;
+    let local_removal_count = final_steps.iter().filter(|step| step.local_done).count();
+    let remote_removal_count = final_steps.iter().filter(|step| step.remote_done).count();
+    let remaining_local_count = count_sender_message_records(state, &discord_message_ids)?;
 
     Ok(BurnSenderMessageRecordsBothSidesDto {
-        requested_count: local.requested_count,
-        local_removal_count: local.removed_count,
+        burn_id,
+        requested_count: discord_message_ids.len(),
+        local_removal_count,
         remote_removal_count,
-        remaining_local_count: local.remaining_local_count,
-        equal_removal_counts: local.removed_count == remote_removal_count,
+        remaining_local_count,
+        equal_removal_counts: local_removal_count == remote_removal_count,
     })
 }
 
@@ -3950,6 +3987,83 @@ fn remove_sender_message_records(
         removed_count: outcome.removed_count,
         remaining_local_count: outcome.remaining_local_count,
     })
+}
+
+fn sender_message_records_both_sides_burn_id(user_id: &str, message_ids: &[String]) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"OSL/sender-message-records-both-sides-burn/v1");
+    hash.update((user_id.len() as u64).to_be_bytes());
+    hash.update(user_id.as_bytes());
+    for message_id in message_ids {
+        hash.update((message_id.len() as u64).to_be_bytes());
+        hash.update(message_id.as_bytes());
+    }
+    hex_lower(&hash.finalize())
+}
+
+fn begin_sender_message_burn(
+    state: &AppState,
+    burn_id: &str,
+    message_ids: &[String],
+) -> Result<Option<Vec<store::SenderMessageBurnStep>>, String> {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(None);
+    };
+    store
+        .begin_sender_message_burn(burn_id, message_ids)
+        .map(Some)
+        .map_err(|e| format!("OSL: sender message burn journal: {e}"))
+}
+
+fn delete_sender_message_burn_step_locally(
+    state: &AppState,
+    burn_id: &str,
+    message_id: &str,
+) -> Result<usize, String> {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(0);
+    };
+    store
+        .delete_sender_message_burn_step_locally(burn_id, message_id)
+        .map_err(|e| format!("OSL: sender message burn local step: {e}"))
+}
+
+fn mark_sender_message_burn_remote_done(
+    state: &AppState,
+    burn_id: &str,
+    message_id: &str,
+) -> Result<(), String> {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(());
+    };
+    store
+        .mark_sender_message_burn_remote_done(burn_id, message_id)
+        .map_err(|e| format!("OSL: sender message burn remote step: {e}"))
+}
+
+fn count_sender_message_records(state: &AppState, message_ids: &[String]) -> Result<usize, String> {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(0);
+    };
+    store
+        .count_message_records(message_ids)
+        .map_err(|e| format!("OSL: sender message burn remaining records: {e}"))
 }
 
 /// Pull diagnostic facts out of a Phase 4 cover string for the

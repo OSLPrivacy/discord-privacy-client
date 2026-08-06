@@ -157,6 +157,16 @@ CREATE TABLE IF NOT EXISTS message_device_acks (
     FOREIGN KEY (mid_bi) REFERENCES messages(mid_bi) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS sender_message_burn_steps (
+    burn_bi BLOB NOT NULL,
+    step_index INTEGER NOT NULL CHECK (step_index >= 0),
+    mid_bi BLOB NOT NULL,
+    local_done INTEGER NOT NULL DEFAULT 0 CHECK (local_done IN (0, 1)),
+    remote_done INTEGER NOT NULL DEFAULT 0 CHECK (remote_done IN (0, 1)),
+    PRIMARY KEY (burn_bi, step_index),
+    UNIQUE (burn_bi, mid_bi)
+);
+
 CREATE TABLE IF NOT EXISTS attachments (
     ck_bi BLOB PRIMARY KEY,
     mid_bi BLOB NOT NULL,

@@ -109,6 +109,14 @@ pub struct DeleteMessageRecordsOutcome {
     pub remaining_local_count: usize,
 }
 
+/// Durable progress for one sender-owned both-sides burn target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SenderMessageBurnStep {
+    pub message_id: String,
+    pub local_done: bool,
+    pub remote_done: bool,
+}
+
 /// At-rest-encrypted message store backed by SQLite.
 ///
 /// Each message body is sealed under a unique random content key. An
@@ -135,6 +143,8 @@ pub struct MessageStore {
     index_key: [u8; 32],
     anchor: Option<anchor::AnchorBinding>,
 }
+
+const BI_SENDER_MESSAGE_BURN_ID: &[u8] = b"osl-store-bi/sender_message_burn_id-v1";
 
 /// Complete cryptographic and selector state needed to authenticate a live
 /// message row.
@@ -425,6 +435,17 @@ fn checkpoint_after_shred(conn: &Connection) -> Result<(), StoreError> {
     // first creates an unanchored crash window.  The caller clears it in the
     // same SQLite transaction that advances the cleared-state anchor.
     Ok(())
+}
+
+fn stable_fingerprint_hex(bytes: &[u8]) -> String {
+    const FNV_OFFSET: u128 = 0x6c62272e07bb014262b821756295c58d;
+    const FNV_PRIME: u128 = 0x0000000001000000000000000000013b;
+    let mut hash = FNV_OFFSET;
+    for byte in bytes {
+        hash ^= u128::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:032x}")
 }
 
 /// Destroy one row's secret material in place, unconditionally.
@@ -1353,6 +1374,227 @@ impl MessageStore {
             removed_count: removed,
             remaining_local_count: remaining,
         })
+    }
+
+    /// Start or reload a durable sender-message burn journal.
+    ///
+    /// The journal stores only blind indexes. The caller must supply the same
+    /// selected message ids on restart; this method verifies they still match
+    /// the burn id's existing ordered steps before returning progress.
+    pub fn begin_sender_message_burn(
+        &self,
+        burn_id: &str,
+        discord_message_ids: &[String],
+    ) -> Result<Vec<SenderMessageBurnStep>, StoreError> {
+        if discord_message_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let burn_bi = self.bi(BI_SENDER_MESSAGE_BURN_ID, burn_id)?;
+        let target_mids: Vec<Vec<u8>> = discord_message_ids
+            .iter()
+            .map(|id| self.bi(cipher::BI_MESSAGE_ID, id))
+            .collect::<Result<_, _>>()?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let existing_count: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM sender_message_burn_steps WHERE burn_bi = ?1",
+            params![&burn_bi],
+            |row| row.get(0),
+        )?;
+        if existing_count == 0 {
+            for (index, mid_bi) in target_mids.iter().enumerate() {
+                tx.execute(
+                    "INSERT INTO sender_message_burn_steps \
+                        (burn_bi, step_index, mid_bi, local_done, remote_done) \
+                     VALUES (?1, ?2, ?3, 0, 0)",
+                    params![&burn_bi, index as i64, mid_bi],
+                )?;
+            }
+        }
+
+        let mut stmt = tx.prepare(
+            "SELECT step_index, mid_bi, local_done, remote_done \
+               FROM sender_message_burn_steps \
+              WHERE burn_bi = ?1 \
+              ORDER BY step_index ASC",
+        )?;
+        let rows = stmt.query_map(params![&burn_bi], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut stored = Vec::new();
+        for row in rows {
+            stored.push(row?);
+        }
+        drop(stmt);
+        if stored.len() != target_mids.len() {
+            return Err(StoreError::Corrupted(
+                "sender message burn journal target count changed".to_string(),
+            ));
+        }
+        let mut steps = Vec::with_capacity(stored.len());
+        for (index, (step_index, mid_bi, local_done, remote_done)) in stored.into_iter().enumerate()
+        {
+            if step_index != index as i64 || mid_bi != target_mids[index] {
+                return Err(StoreError::Corrupted(
+                    "sender message burn journal target list changed".to_string(),
+                ));
+            }
+            steps.push(SenderMessageBurnStep {
+                message_id: discord_message_ids[index].clone(),
+                local_done: local_done != 0,
+                remote_done: remote_done != 0,
+            });
+        }
+        self.commit(tx)?;
+        Ok(steps)
+    }
+
+    /// Delete one local target for a durable sender-message burn and mark its
+    /// local step complete. If the row is already absent, the target is still
+    /// finished and no other message row is touched.
+    pub fn delete_sender_message_burn_step_locally(
+        &self,
+        burn_id: &str,
+        discord_message_id: &str,
+    ) -> Result<usize, StoreError> {
+        let burn_bi = self.bi(BI_SENDER_MESSAGE_BURN_ID, burn_id)?;
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let local_done: Option<i64> = tx
+            .query_row(
+                "SELECT local_done FROM sender_message_burn_steps \
+                  WHERE burn_bi = ?1 AND mid_bi = ?2",
+                params![&burn_bi, &mid_bi],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(local_done) = local_done else {
+            return Err(StoreError::Corrupted(
+                "sender message burn step is missing".to_string(),
+            ));
+        };
+        let mut removed = 0usize;
+        if local_done == 0 {
+            tx.execute(
+                "DELETE FROM attachments WHERE mid_bi = ?1",
+                params![&mid_bi],
+            )?;
+            tx.execute(
+                "DELETE FROM attachment_manifests WHERE mid_bi = ?1",
+                params![&mid_bi],
+            )?;
+            removed = tx.execute("DELETE FROM messages WHERE mid_bi = ?1", params![&mid_bi])?;
+            tx.execute(
+                "UPDATE sender_message_burn_steps SET local_done = 1 \
+                  WHERE burn_bi = ?1 AND mid_bi = ?2",
+                params![&burn_bi, &mid_bi],
+            )?;
+            if removed != 0 {
+                schema::mark_shred_checkpoint_pending(&tx)?;
+            }
+        }
+        self.commit(tx)?;
+        if removed != 0 {
+            checkpoint_after_shred(&conn)?;
+            self.sync_anchor_after_checkpoint(&mut conn)?;
+        }
+        Ok(removed)
+    }
+
+    pub fn mark_sender_message_burn_remote_done(
+        &self,
+        burn_id: &str,
+        discord_message_id: &str,
+    ) -> Result<(), StoreError> {
+        let burn_bi = self.bi(BI_SENDER_MESSAGE_BURN_ID, burn_id)?;
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE sender_message_burn_steps SET remote_done = 1 \
+              WHERE burn_bi = ?1 AND mid_bi = ?2",
+            params![&burn_bi, &mid_bi],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::Corrupted(
+                "sender message burn step is missing".to_string(),
+            ));
+        }
+        self.commit(tx)?;
+        Ok(())
+    }
+
+    pub fn count_message_records(
+        &self,
+        discord_message_ids: &[String],
+    ) -> Result<usize, StoreError> {
+        let target_mids: Vec<Vec<u8>> = discord_message_ids
+            .iter()
+            .map(|id| self.bi(cipher::BI_MESSAGE_ID, id))
+            .collect::<Result<_, _>>()?;
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut remaining = 0usize;
+        for mid_bi in &target_mids {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM messages WHERE mid_bi = ?1",
+                params![mid_bi],
+                |row| row.get(0),
+            )?;
+            remaining += usize::try_from(count).map_err(|_| {
+                StoreError::Corrupted("selected message record count overflow".to_string())
+            })?;
+        }
+        Ok(remaining)
+    }
+
+    /// Stable diagnostic fingerprint of one burned row's stored bytes.
+    ///
+    /// This does not expose plaintext identifiers; the row is selected through
+    /// the caller's live store key and encoded from the already-blinded,
+    /// encrypted columns.
+    pub fn burned_message_record_fingerprint(
+        &self,
+        discord_message_id: &str,
+    ) -> Result<Option<String>, StoreError> {
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let encoded: Option<String> = conn
+            .query_row(
+                "SELECT \
+                    hex(mid_bi) || '|' || hex(chan_bi) || '|' || hex(sender_bi) || '|' || \
+                    hex(meta_nonce) || '|' || hex(meta_ct) || '|' || hex(ciphertext) || '|' || \
+                    hex(nonce) || '|' || seq || '|' || burned || '|' || content_version || '|' || \
+                    ifnull(hex(wrapped_key_nonce), 'NULL') || '|' || \
+                    ifnull(hex(wrapped_key), 'NULL') || '|' || \
+                    ifnull(hex(delivered_at), 'NULL') || '|' || \
+                    ifnull(hex(opened_at), 'NULL') || '|' || \
+                    ifnull(hex(destroyed_at), 'NULL') || '|' || \
+                    ifnull(hex(destruct_reason), 'NULL') || '|' || \
+                    destructive_remote_burn_state || '|' || \
+                    ifnull(hex(destructive_remote_burn_grant), 'NULL') \
+                 FROM messages WHERE mid_bi = ?1 AND burned = 1",
+                params![mid_bi],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(encoded.map(|value| stable_fingerprint_hex(value.as_bytes())))
+    }
+
+    pub fn sender_message_burn_journal_count(&self) -> Result<usize, StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT hex(burn_bi)) FROM sender_message_burn_steps",
+            [],
+            |row| row.get(0),
+        )?;
+        usize::try_from(count)
+            .map_err(|_| StoreError::Corrupted("sender burn journal count overflow".to_string()))
     }
 
     /// Persist a decrypted attachment under a fresh per-write content key.
