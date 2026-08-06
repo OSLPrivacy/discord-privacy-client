@@ -5,6 +5,8 @@
 //! encrypts the resulting bytes. The relay consequently receives neither the
 //! exact lifetime nor a scope-level expiry preference.
 
+use serde::{Deserialize, Serialize};
+
 /// A requested expiry starts at the recipient's first render, in seconds.
 ///
 /// `None` means the sender chose no expiry. The exact value is carried inside
@@ -16,8 +18,56 @@ pub const MIN_VIEW_LIFETIME_SECONDS: u32 = 1;
 /// The longest lifetime the product offers: thirty days.
 pub const MAX_VIEW_LIFETIME_SECONDS: u32 = 30 * 24 * 60 * 60;
 
+const DAY_SECONDS: u64 = 24 * 60 * 60;
+const HOUR_SECONDS: u64 = 60 * 60;
+const MINUTE_SECONDS: u64 = 60;
+
 const FORMAT_VERSION: u8 = 1;
 const HEADER_BYTES: usize = 6;
+
+/// Direct timer fields supplied by the composer.
+///
+/// `Default` is intentionally all zeroes, including `days = 0`: a blank timer
+/// means no per-message expiry. Non-zero timers are validated and converted to
+/// the exact seconds value carried inside the sealed payload.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageTimer {
+    #[serde(default)]
+    pub days: u32,
+    #[serde(default)]
+    pub hours: u32,
+    #[serde(default)]
+    pub minutes: u32,
+    #[serde(default)]
+    pub seconds: u32,
+}
+
+impl MessageTimer {
+    /// Convert the direct timer fields into the sealed view lifetime.
+    ///
+    /// Hours, minutes and seconds use their normal clock ranges so that each
+    /// direct field has one meaning. The total lifetime remains the final
+    /// policy boundary: zero means no expiry, and non-zero values may not exceed
+    /// thirty days.
+    pub fn view_lifetime(self) -> Result<ViewLifetime, String> {
+        if self.hours >= 24 || self.minutes >= 60 || self.seconds >= 60 {
+            return Err("OSL message expiry must be between 1 second and 30 days".to_owned());
+        }
+        let total = u64::from(self.days)
+            .saturating_mul(DAY_SECONDS)
+            .saturating_add(u64::from(self.hours).saturating_mul(HOUR_SECONDS))
+            .saturating_add(u64::from(self.minutes).saturating_mul(MINUTE_SECONDS))
+            .saturating_add(u64::from(self.seconds));
+        if total == 0 {
+            return Ok(None);
+        }
+        let seconds = u32::try_from(total)
+            .map_err(|_| "OSL message expiry must be between 1 second and 30 days".to_owned())?;
+        validate_view_lifetime(Some(seconds))?;
+        Ok(Some(seconds))
+    }
+}
 
 /// Plaintext that must be encrypted as one unit by the caller.
 ///
@@ -42,6 +92,11 @@ impl SealedMessageExpiryPayload {
             view_lifetime,
             payload,
         })
+    }
+
+    /// Select an expiry from direct day/hour/minute/second timer fields.
+    pub fn new_with_timer(timer: MessageTimer, payload: Vec<u8>) -> Result<Self, String> {
+        Self::new(timer.view_lifetime()?, payload)
     }
 
     /// Encode the envelope bytes that the caller must encrypt.
@@ -136,5 +191,42 @@ mod tests {
         for lifetime in [Some(0), Some(MAX_VIEW_LIFETIME_SECONDS + 1)] {
             assert!(SealedMessageExpiryPayload::new(lifetime, Vec::new()).is_err());
         }
+    }
+
+    #[test]
+    fn direct_timer_validation_accepts_30_days_and_rejects_30_days_plus_one_second() {
+        let default_timer = MessageTimer::default();
+        let missing_days_timer: MessageTimer =
+            serde_json::from_str(r#"{"hours":1,"minutes":2,"seconds":3}"#).unwrap();
+        let accepted_timer = MessageTimer {
+            days: 30,
+            ..MessageTimer::default()
+        };
+        let rejected_timer = MessageTimer {
+            days: 30,
+            seconds: 1,
+            ..MessageTimer::default()
+        };
+
+        let accepted = accepted_timer.view_lifetime().unwrap();
+        let rejected = rejected_timer.view_lifetime();
+        let rejected_seconds = u64::from(MAX_VIEW_LIFETIME_SECONDS) + 1;
+
+        println!(
+            "TASK1341 direct_timer_validation default_days={} omitted_days_default={} accepted_days={} accepted_seconds={} rejected_seconds={} rejected={}",
+            default_timer.days,
+            missing_days_timer.days,
+            accepted_timer.days,
+            accepted.unwrap(),
+            rejected_seconds,
+            rejected.is_err()
+        );
+
+        assert_eq!(default_timer.days, 0);
+        assert_eq!(missing_days_timer.days, 0);
+        assert_eq!(missing_days_timer.view_lifetime(), Ok(Some(3_723)));
+        assert_eq!(accepted, Some(MAX_VIEW_LIFETIME_SECONDS));
+        assert_eq!(rejected_seconds, 2_592_001);
+        assert!(rejected.is_err());
     }
 }
