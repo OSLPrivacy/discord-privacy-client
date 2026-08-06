@@ -29,6 +29,15 @@ fn task_0151_two_signal_kind_lookups_return_independently_saved_choices() {
         None,
     )
     .unwrap();
+    cmd_osl_save_signal_auto_whitelist_rule(
+        &state,
+        "story".to_owned(),
+        account.to_owned(),
+        "signal-story-0151".to_owned(),
+        "ask me".to_owned(),
+        None,
+    )
+    .unwrap();
 
     let direct = cmd_osl_read_signal_auto_whitelist_rule(
         &state,
@@ -44,9 +53,17 @@ fn task_0151_two_signal_kind_lookups_return_independently_saved_choices() {
         "signal-group-0151".to_owned(),
     )
     .unwrap();
+    let story = cmd_osl_read_signal_auto_whitelist_rule(
+        &state,
+        "story".to_owned(),
+        account.to_owned(),
+        "signal-story-0151".to_owned(),
+    )
+    .unwrap();
 
     add_allowed_place_record(dir.path(), direct.allowed_place.clone()).unwrap();
     add_allowed_place_record(dir.path(), group.allowed_place.clone()).unwrap();
+    add_allowed_place_record(dir.path(), story.allowed_place.clone()).unwrap();
 
     assert_eq!(direct.signal_kind, "direct_message");
     assert_eq!(direct.auto_rule_app_kind, "signal_direct_message");
@@ -78,9 +95,30 @@ fn task_0151_two_signal_kind_lookups_return_independently_saved_choices() {
     )
     .unwrap());
 
+    assert_eq!(story.signal_kind, "story");
+    assert_eq!(story.auto_rule_app_kind, "signal_story");
+    assert_eq!(story.allowed_place.app, "signal");
+    assert_eq!(story.allowed_place.kind, "story");
+    assert_eq!(
+        story.allowed_place.stable_id,
+        "signal:signal-account-0151:story:signal-story-0151"
+    );
+    assert_eq!(story.choice, "ask me");
+    assert!(allowed_place_is_allowed(
+        dir.path(),
+        &AllowedPlaceQuery::from(story.allowed_place.clone())
+    )
+    .unwrap());
+
     assert_ne!(direct.auto_rule_app_kind, group.auto_rule_app_kind);
+    assert_ne!(direct.auto_rule_app_kind, story.auto_rule_app_kind);
+    assert_ne!(group.auto_rule_app_kind, story.auto_rule_app_kind);
     assert_ne!(direct.allowed_place.kind, group.allowed_place.kind);
+    assert_ne!(direct.allowed_place.kind, story.allowed_place.kind);
+    assert_ne!(group.allowed_place.kind, story.allowed_place.kind);
     assert_ne!(direct.choice, group.choice);
+    assert_ne!(direct.choice, story.choice);
+    assert_ne!(group.choice, story.choice);
 
     println!(
         "TASK 0151 direct lookup: kind={} auto_rule={} allowed_place_kind={} stable_id={} choice={}",
@@ -97,5 +135,13 @@ fn task_0151_two_signal_kind_lookups_return_independently_saved_choices() {
         group.allowed_place.kind,
         group.allowed_place.stable_id,
         group.choice
+    );
+    println!(
+        "TASK 0151 direct lookup: kind={} auto_rule={} allowed_place_kind={} stable_id={} choice={}",
+        story.signal_kind,
+        story.auto_rule_app_kind,
+        story.allowed_place.kind,
+        story.allowed_place.stable_id,
+        story.choice
     );
 }

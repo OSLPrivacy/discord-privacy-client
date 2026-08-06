@@ -43,15 +43,17 @@ impl Default for AutoWhitelistChoice {
 pub enum SignalWhitelistKind {
     DirectMessage,
     GroupChat,
+    Story,
 }
 
 impl SignalWhitelistKind {
-    pub const ALL: [Self; 2] = [Self::DirectMessage, Self::GroupChat];
+    pub const ALL: [Self; 3] = [Self::DirectMessage, Self::GroupChat, Self::Story];
 
     pub fn id(self) -> &'static str {
         match self {
             Self::DirectMessage => "direct_message",
             Self::GroupChat => "group_chat",
+            Self::Story => "story",
         }
     }
 
@@ -59,6 +61,7 @@ impl SignalWhitelistKind {
         match self {
             Self::DirectMessage => "direct message",
             Self::GroupChat => "group chat",
+            Self::Story => "story",
         }
     }
 
@@ -66,6 +69,7 @@ impl SignalWhitelistKind {
         match self {
             Self::DirectMessage => "signal_direct_message",
             Self::GroupChat => "signal_group_chat",
+            Self::Story => "signal_story",
         }
     }
 
@@ -74,12 +78,13 @@ impl SignalWhitelistKind {
     }
 }
 
-pub const AUTO_WHITELIST_APP_KINDS: [&str; 7] = [
+pub const AUTO_WHITELIST_APP_KINDS: [&str; 8] = [
     "discord",
     "telegram",
     "signal",
     "signal_direct_message",
     "signal_group_chat",
+    "signal_story",
     "whatsapp",
     "outlook",
 ];
