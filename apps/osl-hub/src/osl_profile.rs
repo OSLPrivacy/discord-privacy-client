@@ -12,7 +12,9 @@ use url::Url;
 use zeroize::Zeroize;
 
 const PROFILE_FILE: &str = "hub_profile.json";
+const PROFILE_PICTURE_FILE: &str = "owner_profile_picture.json";
 const PROFILE_VERSION: u32 = 1;
+const PROFILE_PICTURE_VERSION: u32 = 1;
 const MAX_DISPLAY_NAME_CHARS: usize = 64;
 const MAX_DISPLAY_NAME_BYTES: usize = 192;
 const MIN_USERNAME_CHARS: usize = 3;
@@ -99,6 +101,27 @@ struct ProfileDocument {
     profile: StoredProfile,
 }
 
+#[derive(Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnerProfilePictureDto {
+    pub status: String,
+    pub image: Option<String>,
+}
+
+impl OwnerProfilePictureDto {
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProfilePictureDocument {
+    version: u32,
+    owner: String,
+    image: String,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StoredProfile {
@@ -153,6 +176,23 @@ pub fn save_active_profile(owner: &str, input: HubProfileInput) -> Result<HubPro
     write_profile_with_key(&active_profile_path()?, owner, profile, &key)
 }
 
+pub fn set_active_profile_picture(
+    owner: &str,
+    image: String,
+) -> Result<OwnerProfilePictureDto, String> {
+    let key = active_file_key()?;
+    set_profile_picture_with_key(&active_profile_picture_path()?, owner, image, &key)
+}
+
+pub fn read_active_profile_picture(owner: &str) -> Result<OwnerProfilePictureDto, String> {
+    let key = active_file_key()?;
+    read_profile_picture_with_key(&active_profile_picture_path()?, owner, &key)
+}
+
+pub fn clear_active_profile_picture(owner: &str) -> Result<OwnerProfilePictureDto, String> {
+    clear_profile_picture_at_path(&active_profile_picture_path()?, owner)
+}
+
 /// Restores the exact logical profile state after a later username-directory
 /// step fails. This remains identity-scoped and encrypted through the same
 /// storage boundary as an ordinary save.
@@ -186,6 +226,12 @@ fn active_file_key() -> Result<[u8; 32], String> {
 fn active_profile_path() -> Result<PathBuf, String> {
     keystore::active_account_dir()
         .map(|directory| directory.join(PROFILE_FILE))
+        .ok_or_else(|| "OSL active identity storage is unavailable".to_owned())
+}
+
+fn active_profile_picture_path() -> Result<PathBuf, String> {
+    keystore::active_account_dir()
+        .map(|directory| directory.join(PROFILE_PICTURE_FILE))
         .ok_or_else(|| "OSL active identity storage is unavailable".to_owned())
 }
 
@@ -320,6 +366,20 @@ fn validate_data_avatar(input: String) -> Result<String, String> {
     Ok(input)
 }
 
+fn present_picture(image: String) -> OwnerProfilePictureDto {
+    OwnerProfilePictureDto {
+        status: "image-present".to_owned(),
+        image: Some(image),
+    }
+}
+
+fn absent_picture() -> OwnerProfilePictureDto {
+    OwnerProfilePictureDto {
+        status: "image-absent".to_owned(),
+        image: None,
+    }
+}
+
 fn matches_mime(mime: &str, bytes: &[u8]) -> bool {
     match mime {
         "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
@@ -401,6 +461,81 @@ fn write_profile_with_key(
     }
     crate::atomic_file::write_recoverable(path, &sealed, "OSL profile")?;
     Ok(profile)
+}
+
+pub fn set_profile_picture_with_key(
+    path: &Path,
+    owner: &str,
+    image: String,
+    key: &[u8; 32],
+) -> Result<OwnerProfilePictureDto, String> {
+    validate_owner(owner)?;
+    let image = validate_data_avatar(image)?;
+    let document = ProfilePictureDocument {
+        version: PROFILE_PICTURE_VERSION,
+        owner: owner.to_owned(),
+        image,
+    };
+    let mut plaintext = serde_json::to_vec(&document)
+        .map_err(|_| "OSL profile picture could not be encoded".to_owned())?;
+    if plaintext.len() > MAX_PROFILE_PLAINTEXT_BYTES {
+        plaintext.zeroize();
+        return Err("OSL profile picture exceeds its storage limit".to_owned());
+    }
+    let encrypted = ipc::main_password::encrypt_at_rest(&plaintext, key)
+        .map_err(|_| "OSL profile picture encryption failed".to_owned());
+    plaintext.zeroize();
+    let sealed = encrypted?;
+    if sealed.len() as u64 > MAX_PROFILE_SEALED_BYTES {
+        return Err("OSL encrypted profile picture exceeds its storage limit".to_owned());
+    }
+    crate::atomic_file::write_recoverable(path, &sealed, "OSL profile picture")?;
+    read_profile_picture_with_key(path, owner, key)
+}
+
+pub fn read_profile_picture_with_key(
+    path: &Path,
+    owner: &str,
+    key: &[u8; 32],
+) -> Result<OwnerProfilePictureDto, String> {
+    validate_owner(owner)?;
+    let Some(sealed) = crate::atomic_file::read_recoverable_bounded(
+        path,
+        MAX_PROFILE_SEALED_BYTES,
+        "OSL profile picture",
+    )?
+    else {
+        return Ok(absent_picture());
+    };
+    if !ipc::main_password::has_enc_magic(&sealed) {
+        return Err("OSL profile picture is not encrypted".to_owned());
+    }
+    let mut plaintext = ipc::main_password::decrypt_at_rest(&sealed, key)
+        .map_err(|_| "OSL profile picture could not be decrypted".to_owned())?;
+    if plaintext.len() > MAX_PROFILE_PLAINTEXT_BYTES {
+        plaintext.zeroize();
+        return Err("OSL profile picture exceeds its storage limit".to_owned());
+    }
+    let decoded = serde_json::from_slice::<ProfilePictureDocument>(&plaintext);
+    plaintext.zeroize();
+    let document = decoded.map_err(|_| "OSL profile picture is malformed".to_owned())?;
+    if document.version != PROFILE_PICTURE_VERSION || document.owner != owner {
+        return Err("OSL profile picture does not belong to the active identity".to_owned());
+    }
+    let image = validate_data_avatar(document.image)?;
+    Ok(present_picture(image))
+}
+
+pub fn clear_profile_picture_at_path(
+    path: &Path,
+    owner: &str,
+) -> Result<OwnerProfilePictureDto, String> {
+    validate_owner(owner)?;
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(absent_picture()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(absent_picture()),
+        Err(_) => Err("OSL profile picture could not be cleared".to_owned()),
+    }
 }
 
 #[cfg(test)]
@@ -519,6 +654,35 @@ mod tests {
             load_profile_with_key(&path, "osl-user-a", &TEST_KEY).unwrap(),
             None
         );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn owner_profile_picture_commands_set_read_and_clear_encrypted_image_state() {
+        let path = temporary_file("picture").with_file_name(PROFILE_PICTURE_FILE);
+        let image =
+            "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==".to_owned();
+
+        let set =
+            set_profile_picture_with_key(&path, "osl-user-a", image.clone(), &TEST_KEY).unwrap();
+        assert_eq!(set.status(), "image-present");
+        assert_eq!(set.image.as_deref(), Some(image.as_str()));
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(ipc::main_password::has_enc_magic(&bytes));
+        assert!(!String::from_utf8_lossy(&bytes).contains("R0lGODlhAQAB"));
+
+        let read = read_profile_picture_with_key(&path, "osl-user-a", &TEST_KEY).unwrap();
+        assert_eq!(read.status(), "image-present");
+        assert_eq!(read.image.as_deref(), Some(image.as_str()));
+        assert!(read_profile_picture_with_key(&path, "osl-user-b", &TEST_KEY).is_err());
+
+        let cleared = clear_profile_picture_at_path(&path, "osl-user-a").unwrap();
+        assert_eq!(cleared.status(), "image-absent");
+        let read_after_clear =
+            read_profile_picture_with_key(&path, "osl-user-a", &TEST_KEY).unwrap();
+        assert_eq!(read_after_clear.status(), "image-absent");
+
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
