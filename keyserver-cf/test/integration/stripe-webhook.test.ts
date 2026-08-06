@@ -1,5 +1,6 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { handleCheckout } from "../../src/endpoints/checkout.js";
 import {
   postSignedWebhook,
   signStripeWebhook,
@@ -14,6 +15,27 @@ function browserClaimToken(): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+async function browserDeliveryKeys(): Promise<{ publicKey: string; privateKey: CryptoKey }> {
+  const pair = await crypto.subtle.generateKey({
+    name: "RSA-OAEP",
+    modulusLength: 2048,
+    publicExponent: new Uint8Array([1, 0, 1]),
+    hash: "SHA-256",
+  }, true, ["encrypt", "decrypt"]) as CryptoKeyPair;
+  return {
+    publicKey: base64(new Uint8Array(
+      await crypto.subtle.exportKey("spki", pair.publicKey) as ArrayBuffer,
+    )),
+    privateKey: pair.privateKey,
+  };
 }
 
 describe("POST /v1/stripe/webhook signature", () => {
@@ -333,6 +355,113 @@ describe("POST /v1/stripe/webhook state machine", () => {
         WHERE event_type = 'checkout.session.completed' AND stripe_object_id = ?`,
     ).bind(sessionId).first<{ amount_cents: number }>();
     expect(metric?.amount_cents).toBe(500);
+  });
+
+  it("TASK 1507 payment fixture reaches success with exactly one newly created code", async () => {
+    const claimToken = browserClaimToken();
+    const keys = await browserDeliveryKeys();
+    const sessionId = `cs_live_1507_${crypto.randomUUID().replace(/-/g, "")}`;
+    const paymentIntentId = `pi_1507_${crypto.randomUUID().replace(/-/g, "")}`;
+    const before = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM licenses",
+    ).first<{ count: number }>();
+
+    const checkout = await handleCheckout(new Request("https://test/v1/checkout-session", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "192.0.2.150" },
+      body: JSON.stringify({
+        plan: "pro",
+        claim_token: claimToken,
+        delivery_public_key_spki: keys.publicKey,
+      }),
+    }), {
+      ...env,
+      STRIPE_SECRET_KEY: "sk_live_task_1507",
+      STRIPE_PRICE_ID_PRO: "price_task_1507",
+      CHECKOUT_SUCCESS_URL: "https://oslprivacy.com/success.html",
+      CHECKOUT_CANCEL_URL: "https://oslprivacy.com/pricing",
+    }, async (_input, init) => {
+      const form = new URLSearchParams(String(init?.body));
+      expect(form.get("mode")).toBe("payment");
+      expect(form.get("success_url")).toBe(
+        "https://oslprivacy.com/success.html?session_id={CHECKOUT_SESSION_ID}",
+      );
+      return Response.json({
+        id: sessionId,
+        url: `https://checkout.stripe.com/c/pay/${sessionId}`,
+      });
+    }, () => true);
+    expect(checkout.status, await checkout.clone().text()).toBe(200);
+    await expect(checkout.json()).resolves.toMatchObject({ session_id: sessionId });
+
+    const callback = await postSignedWebhook(SELF, {
+      id: uniqueEventId(),
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          id: sessionId,
+          mode: "payment",
+          metadata: {
+            osl_plan: "pro",
+            osl_purchase: "one-time",
+            osl_fulfillment: "instant-v1",
+          },
+          payment_status: "paid",
+          payment_intent: paymentIntentId,
+          amount_total: 500,
+          currency: "usd",
+        },
+      },
+    });
+    expect(callback.status, await callback.clone().text()).toBe(200);
+    await expect(callback.json()).resolves.toMatchObject({ kind: "applied" });
+
+    const success = await SELF.fetch("http://test/v1/checkout/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, claim_token: claimToken }),
+    });
+    expect(success.status, await success.clone().text()).toBe(200);
+    const delivery = await success.json() as {
+      status: string;
+      encrypted_license: string;
+      delivery: string;
+    };
+    expect(delivery.status).toBe("delivery_ready");
+    expect(delivery.delivery).toBe("rsa-oaep-sha256");
+    const encrypted = Uint8Array.from(
+      atob(delivery.encrypted_license),
+      (character) => character.charCodeAt(0),
+    );
+    const activationCode = new TextDecoder().decode(await crypto.subtle.decrypt(
+      { name: "RSA-OAEP" },
+      keys.privateKey,
+      encrypted,
+    ));
+    expect(activationCode).toMatch(
+      /^OSL-[0-9A-HJKMNP-TV-Z]{4}(?:-[0-9A-HJKMNP-TV-Z]{4}){3}$/,
+    );
+
+    const after = await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM licenses) AS total_codes,
+         (SELECT COUNT(*) FROM licenses
+           WHERE license_hash = (
+             SELECT license_hash FROM stripe_checkout_claims WHERE session_id = ?
+           )) AS new_code_rows,
+         (SELECT status FROM stripe_checkout_claims WHERE session_id = ?) AS claim_status`,
+    ).bind(sessionId, sessionId).first<{
+      total_codes: number;
+      new_code_rows: number;
+      claim_status: string;
+    }>();
+    const newlyCreatedCodes = (after?.total_codes ?? 0) - (before?.count ?? 0);
+    expect(newlyCreatedCodes).toBe(1);
+    expect(after?.new_code_rows).toBe(1);
+    expect(after?.claim_status).toBe("delivery_ready");
+    console.log(
+      `task1507_success status=${delivery.status} newly_created_codes=${newlyCreatedCodes} code=${activationCode}`,
+    );
   });
 
   it.each([
