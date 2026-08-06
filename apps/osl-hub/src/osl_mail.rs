@@ -73,6 +73,13 @@ pub struct OslMailBurnReceipt {
     pub mailbox_disabled: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslMailForwardPlan {
+    pub osl_recipients: Vec<String>,
+    pub no_osl_warnings: Vec<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MailCapabilities {
@@ -259,6 +266,37 @@ pub fn send(
     })
 }
 
+/// Classify the operator's requested forward recipients before protected
+/// content is released into any outbound path.
+pub fn plan_protected_forward(recipients: Vec<String>) -> Result<OslMailForwardPlan, String> {
+    if recipients.is_empty() || recipients.len() > 64 {
+        return Err("OSL Mail forward recipients are required".to_owned());
+    }
+
+    let mut osl_recipients = Vec::new();
+    let mut no_osl_warnings = Vec::new();
+    for recipient in recipients {
+        let normalized = normalize_forward_recipient(&recipient)?;
+        let target = if valid_osl_address(&normalized) {
+            &mut osl_recipients
+        } else {
+            &mut no_osl_warnings
+        };
+        if !target.contains(&normalized) {
+            target.push(normalized);
+        }
+    }
+
+    if osl_recipients.is_empty() && no_osl_warnings.is_empty() {
+        return Err("OSL Mail forward recipients are required".to_owned());
+    }
+
+    Ok(OslMailForwardPlan {
+        osl_recipients,
+        no_osl_warnings,
+    })
+}
+
 /// Tombstone the server mailbox.  A successful receipt is emitted only after
 /// the authoritative delete endpoint confirms the address is disabled.
 pub fn burn(
@@ -353,6 +391,61 @@ fn valid_osl_address(address: &str) -> bool {
         && local.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
+}
+
+fn normalize_forward_recipient(recipient: &str) -> Result<String, String> {
+    let normalized = recipient.trim().to_ascii_lowercase();
+    if normalized.len() > 254
+        || normalized.chars().any(|character| {
+            character.is_control() || matches!(character, '<' | '>' | '"' | ',' | ';')
+        })
+        || !valid_forward_email_address(&normalized)
+    {
+        return Err("OSL Mail forward recipient is invalid".to_owned());
+    }
+    Ok(normalized)
+}
+
+fn valid_forward_email_address(address: &str) -> bool {
+    let Some((local, domain)) = address.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && local.len() <= 64
+        && !domain.is_empty()
+        && domain.len() <= 253
+        && local.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'.' | b'_'
+                        | b'%'
+                        | b'+'
+                        | b'-'
+                        | b'!'
+                        | b'#'
+                        | b'$'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'/'
+                        | b'='
+                        | b'?'
+                        | b'^'
+                        | b'`'
+                        | b'{'
+                        | b'|'
+                        | b'}'
+                        | b'~'
+                )
+        })
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+        && domain.contains('.')
 }
 
 fn active_identity(core: &HubCoreState) -> Result<keystore::Identity, String> {
@@ -476,7 +569,9 @@ fn canonical_json(value: &Value) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{pointer_envelope, signed_message, status_from_address, BurnResponse};
+    use super::{
+        plan_protected_forward, pointer_envelope, signed_message, status_from_address, BurnResponse,
+    };
     use serde_json::{Map, Value};
 
     #[test]
@@ -552,6 +647,32 @@ mod tests {
         assert!(!pointer.contains("private subject"));
         assert!(!pointer.contains("payload must never transit"));
         assert!(pointer.contains("body_sha256"));
+    }
+
+    #[test]
+    fn task1294_direct_forward_plan_returns_osl_and_no_osl_recipient_lists() {
+        let plan = plan_protected_forward(vec![
+            "alice@oslprivacy.com".to_owned(),
+            "external@example.com".to_owned(),
+            "BOB@OSLPRIVACY.COM".to_owned(),
+            "client@company.test".to_owned(),
+            "alice@oslprivacy.com".to_owned(),
+        ])
+        .expect("forward recipients are classified before protected content moves");
+
+        assert_eq!(
+            plan.osl_recipients,
+            ["alice@oslprivacy.com", "bob@oslprivacy.com"]
+        );
+        assert_eq!(
+            plan.no_osl_warnings,
+            ["external@example.com", "client@company.test"]
+        );
+        println!(
+            "TASK1294 protected_forward osl_recipients={} no_osl_warnings={}",
+            plan.osl_recipients.join(","),
+            plan.no_osl_warnings.join(",")
+        );
     }
 
     #[test]

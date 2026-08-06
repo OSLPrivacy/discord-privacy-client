@@ -563,6 +563,7 @@ macro_rules! hub_tauri_commands {
             osl_mail_get_status,
             osl_mail_provision,
             osl_mail_send,
+            osl_mail_plan_protected_forward,
             osl_mail_burn,
             get_mass_cleanup_capabilities,
             discover_mass_cleanup_targets,
@@ -1780,6 +1781,23 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             "emit_active_session_reset",
+        );
+    }
+
+    #[test]
+    fn osl_mail_protected_forward_planner_is_registered_and_granted() {
+        let (handlers, permissions, capability) = network_registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "osl_mail_plan_protected_forward",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["osl_mail_plan_protected_forward"],
         );
     }
 

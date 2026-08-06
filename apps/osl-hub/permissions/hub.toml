@@ -39,6 +39,11 @@ description = "Send a pointer-only OSL Mail envelope from the trusted main OSL w
 commands.allow = ["osl_mail_send"]
 
 [[permission]]
+identifier = "allow-osl-mail-plan-protected-forward"
+description = "Classify requested protected-forward recipients into OSL recipients and no-OSL warnings before forwarding."
+commands.allow = ["osl_mail_plan_protected_forward"]
+
+[[permission]]
 identifier = "allow-osl-mail-burn"
 description = "Burn the active OSL Mail mailbox only after its exact address is confirmed."
 commands.allow = ["osl_mail_burn"]
