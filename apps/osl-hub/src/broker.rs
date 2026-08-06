@@ -11250,6 +11250,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn task_1346_view_once_record_duration_validation_accepts_1_and_60_rejects_61() {
+        let encrypted_wire = "DPC0::sealed-native-overlay-wire";
+        let mut accepted = Vec::new();
+        for (message_id, seconds) in [
+            ("peer-0123456789abcdef0123456789abcde1", 1_u32),
+            ("peer-0123456789abcdef0123456789abcde2", 60_u32),
+        ] {
+            let upload = build_native_overlay_wrapped_key_upload(
+                message_id,
+                "recipient-osl-id",
+                encrypted_wire,
+                true,
+                3_600,
+                Some(u64::from(seconds)),
+                1_700_003_600,
+                0,
+            )
+            .expect("1 through 60 second view-once records are valid");
+            assert!(upload.single_use, "view-once records are one-use");
+            assert_eq!(upload.display_duration_seconds, Some(seconds));
+            accepted.push((seconds, upload.single_use));
+        }
+
+        let rejected = build_native_overlay_wrapped_key_upload(
+            "peer-0123456789abcdef0123456789abcde3",
+            "recipient-osl-id",
+            encrypted_wire,
+            true,
+            3_600,
+            Some(61),
+            1_700_003_600,
+            0,
+        )
+        .expect_err("61 second view-once records are rejected");
+        assert_eq!(
+            rejected,
+            "OSL could not prepare the protected message key".to_owned()
+        );
+        println!(
+            "TASK1346 accepted_seconds={},{} accepted_single_use={},{} rejected_seconds=61 rejection={}",
+            accepted[0].0, accepted[1].0, accepted[0].1, accepted[1].1, rejected
+        );
+    }
+
     fn install_sender_filter_test_account(label: &str) -> std::path::PathBuf {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
