@@ -87,9 +87,10 @@ use osl_privacy_hub::scrub_index::{
     ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
-    self, AddFriendResult, AllowedPlaceDirectionStateDto, FriendCodeExport, HubRevocationStatusDto,
-    HubScopeBurnResult, HubSecurityState, PersonDto, PrivateContactLinkExport,
-    PrivateContactLinkStatus, RemoveFriendResult, ScopeSecurityDto,
+    self, AddFriendResult, AllowedPlaceDirectionStateDto, FriendCodeExport,
+    FriendWideWhitelistActionHelp, HubRevocationStatusDto, HubScopeBurnResult, HubSecurityState,
+    PersonDto, PrivateContactLinkExport, PrivateContactLinkStatus, RemoveFriendResult,
+    ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -6288,6 +6289,11 @@ async fn list_hub_people(
 ) -> Result<Vec<PersonDto>, String> {
     let _session = session.transition.lock().await;
     security::list_people(&core)
+}
+
+#[tauri::command]
+fn get_hub_friend_wide_whitelist_action_help() -> Vec<FriendWideWhitelistActionHelp> {
+    security::friend_wide_whitelist_action_help()
 }
 
 #[tauri::command]

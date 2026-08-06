@@ -708,6 +708,7 @@ macro_rules! hub_tauri_commands {
             verify_hub_friend_safety_number,
             remove_hub_friend,
             list_hub_people,
+            get_hub_friend_wide_whitelist_action_help,
             compare_allowed_place_direction_state,
             set_hub_friend_nickname,
             set_active_hub_friend_permission,
@@ -1785,6 +1786,23 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["compare_allowed_place_direction_state"],
+        );
+    }
+
+    #[test]
+    fn friend_wide_whitelist_action_help_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "get_hub_friend_wide_whitelist_action_help",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["get_hub_friend_wide_whitelist_action_help"],
         );
     }
 

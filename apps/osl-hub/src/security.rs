@@ -180,6 +180,35 @@ pub struct PersonWhitelistScopeDto {
     pub user_specific: bool,
 }
 
+pub const FRIEND_WIDE_WHITELIST_EVERYWHERE_ACTION: &str = "everywhere";
+pub const FRIEND_WIDE_WHITELIST_NOWHERE_ACTION: &str = "nowhere";
+pub const FRIEND_WIDE_WHITELIST_EVERYWHERE_COMMAND: &str =
+    "set_hub_friend_account_reach_everywhere";
+pub const FRIEND_WIDE_WHITELIST_NOWHERE_COMMAND: &str = "set_hub_friend_account_reach_nowhere";
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendWideWhitelistActionHelp {
+    pub action: String,
+    pub command: String,
+    pub effect: String,
+}
+
+pub fn friend_wide_whitelist_action_help() -> Vec<FriendWideWhitelistActionHelp> {
+    vec![
+        FriendWideWhitelistActionHelp {
+            action: FRIEND_WIDE_WHITELIST_EVERYWHERE_ACTION.to_owned(),
+            command: FRIEND_WIDE_WHITELIST_EVERYWHERE_COMMAND.to_owned(),
+            effect: "allow this friend on every owned account".to_owned(),
+        },
+        FriendWideWhitelistActionHelp {
+            action: FRIEND_WIDE_WHITELIST_NOWHERE_ACTION.to_owned(),
+            command: FRIEND_WIDE_WHITELIST_NOWHERE_COMMAND.to_owned(),
+            effect: "allow this friend on no owned account".to_owned(),
+        },
+    ]
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScopeSecurityDto {
@@ -7014,6 +7043,41 @@ key"
         assert_eq!(two_way.verification_state, "visible");
         assert!(two_way.first_to_second);
         assert!(two_way.second_to_first);
+    }
+
+    #[test]
+    fn direct_friend_wide_whitelist_help_lists_everywhere_and_nowhere_actions() {
+        let help = friend_wide_whitelist_action_help();
+        let actions = help
+            .iter()
+            .map(|entry| entry.action.as_str())
+            .collect::<Vec<_>>();
+        let commands = help
+            .iter()
+            .map(|entry| entry.command.as_str())
+            .collect::<Vec<_>>();
+        println!(
+            "TASK0255 direct_command_help action_count={} actions={} commands={}",
+            help.len(),
+            actions.join(","),
+            commands.join(",")
+        );
+        assert_eq!(
+            actions,
+            vec![
+                FRIEND_WIDE_WHITELIST_EVERYWHERE_ACTION,
+                FRIEND_WIDE_WHITELIST_NOWHERE_ACTION
+            ]
+        );
+        assert_eq!(
+            commands,
+            vec![
+                FRIEND_WIDE_WHITELIST_EVERYWHERE_COMMAND,
+                FRIEND_WIDE_WHITELIST_NOWHERE_COMMAND
+            ]
+        );
+        assert!(help[0].effect.contains("every owned account"));
+        assert!(help[1].effect.contains("no owned account"));
     }
 
     #[test]

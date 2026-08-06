@@ -779,6 +779,11 @@ description = "List bounded People metadata from encrypted local state."
 commands.allow = ["list_hub_people"]
 
 [[permission]]
+identifier = "allow-get-hub-friend-wide-whitelist-action-help"
+description = "List the fixed friend-wide account whitelist action names the trusted local UI may present; this changes no account reach state."
+commands.allow = ["get_hub_friend_wide_whitelist_action_help"]
+
+[[permission]]
 identifier = "allow-compare-allowed-place-direction-state"
 description = "Read only whether the two saved local allowed-place directions for one direct-message pair are absent, one-way, or two-way."
 commands.allow = ["compare_allowed_place_direction_state"]

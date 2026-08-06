@@ -839,6 +839,7 @@ mod tests {
         "verify_hub_friend_safety_number",
         "remove_hub_friend",
         "list_hub_people",
+        "get_hub_friend_wide_whitelist_action_help",
         "set_hub_friend_nickname",
         "set_active_hub_friend_permission",
         "set_active_hub_friend_reach",
