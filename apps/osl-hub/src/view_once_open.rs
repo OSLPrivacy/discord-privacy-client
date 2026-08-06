@@ -70,6 +70,30 @@ pub struct ViewOnceOpenRequest {
     pub content: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ViewOnceViewerTier {
+    Free,
+    Pro,
+}
+
+impl ViewOnceViewerTier {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Free => "free",
+            Self::Pro => "pro",
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ViewOnceOpenResultRecord {
+    pub message_id: String,
+    pub viewer: String,
+    pub viewer_tier: ViewOnceViewerTier,
+    pub exit_code: i32,
+    pub content: String,
+}
+
 impl NamedViewOnceCopies {
     pub fn insert_mark(
         &mut self,
@@ -112,6 +136,22 @@ impl NamedViewOnceCopies {
                 exit_code: 1,
                 content: String::new(),
             },
+        }
+    }
+
+    pub fn request_open_for_viewer(
+        &mut self,
+        viewer: &str,
+        tier: ViewOnceViewerTier,
+        item_id: &str,
+    ) -> ViewOnceOpenResultRecord {
+        let opened = self.request_open(viewer, item_id);
+        ViewOnceOpenResultRecord {
+            message_id: item_id.to_owned(),
+            viewer: viewer.to_owned(),
+            viewer_tier: tier,
+            exit_code: opened.exit_code,
+            content: opened.content,
         }
     }
 }
@@ -218,6 +258,7 @@ mod tests {
     use super::{
         open_view_once, validate_native_image_viewer_lifecycle, NamedViewOnceCopies,
         NativeImageDisplayDuration, NativeImageViewerEvent as ImageEvent, ViewOnceOpenEffects,
+        ViewOnceOpenResultRecord, ViewOnceViewerTier,
     };
 
     #[derive(Debug, PartialEq, Eq)]
@@ -470,6 +511,60 @@ mod tests {
         assert_eq!(second_b.exit_code, 1);
         assert!(second_a.content.is_empty());
         assert!(second_b.content.is_empty());
+    }
+
+    #[test]
+    fn task_0592_free_and_pro_viewers_each_get_exactly_one_open() {
+        const ITEM_ID: &str = "peer-05920592059205920592059205920592";
+        const CONTENT: &str = "the exact words";
+
+        fn exercise_viewer(
+            tier: ViewOnceViewerTier,
+            viewer: &'static str,
+        ) -> (ViewOnceOpenResultRecord, ViewOnceOpenResultRecord) {
+            let mut copies = NamedViewOnceCopies::default();
+            copies.insert_mark(viewer, ITEM_ID, CONTENT);
+
+            let first = copies.request_open_for_viewer(viewer, tier, ITEM_ID);
+            let second = copies.request_open_for_viewer(viewer, tier, ITEM_ID);
+            (first, second)
+        }
+
+        let (free_first, free_second) = exercise_viewer(ViewOnceViewerTier::Free, "free-viewer");
+        let (pro_first, pro_second) = exercise_viewer(ViewOnceViewerTier::Pro, "pro-viewer");
+
+        for (label, first, second) in [
+            ("free", &free_first, &free_second),
+            ("pro", &pro_first, &pro_second),
+        ] {
+            println!(
+                "TASK0592 {label}_first message={} viewer={} tier={} exit_code={} content={}",
+                first.message_id,
+                first.viewer,
+                first.viewer_tier.label(),
+                first.exit_code,
+                first.content
+            );
+            println!(
+                "TASK0592 {label}_second message={} viewer={} tier={} exit_code={} content_len={}",
+                second.message_id,
+                second.viewer,
+                second.viewer_tier.label(),
+                second.exit_code,
+                second.content.len()
+            );
+
+            assert_eq!(first.message_id, ITEM_ID);
+            assert_eq!(second.message_id, ITEM_ID);
+            assert_eq!(first.viewer, format!("{label}-viewer"));
+            assert_eq!(second.viewer, format!("{label}-viewer"));
+            assert_eq!(first.viewer_tier.label(), label);
+            assert_eq!(second.viewer_tier.label(), label);
+            assert_eq!(first.exit_code, 0);
+            assert_eq!(first.content, CONTENT);
+            assert_eq!(second.exit_code, 1);
+            assert!(second.content.is_empty());
+        }
     }
 
     #[test]
