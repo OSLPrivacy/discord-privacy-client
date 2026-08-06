@@ -99,7 +99,8 @@ use osl_privacy_hub::services::{ServiceAccountRunQueue, ServiceRegistryState};
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::tor_pref::{TorPreference, TorPreferenceState};
 use osl_privacy_hub::updates::{
-    bounded_plain_notes, bounded_version, RELEASES_URL, SOURCE_REPOSITORY_URL,
+    bounded_plain_notes, bounded_version, expected_download_fingerprint,
+    prepare_verified_update_download, RELEASES_URL, SOURCE_REPOSITORY_URL,
 };
 use osl_privacy_hub::whatsapp_accessibility::{
     WhatsAppAccessibilityState, WhatsAppVerificationReceipt, WhatsAppVerificationStatus,
@@ -108,7 +109,6 @@ use osl_privacy_hub::whatsapp_accessibility::{
 use osl_privacy_hub::whatsapp_qa_host::{WhatsAppQaHostState, WhatsAppQaResult};
 use runtime::UsbMonitor;
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "whatsapp-qa-shell")]
 use std::io::Write as _;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -1955,10 +1955,30 @@ async fn install_hub_update(
     if update.version != expected_version {
         return Err("The available update changed; check again before installing".to_owned());
     }
-    update
-        .download_and_install(|_, _| {}, || {})
+    let expected_fingerprint = expected_download_fingerprint(&update.raw_json, &update.target)
+        .ok_or_else(|| {
+            "The update manifest has no expected download fingerprint; nothing was installed"
+                .to_owned()
+        })?;
+    let bytes = update
+        .download(|_, _| {}, || {})
         .await
         .map_err(|_| "The update could not be verified and was not installed".to_owned())?;
+    let local_data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| "OSL local update staging is unavailable".to_owned())?;
+    let staged =
+        prepare_verified_update_download(&local_data_dir, &expected_fingerprint, |writer| {
+            writer.write_all(&bytes)
+        })
+        .map_err(|error| format!("The update download failed its fingerprint check: {error}"))?;
+    let staged_bytes = std::fs::read(&staged.staged_path)
+        .map_err(|_| "The verified update download could not be read for install".to_owned())?;
+    update
+        .install(staged_bytes)
+        .map_err(|_| "The update could not be verified and was not installed".to_owned())?;
+    let _ = std::fs::remove_file(staged.staged_path);
     app.restart();
 }
 
