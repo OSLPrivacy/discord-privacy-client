@@ -15,9 +15,11 @@ CAPTURE_ENABLED="${OSL_FIXED_SCREEN_CAPTURE:-1}"
 CAPTURE_ATTEMPTS="${OSL_FIXED_SCREEN_CAPTURE_ATTEMPTS:-20}"
 IMAGE_NAME="${OSL_FIXED_SCREEN_IMAGE_NAME:-osl-fixed-screen.png}"
 META_NAME="${OSL_FIXED_SCREEN_META_NAME:-osl-fixed-screen.json}"
+FAILURE_META_NAME="${OSL_FIXED_SCREEN_FAILURE_META_NAME:-osl-fixed-screen-failure.json}"
 
 IMAGE_PATH="$OUT_DIR/$IMAGE_NAME"
 META_PATH="$OUT_DIR/$META_NAME"
+FAILURE_META_PATH="$OUT_DIR/$FAILURE_META_NAME"
 XVFB_PID=""
 WM_PID=""
 APP_PID=""
@@ -30,6 +32,28 @@ die() {
 
 require_tool() {
   command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"
+}
+
+record_failed_target() {
+  local reason="$1"
+  local target="$2"
+  python3 - "$FAILURE_META_PATH" "$DISPLAY_ID" "$SCREEN" "$CAPTURE_ENABLED" "$target" "$reason" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+meta = {
+    "schema": "osl-fixed-screen-starter-failure-v1",
+    "display": sys.argv[2],
+    "screen": sys.argv[3],
+    "captureEnabled": sys.argv[4] == "1",
+    "targetWindowName": sys.argv[5],
+    "failure": sys.argv[6],
+}
+Path(sys.argv[1]).write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  printf 'TASK0063_FAILED_TARGET target=%q reason=%q metadata=%s\n' \
+    "$target" "$reason" "$FAILURE_META_PATH" >&2
 }
 
 cleanup() {
@@ -119,7 +143,10 @@ while [ "$SECONDS" -lt "$deadline" ]; do
   fi
   sleep 0.5
 done
-[ -n "$WINDOW_ID" ] || die "fixed-screen window not found: $WINDOW_NAME"
+if [ -z "$WINDOW_ID" ]; then
+  record_failed_target "fixed-screen window not found" "$WINDOW_NAME"
+  die "fixed-screen window not found: $WINDOW_NAME"
+fi
 printf 'TASK0063_WINDOW id=%s title=%q\n' "$WINDOW_ID" "$WINDOW_NAME"
 
 XWININFO_OUT="$(DISPLAY="$DISPLAY_ID" xwininfo -id "$WINDOW_ID")"
