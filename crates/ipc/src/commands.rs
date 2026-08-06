@@ -15788,6 +15788,107 @@ pub fn cmd_osl_membership_get(state: &AppState, channel_id: String) -> Result<Ve
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ChannelMessageThreadDto {
+    pub thread_id: String,
+    pub channel_id: String,
+    pub parent_message_id: String,
+    pub channel_message_count: usize,
+    pub thread_count: usize,
+    pub parent_thread_count: usize,
+}
+
+/// Create one local thread attached to a parent channel message.
+///
+/// The parent message is recorded in the same command so the thread cannot
+/// exist without both the parent message id and the channel id that own it.
+pub fn cmd_osl_create_channel_message_thread(
+    state: &AppState,
+    channel_id: String,
+    parent_message_id: String,
+    thread_id: String,
+) -> Result<ChannelMessageThreadDto, String> {
+    record_activity_on_command_entry();
+    let channel_id = normalize_channel_thread_field("channel_id", channel_id)?;
+    let parent_message_id = normalize_channel_thread_field("parent_message_id", parent_message_id)?;
+    let thread_id = normalize_channel_thread_field("thread_id", thread_id)?;
+
+    let mut messages = state
+        .channel_messages
+        .lock()
+        .expect("channel_messages mutex poisoned");
+    let mut threads = state
+        .channel_threads
+        .lock()
+        .expect("channel_threads mutex poisoned");
+
+    let parent = messages
+        .entry(parent_message_id.clone())
+        .or_insert_with(|| crate::state::ChannelMessageRecord {
+            message_id: parent_message_id.clone(),
+            channel_id: channel_id.clone(),
+            thread_ids: Vec::new(),
+        });
+    if parent.channel_id != channel_id {
+        return Err(format!(
+            "OSL: parent message '{}' belongs to channel '{}', not '{}'",
+            parent_message_id, parent.channel_id, channel_id
+        ));
+    }
+
+    match threads.get(&thread_id) {
+        Some(existing)
+            if existing.channel_id == channel_id
+                && existing.parent_message_id == parent_message_id => {}
+        Some(existing) => {
+            return Err(format!(
+                "OSL: thread '{}' already belongs to channel '{}' parent '{}'",
+                thread_id, existing.channel_id, existing.parent_message_id
+            ));
+        }
+        None => {
+            threads.insert(
+                thread_id.clone(),
+                crate::state::ChannelThreadRecord {
+                    thread_id: thread_id.clone(),
+                    channel_id: channel_id.clone(),
+                    parent_message_id: parent_message_id.clone(),
+                },
+            );
+        }
+    }
+
+    if !parent.thread_ids.iter().any(|id| id == &thread_id) {
+        parent.thread_ids.push(thread_id.clone());
+    }
+    let parent_thread_count = parent.thread_ids.len();
+    let channel_message_count = messages
+        .values()
+        .filter(|message| message.channel_id == channel_id)
+        .count();
+    let thread_count = threads
+        .values()
+        .filter(|thread| thread.channel_id == channel_id)
+        .count();
+
+    Ok(ChannelMessageThreadDto {
+        thread_id,
+        channel_id,
+        parent_message_id,
+        channel_message_count,
+        thread_count,
+        parent_thread_count,
+    })
+}
+
+fn normalize_channel_thread_field(field: &str, value: String) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 160 || value.chars().any(char::is_control) {
+        return Err(format!("OSL: invalid {field}"));
+    }
+    Ok(value.to_owned())
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct NamedGroupConversationDto {
     pub name: String,
     pub group_id: String,

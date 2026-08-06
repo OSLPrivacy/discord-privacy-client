@@ -24,6 +24,20 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::MessageStore;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelMessageRecord {
+    pub message_id: String,
+    pub channel_id: String,
+    pub thread_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelThreadRecord {
+    pub thread_id: String,
+    pub channel_id: String,
+    pub parent_message_id: String,
+}
+
 /// Time-to-live for cached sender public keys. Bounded staleness
 /// when a peer rotates their identity key — Phase 5 doesn't have
 /// push-based invalidation, so cached entries can hold an
@@ -307,6 +321,14 @@ pub struct AppState {
     /// SenderChain's snapshot is durable.
     pub channel_members: Mutex<std::collections::HashMap<String, Vec<String>>>,
 
+    /// First-party channel messages that own local thread records. This is
+    /// session-local until the OSL Chats storage lane adds durable persistence.
+    pub channel_messages: Mutex<HashMap<String, ChannelMessageRecord>>,
+
+    /// Thread records keyed by thread id, each attached to one parent channel
+    /// message and its channel id.
+    pub channel_threads: Mutex<HashMap<String, ChannelThreadRecord>>,
+
     /// Phase 9-B1: app-wide user preferences (stego mode selector,
     /// Mode 1 preview confirmations). Mirrors
     /// `<config_dir>/app_preferences.json`. Loaded at bootstrap.
@@ -416,6 +438,8 @@ impl Default for AppState {
             sender_key_rotation: Mutex::new(HashMap::new()),
             sender_keys_enabled: AtomicBool::new(true),
             channel_members: Mutex::new(HashMap::new()),
+            channel_messages: Mutex::new(HashMap::new()),
+            channel_threads: Mutex::new(HashMap::new()),
             app_preferences: Mutex::new(crate::app_preferences::AppPreferences::default()),
             verification_warning_seen: Mutex::new(HashSet::new()),
             friend_ids: Mutex::new(Vec::new()),
