@@ -1893,23 +1893,21 @@ async fn list_hub_app_notifications(
     {
         return Err("OSL notifications require explicit local opt-in".to_owned());
     }
-    if !security::app_notification_enabled_before_notice(&security_state, "osl-hub".to_owned())? {
-        return Ok(Vec::new());
-    }
-    let people = security::list_people(&core)?;
-    Ok(people
+    Ok(
+        security::connected_app_notice_records_for_pending_key_changes(
+            &core,
+            &security_state,
+            "osl-hub".to_owned(),
+        )?
         .into_iter()
-        .filter(|person| person.pending_key_change)
-        .take(20)
-        .map(|person| HubAppNotification {
-            id: format!("key-change-{}", person.person_id),
-            title: "Friend encryption key changed".to_owned(),
-            detail:
-                "Verify the new safety number outside this chat before allowing encrypted messages."
-                    .to_owned(),
-            created_at: "Pending verification".to_owned(),
+        .map(|notice| HubAppNotification {
+            id: notice.id,
+            title: notice.title,
+            detail: notice.detail,
+            created_at: notice.created_at,
         })
-        .collect())
+        .collect(),
+    )
 }
 
 #[tauri::command]

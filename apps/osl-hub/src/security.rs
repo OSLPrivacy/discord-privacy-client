@@ -189,6 +189,14 @@ pub struct AppNotificationChoiceRecord {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AppNotificationNoticeRecord {
+    pub id: String,
+    pub title: String,
+    pub detail: String,
+    pub created_at: String,
+}
+
 /// The minimum friend state needed to create a manual peer-messaging lease.
 /// Key material stays in the original core; callers receive only stable local
 /// and public identity identifiers.
@@ -1315,6 +1323,29 @@ pub fn app_notification_enabled_before_notice(
     validate_app_notification_id(&app_id)?;
     let prefs = load_security_preferences()?;
     Ok(app_notification_choice_enabled(&prefs, &app_id))
+}
+
+pub fn connected_app_notice_records_for_pending_key_changes(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    app_id: String,
+) -> Result<Vec<AppNotificationNoticeRecord>, String> {
+    if !app_notification_enabled_before_notice(security, app_id)? {
+        return Ok(Vec::new());
+    }
+    Ok(list_people(core)?
+        .into_iter()
+        .filter(|person| person.pending_key_change)
+        .take(20)
+        .map(|person| AppNotificationNoticeRecord {
+            id: format!("key-change-{}", person.person_id),
+            title: "Friend encryption key changed".to_owned(),
+            detail:
+                "Verify the new safety number outside this chat before allowing encrypted messages."
+                    .to_owned(),
+            created_at: "Pending verification".to_owned(),
+        })
+        .collect())
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -5041,6 +5072,55 @@ mod tests {
         assert!(choices[0].enabled);
         assert_eq!(choices[1].app_id, "telegram");
         assert!(!choices[1].enabled);
+    }
+
+    #[test]
+    fn connected_app_notice_creation_uses_per_app_notification_lookup() {
+        let harness = FileBackedSecurityHarness::new("app-notification-notice-creation");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core);
+        let (person_id, mut metadata, peer) = test_friend(9);
+        metadata.pending_key_bundle = Some(FriendCodeUnsigned {
+            version: FRIEND_CODE_VERSION,
+            osl_user_id: metadata.osl_user_id.clone(),
+            x25519_public: STANDARD.encode([19; X25519_PUBLIC_BYTES]),
+            ed25519_public: metadata.ed25519_public.clone(),
+            mlkem768_public: STANDARD.encode([29; MLKEM768_PUBLIC_BYTES]),
+            ratchet_initial_public: None,
+        });
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+
+        set_app_notification_choice(&security, "disabled-app".to_owned(), false).unwrap();
+        set_app_notification_choice(&security, "enabled-app".to_owned(), true).unwrap();
+
+        let disabled = connected_app_notice_records_for_pending_key_changes(
+            &core,
+            &security,
+            "disabled-app".to_owned(),
+        )
+        .unwrap();
+        let enabled = connected_app_notice_records_for_pending_key_changes(
+            &core,
+            &security,
+            "enabled-app".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "connected_app_notice_records disabled_app={} enabled_app={} enabled_notice_id={}",
+            disabled.len(),
+            enabled.len(),
+            enabled
+                .first()
+                .map(|record| record.id.as_str())
+                .unwrap_or("none")
+        );
+
+        assert!(disabled.is_empty());
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0].id, format!("key-change-{person_id}"));
+        assert_eq!(enabled[0].title, "Friend encryption key changed");
     }
 
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {
