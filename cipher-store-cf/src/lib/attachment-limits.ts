@@ -12,11 +12,81 @@ export const ATTACHMENT_TIER_LIMITS = {
 } as const;
 
 export type AttachmentTier = keyof typeof ATTACHMENT_TIER_LIMITS;
+export type AttachmentLimit = typeof ATTACHMENT_TIER_LIMITS[AttachmentTier];
 
-export function attachmentLimitForTier(tier: string): typeof ATTACHMENT_TIER_LIMITS[AttachmentTier] | null {
+export type AttachmentLimitDecision =
+  | { accepted: true; tier: AttachmentLimit["tier"]; file_size_bytes: number; file_number: number }
+  | {
+      accepted: false;
+      tier: AttachmentLimit["tier"] | null;
+      file_size_bytes: number;
+      file_number: number;
+      reason: "unknown_tier" | "invalid_size" | "too_large" | "invalid_file_number" | "too_many_files";
+    };
+
+export function attachmentLimitForTier(tier: string): AttachmentLimit | null {
   return Object.hasOwn(ATTACHMENT_TIER_LIMITS, tier)
     ? ATTACHMENT_TIER_LIMITS[tier as AttachmentTier]
     : null;
+}
+
+export function checkAttachmentFileForTier(
+  tier: string,
+  fileSizeBytes: number,
+  fileNumber: number,
+): AttachmentLimitDecision {
+  const limit = attachmentLimitForTier(tier);
+  if (!limit) {
+    return {
+      accepted: false,
+      tier: null,
+      file_size_bytes: fileSizeBytes,
+      file_number: fileNumber,
+      reason: "unknown_tier",
+    };
+  }
+  if (!Number.isSafeInteger(fileSizeBytes) || fileSizeBytes <= 0) {
+    return {
+      accepted: false,
+      tier: limit.tier,
+      file_size_bytes: fileSizeBytes,
+      file_number: fileNumber,
+      reason: "invalid_size",
+    };
+  }
+  if (fileSizeBytes > limit.max_file_bytes) {
+    return {
+      accepted: false,
+      tier: limit.tier,
+      file_size_bytes: fileSizeBytes,
+      file_number: fileNumber,
+      reason: "too_large",
+    };
+  }
+  if (!Number.isSafeInteger(fileNumber) || fileNumber <= 0) {
+    return {
+      accepted: false,
+      tier: limit.tier,
+      file_size_bytes: fileSizeBytes,
+      file_number: fileNumber,
+      reason: "invalid_file_number",
+    };
+  }
+  if (fileNumber > limit.max_files_per_message) {
+    return {
+      accepted: false,
+      tier: limit.tier,
+      file_size_bytes: fileSizeBytes,
+      file_number: fileNumber,
+      reason: "too_many_files",
+    };
+  }
+  return {
+    accepted: true,
+    tier: limit.tier,
+    file_size_bytes: fileSizeBytes,
+    file_number: fileNumber,
+  };
 }
 
 export const MAX_DIRECT_ATTACHMENT_BYTES = ATTACHMENT_TIER_LIMITS.free.max_file_bytes;
