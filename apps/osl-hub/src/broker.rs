@@ -4354,9 +4354,10 @@ fn prepare_peer_inbox_text_with_route_clients(
     #[cfg(feature = "discord-qa-shell")]
     record_fixed_discord_qa_broker_stage(is_fixed_discord_qa_probe, "record", "ready", None)?;
     if let Some(history_plaintext) = history_plaintext {
+        let history_channel_id = scope_storage_key(&manual.scope)?;
         ipc::commands::cmd_osl_persist_outbound(
             &core.osl,
-            context.conversation_id.clone(),
+            history_channel_id,
             logical_message_id.clone(),
             history_plaintext,
         )?;

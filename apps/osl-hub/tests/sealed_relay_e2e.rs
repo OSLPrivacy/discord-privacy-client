@@ -1,9 +1,9 @@
 #![cfg(feature = "core")]
 
 use osl_privacy_hub::broker::{
-    activate_owned_osl_chat_context, drain_osl_chat_text, prepare_osl_chat_text,
-    prepare_peer_prose_text, HubBrokerState, NativeOverlayAcknowledgmentStatus,
-    OSL_RELAY_NOTICE_QUEUED,
+    activate_owned_osl_chat_context, drain_osl_chat_text, load_osl_chat_history,
+    prepare_osl_chat_text, prepare_peer_prose_text, HubBrokerState,
+    NativeOverlayAcknowledgmentStatus, OpenedNativeOverlayTextBatch, OSL_RELAY_NOTICE_QUEUED,
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
 use osl_privacy_hub::security::{
@@ -17,7 +17,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -282,6 +282,47 @@ fn core(identity: keystore::Identity, relay_url: &str) -> HubCoreState {
     *core.osl.identity.lock().unwrap() = Some(identity);
     *core.osl.keyserver.lock().unwrap() = Some(keystore::KeyServerClient::new(relay_url).unwrap());
     core
+}
+
+fn attach_history_store(core: &HubCoreState, identity: &keystore::Identity, account_dir: &Path) {
+    let history_dir = account_dir.join("message-store");
+    fs::create_dir_all(&history_dir).expect("create isolated OSL Chat history store");
+    let store = store::MessageStore::open(&history_dir, identity.x25519_secret.as_bytes())
+        .expect("open isolated OSL Chat history store");
+    *core.osl.message_store.lock().unwrap() = Some(store);
+}
+
+fn matching_history_plaintexts(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    marker_prefix: &str,
+) -> Vec<String> {
+    let mut rows = load_osl_chat_history(core, broker)
+        .expect("fetch OSL Chat conversation history")
+        .into_iter()
+        .filter(|row| row.plaintext.contains(marker_prefix))
+        .map(|row| row.plaintext)
+        .collect::<Vec<_>>();
+    // The store API is newest-first scrollback; this task compares conversation
+    // order, so normalize to chronological order.
+    rows.reverse();
+    rows
+}
+
+fn count_mark(values: &[String], mark: &str) -> usize {
+    values
+        .iter()
+        .filter(|value| value.matches(mark).count() == 1)
+        .count()
+}
+
+fn opened_plaintexts(batch: &OpenedNativeOverlayTextBatch, marker_prefix: &str) -> Vec<String> {
+    batch
+        .messages
+        .iter()
+        .filter(|message| message.plaintext.contains(marker_prefix))
+        .map(|message| message.plaintext.clone())
+        .collect()
 }
 
 fn serve_request(stream: &mut TcpStream, state: &Arc<Mutex<RelayState>>) {
@@ -1202,6 +1243,228 @@ pub fn osl_chat_queues_a_relay_notice_the_key_server_never_accepted() {
         "the queued message must arrive byte-identical"
     );
     assert!(opened.messages[0].person_to_person_e2ee);
+
+    drop(relay);
+}
+
+#[test]
+fn task3784_racing_two_osl_chat_sends_keeps_order_and_private_cover_pairs() {
+    let relay = RelayServer::start();
+    let storage = TestStorage::new();
+    let relay_url = relay.base_url();
+    let alice_dir = storage.account("alice-race", &relay_url);
+    let bob_dir = storage.account("bob-race", &relay_url);
+
+    let alice_identity = keystore::generate_identity("osl-alice-race-two-sends".to_owned());
+    let bob_identity = keystore::generate_identity("osl-bob-race-two-sends".to_owned());
+    let alice_id = alice_identity.user_id.clone();
+    let bob_id = bob_identity.user_id.clone();
+    relay.register_floor_identity(&alice_identity);
+    relay.register_floor_identity(&bob_identity);
+    let alice = Arc::new(core(alice_identity.clone(), &relay_url));
+    let bob = core(bob_identity.clone(), &relay_url);
+    attach_history_store(&alice, &alice_identity, &alice_dir);
+    attach_history_store(&bob, &bob_identity, &bob_dir);
+    let alice_security = Arc::new(HubSecurityState::default());
+    let bob_security = HubSecurityState::default();
+    let alice_broker = Arc::new(HubBrokerState::default());
+    let bob_broker = HubBrokerState::default();
+
+    let alice_code = export_friend_code(&alice).unwrap();
+    let bob_code = export_friend_code(&bob).unwrap();
+
+    TestStorage::activate(&alice_dir);
+    let bob_friend = add_friend_code(
+        &alice,
+        &alice_security,
+        bob_code.friend_code,
+        Some("Bob race fixture".to_owned()),
+    )
+    .unwrap();
+    verify_friend_safety_number(
+        &alice,
+        &alice_security,
+        bob_friend.person_id.clone(),
+        bob_friend.safety_number.clone(),
+    )
+    .unwrap();
+    let alice_binding = manual_peer_binding(&alice, bob_friend.person_id.clone()).unwrap();
+    let alice_context =
+        activate_owned_osl_chat_context(&alice_broker, &alice_id, alice_binding).unwrap();
+    set_manual_peer_scope_permission(
+        &alice,
+        &alice_security,
+        "osl-chat",
+        "osl-main",
+        alice_context.person_id.clone(),
+        alice_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_scope_security(&alice_security, alice_context.scope.clone(), 3600, true).unwrap();
+
+    TestStorage::activate(&bob_dir);
+    let alice_friend = add_friend_code(
+        &bob,
+        &bob_security,
+        alice_code.friend_code,
+        Some("Alice race fixture".to_owned()),
+    )
+    .unwrap();
+    verify_friend_safety_number(
+        &bob,
+        &bob_security,
+        alice_friend.person_id.clone(),
+        alice_friend.safety_number.clone(),
+    )
+    .unwrap();
+    let bob_binding = manual_peer_binding(&bob, alice_friend.person_id.clone()).unwrap();
+    let bob_context = activate_owned_osl_chat_context(&bob_broker, &bob_id, bob_binding).unwrap();
+    set_manual_peer_scope_permission(
+        &bob,
+        &bob_security,
+        "osl-chat",
+        "osl-main",
+        bob_context.person_id.clone(),
+        bob_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_scope_security(&bob_security, bob_context.scope.clone(), 3600, true).unwrap();
+
+    const MARK_PREFIX: &str = "task3784-race";
+    const MARK_A: &str = "task3784-race-A";
+    const MARK_B: &str = "task3784-race-B";
+    let private_a = format!("{MARK_A}: private alpha text");
+    let private_b = format!("{MARK_B}: private beta text");
+    let ai_carrier = Arc::new(osl_privacy_hub::ai_carrier::AiCarrierState::default());
+
+    TestStorage::activate(&alice_dir);
+    let alice_before = matching_history_plaintexts(&alice, &alice_broker, MARK_PREFIX);
+    TestStorage::activate(&bob_dir);
+    let bob_before = matching_history_plaintexts(&bob, &bob_broker, MARK_PREFIX);
+    println!(
+        "TASK3784 before alice_matching={} bob_matching={}",
+        alice_before.len(),
+        bob_before.len()
+    );
+    assert_eq!(alice_before.len(), 0);
+    assert_eq!(bob_before.len(), 0);
+
+    let start = Arc::new(Barrier::new(3));
+    let spawn_send = |label: &'static str, plaintext: String| {
+        let alice = Arc::clone(&alice);
+        let alice_security = Arc::clone(&alice_security);
+        let alice_broker = Arc::clone(&alice_broker);
+        let ai_carrier = Arc::clone(&ai_carrier);
+        let alice_dir = alice_dir.clone();
+        let start = Arc::clone(&start);
+        thread::spawn(move || {
+            TestStorage::activate(&alice_dir);
+            start.wait();
+            prepare_osl_chat_text(
+                &alice,
+                &alice_security,
+                &alice_broker,
+                &ai_carrier,
+                plaintext,
+                false,
+            )
+            .map(|prepared| (label, prepared.message_id))
+        })
+    };
+    let send_a = spawn_send("A", private_a.clone());
+    let send_b = spawn_send("B", private_b.clone());
+    println!("TASK3784 release=two_sends_at_one_barrier");
+    start.wait();
+    let sent_a = send_a.join().expect("send A thread did not panic").unwrap();
+    let sent_b = send_b.join().expect("send B thread did not panic").unwrap();
+    println!(
+        "TASK3784 sent {}={} {}={}",
+        sent_a.0, sent_a.1, sent_b.0, sent_b.1
+    );
+    assert_ne!(
+        sent_a.1, sent_b.1,
+        "the two raced sends must save as distinct messages"
+    );
+    assert_eq!(relay.pending_for(&bob_id), 2, "both relay notices landed");
+
+    TestStorage::activate(&bob_dir);
+    let opened = drain_osl_chat_text(&bob, &bob_security, &bob_broker, true).unwrap();
+    let opened_order = opened_plaintexts(&opened, MARK_PREFIX);
+    let opened_covers = opened
+        .messages
+        .iter()
+        .filter(|message| message.plaintext.contains(MARK_PREFIX))
+        .map(|message| message.cover_pointer.clone().unwrap_or_default())
+        .collect::<Vec<_>>();
+    println!("TASK3784 opened_order={opened_order:?}");
+    println!("TASK3784 opened_cover_count={}", opened_covers.len());
+    assert_eq!(opened_order.len(), 2);
+    assert_eq!(count_mark(&opened_order, MARK_A), 1);
+    assert_eq!(count_mark(&opened_order, MARK_B), 1);
+    assert_eq!(opened_covers.len(), 2);
+    assert!(
+        opened_covers.iter().all(|cover| !cover.is_empty()),
+        "every opened message must report its own cover message"
+    );
+    assert_ne!(
+        opened_covers[0], opened_covers[1],
+        "the two raced sends must not reuse one cover message"
+    );
+    for (plaintext, cover) in opened_order.iter().zip(opened_covers.iter()) {
+        assert!(
+            !cover.contains(MARK_PREFIX),
+            "cover text must not contain private task marks"
+        );
+        if plaintext.contains(MARK_A) {
+            assert!(!plaintext.contains(MARK_B));
+        } else if plaintext.contains(MARK_B) {
+            assert!(!plaintext.contains(MARK_A));
+        } else {
+            panic!("opened message lost both task marks");
+        }
+    }
+
+    TestStorage::activate(&alice_dir);
+    let alice_after = matching_history_plaintexts(&alice, &alice_broker, MARK_PREFIX);
+    TestStorage::activate(&bob_dir);
+    let bob_after = matching_history_plaintexts(&bob, &bob_broker, MARK_PREFIX);
+    println!("TASK3784 alice_history_order={alice_after:?}");
+    println!("TASK3784 bob_history_order={bob_after:?}");
+    assert_eq!(alice_after.len(), 2);
+    assert_eq!(bob_after.len(), 2);
+    assert_eq!(count_mark(&alice_after, MARK_A), 1);
+    assert_eq!(count_mark(&alice_after, MARK_B), 1);
+    assert_eq!(count_mark(&bob_after, MARK_A), 1);
+    assert_eq!(count_mark(&bob_after, MARK_B), 1);
+    assert_eq!(
+        alice_after, bob_after,
+        "both conversation copies must report the same exact order"
+    );
+    assert_eq!(
+        bob_after, opened_order,
+        "the saved receiver copy must keep the receive batch order"
+    );
+    for plaintext in alice_after.iter().chain(bob_after.iter()) {
+        if plaintext.contains(MARK_A) {
+            assert_eq!(plaintext, &private_a);
+        } else if plaintext.contains(MARK_B) {
+            assert_eq!(plaintext, &private_b);
+        } else {
+            panic!("saved message lost its task mark");
+        }
+    }
+    println!(
+        "TASK3784 after alice_matching={} bob_matching={} mark_a_alice={} mark_b_alice={} mark_a_bob={} mark_b_bob={} same_order={}",
+        alice_after.len(),
+        bob_after.len(),
+        count_mark(&alice_after, MARK_A),
+        count_mark(&alice_after, MARK_B),
+        count_mark(&bob_after, MARK_A),
+        count_mark(&bob_after, MARK_B),
+        alice_after == bob_after
+    );
 
     drop(relay);
 }
