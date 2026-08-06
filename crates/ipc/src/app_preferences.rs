@@ -26,6 +26,7 @@
 //! files load as off.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -293,6 +294,8 @@ pub struct AppPreferences {
     pub follow_active_app_choice: FollowActiveAppChoice,
     #[serde(default = "default_language_choice")]
     pub language: String,
+    #[serde(default)]
+    pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
 }
 
 impl Default for AppPreferences {
@@ -309,6 +312,7 @@ impl Default for AppPreferences {
             alert_mode_choice: AlertModeChoice::default(),
             follow_active_app_choice: FollowActiveAppChoice::default(),
             language: default_language_choice(),
+            auto_whitelist_rules: HashMap::new(),
         }
     }
 }
