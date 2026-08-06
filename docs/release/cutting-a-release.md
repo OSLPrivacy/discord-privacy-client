@@ -73,6 +73,22 @@ must leave `hub-v<version>` as a GitHub *draft* release containing exactly the
 signed installer, normalized `latest.json`, checksum and build-hash assets,
 and provenance attestation. The workflow does not publish `hub-latest`.
 
+For a repeatable local installer build from a clean checkout, pass the release
+version explicitly and let the recipe set the three app version files plus the
+lockfile metadata needed by `--locked` before it builds the frontend and Tauri
+NSIS bundle:
+
+```bash
+CARGO_TARGET_DIR=/mnt/d/osl-lane-targets/h node scripts/build-release-installer.mjs --version 2.0.0
+```
+
+The recipe's exact build switches are `npm ci --prefix apps/osl-hub-ui`,
+`npm run --prefix apps/osl-hub-ui build`, and
+`npm exec --yes --package @tauri-apps/cli@2.11.4 -- tauri build --features desktop -- --locked`.
+It copies the single generated NSIS `.exe` to
+`release/installers/OSL-<version>.exe` and refuses missing version input before
+creating any installer.
+
 If it fails, fix with a new version-bump commit and new matching tag; never
 retag or replace candidate assets under an existing release tag.
 
