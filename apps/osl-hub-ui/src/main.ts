@@ -358,7 +358,8 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT = "osl://native-discord-composer
 // warning.
 const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-focus", "session-ended"] as const;
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
-type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "silent-visible" | "visibility" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
+const onboardingRouteValues = ["pro", "welcome", "create", "import", "unlock", "keylost", "account-recovery", "recovery", "mullvad", "sending", "defaults", "tor", "forward-secrecy", "cover", "silent-visible", "visibility", "passwords", "burnpass", "privacy", "tutorial", "detected", "install", "apps", "browser", "decoy"] as const;
+type OnboardingRoute = typeof onboardingRouteValues[number];
 // Derived, never re-declared: the Settings sections ARE the Settings home
 // choices. A hand-copied union here once drifted from settings-home.ts (it
 // lost "privacy"), settingsHomeMenuMarkup's guard threw on every render, and
@@ -465,6 +466,23 @@ if (discordQaShell) document.documentElement.classList.add("discord-qa-shell");
 
 function onboardingRouteForBuild(candidate: OnboardingRoute): OnboardingRoute {
   return discordQaShell && (candidate === "pro" || candidate === "passwords") ? "sending" : candidate;
+}
+
+function isOnboardingRoute(value: unknown): value is OnboardingRoute {
+  return typeof value === "string" && onboardingRouteValues.includes(value as OnboardingRoute);
+}
+
+function handleOnboardingRouteAction(rawRoute: unknown): boolean {
+  if (!isOnboardingRoute(rawRoute)) {
+    showToast("Unknown onboarding route refused");
+    return false;
+  }
+  onboardingRoute = onboardingRouteForBuild(rawRoute);
+  // Arriving at recovery always starts at the phrase step: a half-finished
+  // flow, or a token from a previous attempt, must never be inherited.
+  if (onboardingRoute === "account-recovery") resetAccountRecovery();
+  render();
+  return true;
 }
 
 
@@ -3408,11 +3426,7 @@ function chooseAppsFromQuickTour(): QuickTourControlResult {
 
 function bindOnboarding(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => {
-    onboardingRoute = onboardingRouteForBuild(button.dataset.onboarding as OnboardingRoute);
-    // Arriving at recovery always starts at the phrase step: a half-finished
-    // flow, or a token from a previous attempt, must never be inherited.
-    if (onboardingRoute === "account-recovery") resetAccountRecovery();
-    render();
+    handleOnboardingRouteAction(button.dataset.onboarding);
   }));
   bindAccountRecovery();
   document.querySelector<HTMLButtonElement>("#skip-pro-setup")?.addEventListener("click", () => {
@@ -12199,6 +12213,12 @@ export const __oslHubUiTest = {
   backFromMullvadSetup(): void {
     onboardingRoute = "cover";
     render();
+  },
+  callWelcomeActionForTest(actionRoute: string): { accepted: boolean; route: Route; onboardingRoute: OnboardingRoute; markup: string } {
+    route = "onboarding";
+    onboardingRoute = "welcome";
+    const accepted = handleOnboardingRouteAction(actionRoute);
+    return { accepted, route, onboardingRoute, markup: onboardingContent() };
   },
   persistOslChatNotifications(): void {
     persistOslChatNotifications();
