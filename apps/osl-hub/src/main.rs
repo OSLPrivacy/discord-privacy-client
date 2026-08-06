@@ -87,8 +87,9 @@ use osl_privacy_hub::scrub_index::{
     ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
-    self, AddFriendResult, AllowedPlaceDirectionState, AllowedPlaceQuery, AllowedPlaceRecord, FriendCodeExport, HubRevocationStatusDto, HubScopeBurnResult,
-    HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
+    self, AddFriendResult, AllowedPlaceDirectionState, AllowedPlaceQuery, AllowedPlaceRecord,
+    FriendCodeExport, HubRevocationStatusDto, HubScopeBurnResult, HubSecurityState, PersonDto,
+    RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -5702,7 +5703,9 @@ async fn set_osl_chat_capture_preference(
     local_opt_in: bool,
 ) -> Result<ChatCaptureProtectionDto, String> {
     if caller.label() != "main" {
-        return Err("Only the trusted OSL window may change OSL Chat capture protection".to_owned());
+        return Err(
+            "Only the trusted OSL window may change OSL Chat capture protection".to_owned(),
+        );
     }
     let _session = session.transition.lock().await;
     let binding = security::manual_peer_binding(&core, person_id)?;
@@ -6305,7 +6308,6 @@ async fn compare_allowed_place_direction_state(
         second_account,
     )
 }
-
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
