@@ -61,8 +61,8 @@ pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_
 pub use client::{
     validate_peer_bundle, BurnResponse, ControlInboxItem, ControlInboxPostResponse,
     IdentityBundleError, KeyServerClient, LicenseRedeemResponse, LicenseValidateResponse,
-    PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse, RegisterResponse, ReplenishResponse,
-    WrappedKeyPostResponse, WrappedKeyResponse,
+    LiveServerRevisionReport, PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse,
+    RegisterResponse, ReplenishResponse, WrappedKeyPostResponse, WrappedKeyResponse,
 };
 pub use duress::{
     build_partial_duress_handlers, build_production_duress_config_handlers,

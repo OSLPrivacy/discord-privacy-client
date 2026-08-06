@@ -490,6 +490,7 @@ macro_rules! hub_tauri_commands {
             ai_carrier_status,
             set_ai_carrier_preview_enabled,
             build_integrity_status,
+            get_live_server_revision_report,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
             set_hub_screenshot_protection,
@@ -1610,6 +1611,17 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["check_hub_recovery_word_retype"],
+        );
+    }
+
+    #[test]
+    fn live_server_revision_report_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["get_live_server_revision_report"],
         );
     }
 

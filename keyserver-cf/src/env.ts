@@ -138,4 +138,17 @@ export interface Env {
   CRYPTO_DONATION_XMR_ENABLED?: string;
   /** Exact one-time lifetime Pro price. Production must be the literal "500". */
   CRYPTO_PRO_USD_CENTS?: string;
+
+  /** Optional fallback when the Workers version-metadata binding is unavailable. */
+  OSL_SERVER_REVISION?: string;
+  /** Optional fallback when the Workers version-metadata binding is unavailable. */
+  OSL_SERVER_BUILD_TIME?: string;
+  /** Human-readable deployment/configuration name reported by healthz. */
+  OSL_SERVER_CONFIGURATION_NAME?: string;
+  /** Cloudflare-provided metadata for the deployed Worker version. */
+  CF_VERSION_METADATA?: {
+    id?: string;
+    tag?: string;
+    timestamp?: string;
+  };
 }

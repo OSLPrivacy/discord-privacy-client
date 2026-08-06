@@ -50,6 +50,13 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::Duration;
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct LiveServerRevisionReport {
+    pub revision: String,
+    pub build_time: String,
+    pub configuration_name: String,
+}
+
 /// Rotation proof for an authenticated key change (register
 /// state-machine Case C). Present only when rotating an existing
 /// `user_id` onto a new Ed25519 identity key.
@@ -1811,12 +1818,11 @@ impl KeyServerClient {
                 ControlInboxSenderFilterCapability::Version1,
                 SenderFilterCapabilityFloor::Version1,
             ) => self.get_control_inbox_from(identity, sender_id),
-            (
-                ControlInboxSenderFilterCapability::Legacy,
-                SenderFilterCapabilityFloor::Version1,
-            ) => Err(Error::Transport(
-                "control-inbox sender-filter capability downgrade refused".into(),
-            )),
+            (ControlInboxSenderFilterCapability::Legacy, SenderFilterCapabilityFloor::Version1) => {
+                Err(Error::Transport(
+                    "control-inbox sender-filter capability downgrade refused".into(),
+                ))
+            }
         }
     }
 
@@ -1848,6 +1854,25 @@ impl KeyServerClient {
             "control-inbox sender-filter capability is unavailable, malformed, or transitional"
                 .into(),
         ))
+    }
+
+    /// Read-only live server revision report from the configured keyserver.
+    ///
+    /// The endpoint is the public health route and this method sends no body,
+    /// no bearer, and no identity signature.
+    pub fn live_server_revision_report(&self) -> Result<LiveServerRevisionReport> {
+        let response = self.send_request("GET", "/v1/healthz", None)?;
+        check_2xx(&response)?;
+        let report: LiveServerRevisionReport = serde_json::from_slice(&response.body)?;
+        if report.revision.is_empty()
+            || report.build_time.is_empty()
+            || report.configuration_name.is_empty()
+        {
+            return Err(Error::Transport(
+                "live server revision report is missing a required field".into(),
+            ));
+        }
+        Ok(report)
     }
 
     fn observe_sender_filter_capability_floor(
@@ -2457,6 +2482,53 @@ mod tests {
             "identity_bundle_proof_sig": resp.identity_bundle_proof_sig
         })
         .to_string()
+    }
+
+    #[test]
+    fn live_server_revision_report_reads_healthz_without_mutation() {
+        let body = serde_json::json!({
+            "ok": true,
+            "revision": "MAPLE-0439-revision",
+            "build_time": "2026-08-06T07:43:09Z",
+            "configuration_name": "production-test",
+            "capabilities": {
+                "control_inbox_sender_disposition": 1,
+                "control_inbox_eviction_signal": 1,
+            },
+        })
+        .to_string();
+        let (port, rx) = response_server(vec![test_response(b"HTTP/1.1 200 OK\r\n", body)]);
+        let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+
+        let report = client.live_server_revision_report().unwrap();
+        let request = rx.recv().unwrap();
+        let first_line = String::from_utf8_lossy(&request)
+            .lines()
+            .next()
+            .unwrap()
+            .to_owned();
+        println!(
+            "command=live_server_revision_report request={first_line} revision={} build_time={} configuration_name={}",
+            report.revision, report.build_time, report.configuration_name
+        );
+
+        assert_eq!(first_line, "GET /v1/healthz HTTP/1.1");
+        assert_eq!(report.revision, "MAPLE-0439-revision");
+        assert_eq!(report.build_time, "2026-08-06T07:43:09Z");
+        assert_eq!(report.configuration_name, "production-test");
+    }
+
+    #[test]
+    fn live_server_revision_report_requires_all_three_fields() {
+        let (port, _rx) = response_server(vec![test_response(
+            b"HTTP/1.1 200 OK\r\n",
+            r#"{"ok":true,"revision":"MAPLE-0439-revision","build_time":"2026-08-06T07:43:09Z"}"#,
+        )]);
+        let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+
+        let error = client.live_server_revision_report().unwrap_err();
+        println!("command=live_server_revision_report_missing_field error={error}");
+        assert!(matches!(error, Error::Json(_)));
     }
 
     fn prekey_bundle_json(identity: &Identity, x25519_override: Option<String>) -> String {

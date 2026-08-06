@@ -9338,6 +9338,18 @@ fn build_integrity_status(state: tauri::State<'_, BuildIntegrity>) -> BuildInteg
     *state.inner()
 }
 
+#[tauri::command]
+async fn get_live_server_revision_report(
+    app: tauri::AppHandle,
+) -> Result<keystore::LiveServerRevisionReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<HubCoreState>();
+        core_bridge::live_server_revision_report(&state)
+    })
+    .await
+    .map_err(|_| "OSL live server revision worker failed".to_owned())?
+}
+
 macro_rules! hub_tauri_generate_handler {
     ($($(#[$meta:meta])* $command:ident),* $(,)?) => {
         tauri::generate_handler![$($(#[$meta])* $command,)*]
