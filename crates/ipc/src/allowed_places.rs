@@ -1,10 +1,11 @@
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 const DB_FILE: &str = "allowed_places.sqlite";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AllowedPlaceRecord {
     pub app: String,
     pub account: String,
@@ -35,6 +36,9 @@ pub enum AllowedPlaceStoreError {
 
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
+
+    #[error("not allowed: {stable_id}")]
+    NotAllowed { stable_id: String },
 }
 
 pub type Result<T> = std::result::Result<T, AllowedPlaceStoreError>;
@@ -52,7 +56,12 @@ pub fn add_allowed_place_record(
     ensure_schema(&conn)?;
     conn.execute(
         "INSERT INTO allowed_places (app, account, kind, stable_id) VALUES (?1, ?2, ?3, ?4)",
-        params![record.app, record.account, record.kind, record.stable_id],
+        params![
+            &record.app,
+            &record.account,
+            &record.kind,
+            &record.stable_id
+        ],
     )?;
     Ok(())
 }
@@ -69,6 +78,40 @@ pub fn remove_allowed_place_record(
         params![stable_id.as_ref()],
     )?;
     Ok(removed == 1)
+}
+
+pub fn is_allowed_place_record(
+    app_data_dir: impl AsRef<Path>,
+    record: &AllowedPlaceRecord,
+) -> Result<bool> {
+    std::fs::create_dir_all(app_data_dir.as_ref())?;
+    let conn = Connection::open(allowed_places_db_path(app_data_dir))?;
+    ensure_schema(&conn)?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM allowed_places
+         WHERE app = ?1 AND account = ?2 AND kind = ?3 AND stable_id = ?4",
+        params![
+            &record.app,
+            &record.account,
+            &record.kind,
+            &record.stable_id
+        ],
+        |row| row.get(0),
+    )?;
+    Ok(count == 1)
+}
+
+pub fn require_allowed_place_record(
+    app_data_dir: impl AsRef<Path>,
+    record: &AllowedPlaceRecord,
+) -> Result<()> {
+    if is_allowed_place_record(app_data_dir, record)? {
+        Ok(())
+    } else {
+        Err(AllowedPlaceStoreError::NotAllowed {
+            stable_id: record.stable_id.clone(),
+        })
+    }
 }
 
 fn ensure_schema(conn: &Connection) -> Result<()> {

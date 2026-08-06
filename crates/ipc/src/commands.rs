@@ -23,6 +23,28 @@ use crate::group_send::{
     OSL_RESULT_RECOVERY_IGNORED,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProtectedPlaceAction {
+    Read,
+    Show,
+    Type,
+    Send,
+    Scrub,
+}
+
+impl ProtectedPlaceAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Show => "show",
+            Self::Type => "type",
+            Self::Send => "send",
+            Self::Scrub => "scrub",
+        }
+    }
+}
+
 // 9-TD2.3: F0-FIX3 trace logs.
 //
 // Set the `OSL_TRACE` env var (any value) to surface the snowflake
@@ -72,6 +94,30 @@ fn guard_session_on_command_entry(state: &AppState) -> Result<(), String> {
     }
     record_activity_on_command_entry();
     Ok(())
+}
+
+pub fn cmd_osl_trace_allowed_place_protected_message_path(
+    app_data_dir: PathBuf,
+    action: ProtectedPlaceAction,
+    place: crate::allowed_places::AllowedPlaceRecord,
+) -> Result<Vec<String>, String> {
+    let mut trace = vec![format!(
+        "TASK0120 command trace action={} stable_id={}",
+        action.as_str(),
+        place.stable_id
+    )];
+    crate::allowed_places::require_allowed_place_record(&app_data_dir, &place)
+        .map_err(|e| format!("OSL: allowed-place check refused: {e}"))?;
+    trace.push(format!(
+        "TASK0120 allowed-place check=allowed app={} account={} kind={} stable_id={}",
+        place.app, place.account, place.kind, place.stable_id
+    ));
+    trace.push(format!(
+        "TASK0120 protected-message path reached action={} stable_id={}",
+        action.as_str(),
+        place.stable_id
+    ));
+    Ok(trace)
 }
 
 /// Manual "Lock now": drop every live secret immediately, without waiting for

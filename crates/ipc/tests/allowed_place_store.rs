@@ -1,7 +1,8 @@
 use ipc::allowed_places::{
-    add_allowed_place_record, allowed_places_db_path, remove_allowed_place_record,
-    AllowedPlaceRecord,
+    add_allowed_place_record, allowed_places_db_path, is_allowed_place_record,
+    remove_allowed_place_record, AllowedPlaceRecord,
 };
+use ipc::commands::{cmd_osl_trace_allowed_place_protected_message_path, ProtectedPlaceAction};
 use rusqlite::Connection;
 use tempfile::TempDir;
 
@@ -72,4 +73,47 @@ fn removing_one_allowed_place_by_stable_id_leaves_the_other_unchanged() {
     assert!(removed);
     assert_eq!(records.len(), 1);
     assert_eq!(records[0], remaining_record);
+}
+
+#[test]
+fn allowed_place_command_trace_reaches_protected_message_path() {
+    let dir = TempDir::new().unwrap();
+    let allowed_record =
+        AllowedPlaceRecord::discord_direct_message("900000000000000120", "LANTERN-0120");
+    let unlisted_record =
+        AllowedPlaceRecord::discord_direct_message("900000000000000120", "LANTERN-0120-moved");
+
+    add_allowed_place_record(dir.path(), allowed_record.clone()).unwrap();
+    assert!(is_allowed_place_record(dir.path(), &allowed_record).unwrap());
+    assert!(!is_allowed_place_record(dir.path(), &unlisted_record).unwrap());
+
+    let trace = cmd_osl_trace_allowed_place_protected_message_path(
+        dir.path().to_path_buf(),
+        ProtectedPlaceAction::Send,
+        allowed_record.clone(),
+    )
+    .unwrap();
+    for line in &trace {
+        println!("{line}");
+    }
+
+    let refused = cmd_osl_trace_allowed_place_protected_message_path(
+        dir.path().to_path_buf(),
+        ProtectedPlaceAction::Send,
+        unlisted_record.clone(),
+    )
+    .unwrap_err();
+    println!(
+        "TASK0120 unlisted stable_id={} refused={refused}",
+        unlisted_record.stable_id
+    );
+
+    assert!(trace.iter().any(|line| {
+        line == &format!(
+            "TASK0120 protected-message path reached action=send stable_id={}",
+            allowed_record.stable_id
+        )
+    }));
+    assert!(refused.contains("allowed-place check refused"));
+    assert!(refused.contains(&unlisted_record.stable_id));
 }
