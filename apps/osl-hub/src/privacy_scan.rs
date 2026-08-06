@@ -22,6 +22,10 @@ const MAX_ATTACHMENT_DISPLAY_NAME_BYTES: usize = 256;
 const MAX_ATTACHMENT_ENCODED_BYTES: usize = MAX_ATTACHMENT_BYTES.div_ceil(3) * 4;
 pub(crate) const MAX_ATTACHMENT_BATCH_ENCODED_BYTES: usize = 12 * 1024 * 1024;
 pub(crate) const MAX_FINDINGS: usize = 1_000;
+const MAIL_ATTACHMENT_MIB: u64 = 1024 * 1024;
+const MAILCOM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB: u32 = 30;
+const MAILCOM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB: u32 = 100;
+const EXCHANGE_DEFAULT_ORDINARY_ATTACHMENT_LIMIT_MB: u32 = 10;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -35,6 +39,54 @@ pub struct LocalMessageCandidate {
     pub text: String,
     #[serde(default)]
     pub attachments: Vec<LocalAttachmentCandidate>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrdinaryAttachmentSetItem {
+    pub display_name: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OrdinaryAttachmentLimitProfile {
+    MailcomFree,
+    MailcomPremium,
+    Exchange { company_limit_mb: Option<u32> },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrdinaryAttachmentSetDecision {
+    pub accepted: bool,
+    pub provider_label: String,
+    pub limit_mb: u32,
+    pub total_mb: u64,
+    pub rejected_attachment_name: Option<String>,
+    pub refusal: Option<String>,
+}
+
+impl OrdinaryAttachmentLimitProfile {
+    fn provider_label(self) -> String {
+        match self {
+            Self::MailcomFree => "Mail.com Free".to_owned(),
+            Self::MailcomPremium => "Mail.com Premium".to_owned(),
+            Self::Exchange {
+                company_limit_mb: None,
+            } => "Exchange default".to_owned(),
+            Self::Exchange {
+                company_limit_mb: Some(limit_mb),
+            } => format!("Exchange company {limit_mb} MB"),
+        }
+    }
+
+    fn limit_mb(self) -> u32 {
+        match self {
+            Self::MailcomFree => MAILCOM_FREE_ORDINARY_ATTACHMENT_LIMIT_MB,
+            Self::MailcomPremium => MAILCOM_PREMIUM_ORDINARY_ATTACHMENT_LIMIT_MB,
+            Self::Exchange { company_limit_mb } => {
+                company_limit_mb.unwrap_or(EXCHANGE_DEFAULT_ORDINARY_ATTACHMENT_LIMIT_MB)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq, Serialize)]
@@ -120,6 +172,44 @@ pub fn validate_attachment_input_batch(messages: &[LocalMessageCandidate]) -> Re
         }
     }
     Ok(())
+}
+
+pub fn check_ordinary_attachment_set_limit(
+    profile: OrdinaryAttachmentLimitProfile,
+    attachments: &[OrdinaryAttachmentSetItem],
+) -> OrdinaryAttachmentSetDecision {
+    let provider_label = profile.provider_label();
+    let limit_mb = profile.limit_mb();
+    let limit_bytes = u64::from(limit_mb) * MAIL_ATTACHMENT_MIB;
+    let mut total_bytes = 0u64;
+
+    for attachment in attachments {
+        total_bytes = total_bytes.saturating_add(attachment.size_bytes);
+        if total_bytes > limit_bytes {
+            let total_mb = total_bytes.div_ceil(MAIL_ATTACHMENT_MIB);
+            let refusal = format!(
+                "{provider_label} refuses ordinary attachments over {limit_mb} MB: {} makes the ordinary attachment set {total_mb} MB",
+                attachment.display_name
+            );
+            return OrdinaryAttachmentSetDecision {
+                accepted: false,
+                provider_label,
+                limit_mb,
+                total_mb,
+                rejected_attachment_name: Some(attachment.display_name.clone()),
+                refusal: Some(refusal),
+            };
+        }
+    }
+
+    OrdinaryAttachmentSetDecision {
+        accepted: true,
+        provider_label,
+        limit_mb,
+        total_mb: total_bytes.div_ceil(MAIL_ATTACHMENT_MIB),
+        rejected_attachment_name: None,
+        refusal: None,
+    }
 }
 
 /// Scan with explicitly supplied local media capabilities. The desktop build
@@ -684,6 +774,113 @@ mod tests {
         assert_eq!(
             result.findings[0].attachment_path.as_deref(),
             Some("photo.jpg")
+        );
+    }
+
+    fn mib(value: u64) -> u64 {
+        value * MAIL_ATTACHMENT_MIB
+    }
+
+    fn ordinary_set(prefix: &str, first_mb: u64, second_mb: u64) -> Vec<OrdinaryAttachmentSetItem> {
+        vec![
+            OrdinaryAttachmentSetItem {
+                display_name: format!("{prefix}-a.bin"),
+                size_bytes: mib(first_mb),
+            },
+            OrdinaryAttachmentSetItem {
+                display_name: format!("{prefix}-b.bin"),
+                size_bytes: mib(second_mb),
+            },
+        ]
+    }
+
+    fn set_limit_verdict(
+        label: &str,
+        profile: OrdinaryAttachmentLimitProfile,
+        accepted_mb: u64,
+        refused_mb: u64,
+    ) -> String {
+        let accepted = check_ordinary_attachment_set_limit(
+            profile,
+            &ordinary_set(
+                &format!("task3761-{label}-under"),
+                accepted_mb / 2,
+                accepted_mb - (accepted_mb / 2),
+            ),
+        );
+        let refused = check_ordinary_attachment_set_limit(
+            profile,
+            &ordinary_set(
+                &format!("task3761-{label}-over"),
+                refused_mb / 2,
+                refused_mb - (refused_mb / 2),
+            ),
+        );
+        let accepted_status = if accepted.accepted {
+            "accepted"
+        } else {
+            "refused"
+        };
+        let refused_status = if refused.accepted {
+            "accepted"
+        } else {
+            "refused"
+        };
+        format!(
+            "TASK3761 {label} accepted_set_status={accepted_status} accepted_set_mb={} refused_set_status={refused_status} refused_set_mb={} refused_by_name={} limit_mb={} refusal=\"{}\"",
+            accepted.total_mb,
+            refused.total_mb,
+            refused.rejected_attachment_name.as_deref().unwrap_or(""),
+            refused.limit_mb,
+            refused.refusal.as_deref().unwrap_or("")
+        )
+    }
+
+    #[test]
+    fn task3761_mailcom_and_exchange_attachment_limits_refuse_sets_by_name() {
+        let lines = vec![
+            set_limit_verdict(
+                "mailcom_free",
+                OrdinaryAttachmentLimitProfile::MailcomFree,
+                29,
+                31,
+            ),
+            set_limit_verdict(
+                "mailcom_premium",
+                OrdinaryAttachmentLimitProfile::MailcomPremium,
+                99,
+                101,
+            ),
+            set_limit_verdict(
+                "exchange_default",
+                OrdinaryAttachmentLimitProfile::Exchange {
+                    company_limit_mb: None,
+                },
+                9,
+                11,
+            ),
+            set_limit_verdict(
+                "exchange_company_50",
+                OrdinaryAttachmentLimitProfile::Exchange {
+                    company_limit_mb: Some(50),
+                },
+                49,
+                51,
+            ),
+        ];
+
+        for line in &lines {
+            println!("{line}");
+        }
+
+        assert_eq!(
+            lines,
+            vec![
+                "TASK3761 mailcom_free accepted_set_status=accepted accepted_set_mb=29 refused_set_status=refused refused_set_mb=31 refused_by_name=task3761-mailcom_free-over-b.bin limit_mb=30 refusal=\"Mail.com Free refuses ordinary attachments over 30 MB: task3761-mailcom_free-over-b.bin makes the ordinary attachment set 31 MB\"",
+                "TASK3761 mailcom_premium accepted_set_status=accepted accepted_set_mb=99 refused_set_status=refused refused_set_mb=101 refused_by_name=task3761-mailcom_premium-over-b.bin limit_mb=100 refusal=\"Mail.com Premium refuses ordinary attachments over 100 MB: task3761-mailcom_premium-over-b.bin makes the ordinary attachment set 101 MB\"",
+                "TASK3761 exchange_default accepted_set_status=accepted accepted_set_mb=9 refused_set_status=refused refused_set_mb=11 refused_by_name=task3761-exchange_default-over-b.bin limit_mb=10 refusal=\"Exchange default refuses ordinary attachments over 10 MB: task3761-exchange_default-over-b.bin makes the ordinary attachment set 11 MB\"",
+                "TASK3761 exchange_company_50 accepted_set_status=accepted accepted_set_mb=49 refused_set_status=refused refused_set_mb=51 refused_by_name=task3761-exchange_company_50-over-b.bin limit_mb=50 refusal=\"Exchange company 50 MB refuses ordinary attachments over 50 MB: task3761-exchange_company_50-over-b.bin makes the ordinary attachment set 51 MB\"",
+            ]
         );
     }
 
