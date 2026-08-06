@@ -62,6 +62,9 @@ use osl_privacy_hub::native_apps::{
     MullvadActionResult, MullvadStatus, NativeAppId, NativeAppStatus, NativeInstallResult,
     ProtectedBrowserImportResult,
 };
+use osl_privacy_hub::native_attachment_jobs_bridge::{
+    NativeAttachmentProgressBridge, NativeAttachmentProgressEvent, TauriAttachmentProgressSink,
+};
 #[cfg(feature = "discord-qa-shell")]
 use osl_privacy_hub::native_discord_adapter::{
     compatibility_delay_ms, DiscordProtectedSendOutcome, VerifiedSentCarrierRow,
@@ -116,6 +119,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 #[cfg(feature = "whatsapp-qa-identity")]
@@ -5145,6 +5149,41 @@ async fn select_osl_chat_attachment(
     })
     .await
     .map_err(|error| format!("OSL Chat attachment worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn accept_osl_chat_clipboard_image_attachment(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    media_type: String,
+    image_bytes: Vec<u8>,
+) -> Result<NativeAttachmentProgressEvent, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may accept OSL Chat clipboard images".to_owned());
+    }
+    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let context_id = app
+            .state::<HubBrokerState>()
+            .active_osl_chat_context_token()?;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "OSL clipboard image clock is unavailable".to_owned())?
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        let mut bridge = NativeAttachmentProgressBridge::new(
+            TauriAttachmentProgressSink::for_trusted_window(app.clone(), "main"),
+        );
+        let job = bridge
+            .stage_clipboard_image(&context_id, &media_type, image_bytes, now_ms)
+            .map_err(|error| error.to_string())?;
+        Ok(NativeAttachmentProgressEvent { context_id, job })
+    })
+    .await
+    .map_err(|error| format!("OSL Chat clipboard image worker failed: {error}"))?
 }
 
 #[tauri::command]

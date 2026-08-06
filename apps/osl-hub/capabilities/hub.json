@@ -126,6 +126,7 @@
     "allow-open-osl-chat-text",
     "allow-list-osl-chat-history",
     "allow-select-osl-chat-attachment",
+    "allow-accept-osl-chat-clipboard-image-attachment",
     "allow-list-osl-chat-attachments",
     "allow-open-osl-chat-attachment",
     "allow-set-native-discord-protected-overlay-open",
