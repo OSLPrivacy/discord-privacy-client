@@ -6274,6 +6274,56 @@ mod tests {
             .len()
     }
 
+    fn task0518_marked_friend() -> (String, PersonMetadata, PeerEntry, String) {
+        let ed25519_bytes: [u8; ED25519_PUBLIC_BYTES] = rand::random();
+        let x25519_bytes: [u8; X25519_PUBLIC_BYTES] = rand::random();
+        let mark = format!(
+            "TASK0518-MARK-{}",
+            lower_hex(&Sha256::digest(ed25519_bytes).into())
+        );
+        let ed25519_public = STANDARD.encode(ed25519_bytes);
+        let x25519_public = STANDARD.encode(x25519_bytes);
+        let mlkem768_public = STANDARD.encode([0x51u8; MLKEM768_PUBLIC_BYTES]);
+        let person_id = person_id(&ed25519_public);
+        let key_bundle = KeyBundle {
+            ed25519_pub: ed25519_public.clone(),
+            x25519_pub: x25519_public.clone(),
+            mlkem768_pub: mlkem768_public.clone(),
+            ratchet_initial_pub: None,
+        };
+        (
+            person_id,
+            PersonMetadata {
+                osl_user_id: mark.clone(),
+                ed25519_public,
+                safety_number_verified: true,
+                ..PersonMetadata::default()
+            },
+            PeerEntry {
+                osl_user_id: Some(mark.clone()),
+                pubkey: Some(x25519_public),
+                ik_mlkem768_pub: Some(mlkem768_public),
+                tofu_ed25519_pub: Some(key_bundle.ed25519_pub.clone()),
+                tofu_key_bundle: Some(key_bundle),
+                ..PeerEntry::default()
+            },
+            mark,
+        )
+    }
+
+    fn task0518_copy_count_and_mark(dir: &Path) -> (usize, Option<String>) {
+        let prefs =
+            load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE)).unwrap();
+        let people = load_people_file(dir).unwrap();
+        let mark = prefs
+            .manual_approved_scope_people
+            .values()
+            .next()
+            .and_then(|person_id| people.people.get(person_id))
+            .map(|metadata| metadata.osl_user_id.clone());
+        (prefs.manual_approved_scope_people.len(), mark)
+    }
+
     #[test]
     fn task0258_everywhere_then_nowhere_immediately_controls_protected_message_actions() {
         let harness = FileBackedSecurityHarness::new("task0258-everywhere-nowhere");
@@ -6365,6 +6415,99 @@ mod tests {
         assert_eq!(nowhere_act, 0);
         assert_eq!(nowhere_skipped, 3);
         assert_eq!(after_nowhere, vec!["skipped", "skipped", "skipped"]);
+    }
+
+    #[test]
+    fn task0518_hide_other_people_stays_local() {
+        let named_harness = FileBackedSecurityHarness::new("task0518-named-copy");
+        let named_dir = named_harness.path().to_path_buf();
+        let other_dir = fresh_test_dir("task0518-other-copy");
+        let core_named = HubCoreState::default();
+        let core_other = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core_named);
+        install_self_identity(&core_other);
+        let (person_id, metadata, peer, mark) = task0518_marked_friend();
+        write_people(&named_dir, &person_id, metadata.clone());
+        write_people(&other_dir, &person_id, metadata);
+        install_peer_map(&core_named, &named_dir, &person_id, peer.clone());
+        install_peer_map(&core_other, &other_dir, &person_id, peer);
+        for dir in [&named_dir, &other_dir] {
+            write_encrypted_json(
+                &dir.join(SECURITY_PREFS_FILE),
+                &SecurityPreferences::default(),
+            )
+            .unwrap();
+        }
+        let accounts = vec![HubFriendDirectAccountDto {
+            service_id: "discord".to_owned(),
+            account_id: "native-discord-task0518".to_owned(),
+            label: "named-recipient-copy-0518".to_owned(),
+        }];
+
+        keystore::set_active_account_dir(Some(named_dir.clone()));
+        set_hub_friend_account_reach_everywhere(
+            &core_named,
+            &security,
+            person_id.clone(),
+            accounts.clone(),
+        )
+        .expect("seed named copy recipient mark");
+        keystore::set_active_account_dir(Some(other_dir.clone()));
+        set_hub_friend_account_reach_everywhere(
+            &core_other,
+            &security,
+            person_id.clone(),
+            accounts.clone(),
+        )
+        .expect("seed other copy recipient mark");
+
+        let (named_before_count, named_before_mark) = task0518_copy_count_and_mark(&named_dir);
+        let (other_before_count, other_before_mark) = task0518_copy_count_and_mark(&other_dir);
+        println!(
+            "TASK0518 before copy=named mark={} count={}",
+            named_before_mark.as_deref().unwrap_or("<missing>"),
+            named_before_count
+        );
+        println!(
+            "TASK0518 before copy=other mark={} count={}",
+            other_before_mark.as_deref().unwrap_or("<missing>"),
+            other_before_count
+        );
+        assert_eq!(named_before_mark.as_deref(), Some(mark.as_str()));
+        assert_eq!(other_before_mark.as_deref(), Some(mark.as_str()));
+        assert_eq!(named_before_count, 1);
+        assert_eq!(other_before_count, 1);
+
+        keystore::set_active_account_dir(Some(named_dir.clone()));
+        let hidden =
+            set_hub_friend_account_reach_nowhere(&core_named, &security, person_id, accounts)
+                .expect("hide-other-people action changes only the named copy");
+        let (named_after_count, named_after_mark) = task0518_copy_count_and_mark(&named_dir);
+        let (other_after_count, other_after_mark) = task0518_copy_count_and_mark(&other_dir);
+        println!(
+            "TASK0518 action=hide-other-people enabled_once=true named_action={} named_changed_count={}",
+            hidden.action, hidden.changed_count
+        );
+        println!(
+            "TASK0518 after copy=named count={} mark_readable={}",
+            named_after_count,
+            named_after_mark.is_some()
+        );
+        println!(
+            "TASK0518 after copy=other count={} mark={} mark_readable={}",
+            other_after_count,
+            other_after_mark.as_deref().unwrap_or("<missing>"),
+            other_after_mark.as_deref() == Some(mark.as_str())
+        );
+        assert_eq!(hidden.action, "nowhere");
+        assert_eq!(hidden.changed_count, 1);
+        assert_eq!(named_after_count, 0);
+        assert!(named_after_mark.is_none());
+        assert_eq!(other_after_count, 1);
+        assert_eq!(other_after_mark.as_deref(), Some(mark.as_str()));
+
+        let _ = std::fs::remove_dir_all(&other_dir);
     }
 
     #[test]
