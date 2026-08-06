@@ -1391,19 +1391,28 @@
     function runPersistEdit(messageId, plaintext, channelId) {
         const invoke = getTauriInvoke();
         if (typeof invoke !== "function") return;
-        // Probe-2 fix: pass channelId so the Rust side can upsert as
-        // self when the row is missing (pre-outbound-persistence
-        // messages). Older boot-js builds didn't pass it; the Rust
-        // command treats `channelId: null` as the legacy no-op-on-miss
-        // behaviour, so this is forward/backward compatible.
-        const args = {
-            discordMessageId: messageId,
-            newPlaintext: plaintext,
-        };
-        if (typeof channelId === "string" && channelId.length > 0) {
-            args.channelId = channelId;
-        }
-        invoke("osl_persist_edit", args)
+        oslSelfDiscordId()
+            .then(function (editorDiscordId) {
+                if (
+                    typeof editorDiscordId !== "string" ||
+                    editorDiscordId.length === 0
+                ) {
+                    throw new Error("persist_edit_no_editor");
+                }
+                // Probe-2 fix: pass channelId so the Rust side can upsert as
+                // self when the row is missing (pre-outbound-persistence
+                // messages). The Rust command refuses if editorDiscordId does
+                // not match the persisted sender.
+                const args = {
+                    discordMessageId: messageId,
+                    newPlaintext: plaintext,
+                    editorDiscordId: editorDiscordId,
+                };
+                if (typeof channelId === "string" && channelId.length > 0) {
+                    args.channelId = channelId;
+                }
+                return invoke("osl_persist_edit", args);
+            })
             .then(function () {
                 console.log(
                     "[OSL] selfEdit persist msg=" +

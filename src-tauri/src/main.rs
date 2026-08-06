@@ -432,11 +432,18 @@ async fn osl_persist_edit(
     discord_message_id: String,
     new_plaintext: String,
     channel_id: Option<String>,
+    editor_discord_id: String,
 ) -> Result<(), String> {
     let app_handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app_handle.state::<AppState>();
-        cmd_osl_persist_edit(state.inner(), discord_message_id, new_plaintext, channel_id)
+        cmd_osl_persist_edit(
+            state.inner(),
+            discord_message_id,
+            new_plaintext,
+            channel_id,
+            editor_discord_id,
+        )
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?

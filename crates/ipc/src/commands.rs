@@ -3670,16 +3670,17 @@ pub struct AttachmentCacheDto {
 ///    fresh `DPC0::<base64>` cover, lets the request continue.
 /// 3. Discord's response acknowledges the edit (200/204).
 /// 4. Load listener calls this IPC with the *plaintext the
-///    user typed* and the message_id from the URL.
+///    user typed*, the message_id from the URL, and the current
+///    editor id.
 ///
-/// On a known id: looks up the existing row to preserve
-/// channel_id + sender_discord_id + sender_osl_user_id, then
-/// upserts with `new_plaintext` and a fresh `decrypted_at`
-/// (treating the edit time as the new "decrypted at" since
-/// that's the moment the local store learned this plaintext).
-/// `burned` is preserved as `false` — burned rows are filtered
-/// from `store.get` so we'd already be on the unknown-id path
-/// for those.
+/// On a known id: looks up the existing row, refuses unless the
+/// editor matches the stored sender_discord_id, preserves channel_id
+/// + sender_discord_id + sender_osl_user_id, then upserts with
+/// `new_plaintext` and a fresh `decrypted_at` (treating the edit
+/// time as the new "decrypted at" since that's the moment the local
+/// store learned this plaintext). `burned` is preserved as `false` —
+/// burned rows are filtered from `store.get` so we'd already be on
+/// the unknown-id path for those.
 ///
 /// On an unknown id: idempotent no-op returning `Ok(())`. The
 /// 2-arg signature can't construct a complete row without
@@ -3699,8 +3700,12 @@ pub fn cmd_osl_persist_edit(
     discord_message_id: String,
     new_plaintext: String,
     channel_id: Option<String>,
+    editor_discord_id: String,
 ) -> Result<(), String> {
     record_activity_on_command_entry();
+    if editor_discord_id.is_empty() {
+        return Err("OSL: persist_edit refused: missing editor".to_string());
+    }
     let guard = state
         .message_store
         .lock()
@@ -3716,15 +3721,22 @@ pub fn cmd_osl_persist_edit(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let updated = match existing {
-        Some(prior) => StoredMessage {
-            discord_message_id: prior.discord_message_id,
-            channel_id: prior.channel_id,
-            sender_discord_id: prior.sender_discord_id,
-            sender_osl_user_id: prior.sender_osl_user_id,
-            plaintext: new_plaintext,
-            decrypted_at: now,
-            burned: false,
-        },
+        Some(prior) => {
+            if prior.sender_discord_id != editor_discord_id {
+                return Err(
+                    "OSL: persist_edit refused: only the sender can edit".to_string(),
+                );
+            }
+            StoredMessage {
+                discord_message_id: prior.discord_message_id,
+                channel_id: prior.channel_id,
+                sender_discord_id: prior.sender_discord_id,
+                sender_osl_user_id: prior.sender_osl_user_id,
+                plaintext: new_plaintext,
+                decrypted_at: now,
+                burned: false,
+            }
+        }
         None => {
             // Probe-2 fix: was a silent no-op when row missing, which
             // bricked editing of any outbound message whose row had
@@ -3737,18 +3749,28 @@ pub fn cmd_osl_persist_edit(
             let Some(channel_id) = channel_id else {
                 return Ok(());
             };
-            let self_id = {
+            let (self_osl_user_id, self_discord_id) = {
                 let id_guard = state.identity_slot();
                 let Some(id) = id_guard.as_ref() else {
                     return Ok(());
                 };
-                id.user_id.clone()
+                (
+                    id.user_id.clone(),
+                    id.discord_snowflake
+                        .clone()
+                        .unwrap_or_else(|| id.user_id.clone()),
+                )
             };
+            if self_discord_id != editor_discord_id {
+                return Err(
+                    "OSL: persist_edit refused: only the sender can edit".to_string(),
+                );
+            }
             StoredMessage {
                 discord_message_id: discord_message_id.clone(),
                 channel_id,
-                sender_discord_id: self_id.clone(),
-                sender_osl_user_id: self_id,
+                sender_discord_id: editor_discord_id,
+                sender_osl_user_id: self_osl_user_id,
                 plaintext: new_plaintext,
                 decrypted_at: now,
                 burned: false,
