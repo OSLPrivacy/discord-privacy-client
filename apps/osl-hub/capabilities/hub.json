@@ -120,6 +120,7 @@
     "allow-prepare-osl-chat-text",
     "allow-open-osl-chat-text",
     "allow-list-osl-chat-history",
+    "allow-query-osl-chat-visible-records",
     "allow-select-osl-chat-attachment",
     "allow-list-osl-chat-attachments",
     "allow-open-osl-chat-attachment",

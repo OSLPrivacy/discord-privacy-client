@@ -1198,6 +1198,23 @@ struct ControlInboxDeliveryFacts {
     terminal_rows: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OslChatHistoryVisibilityFilter {
+    #[serde(default)]
+    pub hide_recipient_authored: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslChatVisibleRecordsResult {
+    pub visible_records: Vec<ipc::commands::StoredMessageDto>,
+    pub visible_record_count: usize,
+    pub stored_recipient_records: Vec<ipc::commands::StoredMessageDto>,
+    pub stored_recipient_record_count: usize,
+    pub hide_recipient_authored: bool,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingNativeOverlayText {
@@ -5358,8 +5375,20 @@ pub fn load_osl_chat_history(
     core: &HubCoreState,
     broker: &HubBrokerState,
 ) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
+    Ok(
+        load_osl_chat_visible_records(core, broker, OslChatHistoryVisibilityFilter::default())?
+            .visible_records,
+    )
+}
+
+pub fn load_osl_chat_visible_records(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    filter: OslChatHistoryVisibilityFilter,
+) -> Result<OslChatVisibleRecordsResult, String> {
     let context_token = broker.active_osl_chat_context_token()?;
     let manual = broker.manual_peer_for(&context_token)?;
+    let context = broker.context_for(&context_token)?;
     let display = security::scope_security(manual.scope.clone())?;
     if !display.decrypt_display_enabled {
         return Err("Turn on decrypted text for this conversation before opening it".to_owned());
@@ -5371,11 +5400,64 @@ pub fn load_osl_chat_history(
         manual.person_id,
         manual.scope.clone(),
     )?;
-    ipc::commands::cmd_osl_load_channel_history(
-        &core.osl,
+    query_osl_chat_visible_records(
+        core,
         scope_storage_key(&manual.scope)?,
+        &context.self_osl_id,
+        filter,
         Some(200),
     )
+}
+
+pub fn query_osl_chat_visible_records(
+    core: &HubCoreState,
+    channel_id: String,
+    owner_osl_user_id: &str,
+    filter: OslChatHistoryVisibilityFilter,
+    limit: Option<u32>,
+) -> Result<OslChatVisibleRecordsResult, String> {
+    if owner_osl_user_id.is_empty() || owner_osl_user_id.len() > 160 {
+        return Err("OSL Chat history owner is invalid".to_owned());
+    }
+    let stored = ipc::commands::cmd_osl_load_channel_history(&core.osl, channel_id, limit)?;
+    Ok(query_osl_chat_visible_records_from_stored(
+        stored,
+        owner_osl_user_id,
+        filter,
+    ))
+}
+
+pub fn query_osl_chat_visible_records_from_stored(
+    stored: Vec<ipc::commands::StoredMessageDto>,
+    owner_osl_user_id: &str,
+    filter: OslChatHistoryVisibilityFilter,
+) -> OslChatVisibleRecordsResult {
+    let stored_recipient_records: Vec<_> = stored
+        .iter()
+        .filter(|record| is_recipient_authored_record(record, owner_osl_user_id))
+        .cloned()
+        .collect();
+    let visible_records: Vec<_> = stored
+        .into_iter()
+        .filter(|record| {
+            !filter.hide_recipient_authored
+                || !is_recipient_authored_record(record, owner_osl_user_id)
+        })
+        .collect();
+    OslChatVisibleRecordsResult {
+        visible_record_count: visible_records.len(),
+        stored_recipient_record_count: stored_recipient_records.len(),
+        visible_records,
+        stored_recipient_records,
+        hide_recipient_authored: filter.hide_recipient_authored,
+    }
+}
+
+fn is_recipient_authored_record(
+    record: &ipc::commands::StoredMessageDto,
+    owner_osl_user_id: &str,
+) -> bool {
+    !record.burned && record.sender_osl_user_id != owner_osl_user_id
 }
 
 pub fn begin_native_overlay_attachment(
@@ -13179,6 +13261,70 @@ mod tests {
         .expect_err("missing MessageStore is a loud receive failure");
 
         assert!(error.contains("history is unavailable"), "{error}");
+    }
+
+    #[test]
+    fn task_0516_hide_other_people_local_filter_hides_visible_recipient_records_without_burning() {
+        let core = HubCoreState::default();
+        let owner = keystore::generate_identity("osl-owner-0516".to_owned());
+        *core.osl.identity.lock().unwrap() = Some(owner.clone());
+
+        let history_dir = temporary_registry().with_extension("history-0516");
+        std::fs::create_dir_all(&history_dir).unwrap();
+        let history_store =
+            store::MessageStore::open(&history_dir, owner.x25519_secret.as_bytes()).unwrap();
+        history_store
+            .put(&store::StoredMessage {
+                discord_message_id: "message-0516-recipient".to_owned(),
+                channel_id: "chat-0516".to_owned(),
+                sender_discord_id: "recipient-0516".to_owned(),
+                sender_osl_user_id: "recipient-0516".to_owned(),
+                plaintext: "recipient-authored task 0516 record".to_owned(),
+                decrypted_at: 1_700_000_516,
+                burned: false,
+            })
+            .unwrap();
+        *core.osl.message_store.lock().unwrap() = Some(history_store);
+
+        let hidden = query_osl_chat_visible_records(
+            &core,
+            "chat-0516".to_owned(),
+            &owner.user_id,
+            OslChatHistoryVisibilityFilter {
+                hide_recipient_authored: true,
+            },
+            Some(10),
+        )
+        .unwrap();
+        println!(
+            "task_0516 visible_records={} stored_recipient_records={}",
+            hidden.visible_record_count, hidden.stored_recipient_record_count
+        );
+
+        assert_eq!(hidden.visible_record_count, 0);
+        assert!(hidden.visible_records.is_empty());
+        assert_eq!(hidden.stored_recipient_record_count, 1);
+        assert_eq!(hidden.stored_recipient_records.len(), 1);
+        assert_eq!(
+            hidden.stored_recipient_records[0].plaintext,
+            "recipient-authored task 0516 record"
+        );
+        assert!(!hidden.stored_recipient_records[0].burned);
+
+        let visible_without_filter = query_osl_chat_visible_records(
+            &core,
+            "chat-0516".to_owned(),
+            &owner.user_id,
+            OslChatHistoryVisibilityFilter {
+                hide_recipient_authored: false,
+            },
+            Some(10),
+        )
+        .unwrap();
+        assert_eq!(visible_without_filter.visible_record_count, 1);
+
+        *core.osl.message_store.lock().unwrap() = None;
+        std::fs::remove_dir_all(history_dir).unwrap();
     }
 
     #[test]

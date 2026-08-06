@@ -603,6 +603,7 @@ macro_rules! hub_tauri_commands {
             reveal_native_discord_overlay_view_once,
             open_osl_chat_text,
             list_osl_chat_history,
+            query_osl_chat_visible_records,
             select_osl_chat_attachment,
             list_osl_chat_attachments,
             open_osl_chat_attachment,
@@ -1634,6 +1635,23 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["get_osl_chat_local_state_key"],
+        );
+    }
+
+    #[test]
+    fn osl_chat_visible_record_query_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "query_osl_chat_visible_records",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["query_osl_chat_visible_records"],
         );
     }
 

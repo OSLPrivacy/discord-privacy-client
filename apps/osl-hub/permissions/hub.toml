@@ -74,6 +74,11 @@ description = "Allow only the trusted main OSL window to read bounded encrypted-
 commands.allow = ["list_osl_chat_history"]
 
 [[permission]]
+identifier = "allow-query-osl-chat-visible-records"
+description = "Allow only the trusted main OSL window to query bounded local OSL Chat history with a local-only recipient-authored visibility filter."
+commands.allow = ["query_osl_chat_visible_records"]
+
+[[permission]]
 identifier = "allow-select-osl-chat-attachment"
 description = "Allow only the trusted main OSL window to choose, encrypt, upload, and deliver one Pro attachment for the exact active verified OSL friend scope."
 commands.allow = ["select_osl_chat_attachment"]

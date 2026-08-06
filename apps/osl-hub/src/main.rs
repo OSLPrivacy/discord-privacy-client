@@ -5058,6 +5058,31 @@ async fn list_osl_chat_history(
 }
 
 #[tauri::command]
+async fn query_osl_chat_visible_records(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    filter: Option<broker::OslChatHistoryVisibilityFilter>,
+) -> Result<broker::OslChatVisibleRecordsResult, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read OSL Chat history".to_owned());
+    }
+    screenshot::apply_to_window(&caller, active_osl_capture_protection()).map_err(|_| {
+        "Windows capture resistance is required to read OSL Chat history".to_owned()
+    })?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        broker::load_osl_chat_visible_records(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubBrokerState>(),
+            filter.unwrap_or_default(),
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat visible-record query failed: {error}"))?
+}
+
+#[tauri::command]
 async fn select_osl_chat_attachment(
     app: tauri::AppHandle,
     caller: tauri::WebviewWindow,
