@@ -688,6 +688,7 @@ macro_rules! hub_tauri_commands {
             get_hub_service_burn_readiness,
             burn_hub_service_account,
             burn_active_hub_context,
+            list_active_hub_context_burn_choices,
             get_hub_revocation_status
         }
     };
@@ -1829,6 +1830,17 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             "get_hub_revocation_status",
+        );
+    }
+
+    #[test]
+    fn list_active_hub_context_burn_choices_is_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "list_active_hub_context_burn_choices",
         );
     }
 
