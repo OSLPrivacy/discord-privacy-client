@@ -190,6 +190,24 @@ pub struct PasswordStatusDto {
     pub is_set: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct RecoveryWordEntry {
+    pub position: usize,
+    pub word: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RecoveryWordCheckedDto {
+    pub position: usize,
+    pub matched: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RecoveryWordCheckDto {
+    pub ok: bool,
+    pub checked: Vec<RecoveryWordCheckedDto>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyFailureDto {
     pub ok: bool, // always false on this path
@@ -955,6 +973,35 @@ pub fn view_recovery_phrase(dir: &Path, current: &str) -> Result<String, String>
     }
     nonce.copy_from_slice(&nonce_bytes);
     decrypt_phrase(&ct, &nonce, &key)
+}
+
+pub fn check_recovery_words(
+    dir: &Path,
+    current: &str,
+    entries: &[RecoveryWordEntry],
+) -> Result<RecoveryWordCheckDto, String> {
+    let phrase = Zeroizing::new(view_recovery_phrase(dir, current)?);
+    let words: Vec<&str> = phrase.split_whitespace().collect();
+    let checked = entries
+        .iter()
+        .map(|entry| {
+            let expected = entry
+                .position
+                .checked_sub(1)
+                .and_then(|index| words.get(index))
+                .copied();
+            RecoveryWordCheckedDto {
+                position: entry.position,
+                matched: expected
+                    .map(|word| word == entry.word.trim().to_ascii_lowercase())
+                    .unwrap_or(false),
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok(RecoveryWordCheckDto {
+        ok: !checked.is_empty() && checked.iter().all(|entry| entry.matched),
+        checked,
+    })
 }
 
 /// Verify the supplied password against the marker, applying

@@ -13790,6 +13790,15 @@ pub fn cmd_osl_view_recovery_phrase(current: String) -> Result<String, String> {
     crate::main_password::view_recovery_phrase(&dir, &current)
 }
 
+pub fn cmd_osl_check_recovery_words(
+    current: String,
+    entries: Vec<crate::main_password::RecoveryWordEntry>,
+) -> Result<crate::main_password::RecoveryWordCheckDto, String> {
+    record_activity_on_command_entry();
+    let dir = password_dir()?;
+    crate::main_password::check_recovery_words(&dir, &current, &entries)
+}
+
 /// Device transfer: reveal the 12-word phrase that recovers THIS OSL
 /// identity (account) on another device. Reads the entropy the
 /// identity was derived from and renders it as a BIP39 mnemonic. Only
