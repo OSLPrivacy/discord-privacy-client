@@ -8,6 +8,8 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::Path;
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use base64::engine::general_purpose::STANDARD;
@@ -20,6 +22,7 @@ use ipc::tofu::KeyBundle;
 use ipc::whitelist_state::ScopeState;
 use keystore::client::{reg_msg_with_capabilities, KeyServerClient, CLIENT_RN_CAPABILITY_FLOOR};
 use keystore::{generate_identity, Identity};
+use sha2::{Digest, Sha256};
 
 const ALICE_DID: &str = "900000000000000201";
 const BOB_DID: &str = "900000000000000202";
@@ -29,11 +32,13 @@ const BOB_DID: &str = "900000000000000202";
 /// is what a peer registered by *this* build looks like: `register` always
 /// sends `CLIENT_RN_CAPABILITY_FLOOR`, and the server's capability column only
 /// ever raises (`keyserver-cf/src/endpoints/register.ts:269-287`).
-fn signed_pubkeys_response(identity: &Identity) -> serde_json::Value {
+fn signed_pubkeys_response_with_capabilities(
+    identity: &Identity,
+    capabilities: u32,
+) -> serde_json::Value {
     let x25519 = STANDARD.encode(identity.x25519_public.as_bytes());
     let ed25519 = STANDARD.encode(identity.ed25519_public.as_bytes());
     let mlkem = STANDARD.encode(identity.mlkem_public_bytes);
-    let capabilities = CLIENT_RN_CAPABILITY_FLOOR;
     let message = reg_msg_with_capabilities(
         &identity.user_id,
         &x25519,
@@ -62,6 +67,14 @@ fn signed_pubkeys_response(identity: &Identity) -> serde_json::Value {
     })
 }
 
+fn signed_pubkeys_response(identity: &Identity) -> serde_json::Value {
+    signed_pubkeys_response_with_capabilities(identity, CLIENT_RN_CAPABILITY_FLOOR)
+}
+
+fn signed_downgrade_pubkeys_response(identity: &Identity) -> serde_json::Value {
+    signed_pubkeys_response_with_capabilities(identity, 0)
+}
+
 fn prekey_bundle_response(identity: &Identity) -> serde_json::Value {
     let spk = identity
         .ratchet_initial_pub
@@ -82,8 +95,15 @@ fn prekey_bundle_response(identity: &Identity) -> serde_json::Value {
 }
 
 fn start_keyserver(responses: Vec<(&'static str, serde_json::Value)>) -> u16 {
+    start_keyserver_with_request_log(responses).0
+}
+
+fn start_keyserver_with_request_log(
+    responses: Vec<(&'static str, serde_json::Value)>,
+) -> (u16, Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback keyserver");
     let port = listener.local_addr().expect("loopback address").port();
+    let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         for (expected_path, body) in responses {
             let (mut stream, _) = listener.accept().expect("keyserver request");
@@ -96,6 +116,7 @@ fn start_keyserver(responses: Vec<(&'static str, serde_json::Value)>) -> u16 {
                  expected={expected_path} actual={}",
                 request_text.lines().next().unwrap_or("<empty>")
             );
+            let _ = tx.send(request_text.lines().next().unwrap_or("<empty>").to_owned());
             let encoded = serde_json::to_vec(&body).expect("serialize pubkeys response");
             write!(
                 stream,
@@ -106,7 +127,7 @@ fn start_keyserver(responses: Vec<(&'static str, serde_json::Value)>) -> u16 {
             stream.write_all(&encoded).expect("write response body");
         }
     });
-    port
+    (port, rx)
 }
 
 struct OslConfigDirGuard;
@@ -170,6 +191,32 @@ fn shipping_state_with_current_build_peer(
     state
 }
 
+fn snapshot_rn_saved_state(config_dir: &Path) -> (String, usize) {
+    let rn_dir = config_dir.join(ipc::wire_rn::RN_SESSION_DIR);
+    let mut entries: Vec<_> = std::fs::read_dir(&rn_dir)
+        .unwrap_or_else(|e| panic!("read RN state dir {}: {e}", rn_dir.display()))
+        .map(|entry| entry.expect("read RN state entry").path())
+        .filter(|path| path.is_file())
+        .collect();
+    entries.sort();
+
+    let mut hasher = Sha256::new();
+    for path in &entries {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("RN state file name is UTF-8");
+        let bytes = std::fs::read(path)
+            .unwrap_or_else(|e| panic!("read RN state file {}: {e}", path.display()));
+        hasher.update(name.as_bytes());
+        hasher.update([0]);
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update([0]);
+        hasher.update(bytes);
+    }
+    (format!("{:x}", hasher.finalize()), entries.len())
+}
+
 #[test]
 fn new_eligible_direct_chat_reports_forward_secrecy_on_without_user_setting() {
     let config_dir = tempfile::tempdir().expect("isolated OSL config dir");
@@ -221,6 +268,94 @@ fn new_eligible_direct_chat_reports_forward_secrecy_on_without_user_setting() {
         wire_version.expect("already asserted RN wire"),
         usize::from(session_persisted),
         usize::from(pin_rn)
+    );
+}
+
+#[test]
+fn direct_chat_peer_downgrade_command_is_refused_and_saved_state_is_unchanged() {
+    let config_dir = tempfile::tempdir().expect("isolated OSL config dir");
+    let _config_guard = use_osl_config_dir(config_dir.path());
+    let alice = generate_identity("rn-downgrade-alice".to_owned());
+    let bob = generate_identity("rn-downgrade-bob".to_owned());
+    let (port, requests) = start_keyserver_with_request_log(vec![
+        ("GET /v1/pubkeys/", signed_pubkeys_response(&bob)),
+        ("GET /v1/prekey-bundle/", prekey_bundle_response(&bob)),
+        ("GET /v1/pubkeys/", signed_downgrade_pubkeys_response(&bob)),
+    ]);
+    let alice_state = shipping_state_with_current_build_peer(alice, &bob, BOB_DID, port);
+
+    let agreed_wire = cmd_osl_encrypt_message_v2_wire(
+        &alice_state,
+        "agreed stronger sequence".to_owned(),
+        ScopeInput::from(&Scope::dm(BOB_DID)),
+        vec![BOB_DID.to_owned()],
+        ALICE_DID.to_owned(),
+    )
+    .map(|wire| wire.content)
+    .expect("first direct-chat send should establish OSL-RN");
+    assert_eq!(
+        osl_ratchet_next::peek_wire_version(&agreed_wire),
+        Some(osl_ratchet_next::WIRE_VERSION_RN),
+        "test fixture must first agree the stronger sequence"
+    );
+
+    let store =
+        ipc::wire_rn::RnSessionStore::for_config_dir(config_dir.path()).expect("RN session store");
+    assert!(store
+        .load_session(bob.x25519_public.as_bytes())
+        .expect("load agreed RN session")
+        .is_some());
+    assert!(store
+        .load_pin(bob.x25519_public.as_bytes())
+        .expect("load agreed RN pin")
+        .is_pinned_to_rn());
+    let (before_sha256, before_files) = snapshot_rn_saved_state(config_dir.path());
+
+    let refused = cmd_osl_encrypt_message_v2_wire(
+        &alice_state,
+        "attempt weaker sequence".to_owned(),
+        ScopeInput::from(&Scope::dm(BOB_DID)),
+        vec![BOB_DID.to_owned()],
+        ALICE_DID.to_owned(),
+    )
+    .expect_err("downgraded direct-chat capability must refuse the send command");
+    let refusal = "peer is pinned to OSL-RN; refusing to send a legacy v=3 message";
+    assert!(
+        refused.contains(refusal),
+        "downgrade command returned the wrong refusal: {refused}"
+    );
+
+    let (after_sha256, after_files) = snapshot_rn_saved_state(config_dir.path());
+    assert_eq!(
+        before_files, after_files,
+        "refused downgrade must leave the RN state file count unchanged"
+    );
+    assert_eq!(
+        before_sha256, after_sha256,
+        "refused downgrade must leave saved RN state bytes unchanged"
+    );
+    assert!(store
+        .load_pin(bob.x25519_public.as_bytes())
+        .expect("reload RN pin after refusal")
+        .is_pinned_to_rn());
+
+    let request_lines: Vec<String> = (0..3)
+        .map(|_| requests.recv().expect("keyserver request line"))
+        .collect();
+    assert!(request_lines[0].starts_with("GET /v1/pubkeys/"));
+    assert!(request_lines[1].starts_with("GET /v1/prekey-bundle/"));
+    assert!(request_lines[2].starts_with("GET /v1/pubkeys/"));
+
+    println!(
+        "TASK 0431 downgrade_command=refused refusal=\"{refusal}\" \
+         saved_state_unchanged={} before_files={} after_files={} \
+         before_sha256={} after_sha256={} downgraded_capabilities={}",
+        usize::from(before_sha256 == after_sha256 && before_files == after_files),
+        before_files,
+        after_files,
+        before_sha256,
+        after_sha256,
+        0
     );
 }
 
