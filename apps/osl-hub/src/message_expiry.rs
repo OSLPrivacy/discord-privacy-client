@@ -61,15 +61,17 @@ use crate::control_contract::TimedMessageMode;
 ///
 /// Taken from the cipher store's own allowlist rather than restated, because a
 /// value the relay will not accept is not a lifetime OSL can offer.
-pub const TTL_ALLOWLIST: [u32; 4] = [
+pub const TTL_ALLOWLIST: [u32; 5] = [
     ipc::cipher_store_client::TTL_1H,
     ipc::cipher_store_client::TTL_24H,
     ipc::cipher_store_client::TTL_72H,
     ipc::cipher_store_client::TTL_7D,
+    ipc::cipher_store_client::TTL_30D,
 ];
 
-/// Hard ceiling on any absolute deadline. Seven days, matching the relay.
-pub const MAX_ABSOLUTE_TTL_SECONDS: u32 = ipc::cipher_store_client::TTL_7D;
+/// Hard ceiling on any absolute deadline. Thirty days, matching the longest
+/// marked message timer.
+pub const MAX_ABSOLUTE_TTL_SECONDS: u32 = ipc::cipher_store_client::TTL_30D;
 
 /// How long the relay holds ciphertext for a *relative*-clock message.
 ///
@@ -79,12 +81,12 @@ pub const MAX_ABSOLUTE_TTL_SECONDS: u32 = ipc::cipher_store_client::TTL_7D;
 /// meant them to have — otherwise the "clock starts at first open" promise is
 /// quietly broken by a delivery window that expired first.
 ///
-/// Seven days is the relay's own ceiling, and the tradeoff is explicit: a
+/// Thirty days is the relay's own ceiling, and the tradeoff is explicit: a
 /// relative-clock message's *ciphertext* may sit in relay storage for up to a
-/// week, where the relay necessarily observes object size and access time.
+/// month, where the relay necessarily observes object size and access time.
 /// Callers that prefer a tighter window pass one to
 /// [`relative_release_within`].
-pub const DEFAULT_DELIVERY_WINDOW_SECONDS: u32 = ipc::cipher_store_client::TTL_7D;
+pub const DEFAULT_DELIVERY_WINDOW_SECONDS: u32 = ipc::cipher_store_client::TTL_30D;
 
 fn ttl_is_offered(ttl_seconds: u32) -> bool {
     TTL_ALLOWLIST.contains(&ttl_seconds)
@@ -129,7 +131,7 @@ impl TimedRelease {
 }
 
 /// The default: the clock begins at the receiver's first authenticated local
-/// open, under a seven-day absolute ceiling.
+/// open, under a thirty-day absolute ceiling.
 pub fn relative_release(now: i64, open_ttl_seconds: u32) -> Result<TimedRelease, String> {
     relative_release_within(now, open_ttl_seconds, DEFAULT_DELIVERY_WINDOW_SECONDS)
 }
@@ -1074,7 +1076,7 @@ mod tests {
             assert!(relative_release(1_000, offered).is_ok());
             assert!(absolute_release(1_000, offered).is_ok());
         }
-        for refused in [0u32, 1, 60, 7_200, 604_801, u32::MAX] {
+        for refused in [0u32, 1, 60, 7_200, 604_801, 2_592_001, u32::MAX] {
             assert!(relative_release(1_000, refused).is_err(), "{refused}");
             assert!(absolute_release(1_000, refused).is_err(), "{refused}");
         }
@@ -1369,7 +1371,7 @@ mod tests {
             record_first_open_at_path(&path, &KEY, SCOPE, MESSAGE, [6u8; 32], opened_at)
                 .is_readable()
         );
-        // Long before the seven-day absolute deadline, the open clock is what
+        // Long before the thirty-day absolute deadline, the open clock is what
         // destroys it.
         assert_eq!(
             prune_at_path(&path, &KEY, opened_at + 3_599)
@@ -1383,6 +1385,107 @@ mod tests {
                 .expired,
             1
         );
+    }
+
+    #[test]
+    fn task_3782_full_thirty_day_timer_two_copies() {
+        const THIRTY_DAYS: i64 = 30 * 24 * 60 * 60;
+        const COPY_A: &str = "peer-3782-copy-a";
+        const COPY_B: &str = "peer-3782-copy-b";
+
+        fn readable_count(path: &Path, message_id: &str, now: i64) -> usize {
+            usize::from(verdict_at_path(path, &KEY, SCOPE, message_id, now).is_readable())
+        }
+
+        fn note_copy(
+            path: &Path,
+            message_id: &str,
+            release: TimedRelease,
+            now: i64,
+        ) -> Result<(), String> {
+            note_delivered_at_path(
+                path,
+                &KEY,
+                SCOPE,
+                message_id,
+                release,
+                parts(),
+                [5u8; 32],
+                None,
+                now,
+            )
+        }
+
+        let path = ledger_path("task-3782-thirty-day");
+        let sent_at = 1_000_000i64;
+        let deadline = sent_at + THIRTY_DAYS;
+        let one_second_before = deadline - 1;
+        let release = relative_release(sent_at, ipc::cipher_store_client::TTL_30D)
+            .expect("the exact 30-day marked timer must be sendable");
+
+        let before_a = readable_count(&path, COPY_A, sent_at);
+        let before_b = readable_count(&path, COPY_B, sent_at);
+        println!("task-3782 before-send copy-a-count={before_a} copy-b-count={before_b}");
+        assert_eq!((before_a, before_b), (0, 0));
+
+        note_copy(&path, COPY_A, release, sent_at).unwrap();
+        note_copy(&path, COPY_B, release, sent_at).unwrap();
+        assert_eq!(
+            record_first_open_at_path(&path, &KEY, SCOPE, COPY_A, [6u8; 32], sent_at),
+            ExpiryVerdict::Readable {
+                effective_expires_at: deadline
+            }
+        );
+        assert_eq!(
+            record_first_open_at_path(&path, &KEY, SCOPE, COPY_B, [7u8; 32], sent_at),
+            ExpiryVerdict::Readable {
+                effective_expires_at: deadline
+            }
+        );
+
+        let after_a = readable_count(&path, COPY_A, sent_at);
+        let after_b = readable_count(&path, COPY_B, sent_at);
+        println!("task-3782 after-send copy-a-count={after_a} copy-b-count={after_b}");
+        assert_eq!((after_a, after_b), (1, 1));
+
+        let mut expiry_run_count = 0usize;
+        let early_prune = prune_at_path(&path, &KEY, one_second_before).unwrap();
+        let early_a = readable_count(&path, COPY_A, one_second_before);
+        let early_b = readable_count(&path, COPY_B, one_second_before);
+        println!(
+            "task-3782 day-29-23:59:59 copy-a-count={early_a} copy-b-count={early_b} expired-in-run={}",
+            early_prune.expired
+        );
+        assert_eq!(early_prune.expired, 0);
+        assert_eq!((early_a, early_b), (1, 1));
+
+        let due_prune = prune_at_path(&path, &KEY, deadline).unwrap();
+        if due_prune.expired > 0 {
+            expiry_run_count += 1;
+        }
+        let due_a = readable_count(&path, COPY_A, deadline);
+        let due_b = readable_count(&path, COPY_B, deadline);
+        println!(
+            "task-3782 day-30-00:00:00 copy-a-count={due_a} copy-b-count={due_b} expired-in-run={}",
+            due_prune.expired
+        );
+        assert_eq!(due_prune.expired, 2);
+        assert_eq!((due_a, due_b), (0, 0));
+
+        let later = deadline + 1;
+        let later_a = record_first_open_at_path(&path, &KEY, SCOPE, COPY_A, [8u8; 32], later);
+        let later_b = record_first_open_at_path(&path, &KEY, SCOPE, COPY_B, [9u8; 32], later);
+        let later_prune = prune_at_path(&path, &KEY, later).unwrap();
+        if later_prune.expired > 0 {
+            expiry_run_count += 1;
+        }
+        println!(
+            "task-3782 later-reads copy-a={later_a:?} copy-b={later_b:?} expiry-run-count={expiry_run_count}"
+        );
+        assert_eq!(later_a, ExpiryVerdict::Expired);
+        assert_eq!(later_b, ExpiryVerdict::Expired);
+        assert_eq!(later_prune.expired, 0);
+        assert_eq!(expiry_run_count, 1);
     }
 
     // ---- receipt dedup ----

@@ -37,6 +37,7 @@ pub const TTL_1H: u32 = 60 * 60;
 pub const TTL_24H: u32 = 24 * 60 * 60;
 pub const TTL_72H: u32 = 72 * 60 * 60;
 pub const TTL_7D: u32 = 7 * 24 * 60 * 60;
+pub const TTL_30D: u32 = 30 * 24 * 60 * 60;
 
 /// `DEFAULT_DELIVERY_TTL_FLOOR` in `cipher-store-cf/src/lib/ttl.ts`. Below it
 /// the Worker requires an explicit `absolute` expiry mode, so that a shortened
@@ -44,7 +45,7 @@ pub const TTL_7D: u32 = 7 * 24 * 60 * 60;
 pub const DEFAULT_DELIVERY_TTL_FLOOR: u32 = TTL_7D;
 
 fn is_valid_ttl(ttl: u32) -> bool {
-    ttl == TTL_1H || ttl == TTL_24H || ttl == TTL_72H || ttl == TTL_7D
+    ttl == TTL_1H || ttl == TTL_24H || ttl == TTL_72H || ttl == TTL_7D || ttl == TTL_30D
 }
 
 /// Phase 6 capability-token length. HMAC-SHA256 truncated to 16
@@ -401,7 +402,7 @@ pub struct UploadResult {
 /// in the IPC layer.
 #[derive(Debug, thiserror::Error)]
 pub enum CipherStoreError {
-    #[error("invalid TTL {0}; must be 3600 (1h), 86400 (24h), 259200 (72h), or 604800 (7d)")]
+    #[error("invalid TTL {0}; must be 3600 (1h), 86400 (24h), 259200 (72h), 604800 (7d), or 2592000 (30d)")]
     BadTtl(u32),
     #[error("blob exceeds {max} bytes (got {got})")]
     BlobTooLarge { got: usize, max: usize },
@@ -1666,10 +1667,11 @@ mod tests {
         assert_eq!(TTL_24H, 86_400);
         assert_eq!(TTL_72H, 259_200);
         assert_eq!(TTL_7D, 604_800);
-        for ttl in [TTL_1H, TTL_24H, TTL_72H, TTL_7D] {
+        assert_eq!(TTL_30D, 2_592_000);
+        for ttl in [TTL_1H, TTL_24H, TTL_72H, TTL_7D, TTL_30D] {
             assert!(is_valid_ttl(ttl));
         }
-        for ttl in [0, 3_599, 3_601, 86_399, 604_801, u32::MAX] {
+        for ttl in [0, 3_599, 3_601, 86_399, 604_801, 2_592_001, u32::MAX] {
             assert!(!is_valid_ttl(ttl));
         }
     }
@@ -1678,7 +1680,7 @@ mod tests {
     fn bad_ttl_error_lists_every_exact_option() {
         assert_eq!(
             CipherStoreError::BadTtl(3_601).to_string(),
-            "invalid TTL 3601; must be 3600 (1h), 86400 (24h), 259200 (72h), or 604800 (7d)"
+            "invalid TTL 3601; must be 3600 (1h), 86400 (24h), 259200 (72h), 604800 (7d), or 2592000 (30d)"
         );
     }
 
