@@ -274,6 +274,11 @@ description = "Create one owner-bound named launch server record with explicit m
 commands.allow = ["create_hub_named_server"]
 
 [[permission]]
+identifier = "allow-list-hub-named-servers"
+description = "Read owner-bound named launch server records for the active OSL identity."
+commands.allow = ["list_hub_named_servers"]
+
+[[permission]]
 identifier = "allow-create-service-account"
 description = "Create local metadata for one fresh isolated service profile; stores no credentials or cookies."
 commands.allow = ["create_service_account"]

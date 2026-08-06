@@ -45,6 +45,7 @@
     "allow-request-autoscrub-global-stop",
     "allow-list-linked-services",
     "allow-create-hub-named-server",
+    "allow-list-hub-named-servers",
     "allow-get-core-readiness",
     "allow-list-core-features",
     "allow-get-hub-license-state",

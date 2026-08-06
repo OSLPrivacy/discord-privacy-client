@@ -193,6 +193,7 @@ use native_discord_overlay::OverlaySessionState;
 use osl_privacy_hub::hub_command_surface::{
     build_review_ui_identity_binding_verifier, checked_browser_footprint_binding,
     checked_hosted_session_scan_flow, compose_erasure_request_for_user,
+    create_hub_named_server_for_chats, list_hub_named_servers_for_chats,
     require_native_discord_product_send_authority,
     require_review_ui_identity_binding_from_verifier, service_kind_id,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
@@ -1191,7 +1192,18 @@ async fn create_hub_named_server(
 ) -> Result<NamedServerRecord, String> {
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
-    state.create_launch_server_for_owner(&owner, name, member_osl_user_ids)
+    create_hub_named_server_for_chats(&state, &owner, name, member_osl_user_ids)
+}
+
+#[tauri::command]
+async fn list_hub_named_servers(
+    state: State<'_, NamedServerRegistryState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<NamedServerRecord>, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    list_hub_named_servers_for_chats(&state, &owner)
 }
 
 #[tauri::command]

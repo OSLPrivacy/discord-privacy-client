@@ -27,6 +27,7 @@ use crate::native_discord_adapter::{
     guided_deletion, DiscordCarrierLayout, NativeDiscordComposerState,
 };
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
+use crate::server_records::{NamedServerRecord, NamedServerRegistryState};
 use crate::service_host::ActiveServiceHost;
 use serde::Deserialize;
 #[cfg(feature = "discord-qa-shell")]
@@ -59,6 +60,32 @@ pub fn compose_erasure_request_for_user(
     scrub_erasure::compose_erasure_request(&input).map_err(|_| {
         "Complete provider, account identifier, and data categories are required".to_owned()
     })
+}
+
+pub fn list_hub_named_servers_for_chats(
+    registry: &NamedServerRegistryState,
+    owner_osl_user_id: &str,
+) -> Result<Vec<NamedServerRecord>, String> {
+    registry.list_for_owner(owner_osl_user_id)
+}
+
+pub fn create_hub_named_server_for_chats(
+    registry: &NamedServerRegistryState,
+    owner_osl_user_id: &str,
+    name: String,
+    member_osl_user_ids: Vec<String>,
+) -> Result<NamedServerRecord, String> {
+    let server =
+        registry.create_launch_server_for_owner(owner_osl_user_id, name, member_osl_user_ids)?;
+    let creator_servers = list_hub_named_servers_for_chats(registry, owner_osl_user_id)?;
+    if creator_servers
+        .iter()
+        .any(|listed| listed.server_id == server.server_id)
+    {
+        Ok(server)
+    } else {
+        Err("created server was not added to the creator's server list".to_owned())
+    }
 }
 
 pub fn require_review_ui_identity_binding_from_verifier(
@@ -508,6 +535,7 @@ macro_rules! hub_tauri_commands {
             cancel_scrub_index,
             list_linked_services,
             create_hub_named_server,
+            list_hub_named_servers,
             get_core_readiness,
             list_core_features,
             get_hub_license_state,
@@ -1396,6 +1424,7 @@ mod tauri_registration_surface_tests {
     use crate::identity_binding_verifier::BindingEvidence;
     use std::cell::{Cell, RefCell};
     use std::collections::{BTreeMap, BTreeSet};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn handler_commands() -> BTreeSet<String> {
         hub_tauri_commands!(hub_tauri_command_names)
@@ -1673,12 +1702,68 @@ mod tauri_registration_surface_tests {
     #[test]
     fn named_server_command_is_registered_and_granted() {
         let (handlers, permissions, capability) = registration_inputs();
-        assert_registered_and_granted(
+        assert_each_registration_surface_is_required(
             &handlers,
             &permissions,
             &capability,
-            "create_hub_named_server",
+            &["create_hub_named_server", "list_hub_named_servers"],
         );
+    }
+
+    #[test]
+    fn task1318_direct_chats_action_adds_new_server_to_creators_server_list() {
+        let _serial = crate::global_keystore_test_lock();
+        ipc::main_password::set_file_storage_key(Some([0x18; 32]));
+        let owner = "owner-1318";
+        let member_a = "member-1318-a";
+        let member_b = "member-1318-b";
+        let path = std::env::temp_dir().join(format!(
+            "osl-hub-task1318-server-records-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let registry = NamedServerRegistryState::load(path.clone());
+
+        let before = list_hub_named_servers_for_chats(&registry, owner)
+            .expect("creator server list is readable before creation");
+        let created = create_hub_named_server_for_chats(
+            &registry,
+            owner,
+            "Chats Command Server".to_owned(),
+            vec![member_a.to_owned(), member_b.to_owned()],
+        )
+        .expect("Chats command path creates and lists a named server");
+        let after = list_hub_named_servers_for_chats(&registry, owner)
+            .expect("creator server list is readable after creation");
+        let added_count = after
+            .iter()
+            .filter(|server| server.server_id == created.server_id)
+            .count();
+
+        println!(
+            "TASK1318 direct_action=create_hub_named_server creator={} before_count={} after_count={} added_count={} created_server={} creator_server_list={}",
+            owner,
+            before.len(),
+            after.len(),
+            added_count,
+            created.server_id,
+            after
+                .iter()
+                .map(|server| server.server_id.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        assert!(before.is_empty());
+        assert_eq!(after.len(), 1);
+        assert_eq!(added_count, 1);
+        assert_eq!(after[0], created);
+        assert_eq!(after[0].owner_osl_user_id, owner);
+        assert_eq!(after[0].name, "Chats Command Server");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
