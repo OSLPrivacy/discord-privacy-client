@@ -376,6 +376,8 @@ pub struct FriendRequestFileState {
     pub pending: Vec<StoredFriendRequestFileEntry>,
     pub accepted: Vec<StoredFriendRequestFileEntry>,
     pub declined_or_revoked: Vec<StoredFriendRequestFileEntry>,
+    #[serde(default)]
+    pub blocked: Vec<StoredFriendRequestFileEntry>,
 }
 
 impl FriendRequestFileState {
@@ -386,6 +388,7 @@ impl FriendRequestFileState {
             pending: Vec::new(),
             accepted: Vec::new(),
             declined_or_revoked: Vec::new(),
+            blocked: Vec::new(),
         }
     }
 
@@ -401,6 +404,7 @@ impl FriendRequestFileState {
             .iter()
             .chain(self.accepted.iter())
             .chain(self.declined_or_revoked.iter())
+            .chain(self.blocked.iter())
         {
             validate_stored_request_file_entry(request)?;
         }

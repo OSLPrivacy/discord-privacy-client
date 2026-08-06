@@ -13,6 +13,7 @@ use base64::Engine;
 use crypto::{aead, ed25519, hkdf, random, x25519};
 use keystore::{generate_identity, select_best_sealer, KeyServerClient};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15464,6 +15465,405 @@ pub fn cmd_osl_get_friend_ids(state: &AppState) -> Result<Vec<String>, String> {
     record_activity_on_command_entry();
     let g = state.friend_ids.lock().expect("friend_ids mutex poisoned");
     Ok(g.clone())
+}
+
+const SAVED_FRIEND_REQUEST_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedFriendRequestDto {
+    pub request_id: String,
+    pub requester_id: String,
+    pub target_id: String,
+    pub scope_key: String,
+    pub state: crate::friend_request::StoredFriendState,
+    pub display_name: String,
+    pub block_state: crate::friend_request::StoredFriendBlockState,
+    pub request_fingerprint: String,
+    pub received_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedFriendRequestListDto {
+    pub pending: Vec<SavedFriendRequestDto>,
+    pub accepted: Vec<SavedFriendRequestDto>,
+    pub declined: Vec<SavedFriendRequestDto>,
+    pub blocked: Vec<SavedFriendRequestDto>,
+}
+
+fn saved_friend_request_dir() -> Result<PathBuf, String> {
+    keystore::osl_config_dir().map_err(|e| format!("OSL: friend request dir: {e}"))
+}
+
+fn load_saved_friend_request_file_with_dir(
+    dir: &Path,
+) -> Result<crate::friend_request::FriendRequestFileState, String> {
+    crate::friend_request::load_friend_request_file_state(dir).map_err(|e| format!("OSL: {e}"))
+}
+
+fn save_saved_friend_request_file_with_dir(
+    dir: &Path,
+    file: &crate::friend_request::FriendRequestFileState,
+) -> Result<(), String> {
+    crate::friend_request::save_friend_request_file_state(dir, file)
+        .map_err(|e| format!("OSL: {e}"))
+}
+
+fn friend_request_fingerprint(
+    entry: &crate::friend_request::StoredFriendRequestFileEntry,
+) -> String {
+    let mut hash = Sha256::new();
+    for part in [
+        entry.request_id.as_str(),
+        entry.requester_id.as_str(),
+        entry.target_id.as_str(),
+        entry.scope_key.as_str(),
+    ] {
+        hash.update((part.len() as u64).to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    hex_lower(&hash.finalize())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn saved_friend_record_id(local_identity_id: &str, remote_identity_id: &str) -> String {
+    let mut hash = Sha256::new();
+    for part in [local_identity_id, remote_identity_id] {
+        hash.update((part.len() as u64).to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    format!("friend:{}", hex_lower(&hash.finalize()))
+}
+
+fn saved_friend_record_for_entry<'a>(
+    file: &'a crate::friend_request::FriendRequestFileState,
+    entry: &crate::friend_request::StoredFriendRequestFileEntry,
+) -> Option<&'a crate::friend_request::StoredFriendRecord> {
+    file.friends.iter().find(|friend| {
+        friend.local_identity_id == entry.requester_id
+            && friend.remote_identity_id == entry.target_id
+    })
+}
+
+fn saved_friend_request_dto(
+    file: &crate::friend_request::FriendRequestFileState,
+    entry: &crate::friend_request::StoredFriendRequestFileEntry,
+    state: crate::friend_request::StoredFriendState,
+    block_state: crate::friend_request::StoredFriendBlockState,
+) -> SavedFriendRequestDto {
+    let friend = saved_friend_record_for_entry(file, entry);
+    SavedFriendRequestDto {
+        request_id: entry.request_id.clone(),
+        requester_id: entry.requester_id.clone(),
+        target_id: entry.target_id.clone(),
+        scope_key: entry.scope_key.clone(),
+        state,
+        display_name: friend
+            .map(|record| record.display_name.clone())
+            .unwrap_or_default(),
+        block_state,
+        request_fingerprint: friend_request_fingerprint(entry),
+        received_at_ms: entry.received_at_ms,
+        expires_at_ms: entry.expires_at_ms,
+    }
+}
+
+fn update_saved_friend_record(
+    file: &mut crate::friend_request::FriendRequestFileState,
+    local_identity_id: &str,
+    remote_identity_id: &str,
+    display_name: Option<&str>,
+    state: crate::friend_request::StoredFriendState,
+    block_state: crate::friend_request::StoredFriendBlockState,
+) -> Result<(), String> {
+    let display_name = display_name.map(str::trim).filter(|name| !name.is_empty());
+    if let Some(record) = file.friends.iter_mut().find(|friend| {
+        friend.local_identity_id == local_identity_id
+            && friend.remote_identity_id == remote_identity_id
+    }) {
+        record.state = state;
+        record.block_state = block_state;
+        if let Some(display_name) = display_name {
+            record.display_name = display_name.to_string();
+        }
+        return Ok(());
+    }
+
+    file.friends
+        .push(crate::friend_request::StoredFriendRecord {
+            record_id: saved_friend_record_id(local_identity_id, remote_identity_id),
+            local_identity_id: local_identity_id.to_string(),
+            remote_identity_id: remote_identity_id.to_string(),
+            state,
+            display_name: display_name
+                .ok_or_else(|| "OSL: friend display name is missing".to_string())?
+                .to_string(),
+            block_state,
+        });
+    Ok(())
+}
+
+fn any_saved_request_has_id(
+    file: &crate::friend_request::FriendRequestFileState,
+    request_id: &str,
+) -> bool {
+    file.pending
+        .iter()
+        .chain(file.accepted.iter())
+        .chain(file.declined_or_revoked.iter())
+        .chain(file.blocked.iter())
+        .any(|request| request.request_id == request_id)
+}
+
+fn remove_saved_request_by_id(
+    requests: &mut Vec<crate::friend_request::StoredFriendRequestFileEntry>,
+    request_id: &str,
+) -> Option<crate::friend_request::StoredFriendRequestFileEntry> {
+    let index = requests
+        .iter()
+        .position(|request| request.request_id == request_id)?;
+    Some(requests.remove(index))
+}
+
+fn take_saved_friend_request(
+    file: &mut crate::friend_request::FriendRequestFileState,
+    request_id: &str,
+) -> Option<crate::friend_request::StoredFriendRequestFileEntry> {
+    remove_saved_request_by_id(&mut file.pending, request_id)
+        .or_else(|| remove_saved_request_by_id(&mut file.accepted, request_id))
+        .or_else(|| remove_saved_request_by_id(&mut file.declined_or_revoked, request_id))
+}
+
+pub fn cmd_osl_create_friend_request(
+    state: &AppState,
+    request_id: String,
+    requester_id: String,
+    target_id: String,
+    display_name: String,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<SavedFriendRequestDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+
+    let request_id = request_id.trim();
+    let requester_id = requester_id.trim();
+    let target_id = target_id.trim();
+    let display_name = display_name.trim();
+    if request_id.is_empty()
+        || requester_id.is_empty()
+        || target_id.is_empty()
+        || display_name.is_empty()
+    {
+        return Err("OSL: friend request fields are missing".to_string());
+    }
+    if requester_id == target_id {
+        return Err("OSL: cannot request yourself".to_string());
+    }
+    if any_saved_request_has_id(&file, request_id) {
+        return Err("OSL: friend request already exists".to_string());
+    }
+
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let scope_key = scope.storage_key();
+    if file.pending.iter().any(|request| {
+        request.requester_id == requester_id
+            && request.target_id == target_id
+            && request.scope_key == scope_key
+    }) {
+        return Err("OSL: friend request already exists".to_string());
+    }
+    if file.friends.iter().any(|friend| {
+        friend.local_identity_id == requester_id
+            && friend.remote_identity_id == target_id
+            && friend.block_state == crate::friend_request::StoredFriendBlockState::BlockedByLocal
+    }) {
+        return Err("OSL: friend is blocked".to_string());
+    }
+
+    let now_ms = now_unix_secs().max(0) as u64 * 1000;
+    let entry = crate::friend_request::StoredFriendRequestFileEntry {
+        request_id: request_id.to_string(),
+        requester_id: requester_id.to_string(),
+        target_id: target_id.to_string(),
+        scope_key,
+        received_at_ms: now_ms,
+        expires_at_ms: now_ms + SAVED_FRIEND_REQUEST_TTL_MS,
+    };
+    update_saved_friend_record(
+        &mut file,
+        requester_id,
+        target_id,
+        Some(display_name),
+        crate::friend_request::StoredFriendState::Pending,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    )?;
+    file.pending.push(entry.clone());
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+    Ok(saved_friend_request_dto(
+        &file,
+        &entry,
+        crate::friend_request::StoredFriendState::Pending,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    ))
+}
+
+pub fn cmd_osl_list_friend_requests(state: &AppState) -> Result<SavedFriendRequestListDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let file = load_saved_friend_request_file_with_dir(&dir)?;
+    Ok(SavedFriendRequestListDto {
+        pending: file
+            .pending
+            .iter()
+            .map(|entry| {
+                saved_friend_request_dto(
+                    &file,
+                    entry,
+                    crate::friend_request::StoredFriendState::Pending,
+                    crate::friend_request::StoredFriendBlockState::NotBlocked,
+                )
+            })
+            .collect(),
+        accepted: file
+            .accepted
+            .iter()
+            .map(|entry| {
+                saved_friend_request_dto(
+                    &file,
+                    entry,
+                    crate::friend_request::StoredFriendState::Accepted,
+                    crate::friend_request::StoredFriendBlockState::NotBlocked,
+                )
+            })
+            .collect(),
+        declined: file
+            .declined_or_revoked
+            .iter()
+            .map(|entry| {
+                saved_friend_request_dto(
+                    &file,
+                    entry,
+                    crate::friend_request::StoredFriendState::Declined,
+                    crate::friend_request::StoredFriendBlockState::NotBlocked,
+                )
+            })
+            .collect(),
+        blocked: file
+            .blocked
+            .iter()
+            .map(|entry| {
+                saved_friend_request_dto(
+                    &file,
+                    entry,
+                    crate::friend_request::StoredFriendState::Declined,
+                    crate::friend_request::StoredFriendBlockState::BlockedByLocal,
+                )
+            })
+            .collect(),
+    })
+}
+
+pub fn cmd_osl_accept_saved_friend_request(
+    state: &AppState,
+    request_id: String,
+) -> Result<SavedFriendRequestDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+    let request_id = request_id.trim();
+    let entry = remove_saved_request_by_id(&mut file.pending, request_id)
+        .ok_or_else(|| "OSL: friend request is not pending".to_string())?;
+    update_saved_friend_record(
+        &mut file,
+        &entry.requester_id,
+        &entry.target_id,
+        None,
+        crate::friend_request::StoredFriendState::Accepted,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    )?;
+    file.accepted.push(entry.clone());
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+    Ok(saved_friend_request_dto(
+        &file,
+        &entry,
+        crate::friend_request::StoredFriendState::Accepted,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    ))
+}
+
+pub fn cmd_osl_decline_saved_friend_request(
+    state: &AppState,
+    request_id: String,
+) -> Result<SavedFriendRequestDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+    let request_id = request_id.trim();
+    let entry = remove_saved_request_by_id(&mut file.pending, request_id)
+        .ok_or_else(|| "OSL: friend request is not pending".to_string())?;
+    update_saved_friend_record(
+        &mut file,
+        &entry.requester_id,
+        &entry.target_id,
+        None,
+        crate::friend_request::StoredFriendState::Declined,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    )?;
+    file.declined_or_revoked.push(entry.clone());
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+    Ok(saved_friend_request_dto(
+        &file,
+        &entry,
+        crate::friend_request::StoredFriendState::Declined,
+        crate::friend_request::StoredFriendBlockState::NotBlocked,
+    ))
+}
+
+pub fn cmd_osl_block_saved_friend_request(
+    state: &AppState,
+    request_id: String,
+) -> Result<SavedFriendRequestDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    let dir = saved_friend_request_dir()?;
+    let mut file = load_saved_friend_request_file_with_dir(&dir)?;
+    let request_id = request_id.trim();
+    let entry = take_saved_friend_request(&mut file, request_id)
+        .ok_or_else(|| "OSL: friend request is not pending".to_string())?;
+    update_saved_friend_record(
+        &mut file,
+        &entry.requester_id,
+        &entry.target_id,
+        None,
+        crate::friend_request::StoredFriendState::Declined,
+        crate::friend_request::StoredFriendBlockState::BlockedByLocal,
+    )?;
+    file.blocked.push(entry.clone());
+    save_saved_friend_request_file_with_dir(&dir, &file)?;
+    Ok(saved_friend_request_dto(
+        &file,
+        &entry,
+        crate::friend_request::StoredFriendState::Declined,
+        crate::friend_request::StoredFriendBlockState::BlockedByLocal,
+    ))
 }
 
 /// Outcome for [`cmd_osl_decline_or_revoke_friend_request`].

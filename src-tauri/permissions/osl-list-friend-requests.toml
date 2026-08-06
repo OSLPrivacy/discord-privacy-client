@@ -1,0 +1,6 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-osl-list-friend-requests"
+description = "Permits the main webview to invoke `osl_list_friend_requests` and read saved pending, accepted, declined, and blocked friend request records."
+commands.allow = ["osl_list_friend_requests"]
