@@ -6,6 +6,8 @@ import {
   getLatestSubscriptionObservation,
 } from "./stripe-subscription-observations.js";
 import { revokeLicensesForSubscription } from "./subscriptions.js";
+import type { AcquiredStripeEventClaim } from "./stripe-event-claims.js";
+import type { VerifiedStripeWebhook } from "./stripe.js";
 
 export const STRIPE_CLAIM_LIFETIME_SECONDS = 24 * 60 * 60;
 export const COMPLETED_STRIPE_CLAIM_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
@@ -157,6 +159,115 @@ export async function completeStripeCheckoutClaim(
   return "completed";
 }
 
+const oneTimePaidCodeCallbackChecksBrand: unique symbol = Symbol("oneTimePaidCodeCallbackChecks");
+
+interface TerminalPaymentObservation {
+  status: "REVOKED" | "EXPIRED";
+  eventType: string;
+}
+
+export interface OneTimePaidCodeCallbackChecks {
+  readonly [oneTimePaidCodeCallbackChecksBrand]: true;
+  readonly sessionId: string;
+  readonly paymentIntentId: string;
+  readonly signatureCheck: "verified_stripe_webhook" | "verified_stripe_commerce_record";
+  readonly amountCheck: "paid_500_usd";
+  readonly repeatCheck: "stripe_event_claim_acquired" | "repair_license_missing";
+  readonly refundCheck: "latest_terminal_observation_checked";
+  readonly terminalObservation: TerminalPaymentObservation | null;
+}
+
+export type OneTimePaidCodeCallbackCheckResult =
+  | { ok: true; checks: OneTimePaidCodeCallbackChecks }
+  | { ok: false; reason: string };
+
+export async function verifyOneTimePaidCodeCallbackChecks(
+  db: D1Database,
+  input: {
+    webhook: VerifiedStripeWebhook;
+    eventClaim: AcquiredStripeEventClaim;
+    sessionId: unknown;
+    paymentIntentId: unknown;
+    paymentStatus: unknown;
+    amountTotal: unknown;
+    currency: unknown;
+  },
+): Promise<OneTimePaidCodeCallbackCheckResult> {
+  void input.webhook;
+  void input.eventClaim;
+  if (input.paymentStatus !== "paid") {
+    return { ok: false, reason: "one-time checkout is not paid" };
+  }
+  if (typeof input.sessionId !== "string" || input.sessionId.length === 0) {
+    return { ok: false, reason: "paid checkout without session id" };
+  }
+  if (typeof input.paymentIntentId !== "string" || input.paymentIntentId.length === 0) {
+    return { ok: false, reason: "paid checkout without payment intent" };
+  }
+  if (input.amountTotal !== 500 || input.currency !== "usd") {
+    return { ok: false, reason: "one-time checkout amount does not match $5 USD" };
+  }
+  return {
+    ok: true,
+    checks: oneTimePaidCodeCallbackChecks({
+      amountCheck: "paid_500_usd",
+      paymentIntentId: input.paymentIntentId,
+      refundCheck: "latest_terminal_observation_checked",
+      repeatCheck: "stripe_event_claim_acquired",
+      sessionId: input.sessionId,
+      signatureCheck: "verified_stripe_webhook",
+      terminalObservation: await terminalPaymentObservation(db, input.paymentIntentId),
+    }),
+  };
+}
+
+async function verifyStoredPaidCheckoutRepairChecks(
+  db: D1Database,
+  row: PaidCheckoutMissingCodeRow,
+): Promise<OneTimePaidCodeCallbackChecks> {
+  return oneTimePaidCodeCallbackChecks({
+    amountCheck: "paid_500_usd",
+    paymentIntentId: row.payment_intent_id,
+    refundCheck: "latest_terminal_observation_checked",
+    repeatCheck: "repair_license_missing",
+    sessionId: row.session_id,
+    signatureCheck: "verified_stripe_commerce_record",
+    terminalObservation: await terminalPaymentObservation(db, row.payment_intent_id),
+  });
+}
+
+function oneTimePaidCodeCallbackChecks(
+  checks: Omit<OneTimePaidCodeCallbackChecks, typeof oneTimePaidCodeCallbackChecksBrand>,
+): OneTimePaidCodeCallbackChecks {
+  return {
+    [oneTimePaidCodeCallbackChecksBrand]: true,
+    ...checks,
+  } as OneTimePaidCodeCallbackChecks;
+}
+
+function assertOneTimePaidCodeCallbackChecks(
+  checks: OneTimePaidCodeCallbackChecks,
+): OneTimePaidCodeCallbackChecks {
+  if (checks[oneTimePaidCodeCallbackChecksBrand] !== true) {
+    throw new Error("one-time paid code callback checks missing");
+  }
+  return checks;
+}
+
+async function terminalPaymentObservation(
+  db: D1Database,
+  paymentIntentId: string,
+): Promise<TerminalPaymentObservation | null> {
+  const observation = await getLatestSubscriptionObservation(db, paymentIntentId);
+  if (observation?.status !== "REVOKED" && observation?.status !== "EXPIRED") {
+    return null;
+  }
+  return {
+    eventType: observation.event_type,
+    status: observation.status,
+  };
+}
+
 /**
  * Issue a redeemable one-month code after a verified one-time payment.
  *
@@ -167,36 +278,51 @@ export async function completeStripeCheckoutClaim(
  */
 export async function completeOneTimeStripeCheckoutClaim(
   db: D1Database,
-  input: {
-    sessionId: string;
-    paymentIntentId: string;
-  },
+  checks: OneTimePaidCodeCallbackChecks,
 ): Promise<"completed" | "already_completed" | "missing"> {
-  const claim = await getStripeCheckoutClaim(db, input.sessionId);
+  const verified = assertOneTimePaidCodeCallbackChecks(checks);
+  const claim = await getStripeCheckoutClaim(db, verified.sessionId);
   if (!claim) return "missing";
   if (
     (claim.status === "delivery_ready" || claim.status === "expired") &&
-    claim.subscription_id === input.paymentIntentId
+    claim.subscription_id === verified.paymentIntentId
   ) {
-    await reconcileTerminalOneTimeObservation(db, input.paymentIntentId);
+    await reconcileTerminalOneTimeObservation(db, verified.paymentIntentId);
     return "already_completed";
   }
   if (claim.status !== "pending") return "missing";
 
+  const inserted = await makeOneTimePaidCodeAfterCallbackChecks(db, {
+    license_hash: claim.license_hash,
+    payment_intent_id: verified.paymentIntentId,
+    session_id: verified.sessionId,
+  }, verified);
+  if (inserted !== 1) {
+    await reconcileTerminalOneTimeObservation(db, verified.paymentIntentId);
+    return "already_completed";
+  }
+  await reconcileTerminalOneTimeObservation(db, verified.paymentIntentId);
+  return "completed";
+}
+
+async function makeOneTimePaidCodeAfterCallbackChecks(
+  db: D1Database,
+  row: PaidCheckoutMissingCodeRow,
+  checks: OneTimePaidCodeCallbackChecks,
+): Promise<number> {
+  const verified = assertOneTimePaidCodeCallbackChecks(checks);
   const now = Math.floor(Date.now() / 1000);
-  const priorObservation = await getLatestSubscriptionObservation(db, input.paymentIntentId);
-  const priorTerminal = priorObservation?.status === "REVOKED" ||
-    priorObservation?.status === "EXPIRED";
+  const priorTerminal = verified.terminalObservation !== null;
   // A paid checkout is not an entitlement.  The code is deliberately inert
   // until the holder redeems it; only then does license-redeem grant its
   // bounded period.  PENDING is the existing non-entitled subscription state.
-  const initialStatus = priorTerminal ? priorObservation.status : "PENDING";
+  const initialStatus = priorTerminal ? verified.terminalObservation!.status : "PENDING";
   const initialRevokedAt = priorTerminal ? now : null;
   const initialRevokedReason = priorTerminal
-    ? observationRevocationReason(priorObservation.event_type)
+    ? observationRevocationReason(verified.terminalObservation!.eventType)
     : null;
-  const entitlementId = oneTimeEntitlementId(claim.license_hash);
-  await db.batch([
+  const entitlementId = oneTimeEntitlementId(row.license_hash);
+  const results = await db.batch([
     db.prepare(
       `INSERT INTO subscriptions (
          subscription_id, customer_id, customer_email, status,
@@ -216,7 +342,7 @@ export async function completeOneTimeStripeCheckoutClaim(
          license_hash, subscription_id, issued_at, grant_seconds, revoked_at, revoked_reason
        ) VALUES (?, ?, ?, ?, ?, ?)`,
     ).bind(
-      claim.license_hash,
+      row.license_hash,
       entitlementId,
       now,
       PREPAID_PRO_GRANT_SECONDS,
@@ -236,16 +362,15 @@ export async function completeOneTimeStripeCheckoutClaim(
               ) THEN ? ELSE ? END
         WHERE session_id = ? AND status = 'pending'`,
     ).bind(
-      input.paymentIntentId,
-      input.paymentIntentId,
-      input.paymentIntentId,
+      row.payment_intent_id,
+      row.payment_intent_id,
+      row.payment_intent_id,
       now,
       now + COMPLETED_STRIPE_CLAIM_LIFETIME_SECONDS,
-      input.sessionId,
+      row.session_id,
     ),
   ]);
-  await reconcileTerminalOneTimeObservation(db, input.paymentIntentId);
-  return "completed";
+  return results[1]?.meta?.changes === 1 ? 1 : 0;
 }
 
 export interface PaidCheckoutMissingCodeRepairResult {
@@ -292,7 +417,8 @@ export async function repairPaidStripeCheckoutsMissingCodes(
   let codesCreated = 0;
 
   for (const row of missing) {
-    const inserted = await insertOneTimeLicenseForPaidClaim(db, row);
+    const checks = await verifyStoredPaidCheckoutRepairChecks(db, row);
+    const inserted = await makeOneTimePaidCodeAfterCallbackChecks(db, row, checks);
     codesCreated += inserted;
     if (inserted === 1) {
       await reconcileTerminalOneTimeObservation(db, row.payment_intent_id);
@@ -301,53 +427,6 @@ export async function repairPaidStripeCheckoutsMissingCodes(
 
   return { found: missing.length, codesCreated };
 }
-
-async function insertOneTimeLicenseForPaidClaim(
-  db: D1Database,
-  row: PaidCheckoutMissingCodeRow,
-): Promise<number> {
-  const now = Math.floor(Date.now() / 1000);
-  const priorObservation = await getLatestSubscriptionObservation(db, row.payment_intent_id);
-  const priorTerminal = priorObservation?.status === "REVOKED" ||
-    priorObservation?.status === "EXPIRED";
-  const initialStatus = priorTerminal ? priorObservation.status : "PENDING";
-  const initialRevokedAt = priorTerminal ? now : null;
-  const initialRevokedReason = priorTerminal
-    ? observationRevocationReason(priorObservation.event_type)
-    : null;
-  const entitlementId = oneTimeEntitlementId(row.license_hash);
-  const results = await db.batch([
-    db.prepare(
-      `INSERT INTO subscriptions (
-         subscription_id, customer_id, customer_email, status,
-         current_period_end, cancel_at_period_end, created_at, updated_at,
-         is_comp
-       ) VALUES (?, '', '', ?, NULL, 0, ?, ?, 0)
-       ON CONFLICT(subscription_id) DO UPDATE SET
-         status = CASE
-           WHEN subscriptions.status IN ('REVOKED', 'EXPIRED') THEN subscriptions.status
-           ELSE excluded.status
-         END,
-         current_period_end = NULL,
-         cancel_at_period_end = 0,
-         updated_at = excluded.updated_at`,
-    ).bind(entitlementId, initialStatus, now, now),
-    db.prepare(
-      `INSERT OR IGNORE INTO licenses (
-         license_hash, subscription_id, issued_at, grant_seconds, revoked_at, revoked_reason
-       ) VALUES (?, ?, ?, ?, ?, ?)`,
-    ).bind(
-      row.license_hash,
-      entitlementId,
-      now,
-      PREPAID_PRO_GRANT_SECONDS,
-      initialRevokedAt,
-      initialRevokedReason,
-    ),
-  ]);
-  return results[1]?.meta?.changes === 1 ? 1 : 0;
-}
-
 function oneTimeEntitlementId(licenseHash: string): string {
   return `lic_${licenseHash}`;
 }

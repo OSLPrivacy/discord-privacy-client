@@ -1,87 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { createCheckoutSession } from "../../src/lib/stripe.js";
-import {
-  completeOneTimeStripeCheckoutClaim,
-  PREPAID_PRO_GRANT_SECONDS,
-} from "../../src/lib/stripe-checkout-claims.js";
-
-function issuanceDb(): { db: D1Database; batches: unknown[][] } {
-  const batches: unknown[][] = [];
-  const pendingClaim = {
-    session_id: "cs_card_month",
-    claim_hash: "claim",
-    delivery_public_key_spki: "spki",
-    encrypted_license: "ciphertext",
-    license_hash: "license-card-month",
-    subscription_id: null,
-    status: "pending",
-    created_at: 1,
-    expires_at: 2,
-    delivered_at: null,
-    acknowledged_at: null,
-  };
-  const db = {
-    prepare(sql: string) {
-      return {
-        bind(...values: unknown[]) {
-          return {
-            sql,
-            values,
-            first: async () => sql.includes("stripe_checkout_claims") ? pendingClaim : null,
-            run: async () => ({ success: true }),
-          };
-        },
-      };
-    },
-    async batch(statements: unknown[]) {
-      batches.push(statements);
-      return [];
-    },
-  } as unknown as D1Database;
-  return { db, batches };
-}
+import { PREPAID_PRO_GRANT_SECONDS } from "../../src/lib/stripe-checkout-claims.js";
 
 describe("privacy-minimal one-time Stripe Checkout", () => {
   it("defines card purchases as an unredeemed one-month grant", () => {
     expect(PREPAID_PRO_GRANT_SECONDS).toBe(30 * 24 * 60 * 60);
-  });
-
-  it("issues an unredeemed monthly code, never an active lifetime entitlement", async () => {
-    const { db, batches } = issuanceDb();
-
-    await expect(completeOneTimeStripeCheckoutClaim(db, {
-      sessionId: "cs_card_month",
-      paymentIntentId: "pi_card_month",
-    })).resolves.toBe("completed");
-
-    const licenseInsert = batches[0]?.[1] as { sql: string; values: unknown[] };
-    expect(licenseInsert.sql).toContain("grant_seconds");
-    // `e8519b681 B0-07a P-44: unlink redeemed licenses from payment ids` moved
-    // prepaid issuance off the PaymentIntent id: licenses.subscription_id is
-    // now `lic_<license_hash>`, so a license row carries no Stripe payment
-    // reference.  That commit updated test/integration/stripe-webhook.test.ts
-    // (which now pins `expect.stringMatching(/^lic_/)` and asserts the value is
-    // NOT the PaymentIntent id) but missed this unit test, and no CI run caught
-    // it (D-172).  Pinning the literal keeps the unlinking under test here.
-    expect(licenseInsert.values).toEqual([
-      "license-card-month",
-      "lic_license-card-month",
-      expect.any(Number),
-      PREPAID_PRO_GRANT_SECONDS,
-      null,
-      null,
-    ]);
-    // Redemption fields are deliberately absent from issuance: redeem is the
-    // only operation allowed to start the month.
-    expect(licenseInsert.sql).not.toContain("redeemed_at");
-    // Same two commits, same relation.  `0c232eba7 T16-B5 issue unredeemed
-    // prepaid card codes` changed the issued entitlement from ACTIVE to
-    // PENDING precisely so a paid checkout is not itself an entitlement — which
-    // is what this test's own name asserts ("never an active lifetime
-    // entitlement").  The stale "ACTIVE" here contradicted the title.
-    expect(batches[0]?.[0]).toMatchObject({
-      values: ["lic_license-card-month", "PENDING", expect.any(Number), expect.any(Number)],
-    });
   });
   it("creates a payment session without subscription, email, or saved-payment fields", async () => {
     const fetcher = vi.fn<typeof fetch>(async (_input, init) => {

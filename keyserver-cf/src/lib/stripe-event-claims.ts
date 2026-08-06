@@ -1,6 +1,17 @@
 const CLAIM_LEASE_SECONDS = 60;
 
-export type StripeEventClaim = "acquired" | "completed" | "busy";
+const acquiredStripeEventClaimBrand: unique symbol = Symbol("acquiredStripeEventClaim");
+
+export interface AcquiredStripeEventClaim {
+  readonly [acquiredStripeEventClaimBrand]: true;
+  readonly eventId: string;
+  readonly eventType: string;
+}
+
+export type StripeEventClaim =
+  | { status: "acquired"; proof: AcquiredStripeEventClaim }
+  | { status: "completed" }
+  | { status: "busy" };
 
 export async function claimStripeEvent(
   db: D1Database,
@@ -10,7 +21,7 @@ export async function claimStripeEvent(
   const legacy = await db.prepare(
     "SELECT 1 AS present FROM stripe_events WHERE event_id = ?",
   ).bind(eventId).first<{ present: number }>();
-  if (legacy) return "completed";
+  if (legacy) return { status: "completed" };
 
   const now = Math.floor(Date.now() / 1000);
   const inserted = await db.prepare(
@@ -18,19 +29,34 @@ export async function claimStripeEvent(
        event_id, event_type, status, claimed_at, completed_at
      ) VALUES (?, ?, 'processing', ?, NULL)`,
   ).bind(eventId, eventType, now).run();
-  if ((inserted.meta?.changes ?? 0) === 1) return "acquired";
+  if ((inserted.meta?.changes ?? 0) === 1) {
+    return { status: "acquired", proof: acquiredStripeEventClaim(eventId, eventType) };
+  }
 
   const current = await db.prepare(
     "SELECT status FROM stripe_event_claims WHERE event_id = ?",
   ).bind(eventId).first<{ status: "processing" | "completed" }>();
-  if (current?.status === "completed") return "completed";
+  if (current?.status === "completed") return { status: "completed" };
 
   const reclaimed = await db.prepare(
     `UPDATE stripe_event_claims
         SET event_type = ?, claimed_at = ?
       WHERE event_id = ? AND status = 'processing' AND claimed_at <= ?`,
   ).bind(eventType, now, eventId, now - CLAIM_LEASE_SECONDS).run();
-  return (reclaimed.meta?.changes ?? 0) === 1 ? "acquired" : "busy";
+  return (reclaimed.meta?.changes ?? 0) === 1
+    ? { status: "acquired", proof: acquiredStripeEventClaim(eventId, eventType) }
+    : { status: "busy" };
+}
+
+function acquiredStripeEventClaim(
+  eventId: string,
+  eventType: string,
+): AcquiredStripeEventClaim {
+  return {
+    [acquiredStripeEventClaimBrand]: true,
+    eventId,
+    eventType,
+  } as AcquiredStripeEventClaim;
 }
 
 export async function completeStripeEvent(

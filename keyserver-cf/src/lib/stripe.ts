@@ -228,6 +228,16 @@ export interface StripeEvent {
   livemode: boolean;
 }
 
+const verifiedStripeWebhookBrand: unique symbol = Symbol("verifiedStripeWebhook");
+
+export interface VerifiedStripeWebhook {
+  readonly [verifiedStripeWebhookBrand]: true;
+}
+
+export function verifiedStripeWebhook(): VerifiedStripeWebhook {
+  return { [verifiedStripeWebhookBrand]: true } as VerifiedStripeWebhook;
+}
+
 export function parseEvent(rawBody: string): StripeEvent | null {
   try {
     const j = JSON.parse(rawBody) as Partial<StripeEvent>;
