@@ -59,6 +59,7 @@ import {
 import { handleProofChallenge } from "./endpoints/proof-challenge.js";
 import { handlePubkeys } from "./endpoints/pubkeys.js";
 import { handleRegister } from "./endpoints/register.js";
+import { handleRedeemPage } from "./endpoints/redeem-page.js";
 import { handleSelectorManifest } from "./endpoints/selector-manifest.js";
 import { handleStripeWebhook } from "./endpoints/stripe-webhook.js";
 import { handleTelegramWebhook } from "./endpoints/telegram.js";
@@ -377,6 +378,11 @@ async function dispatch(
   }
 
   if (method === "GET") {
+    if (path === "/redeem") return await handleRedeemPage(request, env);
+    const redeemCode = matchParam(path, /^\/redeem\/([^/]+)$/);
+    if (redeemCode !== null) {
+      return await handleRedeemPage(request, env, decodeURIComponent(redeemCode));
+    }
     if (path === "/v1/healthz") return await handleHealthz(env);
     if (path === "/v1/mail/capabilities") return handleMailCapabilities();
     if (path === "/v1/download/windows") return await handleWindowsDownload(request, env);
