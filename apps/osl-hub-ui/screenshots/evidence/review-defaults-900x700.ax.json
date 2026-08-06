@@ -1,0 +1,126 @@
+[
+  {
+    "role": "RootWebArea",
+    "name": "Review defaults"
+  },
+  {
+    "role": "main",
+    "name": "Review defaults"
+  },
+  {
+    "role": "region",
+    "name": "What should OSL delete?"
+  },
+  {
+    "role": "StaticText",
+    "name": "Review defaults"
+  },
+  {
+    "role": "heading",
+    "name": "What should OSL delete?"
+  },
+  {
+    "role": "StaticText",
+    "name": "Unsent private messages"
+  },
+  {
+    "role": "image",
+    "name": "an app window closes and reopens while the unsent message inside it stays put"
+  },
+  {
+    "role": "StaticText",
+    "name": "Old messages"
+  },
+  {
+    "role": "image",
+    "name": "time passes on a clock while old messages fade out of a tray"
+  },
+  {
+    "role": "button",
+    "name": "Back"
+  },
+  {
+    "role": "button",
+    "name": "Continue"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Review defaults"
+  },
+  {
+    "role": "StaticText",
+    "name": "What should OSL delete?"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Unsent private messages"
+  },
+  {
+    "role": "checkbox",
+    "name": "Delete unsent private messages"
+  },
+  {
+    "role": "StaticText",
+    "name": "Delete unsent private messages"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Old messages"
+  },
+  {
+    "role": "checkbox",
+    "name": "Delete old messages"
+  },
+  {
+    "role": "StaticText",
+    "name": "Delete old messages"
+  },
+  {
+    "role": "StaticText",
+    "name": "Everything kept is encrypted. Nothing is deleted without confirmation"
+  },
+  {
+    "role": "StaticText",
+    "name": "← "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "← "
+  },
+  {
+    "role": "StaticText",
+    "name": "Back"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "What should OSL delete?"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Delete unsent private messages"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Delete old messages"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Everything kept is encrypted. Nothing is deleted without confirmation"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "← "
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Back"
+  },
+  {
+    "role": "StaticText",
+    "name": "Continue"
+  },
+  {
+    "role": "InlineTextBox",
+    "name": "Continue"
+  }
+]
