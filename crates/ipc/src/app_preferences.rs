@@ -150,6 +150,39 @@ impl FromStr for StartWithWindowsChoice {
 /// How long OSL waits after the last owner activity before it locks itself.
 /// Missing legacy preferences keep the historical 15-minute behavior; `Never`
 /// is an explicit opt-out, not the default.
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertModeChoice {
+    Silent,
+    Quiet,
+    #[default]
+    Normal,
+}
+
+impl AlertModeChoice {
+    pub const ALL: [Self; 3] = [Self::Silent, Self::Quiet, Self::Normal];
+
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::Silent => "silent",
+            Self::Quiet => "quiet",
+            Self::Normal => "normal",
+        }
+    }
+}
+
+pub fn parse_alert_mode_choice(input: &str) -> Result<AlertModeChoice, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace(['-', '_'], " ");
+    AlertModeChoice::ALL
+        .into_iter()
+        .find(|choice| normalized == choice.words())
+        .ok_or_else(|| format!("OSL: unknown alert mode choice '{input}'"))
+}
+
+/// How long OSL waits after the last owner activity before it locks itself.
+/// Missing legacy preferences keep the historical 15-minute behavior; `Never`
+/// is an explicit opt-out, not the default.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "choice", content = "seconds", rename_all = "snake_case")]
 pub enum IdleLockTimeChoice {
@@ -253,10 +286,12 @@ pub struct AppPreferences {
     #[serde(default)]
     pub idle_lock_time_choice: IdleLockTimeChoice,
     #[serde(default)]
+    pub alert_mode_choice: AlertModeChoice,
+    #[serde(default)]
     pub follow_active_app_choice: FollowActiveAppChoice,
 }
 
-pub const APP_PREFERENCES_VERSION: u32 = 2;
+pub const APP_PREFERENCES_VERSION: u32 = 3;
 
 pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {
