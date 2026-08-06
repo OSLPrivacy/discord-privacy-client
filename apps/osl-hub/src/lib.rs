@@ -8,6 +8,8 @@ pub mod account_recovery;
 pub mod adapter_profile_boot;
 pub mod adapters;
 #[cfg(feature = "core")]
+pub mod allowed_place_commands;
+#[cfg(feature = "core")]
 pub mod attachment_formats;
 #[cfg(feature = "core")]
 pub mod attachment_partial_guard;

@@ -20,3 +20,23 @@ impl AllowedPlaceRecord {
         }
     }
 }
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedPlaceQuery {
+    pub app: String,
+    pub account: String,
+    pub kind: String,
+    pub stable_id: String,
+}
+
+impl From<AllowedPlaceRecord> for AllowedPlaceQuery {
+    fn from(record: AllowedPlaceRecord) -> Self {
+        Self {
+            app: record.app,
+            account: record.account,
+            kind: record.kind,
+            stable_id: record.stable_id,
+        }
+    }
+}

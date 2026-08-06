@@ -784,6 +784,16 @@ description = "Query one saved allowed-place record from encrypted device-local 
 commands.allow = ["query_allowed_place_record"]
 
 [[permission]]
+identifier = "allow-list-allowed-place-records"
+description = "List saved allowed-place records from encrypted device-local state."
+commands.allow = ["list_allowed_place_records"]
+
+[[permission]]
+identifier = "allow-query-allowed-place-allowed"
+description = "Ask whether one bounded allowed-place query is allowed by encrypted device-local state."
+commands.allow = ["query_allowed_place_allowed"]
+
+[[permission]]
 identifier = "allow-compare-allowed-place-direction-state"
 description = "Compare the two saved allowed-place directions for the same pair of local reachable accounts."
 commands.allow = ["compare_allowed_place_direction_state"]

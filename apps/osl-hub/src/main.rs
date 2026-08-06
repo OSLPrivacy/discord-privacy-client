@@ -87,7 +87,7 @@ use osl_privacy_hub::scrub_index::{
     ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
-    self, AddFriendResult, AllowedPlaceDirectionState, AllowedPlaceRecord, FriendCodeExport, HubRevocationStatusDto, HubScopeBurnResult,
+    self, AddFriendResult, AllowedPlaceDirectionState, AllowedPlaceQuery, AllowedPlaceRecord, FriendCodeExport, HubRevocationStatusDto, HubScopeBurnResult,
     HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
@@ -6269,6 +6269,25 @@ async fn query_allowed_place_record(
 }
 
 #[tauri::command]
+async fn query_allowed_place_allowed(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    query: AllowedPlaceQuery,
+) -> Result<bool, String> {
+    let _session = session.transition.lock().await;
+    security::query_allowed_place_allowed(&security_state, query)
+}
+
+#[tauri::command]
+async fn list_allowed_place_records(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<AllowedPlaceRecord>, String> {
+    let _session = session.transition.lock().await;
+    security::list_allowed_place_records(&security_state)
+}
+
+#[tauri::command]
 async fn compare_allowed_place_direction_state(
     security_state: State<'_, HubSecurityState>,
     session: State<'_, HubAccountSessionState>,
@@ -9450,6 +9469,12 @@ fn main() {
 
 #[cfg(not(feature = "signal-qa-shell"))]
 fn main() {
+    if let Some(exit_code) =
+        osl_privacy_hub::allowed_place_commands::run_allowed_place_cli_from_env()
+    {
+        std::process::exit(exit_code);
+    }
+
     #[cfg(feature = "discord-qa-shell")]
     {
         // This is deliberately before the guardian, breadcrumbs, plugins,
