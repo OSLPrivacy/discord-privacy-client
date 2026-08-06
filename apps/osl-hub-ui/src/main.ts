@@ -2741,158 +2741,177 @@ function bindSavedAccountControls(): void {
 function bindBrowserImportControls(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-revoke-browser-footprint]").forEach((button) => button.addEventListener("click", async () => {
     const key = button.dataset.revokeBrowserFootprint ?? "";
-    const receipt = browserFootprintImports.find((candidate) =>
-      browserProfileKey({ browserId: candidate.browserId, profile: candidate.profile, displayName: candidate.profile }) === key);
-    if (!receipt || browserImportBusy) return;
-    browserImportBusy = true;
-    browserImportFailureNotice = "";
-    render();
-    try {
-      await revokeDetectedBrowserFootprint(receipt.browserId, receipt.profile, receipt.account, receipt.runId);
-      const remaining = browserFootprintImports.filter((candidate) =>
-        candidate.browserId !== receipt.browserId
-        || candidate.profile !== receipt.profile
-        || candidate.account !== receipt.account);
-      if (remaining.length > 0) {
-        applyNativeBrowserFootprint(await loadDetectedBrowserFootprint(remaining));
-      } else {
-        browserFootprintImports = [];
-        completedBrowserImportIds.clear();
-        preferredBrowserId = null;
-        savedAccountsReady = false;
-      }
-      showToast("Saved browser account hints deleted");
-    } catch (failure) {
-      browserImportFailureNotice = localActionError(failure, "Saved browser account hints could not be deleted");
-      showToast(browserImportFailureNotice);
-    } finally {
-      browserImportBusy = false;
-      render();
-    }
+    void deleteBrowserAccountFinderArea(key);
   }));
   document.querySelectorAll<HTMLInputElement>("[data-browser-profile]").forEach((input) => input.addEventListener("change", () => {
     const key = input.dataset.browserProfile ?? "";
-    if (!browserProfiles.some((profile) => browserProfileKey(profile) === key)) return;
-    browserImportFailureNotice = "";
-    if (input.checked) selectedBrowserProfileKeys.add(key);
-    else selectedBrowserProfileKeys.delete(key);
-    render();
+    tickBrowserAccountFinderArea(key, input.checked);
   }));
-  const startProtectedBrowserImport = async (): Promise<void> => {
-    if (selectedBrowserProfileKeys.size === 0 || browserImportBusy) return;
-    const selectedProfiles = browserProfiles.filter((profile) =>
-      selectedBrowserProfileKeys.has(browserProfileKey(profile)));
-    if (selectedProfiles.length !== selectedBrowserProfileKeys.size) {
-      browserImportFailureNotice = "The selected browser areas changed. Review them again.";
-      selectedBrowserProfileKeys.clear();
-      render();
-      return;
-    }
-    // Profile consent is one-shot. Consume it before invoking native code so a
-    // retry, route revisit, or failed scan always requires another fresh click.
-    selectedBrowserProfileKeys.clear();
-    const runEpoch = ++browserImportRunEpoch;
-    browserImportFailureNotice = "";
-    browserImportQueue = selectedProfiles.map((profile) => profile.browserId);
-    browserImportQueueIndex = 0;
-    browserImportSourceSelected = false;
-    persistBrowserImportQueue();
-    browserImportBusy = true;
-    render();
-    const emptyImportNotice = "Nothing was imported from it";
-    const scanReceipts: NativeBrowserImportReceipt[] = [];
-    try {
-      for (let index = 0; index < selectedProfiles.length; index += 1) {
-        if (runEpoch !== browserImportRunEpoch) return;
-        browserImportQueueIndex = index;
-        browserImportSourceSelected = false;
-        persistBrowserImportQueue();
-        render();
-        const selectedProfile = selectedProfiles[index];
-        if (!selectedProfile) throw new Error("Browser selection queue is invalid");
-        const grant = await grantBrowserProfileConsent(
-          selectedProfile.browserId,
-          selectedProfile.profile,
-        );
-        const receipt = await scanConsentedBrowserProfile(
-          selectedProfile.browserId,
-          selectedProfile.profile,
-          grant.grantId,
-        );
-        if (runEpoch !== browserImportRunEpoch) return;
-        if (receipt.observationCount < 1) {
-          throw new Error("Nothing was imported from it");
-        }
-        if (!receipt.snapshotDeleted) {
-          throw new Error("The temporary browser snapshot was not deleted.");
-        }
-        scanReceipts.push(receipt);
-        browserImportSourceSelected = true;
-        browserImportFailureNotice = "";
-        persistBrowserImportQueue();
-      }
-      if (runEpoch !== browserImportRunEpoch) return;
-      const ownerBeforeHydration = core.readiness.activeOslUserId;
-      const hydration = await loadDetectedBrowserFootprint(scanReceipts);
-      if (ownerBeforeHydration === null || core.readiness.activeOslUserId !== ownerBeforeHydration) return;
-      applyNativeBrowserFootprint(hydration);
-      const persistedScopes = new Set(hydration.imports.map((receipt) =>
-        `${receipt.browserId}:${encodeURIComponent(receipt.profile)}`));
-      if (!savedAccountsReady || selectedProfiles.some((profile) =>
-        !persistedScopes.has(browserProfileKey(profile)))) {
-        throw new Error("The saved browser account hints were not verified.");
-      }
-      browserImportQueue = [];
-      browserImportQueueIndex = 0;
-      browserImportSourceSelected = false;
-      persistBrowserImportQueue();
-      selectedBrowserProfileKeys.clear();
-      persistBrowserImportQueue();
-      resetOnboardingBranch();
-      resetOnboardingConnections();
-      const finishProtectedBrowserImportCleanup = closeProtectedBrowserImportHelper;
-      const activeOperation = finishProtectedBrowserImportCleanup();
-      await activeOperation;
-      await finishProtectedBrowserImportCleanup().catch(() => undefined);
-      showToast("Browser import finished");
-      await enterCombinedAppChoice();
-    } catch (failure) {
-      if (runEpoch !== browserImportRunEpoch) return;
-      browserImportQueue = [];
-      browserImportQueueIndex = 0;
-      browserImportSourceSelected = false;
-      persistBrowserImportQueue();
-      selectedBrowserProfileKeys.clear();
-      browserImportFailureNotice = localActionError(failure, "Saved browser account check did not finish");
-      showToast(scanReceipts.length === 0 ? emptyImportNotice : browserImportFailureNotice);
-    } finally {
-      if (runEpoch === browserImportRunEpoch) {
-        browserImportBusy = false;
-        render();
-      }
-    }
-  };
   document.querySelector<HTMLButtonElement>("#import-saved-accounts")?.addEventListener("click", () => {
-    void startProtectedBrowserImport();
+    void checkSelectedBrowserAccountFinderAreas();
   });
   document.querySelector<HTMLButtonElement>("#continue-browser-import")?.addEventListener("click", async () => {
-    if (browserImportBusy || browserImportCancelling) return;
-    browserImportCancelling = true;
-    browserImportRunEpoch += 1;
-    render();
+    await leaveBrowserAccountFinderForApps();
+  });
+}
+
+function tickBrowserAccountFinderArea(key: string, checked: boolean): boolean {
+  if (!browserProfiles.some((profile) => browserProfileKey(profile) === key)) return false;
+  browserImportFailureNotice = "";
+  if (checked) selectedBrowserProfileKeys.add(key);
+  else selectedBrowserProfileKeys.delete(key);
+  render();
+  return true;
+}
+
+async function deleteBrowserAccountFinderArea(key: string): Promise<boolean> {
+  const receipt = browserFootprintImports.find((candidate) =>
+    browserProfileKey({ browserId: candidate.browserId, profile: candidate.profile, displayName: candidate.profile }) === key);
+  if (!receipt || browserImportBusy) return false;
+  browserImportBusy = true;
+  browserImportFailureNotice = "";
+  render();
+  try {
+    await revokeDetectedBrowserFootprint(receipt.browserId, receipt.profile, receipt.account, receipt.runId);
+    const remaining = browserFootprintImports.filter((candidate) =>
+      candidate.browserId !== receipt.browserId
+      || candidate.profile !== receipt.profile
+      || candidate.account !== receipt.account);
+    if (remaining.length > 0) {
+      applyNativeBrowserFootprint(await loadDetectedBrowserFootprint(remaining));
+    } else {
+      browserFootprintImports = [];
+      completedBrowserImportIds.clear();
+      preferredBrowserId = null;
+      savedAccountsReady = false;
+    }
+    showToast("Saved browser account hints deleted");
+    return true;
+  } catch (failure) {
+    browserImportFailureNotice = localActionError(failure, "Saved browser account hints could not be deleted");
+    showToast(browserImportFailureNotice);
+    return false;
+  } finally {
     browserImportBusy = false;
-    const pendingKey = activeBrowserImportPendingStorageKey();
-    if (pendingKey) localStorage.removeItem(pendingKey);
+    render();
+  }
+}
+
+async function checkSelectedBrowserAccountFinderAreas(): Promise<boolean> {
+  if (selectedBrowserProfileKeys.size === 0 || browserImportBusy) return false;
+  const selectedProfiles = browserProfiles.filter((profile) =>
+    selectedBrowserProfileKeys.has(browserProfileKey(profile)));
+  if (selectedProfiles.length !== selectedBrowserProfileKeys.size) {
+    browserImportFailureNotice = "The selected browser areas changed. Review them again.";
+    selectedBrowserProfileKeys.clear();
+    render();
+    return false;
+  }
+  // Profile consent is one-shot. Consume it before invoking native code so a
+  // retry, route revisit, or failed scan always requires another fresh click.
+  selectedBrowserProfileKeys.clear();
+  const runEpoch = ++browserImportRunEpoch;
+  browserImportFailureNotice = "";
+  browserImportQueue = selectedProfiles.map((profile) => profile.browserId);
+  browserImportQueueIndex = 0;
+  browserImportSourceSelected = false;
+  persistBrowserImportQueue();
+  browserImportBusy = true;
+  render();
+  const emptyImportNotice = "Nothing was imported from it";
+  const scanReceipts: NativeBrowserImportReceipt[] = [];
+  try {
+    for (let index = 0; index < selectedProfiles.length; index += 1) {
+      if (runEpoch !== browserImportRunEpoch) return false;
+      browserImportQueueIndex = index;
+      browserImportSourceSelected = false;
+      persistBrowserImportQueue();
+      render();
+      const selectedProfile = selectedProfiles[index];
+      if (!selectedProfile) throw new Error("Browser selection queue is invalid");
+      const grant = await grantBrowserProfileConsent(
+        selectedProfile.browserId,
+        selectedProfile.profile,
+      );
+      const receipt = await scanConsentedBrowserProfile(
+        selectedProfile.browserId,
+        selectedProfile.profile,
+        grant.grantId,
+      );
+      if (runEpoch !== browserImportRunEpoch) return false;
+      if (receipt.observationCount < 1) {
+        throw new Error("Nothing was imported from it");
+      }
+      if (!receipt.snapshotDeleted) {
+        throw new Error("The temporary browser snapshot was not deleted.");
+      }
+      scanReceipts.push(receipt);
+      browserImportSourceSelected = true;
+      browserImportFailureNotice = "";
+      persistBrowserImportQueue();
+    }
+    if (runEpoch !== browserImportRunEpoch) return false;
+    const ownerBeforeHydration = core.readiness.activeOslUserId;
+    const hydration = await loadDetectedBrowserFootprint(scanReceipts);
+    if (ownerBeforeHydration === null || core.readiness.activeOslUserId !== ownerBeforeHydration) return false;
+    applyNativeBrowserFootprint(hydration);
+    const persistedScopes = new Set(hydration.imports.map((receipt) =>
+      `${receipt.browserId}:${encodeURIComponent(receipt.profile)}`));
+    if (!savedAccountsReady || selectedProfiles.some((profile) =>
+      !persistedScopes.has(browserProfileKey(profile)))) {
+      throw new Error("The saved browser account hints were not verified.");
+    }
     browserImportQueue = [];
     browserImportQueueIndex = 0;
     browserImportSourceSelected = false;
     persistBrowserImportQueue();
     selectedBrowserProfileKeys.clear();
-    browserImportCancelling = false;
+    persistBrowserImportQueue();
     resetOnboardingBranch();
     resetOnboardingConnections();
+    const finishProtectedBrowserImportCleanup = closeProtectedBrowserImportHelper;
+    const activeOperation = finishProtectedBrowserImportCleanup();
+    await activeOperation;
+    await finishProtectedBrowserImportCleanup().catch(() => undefined);
+    showToast("Browser import finished");
     await enterCombinedAppChoice();
-  });
+    return true;
+  } catch (failure) {
+    if (runEpoch !== browserImportRunEpoch) return false;
+    browserImportQueue = [];
+    browserImportQueueIndex = 0;
+    browserImportSourceSelected = false;
+    persistBrowserImportQueue();
+    selectedBrowserProfileKeys.clear();
+    browserImportFailureNotice = localActionError(failure, "Saved browser account check did not finish");
+    showToast(scanReceipts.length === 0 ? emptyImportNotice : browserImportFailureNotice);
+    return false;
+  } finally {
+    if (runEpoch === browserImportRunEpoch) {
+      browserImportBusy = false;
+      render();
+    }
+  }
+}
+
+async function leaveBrowserAccountFinderForApps(): Promise<boolean> {
+  if (browserImportBusy || browserImportCancelling) return false;
+  browserImportCancelling = true;
+  browserImportRunEpoch += 1;
+  render();
+  browserImportBusy = false;
+  const pendingKey = activeBrowserImportPendingStorageKey();
+  if (pendingKey) localStorage.removeItem(pendingKey);
+  browserImportQueue = [];
+  browserImportQueueIndex = 0;
+  browserImportSourceSelected = false;
+  persistBrowserImportQueue();
+  selectedBrowserProfileKeys.clear();
+  browserImportCancelling = false;
+  resetOnboardingBranch();
+  resetOnboardingConnections();
+  await enterCombinedAppChoice();
+  return true;
 }
 
 async function refreshBrowserImportReadiness(): Promise<void> {
@@ -11380,6 +11399,41 @@ function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPe
   };
 }
 
+function browserAccountFinderAreaLabel(browserId: BrowserImportId, profile: string): string {
+  const displayName = browserProfiles.find((candidate) =>
+    candidate.browserId === browserId && candidate.profile === profile)?.displayName ?? profile;
+  const browserName = browserImports.find((browser) => browser.id === browserId)?.displayName ?? browserId;
+  return `${browserName} · ${displayName}`;
+}
+
+function browserAccountFinderSnapshotForTest(): {
+  route: Route;
+  onboardingRoute: OnboardingRoute;
+  areaNames: string[];
+  selectedAreaNames: string[];
+  recordedAreaNames: string[];
+  recordedAccounts: string[];
+  accountCount: number;
+  failureNotice: string;
+} {
+  const profileByKey = new Map(browserProfiles.map((profile) => [browserProfileKey(profile), profile]));
+  return {
+    route,
+    onboardingRoute,
+    areaNames: browserProfiles.map((profile) => browserAccountFinderAreaLabel(profile.browserId, profile.profile)),
+    selectedAreaNames: [...selectedBrowserProfileKeys].flatMap((key) => {
+      const profile = profileByKey.get(key);
+      return profile ? [browserAccountFinderAreaLabel(profile.browserId, profile.profile)] : [];
+    }),
+    recordedAreaNames: browserFootprintImports.map((receipt) =>
+      browserAccountFinderAreaLabel(receipt.browserId, receipt.profile)),
+    recordedAccounts: browserFootprintImports.map((receipt) =>
+      `${browserAccountFinderAreaLabel(receipt.browserId, receipt.profile)}=${receipt.account}`),
+    accountCount: browserFootprintImports.length,
+    failureNotice: browserImportFailureNotice,
+  };
+}
+
 function applyTestCoreState(ready: boolean, storageMethod: string | null, bootstrapStatus?: BootstrapStatus): void {
   core = structuredClone(unavailableCoreIntegration);
   core.readiness = {
@@ -12171,6 +12225,43 @@ export const __oslHubUiTest = {
   },
   setDeleteChoicesForTest(choices: DeleteChoices | null): void {
     deleteChoices = choices;
+  },
+  seedBrowserFootprintsForTest(receipts: NativeBrowserImportReceipt[]): void {
+    applyNativeBrowserFootprint({
+      imports: receipts,
+      observations: receipts.map((receipt, index) => ({
+        browserId: receipt.browserId,
+        browserProfileAccount: receipt.account,
+        browserProfileId: receipt.profile,
+        importRunId: receipt.runId,
+        observedAtUnixMs: index + 1,
+      })),
+    });
+  },
+  browserAccountFinderSnapshotForTest(): ReturnType<typeof browserAccountFinderSnapshotForTest> {
+    return browserAccountFinderSnapshotForTest();
+  },
+  async callBrowserAccountFinderControlForTest(
+    control: "areaTick" | "checkSelected" | "deleteArea" | "notNow" | "back",
+    options: { areaKey?: string; checked?: boolean } = {},
+  ): Promise<ReturnType<typeof browserAccountFinderSnapshotForTest> & { accepted: boolean }> {
+    route = "onboarding";
+    onboardingRoute = "browser";
+    let accepted = false;
+    if (control === "areaTick") {
+      accepted = tickBrowserAccountFinderArea(options.areaKey ?? "", options.checked ?? true);
+    } else if (control === "checkSelected") {
+      accepted = await checkSelectedBrowserAccountFinderAreas();
+    } else if (control === "deleteArea") {
+      accepted = await deleteBrowserAccountFinderArea(options.areaKey ?? "");
+    } else if (control === "notNow") {
+      accepted = await leaveBrowserAccountFinderForApps();
+    } else {
+      onboardingRoute = previousSetupRoute(onboardingRoute);
+      render();
+      accepted = true;
+    }
+    return { accepted, ...browserAccountFinderSnapshotForTest() };
   },
   /** D80: binds the real unlock form handler against a caller-supplied DOM so
    * the credential path can be driven end to end rather than string-matched. */
