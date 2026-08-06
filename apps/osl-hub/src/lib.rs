@@ -27,12 +27,12 @@ pub mod ai_carrier;
 pub mod ai_consent;
 pub mod attended_imap;
 #[cfg(feature = "core")]
-pub mod bad_message_rules;
-#[cfg(feature = "core")]
 pub mod autoscrub_bridge;
 #[cfg(feature = "core")]
 pub mod autoscrub_run;
 pub mod background_priority;
+#[cfg(feature = "core")]
+pub mod bad_message_rules;
 pub mod browser_companion;
 // The persistent footprint store is sealed with `ipc`'s process key, so it
 // belongs to the same runtime boundary as the other core storage modules.
@@ -100,6 +100,8 @@ pub mod native_apps;
 pub mod native_attachment_jobs;
 pub mod native_attachment_jobs_bridge;
 pub mod native_discord_adapter;
+#[cfg(feature = "core")]
+pub mod native_outlook_adapter;
 pub mod native_signal_adapter;
 pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
@@ -155,6 +157,8 @@ pub(crate) mod seam_ledger;
 /// Every other implementation in the tree is `#[cfg(test)]`, which is why the
 /// offline send queue could not be wired at all before this module existed.
 pub mod secure_disk_backend;
+#[cfg(feature = "core")]
+pub mod service_connections;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
