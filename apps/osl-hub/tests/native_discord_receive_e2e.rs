@@ -2547,6 +2547,46 @@ fn native_discord_text_and_attachment_drains_refuse_unfiltered_fallback_without_
     assert_text_and_attachment_refuse_reply(ControlInboxGetReply::UnfilteredWithoutEcho);
 }
 
+#[test]
+fn discord_receiving_command_refuses_empty_store() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("discord-empty-store-receive");
+    let relay_url = relay.base_url();
+    let sender = Peer::new(&storage, "empty-store-sender", &relay_url, "66663333");
+    let receiver = Peer::new(&storage, "empty-store-receiver", &relay_url, "77774444");
+    sender.open_native_context_to(&receiver.friend_code);
+    receiver.open_native_context_to(&sender.friend_code);
+    assert_eq!(
+        relay.pending_for(&receiver.identity_id),
+        0,
+        "fixture starts with no Discord content behind the receive command"
+    );
+
+    receiver.activate();
+    let opened =
+        drain_native_discord_overlay_text(&receiver.core, &receiver.security, &receiver.broker)
+            .expect("empty Discord store drains successfully");
+    if !opened.messages.is_empty() {
+        panic!("Discord answered with no content behind it");
+    }
+    assert_eq!(
+        opened.fetched, 0,
+        "empty Discord store reports no fetched content"
+    );
+    assert_eq!(
+        relay.control_inbox_gets().len(),
+        1,
+        "the receiving command actually asked the empty store once"
+    );
+
+    drop(sender);
+    drop(receiver);
+    drop(storage);
+}
+
 // ---------------------------------------------------------------------------
 // Small helpers. Deliberately local so the test binary needs no extra crate.
 // ---------------------------------------------------------------------------
