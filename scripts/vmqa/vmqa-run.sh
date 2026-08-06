@@ -128,15 +128,17 @@ write_test_command_metadata() {
   local dir
   dir="$(test_command_metadata_dir)"
   mkdir -p -- "$dir" || return 9
-  python3 - "$dir" "$category" "$command_name" "$verdict" "$exit_code" "$reported_result" <<'PY'
+  python3 - "$dir" "$category" "$command_name" "$verdict" "$exit_code" "$reported_result" "$REPO_ROOT" <<'PY'
 import datetime
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
 directory = Path(sys.argv[1])
-category, command, verdict, exit_code, reported = sys.argv[2:]
+category, command, verdict, exit_code, reported = sys.argv[2:7]
+repo_root = Path(sys.argv[7])
 if category not in {"unit", "two-copy", "screen"}:
     raise SystemExit("unsupported test metadata category")
 if verdict not in {"pass", "fail"}:
@@ -144,6 +146,16 @@ if verdict not in {"pass", "fail"}:
 slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", command).strip("-")
 if not slug:
     raise SystemExit("empty test metadata command")
+version = json.loads(
+    (repo_root / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+).get("version")
+if not isinstance(version, str) or not version.strip():
+    raise SystemExit("one-build version missing from src-tauri/tauri.conf.json")
+# "feature:desktop" mirrors the contract pin (buildIdentity.build.features
+# must equal ['desktop']); OSL_* env vars are the app's run-time switches.
+switches = ["feature:desktop"] + sorted(
+    f"{name}={value}" for name, value in os.environ.items() if name.startswith("OSL_")
+)
 record = {
     "schemaVersion": 1,
     "kind": "vmqa-test-command-metadata",
@@ -152,6 +164,8 @@ record = {
     "verdict": verdict,
     "reportedResult": reported,
     "exitCode": int(exit_code),
+    "oneBuildVersion": version,
+    "switches": switches,
     "recordedAtUtc": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
 }
 (directory / f"{category}-{slug}.json").write_text(

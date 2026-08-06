@@ -61,6 +61,8 @@ class TestCommandMetadataTests(unittest.TestCase):
         self.assertEqual(record["verdict"], "pass")
         self.assertEqual(record["reportedResult"], "pass")
         self.assertEqual(record["exitCode"], 0)
+        self.assertTrue(record["oneBuildVersion"].strip())
+        self.assertIn("feature:desktop", record["switches"])
         self.assertRegex(record["recordedAtUtc"], r"^\d{4}-\d{2}-\d{2}T")
 
     def test_unit_two_copy_and_screen_commands_each_save_metadata(self) -> None:
