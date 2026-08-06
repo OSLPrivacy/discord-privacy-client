@@ -248,6 +248,106 @@ export async function completeOneTimeStripeCheckoutClaim(
   return "completed";
 }
 
+export interface PaidCheckoutMissingCodeRepairResult {
+  found: number;
+  codesCreated: number;
+}
+
+interface PaidCheckoutMissingCodeRow {
+  session_id: string;
+  payment_intent_id: string;
+  license_hash: string;
+}
+
+/**
+ * Repair paid one-time checkout rows that reached browser delivery state before
+ * the matching prepaid license row was written. The encrypted plaintext already
+ * exists in `stripe_checkout_claims`; this only restores the server-side code
+ * record required for redemption/validation. Re-running converges on zero work.
+ */
+export async function repairPaidStripeCheckoutsMissingCodes(
+  db: D1Database,
+): Promise<PaidCheckoutMissingCodeRepairResult> {
+  const rows = await db.prepare(
+    `SELECT claims.session_id,
+            claims.subscription_id AS payment_intent_id,
+            claims.license_hash
+       FROM stripe_checkout_claims AS claims
+       JOIN commerce_events
+             ON commerce_events.stripe_object_id = claims.session_id
+       LEFT JOIN licenses
+              ON licenses.license_hash = claims.license_hash
+      WHERE claims.status = 'delivery_ready'
+        AND claims.subscription_id IS NOT NULL
+        AND commerce_events.event_type IN (
+          'checkout.session.completed',
+          'checkout.session.async_payment_succeeded'
+        )
+        AND commerce_events.amount_cents = 500
+        AND commerce_events.currency = 'usd'
+        AND licenses.license_hash IS NULL
+      ORDER BY claims.created_at ASC, claims.session_id ASC`,
+  ).all<PaidCheckoutMissingCodeRow>();
+  const missing = rows.results ?? [];
+  let codesCreated = 0;
+
+  for (const row of missing) {
+    const inserted = await insertOneTimeLicenseForPaidClaim(db, row);
+    codesCreated += inserted;
+    if (inserted === 1) {
+      await reconcileTerminalOneTimeObservation(db, row.payment_intent_id);
+    }
+  }
+
+  return { found: missing.length, codesCreated };
+}
+
+async function insertOneTimeLicenseForPaidClaim(
+  db: D1Database,
+  row: PaidCheckoutMissingCodeRow,
+): Promise<number> {
+  const now = Math.floor(Date.now() / 1000);
+  const priorObservation = await getLatestSubscriptionObservation(db, row.payment_intent_id);
+  const priorTerminal = priorObservation?.status === "REVOKED" ||
+    priorObservation?.status === "EXPIRED";
+  const initialStatus = priorTerminal ? priorObservation.status : "PENDING";
+  const initialRevokedAt = priorTerminal ? now : null;
+  const initialRevokedReason = priorTerminal
+    ? observationRevocationReason(priorObservation.event_type)
+    : null;
+  const entitlementId = oneTimeEntitlementId(row.license_hash);
+  const results = await db.batch([
+    db.prepare(
+      `INSERT INTO subscriptions (
+         subscription_id, customer_id, customer_email, status,
+         current_period_end, cancel_at_period_end, created_at, updated_at,
+         is_comp
+       ) VALUES (?, '', '', ?, NULL, 0, ?, ?, 0)
+       ON CONFLICT(subscription_id) DO UPDATE SET
+         status = CASE
+           WHEN subscriptions.status IN ('REVOKED', 'EXPIRED') THEN subscriptions.status
+           ELSE excluded.status
+         END,
+         current_period_end = NULL,
+         cancel_at_period_end = 0,
+         updated_at = excluded.updated_at`,
+    ).bind(entitlementId, initialStatus, now, now),
+    db.prepare(
+      `INSERT OR IGNORE INTO licenses (
+         license_hash, subscription_id, issued_at, grant_seconds, revoked_at, revoked_reason
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      row.license_hash,
+      entitlementId,
+      now,
+      PREPAID_PRO_GRANT_SECONDS,
+      initialRevokedAt,
+      initialRevokedReason,
+    ),
+  ]);
+  return results[1]?.meta?.changes === 1 ? 1 : 0;
+}
+
 function oneTimeEntitlementId(licenseHash: string): string {
   return `lic_${licenseHash}`;
 }
