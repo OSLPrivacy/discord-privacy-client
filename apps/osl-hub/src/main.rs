@@ -87,6 +87,7 @@ use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::PreviewState;
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
+use osl_privacy_hub::remove_everything::{self, RemoveEverythingReadiness, RemoveEverythingResult};
 use osl_privacy_hub::revocation_drain_timer;
 use osl_privacy_hub::scrub_index::{
     ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexManifest, ScrubIndexState,
@@ -7047,6 +7048,60 @@ async fn burn_hub_service_account(
     })
     .await
     .map_err(|_| "OSL service burn worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn get_hub_remove_everything_readiness(
+    core: State<'_, HubCoreState>,
+    registry: State<'_, ServiceRegistryState>,
+    index: State<'_, ServiceScopeIndexState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: String,
+    account_id: String,
+) -> Result<RemoveEverythingReadiness, String> {
+    let _session = session.transition.lock().await;
+    remove_everything::current_account_remove_everything_readiness(
+        &core,
+        &registry,
+        &index,
+        &service_id,
+        &account_id,
+    )
+}
+
+#[tauri::command]
+async fn remove_everything_for_current_account(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    service_id: String,
+    account_id: String,
+    confirmed_burn_id: String,
+) -> Result<RemoveEverythingResult, String> {
+    let _session = session.transition.lock().await;
+    app.state::<osl_privacy_hub::scrub_imap::ScrubImapState>()
+        .revoke_all()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let app_local_data = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| format!("could not resolve local app data directory: {error}"))?;
+        let service_profiles_root = service_host::service_profiles_root(&app_local_data);
+        let result = remove_everything::current_account_remove_everything(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubSecurityState>(),
+            &app.state::<ServiceRegistryState>(),
+            &app.state::<ServiceScopeIndexState>(),
+            &service_profiles_root,
+            &service_id,
+            &account_id,
+            &confirmed_burn_id,
+        )?;
+        native_discord_overlay::clear_and_hide(&app);
+        app.state::<HubBrokerState>().clear()?;
+        Ok(result)
+    })
+    .await
+    .map_err(|_| "OSL remove-everything worker failed".to_owned())?
 }
 
 fn burn_indexed_service_manifest(

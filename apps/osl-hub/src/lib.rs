@@ -134,6 +134,8 @@ pub mod scrub_hosted {
     pub mod verify_surface;
     pub mod x_web;
 }
+#[cfg(feature = "core")]
+pub mod remove_everything;
 #[cfg(all(feature = "core", feature = "desktop"))]
 pub mod revocation_drain_timer;
 #[cfg(feature = "core")]

@@ -723,6 +723,8 @@ macro_rules! hub_tauri_commands {
             execute_hub_full_cleanup,
             get_hub_service_burn_readiness,
             burn_hub_service_account,
+            get_hub_remove_everything_readiness,
+            remove_everything_for_current_account,
             burn_active_hub_context,
             get_hub_revocation_status
         }
