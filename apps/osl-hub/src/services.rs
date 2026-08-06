@@ -65,6 +65,37 @@ pub struct ServiceAccountRunQueueEntry {
     pub status: ServiceAccountRunStatus,
 }
 
+pub const NORMAL_SCREEN_CHANGE_WAIT_MS: u64 = 350;
+pub const PAUSE_AFTER_SCROLL_SCREEN_CHANGE: &str = "normal-screen-change-after-scroll";
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceAccountActionRunLog {
+    pub account_id: String,
+    pub entries: Vec<ServiceAccountActionRunLogEntry>,
+    pub concurrent_actions: usize,
+    pub max_parallel_scroll_actions: usize,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceAccountActionRunLogEntry {
+    pub sequence: usize,
+    pub account_id: String,
+    pub action: ServiceAccountActionKind,
+    pub name: String,
+    pub start_tick: u64,
+    pub end_tick: u64,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceAccountActionKind {
+    Scroll,
+    Wait,
+    InspectVisibleRows,
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceAccountRunStatus {
@@ -76,6 +107,117 @@ pub enum ServiceAccountRunStatus {
 struct RegistryCache {
     loaded: bool,
     accounts: Vec<AccountRecord>,
+}
+
+impl ServiceAccountRunQueue {
+    pub fn paced_action_log_for_active_account(
+        &self,
+    ) -> Result<ServiceAccountActionRunLog, String> {
+        let active_accounts = self
+            .accounts
+            .iter()
+            .filter(|account| account.status == ServiceAccountRunStatus::Active)
+            .collect::<Vec<_>>();
+        let [active] = active_accounts.as_slice() else {
+            return Err("service account pacing requires exactly one active account".to_owned());
+        };
+        build_paced_action_run_log(&active.account_id)
+    }
+}
+
+impl ServiceAccountActionRunLogEntry {
+    pub fn duration_ticks(&self) -> u64 {
+        self.end_tick.saturating_sub(self.start_tick)
+    }
+}
+
+fn build_paced_action_run_log(account_id: &str) -> Result<ServiceAccountActionRunLog, String> {
+    if !valid_account_id(account_id) {
+        return Err("service account id is invalid".to_owned());
+    }
+    let mut entries = Vec::new();
+    let mut cursor = 0;
+    push_paced_entry(
+        &mut entries,
+        account_id,
+        ServiceAccountActionKind::Scroll,
+        "scroll-message-list",
+        1,
+        &mut cursor,
+    );
+    push_paced_entry(
+        &mut entries,
+        account_id,
+        ServiceAccountActionKind::Wait,
+        PAUSE_AFTER_SCROLL_SCREEN_CHANGE,
+        NORMAL_SCREEN_CHANGE_WAIT_MS,
+        &mut cursor,
+    );
+    push_paced_entry(
+        &mut entries,
+        account_id,
+        ServiceAccountActionKind::InspectVisibleRows,
+        "inspect-visible-rows",
+        1,
+        &mut cursor,
+    );
+    Ok(ServiceAccountActionRunLog {
+        account_id: account_id.to_owned(),
+        concurrent_actions: overlapping_action_pairs(&entries),
+        max_parallel_scroll_actions: max_parallel_scroll_actions(&entries),
+        entries,
+    })
+}
+
+fn push_paced_entry(
+    entries: &mut Vec<ServiceAccountActionRunLogEntry>,
+    account_id: &str,
+    action: ServiceAccountActionKind,
+    name: &str,
+    duration_ticks: u64,
+    cursor: &mut u64,
+) {
+    let start_tick = *cursor;
+    let end_tick = start_tick.saturating_add(duration_ticks.max(1));
+    entries.push(ServiceAccountActionRunLogEntry {
+        sequence: entries.len(),
+        account_id: account_id.to_owned(),
+        action,
+        name: name.to_owned(),
+        start_tick,
+        end_tick,
+    });
+    *cursor = end_tick;
+}
+
+fn overlapping_action_pairs(entries: &[ServiceAccountActionRunLogEntry]) -> usize {
+    let mut overlaps = 0;
+    for (index, left) in entries.iter().enumerate() {
+        for right in entries.iter().skip(index + 1) {
+            if left.start_tick < right.end_tick && right.start_tick < left.end_tick {
+                overlaps += 1;
+            }
+        }
+    }
+    overlaps
+}
+
+fn max_parallel_scroll_actions(entries: &[ServiceAccountActionRunLogEntry]) -> usize {
+    let scroll_entries = entries
+        .iter()
+        .filter(|entry| entry.action == ServiceAccountActionKind::Scroll)
+        .collect::<Vec<_>>();
+    scroll_entries
+        .iter()
+        .flat_map(|entry| [entry.start_tick, entry.end_tick.saturating_sub(1)])
+        .map(|tick| {
+            scroll_entries
+                .iter()
+                .filter(|entry| entry.start_tick <= tick && tick < entry.end_tick)
+                .count()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 impl ServiceRegistryState {
@@ -1059,6 +1201,87 @@ mod tests {
         assert_eq!(queue.accounts[0].status, ServiceAccountRunStatus::Active);
         assert_eq!(queue.accounts[1].account_id, second.id);
         assert_eq!(queue.accounts[1].status, ServiceAccountRunStatus::Waiting);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn task_1422_fake_run_log_records_scroll_wait_next_action_without_concurrency() {
+        let _serial = crate::global_keystore_test_lock();
+        let path = temporary_registry();
+        let state = ServiceRegistryState::load(path.clone());
+        let first = state
+            .create_for_owner(OWNER_A, ServiceKind::Discord, "First".to_owned())
+            .unwrap();
+        let second = state
+            .create_for_owner(OWNER_A, ServiceKind::Discord, "Second".to_owned())
+            .unwrap();
+        let queue = state
+            .run_queue_for_owner(
+                OWNER_A,
+                ServiceKind::Discord,
+                &[first.id.clone(), second.id.clone()],
+            )
+            .unwrap();
+
+        let log = queue.paced_action_log_for_active_account().unwrap();
+        let sequence = log
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>()
+            .join(" -> ");
+
+        println!("task_1422_fake_run_log_sequence={sequence}");
+        println!(
+            "task_1422_fake_run_log_scroll={}:{}:{}-{}",
+            log.entries[0].account_id,
+            log.entries[0].name,
+            log.entries[0].start_tick,
+            log.entries[0].end_tick
+        );
+        println!(
+            "task_1422_fake_run_log_wait={}:{}ms:{}-{}",
+            log.entries[1].name,
+            log.entries[1].duration_ticks(),
+            log.entries[1].start_tick,
+            log.entries[1].end_tick
+        );
+        println!(
+            "task_1422_fake_run_log_next_action={}:{}:{}-{}",
+            log.entries[2].account_id,
+            log.entries[2].name,
+            log.entries[2].start_tick,
+            log.entries[2].end_tick
+        );
+        println!(
+            "task_1422_max_parallel_scroll_actions={}",
+            log.max_parallel_scroll_actions
+        );
+        println!("task_1422_concurrent_actions={}", log.concurrent_actions);
+
+        assert_eq!(log.account_id, first.id);
+        assert_eq!(log.entries.len(), 3);
+        assert_eq!(log.entries[0].action, ServiceAccountActionKind::Scroll);
+        assert_eq!(log.entries[0].name, "scroll-message-list");
+        assert_eq!(log.entries[1].action, ServiceAccountActionKind::Wait);
+        assert_eq!(log.entries[1].name, PAUSE_AFTER_SCROLL_SCREEN_CHANGE);
+        assert_eq!(
+            log.entries[1].duration_ticks(),
+            NORMAL_SCREEN_CHANGE_WAIT_MS
+        );
+        assert_eq!(
+            log.entries[2].action,
+            ServiceAccountActionKind::InspectVisibleRows
+        );
+        assert_eq!(log.entries[2].name, "inspect-visible-rows");
+        assert_eq!(
+            sequence,
+            "scroll-message-list -> normal-screen-change-after-scroll -> inspect-visible-rows"
+        );
+        assert_eq!(log.max_parallel_scroll_actions, 1);
+        assert_eq!(log.concurrent_actions, 0);
+        assert_eq!(log.entries[0].end_tick, log.entries[1].start_tick);
+        assert_eq!(log.entries[1].end_tick, log.entries[2].start_tick);
         let _ = fs::remove_file(path);
     }
 
