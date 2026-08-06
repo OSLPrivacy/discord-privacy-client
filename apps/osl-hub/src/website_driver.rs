@@ -368,8 +368,15 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
         }
     }
 
-    fn place_text(&mut self, _placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError> {
-        Err(WebsiteDriverError::TextPlacementFailed)
+    fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(&placement.page)?;
+        let text =
+            serde_json::to_string(&placement.text).map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let expression = PLACE_TEXT_EXPRESSION.replace("__OSL_TEXT__", &text);
+        match evaluate_target(&websocket_url, &expression)? {
+            serde_json::Value::Bool(true) => Ok(()),
+            _ => Err(WebsiteDriverError::TextPlacementFailed),
+        }
     }
 
     fn press_named_control(
@@ -761,6 +768,41 @@ const LIVE_RUN_PROGRESS_EXPRESSION: &str = r#"
     waits: numberFor('waits'),
     changes: numberFor('changes')
   };
+})()
+"#;
+
+const PLACE_TEXT_EXPRESSION: &str = r#"
+(() => {
+  const text = __OSL_TEXT__;
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const editable = (element) => {
+    if (element.disabled || element.readOnly) return false;
+    if (element.isContentEditable) return true;
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return element.getAttribute('role') === 'textbox' || element.getAttribute('role') === 'searchbox';
+    const type = (element.getAttribute('type') || 'text').toLowerCase();
+    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
+  };
+  const candidates = document.querySelectorAll('textarea, input, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="searchbox"]');
+  for (const element of candidates) {
+    if (!visible(element) || !editable(element)) continue;
+    element.focus();
+    if (element.isContentEditable) {
+      element.textContent = text;
+    } else {
+      element.value = text;
+    }
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  return false;
 })()
 "#;
 

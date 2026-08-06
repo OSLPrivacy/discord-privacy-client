@@ -1,6 +1,8 @@
 use osl_privacy_hub::{
     hub_command_surface::{
-        read_protected_email_open_message_with_driver, ProtectedEmailOpenMessageReadRequest,
+        read_ordinary_send_progress, read_protected_email_open_message_with_driver,
+        send_ordinary_message_with_progress, OrdinarySendProgress, OrdinarySendProgressRequest,
+        ProtectedEmailOpenMessageReadRequest,
     },
     website_driver::{
         RealBrowserWebsiteDriver, WebsiteDriver, WebsiteLiveRunProgress, WebsiteNamedControl,
@@ -30,6 +32,15 @@ const TASK_1214_COVER_MESSAGE: &str =
 const TASK_1214_THREAD_ID: &str = "email-thread-1214-stable";
 const TASK_1426_TITLE: &str = "OSL Task 1426 Live Run Progress";
 const TASK_1426_ACCOUNT: &str = "fixture-account-1426@example.invalid";
+const TASK_3603_TITLE: &str = "OSL Task 3603 Ordinary Send Progress";
+const TASK_3603_DRAFT: &str = "ordinary send progress fixture draft";
+const TASK_3603_STEPS: [&str; 5] = [
+    "private_save",
+    "service_acceptance",
+    "local_save",
+    "receiver_publish",
+    "final_confirmation",
+];
 
 #[test]
 fn task_1201_direct_driver_command_opens_local_test_page_and_reads_title() {
@@ -326,10 +337,165 @@ fn task_1426_direct_progress_command_changes_after_each_fixture_action() {
     println!("TASK1426 changes={}", waited.changes);
 }
 
+#[test]
+fn task_3603_direct_interrupted_send_saves_one_id_and_five_step_progress() {
+    let server = LocalTestPage::spawn_body(
+        TASK_3603_TITLE,
+        r#"
+            <main>
+              <label id="compose-label" for="compose">Compose</label>
+              <textarea id="compose" aria-labelledby="compose-label"></textarea>
+              <section
+                data-osl-live-run-progress
+                data-osl-active-account="ordinary-send@example.invalid"
+                data-osl-current-place="Compose"
+                data-osl-messages-checked="0"
+                data-osl-matches="0"
+                data-osl-scrolls="0"
+                data-osl-waits="0"
+                data-osl-changes="0">
+                <button type="button" id="save-local">Save local</button>
+                <button type="button" id="publish">Publish to receiver</button>
+                <button type="button" id="confirm">Confirm final</button>
+              </section>
+              <script>
+                const progress = document.querySelector('[data-osl-live-run-progress]');
+                const changed = (place) => {
+                  progress.dataset.oslCurrentPlace = place;
+                  progress.dataset.oslChanges = String(Number(progress.dataset.oslChanges || '0') + 1);
+                };
+                document.getElementById('compose').addEventListener('input', () => changed('Service accepted'));
+                document.getElementById('save-local').addEventListener('click', () => changed('Local saved'));
+                document.getElementById('publish').addEventListener('click', () => changed('Receiver published'));
+                document.getElementById('confirm').addEventListener('click', () => changed('Final confirmed'));
+              </script>
+            </main>
+        "#,
+    );
+    let directory = tempfile::tempdir().expect("task 3603 progress directory");
+    let progress_path = directory.path().join("ordinary-send-progress.json");
+
+    let interrupted = run_task_3603_send(&server, &progress_path, Some(3));
+    assert_task_3603_shape(&interrupted, false);
+    assert_completed_steps(&interrupted, &TASK_3603_STEPS[..3]);
+    print_task_3603_progress("interrupted", &interrupted);
+
+    let restarted = read_ordinary_send_progress(&task_3603_request(&server, &progress_path, None))
+        .expect("restart reads saved ordinary-send progress");
+    assert_eq!(restarted.send_id, interrupted.send_id);
+    assert_task_3603_shape(&restarted, false);
+    assert_completed_steps(&restarted, &TASK_3603_STEPS[..3]);
+    print_task_3603_progress("after_restart", &restarted);
+
+    let four_steps = run_task_3603_send(&server, &progress_path, Some(4));
+    assert_eq!(four_steps.send_id, interrupted.send_id);
+    assert_task_3603_shape(&four_steps, false);
+    assert_completed_steps(&four_steps, &TASK_3603_STEPS[..4]);
+    print_task_3603_progress("after_four_steps", &four_steps);
+
+    let finished = run_task_3603_send(&server, &progress_path, Some(5));
+    assert_eq!(finished.send_id, interrupted.send_id);
+    assert_task_3603_shape(&finished, true);
+    assert_completed_steps(&finished, &TASK_3603_STEPS);
+    print_task_3603_progress("finished", &finished);
+
+    println!("TASK3603 direct_interrupted_send=send_ordinary_message_with_progress");
+    println!("TASK3603 stable_send_id={}", interrupted.send_id);
+    println!("TASK3603 restart_send_id={}", restarted.send_id);
+    println!(
+        "TASK3603 same_id_after_restart={}",
+        restarted.send_id == interrupted.send_id
+    );
+    println!("TASK3603 named_step_count={}", interrupted.steps.len());
+    for step in &TASK_3603_STEPS {
+        println!("TASK3603 named_step={step}");
+    }
+    println!(
+        "TASK3603 completed_after_interruption={}",
+        interrupted.completed_step_names().len()
+    );
+    println!(
+        "TASK3603 completed_after_restart={}",
+        restarted.completed_step_names().len()
+    );
+    println!(
+        "TASK3603 completed_after_finish={}",
+        finished.completed_step_names().len()
+    );
+    println!(
+        "TASK3603 final_confirmation_after_interruption={}",
+        interrupted.final_confirmation
+    );
+    println!(
+        "TASK3603 final_confirmation_after_four_steps={}",
+        four_steps.final_confirmation
+    );
+    println!(
+        "TASK3603 final_confirmation_after_finish={}",
+        finished.final_confirmation
+    );
+}
+
 struct LocalTestPage {
     listener_addr: String,
     running: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
+}
+
+fn run_task_3603_send(
+    server: &LocalTestPage,
+    progress_path: &std::path::Path,
+    max_steps: Option<usize>,
+) -> OrdinarySendProgress {
+    let mut driver = RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
+    send_ordinary_message_with_progress(
+        &mut driver,
+        task_3603_request(server, progress_path, max_steps),
+    )
+    .expect("direct ordinary send command records progress")
+}
+
+fn task_3603_request(
+    server: &LocalTestPage,
+    progress_path: &std::path::Path,
+    max_steps: Option<usize>,
+) -> OrdinarySendProgressRequest {
+    OrdinarySendProgressRequest {
+        page_url: server.url(),
+        draft_text: TASK_3603_DRAFT.to_owned(),
+        progress_path: progress_path.to_path_buf(),
+        max_steps,
+    }
+}
+
+fn assert_task_3603_shape(progress: &OrdinarySendProgress, final_confirmation: bool) {
+    let names = progress
+        .steps
+        .iter()
+        .map(|step| step.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, TASK_3603_STEPS);
+    assert_eq!(progress.steps.len(), 5);
+    assert_eq!(progress.final_confirmation, final_confirmation);
+}
+
+fn assert_completed_steps(progress: &OrdinarySendProgress, expected: &[&str]) {
+    assert_eq!(progress.completed_step_names(), expected);
+}
+
+fn print_task_3603_progress(stage: &str, progress: &OrdinarySendProgress) {
+    println!(
+        "TASK3603 {stage} send_id={} completed={} final_confirmation={}",
+        progress.send_id,
+        progress.completed_step_names().len(),
+        progress.final_confirmation
+    );
+    for step in &progress.steps {
+        println!(
+            "TASK3603 {stage} step={} completed={}",
+            step.name, step.completed
+        );
+    }
 }
 
 fn press_fixture_action(
