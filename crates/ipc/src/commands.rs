@@ -1327,6 +1327,40 @@ pub fn persist_scope_membership_now(state: &AppState) {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeMembershipLocalCopyRestoreDto {
+    pub restored_items: usize,
+    pub live_copy: String,
+    pub previous_copy: String,
+}
+
+/// Rebuild the durable membership local copies from the in-memory oracle.
+///
+/// This is deliberately distinct from the normal writer: if both on-disk
+/// copies are corrupt, ordinary writes refuse so they do not clobber the last
+/// evidence. This named restore command is the explicit operator recovery path.
+pub fn cmd_osl_restore_scope_membership_local_copies(
+    state: &AppState,
+) -> Result<ScopeMembershipLocalCopyRestoreDto, String> {
+    record_activity_on_command_entry();
+    let dir = keystore::osl_config_dir().map_err(|e| format!("membership dir resolve: {e}"))?;
+    let live = dir.join("membership.json");
+    let previous = crate::membership::previous_scope_membership_path(&live);
+    let snapshot = state
+        .scope_membership
+        .lock()
+        .expect("scope_membership mutex poisoned")
+        .clone();
+    crate::membership::restore_scope_membership_local_copies(&live, &snapshot)
+        .map_err(|e| format!("membership local-copy restore: {e}"))?;
+    Ok(ScopeMembershipLocalCopyRestoreDto {
+        restored_items: snapshot.observed_member_count(),
+        live_copy: live.display().to_string(),
+        previous_copy: previous.display().to_string(),
+    })
+}
+
 /// Refuse to resolve dynamic group recipients from an in-memory snapshot whose
 /// persisted source disappeared. Re-accrual after a fresh install remains
 /// best-effort; deletion after a successful load is different because it can

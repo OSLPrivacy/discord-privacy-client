@@ -252,6 +252,22 @@ pub enum ScopeMembershipError {
     },
     #[error("membership.json parse failed at {path}: {reason}")]
     ParseFailed { path: String, reason: String },
+    #[error(
+        "membership.json local copies are unreadable at {path}: live: {live}; previous: {previous}"
+    )]
+    CopiesUnreadable {
+        path: String,
+        live: String,
+        previous: String,
+    },
+}
+
+pub fn previous_scope_membership_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "membership.json".to_string());
+    path.with_file_name(format!("{name}.previous"))
 }
 
 /// Load `ScopeMembership` from `path`. `NotFound` on a fresh install
@@ -259,36 +275,108 @@ pub enum ScopeMembershipError {
 pub fn load_scope_membership_from_path(
     path: &Path,
 ) -> Result<ScopeMembership, ScopeMembershipError> {
-    let blob = match std::fs::read(path) {
+    match load_scope_membership_single_copy(path, path) {
+        Ok(membership) => Ok(membership),
+        Err(live_error) => {
+            let previous_path = previous_scope_membership_path(path);
+            match load_scope_membership_single_copy(&previous_path, path) {
+                Ok(membership) => {
+                    write_scope_membership_copies_unchecked(path, &membership).map_err(|e| {
+                        ScopeMembershipError::ReadFailed {
+                            path: path.display().to_string(),
+                            source: e,
+                        }
+                    })?;
+                    Ok(membership)
+                }
+                Err(previous_error) => match (&live_error, &previous_error) {
+                    (ScopeMembershipError::NotFound(_), ScopeMembershipError::NotFound(_)) => {
+                        Err(live_error)
+                    }
+                    _ => Err(ScopeMembershipError::CopiesUnreadable {
+                        path: path.display().to_string(),
+                        live: live_error.to_string(),
+                        previous: previous_error.to_string(),
+                    }),
+                },
+            }
+        }
+    }
+}
+
+pub fn load_previous_scope_membership_from_path(
+    path: &Path,
+) -> Result<ScopeMembership, ScopeMembershipError> {
+    load_scope_membership_single_copy(&previous_scope_membership_path(path), path)
+}
+
+fn load_scope_membership_single_copy(
+    copy_path: &Path,
+    authority_path: &Path,
+) -> Result<ScopeMembership, ScopeMembershipError> {
+    let blob = match std::fs::read(copy_path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(ScopeMembershipError::NotFound(path.display().to_string()));
+            return Err(ScopeMembershipError::NotFound(
+                copy_path.display().to_string(),
+            ));
         }
         Err(source) => {
             return Err(ScopeMembershipError::ReadFailed {
-                path: path.display().to_string(),
+                path: copy_path.display().to_string(),
                 source,
             });
         }
     };
-    let plain = crate::main_password::maybe_decrypt_file(path, &blob).map_err(|e| {
+    let plain = crate::main_password::maybe_decrypt_file(authority_path, &blob).map_err(|e| {
         ScopeMembershipError::ParseFailed {
-            path: path.display().to_string(),
+            path: copy_path.display().to_string(),
             reason: e,
         }
     })?;
     let mut membership: ScopeMembership =
         serde_json::from_slice(&plain).map_err(|e| ScopeMembershipError::ParseFailed {
-            path: path.display().to_string(),
+            path: copy_path.display().to_string(),
             reason: e.to_string(),
         })?;
-    membership.backing_file = Some(path.to_path_buf());
+    membership.backing_file = Some(authority_path.to_path_buf());
     Ok(membership)
 }
 
 /// Serialize + atomically write `m` to `path` (tempfile + rename;
 /// mandatory at-rest encryption; no plaintext fallback).
 pub fn write_scope_membership(path: &Path, m: &ScopeMembership) -> std::io::Result<()> {
+    ensure_scope_membership_write_is_recoverable(path)?;
+    write_scope_membership_copies_unchecked(path, m)
+}
+
+pub fn restore_scope_membership_local_copies(
+    path: &Path,
+    m: &ScopeMembership,
+) -> std::io::Result<()> {
+    write_scope_membership_copies_unchecked(path, m)
+}
+
+fn ensure_scope_membership_write_is_recoverable(path: &Path) -> std::io::Result<()> {
+    if crate::main_password::get_file_storage_key().is_none() {
+        return Ok(());
+    }
+    if !path.exists() && !previous_scope_membership_path(path).exists() {
+        return Ok(());
+    }
+    match load_scope_membership_from_path(path) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("OSL: refusing membership write because local copies are unreadable: {error}"),
+        )),
+    }
+}
+
+fn write_scope_membership_copies_unchecked(
+    path: &Path,
+    m: &ScopeMembership,
+) -> std::io::Result<()> {
     let key = crate::main_password::get_file_storage_key().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
@@ -299,8 +387,14 @@ pub fn write_scope_membership(path: &Path, m: &ScopeMembership) -> std::io::Resu
     let body = serde_json::to_vec_pretty(m).map_err(std::io::Error::other)?;
     let out_bytes =
         crate::main_password::encrypt_at_rest(&body, &key).map_err(std::io::Error::other)?;
+    write_scope_membership_copy(path, &out_bytes)?;
+    write_scope_membership_copy(&previous_scope_membership_path(path), &out_bytes)?;
+    Ok(())
+}
+
+fn write_scope_membership_copy(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &out_bytes)?;
+    std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
