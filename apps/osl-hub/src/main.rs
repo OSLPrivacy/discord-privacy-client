@@ -96,6 +96,7 @@ use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, Service
 use osl_privacy_hub::services::ServiceRegistryState;
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::tor_pref::{TorPreference, TorPreferenceState};
+use osl_privacy_hub::update_state_backup;
 use osl_privacy_hub::updates::{
     bounded_plain_notes, bounded_version, RELEASES_URL, SOURCE_REPOSITORY_URL,
 };
@@ -1910,6 +1911,14 @@ async fn install_hub_update(
     if update.version != expected_version {
         return Err("The available update changed; check again before installing".to_owned());
     }
+    let app_config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|_| "OSL account storage is unavailable before update".to_owned())?;
+    update_state_backup::copy_identity_and_history_before_update(
+        &app_config_dir,
+        &expected_version,
+    )?;
     update
         .download_and_install(|_, _| {}, || {})
         .await

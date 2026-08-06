@@ -150,6 +150,8 @@ pub mod secure_disk_backend;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
+#[cfg(feature = "core")]
+pub mod update_state_backup;
 pub mod updates;
 pub mod visual_binding;
 pub mod web_surface_adapter;

@@ -3,11 +3,21 @@
 
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
 
 CONTRACT_PATH = Path(__file__).resolve().parents[1] / "docs/release/burn-and-uninstall-contract.md"
+EXPECTED_UNINSTALL_PLACE_NAMES = (
+    "program files",
+    "settings",
+    "keys",
+    "stored messages",
+    "downloaded files",
+    "startup entry",
+    "logs",
+)
 
 
 def load_contract() -> dict:
@@ -16,6 +26,34 @@ def load_contract() -> dict:
     if match is None:
         raise ValueError("burn/uninstall contract JSON block is missing")
     return json.loads(match.group(1))
+
+
+def load_uninstall_footprint_map() -> dict:
+    document = CONTRACT_PATH.read_text(encoding="utf-8")
+    match = re.search(r"```json uninstall-footprint-map\n(.*?)\n```", document, re.DOTALL)
+    if match is None:
+        raise ValueError("uninstall footprint map JSON block is missing")
+    return json.loads(match.group(1))
+
+
+def uninstall_places(uninstall_map: dict) -> list[dict]:
+    places = uninstall_map["places"]
+    if not isinstance(places, list):
+        raise ValueError("uninstall footprint map places must be a list")
+    return places
+
+
+def print_uninstall_footprint_map() -> int:
+    places = uninstall_places(load_uninstall_footprint_map())
+    names = [place["name"] for place in places]
+    print(f"TASK3182_UNINSTALL_PLACE_COUNT={len(names)}")
+    for index, place in enumerate(places, start=1):
+        print(f"TASK3182_UNINSTALL_PLACE[{index}]={place['name']} COUNT={place['count']}")
+    if names != list(EXPECTED_UNINSTALL_PLACE_NAMES):
+        return 1
+    if any(place.get("count") != 1 for place in places):
+        return 1
+    return 0
 
 
 class BurnAndUninstallContractTest(unittest.TestCase):
@@ -36,6 +74,16 @@ class BurnAndUninstallContractTest(unittest.TestCase):
         self.assertEqual(claims["remote_data_unrecoverable_only_after"], "server confirmation")
         self.assertEqual(claims["burn_status_before_server_confirmation"], "pending")
 
+    def test_uninstall_footprint_names_every_osl_write_place(self) -> None:
+        places = uninstall_places(load_uninstall_footprint_map())
+        self.assertEqual([place["name"] for place in places], list(EXPECTED_UNINSTALL_PLACE_NAMES))
+        self.assertEqual([place["count"] for place in places], [1] * len(EXPECTED_UNINSTALL_PLACE_NAMES))
+        for place in places:
+            self.assertTrue(place["locations"], f"{place['name']} must list concrete locations")
+            self.assertTrue(place["source"], f"{place['name']} must name the source")
+
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--print-uninstall-map"]:
+        raise SystemExit(print_uninstall_footprint_map())
     unittest.main()

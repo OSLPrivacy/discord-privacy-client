@@ -1569,6 +1569,604 @@ mod tauri_registration_surface_tests {
         )
     }
 
+    #[derive(Clone, Copy)]
+    struct NormalLocalWriteCommand {
+        command: &'static str,
+        changed_file: &'static str,
+        source: WriteCommandSource,
+        source_probe: &'static str,
+    }
+
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    enum WriteCommandSource {
+        HubTauri,
+        IpcCommand,
+    }
+
+    const NORMAL_LOCAL_WRITE_COMMANDS: &[NormalLocalWriteCommand] = &[
+        NormalLocalWriteCommand {
+            command: "save_onboarding_preferences",
+            changed_file: "app_config_dir/preview-preferences.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "state.save(preferences)",
+        },
+        NormalLocalWriteCommand {
+            command: "set_tor_preference",
+            changed_file: "app_config_dir/tor-preference.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "state.set_preference(preference)",
+        },
+        NormalLocalWriteCommand {
+            command: "initialize_scrub_index",
+            changed_file: "app_config_dir/scrub-index-v1/journal.bin",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "state.initialize(&owner, request)",
+        },
+        NormalLocalWriteCommand {
+            command: "set_scrub_index_manifest",
+            changed_file: "app_config_dir/scrub-index-v1/journal.bin",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "state.set_scrub_index_manifest(&owner, request)",
+        },
+        NormalLocalWriteCommand {
+            command: "append_scrub_index_chunk",
+            changed_file: "app_config_dir/scrub-index-v1/{chunks/<sequence>.bin,journal.bin}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "state.append_chunk(&owner, request)",
+        },
+        NormalLocalWriteCommand {
+            command: "cancel_scrub_index",
+            changed_file: "app_config_dir/scrub-index-v1/",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "state.cancel(&owner, &import_id)",
+        },
+        NormalLocalWriteCommand {
+            command: "validate_hub_activation_code",
+            changed_file: "app_config_dir/osl-core/license.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "core_bridge::validate_activation_code",
+        },
+        NormalLocalWriteCommand {
+            command: "clear_hub_activation_code",
+            changed_file: "app_config_dir/osl-core/license.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "core_bridge::clear_activation_code",
+        },
+        NormalLocalWriteCommand {
+            command: "unlock_hub_password_gate",
+            changed_file: "app_config_dir/osl-core/{lockout_state.json,gate-burn cleanup targets}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "startup_gate::verify_password_role",
+        },
+        NormalLocalWriteCommand {
+            command: "create_hub_osl_identity",
+            changed_file: "app_config_dir/osl-core/{identity.json,prekeys.json,account-state files}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "password_lifecycle::create_native_identity_with_owner_authorization_signoff",
+        },
+        NormalLocalWriteCommand {
+            command: "import_hub_osl_identity_phrase",
+            changed_file: "app_config_dir/osl-core/{identity.json,prekeys.json,account-state files}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "password_lifecycle::import_native_identity_phrase",
+        },
+        NormalLocalWriteCommand {
+            command: "setup_hub_main_password",
+            changed_file: "app_config_dir/osl-core/{password_marker.json,encrypted account-state files}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "password_lifecycle::setup_main_password",
+        },
+        NormalLocalWriteCommand {
+            command: "set_hub_recovery_kit_unsaved",
+            changed_file: "app_config_dir/osl-core/recovery_kit_status.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "account_recovery::mark_recovery_kit_unsaved",
+        },
+        NormalLocalWriteCommand {
+            command: "set_hub_stealth_password",
+            changed_file: "app_config_dir/osl-core/password_marker.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "security_credentials::set_stealth_password",
+        },
+        NormalLocalWriteCommand {
+            command: "remove_hub_stealth_password",
+            changed_file: "app_config_dir/osl-core/password_marker.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "security_credentials::remove_stealth_password",
+        },
+        NormalLocalWriteCommand {
+            command: "set_hub_burn_password",
+            changed_file: "app_config_dir/osl-core/password_marker.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "security_credentials::set_burn_password",
+        },
+        NormalLocalWriteCommand {
+            command: "remove_hub_burn_password",
+            changed_file: "app_config_dir/osl-core/password_marker.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "security_credentials::remove_burn_password",
+        },
+        NormalLocalWriteCommand {
+            command: "install_hub_update",
+            changed_file: "app_config_dir/update-state-backups/<version>/*",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "update_state_backup::copy_identity_and_history_before_update",
+        },
+        NormalLocalWriteCommand {
+            command: "install_component",
+            changed_file: "app_config_dir/components-v1/{components.json,component-payloads/<id>}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: ".install(artifact)",
+        },
+        NormalLocalWriteCommand {
+            command: "remove_component",
+            changed_file: "app_config_dir/components-v1/{components.json,component-payloads/<id>}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: ".remove(&component_id)",
+        },
+        NormalLocalWriteCommand {
+            command: "load_detected_browser_footprint",
+            changed_file: "app_config_dir/browser-footprint.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: ".grant(binding)",
+        },
+        NormalLocalWriteCommand {
+            command: "revoke_detected_browser_footprint",
+            changed_file: "app_config_dir/browser-footprint.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: ".grant(binding)",
+        },
+        NormalLocalWriteCommand {
+            command: "begin_browser_account_import",
+            changed_file: "app_local_data_dir/service-profiles-v2/<owner>/firefox-browser/*",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "native_apps::begin_browser_account_import",
+        },
+        NormalLocalWriteCommand {
+            command: "begin_protected_browser_import",
+            changed_file: "app_local_data_dir/service-profiles-v2/<owner>/firefox-browser/*",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "native_apps::begin_protected_browser_import",
+        },
+        NormalLocalWriteCommand {
+            command: "launch_firefox_service",
+            changed_file: "app_local_data_dir/service-profiles-v2/<owner>/firefox-browser/*",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "native_apps::launch_firefox_service",
+        },
+        NormalLocalWriteCommand {
+            command: "host_default_browser_companion",
+            changed_file: "app_local_data_dir/browser-companion-profiles-v1/*",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "BrowserCompanionState>().host",
+        },
+        NormalLocalWriteCommand {
+            command: "host_native_app_window",
+            changed_file: "app_local_data_dir/native-window-profiles-v1/*",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "host_mode_with_takeover",
+        },
+        NormalLocalWriteCommand {
+            command: "prepare_native_discord_overlay_text",
+            changed_file: "app_config_dir/osl-core/{store/messages.sqlite,scope_blobs.json,hub_revocation_counters.json,service-scope-index.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "broker::prepare_native_discord_overlay_text_with_route_clients",
+        },
+        NormalLocalWriteCommand {
+            command: "open_native_discord_overlay_text",
+            changed_file: "app_config_dir/osl-core/{store/messages.sqlite,hub_peer_replay.json,hub_revocation_ledger.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "broker::drain_native_discord_overlay_text",
+        },
+        NormalLocalWriteCommand {
+            command: "reveal_native_discord_overlay_view_once",
+            changed_file: "app_config_dir/osl-core/{store/messages.sqlite,hub_peer_replay.json,hub_revocation_ledger.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "broker::reveal_native_discord_overlay_view_once",
+        },
+        NormalLocalWriteCommand {
+            command: "prepare_osl_chat_text",
+            changed_file: "app_config_dir/osl-core/{store/messages.sqlite,scope_blobs.json,hub_revocation_counters.json,service-scope-index.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "broker::prepare_osl_chat_text_with_route_clients",
+        },
+        NormalLocalWriteCommand {
+            command: "open_osl_chat_text",
+            changed_file: "app_config_dir/osl-core/{store/messages.sqlite,hub_peer_replay.json,hub_revocation_ledger.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "broker::drain_osl_chat_text",
+        },
+        NormalLocalWriteCommand {
+            command: "select_osl_chat_attachment",
+            changed_file: "app_local_data_dir/peer-attachment-staging/* and app_config_dir/osl-core/{scope_attachments.json,attachment_deletions.json,service-scope-index.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "native_attachment_transport::select_osl_chat_attachment",
+        },
+        NormalLocalWriteCommand {
+            command: "open_osl_chat_attachment",
+            changed_file: "app_local_data_dir/peer-attachment-staging/* and app_config_dir/osl-core/{hub_peer_replay.json,attachment_deletions.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "native_attachment_transport::open_osl_chat_pending",
+        },
+        NormalLocalWriteCommand {
+            command: "select_native_discord_overlay_attachment",
+            changed_file: "app_local_data_dir/peer-attachment-staging/* and app_config_dir/osl-core/{scope_attachments.json,attachment_deletions.json,service-scope-index.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "native_attachment_transport::select_encrypt_upload_deliver",
+        },
+        NormalLocalWriteCommand {
+            command: "open_native_discord_overlay_attachment",
+            changed_file: "app_local_data_dir/peer-attachment-staging/* and app_config_dir/osl-core/{hub_peer_replay.json,attachment_deletions.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "native_attachment_transport::open_pending",
+        },
+        NormalLocalWriteCommand {
+            command: "burn_native_discord_overlay_chat",
+            changed_file: "app_config_dir/osl-core/{hub_security_preferences.json,scope_ttl.json,scope_blobs.json,scope_attachments.json,hub_peer_replay.json,hub_revocation_outbox.json,store/messages.sqlite}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "security::burn_manual_peer_scope",
+        },
+        NormalLocalWriteCommand {
+            command: "create_service_account",
+            changed_file: "app_config_dir/{service-registry.json,service-scope-index.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "registry.create_with_provider_for_owner",
+        },
+        NormalLocalWriteCommand {
+            command: "remove_service_account",
+            changed_file: "app_config_dir/service-registry.json and app_local_data_dir/service-profiles-v2/*",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "mutate_service_account(",
+        },
+        NormalLocalWriteCommand {
+            command: "set_local_protected_sheet_open",
+            changed_file: "app_local_data_dir/service-profiles-v2/*",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "service_host::desktop::set_local_protected_sheet_open",
+        },
+        NormalLocalWriteCommand {
+            command: "prepare_peer_prose_text",
+            changed_file: "app_config_dir/osl-core/{store/messages.sqlite,scope_blobs.json,hub_revocation_counters.json,service-scope-index.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "broker::prepare_peer_prose_text_with_capture_and_store_client",
+        },
+        NormalLocalWriteCommand {
+            command: "open_peer_prose_text",
+            changed_file: "app_config_dir/osl-core/{store/messages.sqlite,hub_peer_replay.json,service-scope-index.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "broker::open_peer_prose_text",
+        },
+        NormalLocalWriteCommand {
+            command: "prepare_encrypted_text",
+            changed_file: "app_config_dir/osl-core/{store/messages.sqlite,scope_blobs.json,service-scope-index.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "broker::prepare_encrypted_text",
+        },
+        NormalLocalWriteCommand {
+            command: "decrypt_hub_capsule",
+            changed_file: "app_config_dir/osl-core/{store/messages.sqlite,hub_peer_replay.json,service-scope-index.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "broker::decrypt_capsule",
+        },
+        NormalLocalWriteCommand {
+            command: "prepare_local_protected_text_with_policy",
+            changed_file: "app_config_dir/osl-core/{hub_local_protected.json,service-scope-index.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "broker::prepare_local_protected_text_with_policy",
+        },
+        NormalLocalWriteCommand {
+            command: "decrypt_local_protected_capsule",
+            changed_file: "app_config_dir/osl-core/{hub_local_protected.json,service-scope-index.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "broker::decrypt_local_protected_capsule",
+        },
+        NormalLocalWriteCommand {
+            command: "prepare_hub_attachment",
+            changed_file: "app_config_dir/osl-core/{scope_attachments.json,service-scope-index.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "broker::prepare_encrypted_attachment",
+        },
+        NormalLocalWriteCommand {
+            command: "open_hub_attachment",
+            changed_file: "app_config_dir/osl-core/{hub_peer_replay.json,attachment_deletions.json,service-scope-index.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "broker::open_encrypted_attachment",
+        },
+        NormalLocalWriteCommand {
+            command: "add_hub_friend",
+            changed_file: "app_config_dir/osl-core/{hub_people.json,peer_map.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "security::add_friend_code",
+        },
+        NormalLocalWriteCommand {
+            command: "add_hub_friend_by_username",
+            changed_file: "app_config_dir/osl-core/{hub_people.json,peer_map.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "security::add_friend_code",
+        },
+        NormalLocalWriteCommand {
+            command: "save_osl_profile",
+            changed_file: "app_config_dir/osl-core/hub_profile.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "osl_profile::save_active_profile",
+        },
+        NormalLocalWriteCommand {
+            command: "set_owner_profile_picture",
+            changed_file: "app_config_dir/osl-core/owner_profile_picture.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "osl_profile::set_active_profile_picture",
+        },
+        NormalLocalWriteCommand {
+            command: "clear_owner_profile_picture",
+            changed_file: "app_config_dir/osl-core/owner_profile_picture.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "osl_profile::clear_active_profile_picture",
+        },
+        NormalLocalWriteCommand {
+            command: "verify_hub_friend_safety_number",
+            changed_file: "app_config_dir/osl-core/{hub_people.json,peer_map.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "security::verify_friend_safety_number",
+        },
+        NormalLocalWriteCommand {
+            command: "remove_hub_friend",
+            changed_file: "app_config_dir/osl-core/{peer_map.json,hub_people.json,hub_security_preferences.json,hub_revocation_outbox.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "security::remove_friend",
+        },
+        NormalLocalWriteCommand {
+            command: "set_hub_friend_nickname",
+            changed_file: "app_config_dir/osl-core/hub_people.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "security::set_friend_alias",
+        },
+        NormalLocalWriteCommand {
+            command: "set_active_hub_friend_permission",
+            changed_file: "app_config_dir/osl-core/{service-scope-index.json,hub_security_preferences.json,peer_map.json,whitelist_state.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "security::set_manual_peer_scope_permission",
+        },
+        NormalLocalWriteCommand {
+            command: "set_active_hub_friend_reach",
+            changed_file: "app_config_dir/osl-core/peer_map.json",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "security::set_friend_scope_reach",
+        },
+        NormalLocalWriteCommand {
+            command: "revoke_active_hub_friend_scope",
+            changed_file: "app_config_dir/osl-core/{hub_security_preferences.json,peer_map.json,whitelist_state.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "security::revoke_friend_scope_entry",
+        },
+        NormalLocalWriteCommand {
+            command: "set_active_hub_context_security",
+            changed_file: "app_config_dir/osl-core/{service-scope-index.json,scope_ttl.json,hub_security_preferences.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "security::set_scope_security",
+        },
+        NormalLocalWriteCommand {
+            command: "list_hub_identities",
+            changed_file: "app_config_dir/osl-core/{hub_identity_registry.json,hub-active-identity,hub-identities/<slot>/*}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "identity_registry::list_identity_slots",
+        },
+        NormalLocalWriteCommand {
+            command: "create_hub_identity_slot",
+            changed_file: "app_config_dir/osl-core/{hub_identity_registry.json,hub-active-identity,hub-identities/<slot>/*}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "identity_registry::create_identity_slot",
+        },
+        NormalLocalWriteCommand {
+            command: "recover_hub_identity_slot",
+            changed_file: "app_config_dir/osl-core/{hub_identity_registry.json,hub-active-identity,hub-identities/<slot>/*}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "identity_registry::recover_identity_slot",
+        },
+        NormalLocalWriteCommand {
+            command: "switch_hub_identity",
+            changed_file: "app_config_dir/osl-core/{hub-active-identity,hub_identity_registry.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "identity_registry::switch_identity_slot",
+        },
+        NormalLocalWriteCommand {
+            command: "burn_active_hub_identity",
+            changed_file: "app_config_dir/osl-core/{hub-identities/<slot>/*,hub_identity_registry.json,hub-active-identity,service-scope-index.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "identity_registry::burn_active_identity",
+        },
+        NormalLocalWriteCommand {
+            command: "execute_hub_full_cleanup",
+            changed_file: "app_config_dir/* and app_local_data_dir/* OSL cleanup footprint",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "cleanup::execute_full_hub_cleanup",
+        },
+        NormalLocalWriteCommand {
+            command: "burn_hub_service_account",
+            changed_file: "app_config_dir/osl-core/{service-scope-index.json,scope ledgers,store/messages.sqlite}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "index.freeze_complete_manifest",
+        },
+        NormalLocalWriteCommand {
+            command: "burn_active_hub_context",
+            changed_file: "app_config_dir/osl-core/{scope ledgers,store/messages.sqlite,hub_local_protected.json}",
+            source: WriteCommandSource::HubTauri,
+            source_probe: "broker::burn_local_protected_context",
+        },
+        NormalLocalWriteCommand {
+            command: "ipc::commands::cmd_osl_save_auto_whitelist_rule",
+            changed_file: "app_config_dir/osl-core/app_preferences.json",
+            source: WriteCommandSource::IpcCommand,
+            source_probe: "write_app_preferences",
+        },
+        NormalLocalWriteCommand {
+            command: "ipc::commands::cmd_osl_new_place",
+            changed_file: "app_config_dir/osl-core/allowed_places.sqlite",
+            source: WriteCommandSource::IpcCommand,
+            source_probe: "add_allowed_place_record",
+        },
+        NormalLocalWriteCommand {
+            command: "ipc::commands::cmd_osl_set_app_preferences",
+            changed_file: "app_config_dir/osl-core/app_preferences.json",
+            source: WriteCommandSource::IpcCommand,
+            source_probe: "write_app_preferences",
+        },
+        NormalLocalWriteCommand {
+            command: "ipc::commands::cmd_osl_set_update_channel",
+            changed_file: "app_config_dir/osl-core/app_preferences.json",
+            source: WriteCommandSource::IpcCommand,
+            source_probe: "write_app_preferences",
+        },
+    ];
+
+    fn command_function_name(command: &str) -> &str {
+        command.rsplit("::").next().unwrap_or(command)
+    }
+
+    fn rust_function_body<'a>(source: &'a str, function_name: &str) -> &'a str {
+        let needle = format!("fn {function_name}");
+        let function_start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("function {function_name} must exist"));
+        let body_start = source[function_start..]
+            .find('{')
+            .map(|offset| function_start + offset)
+            .unwrap_or_else(|| panic!("function {function_name} must have a body"));
+        let bytes = source.as_bytes();
+        let mut depth = 0usize;
+        let mut index = body_start;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[function_start..=index];
+                    }
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        panic!("function {function_name} body must close");
+    }
+
+    fn normal_local_write_discovery<'a>(rows: &'a [NormalLocalWriteCommand]) -> BTreeSet<&'a str> {
+        rows.iter().map(|row| row.command).collect()
+    }
+
+    fn normal_local_write_unlisted_count(rows: &[NormalLocalWriteCommand]) -> usize {
+        let listed = rows.iter().map(|row| row.command).collect::<BTreeSet<_>>();
+        normal_local_write_discovery(NORMAL_LOCAL_WRITE_COMMANDS)
+            .difference(&listed)
+            .count()
+    }
+
+    fn normal_local_write_duplicate_count(rows: &[NormalLocalWriteCommand]) -> usize {
+        let mut counts = BTreeMap::<&str, usize>::new();
+        for row in rows {
+            *counts.entry(row.command).or_default() += 1;
+        }
+        counts.values().filter(|count| **count != 1).count()
+    }
+
+    fn assert_registered_tauri_command(handlers: &BTreeSet<String>, command: &str) {
+        assert!(
+            handlers.contains(command),
+            "{command} must be registered in generate_handler"
+        );
+    }
+
+    fn assert_normal_local_write_inventory(rows: &[NormalLocalWriteCommand]) -> (usize, usize) {
+        let handlers = handler_commands();
+        let main_source = include_str!("main.rs");
+        let ipc_source = include_str!("../../../crates/ipc/src/commands.rs");
+        let mut file_count = 0usize;
+        let mut listed_counts = BTreeMap::<&str, usize>::new();
+
+        for (index, row) in rows.iter().enumerate() {
+            let ordinal = index + 1;
+            println!(
+                "TASK3609F_WRITE[{ordinal:02}]={} -> {}",
+                row.command, row.changed_file
+            );
+            assert!(
+                !row.changed_file.is_empty(),
+                "{} must name changed file(s)",
+                row.command
+            );
+            *listed_counts.entry(row.command).or_default() += 1;
+            file_count += 1;
+
+            let source = match row.source {
+                WriteCommandSource::HubTauri => {
+                    assert_registered_tauri_command(&handlers, row.command);
+                    main_source
+                }
+                WriteCommandSource::IpcCommand => ipc_source,
+            };
+            let function_name = command_function_name(row.command);
+            let body = rust_function_body(source, function_name);
+            assert!(
+                body.contains(row.source_probe),
+                "{} must still contain write probe {:?}",
+                row.command,
+                row.source_probe
+            );
+        }
+
+        for (command, count) in listed_counts {
+            assert_eq!(count, 1, "{command} must appear exactly once");
+        }
+        (rows.len(), file_count)
+    }
+
+    #[test]
+    fn normal_local_write_command_inventory_is_complete() {
+        let discovered_count = normal_local_write_discovery(NORMAL_LOCAL_WRITE_COMMANDS).len();
+        let (listed_count, file_count) =
+            assert_normal_local_write_inventory(NORMAL_LOCAL_WRITE_COMMANDS);
+        let unlisted_count = normal_local_write_unlisted_count(NORMAL_LOCAL_WRITE_COMMANDS);
+        let duplicate_count = normal_local_write_duplicate_count(NORMAL_LOCAL_WRITE_COMMANDS);
+
+        println!("TASK3609F_DISCOVERED_WRITE_COMMAND_COUNT={discovered_count}");
+        println!("TASK3609F_LISTED_WRITE_COMMAND_COUNT={listed_count}");
+        println!("TASK3609F_LISTED_FILE_COUNT={file_count}");
+        println!("TASK3609F_DUPLICATE_WRITE_COMMAND_COUNT={duplicate_count}");
+        println!("TASK3609F_UNLISTED_WRITE_COMMAND_COUNT={unlisted_count}");
+
+        assert!(
+            discovered_count > 0,
+            "write-command count must be above zero"
+        );
+        assert_eq!(
+            discovered_count, listed_count,
+            "every discovered write command must be listed"
+        );
+        assert_eq!(
+            listed_count, file_count,
+            "write-command and changed-file counts must match"
+        );
+        assert_eq!(duplicate_count, 0, "every write command must appear once");
+        assert_eq!(
+            unlisted_count, 0,
+            "no discovered write command may be unlisted"
+        );
+
+        let missing_one = &NORMAL_LOCAL_WRITE_COMMANDS[..NORMAL_LOCAL_WRITE_COMMANDS.len() - 1];
+        assert_eq!(
+            normal_local_write_unlisted_count(missing_one),
+            1,
+            "removing one inventory row must make the unlisted count go red"
+        );
+        let mut duplicated = NORMAL_LOCAL_WRITE_COMMANDS.to_vec();
+        duplicated.push(NORMAL_LOCAL_WRITE_COMMANDS[0]);
+        assert_eq!(
+            normal_local_write_duplicate_count(&duplicated),
+            1,
+            "duplicating one inventory row must make the exactly-once check go red"
+        );
+    }
+
     fn network_registration_inputs(
     ) -> (BTreeSet<String>, BTreeMap<String, String>, BTreeSet<String>) {
         (
