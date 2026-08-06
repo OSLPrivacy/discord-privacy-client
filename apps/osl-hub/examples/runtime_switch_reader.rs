@@ -2,18 +2,26 @@ use osl_privacy_hub::runtime_switches::{
     assert_runtime_switch_status_safe, old_test_only_build_choice_reports,
     read_startup_test_only_runtime_switches,
     read_startup_test_only_runtime_switches_from_assignments, runtime_switch_status_lines,
-    TEST_ONLY_RUNTIME_SWITCH_LIST,
+    ResolvedTestOnlyRunTimeSwitches, TEST_ONLY_RUNTIME_SWITCH_LIST,
 };
 use std::io::Write;
 
+enum DirectCommand {
+    Status,
+    Unknown(String),
+}
+
 fn main() {
-    let mut status = false;
+    let mut command = None;
     let mut hold_after_print_until_killed = false;
     let mut assignments = Vec::new();
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
-            "status" if !status => status = true,
+            "status" if command.is_none() => command = Some(DirectCommand::Status),
             "--hold-after-print-until-killed" => hold_after_print_until_killed = true,
+            _ if command.is_none() && !arg.contains('=') => {
+                command = Some(DirectCommand::Unknown(arg));
+            }
             _ => assignments.push(arg),
         }
     }
@@ -31,19 +39,18 @@ fn main() {
         }
     };
 
-    if status {
-        let lines = runtime_switch_status_lines(switches);
-        println!("RUN-TIME SWITCH STATUS: count={}", lines.len());
-        for line in &lines {
-            println!("{}", line.render());
+    match command {
+        Some(DirectCommand::Status) => {
+            print_safe_status_or_exit(switches);
+            hold_for_cleanup_if_requested(hold_after_print_until_killed);
+            return;
         }
-        if let Err(error) = assert_runtime_switch_status_safe(&lines) {
-            eprintln!("{error}");
-            std::process::exit(2);
+        Some(DirectCommand::Unknown(name)) => {
+            print_safe_status_or_exit(switches);
+            eprintln!("unknown app command: {name}");
+            std::process::exit(1);
         }
-        println!("RUN-TIME SWITCH STATUS: all-defaults-safe");
-        hold_for_cleanup_if_requested(hold_after_print_until_killed);
-        return;
+        None => {}
     }
 
     println!("RUN-TIME SWITCH LIST: {TEST_ONLY_RUNTIME_SWITCH_LIST}");
@@ -59,6 +66,19 @@ fn main() {
         );
     }
     hold_for_cleanup_if_requested(hold_after_print_until_killed);
+}
+
+fn print_safe_status_or_exit(switches: ResolvedTestOnlyRunTimeSwitches) {
+    let lines = runtime_switch_status_lines(switches);
+    println!("RUN-TIME SWITCH STATUS: count={}", lines.len());
+    for line in &lines {
+        println!("{}", line.render());
+    }
+    if let Err(error) = assert_runtime_switch_status_safe(&lines) {
+        eprintln!("{error}");
+        std::process::exit(2);
+    }
+    println!("RUN-TIME SWITCH STATUS: all-defaults-safe");
 }
 
 fn hold_for_cleanup_if_requested(enabled: bool) {

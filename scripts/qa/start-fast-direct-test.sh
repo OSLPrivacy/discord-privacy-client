@@ -74,6 +74,8 @@ child_stderr="$tmp_dir/child.err"
 pid_file="${OSL_FAST_DIRECT_TEST_PID_FILE:-}"
 disable_cleanup="${OSL_FAST_DIRECT_TEST_DISABLE_CLEANUP:-0}"
 child_pid=""
+child_reaped=0
+child_exit=""
 
 cleanup_tmp() {
   rm -rf -- "$tmp_dir"
@@ -89,16 +91,31 @@ if [ -n "$pid_file" ]; then
   printf '%s\n' "$child_pid" >"$pid_file"
 fi
 
+child_has_exited() {
+  local state
+  state="$(ps -p "$child_pid" -o stat= 2>/dev/null | tr -d '[:space:]' || true)"
+  [ -z "$state" ] || [ "${state#Z}" != "$state" ]
+}
+
+reap_child() {
+  if [ "$child_reaped" = "1" ]; then
+    return 0
+  fi
+  set +e
+  wait "$child_pid"
+  child_exit="$?"
+  set -e
+  child_reaped=1
+}
+
 deadline=$((SECONDS + 10))
 while [ "$SECONDS" -lt "$deadline" ]; do
   if grep -Fq 'RUN-TIME SWITCH STATUS: all-defaults-safe' "$child_stdout"; then
     break
   fi
-  if ! kill -0 "$child_pid" 2>/dev/null; then
-    cat "$child_stdout"
-    cat "$child_stderr" >&2
-    printf 'fast-direct-test-start: direct command exited before switch status was printed\n' >&2
-    exit 1
+  if child_has_exited; then
+    reap_child
+    break
   fi
   sleep 0.1
 done
@@ -106,25 +123,40 @@ done
 cat "$child_stdout"
 cat "$child_stderr" >&2
 
+failure=0
+if [ "$child_reaped" != "1" ] && child_has_exited; then
+  reap_child
+fi
+
+if [ "$child_reaped" = "1" ] && [ "$child_exit" -ne 0 ]; then
+  printf 'fast-direct-test-start: direct command exited with status %s\n' "$child_exit" >&2
+  failure=1
+fi
+
 if ! grep -Fq 'RUN-TIME SWITCH STATUS: all-defaults-safe' "$child_stdout"; then
   printf 'fast-direct-test-start: direct command did not print safe switch status\n' >&2
-  exit 1
+  failure=1
 fi
 
 printf 'TASK0062_DIRECT_COMMAND_COUNT=1\n'
 printf 'TASK0062_OSL_PROCESS_PID=%s\n' "$child_pid"
 printf 'TASK0062_RUNTIME_SWITCHES="%s"\n' "$switch_string"
-
-if [ "$disable_cleanup" != "1" ] && kill -0 "$child_pid" 2>/dev/null; then
-  kill "$child_pid" 2>/dev/null || true
-  wait "$child_pid" 2>/dev/null || true
+if [ "$child_reaped" = "1" ]; then
+  printf 'TASK0062_DIRECT_COMMAND_EXIT=%s\n' "$child_exit"
 fi
 
-if kill -0 "$child_pid" 2>/dev/null; then
+if [ "$disable_cleanup" != "1" ] && [ "$child_reaped" != "1" ] && kill -0 "$child_pid" 2>/dev/null; then
+  kill "$child_pid" 2>/dev/null || true
+  reap_child
+fi
+
+if [ "$child_reaped" != "1" ] && kill -0 "$child_pid" 2>/dev/null; then
   printf 'TASK0062_OSL_PROCESS_COUNT_AFTER_CLEANUP=1\n'
   printf 'fast-direct-test-start: OSL process cleanup check failed for pid=%s\n' "$child_pid" >&2
   exit 1
 fi
 
-wait "$child_pid" 2>/dev/null || true
 printf 'TASK0062_OSL_PROCESS_COUNT_AFTER_CLEANUP=0\n'
+if [ "$failure" -ne 0 ]; then
+  exit 1
+fi
