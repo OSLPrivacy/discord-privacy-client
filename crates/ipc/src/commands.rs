@@ -3756,6 +3756,45 @@ pub fn cmd_osl_burn_message(state: &AppState, discord_message_id: String) -> Res
     }
 }
 
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct RemoveSenderMessageRecordsDto {
+    pub requested_count: usize,
+    pub removed_count: usize,
+    pub remaining_local_count: usize,
+}
+
+/// Physically remove selected sender-owned message records from this local OSL
+/// copy.
+///
+/// This is intentionally narrower than `cmd_osl_burn_scope_data`: the caller
+/// names the exact records covered by sender delete authority, and unrelated
+/// local rows remain present.
+pub fn cmd_osl_remove_sender_message_records(
+    state: &AppState,
+    discord_message_ids: Vec<String>,
+) -> Result<RemoveSenderMessageRecordsDto, String> {
+    record_activity_on_command_entry();
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(RemoveSenderMessageRecordsDto {
+            requested_count: discord_message_ids.len(),
+            removed_count: 0,
+            remaining_local_count: 0,
+        });
+    };
+    let outcome = store
+        .delete_message_records(&discord_message_ids)
+        .map_err(|e| format!("OSL: delete_message_records: {e}"))?;
+    Ok(RemoveSenderMessageRecordsDto {
+        requested_count: outcome.requested_count,
+        removed_count: outcome.removed_count,
+        remaining_local_count: outcome.remaining_local_count,
+    })
+}
+
 /// Pull diagnostic facts out of a Phase 4 cover string for the
 /// NoMatchingSlot error path. Returns a single-line summary like
 /// `version=0x01 N=2 hints=[0xab,0xcd]`, OR a fallback string
