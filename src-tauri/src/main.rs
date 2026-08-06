@@ -2530,6 +2530,34 @@ async fn osl_set_update_channel(
     .map_err(|e| format!("OSL: join error: {e}"))?
 }
 
+/// Read the saved on/off choice for starting OSL when Windows starts.
+#[tauri::command]
+async fn osl_get_start_with_windows_choice(app: tauri::AppHandle) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        ipc::commands::cmd_osl_get_start_with_windows_choice(state.inner())
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+/// Save the on/off choice for starting OSL when Windows starts.
+#[tauri::command]
+async fn osl_save_start_with_windows_choice(
+    app: tauri::AppHandle,
+    choice: String,
+) -> Result<String, String> {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app_handle.state::<AppState>();
+        let dir = keystore::osl_config_dir().ok();
+        ipc::commands::cmd_osl_save_start_with_windows_choice(state.inner(), choice, dir)
+    })
+    .await
+    .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
 /// Phase 2 prose-token send. Takes a `DPC0::<base64>` wire string
 /// produced by the existing encrypt pipeline, uploads the underlying
 /// cipher bytes to the cipher-store with the chosen TTL, and encodes
@@ -3293,6 +3321,8 @@ fn main() {
             osl_install_update,
             osl_get_update_channel,
             osl_set_update_channel,
+            osl_get_start_with_windows_choice,
+            osl_save_start_with_windows_choice,
             osl_prose_token_send,
             osl_prose_token_recv,
             osl_prose_token_burn,

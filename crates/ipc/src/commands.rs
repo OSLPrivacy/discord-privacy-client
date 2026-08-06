@@ -217,6 +217,12 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_get_app_preferences", || {
             let _ = cmd_osl_get_app_preferences(&state);
         });
+        assert_command_marks_activity("cmd_osl_get_start_with_windows_choice", || {
+            let _ = cmd_osl_get_start_with_windows_choice(&state);
+        });
+        assert_command_marks_activity("cmd_osl_save_start_with_windows_choice", || {
+            let _ = cmd_osl_save_start_with_windows_choice(&state, "on".to_owned(), None);
+        });
         assert_command_marks_activity("cmd_osl_get_self_user_id", || {
             let _ = cmd_osl_get_self_user_id(&state);
         });
@@ -16775,6 +16781,36 @@ pub fn cmd_osl_set_update_channel(
         crate::app_preferences::write_app_preferences(&path, &g)?;
     }
     Ok(())
+}
+
+// ---- Start with Windows choice ----
+
+pub fn cmd_osl_get_start_with_windows_choice(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(prefs.start_with_windows.as_value().to_string())
+}
+
+pub fn cmd_osl_save_start_with_windows_choice(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let choice = choice.parse::<crate::app_preferences::StartWithWindowsChoice>()?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.start_with_windows = choice;
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(choice.as_value().to_string())
 }
 
 // ---- Phase 9-D: onboarding tour + VPN warning ----
