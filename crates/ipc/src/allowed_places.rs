@@ -114,6 +114,35 @@ pub fn require_allowed_place_record(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllowedPlaceSummary {
+    pub distinct_apps: usize,
+    pub places: usize,
+}
+
+pub fn allowed_place_summary(app_data_dir: impl AsRef<Path>) -> Result<AllowedPlaceSummary> {
+    let path = allowed_places_db_path(app_data_dir);
+    if !path.exists() {
+        return Ok(AllowedPlaceSummary {
+            distinct_apps: 0,
+            places: 0,
+        });
+    }
+    let conn = Connection::open(path)?;
+    ensure_schema(&conn)?;
+    let distinct_apps: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT app) FROM allowed_places",
+        [],
+        |row| row.get(0),
+    )?;
+    let places: i64 =
+        conn.query_row("SELECT COUNT(*) FROM allowed_places", [], |row| row.get(0))?;
+    Ok(AllowedPlaceSummary {
+        distinct_apps: distinct_apps.max(0) as usize,
+        places: places.max(0) as usize,
+    })
+}
+
 fn ensure_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS allowed_places (

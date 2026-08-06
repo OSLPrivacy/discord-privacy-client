@@ -89,6 +89,132 @@ impl UpdateChannel {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PrivacyLevel {
+    Basic,
+    #[default]
+    Balanced,
+    Maximum,
+}
+
+impl PrivacyLevel {
+    pub const ALL: [Self; 3] = [Self::Basic, Self::Balanced, Self::Maximum];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Basic => "basic",
+            Self::Balanced => "balanced",
+            Self::Maximum => "maximum",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Basic => "Basic",
+            Self::Balanced => "Balanced",
+            Self::Maximum => "Maximum",
+        }
+    }
+}
+
+pub fn parse_privacy_level(input: &str) -> Result<PrivacyLevel, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
+    PrivacyLevel::ALL
+        .into_iter()
+        .find(|level| normalized == level.id())
+        .ok_or_else(|| format!("OSL: unknown privacy level '{input}'"))
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrivacyLevelRuleSet {
+    pub before_send_warnings: bool,
+    pub attachment_cleaning: bool,
+    pub cleanup_review_days: u16,
+    pub public_post_checks: bool,
+    pub vpn_required_actions: bool,
+    pub protected_contacts_required: bool,
+}
+
+impl PrivacyLevelRuleSet {
+    pub fn for_level(level: PrivacyLevel) -> Self {
+        match level {
+            PrivacyLevel::Basic => Self {
+                before_send_warnings: false,
+                attachment_cleaning: false,
+                cleanup_review_days: 0,
+                public_post_checks: false,
+                vpn_required_actions: false,
+                protected_contacts_required: false,
+            },
+            PrivacyLevel::Balanced => Self {
+                before_send_warnings: true,
+                attachment_cleaning: true,
+                cleanup_review_days: 30,
+                public_post_checks: false,
+                vpn_required_actions: false,
+                protected_contacts_required: false,
+            },
+            PrivacyLevel::Maximum => Self {
+                before_send_warnings: true,
+                attachment_cleaning: true,
+                cleanup_review_days: 7,
+                public_post_checks: true,
+                vpn_required_actions: true,
+                protected_contacts_required: true,
+            },
+        }
+    }
+}
+
+impl Default for PrivacyLevelRuleSet {
+    fn default() -> Self {
+        Self::for_level(PrivacyLevel::Balanced)
+    }
+}
+
+/// When to warn before interacting with a conversation whose verification has
+/// not been confirmed by the user.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum VerificationWarningChoice {
+    #[default]
+    #[serde(rename = "every time")]
+    EveryTime,
+    #[serde(rename = "once")]
+    Once,
+    #[serde(rename = "before sending")]
+    BeforeSending,
+    #[serde(rename = "never")]
+    Never,
+}
+
+impl VerificationWarningChoice {
+    pub const ALL: [Self; 4] = [
+        Self::EveryTime,
+        Self::Once,
+        Self::BeforeSending,
+        Self::Never,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::EveryTime => "every time",
+            Self::Once => "once",
+            Self::BeforeSending => "before sending",
+            Self::Never => "never",
+        }
+    }
+}
+
+pub fn parse_verification_warning_choice(
+    choice: &str,
+) -> Result<VerificationWarningChoice, String> {
+    VerificationWarningChoice::ALL
+        .into_iter()
+        .find(|candidate| candidate.label() == choice)
+        .ok_or_else(|| format!("OSL: unknown verification warning choice '{choice}'"))
+}
+
 /// Whether the app should ask again before executing an irreversible action.
 ///
 /// Default = `On`; fresh installs should make the user explicitly confirm
@@ -296,6 +422,12 @@ pub struct AppPreferences {
     pub language: String,
     #[serde(default)]
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
+    #[serde(default)]
+    pub privacy_level: PrivacyLevel,
+    #[serde(default)]
+    pub privacy_level_rule_sets: HashMap<String, PrivacyLevelRuleSet>,
+    #[serde(default)]
+    pub verification_warning: VerificationWarningChoice,
 }
 
 impl Default for AppPreferences {
@@ -313,11 +445,14 @@ impl Default for AppPreferences {
             follow_active_app_choice: FollowActiveAppChoice::default(),
             language: default_language_choice(),
             auto_whitelist_rules: HashMap::new(),
+            privacy_level: PrivacyLevel::default(),
+            privacy_level_rule_sets: HashMap::new(),
+            verification_warning: VerificationWarningChoice::default(),
         }
     }
 }
 
-pub const APP_PREFERENCES_VERSION: u32 = 4;
+pub const APP_PREFERENCES_VERSION: u32 = 5;
 
 pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {

@@ -17,7 +17,7 @@ use crate::peer_map::PeerMap;
 use crate::whitelist_state::WhitelistState;
 use crypto::x25519;
 use keystore::{Identity, KeyServerClient};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -321,6 +321,10 @@ pub struct AppState {
     /// repopulated on every Discord reconnect.
     pub friend_ids: Mutex<Vec<String>>,
 
+    /// Session-local conversations that have already consumed the user's
+    /// "once" verification warning choice.
+    pub verification_warning_seen: Mutex<HashSet<String>>,
+
     /// Phase 9-C2: ephemeral list of guilds the user has access to,
     /// each carrying the gateway-loaded subset of members. Pushed
     /// from boot.js's gateway-tap GUILD_CREATE handler via
@@ -414,6 +418,7 @@ impl Default for AppState {
             channel_members: Mutex::new(HashMap::new()),
             app_preferences: Mutex::new(crate::app_preferences::AppPreferences::default()),
             friend_ids: Mutex::new(Vec::new()),
+            verification_warning_seen: Mutex::new(HashSet::new()),
             guild_list: Mutex::new(Vec::new()),
             server_defaults: Mutex::new(HashMap::new()),
             last_persist_error: Mutex::new(None),
