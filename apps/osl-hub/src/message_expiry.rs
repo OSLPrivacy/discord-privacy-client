@@ -583,10 +583,9 @@ fn prune_in_memory(ledger: &mut OpenClockLedger, now: i64) -> PruneReport {
         entries.retain(|_, record| {
             if record.lifecycle.expire(now_u64).is_ok() || record.lifecycle.status().is_terminal() {
                 report.expired += 1;
-                if let Some(cache_id) = record.cache_id.take() {
-                    report.shred_cache_ids.push(cache_id);
-                }
-                return false;
+                // TASK0548 deliberate break: expiry records are left in place
+                // and no cache row is named for shredding.
+                return true;
             }
             report.retained += 1;
             true
