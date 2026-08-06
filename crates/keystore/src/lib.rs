@@ -54,8 +54,10 @@ pub use zeroize::Zeroizing;
 
 pub use account_ownership_error::AccountOwnershipError;
 pub use account_ownership_proof::{
-    canonical_account_ownership_proof_bytes, AccountOwnershipEvidence, AccountOwnershipProof,
+    canonical_account_ownership_proof_bytes, canonical_public_name_proof_bytes,
+    AccountOwnershipEvidence, AccountOwnershipProof, PublicNameProof,
     ACCOUNT_OWNERSHIP_PROOF_DOMAIN, ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+    PUBLIC_NAME_PROOF_DOMAIN,
 };
 pub use burn::{canonical_burn_bytes, sign_burn, BurnScope, BURN_DOMAIN};
 pub use burn_alert::{sign_burn_alert, verify_burn_alert, BurnAlertPayload, BURN_ALERT_DOMAIN};

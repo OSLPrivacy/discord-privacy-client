@@ -76,7 +76,7 @@ async function claim(
     timestamp_ms,
   });
   const signature_b64 = await signEd25519(pair.signingKey, message);
-  const proofFields = await publicNameProofFields(SELF, uid, pair.signingKey);
+  const proofFields = await publicNameProofFields(SELF, uid, pair.signingKey, username);
   return SELF.fetch("http://test/v1/usernames/claim", {
     method: "POST",
     headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.200" },

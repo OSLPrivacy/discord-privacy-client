@@ -13,6 +13,8 @@ import {
 } from "../../src/lib/account-ownership-proof.js";
 import type { IssuedAccountOwnershipChallenge } from "../../src/lib/account-ownership-challenge.js";
 
+const PUBLIC_NAME_PROOF_DOMAIN = "OSL-PUBLIC-NAME-PROOF-v1\u0000";
+
 export const TEST_ADMIN_TOKEN = "test-admin-token-do-not-ship";
 export const TEST_CLIENT_TOKEN = "test-client-token-do-not-ship";
 let registrationIpOctet = 1;
@@ -35,6 +37,34 @@ export function base64Decode(s: string): Uint8Array {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+function concat(parts: readonly Uint8Array[]): Uint8Array {
+  const output = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.length;
+  }
+  return output;
+}
+
+function u32be(value: number): Uint8Array {
+  const bytes = new Uint8Array(4);
+  new DataView(bytes.buffer).setUint32(0, value, false);
+  return bytes;
+}
+
+function lp(bytes: Uint8Array): Uint8Array {
+  return concat([u32be(bytes.length), bytes]);
+}
+
+function lpText(value: string): Uint8Array {
+  return lp(new TextEncoder().encode(value));
+}
+
+function publicNameProofBytes(publicName: string, accountProofBytes: Uint8Array): Uint8Array {
+  return concat([lpText(PUBLIC_NAME_PROOF_DOMAIN), lpText(publicName), lp(accountProofBytes)]);
 }
 
 /** Generate a fresh Ed25519 keypair and return both the raw public-key
@@ -76,6 +106,7 @@ export async function publicNameProofFields(
   self: { fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> },
   userId: string,
   signingKey: CryptoKey,
+  publicName: string,
 ): Promise<{
   service: "discord";
   service_account_id: string;
@@ -101,30 +132,33 @@ export async function publicNameProofFields(
     );
   }
   const challenge = (await challengeRes.json()) as IssuedAccountOwnershipChallenge;
-  const signature_b64 = await signEd25519(
-    signingKey,
-    canonicalAccountOwnershipProofBytes({
-      proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
-      platform_id: challenge.service_account_id,
+  const accountProofBytes = canonicalAccountOwnershipProofBytes({
+    proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+    platform_id: challenge.service_account_id,
+    owner_user_id: challenge.owner_user_id,
+    nonce_b64: challenge.nonce,
+    issued_at_unix_seconds: challenge.issued_at_unix_seconds,
+    expires_at_unix_seconds: challenge.expires_at_unix_seconds,
+  });
+  const signature_b64 = await signEd25519(signingKey, accountProofBytes);
+  const account_proof = {
+    platform_id: challenge.service_account_id,
+    proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+    e: {
       owner_user_id: challenge.owner_user_id,
       nonce_b64: challenge.nonce,
       issued_at_unix_seconds: challenge.issued_at_unix_seconds,
       expires_at_unix_seconds: challenge.expires_at_unix_seconds,
-    }),
-  );
+      signature_b64,
+    },
+  };
   return {
     service: "discord",
     service_account_id,
     public_name_proof: {
-      platform_id: challenge.service_account_id,
-      proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
-      e: {
-        owner_user_id: challenge.owner_user_id,
-        nonce_b64: challenge.nonce,
-        issued_at_unix_seconds: challenge.issued_at_unix_seconds,
-        expires_at_unix_seconds: challenge.expires_at_unix_seconds,
-        signature_b64,
-      },
+      public_name: publicName,
+      account_proof,
+      signature_b64: await signEd25519(signingKey, publicNameProofBytes(publicName, accountProofBytes)),
     },
   };
 }

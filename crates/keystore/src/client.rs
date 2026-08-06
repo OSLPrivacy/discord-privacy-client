@@ -20,7 +20,7 @@
 //! Tokio runtime under the hood; that's fine — the outer Tauri
 //! runtime stays unblocked.
 
-use crate::account_ownership_proof::AccountOwnershipProof;
+use crate::account_ownership_proof::{AccountOwnershipProof, PublicNameProof};
 use crate::burn::{sign_burn, BurnScope};
 use crate::control_inbox::{
     sign_control_inbox_delete, sign_control_inbox_get, sign_control_inbox_get_filtered,
@@ -190,7 +190,7 @@ struct UsernameClaimRequest<'a> {
     timestamp_ms: i64,
     service: &'static str,
     service_account_id: &'a str,
-    public_name_proof: AccountOwnershipProof,
+    public_name_proof: PublicNameProof,
 }
 
 #[derive(Deserialize)]
@@ -985,8 +985,11 @@ impl KeyServerClient {
         let mut challenge =
             self.request_ownership_challenge(service_account_id, &identity.user_id, true)?;
         let proof_now = (unix_timestamp_ms().max(0) / 1000) as u64;
-        let public_name_proof =
+        let account_proof =
             AccountOwnershipProof::from_challenge(identity, &mut challenge, proof_now)
+                .map_err(|error| Error::Transport(format!("username proof refused: {error}")))?;
+        let public_name_proof =
+            PublicNameProof::from_account_proof(identity, username, account_proof)
                 .map_err(|error| Error::Transport(format!("username proof refused: {error}")))?;
         let request_id = URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32));
         let timestamp_ms = unix_timestamp_ms();
