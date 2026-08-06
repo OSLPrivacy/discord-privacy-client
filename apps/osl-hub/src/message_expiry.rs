@@ -198,6 +198,73 @@ impl ExpiryVerdict {
     }
 }
 
+/// The clock OSL used to decide timed-message expiry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpiryTimeSource {
+    /// A fresh timestamp from the service that owns the message deadline.
+    TrustedService,
+    /// Offline projection from the last trusted service timestamp plus
+    /// monotonic time elapsed while this process kept running.
+    LastTrustedServicePlusElapsed,
+    /// Machine wall time. This exists only as an explicit non-winner for tests
+    /// and diagnostics; expiry must not fall back to it when trusted time is
+    /// unavailable.
+    MachineWall,
+}
+
+/// Inputs for resolving the time used by timed-message expiry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExpiryTimeInput {
+    /// The local wall clock observed at the same decision point.
+    pub machine_wall_unix_secs: i64,
+    /// Fresh service time when the service is reachable.
+    pub trusted_service_unix_secs: Option<i64>,
+    /// Last service time OSL trusted before going offline.
+    pub last_trusted_service_unix_secs: Option<i64>,
+    /// Monotonic elapsed runtime since `last_trusted_service_unix_secs`.
+    pub elapsed_since_last_trusted: Option<Duration>,
+}
+
+/// The resolved time fed into the expiry ledger.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExpiryTimeDecision {
+    pub now_unix_secs: i64,
+    pub source: ExpiryTimeSource,
+    pub machine_wall_unix_secs: i64,
+}
+
+impl ExpiryTimeDecision {
+    pub fn wall_time_won(self) -> bool {
+        matches!(self.source, ExpiryTimeSource::MachineWall)
+    }
+}
+
+/// Resolve the only clocks allowed to drive timed-message expiry.
+///
+/// Online, the service timestamp wins. Offline, OSL advances the last trusted
+/// service timestamp by monotonic runtime elapsed since that trust point. Local
+/// wall time is carried for diagnostics but is not a fallback; without a fresh
+/// or projectable trusted timestamp, callers must fail closed rather than let a
+/// changed machine clock extend content.
+pub fn resolve_expiry_time(input: ExpiryTimeInput) -> Option<ExpiryTimeDecision> {
+    if let Some(now_unix_secs) = input.trusted_service_unix_secs {
+        return Some(ExpiryTimeDecision {
+            now_unix_secs,
+            source: ExpiryTimeSource::TrustedService,
+            machine_wall_unix_secs: input.machine_wall_unix_secs,
+        });
+    }
+
+    let last_trusted = input.last_trusted_service_unix_secs?;
+    let elapsed = input.elapsed_since_last_trusted?;
+    let elapsed_secs = i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX);
+    Some(ExpiryTimeDecision {
+        now_unix_secs: last_trusted.saturating_add(elapsed_secs),
+        source: ExpiryTimeSource::LastTrustedServicePlusElapsed,
+        machine_wall_unix_secs: input.machine_wall_unix_secs,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Sealed open-clock ledger
 // ---------------------------------------------------------------------------
