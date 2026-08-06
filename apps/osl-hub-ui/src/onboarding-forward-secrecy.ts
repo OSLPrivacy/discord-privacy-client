@@ -66,7 +66,8 @@ export function onboardingForwardSecrecyMarkup(state: ForwardSecrecyOnboardingSt
   };
 
   return `<section class="fs-onboarding" aria-labelledby="forward-secrecy-heading">
-    <h1 id="forward-secrecy-heading" tabindex="-1" class="fs-title">If someone gets into this computer,<br/>what happens to old messages?</h1>
+    <h1 id="forward-secrecy-heading" tabindex="-1" class="fs-title">Forward secrecy</h1>
+    <p class="fs-question">If someone gets into this computer,<br/>what happens to old messages?</p>
     <fieldset class="fs-choice-grid"><legend class="sr-only">Old messages</legend>
       ${card(
         "protect-past",

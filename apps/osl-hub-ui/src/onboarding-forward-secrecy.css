@@ -41,13 +41,21 @@
    and out-specifies a lone class selector. */
 .onboarding-panel .fs-title,
 .fs-title {
-  margin: 0 0 30px;
+  margin: 0 0 10px;
   font-family: inherit;
   font-size: 30px;
   font-weight: 600;
   line-height: 1.25;
-  letter-spacing: -.02em;
+  letter-spacing: 0;
   color: var(--osl-setup-text);
+}
+
+.fs-question {
+  margin: 0 0 30px;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 18px;
+  line-height: 1.35;
+  color: var(--osl-setup-muted);
 }
 
 .fs-choice-grid {
