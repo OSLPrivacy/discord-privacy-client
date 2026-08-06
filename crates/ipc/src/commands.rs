@@ -149,6 +149,9 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_get_server_defaults", || {
             let _ = cmd_osl_get_server_defaults(&state);
         });
+        assert_command_marks_activity("cmd_osl_get_new_friend_defaults", || {
+            let _ = cmd_osl_get_new_friend_defaults(&state);
+        });
         assert_command_marks_activity("cmd_osl_get_app_preferences", || {
             let _ = cmd_osl_get_app_preferences(&state);
         });
@@ -15922,6 +15925,31 @@ pub fn cmd_osl_apply_server_default_to_existing_channels(
     }
     persist_whitelist_state_now(state);
     Ok(affected)
+}
+
+// ---- New-friend defaults ----
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NewFriendDefaultsDto {
+    pub account_reach: String,
+    pub auto_whitelist: String,
+    pub verification_warnings: String,
+}
+
+pub fn cmd_osl_get_new_friend_defaults(state: &AppState) -> Result<NewFriendDefaultsDto, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(NewFriendDefaultsDto {
+        account_reach: prefs.new_friend_account_reach.as_value().to_string(),
+        auto_whitelist: prefs.new_friend_auto_whitelist.as_label().to_string(),
+        verification_warnings: prefs
+            .new_friend_verification_warnings
+            .as_value()
+            .to_string(),
+    })
 }
 
 // ---- Phase 9-B1: app preferences ----

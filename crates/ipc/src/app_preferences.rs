@@ -75,6 +75,42 @@ impl UpdateChannel {
     }
 }
 
+/// Default reach granted to a newly added friend.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NewFriendAccountReach {
+    #[default]
+    ApprovedChatsOnly,
+    AllSharedChats,
+}
+
+impl NewFriendAccountReach {
+    pub fn as_value(self) -> &'static str {
+        match self {
+            Self::ApprovedChatsOnly => "approved_chats_only",
+            Self::AllSharedChats => "all_shared_chats",
+        }
+    }
+}
+
+/// Whether new-friend verification warnings are shown by default.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NewFriendVerificationWarnings {
+    #[default]
+    Enabled,
+    Disabled,
+}
+
+impl NewFriendVerificationWarnings {
+    pub fn as_value(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -87,9 +123,15 @@ pub struct AppPreferences {
     pub update_channel: UpdateChannel,
     #[serde(default)]
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistRule>,
+    #[serde(default)]
+    pub new_friend_account_reach: NewFriendAccountReach,
+    #[serde(default)]
+    pub new_friend_auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistRule,
+    #[serde(default)]
+    pub new_friend_verification_warnings: NewFriendVerificationWarnings,
 }
 
-pub const APP_PREFERENCES_VERSION: u32 = 2;
+pub const APP_PREFERENCES_VERSION: u32 = 3;
 
 pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {
