@@ -16323,6 +16323,130 @@ fn signal_rule_lookup(
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct MessageDefaultsDto {
+    pub burn_scope: String,
+    pub timer_seconds: u32,
+    pub view_once_length_seconds: u32,
+    pub cover_writing: String,
+}
+
+impl From<&crate::app_preferences::MessageDefaults> for MessageDefaultsDto {
+    fn from(defaults: &crate::app_preferences::MessageDefaults) -> Self {
+        Self {
+            burn_scope: defaults.burn_scope.clone(),
+            timer_seconds: defaults.timer_seconds,
+            view_once_length_seconds: defaults.view_once_length_seconds,
+            cover_writing: defaults.cover_writing.clone(),
+        }
+    }
+}
+
+fn validate_message_default_choice(field: &str, value: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > 64 {
+        return Err(format!("OSL message default {field} choice is invalid"));
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return Err(format!("OSL message default {field} choice is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_message_defaults(dto: &MessageDefaultsDto) -> Result<(), String> {
+    validate_message_default_choice("burn_scope", &dto.burn_scope)?;
+    validate_message_default_choice("cover_writing", &dto.cover_writing)?;
+    if dto.timer_seconds == 0 || dto.timer_seconds > 31_536_000 {
+        return Err("OSL message default timer_seconds is invalid".to_owned());
+    }
+    if dto.view_once_length_seconds == 0 || dto.view_once_length_seconds > 3_600 {
+        return Err("OSL message default view_once_length_seconds is invalid".to_owned());
+    }
+    Ok(())
+}
+
+pub fn cmd_osl_save_message_defaults(
+    state: &AppState,
+    defaults: MessageDefaultsDto,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<MessageDefaultsDto, String> {
+    record_activity_on_command_entry();
+    validate_message_defaults(&defaults)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.message_defaults = crate::app_preferences::MessageDefaults {
+            burn_scope: defaults.burn_scope.clone(),
+            timer_seconds: defaults.timer_seconds,
+            view_once_length_seconds: defaults.view_once_length_seconds,
+            cover_writing: defaults.cover_writing.clone(),
+        };
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(defaults)
+}
+
+pub fn cmd_osl_read_message_defaults(state: &AppState) -> Result<MessageDefaultsDto, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(MessageDefaultsDto::from(&prefs.message_defaults))
+}
+
+pub fn cmd_osl_read_message_default_burn_scope(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    Ok(state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .message_defaults
+        .burn_scope
+        .clone())
+}
+
+pub fn cmd_osl_read_message_default_timer_seconds(state: &AppState) -> Result<u32, String> {
+    record_activity_on_command_entry();
+    Ok(state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .message_defaults
+        .timer_seconds)
+}
+
+pub fn cmd_osl_read_message_default_view_once_length_seconds(
+    state: &AppState,
+) -> Result<u32, String> {
+    record_activity_on_command_entry();
+    Ok(state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .message_defaults
+        .view_once_length_seconds)
+}
+
+pub fn cmd_osl_read_message_default_cover_writing(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    Ok(state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .message_defaults
+        .cover_writing
+        .clone())
+}
+
 // ---- G3.3: auto-updater channel ----
 //
 // Channel persists in the SAME app_preferences.json as every other

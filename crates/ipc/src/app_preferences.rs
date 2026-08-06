@@ -75,6 +75,50 @@ impl UpdateChannel {
     }
 }
 
+pub const DEFAULT_MESSAGE_BURN_SCOPE: &str = "chat";
+pub const DEFAULT_MESSAGE_TIMER_SECONDS: u32 = crate::scope_ttl_file::DEFAULT_TTL_SECONDS;
+pub const DEFAULT_VIEW_ONCE_LENGTH_SECONDS: u32 = 30;
+pub const DEFAULT_COVER_WRITING: &str = "covertext";
+
+fn default_message_burn_scope() -> String {
+    DEFAULT_MESSAGE_BURN_SCOPE.to_owned()
+}
+
+fn default_message_timer_seconds() -> u32 {
+    DEFAULT_MESSAGE_TIMER_SECONDS
+}
+
+fn default_view_once_length_seconds() -> u32 {
+    DEFAULT_VIEW_ONCE_LENGTH_SECONDS
+}
+
+fn default_cover_writing() -> String {
+    DEFAULT_COVER_WRITING.to_owned()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageDefaults {
+    #[serde(default = "default_message_burn_scope")]
+    pub burn_scope: String,
+    #[serde(default = "default_message_timer_seconds")]
+    pub timer_seconds: u32,
+    #[serde(default = "default_view_once_length_seconds")]
+    pub view_once_length_seconds: u32,
+    #[serde(default = "default_cover_writing")]
+    pub cover_writing: String,
+}
+
+impl Default for MessageDefaults {
+    fn default() -> Self {
+        Self {
+            burn_scope: default_message_burn_scope(),
+            timer_seconds: default_message_timer_seconds(),
+            view_once_length_seconds: default_view_once_length_seconds(),
+            cover_writing: default_cover_writing(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -87,6 +131,8 @@ pub struct AppPreferences {
     pub update_channel: UpdateChannel,
     #[serde(default)]
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
+    #[serde(default)]
+    pub message_defaults: MessageDefaults,
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 2;
