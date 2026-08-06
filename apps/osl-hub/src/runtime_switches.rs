@@ -97,6 +97,58 @@ pub struct OldTestOnlyBuildChoiceReport {
     pub source: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SwitchDefaultSafety {
+    Safe,
+    Unsafe,
+}
+
+impl SwitchDefaultSafety {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Safe => "safe",
+            Self::Unsafe => "unsafe",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SendingDefaultStatus {
+    NotRequired,
+    DisabledWithoutAuthority,
+    EnabledForTest,
+}
+
+impl SendingDefaultStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRequired => "not-required",
+            Self::DisabledWithoutAuthority => "disabled-without-authority",
+            Self::EnabledForTest => "enabled-for-test",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeSwitchStatusLine {
+    pub name: &'static str,
+    pub value: &'static str,
+    pub default_safety: SwitchDefaultSafety,
+    pub sending: SendingDefaultStatus,
+}
+
+impl RuntimeSwitchStatusLine {
+    pub fn render(&self) -> String {
+        format!(
+            "SWITCH {} value={} default={} sending={}",
+            self.name,
+            self.value,
+            self.default_safety.as_str(),
+            self.sending.as_str()
+        )
+    }
+}
+
 pub fn old_test_only_build_choice_reports(
     switches: ResolvedTestOnlyRunTimeSwitches,
 ) -> Vec<OldTestOnlyBuildChoiceReport> {
@@ -112,6 +164,71 @@ pub fn old_test_only_build_choice_reports(
             source: "run-time switches",
         },
     ]
+}
+
+pub fn runtime_switch_status_lines(
+    switches: ResolvedTestOnlyRunTimeSwitches,
+) -> Vec<RuntimeSwitchStatusLine> {
+    vec![
+        RuntimeSwitchStatusLine {
+            name: "password_screen_access",
+            value: switches.password_screen_access.as_str(),
+            default_safety: if switches.password_screen_access
+                == PasswordScreenAccess::RequirePasswordScreen
+            {
+                SwitchDefaultSafety::Safe
+            } else {
+                SwitchDefaultSafety::Unsafe
+            },
+            sending: SendingDefaultStatus::NotRequired,
+        },
+        RuntimeSwitchStatusLine {
+            name: "safe_sending",
+            value: switches.safe_sending.as_str(),
+            default_safety: if switches.safe_sending == SafeSending::LiveSendRequiresAuthority {
+                SwitchDefaultSafety::Safe
+            } else {
+                SwitchDefaultSafety::Unsafe
+            },
+            sending: match switches.safe_sending {
+                SafeSending::LiveSendRequiresAuthority => {
+                    SendingDefaultStatus::DisabledWithoutAuthority
+                }
+                SafeSending::DryRunSendForTest => SendingDefaultStatus::EnabledForTest,
+            },
+        },
+    ]
+}
+
+pub fn assert_runtime_switch_status_safe(lines: &[RuntimeSwitchStatusLine]) -> Result<(), String> {
+    let mut failures = Vec::new();
+    for line in lines {
+        if line.default_safety != SwitchDefaultSafety::Safe {
+            failures.push(format!(
+                "{} default is {}",
+                line.name,
+                line.default_safety.as_str()
+            ));
+        }
+        if line.name == "safe_sending"
+            && line.sending != SendingDefaultStatus::DisabledWithoutAuthority
+        {
+            failures.push(format!(
+                "{} sending is {}",
+                line.name,
+                line.sending.as_str()
+            ));
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "unsafe runtime switch defaults: {}",
+            failures.join("; ")
+        ))
+    }
 }
 
 pub fn read_startup_test_only_runtime_switches() -> Result<ResolvedTestOnlyRunTimeSwitches, String>
@@ -222,5 +339,35 @@ mod tests {
         assert!(bad_name.contains("unknown switch \"bad_switch_name\""));
         let bad_value = read_test_only_runtime_switches(["safe_sending=unsafe-send"]).unwrap_err();
         assert!(bad_value.contains("unknown value \"unsafe-send\""));
+    }
+
+    #[test]
+    fn task_0016_no_switch_status_lists_safe_defaults_and_required_send_block() {
+        let lines = runtime_switch_status_lines(ResolvedTestOnlyRunTimeSwitches::default());
+        println!("TASK0016_SWITCH_COUNT={}", lines.len());
+        for line in &lines {
+            println!("TASK0016_{}", line.render());
+        }
+
+        assert_eq!(lines.len(), TEST_ONLY_RUNTIME_SWITCHES.len());
+        assert_eq!(
+            lines.iter().map(RuntimeSwitchStatusLine::render).collect::<Vec<_>>(),
+            vec![
+                "SWITCH password_screen_access value=require-password-screen default=safe sending=not-required",
+                "SWITCH safe_sending value=live-send-requires-authority default=safe sending=disabled-without-authority",
+            ]
+        );
+        assert_runtime_switch_status_safe(&lines).expect("no-switch defaults must all be safe");
+
+        let unsafe_lines = runtime_switch_status_lines(ResolvedTestOnlyRunTimeSwitches {
+            password_screen_access: PasswordScreenAccess::SkipPasswordScreenForTest,
+            safe_sending: SafeSending::DryRunSendForTest,
+        });
+        let unsafe_error = assert_runtime_switch_status_safe(&unsafe_lines)
+            .expect_err("unsafe defaults must fail the status check");
+        println!("TASK0016_UNSAFE_DEFAULT_ERROR={unsafe_error}");
+        assert!(unsafe_error.contains("password_screen_access default is unsafe"));
+        assert!(unsafe_error.contains("safe_sending default is unsafe"));
+        assert!(unsafe_error.contains("safe_sending sending is enabled-for-test"));
     }
 }
