@@ -207,6 +207,7 @@ import { offlineCapabilityStatus, type OfflineUnavailableCapability, type OslCon
 import type { NativeDiscordOverlayOpenedBatch } from "./overlay-state";
 import type { NativeOverlayPendingAttachment } from "./overlay-state";
 import { listOslChatAttachments, openOslChatAttachment, selectOslChatAttachment } from "./native-overlay-adapter";
+import { VerificationWarningMemory, verificationWarningDecision, type VerificationWarningSetting, type VerificationWarningSurface } from "./verification-warning";
 import {
   pollNativeDiscordHeadlessQa,
   requestNativeDiscordVisibleRowRuntimeReceipt,
@@ -663,6 +664,9 @@ let oslChatBusy = false;
 let oslChatOperationEpoch = 0;
 const oslChatMessages = new Map<string, OslChatMessage[]>();
 const oslChatUnread = new Map<string, number>();
+let oslChatVerificationWarningSetting: VerificationWarningSetting = "every-time";
+const oslChatVerificationWarningMemory = new VerificationWarningMemory();
+let oslChatVerificationWarningSurface: VerificationWarningSurface = "none";
 let oslChatPreviewsVisible = true;
 let oslChatMutedPeople = new Set<string>();
 let oslChatSettingsPersonId: string | null = null;
@@ -4960,6 +4964,7 @@ function oslChatContent(): string {
     viewOnce: oslChatViewOnce,
     homeLogoUrl: oslVectorLogoUrl,
     deletionUnconfirmed: oslChatDeletionUnconfirmed,
+    verificationWarningSurface: oslChatVerificationWarningSurface,
   })}${offlineStatus}${receipt}${attachments}${settings}</main>`;
 }
 
@@ -8312,6 +8317,16 @@ function oslChatTimestamp(): string {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date());
 }
 
+function decideOslChatVerificationWarning(personId: string, moment: "open-conversation" | "prepare-send"): VerificationWarningSurface {
+  const checked = oslChatHandshakeConfirmed(oslChatMessages.get(personId) ?? []);
+  return verificationWarningDecision(
+    oslChatVerificationWarningSetting,
+    { conversationId: personId, checked },
+    moment,
+    oslChatVerificationWarningMemory,
+  ).surface;
+}
+
 async function openOslChat(personId: string): Promise<void> {
   const person = hubPeople.find((candidate) => candidate.personId === personId);
   if (!person || !peerIsVerified(person) || oslChatBusy) return;
@@ -8320,6 +8335,7 @@ async function openOslChat(personId: string): Promise<void> {
     : [];
   const epoch = ++oslChatOperationEpoch;
   oslChatBusy = true;
+  oslChatVerificationWarningSurface = "none";
   oslChatSettingsPersonId = null;
   render();
   let shouldRefresh = false;
@@ -8362,6 +8378,7 @@ async function openOslChat(personId: string): Promise<void> {
       oslChatAttachments = await listOslChatAttachments() ?? [];
       shouldRefresh = true;
     }
+    oslChatVerificationWarningSurface = decideOslChatVerificationWarning(personId, "open-conversation");
   } finally {
     if (epoch === oslChatOperationEpoch) {
       oslChatBusy = false;
@@ -8598,6 +8615,7 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
   const draft = oslChatDraft;
   if (!context?.scopeApproved || !personId || oslChatBusy || !isHubPlaintext(draft) || refuseOfflineCapability("sendMessage")) return;
   const epoch = oslChatOperationEpoch;
+  oslChatVerificationWarningSurface = decideOslChatVerificationWarning(personId, "prepare-send");
   oslChatBusy = true;
   render();
   const sent = await prepareOslChatText(draft, oslChatViewOnce);
@@ -8630,6 +8648,7 @@ function resetOslChatUiState(clearMessages: boolean): void {
   oslChatDraft = "";
   oslChatBusy = false;
   oslChatAttachments = [];
+  oslChatVerificationWarningSurface = "none";
   if (clearMessages) oslChatMessages.clear();
 }
 
