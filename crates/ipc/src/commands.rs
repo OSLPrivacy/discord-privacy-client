@@ -15087,6 +15087,127 @@ mod account_transfer_tests {
     }
 
     #[test]
+    fn task_0459_restore_test_package_on_clean_profile_b() {
+        let _serial = crate::test_process_globals::serialize();
+        let _reset = FileKeyReset;
+        crate::main_password::set_file_storage_key(None);
+
+        const SOURCE_PROFILE: &str = "test-profile-A";
+        const CLEAN_PROFILE_B: &str = "test-profile-B";
+        const ACCOUNT: &str = "task0459-clean-profile-account";
+        const CONVERSATION: &str = "TASK0459-RESTORED-CONVERSATION";
+        const MESSAGE_ID: &str = "task0459-message-0001";
+        const MESSAGE_TEXT: &str = "TASK0459 clean profile B reads this restored package message";
+
+        let source_dir = TempDir::new().unwrap();
+        let profile_b_dir = TempDir::new().unwrap();
+        let entropy = [59; 16];
+        let phrase = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
+            .unwrap()
+            .to_string();
+
+        let source_state = state_with_entropy(entropy);
+        {
+            let mut identity = source_state.identity_slot();
+            let identity = identity.as_mut().expect("source identity installed");
+            identity.user_id = ACCOUNT.to_owned();
+            identity.discord_snowflake = Some(ACCOUNT.to_owned());
+        }
+        let source_identity = source_state.identity_slot().as_ref().unwrap().clone();
+        let expected_identity_key = STANDARD.encode(source_identity.ed25519_public.as_bytes());
+        let source_secret = *source_identity.x25519_secret.as_bytes();
+
+        {
+            let source_store =
+                MessageStore::open(&source_dir.path().join("store"), &source_secret).unwrap();
+            source_store
+                .put(&StoredMessage {
+                    discord_message_id: MESSAGE_ID.to_owned(),
+                    channel_id: CONVERSATION.to_owned(),
+                    sender_discord_id: ACCOUNT.to_owned(),
+                    sender_osl_user_id: ACCOUNT.to_owned(),
+                    plaintext: MESSAGE_TEXT.to_owned(),
+                    decrypted_at: 459,
+                    burned: false,
+                })
+                .unwrap();
+        }
+
+        let package = cmd_osl_export_data_with_dir(&source_state, source_dir.path())
+            .expect("profile A exports a restorable package");
+        assert!(
+            !profile_b_dir.path().join("store/messages.sqlite").exists(),
+            "profile B must start clean, without a preexisting message store"
+        );
+
+        let profile_b_state = AppState::new();
+        let mut placeholder = keystore::generate_identity("task0459-profile-b-placeholder".into());
+        placeholder.discord_snowflake = Some(ACCOUNT.to_owned());
+        profile_b_state.install_identity(placeholder);
+
+        cmd_osl_recover_account_from_export_with_dir(
+            &profile_b_state,
+            package.clone(),
+            phrase,
+            profile_b_dir.path(),
+        )
+        .expect("direct restore command imports the package into clean profile B");
+
+        let unlocked_state = AppState::new();
+        let unlock_response = cmd_load_identity(
+            &unlocked_state,
+            profile_b_dir
+                .path()
+                .join("identity.json")
+                .display()
+                .to_string(),
+        )
+        .expect("profile B unlocks by loading restored identity.json");
+        let unlocked_identity = unlocked_state.identity_slot().as_ref().unwrap().clone();
+        let restored_identity_key = STANDARD.encode(unlocked_identity.ed25519_public.as_bytes());
+        assert_eq!(restored_identity_key, expected_identity_key);
+
+        let restored_store = MessageStore::open(
+            &profile_b_dir.path().join("store"),
+            unlocked_identity.x25519_secret.as_bytes(),
+        )
+        .expect("profile B opens restored message store with restored identity key");
+        let restored_rows = restored_store
+            .list_by_channel(CONVERSATION, 10)
+            .expect("profile B reads restored conversation");
+        assert_eq!(restored_rows.len(), 1);
+        assert_eq!(restored_rows[0].discord_message_id, MESSAGE_ID);
+        assert_eq!(restored_rows[0].plaintext, MESSAGE_TEXT);
+
+        println!("TASK0459_SOURCE_PROFILE={SOURCE_PROFILE}");
+        println!("TASK0459_CLEAN_PROFILE={CLEAN_PROFILE_B}");
+        println!("TASK0459_DIRECT_RESTORE_COMMAND=cmd_osl_recover_account_from_export_with_dir");
+        println!("TASK0459_PROFILE_B_CLEAN_STORE_BEFORE=false");
+        println!("TASK0459_PACKAGE_BYTES={}", package.len());
+        println!("TASK0459_PROFILE_B_UNLOCKED=true");
+        println!("TASK0459_UNLOCKED_USER_ID={}", unlock_response.user_id);
+        println!("TASK0459_EXPECTED_IDENTITY_KEY={expected_identity_key}");
+        println!("TASK0459_PROFILE_B_IDENTITY_KEY={restored_identity_key}");
+        println!(
+            "TASK0459_IDENTITY_KEY_MATCH={}",
+            restored_identity_key == expected_identity_key
+        );
+        println!("TASK0459_EXPECTED_CONVERSATION_COUNT=1");
+        println!(
+            "TASK0459_PROFILE_B_CONVERSATION_COUNT={}",
+            restored_rows.len()
+        );
+        println!(
+            "TASK0459_RESTORED_CONVERSATION={}",
+            restored_rows[0].channel_id
+        );
+        println!(
+            "TASK0459_RESTORED_MESSAGE_TEXT={}",
+            restored_rows[0].plaintext
+        );
+    }
+
+    #[test]
     fn production_store_opens_use_keystore_backed_anchor() {
         let _serial = crate::test_process_globals::serialize();
         let _reset = ProductionStoreOpenHookReset;
