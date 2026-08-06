@@ -28,6 +28,7 @@ const MAX_FRIEND_CODE_BYTES: usize = 8 * 1024;
 const MAX_SECURITY_STATE_BYTES: u64 = 8 * 1024 * 1024;
 const PEOPLE_FILE: &str = "hub_people.json";
 const SECURITY_PREFS_FILE: &str = "hub_security_preferences.json";
+const DEFAULT_DECRYPT_DISPLAY_ENABLED: bool = false;
 const PEER_REPLAY_FILE: &str = "hub_peer_replay.json";
 const ATTACHMENT_BURN_FILE: &str = "scope_attachments.json";
 /// Receiver-side bilateral-burn replay state. Encrypted at rest, and keyed
@@ -163,6 +164,41 @@ pub struct ScopeSecurityDto {
     pub storage_key: String,
     pub ttl_seconds: u32,
     pub decrypt_display_enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum DecryptDisplayChoice {
+    Silent,
+    Visible,
+}
+
+impl DecryptDisplayChoice {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "SILENT" => Ok(Self::Silent),
+            "VISIBLE" => Ok(Self::Visible),
+            _ => Err("OSL decrypt display choice is invalid".to_owned()),
+        }
+    }
+
+    pub const fn from_enabled(enabled: bool) -> Self {
+        if enabled {
+            Self::Visible
+        } else {
+            Self::Silent
+        }
+    }
+
+    pub const fn decrypt_display_enabled(self) -> bool {
+        matches!(self, Self::Visible)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Silent => "SILENT",
+            Self::Visible => "VISIBLE",
+        }
+    }
 }
 
 /// The minimum friend state needed to create a manual peer-messaging lease.
@@ -2404,7 +2440,7 @@ pub fn scope_security(scope_input: ScopeInput) -> Result<ScopeSecurityDto, Strin
             .decrypt_display_by_scope
             .get(&storage_key)
             .copied()
-            .unwrap_or(true),
+            .unwrap_or(DEFAULT_DECRYPT_DISPLAY_ENABLED),
         storage_key,
     })
 }
@@ -2447,6 +2483,21 @@ pub fn set_scope_security(
         ttl_seconds: effective_ttl,
         decrypt_display_enabled,
     })
+}
+
+pub fn set_scope_security_display_choice(
+    security: &HubSecurityState,
+    scope_input: ScopeInput,
+    ttl_seconds: u32,
+    display_choice: &str,
+) -> Result<ScopeSecurityDto, String> {
+    let choice = DecryptDisplayChoice::parse(display_choice)?;
+    set_scope_security(
+        security,
+        scope_input,
+        ttl_seconds,
+        choice.decrypt_display_enabled(),
+    )
 }
 
 /// Burn all OSL Privacy history in one scope and delete every recorded remote
@@ -5891,6 +5942,61 @@ mod tests {
             dm_scope_input(scope_id)
         )
         .unwrap());
+    }
+
+    fn task_0317_display_choice(enabled: bool) -> &'static str {
+        DecryptDisplayChoice::from_enabled(enabled).as_str()
+    }
+
+    #[test]
+    fn task_0317_display_choice_default_persistence_and_refusal() {
+        let harness = FileBackedSecurityHarness::new("task-0317-display-choice");
+        let security = HubSecurityState::default();
+        let new_account_scope = dm_scope_input("task0317-new-account".to_owned());
+        let changed_account_scope = dm_scope_input("task0317-changed-account".to_owned());
+        let invalid_account_scope = dm_scope_input("task0317-invalid-account".to_owned());
+
+        let new_account = scope_security(new_account_scope).unwrap();
+        let new_account_choice = task_0317_display_choice(new_account.decrypt_display_enabled);
+        println!("TASK0317 new_account.display_choice={new_account_choice}");
+        assert_eq!(new_account_choice, "SILENT");
+
+        set_scope_security_display_choice(
+            &security,
+            changed_account_scope.clone(),
+            3_600,
+            "VISIBLE",
+        )
+        .unwrap();
+        let restarted = scope_security(changed_account_scope).unwrap();
+        let changed_account_choice = task_0317_display_choice(restarted.decrypt_display_enabled);
+        println!("TASK0317 changed_account.after_restart.display_choice={changed_account_choice}");
+        assert_eq!(changed_account_choice, "VISIBLE");
+
+        let invalid = set_scope_security_display_choice(
+            &security,
+            invalid_account_scope.clone(),
+            3_600,
+            "AUTO",
+        );
+        assert!(invalid.is_err());
+
+        let stored: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        let invalid_storage_key = Scope::try_from(invalid_account_scope)
+            .unwrap()
+            .storage_key();
+        let invalid_stored = stored
+            .decrypt_display_by_scope
+            .contains_key(&invalid_storage_key);
+        println!("TASK0317 invalid_choice=AUTO result=REFUSED stored={invalid_stored}");
+        assert_eq!(
+            stored
+                .decrypt_display_by_scope
+                .get("dm:task0317-changed-account"),
+            Some(&true)
+        );
+        assert!(!invalid_stored);
     }
 
     /// Read the burn identifiers the outbox actually persisted, so the ack half
