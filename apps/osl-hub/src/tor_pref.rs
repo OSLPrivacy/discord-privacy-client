@@ -800,6 +800,7 @@ mod tests {
         "open_osl_chat_text",
         "list_osl_chat_history",
         "select_osl_chat_attachment",
+        "drop_osl_chat_attachments",
         "list_osl_chat_attachments",
         "open_osl_chat_attachment",
         "select_native_discord_overlay_attachment",
@@ -832,6 +833,10 @@ mod tests {
         "get_hub_username_status",
         "add_hub_friend_by_username",
         "get_osl_profile",
+        "set_owner_profile_picture",
+        "read_owner_profile_picture",
+        "read_owner_profile_picture_for_friend",
+        "clear_owner_profile_picture",
         // Local-only: derives an HKDF subkey from the on-device storage-key
         // authority and returns it to the local webview. No socket, no
         // constructor that consults keystore::egress.
@@ -839,6 +844,8 @@ mod tests {
         "verify_hub_friend_safety_number",
         "remove_hub_friend",
         "list_hub_people",
+        "compare_allowed_place_direction_state",
+        "list_group_verification_build_entries",
         "set_hub_friend_nickname",
         "set_active_hub_friend_permission",
         "set_active_hub_friend_reach",

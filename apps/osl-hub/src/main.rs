@@ -72,6 +72,7 @@ use osl_privacy_hub::native_window_host::{
     DiscordSessionMode, DiscordTakeover, NativeWindowHostReason, NativeWindowHostResult,
     NativeWindowHostState,
 };
+use osl_privacy_hub::osl_chat_drag_drop::{OslChatAttachmentTray, OslChatDropIntakeReceipt};
 use osl_privacy_hub::osl_mail::{self, OslMailState, OslMailStatus};
 use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput, OwnerProfilePictureDto};
 use osl_privacy_hub::password_lifecycle::{
@@ -213,6 +214,9 @@ use osl_privacy_hub::hub_command_surface::{
 
 #[derive(Default)]
 struct WhatsAppQaProtectionState(Mutex<WhatsAppAccessibilityState>);
+
+#[derive(Default)]
+struct OslChatAttachmentTrayState(Mutex<OslChatAttachmentTray>);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -5094,6 +5098,28 @@ async fn select_osl_chat_attachment(
 }
 
 #[tauri::command]
+async fn drop_osl_chat_attachments(
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    tray: State<'_, OslChatAttachmentTrayState>,
+    paths: Vec<String>,
+) -> Result<OslChatDropIntakeReceipt, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may drop OSL Chat attachments".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let paths = paths
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .collect::<Vec<_>>();
+    let mut tray = tray
+        .0
+        .lock()
+        .map_err(|_| "OSL Chat attachment tray is unavailable".to_owned())?;
+    tray.accept_dropped_files(paths)
+}
+
+#[tauri::command]
 async fn list_osl_chat_attachments(
     app: tauri::AppHandle,
     caller: tauri::WebviewWindow,
@@ -9815,6 +9841,7 @@ fn main() {
         startup_breadcrumb("setup_step_24_core_state_managed"); // STARTUP-TRACE
         app.manage(HubBrokerState::default());
         startup_breadcrumb("setup_step_25_broker_state_managed"); // STARTUP-TRACE
+        app.manage(OslChatAttachmentTrayState::default());
         app.manage(security_state);
         revocation_drain_timer::spawn(app.handle().clone());
         startup_breadcrumb("setup_step_26_security_state_managed"); // STARTUP-TRACE

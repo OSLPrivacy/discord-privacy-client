@@ -119,6 +119,7 @@
     "allow-prepare-osl-chat-text",
     "allow-open-osl-chat-text",
     "allow-list-osl-chat-history",
+    "allow-drop-osl-chat-attachments",
     "allow-select-osl-chat-attachment",
     "allow-list-osl-chat-attachments",
     "allow-open-osl-chat-attachment",
