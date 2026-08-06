@@ -180,6 +180,7 @@ const MAX_REVOCATION_POSTS_PER_DRAIN: usize = 8;
 const MAX_PEER_LIFETIME_SECONDS: i64 = 7 * 24 * 60 * 60;
 const MAX_PEER_CLOCK_SKEW_SECONDS: i64 = 5 * 60;
 const VIEW_ONCE_UNAVAILABLE: &str = "This view-once message is unavailable or expired";
+const VIEW_ONCE_ALREADY_OPENED: &str = "This view-once message was already opened";
 const LOCAL_PROTECTED_MESSAGE_TYPE: u8 = 0x80;
 const LOCAL_PROTECTED_FILE: &str = "hub_local_protected.json";
 const NATIVE_OVERLAY_RECEIPTS_FILE: &str = "hub_native_overlay_receipts.json";
@@ -320,6 +321,7 @@ struct BrokerInner {
 pub struct HubBrokerState {
     inner: Mutex<BrokerInner>,
     local_protected_transition: Mutex<()>,
+    native_overlay_view_once_reveal_transition: Mutex<()>,
     native_overlay_receipt_transition: Mutex<()>,
     inbound_privacy_receipts: Mutex<BTreeMap<([u8; 32], [u8; 32]), ReceiptState>>,
     native_overlay_received_view_once: Mutex<BTreeMap<String, i64>>,
@@ -331,6 +333,7 @@ impl core::fmt::Debug for HubBrokerState {
         f.debug_struct("HubBrokerState")
             .field("inner", &"<redacted>")
             .field("local_protected_transition", &"<mutex>")
+            .field("native_overlay_view_once_reveal_transition", &"<mutex>")
             .field("native_overlay_receipt_transition", &"<mutex>")
             .field("inbound_privacy_receipts", &"<mutex>")
             .field(
@@ -4427,6 +4430,10 @@ pub fn reveal_native_discord_overlay_view_once(
     if !valid_peer_attachment_id(message_id) {
         return Err(VIEW_ONCE_UNAVAILABLE.to_owned());
     }
+    let _reveal = broker
+        .native_overlay_view_once_reveal_transition
+        .lock()
+        .map_err(|_| VIEW_ONCE_UNAVAILABLE.to_owned())?;
     let context_token = broker.active_native_manual_context_token()?;
     let manual = broker.manual_peer_for(&context_token)?;
     let now = ipc::main_password::now_unix_secs_pub();
@@ -4434,7 +4441,7 @@ pub fn reveal_native_discord_overlay_view_once(
         .unwrap_or(false)
     {
         let _ = broker.record_view_once_second_reveal_refusal(message_id, now);
-        return Err(VIEW_ONCE_UNAVAILABLE.to_owned());
+        return Err(VIEW_ONCE_ALREADY_OPENED.to_owned());
     }
     let mut batch = drain_peer_inbox_text(
         core,
