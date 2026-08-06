@@ -315,6 +315,34 @@ impl MessengerWhitelistKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InstagramWhitelistKind {
+    DirectMessage,
+    GroupChat,
+    PublicPost,
+}
+
+impl InstagramWhitelistKind {
+    pub const ALL: [Self; 3] = [Self::DirectMessage, Self::GroupChat, Self::PublicPost];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct_message",
+            Self::GroupChat => "group_chat",
+            Self::PublicPost => "public_post",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct message",
+            Self::GroupChat => "group chat",
+            Self::PublicPost => "public post",
+        }
+    }
+}
+
 pub fn parse_auto_whitelist_choice(input: &str) -> Result<AutoWhitelistChoice, String> {
     let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
     AutoWhitelistChoice::ALL
