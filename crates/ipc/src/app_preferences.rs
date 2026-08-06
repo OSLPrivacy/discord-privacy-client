@@ -29,6 +29,12 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::str::FromStr;
 
+pub const DEFAULT_LANGUAGE_CHOICE: &str = "en";
+
+pub fn default_language_choice() -> String {
+    DEFAULT_LANGUAGE_CHOICE.to_string()
+}
+
 /// Active stego envelope. Mode 0 is the production `DPC0::<b64>`
 /// path; Mode 1 is the multi-message `DPC1::<sentences>` cover
 /// added in 9-B1.
@@ -147,10 +153,6 @@ impl FromStr for StartWithWindowsChoice {
     }
 }
 
-/// How long OSL waits after the last owner activity before it locks itself.
-/// Missing legacy preferences keep the historical 15-minute behavior; `Never`
-/// is an explicit opt-out, not the default.
-
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AlertModeChoice {
@@ -267,7 +269,7 @@ impl FollowActiveAppChoice {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
     pub version: u32,
@@ -289,9 +291,29 @@ pub struct AppPreferences {
     pub alert_mode_choice: AlertModeChoice,
     #[serde(default)]
     pub follow_active_app_choice: FollowActiveAppChoice,
+    #[serde(default = "default_language_choice")]
+    pub language: String,
 }
 
-pub const APP_PREFERENCES_VERSION: u32 = 3;
+impl Default for AppPreferences {
+    fn default() -> Self {
+        Self {
+            version: 0,
+            stego_mode: StegoMode::default(),
+            tour: TourState::default(),
+            update_channel: UpdateChannel::default(),
+            ask_before_irreversible_actions: AskBeforeIrreversibleActionsChoice::default(),
+            rn_wire_policy_requested: false,
+            start_with_windows: StartWithWindowsChoice::default(),
+            idle_lock_time_choice: IdleLockTimeChoice::default(),
+            alert_mode_choice: AlertModeChoice::default(),
+            follow_active_app_choice: FollowActiveAppChoice::default(),
+            language: default_language_choice(),
+        }
+    }
+}
+
+pub const APP_PREFERENCES_VERSION: u32 = 4;
 
 pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {
