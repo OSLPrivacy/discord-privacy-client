@@ -37,6 +37,44 @@ pub struct LocalMessageCandidate {
     pub attachments: Vec<LocalAttachmentCandidate>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceFoundMessageInput {
+    pub service_id: String,
+    pub sender: Option<String>,
+    pub sent_at_unix_ms: i64,
+    pub place: String,
+    pub text: String,
+    pub sent_by_signed_in_account: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundMessageRecord {
+    pub sender: String,
+    pub sent_at_unix_ms: i64,
+    pub place: String,
+    pub text: String,
+    pub sent_by_signed_in_account: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FoundMessageRecordError {
+    MissingSender,
+    InvalidField,
+}
+
+impl std::fmt::Display for FoundMessageRecordError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingSender => f.write_str("found message sender is missing"),
+            Self::InvalidField => f.write_str("found message record field is invalid"),
+        }
+    }
+}
+
+impl std::error::Error for FoundMessageRecordError {}
+
 #[derive(Clone, Copy, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PrivacyRiskCategory {
@@ -160,6 +198,42 @@ pub fn group_saved_matches_by_account(
         groups,
         total_matches,
     }
+}
+
+pub fn name_found_message_record(
+    input: ServiceFoundMessageInput,
+) -> Result<FoundMessageRecord, FoundMessageRecordError> {
+    if input.service_id.is_empty()
+        || input.service_id.len() > 32
+        || !input.service_id.bytes().all(valid_id_byte)
+        || input.place.is_empty()
+        || input.place.len() > 256
+        || input.text.is_empty()
+        || input.text.len() > MAX_TEXT_BYTES
+        || input.text.contains('\0')
+    {
+        return Err(FoundMessageRecordError::InvalidField);
+    }
+
+    let sender = input
+        .sender
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .ok_or(FoundMessageRecordError::MissingSender)?;
+
+    Ok(FoundMessageRecord {
+        sender,
+        sent_at_unix_ms: input.sent_at_unix_ms,
+        place: input.place,
+        text: input.text,
+        sent_by_signed_in_account: input.sent_by_signed_in_account,
+    })
+}
+
+pub fn name_found_message_records(
+    inputs: Vec<ServiceFoundMessageInput>,
+) -> Result<Vec<FoundMessageRecord>, FoundMessageRecordError> {
+    inputs.into_iter().map(name_found_message_record).collect()
 }
 
 /// Reject oversized attachment IPC inputs before they are cloned, decoded, or
@@ -809,6 +883,107 @@ mod tests {
                 time: "10:45".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn task_3000_direct_command_names_found_message_record_shape_and_refuses_missing_sender() {
+        let samples = vec![
+            ServiceFoundMessageInput {
+                service_id: "discord".to_owned(),
+                sender: Some("Ari Discord".to_owned()),
+                sent_at_unix_ms: 1_786_008_600_000,
+                place: "discord:dm:task-3000-alpha:message-1".to_owned(),
+                text: "Discord sample found message 3000".to_owned(),
+                sent_by_signed_in_account: false,
+            },
+            ServiceFoundMessageInput {
+                service_id: "telegram".to_owned(),
+                sender: Some("Tessa Telegram".to_owned()),
+                sent_at_unix_ms: 1_786_012_200_000,
+                place: "telegram:chat:task-3000-beta:message-2".to_owned(),
+                text: "Telegram sample found message 3000".to_owned(),
+                sent_by_signed_in_account: true,
+            },
+            ServiceFoundMessageInput {
+                service_id: "signal".to_owned(),
+                sender: Some("Sam Signal".to_owned()),
+                sent_at_unix_ms: 1_786_015_800_000,
+                place: "signal:thread:task-3000-gamma:message-3".to_owned(),
+                text: "Signal sample found message 3000".to_owned(),
+                sent_by_signed_in_account: false,
+            },
+        ];
+        let services: Vec<String> = samples
+            .iter()
+            .map(|sample| sample.service_id.clone())
+            .collect();
+        let records =
+            name_found_message_records(samples.clone()).expect("sample records are valid");
+        println!(
+            "TASK3000_DIRECT_RESULT command=name_found_message_records service_count={} record_count={}",
+            services.len(),
+            records.len()
+        );
+        for (service, record) in services.iter().zip(&records) {
+            let all_five_fields_set = !record.sender.is_empty()
+                && record.sent_at_unix_ms > 0
+                && !record.place.is_empty()
+                && !record.text.is_empty();
+            println!(
+                "TASK3000_RECORD service={} sender=\"{}\" sent_at_unix_ms={} place=\"{}\" text=\"{}\" sent_by_signed_in_account={} all_five_fields_set={}",
+                service,
+                record.sender,
+                record.sent_at_unix_ms,
+                record.place,
+                record.text,
+                record.sent_by_signed_in_account,
+                all_five_fields_set
+            );
+        }
+
+        assert_eq!(records.len(), 3);
+        assert_eq!(
+            records,
+            vec![
+                FoundMessageRecord {
+                    sender: "Ari Discord".to_owned(),
+                    sent_at_unix_ms: 1_786_008_600_000,
+                    place: "discord:dm:task-3000-alpha:message-1".to_owned(),
+                    text: "Discord sample found message 3000".to_owned(),
+                    sent_by_signed_in_account: false,
+                },
+                FoundMessageRecord {
+                    sender: "Tessa Telegram".to_owned(),
+                    sent_at_unix_ms: 1_786_012_200_000,
+                    place: "telegram:chat:task-3000-beta:message-2".to_owned(),
+                    text: "Telegram sample found message 3000".to_owned(),
+                    sent_by_signed_in_account: true,
+                },
+                FoundMessageRecord {
+                    sender: "Sam Signal".to_owned(),
+                    sent_at_unix_ms: 1_786_015_800_000,
+                    place: "signal:thread:task-3000-gamma:message-3".to_owned(),
+                    text: "Signal sample found message 3000".to_owned(),
+                    sent_by_signed_in_account: false,
+                },
+            ]
+        );
+
+        let refused = name_found_message_record(ServiceFoundMessageInput {
+            service_id: "discord".to_owned(),
+            sender: None,
+            sent_at_unix_ms: 1_786_008_600_000,
+            place: "discord:dm:task-3000-alpha:message-missing-sender".to_owned(),
+            text: "Missing sender must be refused".to_owned(),
+            sent_by_signed_in_account: false,
+        })
+        .expect_err("missing sender must be refused");
+        println!(
+            "TASK3000_REFUSAL command=name_found_message_record missing_sender_refused={} error=\"{}\"",
+            refused == FoundMessageRecordError::MissingSender,
+            refused
+        );
+        assert_eq!(refused, FoundMessageRecordError::MissingSender);
     }
 
     #[test]
