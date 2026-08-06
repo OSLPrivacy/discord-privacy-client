@@ -26,7 +26,10 @@ use crate::native_apps::BrowserImportId;
 use crate::native_discord_adapter::{
     guided_deletion, DiscordCarrierLayout, NativeDiscordComposerState,
 };
-use crate::preferences::{PreviewState, ScrubAccountPermissionInput, ScrubAccountPermissionRead};
+use crate::preferences::{
+    DiscordScrubConsentFactsInput, DiscordScrubConsentFactsRead, PreviewState,
+    ScrubAccountPermissionInput, ScrubAccountPermissionRead,
+};
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
 use serde::Deserialize;
@@ -75,6 +78,22 @@ pub fn get_scrub_account_permissions_command(
     owner_user_id: &str,
 ) -> Result<ScrubAccountPermissionRead, String> {
     state.get_scrub_account_permissions(owner_user_id)
+}
+
+pub fn save_discord_scrub_consent_facts_command(
+    state: &PreviewState,
+    owner_user_id: &str,
+    input: DiscordScrubConsentFactsInput,
+) -> Result<DiscordScrubConsentFactsRead, String> {
+    state.save_discord_scrub_consent_facts(owner_user_id, input)
+}
+
+pub fn get_discord_scrub_consent_facts_command(
+    state: &PreviewState,
+    owner_user_id: &str,
+    account_id: &str,
+) -> Result<DiscordScrubConsentFactsRead, String> {
+    state.get_discord_scrub_consent_facts(owner_user_id, account_id)
 }
 
 pub fn require_review_ui_identity_binding_from_verifier(
@@ -523,6 +542,8 @@ macro_rules! hub_tauri_commands {
             cancel_scrub_index,
             save_scrub_account_permissions,
             get_scrub_account_permissions,
+            save_discord_scrub_consent_facts,
+            get_discord_scrub_consent_facts,
             list_linked_services,
             get_core_readiness,
             list_core_features,
@@ -692,8 +713,14 @@ macro_rules! hub_tauri_commands {
 
 #[cfg(test)]
 mod scrub_account_permission_command_tests {
-    use super::{get_scrub_account_permissions_command, save_scrub_account_permissions_command};
-    use crate::preferences::{PreviewState, ScrubAccountPermissionInput};
+    use super::{
+        get_discord_scrub_consent_facts_command, get_scrub_account_permissions_command,
+        save_discord_scrub_consent_facts_command, save_scrub_account_permissions_command,
+    };
+    use crate::preferences::{
+        DiscordScrubConsentFacts, DiscordScrubConsentFactsInput, PreviewState,
+        ScrubAccountPermissionInput,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temporary_file() -> std::path::PathBuf {
@@ -743,6 +770,88 @@ mod scrub_account_permission_command_tests {
         assert!(!read.account_ids.iter().any(|id| id == second));
 
         let _ = std::fs::remove_dir_all(path.parent().expect("temp parent"));
+    }
+
+    #[test]
+    fn task_1405_direct_command_returns_consent_facts_for_chosen_discord_account() {
+        let path = temporary_file();
+        let owner = "owner-task-1405";
+        let chosen = "discord-account-1405";
+        let unticked = "discord-account-unticked-1405";
+        save_scrub_account_permissions_command(
+            &PreviewState::load(path.clone()),
+            owner,
+            ScrubAccountPermissionInput {
+                available_account_ids: vec![chosen.to_owned(), unticked.to_owned()],
+                selected_account_ids: vec![chosen.to_owned()],
+            },
+        )
+        .expect("direct permission command stores the chosen Discord account");
+
+        let unchosen_error = save_discord_scrub_consent_facts_command(
+            &PreviewState::load(path.clone()),
+            owner,
+            DiscordScrubConsentFactsInput {
+                account_id: unticked.to_owned(),
+                facts: consent_facts_1405(),
+            },
+        )
+        .expect_err("unchosen Discord accounts cannot receive consent facts");
+        println!(
+            "TASK1405_REJECT_UNCHOSEN command=save_discord_scrub_consent_facts account_id={} error={}",
+            unticked, unchosen_error
+        );
+
+        let saved = save_discord_scrub_consent_facts_command(
+            &PreviewState::load(path.clone()),
+            owner,
+            DiscordScrubConsentFactsInput {
+                account_id: chosen.to_owned(),
+                facts: consent_facts_1405(),
+            },
+        )
+        .expect("direct consent command stores facts for the chosen Discord account");
+        println!(
+            "TASK1405_SAVE command=save_discord_scrub_consent_facts account_id={} real_reading=\"{}\" careful_scrolling=\"{}\" service_rules=\"{}\" ban_risk=\"{}\" stopping=\"{}\"",
+            saved.account_id,
+            saved.facts.real_reading,
+            saved.facts.careful_scrolling,
+            saved.facts.service_rules,
+            saved.facts.ban_risk,
+            saved.facts.stopping
+        );
+
+        let read = get_discord_scrub_consent_facts_command(
+            &PreviewState::load(path.clone()),
+            owner,
+            chosen,
+        )
+        .expect("direct read command returns facts for the chosen Discord account");
+        println!(
+            "TASK1405_READ command=get_discord_scrub_consent_facts account_id={} real_reading=\"{}\" careful_scrolling=\"{}\" service_rules=\"{}\" ban_risk=\"{}\" stopping=\"{}\"",
+            read.account_id,
+            read.facts.real_reading,
+            read.facts.careful_scrolling,
+            read.facts.service_rules,
+            read.facts.ban_risk,
+            read.facts.stopping
+        );
+
+        assert_eq!(saved, read);
+        assert_eq!(read.account_id, chosen);
+        assert_eq!(read.facts, consent_facts_1405());
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("temp parent"));
+    }
+
+    fn consent_facts_1405() -> DiscordScrubConsentFacts {
+        DiscordScrubConsentFacts {
+            real_reading: "real reading".to_owned(),
+            careful_scrolling: "careful scrolling".to_owned(),
+            service_rules: "service rules".to_owned(),
+            ban_risk: "ban risk".to_owned(),
+            stopping: "stopping".to_owned(),
+        }
     }
 }
 

@@ -64,8 +64,34 @@ pub struct ScrubAccountPermissionRead {
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiscordScrubConsentFacts {
+    pub real_reading: String,
+    pub careful_scrolling: String,
+    pub service_rules: String,
+    pub ban_risk: String,
+    pub stopping: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiscordScrubConsentFactsInput {
+    pub account_id: String,
+    pub facts: DiscordScrubConsentFacts,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscordScrubConsentFactsRead {
+    pub account_id: String,
+    pub facts: DiscordScrubConsentFacts,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredScrubAccountPermissions {
     account_ids: Vec<String>,
+    #[serde(default)]
+    discord_consent_facts_by_account_id: BTreeMap<String, DiscordScrubConsentFacts>,
 }
 
 impl PreviewState {
@@ -290,6 +316,85 @@ impl PreviewState {
         Ok(read_scrub_account_permissions(Some(stored)))
     }
 
+    pub fn save_discord_scrub_consent_facts(
+        &self,
+        owner_user_id: &str,
+        input: DiscordScrubConsentFactsInput,
+    ) -> Result<DiscordScrubConsentFactsRead, String> {
+        let owner_user_id = validate_owner_key(owner_user_id)?;
+        let input = sanitize_discord_scrub_consent_facts_input(input)?;
+        let onboarding = self
+            .onboarding
+            .lock()
+            .map_err(|_| "preview preferences lock is unavailable".to_owned())?
+            .clone();
+        let home_tiles_by_user = self
+            .home_tiles_by_user
+            .lock()
+            .map_err(|_| "home tile preferences lock is unavailable".to_owned())?
+            .clone();
+        let mut scrub_account_permissions_by_user = self
+            .scrub_account_permissions_by_user
+            .lock()
+            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?
+            .clone();
+        let permissions = scrub_account_permissions_by_user
+            .get_mut(&owner_user_id)
+            .ok_or_else(|| "Choose a Discord account before recording consent facts".to_owned())?;
+        if !permissions.account_ids.contains(&input.account_id) {
+            return Err("Consent facts can only be stored for a chosen Discord account".to_owned());
+        }
+
+        permissions
+            .discord_consent_facts_by_account_id
+            .insert(input.account_id.clone(), input.facts.clone());
+        write_preferences(
+            &self.path,
+            &onboarding,
+            &home_tiles_by_user,
+            &scrub_account_permissions_by_user,
+        )
+        .map_err(|error| format!("could not save Discord consent facts: {error}"))?;
+
+        let mut current = self
+            .scrub_account_permissions_by_user
+            .lock()
+            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?;
+        *current = scrub_account_permissions_by_user;
+        Ok(DiscordScrubConsentFactsRead {
+            account_id: input.account_id,
+            facts: input.facts,
+        })
+    }
+
+    pub fn get_discord_scrub_consent_facts(
+        &self,
+        owner_user_id: &str,
+        account_id: &str,
+    ) -> Result<DiscordScrubConsentFactsRead, String> {
+        let owner_user_id = validate_owner_key(owner_user_id)?;
+        validate_scrub_account_id(account_id)?;
+        let current = self
+            .scrub_account_permissions_by_user
+            .lock()
+            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?;
+        let permissions = current
+            .get(&owner_user_id)
+            .ok_or_else(|| "Choose a Discord account before reading consent facts".to_owned())?;
+        if !permissions.account_ids.iter().any(|id| id == account_id) {
+            return Err("Consent facts can only be read for a chosen Discord account".to_owned());
+        }
+        let facts = permissions
+            .discord_consent_facts_by_account_id
+            .get(account_id)
+            .cloned()
+            .ok_or_else(|| "Discord consent facts have not been recorded".to_owned())?;
+        Ok(DiscordScrubConsentFactsRead {
+            account_id: account_id.to_owned(),
+            facts,
+        })
+    }
+
     pub fn get_scrub_account_permissions(
         &self,
         owner_user_id: &str,
@@ -366,7 +471,10 @@ fn sanitize_scrub_account_permission_input(
         .filter(|account_id| selected.contains(account_id))
         .collect::<Vec<_>>();
     account_ids.sort();
-    Ok(StoredScrubAccountPermissions { account_ids })
+    Ok(StoredScrubAccountPermissions {
+        account_ids,
+        discord_consent_facts_by_account_id: BTreeMap::new(),
+    })
 }
 
 fn sanitize_scrub_account_permissions(
@@ -385,7 +493,17 @@ fn sanitize_scrub_account_permissions(
         account_ids.push(account_id);
     }
     account_ids.sort();
-    Ok(StoredScrubAccountPermissions { account_ids })
+    let mut discord_consent_facts_by_account_id = BTreeMap::new();
+    for (account_id, facts) in permissions.discord_consent_facts_by_account_id {
+        validate_scrub_account_id(&account_id)?;
+        if account_ids.iter().any(|selected| selected == &account_id) {
+            discord_consent_facts_by_account_id.insert(account_id, sanitize_consent_facts(facts)?);
+        }
+    }
+    Ok(StoredScrubAccountPermissions {
+        account_ids,
+        discord_consent_facts_by_account_id,
+    })
 }
 
 fn read_scrub_account_permissions(
@@ -396,6 +514,42 @@ fn read_scrub_account_permissions(
         .map(|permissions| permissions.account_ids)
         .unwrap_or_default();
     ScrubAccountPermissionRead { account_ids }
+}
+
+fn sanitize_discord_scrub_consent_facts_input(
+    input: DiscordScrubConsentFactsInput,
+) -> Result<DiscordScrubConsentFactsInput, String> {
+    validate_scrub_account_id(&input.account_id)?;
+    Ok(DiscordScrubConsentFactsInput {
+        account_id: input.account_id,
+        facts: sanitize_consent_facts(input.facts)?,
+    })
+}
+
+fn sanitize_consent_facts(
+    facts: DiscordScrubConsentFacts,
+) -> Result<DiscordScrubConsentFacts, String> {
+    Ok(DiscordScrubConsentFacts {
+        real_reading: validate_consent_fact("real reading", facts.real_reading)?,
+        careful_scrolling: validate_consent_fact("careful scrolling", facts.careful_scrolling)?,
+        service_rules: validate_consent_fact("service rules", facts.service_rules)?,
+        ban_risk: validate_consent_fact("ban risk", facts.ban_risk)?,
+        stopping: validate_consent_fact("stopping", facts.stopping)?,
+    })
+}
+
+fn validate_consent_fact(label: &str, fact: String) -> Result<String, String> {
+    let fact = fact.trim().to_owned();
+    if !fact.is_empty()
+        && fact.len() <= 256
+        && fact
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() || byte == b' ')
+    {
+        Ok(fact)
+    } else {
+        Err(format!("Discord consent fact is invalid: {label}"))
+    }
 }
 
 fn validate_scrub_account_id(account_id: &str) -> Result<(), String> {

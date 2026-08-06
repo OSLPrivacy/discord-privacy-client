@@ -80,7 +80,8 @@ use osl_privacy_hub::password_lifecycle::{
 };
 use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::{
-    PreviewState, ScrubAccountPermissionInput, ScrubAccountPermissionRead,
+    DiscordScrubConsentFactsInput, DiscordScrubConsentFactsRead, PreviewState,
+    ScrubAccountPermissionInput, ScrubAccountPermissionRead,
 };
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
@@ -193,13 +194,14 @@ use native_discord_overlay::OverlaySessionState;
 use osl_privacy_hub::hub_command_surface::{
     build_review_ui_identity_binding_verifier, checked_browser_footprint_binding,
     checked_hosted_session_scan_flow, compose_erasure_request_for_user,
-    get_scrub_account_permissions_command, require_native_discord_product_send_authority,
-    require_review_ui_identity_binding_from_verifier, save_scrub_account_permissions_command,
-    service_kind_id, start_autoscrub_reviewed_run_after_review_ui_binding,
-    start_autoscrub_reviewed_run_checked, start_autoscrub_reviewed_run_inner,
-    with_native_discord_product_send_authority, BrowserFootprintConsentRequest, CheckedHost,
-    DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
-    NativeDiscordProductSendAuthority,
+    get_discord_scrub_consent_facts_command, get_scrub_account_permissions_command,
+    require_native_discord_product_send_authority,
+    require_review_ui_identity_binding_from_verifier, save_discord_scrub_consent_facts_command,
+    save_scrub_account_permissions_command, service_kind_id,
+    start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
+    start_autoscrub_reviewed_run_inner, with_native_discord_product_send_authority,
+    BrowserFootprintConsentRequest, CheckedHost, DiscordGuidedDeletionPlanState,
+    GuidedDeletionRunAuthorityInput, NativeDiscordProductSendAuthority,
 };
 use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
@@ -667,6 +669,26 @@ fn get_scrub_account_permissions(
 ) -> Result<ScrubAccountPermissionRead, String> {
     let owner = active_unlocked_osl_user_id(&core)?;
     get_scrub_account_permissions_command(&state, &owner)
+}
+
+#[tauri::command]
+fn save_discord_scrub_consent_facts(
+    state: State<'_, PreviewState>,
+    core: State<'_, HubCoreState>,
+    input: DiscordScrubConsentFactsInput,
+) -> Result<DiscordScrubConsentFactsRead, String> {
+    let owner = active_unlocked_osl_user_id(&core)?;
+    save_discord_scrub_consent_facts_command(&state, &owner, input)
+}
+
+#[tauri::command]
+fn get_discord_scrub_consent_facts(
+    state: State<'_, PreviewState>,
+    core: State<'_, HubCoreState>,
+    account_id: String,
+) -> Result<DiscordScrubConsentFactsRead, String> {
+    let owner = active_unlocked_osl_user_id(&core)?;
+    get_discord_scrub_consent_facts_command(&state, &owner, &account_id)
 }
 
 /// Persist the explicit connection route selected during onboarding.
