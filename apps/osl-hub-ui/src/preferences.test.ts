@@ -57,6 +57,7 @@ describe("first-run onboarding preference persistence", () => {
       },
       showPlaintextPreview: true,
       windowCaptureEnabled: true,
+      rnWirePolicyRequested: false,
       forwardSecrecyMode: "keepGroupDelivery",
     });
     expect(storage.getItem("osl-preview-onboarded")).toBe("true");
@@ -101,6 +102,7 @@ describe("first-run onboarding preference persistence", () => {
       placementMode: "atomic",
       showPlaintextPreview: true,
       windowCaptureEnabled: false,
+      rnWirePolicyRequested: false,
       forwardSecrecyMode: "keepGroupDelivery",
       acknowledgeExperimentalSendRisk: false,
     });
@@ -118,6 +120,7 @@ describe("first-run onboarding preference persistence", () => {
         placementMode: "atomic",
         showPlaintextPreview: true,
         windowCaptureEnabled: false,
+        rnWirePolicyRequested: false,
         acknowledgeExperimentalSendRisk: false,
         forwardSecrecyMode: "keepGroupDelivery",
       },

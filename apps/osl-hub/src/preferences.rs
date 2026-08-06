@@ -69,6 +69,25 @@ impl PreviewState {
     }
 }
 
+#[cfg(feature = "core")]
+pub fn apply_message_runtime_preferences(
+    core: &crate::core_bridge::HubCoreState,
+    preferences: &OnboardingPreferences,
+) -> bool {
+    core.osl
+        .set_rn_wire_in_enabled(preferences.rn_wire_policy_requested);
+    core.osl.rn_wire_in_enabled()
+}
+
+#[cfg(feature = "core")]
+pub fn apply_saved_message_runtime_preferences(
+    core: &crate::core_bridge::HubCoreState,
+    state: &PreviewState,
+) -> Result<bool, String> {
+    let preferences = state.get()?;
+    Ok(apply_message_runtime_preferences(core, &preferences))
+}
+
 fn read_preferences(path: &Path) -> Option<PreferencesDocument> {
     let bytes = crate::atomic_file::read_recoverable_bounded(
         path,
@@ -121,6 +140,7 @@ mod tests {
             placement_mode: PlacementMode::Compatibility,
             show_plaintext_preview: false,
             window_capture_enabled: true,
+            rn_wire_policy_requested: false,
             acknowledge_experimental_send_risk: true,
             forward_secrecy_mode: ForwardSecrecyMode::default(),
         };
@@ -170,6 +190,7 @@ mod tests {
             placement_mode: PlacementMode::Compatibility,
             show_plaintext_preview: true,
             window_capture_enabled: true,
+            rn_wire_policy_requested: false,
             acknowledge_experimental_send_risk: false,
             forward_secrecy_mode: ForwardSecrecyMode::default(),
         };
@@ -196,6 +217,7 @@ mod tests {
             placement_mode: PlacementMode::Atomic,
             show_plaintext_preview: false,
             window_capture_enabled: true,
+            rn_wire_policy_requested: false,
             acknowledge_experimental_send_risk: false,
             forward_secrecy_mode: ForwardSecrecyMode::default(),
         };

@@ -213,6 +213,7 @@ export interface OnboardingPreferences {
   setup: SetupState;
   showPlaintextPreview: boolean;
   windowCaptureEnabled: boolean;
+  rnWirePolicyRequested: boolean;
   forwardSecrecyMode: ForwardSecrecyMode;
 }
 
@@ -224,6 +225,7 @@ export interface RustOnboardingPreferences {
   placementMode: PlacementMode;
   showPlaintextPreview: boolean;
   windowCaptureEnabled: boolean;
+  rnWirePolicyRequested: boolean;
   forwardSecrecyMode: ForwardSecrecyMode;
   acknowledgeExperimentalSendRisk: boolean;
 }
@@ -240,6 +242,7 @@ export const defaultOnboardingPreferences: OnboardingPreferences = {
   setup: { ...defaultSetup },
   showPlaintextPreview: true,
   windowCaptureEnabled: true,
+  rnWirePolicyRequested: false,
   forwardSecrecyMode: "keepGroupDelivery",
 };
 
@@ -351,6 +354,7 @@ export function parseRustOnboardingPreferences(raw: unknown): OnboardingPreferen
     "placementMode",
     "showPlaintextPreview",
     "windowCaptureEnabled",
+    "rnWirePolicyRequested",
     "forwardSecrecyMode",
     "acknowledgeExperimentalSendRisk",
   ]);
@@ -365,6 +369,7 @@ export function parseRustOnboardingPreferences(raw: unknown): OnboardingPreferen
     || typeof raw.onboardingComplete !== "boolean"
     || typeof raw.showPlaintextPreview !== "boolean"
     || typeof raw.windowCaptureEnabled !== "boolean"
+    || typeof raw.rnWirePolicyRequested !== "boolean"
     || !forwardSecrecyModeValues.includes(raw.forwardSecrecyMode as ForwardSecrecyMode)
     || typeof raw.acknowledgeExperimentalSendRisk !== "boolean"
   ) return cloneDefaultPreferences();
@@ -382,6 +387,7 @@ export function parseRustOnboardingPreferences(raw: unknown): OnboardingPreferen
     },
     showPlaintextPreview: raw.showPlaintextPreview,
     windowCaptureEnabled: raw.windowCaptureEnabled,
+    rnWirePolicyRequested: raw.rnWirePolicyRequested,
     forwardSecrecyMode: raw.forwardSecrecyMode as ForwardSecrecyMode,
   };
 }
@@ -398,6 +404,7 @@ export function toRustOnboardingPreferences(preferences: OnboardingPreferences):
     placementMode: parsedSetup.placementMode,
     showPlaintextPreview: preferences.showPlaintextPreview === true,
     windowCaptureEnabled: preferences.windowCaptureEnabled === true,
+    rnWirePolicyRequested: preferences.rnWirePolicyRequested === true,
     forwardSecrecyMode: forwardSecrecyModeValues.includes(preferences.forwardSecrecyMode) ? preferences.forwardSecrecyMode : "keepGroupDelivery",
     acknowledgeExperimentalSendRisk: acknowledged,
   };
@@ -413,6 +420,7 @@ function cloneDefaultPreferences(): OnboardingPreferences {
     setup: { ...defaultSetup },
     showPlaintextPreview: true,
     windowCaptureEnabled: true,
+    rnWirePolicyRequested: false,
     forwardSecrecyMode: "keepGroupDelivery",
   };
 }

@@ -3176,8 +3176,9 @@ function bindOnboarding(): void {
   document.querySelector<HTMLButtonElement>("[data-forward-secrecy-continue]")?.addEventListener("click", () => {
     if (forwardSecrecyOnboarding.choice === null) return;
     const selectedForwardSecrecyMode = forwardSecrecyOnboarding.choice === "protect-past" ? "protectPast" : "keepGroupDelivery";
-    void saveOnboardingPreferences({ onboardingComplete: false, setup, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
+    void saveOnboardingPreferences({ onboardingComplete: false, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
       forwardSecrecyMode = saved.forwardSecrecyMode;
+      rnWirePolicyRequested = saved.rnWirePolicyRequested;
       onboardingRoute = "privacy";
       render();
     }).catch(() => undefined);
@@ -3368,9 +3369,10 @@ async function completeSixStepOnboarding(): Promise<void> {
   const completedSetup = balancedFirstRunSetup(setup);
   if (!canCompleteSetup(completedSetup)) throw new Error("setup missing required sending consent");
   setup = completedSetup;
-  const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
+  const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode });
   setup = saved.setup;
   windowCaptureEnabled = saved.windowCaptureEnabled;
+  rnWirePolicyRequested = saved.rnWirePolicyRequested;
   onboardingComplete = true;
   clearServiceOnboardingResume();
   resetOnboardingBranch();
@@ -5800,9 +5802,10 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
   };
   render();
   try {
-    const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
+    const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode });
     setup = saved.setup;
     windowCaptureEnabled = saved.windowCaptureEnabled;
+    rnWirePolicyRequested = saved.rnWirePolicyRequested;
     showToast(`${formatSendMode(mode)} selected`);
   } catch {
     setup = previous;
@@ -7448,9 +7451,18 @@ function bindWorkspace(): void {
     render();
   });
   document.querySelector<HTMLInputElement>("#rn-wire-policy-toggle")?.addEventListener("change", (event) => {
+    const previous = rnWirePolicyRequested;
     rnWirePolicyRequested = (event.currentTarget as HTMLInputElement).checked;
     localStorage.setItem(rnWirePolicyStorageKey, String(rnWirePolicyRequested));
     render();
+    void saveOnboardingPreferences({ onboardingComplete, setup, showPlaintextPreview: true, windowCaptureEnabled, rnWirePolicyRequested, forwardSecrecyMode }).then((saved) => {
+      rnWirePolicyRequested = saved.rnWirePolicyRequested;
+      render();
+    }).catch(() => {
+      rnWirePolicyRequested = previous;
+      showToast("Message format preference could not be saved");
+      render();
+    });
   });
   document.querySelectorAll<HTMLButtonElement>("[data-notification-settings]").forEach((button) => button.addEventListener("click", () => { route = "settings"; settingsSection = "notifications"; render(); }));
   document.querySelector<HTMLButtonElement>("[data-privacy-primary-action]")?.addEventListener("click", privacyPrimaryAction);
@@ -9699,12 +9711,14 @@ async function bootstrap(): Promise<void> {
       setup: parseSetupState(null),
       showPlaintextPreview: true,
       windowCaptureEnabled: true,
+      rnWirePolicyRequested,
       forwardSecrecyMode: "keepGroupDelivery" as const,
     };
     await recoveryKitUnsavedFlag.load();
     if (attempt !== bootstrapEpoch) return;
     setup = preferences.setup;
     windowCaptureEnabled = preferences.windowCaptureEnabled;
+    rnWirePolicyRequested = preferences.rnWirePolicyRequested;
     onboardingComplete = preferences.onboardingComplete;
     forwardSecrecyMode = preferences.forwardSecrecyMode;
     if (discordQaShell) {

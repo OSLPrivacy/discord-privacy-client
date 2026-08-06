@@ -45,6 +45,7 @@ export async function loadOnboardingPreferences(): Promise<OnboardingPreferences
     setup: parseSetupState(localStorage.getItem(browserSetupKey)),
     showPlaintextPreview: true,
     windowCaptureEnabled: true,
+    rnWirePolicyRequested: false,
     forwardSecrecyMode: "keepGroupDelivery",
   };
 }
@@ -101,6 +102,7 @@ export async function saveFirstRunOnboardingPreferences(selection: {
     },
     showPlaintextPreview: true,
     windowCaptureEnabled: selection.windowCaptureEnabled !== false,
+    rnWirePolicyRequested: false,
     forwardSecrecyMode: "keepGroupDelivery",
   });
 }
