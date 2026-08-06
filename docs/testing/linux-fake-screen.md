@@ -21,6 +21,31 @@ sudo apt-get install -y x11-apps
 
 ## Commands
 
+Start the fixed OSL Linux screen launcher and print the launch contract:
+
+```bash
+scripts/qa/linux-fixed-screen-launcher.sh
+```
+
+It always starts the same fake screen contract for Linux QA:
+
+```text
+size=1280x800 color_depth=24 scale=1 theme=dark
+```
+
+Run a command inside that fixed screen:
+
+```bash
+CARGO_TARGET_DIR=/home/liamw/osl-exec-e/.cargo-target \
+  scripts/qa/linux-fixed-screen-launcher.sh -- cargo test -- --test-threads=1
+```
+
+Check that two launches match and a wrong-size fake screen is rejected:
+
+```bash
+scripts/qa/test-linux-fixed-screen-launcher.sh
+```
+
 Start a fake screen and print its display name:
 
 ```bash
