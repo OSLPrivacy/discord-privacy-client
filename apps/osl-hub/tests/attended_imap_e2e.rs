@@ -1,8 +1,10 @@
 use osl_privacy_hub::attended_imap::{
-    delete_prepared, prepare_delete, ImapMailbox, ImapMessageSnapshot, ImapPolicyError,
-    SeededLocalImapFixture,
+    delete_prepared, prepare_delete, still_authorizes_imap_delete, ImapDeleteContext,
+    ImapDeleteGrant, ImapDeletePhase, ImapEntitlement, ImapGrantAuthority, ImapMailbox,
+    ImapMessageSnapshot, ImapPolicyError, SeededLocalImapFixture,
 };
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
 fn self_authored_fixture_message(index: usize) -> ImapMessageSnapshot {
     let fixture = SeededLocalImapFixture::scaffold(17);
@@ -157,4 +159,60 @@ fn attended_imap_manual_snapshots_reject_wrong_sender_duplicate_and_uid_change()
         Err(ImapPolicyError::FingerprintMismatch)
     );
     assert_eq!(changed.deleted_count(), 0);
+}
+
+#[test]
+fn task_0416_changed_delete_grant_owner_fails_and_stored_record_remains() {
+    let owner = "owner-local-0416";
+    let account = "account-local-0416";
+    let mailbox_name = "INBOX";
+    let message_id = "<task-0416@local.test>";
+    let original = message(owner, account, mailbox_name, message_id, 41, true);
+    let mailbox = ImapMailbox::from_messages(vec![original.clone()]);
+    let prepared = prepare_delete(&mailbox, owner, account, mailbox_name, message_id)
+        .expect("valid self-authored grant prepares before owner tamper");
+    let mut grant_fingerprints = BTreeSet::new();
+    grant_fingerprints.insert(prepared.fingerprint);
+    let mut grant = ImapDeleteGrant {
+        grant_id: "task-0416-grant".to_string(),
+        authority: ImapGrantAuthority::Attended,
+        owner_osl_user_id: prepared.owner_osl_user_id.clone(),
+        account_id: prepared.account_id.clone(),
+        batch_digest: prepared.batch_digest,
+        message_fingerprints: grant_fingerprints,
+        phase: ImapDeletePhase::Executing,
+        entitlement: ImapEntitlement::Pro,
+        deadline_unix_ms: 2_000,
+        used: false,
+        revoked: false,
+    };
+    let context = ImapDeleteContext {
+        entitlement: ImapEntitlement::Pro,
+        phase: ImapDeletePhase::Executing,
+        now_unix_ms: 1_000,
+    };
+
+    assert_eq!(
+        still_authorizes_imap_delete(context, &grant, &prepared),
+        Ok(()),
+        "precondition: the grant is valid before changing only its owner"
+    );
+
+    grant.owner_osl_user_id = "owner-local-0416-tampered".to_string();
+    let result = still_authorizes_imap_delete(context, &grant, &prepared);
+
+    assert_eq!(result, Err(ImapPolicyError::AccountBindingMismatch));
+    assert_eq!(mailbox.deleted_count(), 0);
+    assert_eq!(
+        mailbox.search_message(account, mailbox_name, message_id),
+        Some(&original)
+    );
+    println!("TASK0416_VALID_GRANT_BEFORE_OWNER_CHANGE=Ok(())");
+    println!("TASK0416_CHANGED_FIELD=owner_osl_user_id");
+    println!("TASK0416_REQUEST_RESULT=Err(AccountBindingMismatch)");
+    println!("TASK0416_ORIGINAL_DELETED_COUNT={}", mailbox.deleted_count());
+    println!(
+        "TASK0416_ORIGINAL_STORED_RECORD_REMAINS={}",
+        mailbox.search_message(account, mailbox_name, message_id) == Some(&original)
+    );
 }

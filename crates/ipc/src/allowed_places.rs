@@ -19,6 +19,15 @@ pub struct AllowedPlaceRecord {
     pub stable_id: String,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedPlaceQuery {
+    pub app: String,
+    pub account: String,
+    pub kind: String,
+    pub stable_id: String,
+}
+
 impl AllowedPlaceRecord {
     pub fn discord_direct_message(account: &str, conversation_id: &str) -> Self {
         Self {
