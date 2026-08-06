@@ -901,6 +901,9 @@ mod discord_guided_deletion_plan_producer_tests {
     use crate::native_discord_adapter::guided_deletion::{
         DeletionPreview, DeletionScan, RowShape, ScannedRow, WalkCompleteness,
     };
+    use crate::scrub_hosted::fixture::{
+        ApprovedScrubAccountFixture, LARGE_SCRUB_MARKED_MATCH_COUNT, LARGE_SCRUB_MESSAGE_COUNT,
+    };
 
     fn row(scan_ordinal: usize) -> ScannedRow {
         ScannedRow {
@@ -1045,6 +1048,63 @@ mod discord_guided_deletion_plan_producer_tests {
             stop.saved_state,
             stop.match_count,
             stop_preview.rows.len()
+        );
+    }
+
+    #[test]
+    fn task_3687_fresh_fixture_creates_one_hundred_thousand_scrub_messages() {
+        let mut fixture = ApprovedScrubAccountFixture::fresh("approved-account-3687", "owner-3687");
+        assert_eq!(fixture.message_count(), 0);
+
+        let report = fixture
+            .populate_one_hundred_thousand_ordered_messages()
+            .expect("fresh fixture creation");
+        assert_eq!(report.messages_before_creation, 0);
+        assert_eq!(report.messages_after_creation, LARGE_SCRUB_MESSAGE_COUNT);
+        assert_eq!(
+            report.marked_matches_after_creation,
+            LARGE_SCRUB_MARKED_MATCH_COUNT
+        );
+        assert_eq!(report.first_marked_position, Some(10));
+        assert_eq!(report.last_marked_position, Some(100_000));
+        assert!(report.marked_matches_are_every_tenth_position);
+        assert!(fixture.messages_are_strictly_ordered());
+        assert!(fixture
+            .marked_match_positions()
+            .all(|position| position % 10 == 0));
+
+        let scan = fixture.to_guided_deletion_scan();
+        assert_eq!(scan.rows_seen, LARGE_SCRUB_MESSAGE_COUNT);
+        assert_eq!(scan.candidates.len(), LARGE_SCRUB_MARKED_MATCH_COUNT);
+        assert_eq!(
+            scan.candidates.first().map(|row| row.scan_ordinal),
+            Some(10)
+        );
+        assert_eq!(
+            scan.candidates.last().map(|row| row.scan_ordinal),
+            Some(100_000)
+        );
+
+        let state = DiscordGuidedDeletionPlanState::default();
+        state.record_scan(scan).expect("scan is stored");
+        let stop = state
+            .stop_after_current_safe_step()
+            .expect("safe stop reports retained match count");
+        assert_eq!(stop.saved_state, "stop_after_current_safe_step");
+        assert_eq!(stop.match_count, LARGE_SCRUB_MARKED_MATCH_COUNT);
+
+        println!(
+            "TASK3687 fixture_account={} owner={} messages_before_creation={} messages_after_creation={} marked_matches={} match_interval=10 first_marked_position={} last_marked_position={} scrub_runner_rows_seen={} safe_stop_saved_state={} safe_stop_match_count={}",
+            fixture.account_id(),
+            fixture.owner_osl_user_id(),
+            report.messages_before_creation,
+            report.messages_after_creation,
+            report.marked_matches_after_creation,
+            report.first_marked_position.expect("first marked position"),
+            report.last_marked_position.expect("last marked position"),
+            LARGE_SCRUB_MESSAGE_COUNT,
+            stop.saved_state,
+            stop.match_count
         );
     }
 }

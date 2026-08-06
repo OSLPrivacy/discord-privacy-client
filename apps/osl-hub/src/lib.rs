@@ -124,6 +124,7 @@ pub mod scrub_evidence_manifest;
 pub mod tor_pref;
 pub mod scrub_hosted {
     pub mod checkpoint;
+    pub mod fixture;
     pub mod friction;
     pub mod ordering;
     pub mod verify_surface;
