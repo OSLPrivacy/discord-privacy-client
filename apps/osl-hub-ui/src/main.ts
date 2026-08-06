@@ -25,7 +25,7 @@ import {
   type SetupState,
 } from "./state";
 import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } from "./preferences";
-import { chooseForwardSecrecyMode, initialForwardSecrecyOnboardingState, onboardingForwardSecrecyMarkup, type ForwardSecrecyOnboardingState } from "./onboarding-forward-secrecy";
+import { chooseForwardSecrecyMode, initialForwardSecrecyOnboardingState, onboardingForwardSecrecyMarkup, type ForwardSecrecyChoice, type ForwardSecrecyOnboardingState } from "./onboarding-forward-secrecy";
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
 import { chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type TorOnboardingState } from "./onboarding-tor";
 import { chooseCoverInsertion, initialCoverInsertionChoice, onboardingCoverMarkup, type CoverInsertionChoice } from "./onboarding-cover";
@@ -10056,6 +10056,8 @@ type OslHubUiTestStatePatch = {
   inboxFilter?: InboxFilter;
   oslMailNotifications?: boolean;
   licenseAccess?: HubLicenseState["access"];
+  forwardSecrecyChoice?: ForwardSecrecyChoice | null;
+  forwardSecrecyMode?: "protectPast" | "keepGroupDelivery";
   autoScrubFleetStatus?: AutoScrubFleetStatus | null;
   hubIdentities?: HubIdentitySlot[];
   hubIdentitiesLoad?: IdentityListLoad;
@@ -10136,6 +10138,8 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   notificationPreviewContent = patch.notificationPreviewContent ?? true;
   appNotifications = patch.appNotifications ?? [];
   licenseState = { ...unconfiguredLicenseState, access: patch.licenseAccess ?? "free" };
+  forwardSecrecyOnboarding = { choice: patch.forwardSecrecyChoice ?? null };
+  forwardSecrecyMode = patch.forwardSecrecyMode ?? "keepGroupDelivery";
   autoScrubFleetStatus = patch.autoScrubFleetStatus ?? null;
   autoScrubStatusLoading = false;
   autoScrubStopPending = false;
@@ -10356,6 +10360,8 @@ export const __oslHubUiTest = {
     mullvadSetupNotice: string;
     ownedConfirmationKind: OwnedConfirmation["kind"] | null;
     ownedConfirmationPersonId: string | null;
+    forwardSecrecyChoice: ForwardSecrecyChoice | null;
+    forwardSecrecyMode: "protectPast" | "keepGroupDelivery";
   } {
     return {
       route,
@@ -10373,6 +10379,8 @@ export const __oslHubUiTest = {
       ownedConfirmationPersonId: ownedConfirmation?.kind === "verifyFriend" || ownedConfirmation?.kind === "removeFriend"
         ? ownedConfirmation.personId
         : null,
+      forwardSecrecyChoice: forwardSecrecyOnboarding.choice,
+      forwardSecrecyMode,
     };
   },
 };

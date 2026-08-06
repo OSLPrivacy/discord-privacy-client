@@ -10,17 +10,14 @@ import {
 const styles = readFileSync(new URL("./onboarding-forward-secrecy.css", import.meta.url), "utf8");
 
 describe("D111 forward-secrecy onboarding choice", () => {
-  // 2026-08-06 restyle. The screen used to start with nothing selected and a
-  // disabled Continue; it now starts on "stay locked" and still saves the
-  // choice on Continue, so what is stored is what is on screen.
-  it("starts on the locked option and can continue", () => {
+  it("starts with no saved choice and holds Continue", () => {
     const state = initialForwardSecrecyOnboardingState();
-    expect(state.choice).toBe("protect-past");
-    expect(canContinuePastForwardSecrecyChoice(state)).toBe(true);
+    expect(state.choice).toBeNull();
+    expect(canContinuePastForwardSecrecyChoice(state)).toBe(false);
     const markup = onboardingForwardSecrecyMarkup(state);
-    expect(markup).toContain('value="protect-past" checked');
+    expect(markup).not.toContain('value="protect-past" checked');
     expect(markup).not.toContain('value="keep-group-delivery" checked');
-    expect(markup).not.toContain("disabled");
+    expect(markup).toContain("data-forward-secrecy-continue disabled");
   });
 
   it("states both irreversible costs and records an explicit choice", () => {
@@ -32,6 +29,11 @@ describe("D111 forward-secrecy onboarding choice", () => {
     expect(markup.match(/class="fs-tradeoff"/gu)).toHaveLength(2);
     expect(chooseForwardSecrecyMode(initialForwardSecrecyOnboardingState(), "protect-past").choice).toBe("protect-past");
     expect(chooseForwardSecrecyMode(initialForwardSecrecyOnboardingState(), "keep-group-delivery").choice).toBe("keep-group-delivery");
+  });
+
+  it("refuses values outside the two choices", () => {
+    const saved = chooseForwardSecrecyMode(initialForwardSecrecyOnboardingState(), "protect-past");
+    expect(chooseForwardSecrecyMode(saved, "archive-forever").choice).toBe("protect-past");
   });
 
   it("does not call this a phone", () => {
