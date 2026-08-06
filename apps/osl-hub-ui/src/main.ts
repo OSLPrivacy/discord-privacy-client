@@ -49,6 +49,7 @@ import { unlockAttemptWarning } from "./unlock-attempts";
 import { chatPreviewHidingVisible } from "./entitlement-gates";
 import { entitlementCopy } from "./entitlement-copy";
 import { entitlementView } from "./entitlement-view";
+import { bindProtectedTextBoxShortcutGuards } from "./protected-box-shortcuts";
 import {
   escapeHtml,
   closeEmbeddedServiceHost,
@@ -7315,6 +7316,7 @@ async function copyLocalProtectedCapsule(): Promise<void> {
 }
 
 function bindLocalProtectedSheet(): void {
+  bindProtectedTextBoxShortcutGuards(document);
   document.querySelector<HTMLButtonElement>("#local-protected-toggle")?.addEventListener("click", () => void toggleLocalProtectedSheet());
   document.querySelector<HTMLButtonElement>("#local-protected-close")?.addEventListener("click", () => void toggleLocalProtectedSheet());
   document.querySelector<HTMLButtonElement>("#protect-local-only")?.addEventListener("click", showLocalProtectedChoice);

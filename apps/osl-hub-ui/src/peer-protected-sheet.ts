@@ -1,6 +1,7 @@
 import { peerIsVerified, type HubPerson, type ManualPeerContext } from "./adapters";
 import { LOCAL_TTL_OPTIONS, type LocalTtlSeconds } from "./local-protected-sheet";
 import { utf8Length } from "./overlay-state";
+import { COVER_MESSAGE_BOX_RULE, PROTECTED_TEXT_BOX_RULE } from "./protected-box-shortcuts";
 
 const PEER_PROTECTED_DRAFT_BYTES = 1_000;
 
@@ -152,13 +153,13 @@ function readyMarkup(model: PeerProtectedSheetModel): string {
   const boundedDraft = boundedPeerProtectedDraft(model.draft);
   const write = `<form id="peer-protect-form" class="local-protected-form">
       <label for="peer-protected-draft">Message</label>
-      <textarea id="peer-protected-draft" rows="5" autocomplete="off" spellcheck="true" aria-describedby="peer-protected-draft-bytes" placeholder="Write privately">${escapeHtml(boundedDraft)}</textarea>
+      <textarea id="peer-protected-draft" rows="5" autocomplete="off" spellcheck="true" data-osl-protected-box-rule="${PROTECTED_TEXT_BOX_RULE}" aria-describedby="peer-protected-draft-bytes" placeholder="Write privately">${escapeHtml(boundedDraft)}</textarea>
       <small id="peer-protected-draft-bytes" class="peer-draft-bytes" aria-live="polite">${peerProtectedDraftByteFeedback(boundedDraft)}</small>
       <div class="local-protected-options"><label class="peer-ttl"><span>Relay copy expires after</span><select id="peer-protected-ttl">${ttlOptions}</select><small>Copies already opened remain.</small></label><label class="local-view-once"><span>View once</span><input id="peer-protected-view-once" type="checkbox" ${model.viewOnce ? "checked" : ""}/><small>Display is bounded on cooperating OSL clients; cameras are outside OSL's control.</small></label></div>
       <button class="local-primary" type="submit" ${model.busy ? "disabled" : ""}>${model.busy ? "Encrypting…" : "Encrypt & copy"}</button>
       <small class="local-send-truth">OSL copies protected text. It never presses Send.</small>
     </form>
-    ${model.coverText ? `<section class="local-capsule-result"><label for="peer-cover-output">Protected text</label><textarea id="peer-cover-output" rows="4" readonly>${escapeHtml(model.coverText)}</textarea><button class="local-copy" id="peer-cover-copy" type="button">Copy again</button><small>Check where you paste it.</small>${peerHandshakeWarning(model) ? `<p class="peer-handshake-warning" role="status">${escapeHtml(peerHandshakeWarning(model))}</p>` : ""}</section>` : ""}`;
+    ${model.coverText ? `<section class="local-capsule-result"><label for="peer-cover-output">Protected text</label><textarea id="peer-cover-output" rows="4" readonly data-osl-cover-message-box="${COVER_MESSAGE_BOX_RULE}">${escapeHtml(model.coverText)}</textarea><button class="local-copy" id="peer-cover-copy" type="button">Copy again</button><small>Check where you paste it.</small>${peerHandshakeWarning(model) ? `<p class="peer-handshake-warning" role="status">${escapeHtml(peerHandshakeWarning(model))}</p>` : ""}</section>` : ""}`;
   const open = `<form id="peer-open-form" class="local-protected-form">
       <label for="peer-cover-input">Protected text</label>
       <textarea id="peer-cover-input" maxlength="262144" rows="6" autocomplete="off" spellcheck="false" placeholder="Paste here yourself">${escapeHtml(model.openDraft)}</textarea>
