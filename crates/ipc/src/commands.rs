@@ -13787,6 +13787,7 @@ fn decode_export_identity(
 /// SQLite files deliberately remain opaque bytes.
 fn decode_export_files(
     files: &serde_json::Map<String, serde_json::Value>,
+    destination_encrypted: bool,
 ) -> Result<Vec<(String, Vec<u8>)>, String> {
     let mut decoded = Vec::with_capacity(files.len());
     for (rel, value) in files {
@@ -13809,12 +13810,37 @@ fn decode_export_files(
             }
             serde_json::from_slice::<serde_json::Value>(&bytes)
                 .map_err(|e| format!("OSL: import: file {rel} is invalid JSON: {e}"))?;
-            bytes = crate::main_password::maybe_encrypt(&bytes)
-                .map_err(|e| format!("OSL: import: encrypt {rel}: {e}"))?;
+            if destination_encrypted {
+                bytes = crate::main_password::maybe_encrypt(&bytes)
+                    .map_err(|e| format!("OSL: import: encrypt {rel}: {e}"))?;
+            }
         }
         decoded.push((rel.clone(), bytes));
     }
     Ok(decoded)
+}
+
+const OSL_IMPORT_DESTINATION_ACCOUNT_FILES: &[&str] = &[
+    "identity.json",
+    "password_marker.json",
+    "lockout_state.json",
+    "file_storage_key_fallback.json",
+    "recovery_kit_status.json",
+];
+
+fn clean_account_import_destination(state: &AppState, dir: &Path) -> Result<bool, String> {
+    if state
+        .identity
+        .lock()
+        .map_err(|_| "OSL: identity lock poisoned".to_string())?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    Ok(OSL_IMPORT_DESTINATION_ACCOUNT_FILES
+        .iter()
+        .chain(OSL_EXPORT_FILES.iter())
+        .all(|relative| !dir.join(relative).exists()))
 }
 
 /// Commit a fully validated/staged account import with rollback. Existing
@@ -14267,17 +14293,21 @@ fn cmd_osl_recover_account_from_export_with_dir(
         .as_ref()
         .and_then(|current| current.discord_snowflake.as_deref())
         .map(str::to_string);
-    if active_snowflake.as_deref() != Some(imported_snowflake) {
+    let destination_is_clean =
+        active_snowflake.is_none() && clean_account_import_destination(state, dir)?;
+    if active_snowflake.as_deref() != Some(imported_snowflake) && !destination_is_clean {
         return Err(format!(
             "OSL: import belongs to Discord account {imported_snowflake}, not the currently active account. Switch Discord accounts first; nothing was changed.",
             imported_snowflake = crate::log_id::log_id(imported_snowflake)
         ));
     }
+    let destination_encrypted = crate::main_password::get_file_storage_key().is_some()
+        || crate::main_password::at_rest_encryption_enrolled(dir);
     let files = bundle
         .get("files")
         .and_then(|f| f.as_object())
         .ok_or_else(|| "OSL: import: files missing".to_string())?;
-    let files = decode_export_files(files)?;
+    let files = decode_export_files(files, destination_encrypted)?;
 
     // Stage the complete replacement first.  Renames are atomic per path;
     // malformed data cannot reach a live path because all validation and all
@@ -14313,7 +14343,6 @@ fn cmd_osl_recover_account_from_export_with_dir(
     }
 
     let _store_pause = MessageStorePause::new(state, dir)?;
-    let destination_encrypted = crate::main_password::get_file_storage_key().is_some();
     // Keep the stage on every commit failure. It may contain the only
     // remaining rollback copy if Windows/AV held a destination file -- `?`
     // returns before the remove_dir_all below, exactly as the old
@@ -14463,7 +14492,7 @@ mod account_transfer_tests {
             "peer_map.json".into(),
             serde_json::Value::String(STANDARD.encode(b"{}")),
         );
-        let decoded = decode_export_files(&files).unwrap();
+        let decoded = decode_export_files(&files, true).unwrap();
         crate::main_password::set_file_storage_key(None);
         assert!(crate::main_password::has_enc_magic(&decoded[0].1));
         assert_eq!(
@@ -14564,6 +14593,60 @@ mod account_transfer_tests {
         )
         .is_err());
         assert_eq!(std::fs::read(&live).unwrap(), b"old");
+    }
+
+    #[test]
+    fn full_export_restores_to_clean_second_profile_without_replacing_source_profile() {
+        let source_dir = TempDir::new().unwrap();
+        let second_dir = TempDir::new().unwrap();
+        let entropy = [0x32; 16];
+        let snowflake = "task0322-source-account";
+        let phrase = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
+            .unwrap()
+            .to_string();
+        let source_peer_map = br#"{"task0322":"source-profile-still-here"}"#;
+
+        std::fs::write(source_dir.path().join("peer_map.json"), source_peer_map).unwrap();
+        let source = AppState::new();
+        let mut identity = keystore::identity_from_entropy(entropy, snowflake.to_owned());
+        identity.discord_snowflake = Some(snowflake.to_owned());
+        let source_user_id = identity.user_id.clone();
+        let source_ed25519 = *identity.ed25519_public.as_bytes();
+        source.install_identity(identity);
+
+        let package = cmd_osl_export_data_with_dir(&source, source_dir.path())
+            .expect("source profile can produce one recovery package");
+
+        let second = AppState::new();
+        cmd_osl_recover_account_from_export_with_dir(&second, package, phrase, second_dir.path())
+            .expect("a clean second profile accepts the recovery package");
+
+        let restored = second.identity_slot().as_ref().cloned().unwrap();
+        assert_eq!(restored.user_id, source_user_id);
+        assert_eq!(restored.discord_snowflake.as_deref(), Some(snowflake));
+        assert_eq!(restored.ed25519_public.as_bytes(), &source_ed25519);
+        assert_eq!(
+            std::fs::read(second_dir.path().join("peer_map.json")).unwrap(),
+            source_peer_map
+        );
+        assert!(second_dir.path().join("identity.json").is_file());
+
+        assert_eq!(
+            std::fs::read(source_dir.path().join("peer_map.json")).unwrap(),
+            source_peer_map,
+            "the source profile's data file must not be moved or replaced"
+        );
+        assert_eq!(
+            source.identity_slot().as_ref().unwrap().user_id,
+            source_user_id,
+            "the source profile's in-memory identity remains installed"
+        );
+        cmd_osl_export_data_with_dir(&source, source_dir.path())
+            .expect("source profile remains usable after second-profile import");
+
+        println!("TASK0322 packages_restored=1");
+        println!("TASK0322 second_profile_restored=true");
+        println!("TASK0322 first_profile_still_usable=true");
     }
 
     #[test]
