@@ -182,6 +182,33 @@ pub struct GroupMemberPermissionRecord {
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FriendAccountReachAccount {
+    pub service_id: String,
+    pub account_id: String,
+    pub account_label: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendAccountReachRecord {
+    pub person_id: String,
+    pub service_id: String,
+    pub account_id: String,
+    pub account_label: String,
+    pub allowed: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendAccountReachBulkResult {
+    pub action: String,
+    pub person_id: String,
+    pub accounts: Vec<FriendAccountReachRecord>,
+    pub changed_count: usize,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProtectedFriendProfilePictureImage {
     pub media_type: String,
     pub bytes_b64: String,
@@ -607,6 +634,11 @@ struct SecurityPreferences {
     /// not inferred from a missing grant.
     #[serde(default)]
     group_member_permissions: BTreeMap<String, BTreeMap<String, bool>>,
+    /// Per accepted friend, the local service accounts that friend may reach.
+    /// Missing means unticked. Explicit denials are not stored, so choosing
+    /// "nowhere" removes rows and the absence fails closed.
+    #[serde(default)]
+    friend_account_reach_choices: BTreeMap<String, BTreeMap<String, bool>>,
     /// Identity-owned profile pictures for protected friend surfaces. Image
     /// bytes are optional because an identity can reserve its record before the
     /// operator chooses an image.
@@ -1274,6 +1306,57 @@ pub fn list_group_member_permissions_for_group(
     let prefs =
         load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
     Ok(group_member_permission_records_for_group(&prefs, &group_id))
+}
+
+pub fn set_hub_friend_account_reach_nowhere(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+) -> Result<FriendAccountReachBulkResult, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    if accounts.is_empty() {
+        return Err("OSL friend account reach requires at least one owned account".to_owned());
+    }
+    let account_keys = validate_friend_account_reach_accounts(&accounts)?;
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend account reach is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let mut changed_count = 0;
+    if let Some(choices) = prefs.friend_account_reach_choices.get_mut(&person_id) {
+        for key in &account_keys {
+            if choices.remove(key).is_some() {
+                changed_count += 1;
+            }
+        }
+        if choices.is_empty() {
+            prefs.friend_account_reach_choices.remove(&person_id);
+        }
+    }
+    if changed_count > 0 {
+        prefs.version = 2;
+        write_encrypted_json(&path, &prefs)?;
+    }
+
+    Ok(FriendAccountReachBulkResult {
+        action: "nowhere".to_owned(),
+        person_id: person_id.clone(),
+        accounts: accounts
+            .into_iter()
+            .map(|account| FriendAccountReachRecord {
+                person_id: person_id.clone(),
+                service_id: account.service_id,
+                account_id: account.account_id,
+                account_label: account.account_label,
+                allowed: false,
+            })
+            .collect(),
+        changed_count,
+    })
 }
 
 pub fn set_protected_friend_profile_picture(
@@ -4160,6 +4243,35 @@ fn group_member_permission_records_for_group(
         .collect()
 }
 
+fn friend_account_reach_key(account: &FriendAccountReachAccount) -> String {
+    format!("{}:{}", account.service_id, account.account_id)
+}
+
+fn validate_friend_account_reach_accounts(
+    accounts: &[FriendAccountReachAccount],
+) -> Result<Vec<String>, String> {
+    let mut keys = BTreeSet::new();
+    let mut ordered_keys = Vec::with_capacity(accounts.len());
+    for account in accounts {
+        validate_manual_peer_scope_component(&account.service_id)
+            .map_err(|_| "OSL friend account reach service is invalid".to_owned())?;
+        validate_manual_peer_scope_component(&account.account_id)
+            .map_err(|_| "OSL friend account reach account is invalid".to_owned())?;
+        if account.account_label.trim().is_empty()
+            || account.account_label.len() > 80
+            || account.account_label.chars().any(char::is_control)
+        {
+            return Err("OSL friend account reach label is invalid".to_owned());
+        }
+        let key = friend_account_reach_key(account);
+        if !keys.insert(key.clone()) {
+            return Err("OSL friend account reach account is duplicated".to_owned());
+        }
+        ordered_keys.push(key);
+    }
+    Ok(ordered_keys)
+}
+
 fn protected_friend_profile_picture_records(
     prefs: &SecurityPreferences,
 ) -> Vec<ProtectedFriendProfilePictureRecord> {
@@ -5039,6 +5151,83 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].owner_osl_user_id, "identity-0230");
         assert!(records[0].image_present());
+    }
+
+    #[test]
+    fn direct_whitelist_nowhere_action_unticks_three_current_owned_accounts_for_one_friend() {
+        let harness = FileBackedSecurityHarness::new("friend-account-reach-nowhere");
+        let security = HubSecurityState::default();
+        let person_id = "hub-person-task-0257".to_owned();
+        let accounts = vec![
+            FriendAccountReachAccount {
+                service_id: "discord".to_owned(),
+                account_id: "account-0257-a".to_owned(),
+                account_label: "OLIVE-0257 Discord".to_owned(),
+            },
+            FriendAccountReachAccount {
+                service_id: "telegram".to_owned(),
+                account_id: "account-0257-b".to_owned(),
+                account_label: "OLIVE-0257 Telegram".to_owned(),
+            },
+            FriendAccountReachAccount {
+                service_id: "email".to_owned(),
+                account_id: "account-0257-c".to_owned(),
+                account_label: "OLIVE-0257 Mail".to_owned(),
+            },
+        ];
+        let seeded_choices = accounts
+            .iter()
+            .map(|account| (friend_account_reach_key(account), true))
+            .collect::<BTreeMap<_, _>>();
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences {
+                version: 2,
+                friend_account_reach_choices: BTreeMap::from([(person_id.clone(), seeded_choices)]),
+                ..SecurityPreferences::default()
+            },
+        )
+        .unwrap();
+
+        let result =
+            set_hub_friend_account_reach_nowhere(&security, person_id.clone(), accounts).unwrap();
+        let unticked = result
+            .accounts
+            .iter()
+            .filter(|account| !account.allowed)
+            .count();
+        let ticked = result.accounts.len() - unticked;
+        let states = result
+            .accounts
+            .iter()
+            .map(|account| format!("{}={}", account.account_label, account.allowed))
+            .collect::<Vec<_>>()
+            .join("|");
+        println!(
+            "TASK0257 direct_account_list action={} friend={} rows={} unticked={} ticked={} changed_count={} states={}",
+            result.action,
+            result.person_id,
+            result.accounts.len(),
+            unticked,
+            ticked,
+            result.changed_count,
+            states
+        );
+
+        assert_eq!(result.action, "nowhere");
+        assert_eq!(result.person_id, person_id);
+        assert_eq!(result.accounts.len(), 3);
+        assert_eq!(unticked, 3);
+        assert_eq!(ticked, 0);
+        assert_eq!(result.changed_count, 3);
+        assert!(result.accounts.iter().all(|account| !account.allowed));
+
+        let stored: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        assert!(
+            !stored.friend_account_reach_choices.contains_key(&person_id),
+            "nowhere removes explicit account reach grants so the friend is unticked everywhere"
+        );
     }
 
     #[test]
