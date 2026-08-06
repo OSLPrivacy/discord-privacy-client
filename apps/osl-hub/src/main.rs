@@ -8,8 +8,8 @@ use osl_privacy_hub::ai_carrier::{
 };
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::broker::{
-    self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
-    OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, PreparedCoreMessage,
+    self, DecryptedLocalProtectedMessage, HubBrokerState, HubContextBurnChoice,
+    OpenedHubAttachment, OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, PreparedCoreMessage,
     PreparedHubAttachment, PreparedLocalProtectedMessage, PreparedNativeOverlayText,
     PreparedPeerProseMessage,
 };
@@ -6981,6 +6981,16 @@ async fn burn_active_hub_context(
     })
     .await
     .map_err(|_| "OSL active-context burn worker failed".to_owned())?
+}
+
+#[tauri::command]
+async fn list_active_hub_context_burn_choices(
+    broker: State<'_, HubBrokerState>,
+    session: State<'_, HubAccountSessionState>,
+    context_token: String,
+) -> Result<Vec<HubContextBurnChoice>, String> {
+    let _session = session.transition.lock().await;
+    broker.server_channel_burn_choices(&context_token)
 }
 
 /// Whether the peer revocations a burn queued for one conversation have

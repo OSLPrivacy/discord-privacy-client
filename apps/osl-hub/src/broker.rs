@@ -840,6 +840,40 @@ impl HubBrokerState {
             }))
     }
 
+    pub fn server_channel_burn_choices(
+        &self,
+        context_token: &str,
+    ) -> Result<Vec<HubContextBurnChoice>, String> {
+        let scope = self.scope_for_context(context_token)?;
+        if scope.kind != ScopeKind::ServerChannel {
+            return Err("OSL active context is not an open server channel".to_owned());
+        }
+        let server_id = scope
+            .server_id
+            .clone()
+            .ok_or_else(|| "OSL active server-channel scope is missing its server id".to_owned())?;
+        let channel_id = scope.channel_id.clone().ok_or_else(|| {
+            "OSL active server-channel scope is missing its channel id".to_owned()
+        })?;
+        let whole_server_scope = ScopeInput {
+            kind: ScopeKind::ServerFull,
+            id: server_id.clone(),
+            server_id: Some(server_id),
+            channel_id: None,
+        };
+        debug_assert_eq!(scope.channel_id.as_deref(), Some(channel_id.as_str()));
+        Ok(vec![
+            HubContextBurnChoice {
+                choice: "this_channel".to_owned(),
+                scope,
+            },
+            HubContextBurnChoice {
+                choice: "whole_server".to_owned(),
+                scope: whole_server_scope,
+            },
+        ])
+    }
+
     pub fn service_scope_registration(
         &self,
         context_token: &str,
@@ -977,6 +1011,13 @@ pub struct ManualPeerBurnTarget {
     pub service_id: String,
     pub account_id: String,
     pub person_id: String,
+    pub scope: ScopeInput,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubContextBurnChoice {
+    pub choice: String,
     pub scope: ScopeInput,
 }
 
@@ -13799,6 +13840,49 @@ mod tests {
             scope_input(&second).unwrap().id
         );
         assert!(!scope_input(&first).unwrap().id.contains("dm-1"));
+    }
+
+    #[test]
+    fn task_0528_open_server_channel_burn_choices_are_channel_and_whole_server() {
+        let broker = HubBrokerState::default();
+        let context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "discord-account-0528".to_owned(),
+            conversation_kind: HubConversationKind::Channel,
+            conversation_id: "discord-channel-0528".to_owned(),
+            space_id: Some("discord-server-0528".to_owned()),
+            participant_osl_ids: vec!["peer-0528".to_owned(), "self-0528".to_owned()],
+            self_osl_id: "self-0528".to_owned(),
+        };
+        let expected_channel = scope_input(&context).expect("server channel scope is valid");
+        let lease = broker
+            .activate(context, 52)
+            .expect("open server channel context activates");
+
+        let choices = broker
+            .server_channel_burn_choices(&lease.context_token)
+            .expect("server-channel burn choices resolve");
+
+        println!("TASK 0528 choice count: {}", choices.len());
+        for choice in &choices {
+            println!(
+                "TASK 0528 choice={} kind={:?} server_id={} channel_id={}",
+                choice.choice,
+                choice.scope.kind,
+                choice.scope.server_id.as_deref().unwrap_or("<none>"),
+                choice.scope.channel_id.as_deref().unwrap_or("<none>")
+            );
+        }
+
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[0].choice, "this_channel");
+        assert_eq!(choices[0].scope.kind, ScopeKind::ServerChannel);
+        assert_eq!(choices[0].scope.server_id, expected_channel.server_id);
+        assert_eq!(choices[0].scope.channel_id, expected_channel.channel_id);
+        assert_eq!(choices[1].choice, "whole_server");
+        assert_eq!(choices[1].scope.kind, ScopeKind::ServerFull);
+        assert_eq!(choices[1].scope.server_id, choices[0].scope.server_id);
+        assert_eq!(choices[1].scope.channel_id, None);
     }
 
     #[test]
