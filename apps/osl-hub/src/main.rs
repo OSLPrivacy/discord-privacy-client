@@ -4014,6 +4014,28 @@ async fn send_native_discord_qa_atomic_text(
             });
         };
         qa_discord_send_stage("send_carrier_text_ready");
+        if let Err(error) = broker::read_back_prepared_native_overlay_post_copy(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubBrokerState>(),
+            &carrier_text,
+        ) {
+            qa_discord_send_stage("send_refused_carrier_pointer_unrecoverable");
+            qa_atomic_send_receipt(
+                &registration,
+                "post",
+                "error",
+                Some(&error),
+                Some("carrier_pointer_unrecoverable"),
+                None,
+            );
+            qa_discord_send_stage("send_receipt_written");
+            return Ok(NativeDiscordQaAtomicText {
+                prepared: broker::PreparedNativeDiscordOverlayText { prepared, flagtext },
+                carrier: failed_carrier(),
+                visible_carrier_row: None,
+            });
+        }
+        qa_discord_send_stage("send_carrier_pointer_recovered");
         if require_same_overlay_context(&app, context_epoch, &host).is_err() {
             qa_discord_send_stage("send_pre_placement_context_changed");
             qa_atomic_send_receipt(
@@ -7194,13 +7216,14 @@ mod qa_selftest {
     /// `send_native_discord_qa_atomic_text` appends them. Each failure site in
     /// that command writes a *different* label, so a missing entry here names
     /// the exact hop that stopped the send.
-    const EXPECTED_STAGES: [&str; 11] = [
+    const EXPECTED_STAGES: [&str; 12] = [
         "send_command_entered",
         "send_registration_ready",
         "send_session_locked",
         "send_plaintext_accepted",
         "send_encryption_done",
         "send_carrier_text_ready",
+        "send_carrier_pointer_recovered",
         "send_place_carrier_called",
         "send_carrier_typed",
         "send_enter_injected",

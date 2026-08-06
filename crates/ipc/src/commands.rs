@@ -6475,6 +6475,7 @@ mod wrapped_key_open_tests {
             blob_version: 1,
             single_use: true,
             display_duration_seconds: Some(30),
+            expiry_seconds: Some(30),
             expires_at: "2026-07-30T20:00:00Z".to_string(),
         };
 
