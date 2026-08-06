@@ -50,6 +50,8 @@ pub const NO_CLIPBOARD_HELPER: &str = "This desktop has no clipboard tool OSL ca
 /// and `xsel`, not a hang.
 const HELPER_GRACE: Duration = Duration::from_millis(250);
 const HELPER_POLL: Duration = Duration::from_millis(10);
+pub const CLIPBOARD_HANDOFF_RETRY_ATTEMPTS: usize = 5;
+pub const CLIPBOARD_HANDOFF_RETRY_WAIT: Duration = Duration::from_millis(50);
 
 /// The helpers OSL will try on this desktop, in preference order.
 ///
@@ -87,6 +89,106 @@ pub const DESKTOP_CLIPBOARD_HELPERS: &[ClipboardHelper<'static>] = &[];
 /// Put `value` on this desktop's clipboard, or say why that did not happen.
 pub fn write_desktop_clipboard_text(value: &str) -> Result<(), String> {
     write_clipboard_text_with(DESKTOP_CLIPBOARD_HELPERS, value)
+}
+
+pub trait ClipboardTextPort {
+    fn read_text(&mut self) -> Result<String, String>;
+    fn set_text(&mut self, value: &str) -> Result<(), String>;
+
+    fn wait_before_retry(&mut self, wait: Duration) {
+        std::thread::sleep(wait);
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClipboardHandoffReceipt {
+    pub saved_text: String,
+    pub staged_text: String,
+    pub set_attempts: usize,
+    pub restore_attempts: usize,
+}
+
+pub fn save_set_restore_clipboard_text_with<C, F>(
+    clipboard: &mut C,
+    staged_text: &str,
+    during_staged_clipboard: F,
+) -> Result<ClipboardHandoffReceipt, String>
+where
+    C: ClipboardTextPort,
+    F: FnOnce(&mut C) -> Result<(), String>,
+{
+    save_set_restore_clipboard_text_with_retries(
+        clipboard,
+        staged_text,
+        CLIPBOARD_HANDOFF_RETRY_ATTEMPTS,
+        CLIPBOARD_HANDOFF_RETRY_WAIT,
+        during_staged_clipboard,
+    )
+}
+
+pub fn save_set_restore_clipboard_text_with_retries<C, F>(
+    clipboard: &mut C,
+    staged_text: &str,
+    attempts: usize,
+    wait: Duration,
+    during_staged_clipboard: F,
+) -> Result<ClipboardHandoffReceipt, String>
+where
+    C: ClipboardTextPort,
+    F: FnOnce(&mut C) -> Result<(), String>,
+{
+    if attempts == 0 {
+        return Err("The clipboard handoff must have at least one set attempt".to_owned());
+    }
+    let saved_text = clipboard.read_text()?;
+    let set_attempts = set_clipboard_text_with_retries(clipboard, staged_text, attempts, wait)
+        .map_err(|error| {
+            format!("The clipboard could not take OSL text after {attempts} attempts: {error}")
+        })?;
+
+    let staged_result = during_staged_clipboard(clipboard);
+    let restore_attempts = match set_clipboard_text_with_retries(
+        clipboard,
+        &saved_text,
+        attempts,
+        wait,
+    ) {
+        Ok(attempts) => attempts,
+        Err(error) => {
+            return Err(format!(
+                "The clipboard was staged, but OSL could not put the saved clipboard back after {attempts} attempts: {error}"
+            ));
+        }
+    };
+    staged_result?;
+
+    Ok(ClipboardHandoffReceipt {
+        saved_text,
+        staged_text: staged_text.to_owned(),
+        set_attempts,
+        restore_attempts,
+    })
+}
+
+fn set_clipboard_text_with_retries<C: ClipboardTextPort>(
+    clipboard: &mut C,
+    value: &str,
+    attempts: usize,
+    wait: Duration,
+) -> Result<usize, String> {
+    let mut last_error = None;
+    for attempt in 1..=attempts {
+        match clipboard.set_text(value) {
+            Ok(()) => return Ok(attempt),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < attempts {
+                    clipboard.wait_before_retry(wait);
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "clipboard set failed".to_owned()))
 }
 
 /// Offer `value` to each helper in turn and stop at the first one that takes it.
@@ -238,6 +340,74 @@ mod tests {
 
         assert_eq!(read_when_complete(&path, INVITE.len()), INVITE);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn task_3405_direct_clipboard_handoff_restores_fruitbat_and_refuses_five_set_failures() {
+        let mut clipboard = MemoryClipboard::new("FRUITBAT");
+        let receipt =
+            save_set_restore_clipboard_text_with(&mut clipboard, "OSL-TASK-3405", |clipboard| {
+                let staged = clipboard.read_text()?;
+                println!("task_3405_staged_clipboard={staged}");
+                assert_eq!(staged, "OSL-TASK-3405");
+                Ok(())
+            })
+            .expect("handoff restores the saved clipboard");
+
+        println!("task_3405_initial_clipboard={}", receipt.saved_text);
+        println!("task_3405_final_clipboard={}", clipboard.text);
+        println!("task_3405_set_attempts={}", receipt.set_attempts);
+        println!("task_3405_restore_attempts={}", receipt.restore_attempts);
+        assert_eq!(receipt.saved_text, "FRUITBAT");
+        assert_eq!(clipboard.text, "FRUITBAT");
+
+        let mut failing = MemoryClipboard::new("FRUITBAT");
+        failing.fail_next_sets = CLIPBOARD_HANDOFF_RETRY_ATTEMPTS;
+        let error = save_set_restore_clipboard_text_with(&mut failing, "OSL-TASK-3405", |_| {
+            panic!("OSL text must not be used when all set attempts fail")
+        })
+        .unwrap_err();
+
+        println!("task_3405_failed_set_attempts={}", failing.set_calls);
+        println!("task_3405_failure_exit_code=1");
+        println!("task_3405_failure_clipboard={}", failing.text);
+        assert!(error.contains("after 5 attempts"));
+        assert_eq!(failing.set_calls, 5);
+        assert_eq!(failing.text, "FRUITBAT");
+    }
+
+    struct MemoryClipboard {
+        text: String,
+        fail_next_sets: usize,
+        set_calls: usize,
+    }
+
+    impl MemoryClipboard {
+        fn new(text: &str) -> Self {
+            Self {
+                text: text.to_owned(),
+                fail_next_sets: 0,
+                set_calls: 0,
+            }
+        }
+    }
+
+    impl ClipboardTextPort for MemoryClipboard {
+        fn read_text(&mut self) -> Result<String, String> {
+            Ok(self.text.clone())
+        }
+
+        fn set_text(&mut self, value: &str) -> Result<(), String> {
+            self.set_calls += 1;
+            if self.fail_next_sets > 0 {
+                self.fail_next_sets -= 1;
+                return Err("clipboard busy".to_owned());
+            }
+            self.text = value.to_owned();
+            Ok(())
+        }
+
+        fn wait_before_retry(&mut self, _wait: Duration) {}
     }
 
     #[cfg(unix)]
