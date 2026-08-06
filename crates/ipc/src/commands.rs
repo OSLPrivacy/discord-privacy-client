@@ -15952,6 +15952,35 @@ pub fn cmd_osl_get_new_friend_defaults(state: &AppState) -> Result<NewFriendDefa
     })
 }
 
+pub fn cmd_osl_save_new_friend_defaults(
+    state: &AppState,
+    defaults: NewFriendDefaultsDto,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<NewFriendDefaultsDto, String> {
+    record_activity_on_command_entry();
+    let account_reach = defaults
+        .account_reach
+        .parse::<crate::app_preferences::NewFriendAccountReach>()?;
+    let auto_whitelist = defaults
+        .auto_whitelist
+        .parse::<crate::auto_whitelist_rules::AutoWhitelistRule>()?;
+    let verification_warnings = defaults
+        .verification_warnings
+        .parse::<crate::app_preferences::NewFriendVerificationWarnings>()?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.new_friend_account_reach = account_reach;
+        prefs.new_friend_auto_whitelist = auto_whitelist;
+        prefs.new_friend_verification_warnings = verification_warnings;
+    }
+    persist_app_preferences_now(state, config_dir);
+    cmd_osl_get_new_friend_defaults(state)
+}
+
 // ---- Phase 9-B1: app preferences ----
 
 /// DTO mirroring [`crate::app_preferences::AppPreferences`] for the JS bridge.

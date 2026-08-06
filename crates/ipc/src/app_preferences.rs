@@ -21,6 +21,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::str::FromStr;
 
 /// Active stego envelope. Mode 0 is the production `DPC0::<b64>`
 /// path; Mode 1 is the multi-message `DPC1::<sentences>` cover
@@ -93,6 +94,20 @@ impl NewFriendAccountReach {
     }
 }
 
+impl FromStr for NewFriendAccountReach {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
+            "approved_chats_only" => Ok(Self::ApprovedChatsOnly),
+            "all_shared_chats" => Ok(Self::AllSharedChats),
+            _ => Err(format!(
+                "OSL: unknown new-friend account reach {raw:?}; valid choices: approved_chats_only, all_shared_chats"
+            )),
+        }
+    }
+}
+
 /// Whether new-friend verification warnings are shown by default.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -107,6 +122,20 @@ impl NewFriendVerificationWarnings {
         match self {
             Self::Enabled => "enabled",
             Self::Disabled => "disabled",
+        }
+    }
+}
+
+impl FromStr for NewFriendVerificationWarnings {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().replace(['-', ' '], "_").as_str() {
+            "enabled" => Ok(Self::Enabled),
+            "disabled" => Ok(Self::Disabled),
+            _ => Err(format!(
+                "OSL: unknown new-friend verification warnings {raw:?}; valid choices: enabled, disabled"
+            )),
         }
     }
 }
