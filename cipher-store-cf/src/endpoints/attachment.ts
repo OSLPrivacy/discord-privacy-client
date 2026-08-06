@@ -9,6 +9,10 @@
 
 import type { Env } from "../env.js";
 import {
+  ATTACHMENT_TIER_LIMITS,
+  attachmentTierLimit,
+  checkAttachmentTierLimit,
+  type AttachmentTier,
   INCOMPLETE_SESSION_TTL_SECONDS,
   MAX_ATTACHMENT_PART_BYTES,
   MAX_ATTACHMENT_PARTS,
@@ -58,6 +62,35 @@ function readSingleFetch(request: Request): number | null {
   const value = request.headers.get("x-osl-single-fetch");
   if (value === null || value === "0") return 0;
   return value === "1" ? 1 : null;
+}
+
+function readAccountTier(request: Request): AttachmentTier | Response {
+  const raw = request.headers.get("x-osl-account-tier")?.trim().toLowerCase() ?? "free";
+  if (attachmentTierLimit(raw) === null) {
+    return error(400, "bad_account_tier", "X-OSL-Account-Tier must be free or pro");
+  }
+  return raw as AttachmentTier;
+}
+
+function enforceAccountTier(
+  tier: AttachmentTier,
+  sizeBytes: number,
+  fileCount: number,
+): Response | null {
+  const result = checkAttachmentTierLimit(tier, sizeBytes, fileCount);
+  if (result.accepted) return null;
+  if (result.reason === "too_many_files") {
+    return error(
+      413,
+      "attachment_tier_limit",
+      `${result.tierLabel} attachments are limited to ${result.maxFilesPerMessage} files per message`,
+    );
+  }
+  return error(
+    413,
+    "attachment_tier_limit",
+    `${result.tierLabel} attachments are limited to ${ATTACHMENT_TIER_LIMITS[tier].perFileLabel} per file`,
+  );
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -440,6 +473,10 @@ export async function handleAttachmentSessionCreate(request: Request, env: Env):
   if (declared instanceof Response || declared === null) {
     return declared ?? error(400, "size_required", "X-OSL-Size-Bytes header required");
   }
+  const tier = readAccountTier(request);
+  if (tier instanceof Response) return tier;
+  const tierRejected = enforceAccountTier(tier, declared, 1);
+  if (tierRejected) return tierRejected;
 
   if (await reservationPoolExhausted(env, declared)) {
     return error(503, "storage_capacity", "attachment storage is temporarily at capacity");
@@ -766,6 +803,10 @@ export async function handleAttachmentUpload(request: Request, env: Env): Promis
   if (size === 0 || (typeof declared === "number" && declared !== size)) {
     return error(400, size === 0 ? "empty_body" : "content_length_mismatch", "invalid attachment length");
   }
+  const tier = readAccountTier(request);
+  if (tier instanceof Response) return tier;
+  const tierRejected = enforceAccountTier(tier, size, 1);
+  if (tierRejected) return tierRejected;
 
   const id = randomHex(16);
   const objectKey = `attachments/${id}`;

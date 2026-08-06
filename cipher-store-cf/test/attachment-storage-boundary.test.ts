@@ -57,6 +57,15 @@ function directUpload(bytes: Uint8Array): Request {
   });
 }
 
+function freeMultipartRequest(sizeBytes: number): Request {
+  return request("/v1/attachment/session", "POST", undefined, {
+    "x-osl-ttl-seconds": "3600",
+    "x-osl-fetch-token": TOKEN,
+    "x-osl-size-bytes": String(sizeBytes),
+    "x-osl-account-tier": "free",
+  });
+}
+
 async function uploadDirect(
   env: Env,
   bytes: Uint8Array,
@@ -106,6 +115,38 @@ async function createMultipart(
 }
 
 describe("registered attachment storage boundary", () => {
+  it("refuses a 26 MB Free chat file before any upload record exists", async () => {
+    const real = workerEnv();
+    const createMultipartUpload = vi.fn(real.ATTACHMENTS.createMultipartUpload.bind(real.ATTACHMENTS));
+    const env = workerEnv({
+      ATTACHMENTS: boundBucket(real.ATTACHMENTS, { createMultipartUpload }),
+    });
+    const sizeBytes = 26 * 1024 * 1024;
+
+    const response = await worker.fetch(freeMultipartRequest(sizeBytes), env, CTX);
+    const body = await response.json() as { error: string; message: string };
+    const uploadRecords = await d1Count("SELECT COUNT(*) AS c FROM attachment_objects");
+
+    console.log(
+      [
+        "task1331",
+        "size=26 MB",
+        "tier=free",
+        `status=${response.status}`,
+        `error=${body.error}`,
+        `upload_records=${uploadRecords}`,
+        `multipart_uploads=${createMultipartUpload.mock.calls.length}`,
+      ].join(" "),
+    );
+    expect(response.status).toBe(413);
+    expect(body).toEqual({
+      error: "attachment_tier_limit",
+      message: "Free attachments are limited to 25 MB per file",
+    });
+    expect(uploadRecords).toBe(0);
+    expect(createMultipartUpload).not.toHaveBeenCalled();
+  });
+
   it("routes nonempty direct bytes through real R2 and reads them back exactly", async () => {
     const env = workerEnv();
     const bytes = new Uint8Array([3, 1, 4, 1, 5, 9]);
