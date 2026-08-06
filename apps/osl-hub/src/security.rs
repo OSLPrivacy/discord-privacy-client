@@ -6825,6 +6825,18 @@ key"
         let outside_a_readable_after = after_outside.iter().any(|mark| mark == &outside_mark_a);
         let outside_b_readable_after = after_outside.iter().any(|mark| mark == &outside_mark_b);
 
+        if !after_server_a.is_empty() {
+            println!(
+                "TASK0531_MARKED_SERVER_MESSAGE_STILL_PRESENT channel={} marks={:?}",
+                server_channel_a, after_server_a
+            );
+        }
+        if !after_server_b.is_empty() {
+            println!(
+                "TASK0531_MARKED_SERVER_MESSAGE_STILL_PRESENT channel={} marks={:?}",
+                server_channel_b, after_server_b
+            );
+        }
         assert_eq!(result.channels_destroyed, 2);
         assert_eq!(result.rows_destroyed, 2);
         assert!(after_server_a.is_empty());
