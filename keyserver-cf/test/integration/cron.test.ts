@@ -182,12 +182,27 @@ describe("sweepExpiredPrivacyRows (hourly cron)", () => {
            VALUES (?, ?, 'expired-post', ?)`,
         )
         .bind(owner, new Uint8Array(32).fill(3), nowSeconds - 1),
+      env.DB
+        .prepare(
+          `INSERT INTO wrapped_key_open_receipts
+             (recipient_id, signer_ed25519_pub, request_digest, content_id, opened_at, expires_at)
+           VALUES (?, 'signer', ?, 'expired-open', ?, ?)`,
+        )
+        .bind(owner, new Uint8Array(32).fill(4), new Date(nowMs).toISOString(), nowSeconds - 1),
+      env.DB
+        .prepare(
+          `INSERT INTO wrapped_key_open_receipts
+             (recipient_id, signer_ed25519_pub, request_digest, content_id, opened_at, expires_at)
+           VALUES (?, 'signer', ?, 'fresh-open', ?, ?)`,
+        )
+        .bind(owner, new Uint8Array(32).fill(5), new Date(nowMs).toISOString(), nowSeconds + 60),
     ]);
 
     expect(await sweepExpiredPrivacyRows(env.DB, nowMs)).toEqual({
       wrappedKeys: 1,
       consumingGetReceipts: 1,
       wrappedKeyPostReceipts: 1,
+      wrappedKeyOpenReceipts: 1,
       prekeyReplenishReceipts: 0,
       wrappedKeyBurnReceipts: 0,
       unregisterReceipts: 0,
@@ -205,6 +220,12 @@ describe("sweepExpiredPrivacyRows (hourly cron)", () => {
       .bind(owner)
       .all<{ target_id: string }>();
     expect(receipts.results.map((row) => row.target_id)).toEqual(["fresh"]);
+    const openReceipts = await env.DB.prepare(
+      "SELECT content_id FROM wrapped_key_open_receipts WHERE recipient_id = ?",
+    )
+      .bind(owner)
+      .all<{ content_id: string }>();
+    expect(openReceipts.results.map((row) => row.content_id)).toEqual(["fresh-open"]);
   });
 
   it("drains a multi-batch expired privacy backlog without deleting live rows", async () => {
@@ -238,6 +259,11 @@ describe("sweepExpiredPrivacyRows (hourly cron)", () => {
              (sender_id, request_digest, content_id, expires_at)
            VALUES (?, ?, ?, ?)`,
         ).bind(owner, digest, `expired-backlog-post-${i}`, nowSeconds - 1),
+        env.DB.prepare(
+          `INSERT INTO wrapped_key_open_receipts
+             (recipient_id, signer_ed25519_pub, request_digest, content_id, opened_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        ).bind(owner, signer, digest, `expired-backlog-open-${i}`, createdIso, nowSeconds - 1),
         env.DB.prepare(
           `INSERT INTO prekey_replenish_receipts
              (user_id, signer_ed25519_pub, request_digest, expires_at)
@@ -275,6 +301,11 @@ describe("sweepExpiredPrivacyRows (hourly cron)", () => {
          VALUES (?, ?, 'fresh-backlog-post', ?)`,
       ).bind(owner, new Uint8Array(32).fill(202), nowSeconds + 60),
       env.DB.prepare(
+        `INSERT INTO wrapped_key_open_receipts
+           (recipient_id, signer_ed25519_pub, request_digest, content_id, opened_at, expires_at)
+         VALUES (?, ?, ?, 'fresh-backlog-open', ?, ?)`,
+      ).bind(owner, signer, new Uint8Array(32).fill(206), createdIso, nowSeconds + 60),
+      env.DB.prepare(
         `INSERT INTO prekey_replenish_receipts
            (user_id, signer_ed25519_pub, request_digest, expires_at)
          VALUES (?, ?, ?, ?)`,
@@ -299,6 +330,7 @@ describe("sweepExpiredPrivacyRows (hourly cron)", () => {
       wrappedKeys: expiredRows,
       consumingGetReceipts: expiredRows,
       wrappedKeyPostReceipts: expiredRows,
+      wrappedKeyOpenReceipts: expiredRows,
       prekeyReplenishReceipts: expiredRows,
       wrappedKeyBurnReceipts: expiredRows,
       unregisterReceipts: expiredRows,
@@ -323,6 +355,12 @@ describe("sweepExpiredPrivacyRows (hourly cron)", () => {
     ).bind(owner).all<{ content_id: string }>();
     expect(postReceipts.results.map((row) => row.content_id)).toEqual([
       "fresh-backlog-post",
+    ]);
+    const openReceipts = await env.DB.prepare(
+      "SELECT content_id FROM wrapped_key_open_receipts WHERE recipient_id = ?",
+    ).bind(owner).all<{ content_id: string }>();
+    expect(openReceipts.results.map((row) => row.content_id)).toEqual([
+      "fresh-backlog-open",
     ]);
 
     for (const table of [

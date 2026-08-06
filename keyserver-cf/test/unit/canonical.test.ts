@@ -4,6 +4,7 @@ import {
   canonicalPrekeyBundleGetBytes,
   canonicalReplenishBytes,
   canonicalWrappedKeyGetBytes,
+  canonicalWrappedKeyOpenClaimBytes,
   canonicalWrappedKeyPostBytes,
 } from "../../src/lib/canonical.js";
 
@@ -216,6 +217,29 @@ describe("authenticated consuming GET canonical bytes", () => {
         "00000003626f6200000003626f62000000096d6573736167652d310000000d31373030303030303030313233",
     );
     expect(hex(base)).not.toBe(hex(wrongTarget));
+  });
+
+  it("binds wrapped-key opened claims to recipient, content, timestamp and request", () => {
+    const base = canonicalWrappedKeyOpenClaimBytes({
+      recipient_id: "bob",
+      content_id: "message-1",
+      timestamp_ms: 1_700_000_000_123,
+      request_id: signedCommand.request_id,
+    });
+    expect(hex(base)).toMatch(
+      /^00000030646973636f72642d707269766163792d636c69656e742f777261707065642d6b65792d6f70656e2d636c61696d2f7631/,
+    );
+    expect(hex(base)).toContain(`0000002b${"41".repeat(43)}`);
+    expect(hex(base)).not.toBe(
+      hex(
+        canonicalWrappedKeyOpenClaimBytes({
+          recipient_id: "bob",
+          content_id: "message-2",
+          timestamp_ms: 1_700_000_000_123,
+          request_id: signedCommand.request_id,
+        }),
+      ),
+    );
   });
 });
 

@@ -95,6 +95,7 @@ import {
   handleWrappedKeysDelete,
   handleWrappedKeysGet,
   handleWrappedKeysPost,
+  handleWrappedKeyOpenedPost,
 } from "./endpoints/wrapped-keys.js";
 import { corsPreflight, error, notFound, serverError, tooMany, withCors } from "./lib/http.js";
 import { callerIp, checkRateLimit } from "./lib/rate-limit.js";
@@ -498,6 +499,10 @@ async function dispatch(
     if (path === "/v1/control-inbox") return await handleControlInboxPost(request, env);
     if (path === "/v1/usernames/claim") return await handleUsernameClaim(request, env);
     if (path === "/v1/usernames/lookup") return await handleUsernameLookup(request, env);
+    const wrappedOpenedContentId = matchParam(path, /^\/v1\/wrapped-keys\/([^/]+)\/opened$/);
+    if (wrappedOpenedContentId !== null) {
+      return await handleWrappedKeyOpenedPost(request, env, wrappedOpenedContentId);
+    }
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysPost(request, env);
     if (path === "/v1/prekey-bundle/replenish") {
       return await handlePrekeyBundleReplenish(request, env);

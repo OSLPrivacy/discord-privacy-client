@@ -307,6 +307,7 @@ export interface PrivacyRetentionSweepResult {
   wrappedKeys: number;
   consumingGetReceipts: number;
   wrappedKeyPostReceipts: number;
+  wrappedKeyOpenReceipts: number;
   prekeyReplenishReceipts: number;
   wrappedKeyBurnReceipts: number;
   unregisterReceipts: number;
@@ -417,6 +418,16 @@ export async function sweepExpiredPrivacyRows(
       db,
       "wrapped_key_post_receipts",
       ["sender_id", "request_digest"],
+      "expires_at <= ?",
+      nowSeconds,
+    ),
+    wrappedKeyOpenReceipts: await sweepExpiredRowsByPrimaryKey<{
+      recipient_id: string;
+      request_digest: ArrayBuffer | Uint8Array;
+    }>(
+      db,
+      "wrapped_key_open_receipts",
+      ["recipient_id", "request_digest"],
       "expires_at <= ?",
       nowSeconds,
     ),
@@ -1071,6 +1082,125 @@ export async function fetchWrappedKeyAuthenticated(
     status: "ok",
     row: { ...row, single_use: row.single_use === 1 },
   };
+}
+
+export type ClaimWrappedKeyOpenedResult =
+  | { status: "ok"; content_id: string }
+  | { status: "already_opened" }
+  | { status: "gone" }
+  | { status: "not_found" }
+  | { status: "not_single_use" }
+  | { status: "replay" }
+  | { status: "stale_identity" };
+
+/** Recipient-authenticated opened claim for single-use wrapped keys. */
+export async function claimWrappedKeyOpenedAuthenticated(
+  db: D1Database,
+  contentId: string,
+  recipientId: string,
+  requestDigest: Uint8Array,
+  expectedRecipientEd25519Pub: string,
+  receiptExpiresAt: number,
+): Promise<ClaimWrappedKeyOpenedResult> {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const nowIso = new Date().toISOString();
+  const cleanup = db
+    .prepare("DELETE FROM wrapped_key_open_receipts WHERE expires_at < ?")
+    .bind(nowSeconds);
+  const receipt = db
+    .prepare(
+      `INSERT INTO wrapped_key_open_receipts
+         (recipient_id, signer_ed25519_pub, request_digest, content_id, opened_at, expires_at)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6
+        WHERE EXISTS (
+          SELECT 1 FROM users
+           WHERE user_id = ?1 AND ik_ed25519_pub = ?2
+        )
+          AND EXISTS (
+            SELECT 1 FROM wrapped_keys
+             WHERE content_id = ?4
+               AND recipient_id = ?1
+               AND single_use = 1
+               AND expires_at > ?5
+          )`,
+    )
+    .bind(
+      recipientId,
+      expectedRecipientEd25519Pub,
+      requestDigest,
+      contentId,
+      nowIso,
+      receiptExpiresAt,
+    );
+  const opened = db
+    .prepare(
+      `DELETE FROM wrapped_keys
+        WHERE content_id = ?4
+          AND recipient_id = ?1
+          AND single_use = 1
+          AND EXISTS (
+            SELECT 1 FROM users
+             WHERE user_id = ?1 AND ik_ed25519_pub = ?2
+          )
+          AND EXISTS (
+            SELECT 1 FROM wrapped_key_open_receipts
+             WHERE recipient_id = ?1
+               AND signer_ed25519_pub = ?2
+               AND request_digest = ?3
+               AND content_id = ?4
+          )
+      RETURNING content_id`,
+    )
+    .bind(recipientId, expectedRecipientEd25519Pub, requestDigest, contentId);
+
+  let results: D1Result[];
+  try {
+    results = await db.batch([cleanup, receipt, opened]);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/wrapped_key_open_receipts/i.test(message) && /UNIQUE|PRIMARY/i.test(message)) {
+      return { status: "replay" };
+    }
+    throw err;
+  }
+  if ((results[1]?.meta?.changes ?? 0) !== 1) {
+    if (!(await identityKeyIsCurrent(db, recipientId, expectedRecipientEd25519Pub))) {
+      return { status: "stale_identity" };
+    }
+    const priorOpen = await db
+      .prepare(
+        `SELECT 1 AS ok FROM wrapped_key_open_receipts
+          WHERE content_id = ? AND recipient_id = ?`,
+      )
+      .bind(contentId, recipientId)
+      .first<{ ok: number }>();
+    if (priorOpen?.ok === 1) return { status: "already_opened" };
+    const row = await db
+      .prepare(
+        "SELECT single_use, expires_at FROM wrapped_keys WHERE content_id = ? AND recipient_id = ?",
+      )
+      .bind(contentId, recipientId)
+      .first<{ single_use: number; expires_at: string }>();
+    if (!row) return { status: "not_found" };
+    if (Date.parse(row.expires_at) <= Date.now()) {
+      await db
+        .prepare("DELETE FROM wrapped_keys WHERE content_id = ? AND recipient_id = ?")
+        .bind(contentId, recipientId)
+        .run();
+      return { status: "gone" };
+    }
+    return row.single_use === 1
+      ? { status: "not_found" }
+      : { status: "not_single_use" };
+  }
+  const openedContentId = (results[2]?.results?.[0] as { content_id: string } | undefined)
+    ?.content_id;
+  if (!openedContentId) {
+    return (await identityKeyIsCurrent(db, recipientId, expectedRecipientEd25519Pub))
+      ? { status: "not_found" }
+      : { status: "stale_identity" };
+  }
+  return { status: "ok", content_id: openedContentId };
 }
 
 async function identityKeyIsCurrent(

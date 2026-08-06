@@ -62,7 +62,7 @@ pub use client::{
     validate_peer_bundle, BurnResponse, ControlInboxItem, ControlInboxPostResponse,
     IdentityBundleError, KeyServerClient, LicenseRedeemResponse, LicenseValidateResponse,
     PrekeyBundleOpk, PrekeyBundleResponse, PubkeysResponse, RegisterResponse, ReplenishResponse,
-    WrappedKeyPostResponse, WrappedKeyResponse,
+    WrappedKeyOpenClaimResponse, WrappedKeyPostResponse, WrappedKeyResponse,
 };
 pub use duress::{
     build_partial_duress_handlers, build_production_duress_config_handlers,
@@ -113,8 +113,9 @@ pub use signed_get::{
 pub use storage::{load_identity, save_identity, IdentityOnDisk};
 pub use unregister::{canonical_unregister_bytes, sign_unregister, UNREGISTER_DOMAIN};
 pub use wrapped_key::{
-    canonical_wrapped_key_post_bytes, sign_wrapped_key_post, WrappedKeyUpload,
-    WRAPPED_KEY_POST_DOMAIN,
+    canonical_wrapped_key_open_claim_bytes, canonical_wrapped_key_post_bytes,
+    sign_wrapped_key_open_claim, sign_wrapped_key_post, WrappedKeyUpload,
+    WRAPPED_KEY_OPEN_CLAIM_DOMAIN, WRAPPED_KEY_POST_DOMAIN,
 };
 
 use thiserror::Error;

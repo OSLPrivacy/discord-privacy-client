@@ -42,6 +42,8 @@ const SENDER_FILTER_FLOOR_GET_DOMAIN =
   "discord-privacy-client/sender-filter-floor-get/v1";
 const PREKEY_BUNDLE_GET_DOMAIN = "discord-privacy-client/prekey-bundle-get/v1";
 const WRAPPED_KEY_GET_DOMAIN = "discord-privacy-client/wrapped-key-get/v1";
+const WRAPPED_KEY_OPEN_CLAIM_DOMAIN =
+  "discord-privacy-client/wrapped-key-open-claim/v1";
 const WRAPPED_KEY_POST_DOMAIN = "discord-privacy-client/wrapped-key-post/v1";
 const LINK_GRANT_DOMAIN = "discord-privacy-client/link-grant/v1";
 
@@ -282,6 +284,21 @@ export function canonicalWrappedKeyGetBytes(args: {
     lpString(args.recipient_id),
     lpString(args.content_id),
     lpString(String(args.timestamp_ms)),
+  ]);
+}
+
+export function canonicalWrappedKeyOpenClaimBytes(args: {
+  recipient_id: string;
+  content_id: string;
+  timestamp_ms: number;
+  request_id: string;
+}): Uint8Array {
+  return concatBytes([
+    lpString(WRAPPED_KEY_OPEN_CLAIM_DOMAIN),
+    lpString(args.recipient_id),
+    lpString(args.content_id),
+    lpString(String(args.timestamp_ms)),
+    lpString(args.request_id),
   ]);
 }
 

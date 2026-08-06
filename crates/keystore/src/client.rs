@@ -38,7 +38,7 @@ use crate::sender_filter_rollout::{
 use crate::signed_get::{sign_prekey_bundle_get, sign_wrapped_key_get};
 use crate::unregister::sign_unregister;
 use crate::username::{ResolvedIdentity, Resolver};
-use crate::wrapped_key::{sign_wrapped_key_post, WrappedKeyUpload};
+use crate::wrapped_key::{sign_wrapped_key_open_claim, sign_wrapped_key_post, WrappedKeyUpload};
 use crate::{Error, Result};
 
 #[path = "license_client.rs"]
@@ -727,6 +727,12 @@ pub struct WrappedKeyPostResponse {
     pub content_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct WrappedKeyOpenClaimResponse {
+    pub content_id: String,
+    pub opened: bool,
+}
+
 /// Response body for `DELETE /v1/wrapped-keys`.
 #[derive(Debug, Deserialize)]
 pub struct BurnResponse {
@@ -853,6 +859,14 @@ struct WrappedKeyPostRequest<'a> {
     sender_id: &'a str,
     timestamp_ms: i64,
     sender_signature_b64: String,
+}
+
+#[derive(Serialize)]
+struct WrappedKeyOpenClaimRequest<'a> {
+    recipient_id: &'a str,
+    timestamp_ms: i64,
+    request_id: String,
+    open_signature_b64: String,
 }
 
 /// HTTP client for the OSL key server.
@@ -1448,6 +1462,33 @@ impl KeyServerClient {
             "/v1/wrapped-keys",
             Some(("application/json", &body_json)),
         )?;
+        check_2xx(&response)?;
+        Ok(serde_json::from_slice(&response.body)?)
+    }
+
+    /// Claim that the intended recipient opened a single-use protected record.
+    ///
+    /// The server records the opened receipt and consumes the single-use row
+    /// atomically. A fresh second claim for the same content returns a non-2xx
+    /// response, which callers treat as a failed claim.
+    pub fn claim_wrapped_key_opened(
+        &self,
+        recipient: &Identity,
+        content_id: &str,
+    ) -> Result<WrappedKeyOpenClaimResponse> {
+        let timestamp_ms = unix_timestamp_ms();
+        let request_id = URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32));
+        let signature =
+            sign_wrapped_key_open_claim(recipient, content_id, timestamp_ms, &request_id);
+        let body = WrappedKeyOpenClaimRequest {
+            recipient_id: &recipient.user_id,
+            timestamp_ms,
+            request_id,
+            open_signature_b64: STANDARD.encode(signature.as_bytes()),
+        };
+        let body_json = serde_json::to_vec(&body)?;
+        let path = format!("/v1/wrapped-keys/{}/opened", urlencode_segment(content_id));
+        let response = self.send_request("POST", &path, Some(("application/json", &body_json)))?;
         check_2xx(&response)?;
         Ok(serde_json::from_slice(&response.body)?)
     }

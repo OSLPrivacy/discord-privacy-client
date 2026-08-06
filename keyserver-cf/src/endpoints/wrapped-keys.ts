@@ -1,6 +1,7 @@
 import type { Env } from "../env.js";
 import {
   canonicalBurnBytes,
+  canonicalWrappedKeyOpenClaimBytes,
   canonicalWrappedKeyPostBytes,
   canonicalWrappedKeyGetBytes,
   CONSUMING_GET_FRESHNESS_WINDOW_MS,
@@ -11,6 +12,7 @@ import {
 import { verifyEd25519 } from "../lib/crypto.js";
 import {
   burnWrappedKeysAuthenticated,
+  claimWrappedKeyOpenedAuthenticated,
   ConsumingGetReplay,
   ContentIdConflict,
   fetchWrappedKeyAuthenticated,
@@ -332,6 +334,90 @@ export async function handleWrappedKeysGet(
   }
   if (result.status === "gone") return gone("tombstoned (past expires_at)");
   return json(result.row);
+}
+
+// ---- POST /v1/wrapped-keys/:content_id/opened ----
+
+export async function handleWrappedKeyOpenedPost(
+  request: Request,
+  env: Env,
+  contentId: string,
+): Promise<Response> {
+  const rl = await checkRateLimit(env, callerIp(request), 120, "wrapped-open");
+  if (!rl.ok) return tooMany(rl.retryAfter);
+  if (!isProtocolId(contentId)) return badRequest("content_id must be a bounded identifier");
+
+  let b: Record<string, unknown>;
+  try {
+    b = (await request.json()) as Record<string, unknown>;
+  } catch {
+    return badRequest("malformed JSON body");
+  }
+  if (!isProtocolId(b.recipient_id)) {
+    return badRequest("recipient_id must be a bounded identifier");
+  }
+  if (
+    !Number.isSafeInteger(b.timestamp_ms) ||
+    (b.timestamp_ms as number) <= 0 ||
+    Math.abs(Date.now() - (b.timestamp_ms as number)) >
+      SIGNED_COMMAND_FRESHNESS_WINDOW_MS
+  ) {
+    return unauthorized("fresh signed opened claim required");
+  }
+  if (!isHighEntropyRequestId(b.request_id)) {
+    return badRequest("request_id must be a 256-bit base64url value");
+  }
+  const signature = decodeExactBase64(b.open_signature_b64, ED25519_SIGNATURE_BYTES);
+  if (!signature) {
+    return badRequest("open_signature_b64 must decode to 64 bytes");
+  }
+
+  const recipient = await getUserForVerify(env.DB, b.recipient_id);
+  if (!recipient) return unauthorized("recipient identity is not registered");
+  const message = canonicalWrappedKeyOpenClaimBytes({
+    recipient_id: b.recipient_id,
+    content_id: contentId,
+    timestamp_ms: b.timestamp_ms as number,
+    request_id: b.request_id,
+  });
+  let pubBytes: Uint8Array;
+  try {
+    pubBytes = decodeBase64(recipient.ik_ed25519_pub);
+  } catch {
+    return unauthorized("signature encoding invalid");
+  }
+  if (!(await verifyEd25519(pubBytes, message, signature))) {
+    return unauthorized("open_signature_b64 verification failed");
+  }
+
+  const requestDigest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", message),
+  );
+  const result = await claimWrappedKeyOpenedAuthenticated(
+    env.DB,
+    contentId,
+    b.recipient_id,
+    requestDigest,
+    recipient.ik_ed25519_pub,
+    Math.floor(Date.now() / 1000) + 10 * 60,
+  );
+  if (result.status === "ok") {
+    return json({ content_id: result.content_id, opened: true });
+  }
+  if (result.status === "replay") {
+    return conflict("signed opened claim already used");
+  }
+  if (result.status === "stale_identity") {
+    return unauthorized("recipient identity changed during opened claim");
+  }
+  if (result.status === "gone") return gone("tombstoned (past expires_at)");
+  if (result.status === "not_single_use") {
+    return conflict("wrapped key is not a single-use protected record");
+  }
+  if (result.status === "already_opened") {
+    return conflict("single-use protected record already opened");
+  }
+  return notFound("unknown or burned content_id");
 }
 
 // ---- DELETE /v1/wrapped-keys ----
