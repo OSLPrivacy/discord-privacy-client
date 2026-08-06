@@ -39,8 +39,17 @@ impl SharedMailboxFolder {
         Self::new(id.clone(), id, "gmail", account_id)
     }
 
+    pub fn yahoo_folder(id: impl Into<String>, account_id: impl Into<String>) -> Self {
+        let id = id.into();
+        Self::new(id.clone(), id, "yahoo", account_id)
+    }
+
     pub fn is_gmail_label(&self) -> bool {
         self.service == "gmail"
+    }
+
+    pub fn is_yahoo_folder(&self) -> bool {
+        self.service == "yahoo"
     }
 }
 
@@ -129,6 +138,14 @@ impl SharedMailboxReader {
             .collect()
     }
 
+    pub fn list_yahoo_folders(&self) -> Vec<SharedMailboxFolder> {
+        self.folders
+            .iter()
+            .filter(|folder| folder.is_yahoo_folder())
+            .cloned()
+            .collect()
+    }
+
     pub fn list_messages(
         &self,
         folder_id: &str,
@@ -183,6 +200,18 @@ impl SharedMailboxReader {
             return Err("mailbox folder is not a Gmail label".to_owned());
         }
         self.folder_page_place(label_id, page_size)
+    }
+
+    pub fn yahoo_folder_page_place(
+        &self,
+        folder_id: &str,
+        page_size: usize,
+    ) -> Result<SharedMailboxFolderPagePlace, String> {
+        let folder = self.folder_for(folder_id)?;
+        if !folder.is_yahoo_folder() {
+            return Err("mailbox folder is not a Yahoo Mail folder".to_owned());
+        }
+        self.folder_page_place(folder_id, page_size)
     }
 
     fn folder_for(&self, folder_id: &str) -> Result<&SharedMailboxFolder, String> {
