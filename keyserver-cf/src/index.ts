@@ -89,6 +89,7 @@ import {
   handleSenderFilterRolloutRootAdvance,
   handleSenderFilterRolloutRootProvision,
 } from "./endpoints/sender-filter-rollout-root.js";
+import { handleUpdateAttemptRecord } from "./endpoints/update-attempts.js";
 import { handleUpdateManifest } from "./endpoints/update-manifest.js";
 import { handleSpaceEventAck, handleSpaceEventDrainPost, handleSpaceEventPost } from "./endpoints/space-events.js";
 import {
@@ -366,6 +367,7 @@ async function dispatch(
       path === "/v1/crypto/status" ||
       path === "/v1/donations/crypto/quote" ||
       path === "/v1/donations/crypto/status" ||
+      path === "/v1/update-attempts" ||
       path === "/v1/username-coverage"
     ) {
       return corsPreflight("POST, OPTIONS", request);
@@ -448,6 +450,9 @@ async function dispatch(
   if (method === "POST") {
     if (path === "/v1/ai/generate") return await handleAiGenerate(request, env);
     if (path === "/v1/credits/spend") return await handleCreditSpend(request, env);
+    if (path === "/v1/update-attempts") {
+      return withCors(await handleUpdateAttemptRecord(request, env), request);
+    }
     if (path === "/v1/account-ownership/challenge") {
       return await handleAccountOwnershipChallenge(request, env);
     }
