@@ -844,6 +844,21 @@ description = "Read whether the burn notices already queued for one canonical OS
 commands.allow = ["get_hub_revocation_status"]
 
 [[permission]]
+identifier = "allow-set-owner-profile-picture"
+description = "Set the unlocked owner's bounded profile picture into encrypted owner-scoped local storage."
+commands.allow = ["set_owner_profile_picture"]
+
+[[permission]]
+identifier = "allow-read-owner-profile-picture"
+description = "Read only the unlocked owner's encrypted profile-picture record and report whether an image is present."
+commands.allow = ["read_owner_profile_picture"]
+
+[[permission]]
+identifier = "allow-clear-owner-profile-picture"
+description = "Clear only the unlocked owner's encrypted profile-picture record."
+commands.allow = ["clear_owner_profile_picture"]
+
+[[permission]]
 identifier = "allow-get-osl-chat-local-state-key"
 description = "Hand the local UI an HKDF subkey, derived from the existing at-rest storage-key authority under its own info label, so OSL Chat's muted people, unread counts, preview visibility and message notifications are sealed in the webview store instead of sitting in localStorage. It never returns the file storage key itself and refuses while a main-password gate is locked."
 commands.allow = ["get_osl_chat_local_state_key"]
