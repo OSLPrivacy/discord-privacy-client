@@ -141,6 +141,8 @@ pub mod revocation_drain_timer;
 pub mod rn_attribution;
 #[cfg(feature = "core")]
 pub mod rn_recovery;
+#[cfg(feature = "core")]
+pub mod run_choices;
 pub mod scrub_hosted_port;
 /// **Binding Ledger 9, the seam ledger.** Adapters declared vs adapters with a
 /// live carry receipt, ratcheted in both directions against
