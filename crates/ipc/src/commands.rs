@@ -15669,6 +15669,276 @@ pub fn cmd_osl_membership_get(state: &AppState, channel_id: String) -> Result<Ve
     Ok(g.get(&channel_id).cloned().unwrap_or_default())
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ChannelMessageThreadDto {
+    pub thread_id: String,
+    pub channel_id: String,
+    pub parent_message_id: String,
+    pub channel_message_count: usize,
+    pub thread_count: usize,
+    pub parent_thread_count: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ChannelMessageDto {
+    pub message_id: String,
+    pub channel_id: String,
+    pub thread_ids: Vec<String>,
+    pub thread_count: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct OpenedChannelMessageThreadDto {
+    pub thread_id: String,
+    pub channel_id: String,
+    pub parent_message_id: String,
+    pub parent_message: ChannelMessageDto,
+}
+
+/// Create one local thread attached to a parent channel message.
+///
+/// The parent message is recorded in the same command so the thread cannot
+/// exist without both the parent message id and the channel id that own it.
+pub fn cmd_osl_create_channel_message_thread(
+    state: &AppState,
+    channel_id: String,
+    parent_message_id: String,
+    thread_id: String,
+) -> Result<ChannelMessageThreadDto, String> {
+    record_activity_on_command_entry();
+    let channel_id = normalize_channel_thread_field("channel_id", channel_id)?;
+    let parent_message_id = normalize_channel_thread_field("parent_message_id", parent_message_id)?;
+    let thread_id = normalize_channel_thread_field("thread_id", thread_id)?;
+
+    let mut messages = state
+        .channel_messages
+        .lock()
+        .expect("channel_messages mutex poisoned");
+    let mut threads = state
+        .channel_threads
+        .lock()
+        .expect("channel_threads mutex poisoned");
+
+    let parent = messages
+        .entry(parent_message_id.clone())
+        .or_insert_with(|| crate::state::ChannelMessageRecord {
+            message_id: parent_message_id.clone(),
+            channel_id: channel_id.clone(),
+            thread_ids: Vec::new(),
+        });
+    if parent.channel_id != channel_id {
+        return Err(format!(
+            "OSL: parent message '{}' belongs to channel '{}', not '{}'",
+            parent_message_id, parent.channel_id, channel_id
+        ));
+    }
+
+    match threads.get(&thread_id) {
+        Some(existing)
+            if existing.channel_id == channel_id
+                && existing.parent_message_id == parent_message_id => {}
+        Some(existing) => {
+            return Err(format!(
+                "OSL: thread '{}' already belongs to channel '{}' parent '{}'",
+                thread_id, existing.channel_id, existing.parent_message_id
+            ));
+        }
+        None => {
+            threads.insert(
+                thread_id.clone(),
+                crate::state::ChannelThreadRecord {
+                    thread_id: thread_id.clone(),
+                    channel_id: channel_id.clone(),
+                    parent_message_id: parent_message_id.clone(),
+                },
+            );
+        }
+    }
+
+    if !parent.thread_ids.iter().any(|id| id == &thread_id) {
+        parent.thread_ids.push(thread_id.clone());
+    }
+    let parent_thread_count = parent.thread_ids.len();
+    let channel_message_count = messages
+        .values()
+        .filter(|message| message.channel_id == channel_id)
+        .count();
+    let thread_count = threads
+        .values()
+        .filter(|thread| thread.channel_id == channel_id)
+        .count();
+
+    Ok(ChannelMessageThreadDto {
+        thread_id,
+        channel_id,
+        parent_message_id,
+        channel_message_count,
+        thread_count,
+        parent_thread_count,
+    })
+}
+
+/// Open one local channel-message thread and return the parent message that
+/// owns it.
+pub fn cmd_osl_open_channel_message_thread(
+    state: &AppState,
+    thread_id: String,
+) -> Result<OpenedChannelMessageThreadDto, String> {
+    record_activity_on_command_entry();
+    let thread_id = normalize_channel_thread_field("thread_id", thread_id)?;
+
+    let threads = state
+        .channel_threads
+        .lock()
+        .expect("channel_threads mutex poisoned");
+    let thread = threads
+        .get(&thread_id)
+        .cloned()
+        .ok_or_else(|| format!("OSL: thread '{thread_id}' does not exist"))?;
+    drop(threads);
+
+    let messages = state
+        .channel_messages
+        .lock()
+        .expect("channel_messages mutex poisoned");
+    let parent = messages
+        .get(&thread.parent_message_id)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "OSL: parent message '{}' for thread '{}' does not exist",
+                thread.parent_message_id, thread.thread_id
+            )
+        })?;
+    if parent.channel_id != thread.channel_id {
+        return Err(format!(
+            "OSL: parent message '{}' belongs to channel '{}', not '{}'",
+            parent.message_id, parent.channel_id, thread.channel_id
+        ));
+    }
+    if !parent.thread_ids.iter().any(|id| id == &thread.thread_id) {
+        return Err(format!(
+            "OSL: parent message '{}' does not list thread '{}'",
+            parent.message_id, thread.thread_id
+        ));
+    }
+
+    Ok(OpenedChannelMessageThreadDto {
+        thread_id: thread.thread_id,
+        channel_id: thread.channel_id,
+        parent_message_id: parent.message_id.clone(),
+        parent_message: ChannelMessageDto {
+            thread_count: parent.thread_ids.len(),
+            message_id: parent.message_id,
+            channel_id: parent.channel_id,
+            thread_ids: parent.thread_ids,
+        },
+    })
+}
+
+fn normalize_channel_thread_field(field: &str, value: String) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 160 || value.chars().any(char::is_control) {
+        return Err(format!("OSL: invalid {field}"));
+    }
+    Ok(value.to_owned())
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NamedGroupConversationDto {
+    pub name: String,
+    pub group_id: String,
+    pub scope: crate::scope::ScopeInput,
+    pub member_ids: Vec<String>,
+    pub member_count: usize,
+}
+
+/// Create a first-party named group conversation and seed its membership oracle.
+///
+/// The command requires at least three distinct member ids. It writes both the
+/// durable GC membership view and the in-memory channel snapshot that group
+/// sends already consult, so later send paths resolve the same member set.
+pub fn cmd_osl_create_group_conversation(
+    state: &AppState,
+    name: String,
+    member_ids: Vec<String>,
+) -> Result<NamedGroupConversationDto, String> {
+    record_activity_on_command_entry();
+    let name = normalize_group_name(name)?;
+    let member_ids = normalize_group_member_ids(member_ids)?;
+    let group_id = named_group_id(&name, &member_ids);
+    {
+        let mut membership = state
+            .scope_membership
+            .lock()
+            .expect("scope_membership mutex poisoned");
+        membership.note_gc_members(&group_id, member_ids.iter());
+    }
+    {
+        let mut channel_members = state
+            .channel_members
+            .lock()
+            .expect("channel_members mutex poisoned");
+        channel_members.insert(group_id.clone(), member_ids.clone());
+    }
+    persist_scope_membership_now(state);
+    let scope = crate::scope::Scope::gc(group_id.clone());
+    Ok(NamedGroupConversationDto {
+        name,
+        group_id,
+        scope: (&scope).into(),
+        member_count: member_ids.len(),
+        member_ids,
+    })
+}
+
+fn normalize_group_name(name: String) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > 80 || name.chars().any(char::is_control) {
+        return Err("OSL: group conversation name is invalid".to_owned());
+    }
+    Ok(name.to_owned())
+}
+
+fn normalize_group_member_ids(member_ids: Vec<String>) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::with_capacity(member_ids.len());
+    for member_id in member_ids {
+        let member_id = member_id.trim();
+        if member_id.is_empty()
+            || member_id.len() > 160
+            || member_id.chars().any(|character| {
+                !(character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':'))
+            })
+        {
+            return Err("OSL: group member id is invalid".to_owned());
+        }
+        normalized.push(member_id.to_owned());
+    }
+    let supplied_count = normalized.len();
+    normalized.sort();
+    normalized.dedup();
+    if normalized.len() != supplied_count {
+        return Err("OSL: group conversations require distinct members".to_owned());
+    }
+    if normalized.len() < 3 {
+        return Err("OSL: group conversations require at least three members".to_owned());
+    }
+    Ok(normalized)
+}
+
+fn named_group_id(name: &str, member_ids: &[String]) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"OSL/named-group-conversation/v1");
+    hash.update((name.len() as u64).to_le_bytes());
+    hash.update(name.as_bytes());
+    for member_id in member_ids {
+        hash.update((member_id.len() as u64).to_le_bytes());
+        hash.update(member_id.as_bytes());
+    }
+    let hex = hex_lower(&hash.finalize());
+    format!("named-gc-{}", &hex[..32])
+}
+
 /// W2: durable membership accrual. boot.js gateway taps call this
 /// with the scope they observed members in. ServerChannel rolls up
 /// into the server key (server-header enumeration); Gc records the

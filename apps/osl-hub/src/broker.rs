@@ -1066,6 +1066,32 @@ pub fn create_osl_chat_group_conversation(
     ipc::commands::cmd_osl_create_group_conversation(&core.osl, name, selected_member_ids)
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OslChatOpenedReplyThread {
+    pub created_thread: ipc::commands::ChannelMessageThreadDto,
+    pub opened_thread: ipc::commands::OpenedChannelMessageThreadDto,
+}
+
+pub fn reply_to_osl_chat_message_and_open_thread(
+    core: &HubCoreState,
+    channel_id: String,
+    parent_message_id: String,
+    thread_id: String,
+) -> Result<OslChatOpenedReplyThread, String> {
+    let created_thread = ipc::commands::cmd_osl_create_channel_message_thread(
+        &core.osl,
+        channel_id,
+        parent_message_id,
+        thread_id.clone(),
+    )?;
+    let opened_thread = ipc::commands::cmd_osl_open_channel_message_thread(&core.osl, thread_id)?;
+    Ok(OslChatOpenedReplyThread {
+        created_thread,
+        opened_thread,
+    })
+}
+
 fn activate_manual_peer_from_trusted_host(
     broker: &HubBrokerState,
     owner_osl_user_id: &str,
@@ -9257,6 +9283,63 @@ mod tests {
             created.member_count,
             created.member_ids.join(","),
             stored_members.len()
+        );
+    }
+
+    #[test]
+    fn task_1326_direct_chats_action_opens_created_thread_and_returns_parent_message() {
+        let core = HubCoreState::new_for_test(ipc::AppState::new());
+
+        let result = reply_to_osl_chat_message_and_open_thread(
+            &core,
+            "task-1326-channel".to_owned(),
+            "task-1326-parent-message".to_owned(),
+            "task-1326-thread".to_owned(),
+        )
+        .expect("direct Chats reply-to-message action opens created thread");
+
+        assert_eq!(result.created_thread.channel_id, "task-1326-channel");
+        assert_eq!(
+            result.created_thread.parent_message_id,
+            "task-1326-parent-message"
+        );
+        assert_eq!(result.created_thread.thread_id, "task-1326-thread");
+        assert_eq!(result.created_thread.thread_count, 1);
+        assert_eq!(result.created_thread.parent_thread_count, 1);
+        assert_eq!(
+            result.opened_thread.thread_id,
+            result.created_thread.thread_id
+        );
+        assert_eq!(
+            result.opened_thread.channel_id,
+            result.created_thread.channel_id
+        );
+        assert_eq!(
+            result.opened_thread.parent_message_id,
+            result.created_thread.parent_message_id
+        );
+        assert_eq!(
+            result.opened_thread.parent_message.message_id,
+            "task-1326-parent-message"
+        );
+        assert_eq!(
+            result.opened_thread.parent_message.channel_id,
+            "task-1326-channel"
+        );
+        assert_eq!(
+            result.opened_thread.parent_message.thread_ids,
+            vec!["task-1326-thread".to_owned()]
+        );
+        assert_eq!(result.opened_thread.parent_message.thread_count, 1);
+
+        println!(
+            "TASK1326 direct_action=broker::reply_to_osl_chat_message_and_open_thread create_command=cmd_osl_create_channel_message_thread open_command=cmd_osl_open_channel_message_thread opened_thread_id={} parent_message_id={} parent_channel_id={} parent_thread_count={} returned_parent_message_id={} returned_parent_thread_ids={}",
+            result.opened_thread.thread_id,
+            result.opened_thread.parent_message_id,
+            result.opened_thread.parent_message.channel_id,
+            result.opened_thread.parent_message.thread_count,
+            result.opened_thread.parent_message.message_id,
+            result.opened_thread.parent_message.thread_ids.join(",")
         );
     }
 
