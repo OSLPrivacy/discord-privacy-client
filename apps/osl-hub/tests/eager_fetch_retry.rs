@@ -55,9 +55,8 @@ fn tf_91_flaky_network_retries_inside_one_reservation_without_losing_the_payload
     let queue = EncryptedBurnQueue::new(temp.path().join("burns.enc"), [7; 32]);
     let mut driver = EagerFetchDriver::new(network, Store::default(), queue);
     let pointer = PointerArrival {
-        blob_id: "view-once".to_owned(),
-        fetch_cap: vec![1; 32],
-        manage_cap: vec![2; 32],
+        server_blob_id: [0x33; ipc::prose_token::BRIDGE_ID_BYTES],
+        seed: [0x44; ipc::prose_token::BRIDGE_SEED_BYTES],
     };
 
     driver.on_pointer_arrival(&pointer).unwrap();

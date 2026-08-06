@@ -18,19 +18,17 @@ pub const MAX_PENDING_BURNS: usize = 256;
 const MAX_QUEUE_FILE_BYTES: u64 = 256 * 1024;
 const QUEUE_VERSION: u8 = 1;
 
-/// The authority which arrived in an authenticated pointer.  The driver never
-/// derives, logs, or re-signs either capability.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PointerArrival {
-    pub blob_id: String,
-    pub fetch_cap: Vec<u8>,
-    pub manage_cap: Vec<u8>,
-}
+/// The authenticated prose-token pointer shape the deployed service uses.
+///
+/// Production carries the server-assigned blob id and a seed; the fetch token
+/// is derived from that seed when the pointer arrives. The retired shape with
+/// separate `fetch_cap` and `manage_cap` fields is not accepted here.
+pub type PointerArrival = ipc::prose_token::BridgePointer;
 
 /// Network operations supplied by T6-R2's cipher-store client adapter.
 pub trait CipherStoreTransport {
-    fn fetch(&mut self, blob_id: &str, fetch_cap: &[u8]) -> Result<Vec<u8>, String>;
-    fn burn(&mut self, blob_id: &str, manage_cap: &[u8]) -> Result<(), String>;
+    fn fetch(&mut self, blob_id: &str, fetch_token: &[u8]) -> Result<Vec<u8>, String>;
+    fn burn(&mut self, blob_id: &str, burn_capability: &[u8]) -> Result<(), String>;
 }
 
 /// Trusted local persistence.  It must authenticate/decrypt and durably write
@@ -60,22 +58,25 @@ impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
     /// Retries retain the cipher-store reservation created before the first
     /// byte. A failed fetch/decrypt/write leaves no ACK decision to this task.
     pub fn on_pointer_arrival(&mut self, pointer: &PointerArrival) -> Result<(), String> {
+        let blob_id = pointer.blob_id_hex();
+        let fetch_token = pointer.fetch_token();
         let ciphertext = crate::eager_fetch_retry::retry_reserved_fetch(|| {
-            self.transport.fetch(&pointer.blob_id, &pointer.fetch_cap)
+            self.transport.fetch(&blob_id, &fetch_token)
         })?;
-        self.store
-            .decrypt_and_persist(&pointer.blob_id, &ciphertext)
+        self.store.decrypt_and_persist(&blob_id, &ciphertext)
     }
 
     /// Local destruction is first.  Capacity is checked before destruction so
     /// a full durable queue fails closed without silently dropping a server
     /// delete; after destruction the exact received capability is persisted.
     pub fn burn_offline(&mut self, pointer: &PointerArrival) -> Result<(), String> {
-        if !self.burns.can_enqueue(&pointer.blob_id)? {
+        let blob_id = pointer.blob_id_hex();
+        if !self.burns.can_enqueue(&blob_id)? {
             return Err("offline burn queue is full; no live delete was evicted".to_owned());
         }
-        self.store.destroy_local(&pointer.blob_id)?;
-        self.burns.enqueue(&pointer.blob_id, &pointer.manage_cap)
+        self.store.destroy_local(&blob_id)?;
+        let burn_capability = pointer.fetch_token();
+        self.burns.enqueue(&blob_id, &burn_capability)
     }
 
     /// Retry every durable record after reconnect.  A failure retains that

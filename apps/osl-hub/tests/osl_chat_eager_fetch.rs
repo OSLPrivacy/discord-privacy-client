@@ -10,6 +10,13 @@ use osl_privacy_hub::{
     osl_chat_delivery::receive_osl_chat_pointer,
 };
 
+fn pointer() -> PointerArrival {
+    PointerArrival {
+        server_blob_id: [0x11; ipc::prose_token::BRIDGE_ID_BYTES],
+        seed: [0x22; ipc::prose_token::BRIDGE_SEED_BYTES],
+    }
+}
+
 #[derive(Default)]
 struct Transport(BTreeMap<String, Vec<u8>>);
 impl CipherStoreTransport for Transport {
@@ -39,21 +46,20 @@ impl LocalMessageStore for Store {
 #[test]
 fn t14_t11_payload_is_local_before_the_user_opens_the_conversation() {
     let path = std::env::temp_dir().join(format!("osl-chat-eager-{}", uuid::Uuid::new_v4()));
+    let pointer = pointer();
     let mut transport = Transport::default();
     transport
         .0
-        .insert("pointer-1".to_owned(), b"ciphertext".to_vec());
+        .insert(pointer.blob_id_hex(), b"ciphertext".to_vec());
     let queue = EncryptedBurnQueue::new(&path, [7; 32]);
     let mut driver = EagerFetchDriver::new(transport, Store::default(), queue);
-    let pointer = PointerArrival {
-        blob_id: "pointer-1".to_owned(),
-        fetch_cap: vec![1],
-        manage_cap: vec![2],
-    };
 
     // No chat view/open callback exists in this call: pointer arrival itself
     // must put the payload in the durable local store.
     receive_osl_chat_pointer(&mut driver, &pointer).expect("arrival fetches and persists");
     let (_, store, _) = driver.into_parts();
-    assert_eq!(store.0.get("pointer-1"), Some(&b"ciphertext".to_vec()));
+    assert_eq!(
+        store.0.get(&pointer.blob_id_hex()),
+        Some(&b"ciphertext".to_vec())
+    );
 }

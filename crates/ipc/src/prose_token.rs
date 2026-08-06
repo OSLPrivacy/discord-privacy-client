@@ -45,6 +45,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use crypto::pointer::{derive_manage_capability, CAPABILITY_BYTES, POINTER_BYTES};
 use hkdf::Hkdf;
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 // BRIDGE (B0-01): `BlobCapabilities` / `BlobObjectClass` left with
@@ -109,7 +110,7 @@ const _: () = assert!(stego::TOKEN_ID_BYTES == POINTER_BYTES);
 /// Domain separator for the bridge's carrier-derived fetch token. Distinct
 /// from every pointer-capability separator so a bridge token can never be
 /// mistaken for, or collide with, a real capability.
-const BRIDGE_FETCH_INFO: &[u8] = b"osl/bridge/b0-01/fetch-token/v1";
+pub const BRIDGE_FETCH_INFO: &[u8] = b"osl/bridge/b0-01/fetch-token/v1";
 
 /// Width of the id the deployed Worker assigns: 8 bytes, rendered as the
 /// 16 hex chars `CipherStoreClient::upload` validates.
@@ -124,12 +125,46 @@ pub const BRIDGE_ID_BYTES: usize = 8;
 /// Whatever the id leaves over in the carrier becomes secret seed material.
 /// 96 bits, freshly drawn per message, and it never crosses the network —
 /// only its HKDF output does.
-const BRIDGE_SEED_BYTES: usize = stego::TOKEN_ID_BYTES - BRIDGE_ID_BYTES;
+pub const BRIDGE_SEED_BYTES: usize = stego::TOKEN_ID_BYTES - BRIDGE_ID_BYTES;
+
+/// The deployed bridge pointer carried by prose-token covers.
+///
+/// This is deliberately not the destination capability shape. Production sends
+/// an 8-byte server-assigned blob id plus a 12-byte seed; the fetch token is
+/// derived from that seed at receive time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BridgePointer {
+    pub server_blob_id: [u8; BRIDGE_ID_BYTES],
+    pub seed: [u8; BRIDGE_SEED_BYTES],
+}
+
+impl BridgePointer {
+    pub fn from_carrier(carrier: &[u8; stego::TOKEN_ID_BYTES]) -> Self {
+        let (server_blob_id, seed) = bridge_unpack(carrier);
+        Self {
+            server_blob_id,
+            seed,
+        }
+    }
+
+    pub fn carrier(&self) -> [u8; stego::TOKEN_ID_BYTES] {
+        bridge_pack(&self.server_blob_id, &self.seed)
+    }
+
+    pub fn blob_id_hex(&self) -> String {
+        hex_lower(&self.server_blob_id)
+    }
+
+    pub fn fetch_token(&self) -> [u8; FETCH_TOKEN_BYTES] {
+        bridge_fetch_token(&self.seed)
+    }
+}
 
 /// The bridge's read capability, derived from carrier material alone so the
 /// receiver needs no key material and no roundtrip — the same property the
 /// pointer path has, at 96 rather than 160 bits of input entropy.
-fn bridge_fetch_token(seed: &[u8; BRIDGE_SEED_BYTES]) -> [u8; FETCH_TOKEN_BYTES] {
+pub fn bridge_fetch_token(seed: &[u8; BRIDGE_SEED_BYTES]) -> [u8; FETCH_TOKEN_BYTES] {
     let hk = Hkdf::<Sha256>::new(None, seed);
     let mut out = [0u8; FETCH_TOKEN_BYTES];
     hk.expand(BRIDGE_FETCH_INFO, &mut out)
@@ -138,7 +173,7 @@ fn bridge_fetch_token(seed: &[u8; BRIDGE_SEED_BYTES]) -> [u8; FETCH_TOKEN_BYTES]
 }
 
 /// Pack the server's id and our seed into the fixed-width carrier payload.
-fn bridge_pack(
+pub fn bridge_pack(
     id: &[u8; BRIDGE_ID_BYTES],
     seed: &[u8; BRIDGE_SEED_BYTES],
 ) -> [u8; stego::TOKEN_ID_BYTES] {
@@ -150,7 +185,7 @@ fn bridge_pack(
 
 /// Inverse of [`bridge_pack`]. Total width is pinned by the carrier, so this
 /// cannot fail — a carrier that decoded at all is exactly this wide.
-fn bridge_unpack(
+pub fn bridge_unpack(
     carrier: &[u8; stego::TOKEN_ID_BYTES],
 ) -> ([u8; BRIDGE_ID_BYTES], [u8; BRIDGE_SEED_BYTES]) {
     let mut id = [0u8; BRIDGE_ID_BYTES];
@@ -161,7 +196,7 @@ fn bridge_unpack(
 }
 
 /// Parse the 16-hex id the deployed Worker returns.
-fn bridge_id_from_hex(id_hex: &str) -> Result<[u8; BRIDGE_ID_BYTES], ProseTokenError> {
+pub fn bridge_id_from_hex(id_hex: &str) -> Result<[u8; BRIDGE_ID_BYTES], ProseTokenError> {
     if id_hex.len() != BRIDGE_ID_BYTES * 2 || !id_hex.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(ProseTokenError::BadIdHex(id_hex.to_string()));
     }
@@ -171,6 +206,17 @@ fn bridge_id_from_hex(id_hex: &str) -> Result<[u8; BRIDGE_ID_BYTES], ProseTokenE
             .map_err(|_| ProseTokenError::BadIdHex(id_hex.to_string()))?;
     }
     Ok(out)
+}
+
+pub fn prose_token_bridge_pointer(
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    msg: &str,
+) -> Result<Option<BridgePointer>, ProseTokenError> {
+    let cipher = derive_scope_cipher(scope_input)?;
+    let scoped_detector = scope_bound_detection_key(detection_key, scope_input)?;
+    Ok(stego::decode_token(&cipher, &scoped_detector, msg)
+        .map(|carrier| BridgePointer::from_carrier(&carrier)))
 }
 
 /// Key material the sending layer holds, threaded to the pointer derivation.
@@ -586,13 +632,8 @@ pub fn prose_token_recv_classified(
     detection_key: &[u8; MAC_KEY_LEN],
     msg: &str,
 ) -> Result<ProseTokenRecv, ProseTokenError> {
-    let cipher = derive_scope_cipher(scope_input)?;
-    // D-231: the scope-bound detector, never the caller's. A cover minted for a
-    // different conversation fails the detect tag here and returns `NoToken`,
-    // so nothing below this line runs and the cipher store is never contacted.
-    let scoped_detector = scope_bound_detection_key(detection_key, scope_input)?;
-    let carrier = match stego::decode_token(&cipher, &scoped_detector, msg) {
-        Some(bytes) => bytes,
+    let pointer = match prose_token_bridge_pointer(scope_input, detection_key, msg)? {
+        Some(pointer) => pointer,
         None => return Ok(ProseTokenRecv::Missed(ProseTokenMiss::NoToken)),
     };
     // BRIDGE (B0-01). The destination read the carrier as a pointer `P` and
@@ -600,9 +641,8 @@ pub fn prose_token_recv_classified(
     // deployed Worker assigns ids itself, so the id has to be carried and the
     // capability comes from the rest of the carrier. Still no roundtrip and
     // still no scope metadata in the derivation — see the BRIDGE section above.
-    let (id, seed) = bridge_unpack(&carrier);
-    let id_hex = hex_lower(&id);
-    let fetch_token = bridge_fetch_token(&seed);
+    let id_hex = pointer.blob_id_hex();
+    let fetch_token = pointer.fetch_token();
 
     let base_url = crate::cipher_store_client::resolve_cipher_store_base_url(config_dir)?;
     let client = CipherStoreClient::new(base_url)?;
