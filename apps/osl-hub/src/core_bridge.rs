@@ -11,9 +11,13 @@ use std::fmt;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+use crate::runtime_switches::{
+    read_startup_test_only_runtime_switches, ResolvedTestOnlyRunTimeSwitches,
+};
+
 pub struct HubCoreState {
     pub osl: Arc<AppState>,
-    startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches,
+    startup_switches: ResolvedTestOnlyRunTimeSwitches,
     bootstrap_attempted: bool,
     /// Serialises trusted identity/password transitions so Create, Import,
     /// Setup, and Unlock cannot race each other into replacing disk state.
@@ -24,7 +28,7 @@ impl Default for HubCoreState {
     fn default() -> Self {
         Self {
             osl: production_osl_state(),
-            startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches::default(),
+            startup_switches: ResolvedTestOnlyRunTimeSwitches::default(),
             bootstrap_attempted: false,
             lifecycle_lock: Mutex::new(()),
         }
@@ -36,15 +40,13 @@ impl HubCoreState {
     pub(crate) fn new_for_test(osl: AppState) -> Self {
         Self {
             osl: Arc::new(osl),
-            startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches::default(),
+            startup_switches: ResolvedTestOnlyRunTimeSwitches::default(),
             bootstrap_attempted: false,
             lifecycle_lock: Mutex::new(()),
         }
     }
 
-    pub fn with_startup_switches(
-        startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches,
-    ) -> Self {
+    pub fn with_startup_switches(startup_switches: ResolvedTestOnlyRunTimeSwitches) -> Self {
         Self {
             osl: production_osl_state(),
             startup_switches,
@@ -56,13 +58,19 @@ impl HubCoreState {
     /// Load the original OSL account and security state from its sealed local
     /// configuration. Missing, locked, or corrupt state remains unavailable.
     pub fn bootstrap_from_disk() -> Self {
-        Self::bootstrap_from_disk_with_startup_switches(
-            crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches::default(),
+        Self::bootstrap_from_disk_with_runtime_switches(
+            read_startup_test_only_runtime_switches().unwrap_or_default(),
         )
     }
 
+    pub fn bootstrap_from_disk_with_runtime_switches(
+        startup_switches: ResolvedTestOnlyRunTimeSwitches,
+    ) -> Self {
+        Self::bootstrap_from_disk_with_startup_switches(startup_switches)
+    }
+
     pub fn bootstrap_from_disk_with_startup_switches(
-        startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches,
+        startup_switches: ResolvedTestOnlyRunTimeSwitches,
     ) -> Self {
         let state = Self {
             osl: production_osl_state(),
@@ -80,7 +88,11 @@ impl HubCoreState {
         state
     }
 
-    pub fn startup_switches(&self) -> crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches {
+    pub fn startup_switches(&self) -> ResolvedTestOnlyRunTimeSwitches {
+        self.startup_switches
+    }
+
+    pub fn runtime_switches(&self) -> ResolvedTestOnlyRunTimeSwitches {
         self.startup_switches
     }
 
@@ -256,13 +268,12 @@ fn hub_license_state(value: keystore::LicenseStateDto) -> HubLicenseState {
 
 pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     let status = ipc::commands::cmd_status(&state.osl);
-    let password_gate_required = match state.startup_switches.password_screen_access {
-        crate::runtime_switches::PasswordScreenAccess::SkipPasswordScreenForTest => false,
-        crate::runtime_switches::PasswordScreenAccess::RequirePasswordScreen => {
-            ipc::commands::cmd_osl_password_status()
-                .map(|value| value.is_set)
-                .unwrap_or(true)
-        }
+    let password_gate_required = if state.startup_switches.password_screen_gate_required() {
+        ipc::commands::cmd_osl_password_status()
+            .map(|value| value.is_set)
+            .unwrap_or(true)
+    } else {
+        false
     };
     // D-207: NOT `get_file_storage_key().is_some()`. A device-bound fallback
     // key minted behind the user's back put 32 bytes in that slot, made this
@@ -291,9 +302,8 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     // generated public identity registers in the background. Protected-send
     // commands still enforce registration themselves; only the setup UI gate
     // is bypassed in this compile-time-only build.
-    let skips_password_screen = state.startup_switches.password_screen_access
-        == crate::runtime_switches::PasswordScreenAccess::SkipPasswordScreenForTest;
-    let bootstrap_status = if skips_password_screen
+    let password_screen_skipped_for_test = !state.startup_switches.password_screen_gate_required();
+    let bootstrap_status = if password_screen_skipped_for_test
         && state.bootstrap_attempted
         && status.identity_loaded
         && unlocked
@@ -311,7 +321,7 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
             // that as satisfying the local password prerequisite rather than
             // letting the classifier read it as "not set yet" and route back
             // to setupRequired.
-            password_gate_required || skips_password_screen,
+            password_gate_required || password_screen_skipped_for_test,
             unlocked,
             status.keyserver_initialised,
             state.osl.cloud_registration_state() == ipc::state::CloudRegistrationState::Registered,

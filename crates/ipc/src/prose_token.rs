@@ -619,6 +619,15 @@ pub enum ProseTokenRecv {
     Missed(ProseTokenMiss),
 }
 
+/// Rebuild the regular `DPC0::<base64>` receive wire from a fetched bridge
+/// object. This is the single bridge object opener used after the cipher-store
+/// bytes have already been retrieved.
+pub fn prose_token_bridge_object_to_wire(object: &[u8]) -> Result<String, ProseTokenError> {
+    let cipher_bytes =
+        unframe_padded_transport_object(object).ok_or(ProseTokenError::MalformedObject)?;
+    Ok(format!("{}{}", DPC0_PREFIX, B64.encode(cipher_bytes)))
+}
+
 /// Try to decode a Discord message as an OSL prose-token, keeping the two
 /// distinct reasons a cover can produce nothing apart.
 ///
@@ -655,9 +664,7 @@ pub fn prose_token_recv_classified(
         }
         Err(e) => return Err(e.into()),
     };
-    let cipher_bytes =
-        unframe_padded_transport_object(&object).ok_or(ProseTokenError::MalformedObject)?;
-    let wire = format!("{}{}", DPC0_PREFIX, B64.encode(cipher_bytes));
+    let wire = prose_token_bridge_object_to_wire(&object)?;
 
     Ok(ProseTokenRecv::Recovered(ProseTokenRecvOutput {
         wire,

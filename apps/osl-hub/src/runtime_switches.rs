@@ -1,3 +1,9 @@
+//! Test-only runtime switches that replace old build-selected QA shortcuts.
+//!
+//! These switches are deliberately narrow and named. They exist so one binary
+//! can be started in either side of a former test-only branch without changing
+//! Cargo features.
+
 use serde::Serialize;
 
 pub const TEST_ONLY_RUNTIME_SWITCH_LIST: &str = "osl-test-only-runtime-switches";
@@ -53,6 +59,15 @@ impl SafeSending {
 pub struct ResolvedTestOnlyRunTimeSwitches {
     pub password_screen_access: PasswordScreenAccess,
     pub safe_sending: SafeSending,
+}
+
+impl ResolvedTestOnlyRunTimeSwitches {
+    pub fn password_screen_gate_required(self) -> bool {
+        match self.password_screen_access {
+            PasswordScreenAccess::RequirePasswordScreen => true,
+            PasswordScreenAccess::SkipPasswordScreenForTest => false,
+        }
+    }
 }
 
 impl Default for PasswordScreenAccess {
@@ -313,6 +328,7 @@ mod tests {
             switches.password_screen_access,
             PasswordScreenAccess::RequirePasswordScreen
         );
+        assert!(switches.password_screen_gate_required());
         assert_eq!(
             switches.safe_sending,
             SafeSending::LiveSendRequiresAuthority
@@ -330,6 +346,7 @@ mod tests {
             switches.password_screen_access,
             PasswordScreenAccess::SkipPasswordScreenForTest
         );
+        assert!(!switches.password_screen_gate_required());
         assert_eq!(switches.safe_sending, SafeSending::DryRunSendForTest);
     }
 
