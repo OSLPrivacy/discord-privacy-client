@@ -2,7 +2,8 @@
 //!
 //! `std::fs::rename(tmp, destination)` cannot replace an existing destination
 //! on Windows. Security state is rewritten frequently, so preserve the last
-//! committed file as a sibling backup until the new file is in place.
+//! committed file as a sibling backup until the new file is in place and the
+//! replacement can be opened again.
 
 use std::io::Write as _;
 use std::path::Path;
@@ -89,7 +90,14 @@ pub(crate) fn write_recoverable(path: &Path, bytes: &[u8], label: &str) -> Resul
         return Err(format!("{label} could not be committed"));
     }
     if had_previous {
-        remove_if_present(&backup, label)?;
+        match std::fs::read(path) {
+            Ok(read_back) if read_back == bytes => {}
+            Ok(_) | Err(_) => {
+                let _ = std::fs::remove_file(path);
+                let _ = std::fs::rename(&backup, path);
+                return Err(format!("{label} replacement could not be verified"));
+            }
+        }
     }
     Ok(())
 }
@@ -126,8 +134,55 @@ mod tests {
         ))
     }
 
+    fn fingerprint(bytes: &[u8]) -> String {
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("fnv1a64:{hash:016x}:len:{}", bytes.len())
+    }
+
     #[test]
-    fn repeated_replacement_keeps_latest_committed_bytes() {
+    fn task_3609g_local_save_retains_known_good_previous_copy() {
+        let dir = test_path("task-3609g");
+        let path = dir.join("state.json");
+        let old = br#"{"generation":"old","value":1}"#;
+        let new = br#"{"generation":"new","value":2}"#;
+        let old_fingerprint = fingerprint(old);
+        let new_fingerprint = fingerprint(new);
+
+        write_recoverable(&path, old, "test state").unwrap();
+        std::fs::write(temporary_path(&path), new).unwrap();
+        let stopped_before_replacement = fingerprint(&std::fs::read(&path).unwrap());
+        assert_eq!(stopped_before_replacement, old_fingerprint);
+
+        write_recoverable(&path, new, "test state").unwrap();
+        let finished_replacement = fingerprint(
+            &read_recoverable(&path, "test state")
+                .unwrap()
+                .expect("replacement remains readable"),
+        );
+        let previous_copy = std::fs::read(backup_path(&path)).expect("previous copy remains");
+        let previous_copy_fingerprint = fingerprint(&previous_copy);
+
+        assert_eq!(finished_replacement, new_fingerprint);
+        assert_eq!(previous_copy_fingerprint, old_fingerprint);
+        assert_eq!(previous_copy, old);
+        assert!(!temporary_path(&path).exists());
+
+        println!("old_fingerprint={old_fingerprint}");
+        println!("new_fingerprint={new_fingerprint}");
+        println!("stopped_before_replacement={stopped_before_replacement}");
+        println!("finished_replacement={finished_replacement}");
+        println!("previous_copy_fingerprint={previous_copy_fingerprint}");
+        println!("previous_copy_readable_bytes={}", previous_copy.len());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn repeated_replacement_keeps_latest_committed_and_one_previous_copy() {
         let dir = test_path("replace");
         let path = dir.join("state.json");
         write_recoverable(&path, b"one", "test state").unwrap();
@@ -137,7 +192,7 @@ mod tests {
             read_recoverable(&path, "test state").unwrap(),
             Some(b"three".to_vec())
         );
-        assert!(!path.with_extension("bak").exists());
+        assert_eq!(std::fs::read(path.with_extension("bak")).unwrap(), b"two");
         assert!(!path.with_extension("tmp").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
