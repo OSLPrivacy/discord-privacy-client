@@ -1,5 +1,70 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
+pub const DEFAULT_HOME_TILE_ORDER: &[&str] = &[
+    "discord",
+    "telegram",
+    "signal",
+    "whatsapp",
+    "gmail",
+    "outlook",
+    "proton",
+    "yahoo",
+    "aol",
+    "gmx",
+    "maildotcom",
+    "icloud",
+    "tuta",
+    "osl-chats",
+    "osl-mail",
+    "osl-notes",
+    "scrub",
+];
+
+pub fn default_home_tile_order() -> Vec<String> {
+    DEFAULT_HOME_TILE_ORDER
+        .iter()
+        .map(|tile| (*tile).to_owned())
+        .collect()
+}
+
+pub fn is_default_home_tile(tile: &str) -> bool {
+    DEFAULT_HOME_TILE_ORDER.contains(&tile)
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HomeTileArrangementInput {
+    pub order: Vec<String>,
+    pub hidden: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HomeTileArrangementRead {
+    pub visible_tiles: Vec<String>,
+    pub hidden_tiles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", tag = "action", deny_unknown_fields)]
+pub enum HomeTileArrangementAction {
+    Move {
+        tile_id: String,
+        delta: i8,
+    },
+    Drag {
+        tile_id: String,
+        before_tile_id: String,
+    },
+    Hide {
+        tile_id: String,
+    },
+    Show {
+        tile_id: String,
+    },
+    Done,
+}
+
 /// How an encrypted capsule would be handed to a service composer.
 ///
 /// These values are preferences only in this isolated preview. This crate does
