@@ -187,7 +187,7 @@ export {
 } from "./autoscrub-unattended-run";
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
-import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, type OslChatMessage } from "./osl-chats-view";
+import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
@@ -7436,6 +7436,15 @@ function bindWorkspace(): void {
     // mid-word. The preconditions that cannot change while typing (verified,
     // ready, not busy) are carried on the button by the view.
     setOslChatDraft(oslChatDraftInput.value, false);
+  });
+  oslChatDraftInput?.addEventListener("keydown", (event) => {
+    if (!submitsOslChatDraft(event)) return;
+    event.preventDefault();
+    const form = oslChatDraftInput.closest<HTMLFormElement>("[data-osl-chat-compose]");
+    const send = form?.querySelector<HTMLButtonElement>("button.osl-chat-send");
+    if (!form || !send || send.disabled) return;
+    if (typeof form.requestSubmit === "function") form.requestSubmit(send);
+    else send.click();
   });
   document.querySelector<HTMLInputElement>("#osl-chat-view-once")?.addEventListener("change", (event) => { oslChatViewOnce = (event.currentTarget as HTMLInputElement).checked; });
   document.querySelector<HTMLFormElement>("[data-osl-chat-compose]")?.addEventListener("submit", (event) => void sendOslChat(event));

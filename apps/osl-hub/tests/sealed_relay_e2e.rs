@@ -1029,6 +1029,143 @@ pub fn osl_chat_message_survives_a_lost_wrapped_key_response() {
     .is_err());
 }
 
+pub fn task_1303_direct_send_creates_one_protected_message_from_box_text() {
+    let relay = RelayServer::start();
+    let storage = TestStorage::new();
+    let relay_url = relay.base_url();
+    let alice_dir = storage.account("alice-task-1303", &relay_url);
+    let bob_dir = storage.account("bob-task-1303", &relay_url);
+
+    let alice_identity = keystore::generate_identity("osl-alice-task-1303".to_owned());
+    let bob_identity = keystore::generate_identity("osl-bob-task-1303".to_owned());
+    let alice_id = alice_identity.user_id.clone();
+    let bob_id = bob_identity.user_id.clone();
+    relay.register_floor_identity(&alice_identity);
+    relay.register_floor_identity(&bob_identity);
+    let alice = core(alice_identity, &relay_url);
+    let bob = core(bob_identity.clone(), &relay_url);
+    let alice_security = HubSecurityState::default();
+    let bob_security = HubSecurityState::default();
+    let alice_broker = HubBrokerState::default();
+    let bob_broker = HubBrokerState::default();
+
+    let alice_code = export_friend_code(&alice).unwrap();
+    let bob_code = export_friend_code(&bob).unwrap();
+
+    TestStorage::activate(&alice_dir);
+    let bob_friend = add_friend_code(
+        &alice,
+        &alice_security,
+        bob_code.friend_code,
+        Some("Bob task 1303 fixture".to_owned()),
+    )
+    .unwrap();
+    verify_friend_safety_number(
+        &alice,
+        &alice_security,
+        bob_friend.person_id.clone(),
+        bob_friend.safety_number.clone(),
+    )
+    .unwrap();
+    let alice_binding = manual_peer_binding(&alice, bob_friend.person_id.clone()).unwrap();
+    let alice_context =
+        activate_owned_osl_chat_context(&alice_broker, &alice_id, alice_binding).unwrap();
+    set_manual_peer_scope_permission(
+        &alice,
+        &alice_security,
+        "osl-chat",
+        "osl-main",
+        alice_context.person_id.clone(),
+        alice_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_scope_security(&alice_security, alice_context.scope.clone(), 3600, true).unwrap();
+
+    TestStorage::activate(&bob_dir);
+    let alice_friend = add_friend_code(
+        &bob,
+        &bob_security,
+        alice_code.friend_code,
+        Some("Alice task 1303 fixture".to_owned()),
+    )
+    .unwrap();
+    verify_friend_safety_number(
+        &bob,
+        &bob_security,
+        alice_friend.person_id.clone(),
+        alice_friend.safety_number.clone(),
+    )
+    .unwrap();
+    let bob_binding = manual_peer_binding(&bob, alice_friend.person_id.clone()).unwrap();
+    let bob_context = activate_owned_osl_chat_context(&bob_broker, &bob_id, bob_binding).unwrap();
+    set_manual_peer_scope_permission(
+        &bob,
+        &bob_security,
+        "osl-chat",
+        "osl-main",
+        bob_context.person_id.clone(),
+        bob_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_scope_security(&bob_security, bob_context.scope.clone(), 3600, true).unwrap();
+
+    let box_text = "task 1303 box text direct send".to_owned();
+    let ai_carrier = osl_privacy_hub::ai_carrier::AiCarrierState::default();
+
+    TestStorage::activate(&alice_dir);
+    let prepared = prepare_osl_chat_text(
+        &alice,
+        &alice_security,
+        &alice_broker,
+        &ai_carrier,
+        box_text.clone(),
+        true,
+    )
+    .unwrap();
+    let pending_after_send = relay.pending_for(&bob_id);
+    let protected_send_count =
+        usize::from(prepared.delivered_to_osl_inbox && prepared.person_to_person_e2ee);
+
+    let first_wrapped_key_id = relay.single_wrapped_key_id_for(&alice_id, &bob_id);
+    keystore::KeyServerClient::new(&relay_url)
+        .unwrap()
+        .fetch_wrapped_key(&bob_identity, &first_wrapped_key_id)
+        .unwrap();
+
+    TestStorage::activate(&bob_dir);
+    let opened = drain_osl_chat_text(&bob, &bob_security, &bob_broker, true).unwrap();
+    let protected_message_count = opened
+        .messages
+        .iter()
+        .filter(|message| {
+            message.context_verified
+                && message.person_to_person_e2ee
+                && message.plaintext == box_text
+        })
+        .count();
+    let opened_text = opened
+        .messages
+        .first()
+        .map(|message| message.plaintext.as_str())
+        .unwrap_or("");
+
+    println!("TASK1303_DIRECT_SEND_ACTION=Enter");
+    println!("TASK1303_PROTECTED_SEND_PATH=prepare_osl_chat_text");
+    println!("TASK1303_BOX_TEXT={box_text}");
+    println!("TASK1303_PROTECTED_SEND_COUNT={protected_send_count}");
+    println!("TASK1303_RELAY_PENDING_AFTER_SEND={pending_after_send}");
+    println!("TASK1303_OPENED_PROTECTED_MESSAGE_COUNT={protected_message_count}");
+    println!("TASK1303_OPENED_TEXT={opened_text}");
+
+    assert_eq!(protected_send_count, 1);
+    assert_eq!(pending_after_send, 1);
+    assert_eq!(opened.messages.len(), 1);
+    assert_eq!(protected_message_count, 1);
+    assert_eq!(opened_text, box_text);
+}
+
 /// D-223, both halves, end to end.
 ///
 /// The relay notice lane is taken offline *after* the wrapped key has landed —
