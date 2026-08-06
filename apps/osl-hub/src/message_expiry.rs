@@ -39,7 +39,7 @@
 //! material or conversation content. The ledger holds opaque scope keys, opaque
 //! random message ids, byte counts, digests of *sealed* bytes, and timestamps.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -811,6 +811,22 @@ pub struct TimedDeleteStoreSnapshot {
     pub records: Vec<TimedDeleteRecord>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimedDeleteTwoCopyReport {
+    pub local_copy_names: [String; 2],
+    pub record_count: usize,
+    pub message_locator: String,
+    pub delete_at_unix_seconds: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TimedDeleteExpiryReport {
+    pub expired_records: usize,
+    pub retained_records: usize,
+    pub removed_records: usize,
+    pub shredded_cache_rows: usize,
+}
+
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct TimedDeleteLedger {
@@ -987,6 +1003,35 @@ pub fn cmd_record_timed_delete_at_path(
     Ok(record)
 }
 
+/// Direct command boundary for sending the same expiry record to both local
+/// chat-machine copies of a conversation.
+pub fn cmd_record_timed_delete_for_two_local_copies_at_paths(
+    first_copy_name: &str,
+    first_path: &Path,
+    second_copy_name: &str,
+    second_path: &Path,
+    key: &[u8; 32],
+    record: TimedDeleteRecord,
+) -> Result<TimedDeleteTwoCopyReport, String> {
+    if !valid_timed_delete_component(first_copy_name)
+        || !valid_timed_delete_component(second_copy_name)
+    {
+        return Err("OSL timed-delete local copy name is invalid".to_owned());
+    }
+    validate_timed_delete_record(&record)?;
+    let first = cmd_record_timed_delete_at_path(first_path, key, record.clone())?;
+    let second = cmd_record_timed_delete_at_path(second_path, key, record.clone())?;
+    if first != second {
+        return Err("OSL timed-delete fanout wrote different records".to_owned());
+    }
+    Ok(TimedDeleteTwoCopyReport {
+        local_copy_names: [first_copy_name.to_owned(), second_copy_name.to_owned()],
+        record_count: 2,
+        message_locator: record.message_locator,
+        delete_at_unix_seconds: record.delete_at_unix_seconds,
+    })
+}
+
 /// Fresh-read lookup for the exact native-service message scheduled to go.
 pub fn find_timed_delete_record_at_path(
     path: &Path,
@@ -1038,6 +1083,60 @@ pub fn read_timed_delete_store_snapshot_at_path(
         record_count: records.len(),
         records,
     })
+}
+
+/// Remove timed-delete records whose deadline has elapsed and shred their
+/// matching local chat cache rows.
+pub fn expire_timed_delete_records_at_path(
+    path: &Path,
+    key: &[u8; 32],
+    now: i64,
+    shred: &store::MessageStore,
+) -> Result<TimedDeleteExpiryReport, String> {
+    let mut ledger = load_timed_delete_ledger(path, key)?;
+    let mut report = TimedDeleteExpiryReport::default();
+    let mut due_locators = Vec::new();
+
+    for conversations in ledger.apps.values() {
+        for messages in conversations.values() {
+            for record in messages.values() {
+                if record.delete_at_unix_seconds <= now {
+                    report.expired_records += 1;
+                    due_locators.push(record.message_locator.clone());
+                } else {
+                    report.retained_records += 1;
+                }
+            }
+        }
+    }
+
+    if due_locators.is_empty() {
+        return Ok(report);
+    }
+
+    let batch: Vec<String> = due_locators
+        .into_iter()
+        .take(MAX_CACHE_SHREDS_PER_PASS)
+        .collect();
+    report.shredded_cache_rows = shred
+        .shred_expired_messages(&batch)
+        .map_err(|_| "OSL timed-delete cache shred failed".to_owned())?;
+    let remove_locators: BTreeSet<String> = batch.into_iter().collect();
+
+    ledger.apps.retain(|_, conversations| {
+        conversations.retain(|_, messages| {
+            messages.retain(|_, record| {
+                record.delete_at_unix_seconds > now
+                    || !remove_locators.contains(&record.message_locator)
+            });
+            !messages.is_empty()
+        });
+        !conversations.is_empty()
+    });
+    report.removed_records = remove_locators.len();
+    ledger.version = 1;
+    store_timed_delete_ledger(path, &ledger, key)?;
+    Ok(report)
 }
 
 // ---------------------------------------------------------------------------
@@ -1152,7 +1251,9 @@ pub struct PassReport {
     /// were unreadable and the pass was a no-op by design.
     pub ran: bool,
     pub expired_messages: usize,
+    pub expired_timed_delete_records: usize,
     pub shredded_cache_rows: usize,
+    pub timed_delete_shredded_cache_rows: usize,
     pub dropped_receipt_records: usize,
     pub removed_staging_files: usize,
     /// A leg that failed. The pass never propagates it: a failed sweep is
@@ -1313,6 +1414,18 @@ pub fn run_pass(
         Err(_) => report.degraded = true,
     }
 
+    if let Some(store) = shred {
+        match timed_delete_path()
+            .and_then(|path| expire_timed_delete_records_at_path(&path, &key, now, store))
+        {
+            Ok(expired) => {
+                report.expired_timed_delete_records = expired.removed_records;
+                report.timed_delete_shredded_cache_rows = expired.shredded_cache_rows;
+            }
+            Err(_) => report.degraded = true,
+        }
+    }
+
     report
 }
 
@@ -1375,6 +1488,29 @@ mod tests {
             cache_id.map(str::to_owned),
             now,
         )
+    }
+
+    fn stored_message(id: &str, channel: &str, body: &str, at: i64) -> store::StoredMessage {
+        store::StoredMessage {
+            discord_message_id: id.to_owned(),
+            channel_id: channel.to_owned(),
+            sender_discord_id: "task1342-sender".to_owned(),
+            sender_osl_user_id: "task1342-sender".to_owned(),
+            plaintext: body.to_owned(),
+            decrypted_at: at,
+            reply_parent_id: None,
+            edit_revision: 1,
+            burned: false,
+        }
+    }
+
+    fn marked_history_count(store: &store::MessageStore, channel: &str, mark: &str) -> usize {
+        store
+            .list_by_channel(channel, 10)
+            .unwrap()
+            .into_iter()
+            .filter(|message| message.plaintext.contains(mark))
+            .count()
     }
 
     // ---- two clocks ----
@@ -1940,6 +2076,131 @@ mod tests {
         println!(
             "task_3307_wiped_reopen_record_count={}",
             wiped_reopen.record_count
+        );
+    }
+
+    #[test]
+    fn task_1342_connects_timer_expiry_to_both_local_chat_copies() {
+        let root = root("task-1342");
+        let first_name = "task1342-alice-local-copy";
+        let second_name = "task1342-bob-local-copy";
+        let first_ledger = root.join(first_name).join(TIMED_DELETE_FILE);
+        let second_ledger = root.join(second_name).join(TIMED_DELETE_FILE);
+        let first_store_dir = root.join(first_name).join("message-store");
+        let second_store_dir = root.join(second_name).join("message-store");
+        std::fs::create_dir_all(first_ledger.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(second_ledger.parent().unwrap()).unwrap();
+
+        let first_store = store::MessageStore::open(&first_store_dir, &KEY).unwrap();
+        let second_store = store::MessageStore::open(&second_store_dir, &KEY).unwrap();
+        let channel = "task1342-chat";
+        let message_id = "task1342-one-minute-message";
+        let mark = "TASK1342-MARKED-ONE-MINUTE-MESSAGE";
+        let sent_at = 1_960_000_000i64;
+        let delete_at = sent_at + 60;
+        let body = format!("{mark} body");
+        let message = stored_message(message_id, channel, &body, sent_at);
+        first_store.put(&message).unwrap();
+        second_store.put(&message).unwrap();
+
+        let record = TimedDeleteRecord {
+            app_id: "osl-chat".to_owned(),
+            conversation_id: channel.to_owned(),
+            message_locator: message_id.to_owned(),
+            sent_at_unix_seconds: sent_at,
+            delete_at_unix_seconds: delete_at,
+            protection: TimedDeleteProtection::Protected,
+        };
+        let fanout = cmd_record_timed_delete_for_two_local_copies_at_paths(
+            first_name,
+            &first_ledger,
+            second_name,
+            &second_ledger,
+            &KEY,
+            record.clone(),
+        )
+        .unwrap();
+        assert_eq!(fanout.record_count, 2);
+        assert_eq!(fanout.message_locator, message_id);
+        assert_eq!(fanout.delete_at_unix_seconds - sent_at, 60);
+        println!(
+            "TASK1342_EXPIRY_RECORD_SENT_TO_BOTH local_copies={},{} record_count={} locator={} lifetime_seconds={}",
+            fanout.local_copy_names[0],
+            fanout.local_copy_names[1],
+            fanout.record_count,
+            fanout.message_locator,
+            fanout.delete_at_unix_seconds - sent_at
+        );
+
+        let first_before = marked_history_count(&first_store, channel, mark);
+        let second_before = marked_history_count(&second_store, channel, mark);
+        assert_eq!(first_before, 1);
+        assert_eq!(second_before, 1);
+        assert_eq!(
+            find_timed_delete_record_at_path(&first_ledger, &KEY, "osl-chat", channel, message_id)
+                .unwrap(),
+            Some(record.clone())
+        );
+        assert_eq!(
+            find_timed_delete_record_at_path(&second_ledger, &KEY, "osl-chat", channel, message_id)
+                .unwrap(),
+            Some(record)
+        );
+        println!(
+            "TASK1342_BEFORE local_copy={} same_mark={} count={}",
+            first_name, mark, first_before
+        );
+        println!(
+            "TASK1342_BEFORE local_copy={} same_mark={} count={}",
+            second_name, mark, second_before
+        );
+
+        let first_expired =
+            expire_timed_delete_records_at_path(&first_ledger, &KEY, delete_at, &first_store)
+                .unwrap();
+        let second_expired =
+            expire_timed_delete_records_at_path(&second_ledger, &KEY, delete_at, &second_store)
+                .unwrap();
+        assert_eq!(first_expired.expired_records, 1);
+        assert_eq!(second_expired.expired_records, 1);
+        assert_eq!(first_expired.removed_records, 1);
+        assert_eq!(second_expired.removed_records, 1);
+        assert_eq!(first_expired.shredded_cache_rows, 1);
+        assert_eq!(second_expired.shredded_cache_rows, 1);
+
+        let first_after = marked_history_count(&first_store, channel, mark);
+        let second_after = marked_history_count(&second_store, channel, mark);
+        let first_mark_absent = first_after == 0;
+        let second_mark_absent = second_after == 0;
+        assert_eq!(first_after, 0);
+        assert_eq!(second_after, 0);
+        assert_eq!(
+            find_timed_delete_record_at_path(&first_ledger, &KEY, "osl-chat", channel, message_id)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            find_timed_delete_record_at_path(&second_ledger, &KEY, "osl-chat", channel, message_id)
+                .unwrap(),
+            None
+        );
+        println!(
+            "TASK1342_AFTER local_copy={} count={} mark_absent={} expired_records={} removed_records={} shredded_cache_rows={}",
+            first_name,
+            first_after,
+            first_mark_absent,
+            first_expired.expired_records,
+            first_expired.removed_records,
+            first_expired.shredded_cache_rows
+        );
+        println!(
+            "TASK1342_AFTER local_copy={} count={} mark_absent={} expired_records={} removed_records={} shredded_cache_rows={}",
+            second_name,
+            second_after,
+            second_mark_absent,
+            second_expired.expired_records,
+            second_expired.removed_records,
+            second_expired.shredded_cache_rows
         );
     }
 
