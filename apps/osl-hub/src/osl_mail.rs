@@ -19,6 +19,8 @@ use std::sync::Mutex;
 
 const MAIL_DOMAIN: &str = "oslprivacy.com";
 const RETENTION_SECONDS: u32 = 7 * 24 * 60 * 60;
+const BORING_PROTECTED_SUBJECT: &str = "OSL protected message";
+const MIN_COPIED_SUBJECT_BYTES: usize = 16;
 /// Whether the user-facing OSL Mail client may present as usable.
 ///
 /// **Derived, not written.** This was the literal `false` that D-221 called out
@@ -186,6 +188,9 @@ pub fn send(
     {
         return Err("OSL Mail message is invalid".to_owned());
     }
+    if visible_subject_copies_protected_text(&subject, &body) {
+        return Err(visible_subject_protection_warning());
+    }
     let identity = active_identity(core)?;
     let own_address = state
         .addresses
@@ -339,6 +344,28 @@ fn pointer_envelope(recipient: &str, subject: &str, body: &str) -> String {
     .to_string()
 }
 
+fn visible_subject_protection_warning() -> String {
+    format!("OSL Mail subject is visible. Use \"{BORING_PROTECTED_SUBJECT}\" instead.")
+}
+
+fn visible_subject_copies_protected_text(subject: &str, protected_text: &str) -> bool {
+    let subject = normalized_visible_subject_text(subject);
+    if subject.len() < MIN_COPIED_SUBJECT_BYTES {
+        return false;
+    }
+    let protected_text = normalized_visible_subject_text(protected_text);
+    !protected_text.is_empty()
+        && (subject == protected_text || protected_text.contains(subject.as_str()))
+}
+
+fn normalized_visible_subject_text(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -476,7 +503,10 @@ fn canonical_json(value: &Value) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{pointer_envelope, signed_message, status_from_address, BurnResponse};
+    use super::{
+        pointer_envelope, signed_message, status_from_address, visible_subject_protection_warning,
+        BurnResponse, BORING_PROTECTED_SUBJECT,
+    };
     use serde_json::{Map, Value};
 
     #[test]
@@ -552,6 +582,30 @@ mod tests {
         assert!(!pointer.contains("private subject"));
         assert!(!pointer.contains("payload must never transit"));
         assert!(pointer.contains("body_sha256"));
+    }
+
+    #[test]
+    fn task1297_direct_mail_send_refuses_subject_copied_from_protected_text() {
+        let core = crate::core_bridge::HubCoreState::default();
+        let state = super::OslMailState::default();
+        let protected_text = "Meet me at the west loading door after payroll closes.".to_owned();
+        let copied_subject = protected_text.clone();
+
+        let refusal = super::send(
+            &core,
+            &state,
+            "member@oslprivacy.com".to_owned(),
+            copied_subject,
+            protected_text,
+        )
+        .expect_err("direct mail command must refuse copied protected text in the subject");
+
+        println!("TASK1297 direct_command_refused=true");
+        println!("TASK1297 copied_subject_replacement={BORING_PROTECTED_SUBJECT}");
+        println!("TASK1297 refusal={refusal}");
+        assert_eq!(refusal, visible_subject_protection_warning());
+        assert!(refusal.contains(BORING_PROTECTED_SUBJECT));
+        assert_ne!(refusal, "Unlock an OSL identity before using OSL Mail");
     }
 
     #[test]
