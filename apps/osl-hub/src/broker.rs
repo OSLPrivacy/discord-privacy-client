@@ -4008,6 +4008,73 @@ fn qa_encrypt_refusal_site(site: &'static str) {
 #[cfg(not(feature = "discord-qa-shell"))]
 fn qa_encrypt_refusal_site(_site: &'static str) {}
 
+pub const MESSAGE_SERVICE_SEND_RETRYABLE_LOCAL_RESULT: &str = "retryable";
+
+const DOCUMENTED_MESSAGE_SERVICE_SEND_FAILURES: &[&str] = &[
+    "expires_at_overflow",
+    "chunk_count_overflow",
+    "chunk_index_overflow",
+    "notice_encode_failed",
+    "verify_manual_v3_type_failed",
+    "post_control_inbox_failed",
+    "http_400",
+    "http_401",
+    "http_403",
+    "http_404",
+    "http_409",
+    "http_429",
+    "http_5xx",
+    "http_other",
+    "transport",
+    "encode_or_response",
+    "crypto",
+    "peer_bundle_proof_invalid",
+    "prekey_missing",
+    "local_state",
+];
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageServiceSendFailureLocalResult {
+    pub name: &'static str,
+    pub local_result: &'static str,
+    pub retryable: bool,
+}
+
+pub fn documented_message_service_send_failures() -> &'static [&'static str] {
+    DOCUMENTED_MESSAGE_SERVICE_SEND_FAILURES
+}
+
+pub fn retryable_local_result_for_message_service_send_failure(
+    name: &str,
+) -> Result<MessageServiceSendFailureLocalResult, String> {
+    let Some(documented) = DOCUMENTED_MESSAGE_SERVICE_SEND_FAILURES
+        .iter()
+        .copied()
+        .find(|documented| *documented == name)
+    else {
+        return Err(format!("unknown message-service send failure: {name}"));
+    };
+    Ok(MessageServiceSendFailureLocalResult {
+        name: documented,
+        local_result: MESSAGE_SERVICE_SEND_RETRYABLE_LOCAL_RESULT,
+        retryable: true,
+    })
+}
+
+pub fn documented_message_service_send_failure_local_results(
+) -> Vec<MessageServiceSendFailureLocalResult> {
+    DOCUMENTED_MESSAGE_SERVICE_SEND_FAILURES
+        .iter()
+        .copied()
+        .map(|name| MessageServiceSendFailureLocalResult {
+            name,
+            local_result: MESSAGE_SERVICE_SEND_RETRYABLE_LOCAL_RESULT,
+            retryable: true,
+        })
+        .collect()
+}
+
 fn prepare_peer_inbox_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
@@ -9400,6 +9467,72 @@ mod tests {
             result.opened_thread.parent_message.message_id,
             result.opened_thread.parent_message.thread_ids.join(",")
         );
+    }
+
+    #[test]
+    fn task_3570_lists_every_documented_message_service_send_failure_as_retryable() {
+        let documented = documented_message_service_send_failures();
+        let handled = documented_message_service_send_failure_local_results();
+        let mut occurrences = std::collections::BTreeMap::<&str, usize>::new();
+        for result in &handled {
+            *occurrences.entry(result.name).or_insert(0) += 1;
+            assert_eq!(
+                result.local_result, MESSAGE_SERVICE_SEND_RETRYABLE_LOCAL_RESULT,
+                "{} must resolve to the retryable local result",
+                result.name
+            );
+            assert!(
+                result.retryable,
+                "{} must be marked retryable locally",
+                result.name
+            );
+        }
+
+        assert!(
+            !documented.is_empty(),
+            "the documented send-failure list must not be empty"
+        );
+        assert_eq!(
+            documented.len(),
+            handled.len(),
+            "every documented message-service send failure must be handled"
+        );
+        for name in documented {
+            assert_eq!(
+                occurrences.get(name).copied().unwrap_or(0),
+                1,
+                "{name} must appear exactly once"
+            );
+            assert_eq!(
+                retryable_local_result_for_message_service_send_failure(name)
+                    .expect("documented name resolves"),
+                MessageServiceSendFailureLocalResult {
+                    name,
+                    local_result: MESSAGE_SERVICE_SEND_RETRYABLE_LOCAL_RESULT,
+                    retryable: true,
+                }
+            );
+        }
+        let refused =
+            retryable_local_result_for_message_service_send_failure("not_documented_task_3570")
+                .unwrap_err();
+        assert_eq!(
+            refused,
+            "unknown message-service send failure: not_documented_task_3570"
+        );
+
+        println!("TASK3570_DOCUMENTED_FAILURE_COUNT={}", documented.len());
+        println!("TASK3570_HANDLED_FAILURE_COUNT={}", handled.len());
+        println!("TASK3570_UNIQUE_NAME_COUNT={}", occurrences.len());
+        println!("TASK3570_FAILURE_NAMES={}", documented.join(","));
+        for result in &handled {
+            println!(
+                "TASK3570_HANDLED_FAILURE name={} local_result={} retryable={}",
+                result.name, result.local_result, result.retryable
+            );
+        }
+        println!("TASK3570_UNKNOWN_NAME_RESULT=ERR");
+        println!("TASK3570_UNKNOWN_NAME_ERROR={refused}");
     }
 
     #[test]
