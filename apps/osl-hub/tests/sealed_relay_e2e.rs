@@ -23,7 +23,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const TEST_MAIN_PASSWORD: &str = "sealed-relay-fixture-password";
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct InboxRow {
     id: String,
     sender_id: String,
@@ -166,6 +166,17 @@ impl RelayServer {
             .iter()
             .filter(|row| row.recipient_id == recipient_id)
             .count()
+    }
+
+    fn posted_for(&self, sender_id: &str, recipient_id: &str) -> Vec<InboxRow> {
+        self.state
+            .lock()
+            .unwrap()
+            .posted
+            .iter()
+            .filter(|row| row.sender_id == sender_id && row.recipient_id == recipient_id)
+            .cloned()
+            .collect()
     }
 
     fn single_wrapped_key_id_for(&self, sender_id: &str, recipient_id: &str) -> String {
@@ -1164,6 +1175,185 @@ pub fn task_1303_direct_send_creates_one_protected_message_from_box_text() {
     assert_eq!(opened.messages.len(), 1);
     assert_eq!(protected_message_count, 1);
     assert_eq!(opened_text, box_text);
+}
+
+pub fn task_0130_old_protected_message_record_survives_place_removal() {
+    let relay = RelayServer::start();
+    let storage = TestStorage::new();
+    let relay_url = relay.base_url();
+    let alice_dir = storage.account("alice-task-0130", &relay_url);
+    let bob_dir = storage.account("bob-task-0130", &relay_url);
+
+    let alice_identity = keystore::generate_identity("osl-alice-task-0130".to_owned());
+    let bob_identity = keystore::generate_identity("osl-bob-task-0130".to_owned());
+    let alice_id = alice_identity.user_id.clone();
+    let bob_id = bob_identity.user_id.clone();
+    relay.register_floor_identity(&alice_identity);
+    relay.register_floor_identity(&bob_identity);
+    let alice = core(alice_identity, &relay_url);
+    let bob = core(bob_identity, &relay_url);
+    let alice_security = HubSecurityState::default();
+    let bob_security = HubSecurityState::default();
+    let alice_broker = HubBrokerState::default();
+    let bob_broker = HubBrokerState::default();
+
+    let alice_code = export_friend_code(&alice).unwrap();
+    let bob_code = export_friend_code(&bob).unwrap();
+
+    TestStorage::activate(&alice_dir);
+    let bob_friend = add_friend_code(
+        &alice,
+        &alice_security,
+        bob_code.friend_code,
+        Some("Bob task 0130 fixture".to_owned()),
+    )
+    .unwrap();
+    verify_friend_safety_number(
+        &alice,
+        &alice_security,
+        bob_friend.person_id.clone(),
+        bob_friend.safety_number.clone(),
+    )
+    .unwrap();
+    let alice_binding = manual_peer_binding(&alice, bob_friend.person_id.clone()).unwrap();
+    let alice_context =
+        activate_owned_osl_chat_context(&alice_broker, &alice_id, alice_binding).unwrap();
+    set_manual_peer_scope_permission(
+        &alice,
+        &alice_security,
+        "osl-chat",
+        "osl-main",
+        alice_context.person_id.clone(),
+        alice_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_scope_security(&alice_security, alice_context.scope.clone(), 3600, true).unwrap();
+
+    TestStorage::activate(&bob_dir);
+    let alice_friend = add_friend_code(
+        &bob,
+        &bob_security,
+        alice_code.friend_code,
+        Some("Alice task 0130 fixture".to_owned()),
+    )
+    .unwrap();
+    verify_friend_safety_number(
+        &bob,
+        &bob_security,
+        alice_friend.person_id.clone(),
+        alice_friend.safety_number.clone(),
+    )
+    .unwrap();
+    let bob_binding = manual_peer_binding(&bob, alice_friend.person_id.clone()).unwrap();
+    let bob_context = activate_owned_osl_chat_context(&bob_broker, &bob_id, bob_binding).unwrap();
+    set_manual_peer_scope_permission(
+        &bob,
+        &bob_security,
+        "osl-chat",
+        "osl-main",
+        bob_context.person_id.clone(),
+        bob_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_scope_security(&bob_security, bob_context.scope.clone(), 3600, true).unwrap();
+
+    let old_text = "task 0130 protected fixture old text".to_owned();
+    let ai_carrier = osl_privacy_hub::ai_carrier::AiCarrierState::default();
+
+    TestStorage::activate(&alice_dir);
+    let prepared = prepare_osl_chat_text(
+        &alice,
+        &alice_security,
+        &alice_broker,
+        &ai_carrier,
+        old_text.clone(),
+        true,
+    )
+    .unwrap();
+    let protected_send_count =
+        usize::from(prepared.delivered_to_osl_inbox && prepared.person_to_person_e2ee);
+    let posted_before = relay.posted_for(&alice_id, &bob_id);
+    assert_eq!(
+        posted_before.len(),
+        1,
+        "fixture must save exactly one old row"
+    );
+    let saved_record = posted_before[0].clone();
+    let receipt_before = fs::read(alice_dir.join("hub_native_overlay_receipts.json")).unwrap();
+    let wrapped_before = relay.wrapped_keys_for(&alice_id, &bob_id);
+    let pending_before = relay.pending_for(&bob_id);
+
+    let remove_result = set_manual_peer_scope_permission(
+        &alice,
+        &alice_security,
+        "osl-chat",
+        "osl-main",
+        alice_context.person_id.clone(),
+        alice_context.scope.clone(),
+        false,
+    );
+
+    let new_send = prepare_osl_chat_text(
+        &alice,
+        &alice_security,
+        &alice_broker,
+        &ai_carrier,
+        "task 0130 should be skipped after place removal".to_owned(),
+        true,
+    );
+    let new_send_error = new_send.as_ref().err().cloned().unwrap_or_default();
+    let posted_after = relay.posted_for(&alice_id, &bob_id);
+    let receipt_after = fs::read(alice_dir.join("hub_native_overlay_receipts.json")).unwrap();
+    let wrapped_after = relay.wrapped_keys_for(&alice_id, &bob_id);
+    let pending_after = relay.pending_for(&bob_id);
+    let old_record_exact = posted_after.first() == Some(&saved_record);
+    let receipt_exact = receipt_after == receipt_before;
+    let new_send_skipped = new_send.is_err()
+        && posted_after.len() == posted_before.len()
+        && wrapped_after == wrapped_before
+        && pending_after == pending_before;
+
+    println!("TASK0130_OLD_TEXT={old_text}");
+    println!("TASK0130_OLD_MESSAGE_ID={}", prepared.message_id);
+    println!("TASK0130_REMOVED_PLACE_SCOPE={}", saved_record.scope_id);
+    println!("TASK0130_REMOVE_PLACE_RESULT={}", remove_result.is_ok());
+    println!("TASK0130_PROTECTED_SEND_COUNT={protected_send_count}");
+    println!(
+        "TASK0130_POSTED_RECORD_COUNT_BEFORE={}",
+        posted_before.len()
+    );
+    println!("TASK0130_POSTED_RECORD_COUNT_AFTER={}", posted_after.len());
+    println!("TASK0130_WRAPPED_KEY_COUNT_BEFORE={wrapped_before}");
+    println!("TASK0130_WRAPPED_KEY_COUNT_AFTER={wrapped_after}");
+    println!("TASK0130_PENDING_RECORD_COUNT_BEFORE={pending_before}");
+    println!("TASK0130_PENDING_RECORD_COUNT_AFTER={pending_after}");
+    println!("TASK0130_SAVED_RECORD_ID={}", saved_record.id);
+    println!(
+        "TASK0130_SAVED_RECORD_BUNDLE_SHA256={}",
+        sha256_hex(&saved_record.bundle_b64)
+    );
+    println!("TASK0130_OLD_RECORD_EXACT_AFTER_REMOVAL={old_record_exact}");
+    println!("TASK0130_RECEIPT_FILE_EXACT_AFTER_REMOVAL={receipt_exact}");
+    println!("TASK0130_NEW_SEND_SKIPPED={new_send_skipped}");
+    println!("TASK0130_NEW_SEND_ERROR={new_send_error}");
+
+    assert!(prepared.view_once);
+    assert_eq!(protected_send_count, 1);
+    assert_eq!(remove_result, Ok(()));
+    assert_eq!(posted_after, posted_before);
+    assert!(old_record_exact);
+    assert!(receipt_exact);
+    assert_eq!(wrapped_before, 1);
+    assert_eq!(wrapped_after, 1);
+    assert_eq!(pending_before, 1);
+    assert_eq!(pending_after, 1);
+    assert!(new_send_skipped);
+    assert_eq!(
+        new_send_error,
+        "Approve encryption for this friend before continuing"
+    );
 }
 
 /// D-223, both halves, end to end.
