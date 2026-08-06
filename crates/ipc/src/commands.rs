@@ -16450,6 +16450,137 @@ fn auto_whitelist_allowed_place(app_kind: &str) -> Option<AutoWhitelistAllowedPl
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewPlaceAllowRequestDto {
+    pub request_id: String,
+    pub choice_required: bool,
+    pub allowed_choices: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewPlaceDecisionDto {
+    pub status: String,
+    pub rule: String,
+    pub prompt: bool,
+    pub allow_request: Option<NewPlaceAllowRequestDto>,
+    pub place: crate::allowed_places::AllowedPlaceRecord,
+}
+
+fn pending_allow_request_id(record: &crate::allowed_places::AllowedPlaceRecord) -> String {
+    format!("allow:{}", record.stable_id)
+}
+
+fn friend_marker_for_allowed_place(record: &crate::allowed_places::AllowedPlaceRecord) -> &str {
+    record.person_name.trim()
+}
+
+pub fn cmd_osl_new_place(
+    state: &AppState,
+    record: crate::allowed_places::AllowedPlaceRecord,
+    app_data_dir: Option<PathBuf>,
+) -> Result<NewPlaceDecisionDto, String> {
+    record_activity_on_command_entry();
+    let app_kind =
+        crate::auto_whitelist_rules::auto_whitelist_rule_key_for_place(&record.app, &record.kind)?;
+    record.validate().map_err(|error| format!("OSL: {error}"))?;
+
+    let rule = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .auto_whitelist_rules
+        .get(&app_kind)
+        .copied()
+        .unwrap_or_default();
+
+    match rule {
+        crate::auto_whitelist_rules::AutoWhitelistChoice::Never => Ok(NewPlaceDecisionDto {
+            status: "unlisted".to_string(),
+            rule: rule.label().to_string(),
+            prompt: false,
+            allow_request: None,
+            place: record,
+        }),
+        crate::auto_whitelist_rules::AutoWhitelistChoice::AskMe => Ok(NewPlaceDecisionDto {
+            status: "pending_allow_request".to_string(),
+            rule: rule.label().to_string(),
+            prompt: true,
+            allow_request: Some(NewPlaceAllowRequestDto {
+                request_id: pending_allow_request_id(&record),
+                choice_required: true,
+                allowed_choices: vec!["allow".to_string(), "deny".to_string()],
+            }),
+            place: record,
+        }),
+        crate::auto_whitelist_rules::AutoWhitelistChoice::Always => {
+            let dir =
+                app_data_dir.ok_or_else(|| "OSL: allowed-place data dir is missing".to_string())?;
+            crate::allowed_places::add_allowed_place_record(&dir, &record)
+                .map_err(|error| format!("OSL: {error}"))?;
+            Ok(NewPlaceDecisionDto {
+                status: "allowed".to_string(),
+                rule: rule.label().to_string(),
+                prompt: false,
+                allow_request: None,
+                place: record,
+            })
+        }
+        crate::auto_whitelist_rules::AutoWhitelistChoice::OnlyIfAFriend => {
+            let friend_marker = friend_marker_for_allowed_place(&record);
+            let is_friend = state
+                .friend_ids
+                .lock()
+                .expect("friend_ids mutex poisoned")
+                .iter()
+                .any(|id| id == friend_marker);
+            if !is_friend {
+                return Err("OSL: auto-whitelist refused: not a friend".to_string());
+            }
+            let dir =
+                app_data_dir.ok_or_else(|| "OSL: allowed-place data dir is missing".to_string())?;
+            crate::allowed_places::add_allowed_place_record(&dir, &record)
+                .map_err(|error| format!("OSL: {error}"))?;
+            Ok(NewPlaceDecisionDto {
+                status: "allowed".to_string(),
+                rule: rule.label().to_string(),
+                prompt: false,
+                allow_request: None,
+                place: record,
+            })
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AllowedPlaceSearchResultDto {
+    pub app: String,
+    pub account: String,
+    pub kind: String,
+    pub stable_id: String,
+    pub place_name: String,
+    pub person_name: String,
+}
+
+pub fn cmd_osl_search_allowed_places(
+    app_data_dir: PathBuf,
+    query: String,
+) -> Result<Vec<AllowedPlaceSearchResultDto>, String> {
+    record_activity_on_command_entry();
+    let results = crate::allowed_places::search_allowed_place_records(&app_data_dir, &query)
+        .map_err(|error| format!("OSL: {error}"))?
+        .into_iter()
+        .map(|place| AllowedPlaceSearchResultDto {
+            app: place.app,
+            account: place.account,
+            kind: place.kind,
+            stable_id: place.stable_id,
+            place_name: place.place_name,
+            person_name: place.person_name,
+        })
+        .collect();
+    Ok(results)
+}
+
 // ---- G3.3: auto-updater channel ----
 //
 // Channel persists in the SAME app_preferences.json as every other

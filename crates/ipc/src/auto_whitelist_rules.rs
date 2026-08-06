@@ -158,6 +158,10 @@ pub fn whatsapp_allowed_place_kind_for_rule_key(rule_key: &str) -> Option<&'stat
         .map(WhatsAppWhitelistKind::id)
 }
 
+pub fn auto_whitelist_rule_key_for_place(app: &str, _kind: &str) -> Result<String, String> {
+    normalize_auto_whitelist_app_kind(app)
+}
+
 pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> {
     let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
     if let Some((app, kind)) = normalized.split_once(':') {
