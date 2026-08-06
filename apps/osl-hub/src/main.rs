@@ -6290,6 +6290,23 @@ async fn read_owner_profile_picture(
 }
 
 #[tauri::command]
+async fn read_owner_profile_picture_for_friend(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    reader_id: String,
+) -> Result<OwnerProfilePictureDto, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let accepted_friend_ids = core
+        .osl
+        .friend_ids
+        .lock()
+        .map_err(|_| "OSL accepted friend state is unavailable".to_owned())?
+        .clone();
+    osl_profile::read_active_profile_picture_for_reader(&owner, &reader_id, &accepted_friend_ids)
+}
+
+#[tauri::command]
 async fn clear_owner_profile_picture(
     core: State<'_, HubCoreState>,
     session: State<'_, HubAccountSessionState>,

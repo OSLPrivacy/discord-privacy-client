@@ -655,6 +655,7 @@ macro_rules! hub_tauri_commands {
             get_osl_profile,
             set_owner_profile_picture,
             read_owner_profile_picture,
+            read_owner_profile_picture_for_friend,
             clear_owner_profile_picture,
             get_osl_chat_local_state_key,
             save_osl_profile,
