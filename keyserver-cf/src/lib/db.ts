@@ -49,6 +49,12 @@ export interface UpsertResult {
   last_rotated_at?: string;
 }
 
+export interface ProtectedFriendProfilePictureRecord {
+  owner_user_id: string;
+  protected_image_ciphertext: string | null;
+  updated_at: string;
+}
+
 export async function upsertUser(
   db: D1Database,
   input: RegisterInput,
@@ -797,6 +803,35 @@ async function userExists(db: D1Database, userId: string): Promise<boolean> {
     .bind(userId)
     .first<{ ok: number }>();
   return row?.ok === 1;
+}
+
+export async function defineProtectedFriendProfilePicture(
+  db: D1Database,
+  ownerUserId: string,
+  protectedImageCiphertext: string | null = null,
+): Promise<ProtectedFriendProfilePictureRecord> {
+  const updatedAt = new Date().toISOString();
+  const result = await db
+    .prepare(
+      `INSERT INTO protected_friend_profile_pictures
+         (owner_user_id, protected_image_ciphertext, updated_at)
+       SELECT user_id, ?2, ?3
+         FROM users
+        WHERE user_id = ?1
+       ON CONFLICT(owner_user_id) DO UPDATE SET
+         protected_image_ciphertext = excluded.protected_image_ciphertext,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(ownerUserId, protectedImageCiphertext, updatedAt)
+    .run();
+  if ((result.meta.changes ?? 0) !== 1) {
+    throw new Error("protected friend profile picture owner identity missing");
+  }
+  return {
+    owner_user_id: ownerUserId,
+    protected_image_ciphertext: protectedImageCiphertext,
+    updated_at: updatedAt,
+  };
 }
 
 export async function insertWrappedKey(
