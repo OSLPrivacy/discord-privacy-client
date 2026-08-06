@@ -4501,6 +4501,9 @@ pub fn drain_osl_chat_text(
     capture_protection_ready: bool,
 ) -> Result<OpenedNativeOverlayTextBatch, String> {
     let context_token = broker.active_osl_chat_context_token()?;
+    if !capture_protection_ready {
+        return Err("OSL Chat refused unprotected mode".to_owned());
+    }
     // Reaching the inbox at all proves the key server is reachable, so this is
     // the honest moment to finish anything the last outage stranded. A drain
     // failure must not block receiving: the records stay queued for the next
