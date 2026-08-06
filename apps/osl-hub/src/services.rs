@@ -298,6 +298,20 @@ pub fn service_capability_facts(service_id: &str) -> Option<ServiceCapabilityFac
     service_capability_facts_for_kind(service_id)
 }
 
+pub fn generated_tile_label(facts: ServiceCapabilityFacts) -> &'static str {
+    if facts.real_two_person_protected_messaging || (facts.placing && facts.reading) {
+        "Ready"
+    } else if facts.placing {
+        "Placing only"
+    } else if facts.reading {
+        "Reading only"
+    } else if facts.opening {
+        "Opens the app"
+    } else {
+        "Not started"
+    }
+}
+
 fn service_capability_facts_for_kind(service_id: ServiceKind) -> Option<ServiceCapabilityFacts> {
     SERVICE_CAPABILITY_FACTS
         .iter()
