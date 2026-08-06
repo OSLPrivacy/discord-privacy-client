@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -163,4 +163,131 @@ fn bounded_non_empty(value: String, field: &'static str) -> Result<String, Serve
         return Err(ServerMembershipError::FieldTooLong { field });
     }
     Ok(trimmed.to_owned())
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum ServerPermission {
+    Read,
+    Send,
+    Invite,
+    MakeChannels,
+    RemoveMessages,
+    RemovePeople,
+    ChangeServer,
+}
+
+impl ServerPermission {
+    pub const ALL: [Self; 7] = [
+        Self::Read,
+        Self::Send,
+        Self::Invite,
+        Self::MakeChannels,
+        Self::RemoveMessages,
+        Self::RemovePeople,
+        Self::ChangeServer,
+    ];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Send => "send",
+            Self::Invite => "invite",
+            Self::MakeChannels => "make channels",
+            Self::RemoveMessages => "remove messages",
+            Self::RemovePeople => "remove people",
+            Self::ChangeServer => "change server",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerPermissionGrant {
+    pub server_id: String,
+    pub person_name: String,
+    permissions: BTreeSet<ServerPermission>,
+}
+
+impl ServerPermissionGrant {
+    fn new(
+        server_id: impl Into<String>,
+        person_name: impl Into<String>,
+        permissions: impl IntoIterator<Item = ServerPermission>,
+    ) -> Result<Self, ServerMembershipError> {
+        let server_id = bounded_non_empty(server_id.into(), "server_id")?;
+        let person_name = bounded_non_empty(person_name.into(), "person_name")?;
+        Ok(Self {
+            server_id,
+            person_name,
+            permissions: permissions.into_iter().collect(),
+        })
+    }
+
+    pub fn permissions(&self) -> Vec<ServerPermission> {
+        self.permissions.iter().copied().collect()
+    }
+
+    pub fn allows(&self, permission: ServerPermission) -> bool {
+        self.permissions.contains(&permission)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerPermissionStore {
+    grants_by_server_person: BTreeMap<String, ServerPermissionGrant>,
+}
+
+impl ServerPermissionStore {
+    pub fn set_person_permissions(
+        &mut self,
+        server_id: String,
+        person_name: String,
+        permissions: Vec<ServerPermission>,
+    ) -> Result<ServerPermissionGrant, ServerMembershipError> {
+        let grant = ServerPermissionGrant::new(server_id, person_name, permissions)?;
+        let key = grant_key(&grant.server_id, &grant.person_name);
+        self.grants_by_server_person.insert(key, grant.clone());
+        Ok(grant)
+    }
+
+    pub fn require_person_permission(
+        &self,
+        server_id: &str,
+        person_name: &str,
+        permission: ServerPermission,
+    ) -> Result<(), ServerPermissionError> {
+        let server_id = bounded_non_empty(server_id.to_owned(), "server_id")
+            .map_err(ServerPermissionError::Membership)?;
+        let person_name = bounded_non_empty(person_name.to_owned(), "person_name")
+            .map_err(ServerPermissionError::Membership)?;
+        let key = grant_key(&server_id, &person_name);
+        let allowed = self
+            .grants_by_server_person
+            .get(&key)
+            .is_some_and(|grant| grant.allows(permission));
+        if allowed {
+            Ok(())
+        } else {
+            Err(ServerPermissionError::Refused {
+                person_name,
+                permission,
+            })
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ServerPermissionError {
+    #[error("{0}")]
+    Membership(ServerMembershipError),
+    #[error("OSL: {person_name} is not allowed to {permission}", permission = permission.name())]
+    Refused {
+        person_name: String,
+        permission: ServerPermission,
+    },
+}
+
+fn grant_key(server_id: &str, person_name: &str) -> String {
+    format!("{server_id}\n{person_name}")
 }

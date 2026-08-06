@@ -344,6 +344,11 @@ pub struct AppState {
     /// recipient observation oracle rather than an authoritative roster.
     pub server_member_lists: Mutex<crate::server_membership::ServerMembershipStore>,
 
+    /// Explicit server permission grants. The closed ServerPermission enum is
+    /// the only authority for read, send, invite, channel creation, message
+    /// removal, member removal, and server changes.
+    pub server_permissions: Mutex<crate::server_membership::ServerPermissionStore>,
+
     /// 9-TD1.4: most-recent disk-persist failure message. Pre-TD1
     /// every `persist_*_now` swallowed errors silently with a
     /// `tracing::warn!`; the user thought their whitelist / burn /
@@ -423,6 +428,9 @@ impl Default for AppState {
             server_defaults: Mutex::new(HashMap::new()),
             server_member_lists: Mutex::new(
                 crate::server_membership::ServerMembershipStore::default(),
+            ),
+            server_permissions: Mutex::new(
+                crate::server_membership::ServerPermissionStore::default(),
             ),
             last_persist_error: Mutex::new(None),
             license_state: Mutex::new(keystore::LicenseStateDto::default()),

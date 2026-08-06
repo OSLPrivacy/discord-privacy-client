@@ -155,6 +155,20 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_list_server_members", || {
             let _ = cmd_osl_list_server_members(&state, "activity-server".to_owned());
         });
+        let _ = cmd_osl_set_server_person_permissions(
+            &state,
+            "activity-server".to_owned(),
+            "Activity Owner".to_owned(),
+            vec![crate::server_membership::ServerPermission::Read],
+        );
+        assert_command_marks_activity("cmd_osl_check_server_person_allowed", || {
+            let _ = cmd_osl_check_server_person_allowed(
+                &state,
+                "activity-server".to_owned(),
+                "Activity Owner".to_owned(),
+                crate::server_membership::ServerPermission::Read,
+            );
+        });
         assert_command_marks_activity("cmd_osl_get_server_defaults", || {
             let _ = cmd_osl_get_server_defaults(&state);
         });
@@ -16056,6 +16070,60 @@ pub fn cmd_osl_remove_server_member_by_name(
     lists
         .remove_member_by_name(&server_id, member_name)
         .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerPermissionCheckDto {
+    pub server_id: String,
+    pub person_name: String,
+    pub permission: crate::server_membership::ServerPermission,
+    pub permission_name: String,
+    pub allowed: bool,
+}
+
+/// Give one person the exact set of server actions they are allowed to do.
+/// The action vocabulary is the closed ServerPermission enum; callers cannot
+/// mint extra permission names through this command.
+pub fn cmd_osl_set_server_person_permissions(
+    state: &AppState,
+    server_id: String,
+    person_name: String,
+    permissions: Vec<crate::server_membership::ServerPermission>,
+) -> Result<crate::server_membership::ServerPermissionGrant, String> {
+    record_activity_on_command_entry();
+    let mut grants = state
+        .server_permissions
+        .lock()
+        .expect("server_permissions mutex poisoned");
+    grants
+        .set_person_permissions(server_id, person_name, permissions)
+        .map_err(|error| error.to_string())
+}
+
+/// Check one named server action. No other backend path should decide the
+/// seven user-facing server actions independently of ServerPermissionStore.
+pub fn cmd_osl_check_server_person_allowed(
+    state: &AppState,
+    server_id: String,
+    person_name: String,
+    permission: crate::server_membership::ServerPermission,
+) -> Result<ServerPermissionCheckDto, String> {
+    record_activity_on_command_entry();
+    let grants = state
+        .server_permissions
+        .lock()
+        .expect("server_permissions mutex poisoned");
+    grants
+        .require_person_permission(&server_id, &person_name, permission)
+        .map_err(|error| error.to_string())?;
+    Ok(ServerPermissionCheckDto {
+        server_id,
+        person_name,
+        permission,
+        permission_name: permission.name().to_owned(),
+        allowed: true,
+    })
 }
 
 /// 9-C2: bulk-whitelist N peers under DM scope (one DM scope per
