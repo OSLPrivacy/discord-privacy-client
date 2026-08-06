@@ -1,7 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(feature = "whatsapp-qa-identity")]
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use osl_privacy_hub::account_recovery;
 use osl_privacy_hub::ai_carrier::{
     ai_carrier_status_for, set_ai_carrier_preview_enabled_for, AiCarrierState,
@@ -5090,6 +5091,31 @@ async fn list_osl_chat_attachments(
     })
     .await
     .map_err(|error| format!("OSL Chat attachment worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn intake_osl_chat_clipboard_image(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    image_bytes_b64: String,
+    mime_type: String,
+    view_once: bool,
+) -> Result<broker::ClipboardImageAttachmentTrayResult, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may stage clipboard images".to_owned());
+    }
+    require_active_pro_entitlement(&app.state::<HubCoreState>())?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let image_bytes = base64::engine::general_purpose::STANDARD
+            .decode(image_bytes_b64.as_bytes())
+            .map_err(|_| "OSL could not read the pasted clipboard image".to_owned())?;
+        require_active_pro_entitlement(&app.state::<HubCoreState>())?;
+        broker::cmd_clipboard_image_attachment_tray(&image_bytes, &mime_type, view_once)
+    })
+    .await
+    .map_err(|error| format!("OSL clipboard image worker failed: {error}"))?
 }
 
 #[tauri::command]

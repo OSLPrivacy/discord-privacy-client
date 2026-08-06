@@ -604,6 +604,7 @@ macro_rules! hub_tauri_commands {
             list_osl_chat_history,
             select_osl_chat_attachment,
             list_osl_chat_attachments,
+            intake_osl_chat_clipboard_image,
             open_osl_chat_attachment,
             select_native_discord_overlay_attachment,
             list_native_discord_overlay_attachments,

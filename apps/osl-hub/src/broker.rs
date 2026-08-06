@@ -1712,6 +1712,24 @@ pub struct PendingNativeOverlayAttachment {
     pub view_once: bool,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardImageAttachmentTrayRecord {
+    pub attachment_id: String,
+    pub original_filename: String,
+    pub mime_type: String,
+    pub plaintext_size: u64,
+    pub checked: bool,
+    pub view_once: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardImageAttachmentTrayResult {
+    pub tray_count: usize,
+    pub records: Vec<ClipboardImageAttachmentTrayRecord>,
+}
+
 pub struct NativeOverlayAttachmentOpenPlan {
     pub inbox_id: String,
     pub attachment_id: String,
@@ -7744,6 +7762,47 @@ pub fn prepare_peer_attachment_fanout(
         })
     })
     .map(|copies| copies.into_iter().map(|copy| copy.copy).collect())
+}
+
+pub fn cmd_clipboard_image_attachment_tray(
+    image_bytes: &[u8],
+    mime_type: &str,
+    view_once: bool,
+) -> Result<ClipboardImageAttachmentTrayResult, String> {
+    const ERROR: &str = "OSL could not read the pasted clipboard image";
+    let (original_filename, expected_mime) = match mime_type {
+        "image/png" => ("clipboard-image.png", "image/png"),
+        "image/jpeg" => ("clipboard-image.jpg", "image/jpeg"),
+        _ => return Err(ERROR.to_owned()),
+    };
+    if image_bytes.is_empty()
+        || image_bytes.len() as u64 > ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES
+        || validate_peer_attachment_filename(original_filename).as_deref() != Ok(expected_mime)
+    {
+        return Err(ERROR.to_owned());
+    }
+    let has_png_signature = image_bytes.starts_with(b"\x89PNG\r\n\x1a\n");
+    let has_jpeg_signature = image_bytes.len() >= 4
+        && image_bytes[0] == 0xff
+        && image_bytes[1] == 0xd8
+        && image_bytes[2] == 0xff;
+    if (expected_mime == "image/png" && !has_png_signature)
+        || (expected_mime == "image/jpeg" && !has_jpeg_signature)
+    {
+        return Err(ERROR.to_owned());
+    }
+    let record = ClipboardImageAttachmentTrayRecord {
+        attachment_id: random_peer_message_id(),
+        original_filename: original_filename.to_owned(),
+        mime_type: expected_mime.to_owned(),
+        plaintext_size: image_bytes.len() as u64,
+        checked: true,
+        view_once,
+    };
+    Ok(ClipboardImageAttachmentTrayResult {
+        tray_count: 1,
+        records: vec![record],
+    })
 }
 
 fn prepare_peer_attachment_at(
