@@ -280,7 +280,7 @@ fn run_autostart_mode(state: &AppState, register_online: bool) {
     // safe behavior — the worst outcome is the receive observer
     // re-decrypts what it previously could decrypt. A future
     // user-initiated burn refills the ledger.
-    let bs_path = dir.join("burned_scopes.json");
+    let bs_path = ipc::burned_scopes_file::path_in_config_dir(&dir);
     let bs = ipc::burned_scopes_file::load_burned_scopes(&bs_path);
     let n = bs.scopes.len();
     *state
@@ -407,7 +407,7 @@ const ACCOUNT_STATE_FILES: &[&str] = &[
     "whitelist_state.json",
     "sender_key_state.json",
     "channels.json",
-    "burned_scopes.json",
+    ipc::burned_scopes_file::BURNED_SCOPES_FILE_NAME,
     "membership.json",
     "scope_ttl.json",
     "scope_blobs.json",

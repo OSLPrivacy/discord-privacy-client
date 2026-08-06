@@ -1817,7 +1817,7 @@ pub fn has_enc_magic(blob: &[u8]) -> bool {
 pub const AT_REST_STATE_FILES: &[&str] = &[
     "peer_map.json",
     "whitelist_state.json",
-    "burned_scopes.json",
+    crate::burned_scopes_file::BURNED_SCOPES_FILE_NAME,
     "app_preferences.json",
     "sender_key_state.json",
     "membership.json",
@@ -2416,7 +2416,7 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
         "password_marker.json",
         "lockout_state.json",
         // 7d-FIX1: also wipe burned-scopes ledger.
-        "burned_scopes.json",
+        crate::burned_scopes_file::BURNED_SCOPES_FILE_NAME,
         // BURN-CLEANSLATE: app_preferences.json and
         // sender_key_state.json are sealed under file_storage_key
         // (the main password) just like peer_map/whitelist_state,

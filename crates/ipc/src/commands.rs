@@ -13744,7 +13744,7 @@ const OSL_EXPORT_FILES: &[&str] = &[
     "whitelist_state.json",
     "sender_key_state.json",
     "channels.json",
-    "burned_scopes.json",
+    crate::burned_scopes_file::BURNED_SCOPES_FILE_NAME,
     "membership.json",
     "scope_ttl.json",
     "scope_blobs.json",
@@ -17042,7 +17042,7 @@ fn persist_burned_scopes_now(state: &AppState) {
             return;
         }
     };
-    let path = dir.join("burned_scopes.json");
+    let path = crate::burned_scopes_file::path_in_config_dir(&dir);
     let g = state
         .burned_scopes
         .lock()
@@ -17196,7 +17196,7 @@ fn cmd_osl_burn_engage_finish(
     for name in [
         "password_marker.json",
         "lockout_state.json",
-        "burned_scopes.json",
+        crate::burned_scopes_file::BURNED_SCOPES_FILE_NAME,
         "app_preferences.json",
         "sender_key_state.json",
         // Probe-2 Rust Bug 3: membership.json was leaking across burns
