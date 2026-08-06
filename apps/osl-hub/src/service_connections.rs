@@ -14,6 +14,48 @@ const EMAIL_COMPOSE_CONTROLS: [WebsiteNamedControlRequest; 2] = [
     },
 ];
 
+pub const GMAIL_SERVICE_ID: &str = "gmail";
+
+pub const GMAIL_CONTROL_NAMES: [&str; 6] = [
+    "compose",
+    "body",
+    "Send",
+    "thread view",
+    "labels",
+    "reading pane or full page",
+];
+
+const GMAIL_CONTROL_REQUESTS: [WebsiteNamedControlRequest; 6] = [
+    WebsiteNamedControlRequest {
+        name: "compose",
+        kind: WebsiteControlKind::Button,
+    },
+    WebsiteNamedControlRequest {
+        name: "body",
+        kind: WebsiteControlKind::EditableBox,
+    },
+    WebsiteNamedControlRequest {
+        name: "Send",
+        kind: WebsiteControlKind::Button,
+    },
+    WebsiteNamedControlRequest {
+        name: "thread view",
+        kind: WebsiteControlKind::VisibleMessageArea,
+    },
+    WebsiteNamedControlRequest {
+        name: "labels",
+        kind: WebsiteControlKind::VisibleMessageArea,
+    },
+    WebsiteNamedControlRequest {
+        name: "reading pane or full page",
+        kind: WebsiteControlKind::VisibleMessageArea,
+    },
+];
+
+pub const fn gmail_control_mapping() -> &'static [WebsiteNamedControlRequest] {
+    &GMAIL_CONTROL_REQUESTS
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct EmailComposeControls {
     pub compose_box: WebsiteNamedControl,
@@ -203,5 +245,34 @@ mod tests {
         assert_eq!(controls.compose_box.kind, WebsiteControlKind::EditableBox);
         assert_eq!(controls.send_button.name, "Send button");
         assert_eq!(controls.send_button.kind, WebsiteControlKind::Button);
+    }
+
+    #[test]
+    fn task_1230_gmail_service_connection_mapping_contains_all_six_named_targets() {
+        let mapping = gmail_control_mapping();
+        let names: Vec<&str> = mapping.iter().map(|request| request.name).collect();
+        let expected_names = [
+            "compose",
+            "body",
+            "Send",
+            "thread view",
+            "labels",
+            "reading pane or full page",
+        ];
+
+        println!("TASK1230 service_connection={GMAIL_SERVICE_ID}");
+        println!("TASK1230 named_target_count={}", names.len());
+        for name in &names {
+            println!("TASK1230 named_target={name}");
+        }
+
+        assert_eq!(names, expected_names);
+        assert_eq!(GMAIL_CONTROL_NAMES, expected_names);
+        assert_eq!(mapping[0].kind, WebsiteControlKind::Button);
+        assert_eq!(mapping[1].kind, WebsiteControlKind::EditableBox);
+        assert_eq!(mapping[2].kind, WebsiteControlKind::Button);
+        assert_eq!(mapping[3].kind, WebsiteControlKind::VisibleMessageArea);
+        assert_eq!(mapping[4].kind, WebsiteControlKind::VisibleMessageArea);
+        assert_eq!(mapping[5].kind, WebsiteControlKind::VisibleMessageArea);
     }
 }
