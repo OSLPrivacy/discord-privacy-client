@@ -24,6 +24,75 @@ use crate::group_send::{
     OSL_RESULT_RECOVERY_IGNORED,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProtectedPlaceAction {
+    Read,
+    Show,
+    Type,
+    Send,
+    Scrub,
+}
+
+impl ProtectedPlaceAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Show => "show",
+            Self::Type => "type",
+            Self::Send => "send",
+            Self::Scrub => "scrub",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AllowedPlaceAction {
+    Read,
+    Prepare,
+    Place,
+    Scrub,
+}
+
+impl AllowedPlaceAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Prepare => "prepare",
+            Self::Place => "place",
+            Self::Scrub => "scrub",
+        }
+    }
+
+    fn item_name(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Prepare => "draft",
+            Self::Place => "sent item",
+            Self::Scrub => "Scrub item",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedPlaceActionReceiptDto {
+    pub action: String,
+    pub item_name: String,
+    pub stable_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedPlaceDirectionStateDto {
+    pub saved_directions: u8,
+    pub whitelist_state: String,
+    pub verification_state: String,
+    pub first_to_second: bool,
+    pub second_to_first: bool,
+}
+
 // 9-TD2.3: F0-FIX3 trace logs.
 //
 // Set the `OSL_TRACE` env var (any value) to surface the snowflake
@@ -73,6 +142,76 @@ fn guard_session_on_command_entry(state: &AppState) -> Result<(), String> {
     }
     record_activity_on_command_entry();
     Ok(())
+}
+
+pub fn cmd_osl_trace_allowed_place_protected_message_path(
+    app_data_dir: PathBuf,
+    action: ProtectedPlaceAction,
+    place: crate::allowed_places::AllowedPlaceRecord,
+) -> Result<Vec<String>, String> {
+    let mut trace = vec![format!(
+        "TASK0120 command trace action={} stable_id={}",
+        action.as_str(),
+        place.stable_id
+    )];
+    crate::allowed_places::require_allowed_place_record(&app_data_dir, &place)
+        .map_err(|e| format!("OSL: allowed-place check refused: {e}"))?;
+    trace.push(format!(
+        "TASK0120 allowed-place check=allowed app={} account={} kind={} stable_id={}",
+        place.app, place.account, place.kind, place.stable_id
+    ));
+    trace.push(format!(
+        "TASK0120 protected-message path reached action={} stable_id={}",
+        action.as_str(),
+        place.stable_id
+    ));
+    Ok(trace)
+}
+
+pub fn cmd_osl_run_allowed_place_action(
+    app_data_dir: PathBuf,
+    action: AllowedPlaceAction,
+    place: crate::allowed_places::AllowedPlaceRecord,
+) -> Result<AllowedPlaceActionReceiptDto, String> {
+    crate::allowed_places::require_allowed_place_record(&app_data_dir, &place)
+        .map_err(|e| format!("OSL: place not allowed: {e}"))?;
+    Ok(AllowedPlaceActionReceiptDto {
+        action: action.as_str().to_string(),
+        item_name: action.item_name().to_string(),
+        stable_id: place.stable_id,
+    })
+}
+
+pub fn compare_allowed_place_direction_state(
+    app_data_dir: PathBuf,
+    first_to_second_place: crate::allowed_places::AllowedPlaceRecord,
+    second_to_first_place: crate::allowed_places::AllowedPlaceRecord,
+) -> Result<AllowedPlaceDirectionStateDto, String> {
+    let first_to_second =
+        crate::allowed_places::is_allowed_place_record(&app_data_dir, &first_to_second_place)
+            .map_err(|e| format!("OSL: allowed-place direction check failed: {e}"))?;
+    let second_to_first =
+        crate::allowed_places::is_allowed_place_record(&app_data_dir, &second_to_first_place)
+            .map_err(|e| format!("OSL: allowed-place direction check failed: {e}"))?;
+    let saved_directions = u8::from(first_to_second) + u8::from(second_to_first);
+    let whitelist_state = match saved_directions {
+        2 => "two-way",
+        1 => "one-way",
+        _ => "none",
+    };
+    let verification_state = if saved_directions == 2 {
+        "visible"
+    } else {
+        "hidden"
+    };
+
+    Ok(AllowedPlaceDirectionStateDto {
+        saved_directions,
+        whitelist_state: whitelist_state.to_string(),
+        verification_state: verification_state.to_string(),
+        first_to_second,
+        second_to_first,
+    })
 }
 
 /// Manual "Lock now": drop every live secret immediately, without waiting for
