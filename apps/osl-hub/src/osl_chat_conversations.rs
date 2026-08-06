@@ -27,13 +27,21 @@ impl OslChatConversationKind {
 pub struct OslChatConversationRecord {
     pub conversation_id: String,
     pub kind: OslChatConversationKind,
+    pub created_by_member_id: String,
     pub member_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectMessageConversationInput {
+    pub creator_id: String,
     pub member_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OslChatConversationListInput {
+    pub creator_id: String,
 }
 
 #[derive(Default)]
@@ -55,17 +63,29 @@ impl OslChatConversationState {
             .map(|records| records.clone())
             .map_err(|_| "OSL Chat conversations are unavailable".to_owned())
     }
+
+    pub fn conversations_for_creator(
+        &self,
+        input: OslChatConversationListInput,
+    ) -> Result<Vec<OslChatConversationRecord>, String> {
+        list_creator_conversations_command(self, input)
+    }
 }
 
 pub fn create_direct_message_conversation_command(
     state: &OslChatConversationState,
     input: DirectMessageConversationInput,
 ) -> Result<OslChatConversationRecord, String> {
+    let creator_id = normalize_creator_id(input.creator_id)?;
     let member_ids = normalize_direct_message_members(input.member_ids)?;
+    if !member_ids.iter().any(|member| member == &creator_id) {
+        return Err("Direct-message creator must be one of the member ids".to_owned());
+    }
     let conversation_id = direct_message_conversation_id(&member_ids);
     let record = OslChatConversationRecord {
         conversation_id,
         kind: OslChatConversationKind::DirectMessage,
+        created_by_member_id: creator_id,
         member_ids,
     };
     let mut records = state
@@ -80,6 +100,32 @@ pub fn create_direct_message_conversation_command(
     }
     records.push(record.clone());
     Ok(record)
+}
+
+pub fn list_creator_conversations_command(
+    state: &OslChatConversationState,
+    input: OslChatConversationListInput,
+) -> Result<Vec<OslChatConversationRecord>, String> {
+    let creator_id = normalize_creator_id(input.creator_id)?;
+    state
+        .records
+        .lock()
+        .map(|records| {
+            records
+                .iter()
+                .filter(|record| record.member_ids.iter().any(|member| member == &creator_id))
+                .cloned()
+                .collect()
+        })
+        .map_err(|_| "OSL Chat conversations are unavailable".to_owned())
+}
+
+fn normalize_creator_id(creator_id: String) -> Result<String, String> {
+    let normalized = creator_id.trim().to_owned();
+    if normalized.is_empty() {
+        return Err("Direct-message creator id cannot be empty".to_owned());
+    }
+    Ok(normalized)
 }
 
 fn normalize_direct_message_members(member_ids: Vec<String>) -> Result<Vec<String>, String> {
@@ -132,6 +178,7 @@ mod tests {
         let created = create_direct_message_conversation_command(
             &state,
             DirectMessageConversationInput {
+                creator_id: "Ava".to_owned(),
                 member_ids: vec!["Ava".to_owned(), "Ben".to_owned()],
             },
         )
@@ -167,6 +214,7 @@ mod tests {
         let one = create_direct_message_conversation_command(
             &state,
             DirectMessageConversationInput {
+                creator_id: "Ava".to_owned(),
                 member_ids: vec!["Ava".to_owned()],
             },
         );
@@ -178,6 +226,7 @@ mod tests {
         let three = create_direct_message_conversation_command(
             &state,
             DirectMessageConversationInput {
+                creator_id: "Ava".to_owned(),
                 member_ids: vec!["Ava".to_owned(), "Ben".to_owned(), "Cy".to_owned()],
             },
         );
@@ -186,5 +235,66 @@ mod tests {
             "Direct messages require exactly two member ids"
         );
         assert!(state.conversations().unwrap().is_empty());
+    }
+
+    #[test]
+    fn task_1308_direct_action_adds_new_conversation_to_creators_list() {
+        let state = OslChatConversationState::default();
+        let before = list_creator_conversations_command(
+            &state,
+            OslChatConversationListInput {
+                creator_id: "Ava".to_owned(),
+            },
+        )
+        .expect("read creator conversations before create");
+        let created = create_direct_message_conversation_command(
+            &state,
+            DirectMessageConversationInput {
+                creator_id: "Ava".to_owned(),
+                member_ids: vec!["Ava".to_owned(), "Ben".to_owned()],
+            },
+        )
+        .expect("direct action creates a direct-message conversation");
+        let creator_list = list_creator_conversations_command(
+            &state,
+            OslChatConversationListInput {
+                creator_id: "Ava".to_owned(),
+            },
+        )
+        .expect("read creator conversations after create");
+        let unrelated_list = list_creator_conversations_command(
+            &state,
+            OslChatConversationListInput {
+                creator_id: "Cy".to_owned(),
+            },
+        )
+        .expect("read unrelated creator conversations");
+
+        println!("TASK1308 direct_action=create_osl_chat_direct_message_conversation");
+        println!("TASK1308 creator_id={}", created.created_by_member_id);
+        println!("TASK1308 creator_list_before={}", before.len());
+        println!("TASK1308 creator_list_after={}", creator_list.len());
+        println!(
+            "TASK1308 creator_list_conversation_id={}",
+            creator_list
+                .first()
+                .map(|record| record.conversation_id.as_str())
+                .unwrap_or("none")
+        );
+        println!("TASK1308 unrelated_list_after={}", unrelated_list.len());
+
+        assert!(before.is_empty());
+        assert_eq!(creator_list, vec![created.clone()]);
+        assert_eq!(creator_list.len(), 1);
+        assert!(unrelated_list.is_empty());
+
+        let source = include_str!("main.rs");
+        assert!(source.contains("#[tauri::command]\nasync fn list_osl_chat_conversations("));
+        let command_surface = include_str!("hub_command_surface.rs");
+        assert!(command_surface.contains("list_osl_chat_conversations,"));
+        assert!(include_str!("../permissions/hub.toml")
+            .contains(r#"commands.allow = ["list_osl_chat_conversations"]"#));
+        assert!(include_str!("../capabilities/hub.json")
+            .contains(r#""allow-list-osl-chat-conversations""#));
     }
 }

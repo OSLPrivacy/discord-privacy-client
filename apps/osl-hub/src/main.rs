@@ -73,7 +73,8 @@ use osl_privacy_hub::native_window_host::{
     NativeWindowHostState,
 };
 use osl_privacy_hub::osl_chat_conversations::{
-    DirectMessageConversationInput, OslChatConversationRecord, OslChatConversationState,
+    DirectMessageConversationInput, OslChatConversationListInput, OslChatConversationRecord,
+    OslChatConversationState,
 };
 use osl_privacy_hub::osl_mail::{self, OslMailState, OslMailStatus};
 use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput};
@@ -5067,12 +5068,28 @@ async fn prepare_osl_chat_text(
 async fn create_osl_chat_direct_message_conversation(
     caller: tauri::WebviewWindow,
     conversations: State<'_, OslChatConversationState>,
+    creator_id: String,
     member_ids: Vec<String>,
 ) -> Result<OslChatConversationRecord, String> {
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may create OSL Chat conversations".to_owned());
     }
-    conversations.create_direct_message_conversation(DirectMessageConversationInput { member_ids })
+    conversations.create_direct_message_conversation(DirectMessageConversationInput {
+        creator_id,
+        member_ids,
+    })
+}
+
+#[tauri::command]
+async fn list_osl_chat_conversations(
+    caller: tauri::WebviewWindow,
+    conversations: State<'_, OslChatConversationState>,
+    creator_id: String,
+) -> Result<Vec<OslChatConversationRecord>, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may list OSL Chat conversations".to_owned());
+    }
+    conversations.conversations_for_creator(OslChatConversationListInput { creator_id })
 }
 
 #[tauri::command]

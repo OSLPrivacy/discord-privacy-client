@@ -744,6 +744,7 @@ macro_rules! hub_tauri_commands {
             poll_native_discord_headless_qa,
             prepare_osl_chat_text,
             create_osl_chat_direct_message_conversation,
+            list_osl_chat_conversations,
             send_native_discord_overlay_carrier,
             open_native_discord_overlay_text,
             rehydrate_native_discord_overlay_history,

@@ -118,6 +118,7 @@
     "allow-poll-native-discord-headless-qa",
     "allow-prepare-osl-chat-text",
     "allow-create-osl-chat-direct-message-conversation",
+    "allow-list-osl-chat-conversations",
     "allow-open-osl-chat-text",
     "allow-list-osl-chat-history",
     "allow-select-osl-chat-attachment",
