@@ -26,6 +26,28 @@ impl AllowedPlaceRecord {
             kind: "direct_message".to_string(),
         }
     }
+
+    pub fn email_address(account: impl Into<String>, address: impl Into<String>) -> Self {
+        let account = account.into();
+        let address = address.into();
+        Self {
+            app: "email".to_string(),
+            stable_id: format!("email:{account}:email_address:{address}"),
+            account,
+            kind: "email_address".to_string(),
+        }
+    }
+
+    pub fn email_domain(account: impl Into<String>, domain: impl Into<String>) -> Self {
+        let account = account.into();
+        let domain = domain.into();
+        Self {
+            app: "email".to_string(),
+            stable_id: format!("email:{account}:email_domain:{domain}"),
+            account,
+            kind: "email_domain".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Error)]

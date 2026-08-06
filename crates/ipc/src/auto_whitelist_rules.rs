@@ -39,8 +39,15 @@ impl Default for AutoWhitelistChoice {
     }
 }
 
-pub const AUTO_WHITELIST_APP_KINDS: [&str; 5] =
-    ["discord", "telegram", "signal", "whatsapp", "outlook"];
+pub const AUTO_WHITELIST_APP_KINDS: [&str; 7] = [
+    "discord",
+    "telegram",
+    "signal",
+    "whatsapp",
+    "outlook",
+    "email_address",
+    "email_domain",
+];
 
 pub fn parse_auto_whitelist_choice(input: &str) -> Result<AutoWhitelistChoice, String> {
     let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
@@ -51,10 +58,33 @@ pub fn parse_auto_whitelist_choice(input: &str) -> Result<AutoWhitelistChoice, S
 }
 
 pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> {
-    let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
+    let normalized = normalize_rule_part(input);
     if AUTO_WHITELIST_APP_KINDS.contains(&normalized.as_str()) {
         Ok(normalized)
     } else {
         Err(format!("OSL: unknown auto-whitelist app kind '{input}'"))
     }
+}
+
+pub fn auto_whitelist_app_kind_for_place(
+    place: &crate::allowed_places::AllowedPlaceRecord,
+) -> Result<String, String> {
+    let app = normalize_rule_part(&place.app);
+    let kind = normalize_rule_part(&place.kind);
+    match app.as_str() {
+        "email" => match kind.as_str() {
+            "address" | "email_address" => Ok("email_address".to_string()),
+            "domain" | "email_domain" => Ok("email_domain".to_string()),
+            _ => Err(format!(
+                "OSL: unknown email auto-whitelist place kind '{}'",
+                place.kind
+            )),
+        },
+        "email_address" | "email_domain" => Ok(app),
+        _ => normalize_auto_whitelist_app_kind(&place.app),
+    }
+}
+
+fn normalize_rule_part(input: &str) -> String {
+    input.trim().to_ascii_lowercase().replace('-', "_")
 }

@@ -16106,8 +16106,8 @@ pub fn cmd_osl_new_place(
     place: crate::allowed_places::AllowedPlaceRecord,
 ) -> Result<NewPlaceAutoWhitelistDto, String> {
     record_activity_on_command_entry();
-    let app_kind = crate::auto_whitelist_rules::normalize_auto_whitelist_app_kind(&place.app)?;
     validate_new_place_record(&place)?;
+    let app_kind = crate::auto_whitelist_rules::auto_whitelist_app_kind_for_place(&place)?;
     let choice = state
         .app_preferences
         .lock()
@@ -16170,9 +16170,15 @@ pub fn cmd_osl_new_place(
 }
 
 fn new_place_person_id(place: &crate::allowed_places::AllowedPlaceRecord) -> Option<String> {
-    if place.kind != "direct_message" {
-        return None;
+    match (place.app.as_str(), place.kind.as_str()) {
+        (_, "direct_message") => stable_id_suffix(place),
+        ("email", "address" | "email_address") => stable_id_suffix(place),
+        ("email_address", _) => stable_id_suffix(place),
+        _ => None,
     }
+}
+
+fn stable_id_suffix(place: &crate::allowed_places::AllowedPlaceRecord) -> Option<String> {
     let expected_prefix = format!("{}:{}:{}:", place.app, place.account, place.kind);
     place
         .stable_id
