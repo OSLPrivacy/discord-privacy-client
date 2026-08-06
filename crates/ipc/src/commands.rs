@@ -13213,6 +13213,159 @@ pub fn cmd_osl_list_signal_whitelist_kinds() -> Result<Vec<SignalWhitelistKindDt
     ])
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutoWhitelistRuleChoiceDto {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutoWhitelistRuleDto {
+    pub app_kind: String,
+    pub choice: String,
+}
+
+pub fn cmd_osl_get_auto_whitelist_rule_choices() -> Result<Vec<AutoWhitelistRuleChoiceDto>, String>
+{
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::AutoWhitelistChoice::ALL
+        .into_iter()
+        .map(|choice| AutoWhitelistRuleChoiceDto {
+            id: choice.id().to_string(),
+            label: choice.label().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_save_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: String,
+    choice: String,
+    config_dir: Option<PathBuf>,
+) -> Result<AutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::normalize_auto_whitelist_app_kind(&app_kind)?;
+    let choice = crate::auto_whitelist_rules::parse_auto_whitelist_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.auto_whitelist_rules.insert(app_kind.clone(), choice);
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(AutoWhitelistRuleDto {
+        app_kind,
+        choice: choice.label().to_string(),
+    })
+}
+
+pub fn cmd_osl_read_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: String,
+) -> Result<AutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::normalize_auto_whitelist_app_kind(&app_kind)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .auto_whitelist_rules
+        .get(&app_kind)
+        .copied()
+        .unwrap_or_default();
+    Ok(AutoWhitelistRuleDto {
+        app_kind,
+        choice: choice.label().to_string(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewPlaceAllowRequestDto {
+    pub request_id: String,
+    pub choice_required: bool,
+    pub allowed_choices: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NewPlaceDecisionDto {
+    pub status: String,
+    pub rule: String,
+    pub prompt: bool,
+    pub allow_request: Option<NewPlaceAllowRequestDto>,
+    pub place: crate::allowed_places::AllowedPlaceRecord,
+}
+
+fn pending_allow_request_id(record: &crate::allowed_places::AllowedPlaceRecord) -> String {
+    format!("allow:{}", record.stable_id)
+}
+
+pub fn cmd_osl_new_place(
+    state: &AppState,
+    record: crate::allowed_places::AllowedPlaceRecord,
+    app_data_dir: Option<PathBuf>,
+) -> Result<NewPlaceDecisionDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::normalize_auto_whitelist_app_kind(&record.app)?;
+    record.validate().map_err(|error| format!("OSL: {error}"))?;
+
+    let rule = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .auto_whitelist_rules
+        .get(&app_kind)
+        .copied()
+        .unwrap_or_default();
+
+    match rule {
+        crate::auto_whitelist_rules::AutoWhitelistChoice::Never => Ok(NewPlaceDecisionDto {
+            status: "unlisted".to_string(),
+            rule: rule.label().to_string(),
+            prompt: false,
+            allow_request: None,
+            place: record,
+        }),
+        crate::auto_whitelist_rules::AutoWhitelistChoice::AskMe => Ok(NewPlaceDecisionDto {
+            status: "pending_allow_request".to_string(),
+            rule: rule.label().to_string(),
+            prompt: true,
+            allow_request: Some(NewPlaceAllowRequestDto {
+                request_id: pending_allow_request_id(&record),
+                choice_required: true,
+                allowed_choices: vec!["allow".to_string(), "deny".to_string()],
+            }),
+            place: record,
+        }),
+        crate::auto_whitelist_rules::AutoWhitelistChoice::Always => {
+            let dir =
+                app_data_dir.ok_or_else(|| "OSL: allowed-place data dir is missing".to_string())?;
+            crate::allowed_places::add_allowed_place_record(&dir, &record)
+                .map_err(|error| format!("OSL: {error}"))?;
+            Ok(NewPlaceDecisionDto {
+                status: "allowed".to_string(),
+                rule: rule.label().to_string(),
+                prompt: false,
+                allow_request: None,
+                place: record,
+            })
+        }
+        crate::auto_whitelist_rules::AutoWhitelistChoice::OnlyIfAFriend => {
+            Ok(NewPlaceDecisionDto {
+                status: "friend_check_required".to_string(),
+                rule: rule.label().to_string(),
+                prompt: false,
+                allow_request: None,
+                place: record,
+            })
+        }
+    }
+}
+
 /// 7d-A: flatten every peer's outgoing_whitelists into a single
 /// list of DTOs for the settings-menu Whitelist Manager. Order
 /// is stable: peers sorted by Discord snowflake (string), then

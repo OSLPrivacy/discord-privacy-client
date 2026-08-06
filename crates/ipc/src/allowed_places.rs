@@ -35,7 +35,7 @@ impl AllowedPlaceRecord {
         }
     }
 
-    fn validate(&self) -> Result<(), AllowedPlaceStoreError> {
+    pub fn validate(&self) -> Result<(), AllowedPlaceStoreError> {
         for (field, value) in [
             ("app", self.app.as_str()),
             ("account", self.account.as_str()),
