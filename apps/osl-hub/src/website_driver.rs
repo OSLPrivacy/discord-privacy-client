@@ -17,6 +17,7 @@ use std::{
 pub enum WebsiteDriverJob {
     FindPage,
     ReadSelectedEmailIdentity,
+    SendEmailDraft,
 }
 
 impl WebsiteDriverJob {
@@ -24,13 +25,15 @@ impl WebsiteDriverJob {
         match self {
             Self::FindPage => "find_page",
             Self::ReadSelectedEmailIdentity => "read_selected_email_identity",
+            Self::SendEmailDraft => "send_email_draft",
         }
     }
 }
 
-pub const WEBSITE_DRIVER_JOBS: [WebsiteDriverJob; 2] = [
+pub const WEBSITE_DRIVER_JOBS: [WebsiteDriverJob; 3] = [
     WebsiteDriverJob::FindPage,
     WebsiteDriverJob::ReadSelectedEmailIdentity,
+    WebsiteDriverJob::SendEmailDraft,
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,6 +54,18 @@ pub struct WebsiteSelectedEmailIdentity {
     pub folder_identity: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteEmailDraft {
+    pub recipient: String,
+    pub body: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteEmailSendReceipt {
+    pub page: WebsitePage,
+    pub recipient: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WebsiteDriverError {
     BrowserUnavailable,
@@ -58,6 +73,7 @@ pub enum WebsiteDriverError {
     BrowserConnectionFailed,
     PageNotFound,
     ReadFailed,
+    MalformedRecipient,
 }
 
 impl fmt::Display for WebsiteDriverError {
@@ -68,6 +84,7 @@ impl fmt::Display for WebsiteDriverError {
             Self::BrowserConnectionFailed => "website browser connection failed",
             Self::PageNotFound => "website page was not found",
             Self::ReadFailed => "website page could not be read",
+            Self::MalformedRecipient => "malformed recipient",
         })
     }
 }
@@ -84,6 +101,12 @@ pub trait WebsiteDriver {
         &mut self,
         page: &WebsitePage,
     ) -> Result<WebsiteSelectedEmailIdentity, WebsiteDriverError>;
+
+    fn send_email_draft(
+        &mut self,
+        page: &WebsitePage,
+        draft: WebsiteEmailDraft,
+    ) -> Result<WebsiteEmailSendReceipt, WebsiteDriverError>;
 }
 
 pub struct RealBrowserWebsiteDriver {
@@ -227,6 +250,52 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
             }
             thread::sleep(Duration::from_millis(100));
         }
+    }
+
+    fn send_email_draft(
+        &mut self,
+        page: &WebsitePage,
+        draft: WebsiteEmailDraft,
+    ) -> Result<WebsiteEmailSendReceipt, WebsiteDriverError> {
+        let recipient_is_valid = valid_email_recipient(&draft.recipient);
+        let target_id = page
+            .target_id
+            .as_ref()
+            .ok_or(WebsiteDriverError::ReadFailed)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+
+        loop {
+            let target = self
+                .devtools_targets()?
+                .into_iter()
+                .find(|target| target.target_type == "page" && &target.id == target_id)
+                .ok_or(WebsiteDriverError::ReadFailed)?;
+            if let Some(websocket_url) = target.web_socket_debugger_url {
+                if let Ok(sent) = evaluate_target(
+                    &websocket_url,
+                    &email_send_expression(
+                        &draft.recipient,
+                        draft.body.as_deref(),
+                        recipient_is_valid,
+                    ),
+                ) {
+                    if sent.as_bool() == Some(true) {
+                        break;
+                    }
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(WebsiteDriverError::ReadFailed);
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        if !recipient_is_valid {
+            return Err(WebsiteDriverError::MalformedRecipient);
+        }
+        Ok(WebsiteEmailSendReceipt {
+            page: page.clone(),
+            recipient: draft.recipient,
+        })
     }
 }
 
@@ -512,6 +581,104 @@ const SELECTED_EMAIL_IDENTITY_EXPRESSION: &str = r#"
   };
 })()
 "#;
+
+fn email_send_expression(recipient: &str, body: Option<&str>, should_send: bool) -> String {
+    let recipient = serde_json::to_string(recipient).unwrap_or_else(|_| "\"\"".to_owned());
+    let body = body
+        .map(|body| serde_json::to_string(body).unwrap_or_else(|_| "\"\"".to_owned()))
+        .unwrap_or_else(|| "null".to_owned());
+    let should_send = if should_send { "true" } else { "false" };
+    format!(
+        r#"
+(async () => {{
+  const recipient = {recipient};
+  const body = {body};
+  const shouldSend = {should_send};
+  const visible = (element) => {{
+    if (!element || element.disabled || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && element.getClientRects().length > 0;
+  }};
+  const firstVisible = (selector) => Array.from(document.querySelectorAll(selector)).find(visible);
+  const setText = (element, value) => {{
+    element.focus();
+    if (element.isContentEditable) {{
+      element.textContent = value;
+    }} else {{
+      element.value = value;
+    }}
+    element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: value }}));
+    element.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  }};
+
+  const to = firstVisible([
+    '[data-osl-email-to]',
+    'input[name="to"]',
+    'input[type="email"]',
+    '[role="textbox"][aria-label="To"]',
+    '[aria-label="To"]'
+  ].join(', '));
+  const send = firstVisible([
+    '[data-osl-email-send]',
+    'button[type="submit"]',
+    'button[aria-label="Send"]',
+    '[role="button"][aria-label="Send"]'
+  ].join(', '));
+  if (!to || !send) return false;
+  setText(to, recipient);
+
+  if (body !== null) {{
+    const bodyElement = firstVisible([
+      '[data-osl-email-body-input]',
+      'textarea[name="body"]',
+      'textarea[aria-label="Body"]',
+      '[contenteditable="true"][aria-label="Body"]',
+      '[role="textbox"][aria-label="Body"]'
+    ].join(', '));
+    if (!bodyElement) return false;
+    setText(bodyElement, body);
+  }}
+
+  if (!shouldSend) return true;
+  send.click();
+  if (window.__oslLastSendPromise && typeof window.__oslLastSendPromise.then === 'function') {{
+    await window.__oslLastSendPromise;
+  }} else {{
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }}
+  return true;
+}})()
+"#
+    )
+}
+
+fn valid_email_recipient(recipient: &str) -> bool {
+    if recipient.len() > 254
+        || recipient
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return false;
+    }
+    let Some((local, domain)) = recipient.split_once('@') else {
+        return false;
+    };
+    if local.is_empty() || domain.is_empty() || domain.ends_with('.') || !domain.contains('.') {
+        return false;
+    }
+    if domain.contains('@') || local.contains('@') {
+        return false;
+    }
+    domain.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
 
 fn reserve_loopback_port() -> Result<u16, WebsiteDriverError> {
     TcpListener::bind("127.0.0.1:0")
