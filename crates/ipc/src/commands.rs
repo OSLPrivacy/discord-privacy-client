@@ -16331,6 +16331,15 @@ pub struct MessageDefaultsDto {
     pub cover_writing: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct DirectNewMessagePlanDto {
+    pub conversation_kind: String,
+    pub burn_scope: String,
+    pub timer_seconds: u32,
+    pub view_once_length_seconds: u32,
+    pub cover_writing: String,
+}
+
 impl From<&crate::app_preferences::MessageDefaults> for MessageDefaultsDto {
     fn from(defaults: &crate::app_preferences::MessageDefaults) -> Self {
         Self {
@@ -16401,6 +16410,24 @@ pub fn cmd_osl_read_message_defaults(state: &AppState) -> Result<MessageDefaults
         .lock()
         .expect("app_preferences mutex poisoned");
     Ok(MessageDefaultsDto::from(&prefs.message_defaults))
+}
+
+pub fn cmd_osl_start_direct_new_message_plan(
+    state: &AppState,
+) -> Result<DirectNewMessagePlanDto, String> {
+    record_activity_on_command_entry();
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    let defaults = MessageDefaultsDto::from(&prefs.message_defaults);
+    Ok(DirectNewMessagePlanDto {
+        conversation_kind: "direct".to_owned(),
+        burn_scope: defaults.burn_scope,
+        timer_seconds: defaults.timer_seconds,
+        view_once_length_seconds: defaults.view_once_length_seconds,
+        cover_writing: defaults.cover_writing,
+    })
 }
 
 pub fn cmd_osl_read_message_default_burn_scope(state: &AppState) -> Result<String, String> {
