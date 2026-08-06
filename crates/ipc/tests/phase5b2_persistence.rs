@@ -329,6 +329,9 @@ fn task_0506_your_side_burn_is_narrow() {
         .map(|row| row.plaintext.clone())
         .collect();
     all_after_marks.sort();
+    if all_after_marks.contains(&chosen_mark) {
+        println!("TASK0506B_STILL_PRESENT chosen_mark={chosen_mark}");
+    }
 
     assert_eq!(after_chosen.len(), 0);
     assert_eq!(after_other.len(), 3);
