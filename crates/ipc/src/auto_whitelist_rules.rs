@@ -16,6 +16,8 @@ pub enum AutoWhitelistAppKind {
     Email,
     Browser,
     Native,
+    SignalDirectMessage,
+    SignalGroupChat,
 }
 
 /// The complete set of user-visible rule choices.
@@ -31,6 +33,15 @@ pub enum AutoWhitelistChoice {
 impl AutoWhitelistChoice {
     pub const ALL: [Self; 4] = [Self::Never, Self::AskMe, Self::Always, Self::OnlyIfAFriend];
 
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::AskMe => "ask_me",
+            Self::Always => "always",
+            Self::OnlyIfAFriend => "only_if_a_friend",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Never => "never",
@@ -39,6 +50,20 @@ impl AutoWhitelistChoice {
             Self::OnlyIfAFriend => "only if a friend",
         }
     }
+}
+
+impl Default for AutoWhitelistChoice {
+    fn default() -> Self {
+        Self::Never
+    }
+}
+
+pub fn parse_auto_whitelist_choice(input: &str) -> Result<AutoWhitelistChoice, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+    AutoWhitelistChoice::ALL
+        .into_iter()
+        .find(|choice| normalized == choice.id())
+        .ok_or_else(|| format!("OSL: unknown auto-whitelist rule choice '{input}'"))
 }
 
 /// The complete set of Discord place kinds that can be whitelisted.
@@ -77,6 +102,57 @@ pub fn discord_whitelist_kind_labels() -> Vec<&'static str> {
         .iter()
         .map(|kind| kind.label())
         .collect()
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalWhitelistKind {
+    DirectMessage,
+    GroupChat,
+}
+
+impl SignalWhitelistKind {
+    pub const ALL: [Self; 2] = [Self::DirectMessage, Self::GroupChat];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct_message",
+            Self::GroupChat => "group_chat",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct message",
+            Self::GroupChat => "group chat",
+        }
+    }
+
+    pub fn auto_rule_app_kind(self) -> AutoWhitelistAppKind {
+        match self {
+            Self::DirectMessage => AutoWhitelistAppKind::SignalDirectMessage,
+            Self::GroupChat => AutoWhitelistAppKind::SignalGroupChat,
+        }
+    }
+
+    pub fn auto_rule_app_kind_id(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "signal_direct_message",
+            Self::GroupChat => "signal_group_chat",
+        }
+    }
+
+    pub fn allowed_place_kind(self) -> &'static str {
+        self.id()
+    }
+}
+
+pub fn parse_signal_whitelist_kind(input: &str) -> Result<SignalWhitelistKind, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+    SignalWhitelistKind::ALL
+        .into_iter()
+        .find(|kind| normalized == kind.id())
+        .ok_or_else(|| format!("OSL: unknown Signal whitelist kind '{input}'"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

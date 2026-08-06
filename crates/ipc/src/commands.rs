@@ -16913,6 +16913,87 @@ pub fn cmd_osl_list_discord_whitelist_kinds(
     Ok(discord_whitelist_kind_labels())
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct SignalWhitelistKindDto {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub auto_rule_app_kind: &'static str,
+    pub allowed_place_kind: &'static str,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct SignalAutoWhitelistRuleDto {
+    pub signal_kind: String,
+    pub auto_rule_app_kind: String,
+    pub allowed_place: crate::allowed_places::AllowedPlaceRecord,
+    pub choice: String,
+}
+
+pub fn cmd_osl_list_signal_whitelist_kinds() -> Result<Vec<SignalWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::SignalWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| SignalWhitelistKindDto {
+            id: kind.id(),
+            name: kind.label(),
+            auto_rule_app_kind: kind.auto_rule_app_kind_id(),
+            allowed_place_kind: kind.allowed_place_kind(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_save_signal_auto_whitelist_rule(
+    state: &AppState,
+    signal_kind: String,
+    account: String,
+    place: String,
+    choice: String,
+) -> Result<SignalAutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let kind = crate::auto_whitelist_rules::parse_signal_whitelist_kind(&signal_kind)?;
+    let choice = crate::auto_whitelist_rules::parse_auto_whitelist_choice(&choice)?;
+    {
+        let mut rules = state
+            .auto_whitelist_rules
+            .lock()
+            .expect("auto_whitelist_rules mutex poisoned");
+        rules.save(kind.auto_rule_app_kind(), choice);
+    }
+    Ok(signal_rule_lookup(kind, account, place, choice))
+}
+
+pub fn cmd_osl_read_signal_auto_whitelist_rule(
+    state: &AppState,
+    signal_kind: String,
+    account: String,
+    place: String,
+) -> Result<SignalAutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let kind = crate::auto_whitelist_rules::parse_signal_whitelist_kind(&signal_kind)?;
+    let choice = state
+        .auto_whitelist_rules
+        .lock()
+        .expect("auto_whitelist_rules mutex poisoned")
+        .query(kind.auto_rule_app_kind())
+        .saved_choice
+        .unwrap_or_default();
+    Ok(signal_rule_lookup(kind, account, place, choice))
+}
+
+fn signal_rule_lookup(
+    kind: crate::auto_whitelist_rules::SignalWhitelistKind,
+    account: String,
+    place: String,
+    choice: crate::auto_whitelist_rules::AutoWhitelistChoice,
+) -> SignalAutoWhitelistRuleDto {
+    SignalAutoWhitelistRuleDto {
+        signal_kind: kind.id().to_owned(),
+        auto_rule_app_kind: kind.auto_rule_app_kind_id().to_owned(),
+        allowed_place: crate::allowed_places::AllowedPlaceRecord::signal(account, kind, place),
+        choice: choice.label().to_owned(),
+    }
+}
+
 // ---- Phase 9-B1: app preferences ----
 
 /// DTO mirroring [`crate::app_preferences::AppPreferences`] for the JS bridge.
