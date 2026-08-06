@@ -11061,6 +11061,57 @@ fn burn_wrapped_keys_for_peer(state: &AppState, peer_discord_id: &str) -> Result
     Ok(response.deleted_count)
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct TheirSideBurnDto {
+    pub remote_removal_count: u32,
+}
+
+/// Burn only the peer-readable server-side wrapped key for one local message.
+///
+/// This is the "their side" half of a burn choice: it signs the keyserver's
+/// single-message wrapped-key deletion request, but deliberately does not call
+/// `cmd_osl_apply_burn`, `cmd_osl_burn_message`, or any local store mutation.
+pub fn cmd_osl_burn_their_side_message(
+    state: &AppState,
+    content_id: String,
+) -> Result<TheirSideBurnDto, String> {
+    record_activity_on_command_entry();
+    if content_id.trim().is_empty() {
+        return Err("OSL: their-side burn content id is missing".to_string());
+    }
+    let identity = {
+        let guard = state.identity_slot();
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "OSL: identity not loaded".to_string())?
+    };
+    let client = {
+        let guard = state.keyserver_slot();
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "OSL: key-server not initialised".to_string())?
+    };
+    let response = client
+        .burn(
+            &identity,
+            &keystore::BurnScope::Single {
+                content_id: content_id.clone(),
+            },
+        )
+        .map_err(|_| "OSL: their-side wrapped-key burn refused".to_string())?;
+    if response.scope != "single" {
+        return Err(format!(
+            "OSL: their-side wrapped-key burn returned unexpected scope {}",
+            response.scope
+        ));
+    }
+    Ok(TheirSideBurnDto {
+        remote_removal_count: response.deleted_count,
+    })
+}
+
 #[cfg(test)]
 mod burn_wrapped_key_coordination_tests {
     use super::*;

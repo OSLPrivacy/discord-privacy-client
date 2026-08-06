@@ -13,6 +13,7 @@
     "allow-osl-set-scope-encrypt",
     "allow-osl-send-burn-marker",
     "allow-osl-apply-burn",
+    "allow-osl-burn-their-side-message",
     "allow-osl-burn-scope-data",
     "allow-osl-mark-scope-burned",
     "allow-osl-unburn-scope",
