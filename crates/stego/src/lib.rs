@@ -19,12 +19,18 @@
 //!   padding.
 
 pub mod bigram;
+mod image_hidden;
 pub mod line_shape;
 mod mode0;
 mod mode1;
 mod mode1_templates;
 mod mode1_wordlists;
 
+pub use image_hidden::{
+    decode_png_hidden_pointer, decode_png_hidden_pointer_bytes, encode_png_hidden_pointer_bytes,
+    encode_png_hidden_pointer_copy, ImageHiddenPointer, IMAGE_HIDDEN_CHECK_MARK_BYTES,
+    IMAGE_HIDDEN_POINTER_BYTES,
+};
 pub use line_shape::{
     encode_mode1_shaped, encode_token_shaped, rendered_rows, rows_for_hard_lines, shape_cover,
     RowBudget, RowMatch, ShapedCover, MAX_SHAPED_ROWS,
@@ -69,6 +75,28 @@ pub enum Error {
 
     #[error("cover message version {version} did not decode as {kind}")]
     CoverMessageDecode { version: u8, kind: &'static str },
+
+    #[error("image-hidden carrier I/O failed: {0}")]
+    ImageHiddenIo(#[from] std::io::Error),
+
+    #[error("image-hidden PNG failed: {0}")]
+    ImageHiddenPng(String),
+
+    #[error(
+        "image-hidden PNG must be 8-bit RGB or RGBA, got color={color_type} depth={bit_depth}"
+    )]
+    ImageHiddenUnsupportedPng {
+        color_type: String,
+        bit_depth: String,
+    },
+
+    #[error(
+        "image-hidden carrier capacity is too small (requires {required_bits} bits, got {capacity_bits})"
+    )]
+    ImageHiddenTooSmall {
+        required_bits: usize,
+        capacity_bits: usize,
+    },
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
