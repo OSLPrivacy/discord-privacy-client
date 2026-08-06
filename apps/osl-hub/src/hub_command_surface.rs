@@ -28,9 +28,7 @@ use crate::native_discord_adapter::{
 };
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
-use serde::Deserialize;
-#[cfg(feature = "discord-qa-shell")]
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
 pub fn build_review_ui_identity_binding_verifier(
@@ -479,6 +477,48 @@ pub fn service_kind_id(kind: ServiceKind) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceTermsAddress {
+    pub service_id: &'static str,
+    pub terms_address: &'static str,
+}
+
+pub fn service_terms_address(service_id: &str) -> Result<ServiceTermsAddress, String> {
+    let service_kind = crate::services::service_kind_from_id(service_id)
+        .ok_or_else(|| "unknown service".to_owned())?;
+    Ok(ServiceTermsAddress {
+        service_id: service_kind_id(service_kind),
+        terms_address: terms_address_for_service(service_kind),
+    })
+}
+
+pub fn supported_service_terms_addresses() -> Vec<ServiceTermsAddress> {
+    [
+        ServiceKind::Discord,
+        ServiceKind::Telegram,
+        ServiceKind::WhatsApp,
+        ServiceKind::Email,
+        ServiceKind::Signal,
+    ]
+    .into_iter()
+    .map(|service_kind| ServiceTermsAddress {
+        service_id: service_kind_id(service_kind),
+        terms_address: terms_address_for_service(service_kind),
+    })
+    .collect()
+}
+
+fn terms_address_for_service(kind: ServiceKind) -> &'static str {
+    match kind {
+        ServiceKind::Discord => "https://discord.com/terms",
+        ServiceKind::Telegram => "https://telegram.org/tos",
+        ServiceKind::WhatsApp => "https://www.whatsapp.com/legal/terms-of-service",
+        ServiceKind::Email => "https://policies.google.com/terms",
+        ServiceKind::Signal => "https://signal.org/legal/",
+    }
+}
+
 /*
 tauri::generate_handler![
 */
@@ -619,6 +659,7 @@ macro_rules! hub_tauri_commands {
             focus_mullvad_window,
             restore_mullvad_window,
             create_service_account,
+            get_service_terms_address,
             open_service_host,
             request_hosted_session_scan_command,
             scan_discord_own_messages_for_deletion,

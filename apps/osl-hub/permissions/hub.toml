@@ -654,6 +654,11 @@ description = "Open one explicitly allowlisted service in an isolated per-accoun
 commands.allow = ["open_service_host"]
 
 [[permission]]
+identifier = "allow-get-service-terms-address"
+description = "Return the fixed terms address for one supported service; this does not open, navigate to, or host the service."
+commands.allow = ["get_service_terms_address"]
+
+[[permission]]
 identifier = "allow-request-hosted-session-scan-command"
 description = "Request one read-only scan of the exact checked native-hosted Discord context; native code derives owner, scope, generation, and attended binding state and grants no account, handle, credential, profile, path, URL, conversation, row, preview, confirmation, deletion, navigation, or network authority."
 commands.allow = ["request_hosted_session_scan_command"]

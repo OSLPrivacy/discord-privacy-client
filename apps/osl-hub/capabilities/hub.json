@@ -128,6 +128,7 @@
     "allow-set-native-discord-protected-overlay-open",
     "allow-set-native-discord-covertext-enabled",
     "allow-create-service-account",
+    "allow-get-service-terms-address",
     "allow-open-service-host",
     "allow-open-hosted-session-scan",
     "allow-request-hosted-session-scan",

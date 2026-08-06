@@ -195,11 +195,11 @@ use osl_privacy_hub::hub_command_surface::{
     build_review_ui_identity_binding_verifier, checked_browser_footprint_binding,
     checked_hosted_session_scan_flow, compose_erasure_request_for_user,
     require_native_discord_product_send_authority,
-    require_review_ui_identity_binding_from_verifier, service_kind_id,
+    require_review_ui_identity_binding_from_verifier, service_kind_id, service_terms_address,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
     start_autoscrub_reviewed_run_inner, with_native_discord_product_send_authority,
     BrowserFootprintConsentRequest, CheckedHost, DiscordGuidedDeletionPlanState,
-    GuidedDeletionRunAuthorityInput, NativeDiscordProductSendAuthority,
+    GuidedDeletionRunAuthorityInput, NativeDiscordProductSendAuthority, ServiceTermsAddress,
 };
 use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
@@ -5414,6 +5414,11 @@ async fn create_service_account(
         return Err(error);
     }
     Ok(account)
+}
+
+#[tauri::command]
+async fn get_service_terms_address(service_id: String) -> Result<ServiceTermsAddress, String> {
+    service_terms_address(&service_id)
 }
 
 #[tauri::command]
