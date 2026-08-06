@@ -158,6 +158,7 @@ describe("canonicalWrappedKeyPostBytes u32 bounds", () => {
     "share_index",
     "blob_version",
     "display_duration_seconds",
+    "expiry_seconds",
   ] as const) {
     it(`rejects out-of-range ${field}`, () => {
       expect(() =>
@@ -250,6 +251,7 @@ describe("canonicalWrappedKeyPostBytes", () => {
       ["content_id", "message-2"],
       ["recipient_id", "carol"],
       ["wrapped_share_blob", "BQYHCA=="],
+      ["expiry_seconds", 90],
       ["expires_at", "2026-07-19T00:00:00.000Z"],
       ["timestamp_ms", 1_700_000_000_124],
     ] as const) {

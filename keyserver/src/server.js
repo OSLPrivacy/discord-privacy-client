@@ -67,6 +67,12 @@ function isPlainString(value) {
   return typeof value === 'string' && value.length > 0;
 }
 
+function deriveExpirySeconds(expiresAt, now = new Date()) {
+  const deltaMs = Date.parse(expiresAt) - now.getTime();
+  if (!Number.isFinite(deltaMs) || deltaMs <= 0) return null;
+  return Math.ceil(deltaMs / 1000);
+}
+
 // Constant-time comparison. Hashes both sides to SHA-256 first so the
 // length of `a` (the secret) doesn't leak via the comparator's
 // length precondition. Both digests are 32 bytes regardless of
@@ -418,12 +424,23 @@ are open. OK for localhost dev; DO NOT do this on a public host.'
     if (Number.isNaN(Date.parse(b.expires_at))) {
       return reply.code(400).send({ error: 'expires_at must be ISO-8601' });
     }
+    if (
+      b.expiry_seconds != null &&
+      (!Number.isInteger(b.expiry_seconds) || b.expiry_seconds <= 0)
+    ) {
+      return reply.code(400).send({ error: 'expiry_seconds must be a positive integer' });
+    }
+    const expirySeconds = b.expiry_seconds ?? deriveExpirySeconds(b.expires_at);
+    if (expirySeconds == null) {
+      return reply.code(400).send({ error: 'expires_at must be in the future' });
+    }
 
     try {
       insertWrappedKey(db, {
         ...b,
         single_use: b.single_use ? 1 : 0,
         display_duration_seconds: b.display_duration_seconds ?? null,
+        expiry_seconds: expirySeconds,
         system_message_kind: b.system_message_kind ?? null,
       });
     } catch (err) {

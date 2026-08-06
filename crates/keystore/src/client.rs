@@ -2971,6 +2971,7 @@ mod tests {
                 blob_version: 1,
                 single_use: false,
                 display_duration_seconds: None,
+                expiry_seconds: None,
                 expires_at: "2026-07-18T00:00:00.000Z".to_owned(),
             };
             let response =

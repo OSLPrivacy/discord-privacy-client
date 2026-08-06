@@ -68,6 +68,7 @@ async function postSignedWrappedKey(
     single_use: body.single_use as boolean,
     display_duration_seconds:
       (body.display_duration_seconds as number | undefined) ?? null,
+    expiry_seconds: (body.expiry_seconds as number | undefined) ?? null,
     expires_at: body.expires_at as string,
     timestamp_ms: body.timestamp_ms as number,
   });
@@ -134,6 +135,31 @@ describe("POST /v1/wrapped-keys", () => {
     const res = await postSignedWrappedKey(body, senderSigningKey);
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ content_id: body.content_id });
+  });
+
+  it("stores the chosen timer expiry on the sent record", async () => {
+    const chosenSeconds = 90;
+    const body = validBody({
+      sender_id: senderId,
+      expiry_seconds: chosenSeconds,
+      expires_at: new Date(Date.now() + chosenSeconds * 1000).toISOString(),
+    });
+    const res = await postSignedWrappedKey(body, senderSigningKey);
+    expect(res.status).toBe(201);
+
+    const row = await testDb
+      .prepare("SELECT expiry_seconds FROM wrapped_keys WHERE content_id = ?")
+      .bind(body.content_id)
+      .first<{ expiry_seconds: number | null }>();
+    console.log(
+      JSON.stringify({
+        task: "0546",
+        direct_query: "SELECT expiry_seconds FROM wrapped_keys WHERE content_id = ?",
+        chosen_seconds: chosenSeconds,
+        sent_record_expiry_seconds: row?.expiry_seconds,
+      }),
+    );
+    expect(row?.expiry_seconds).toBe(chosenSeconds);
   });
 
   it("409s on duplicate content_id", async () => {

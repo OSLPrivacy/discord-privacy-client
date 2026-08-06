@@ -2217,6 +2217,7 @@ fn build_native_overlay_wrapped_key_upload(
         blob_version: 1,
         single_use: view_once,
         display_duration_seconds: view_once.then_some(ttl_seconds),
+        expiry_seconds: Some(ttl_seconds),
         expires_at: keystore::iso_8601_from_unix_seconds(expires_at_unix),
     })
 }
@@ -11083,6 +11084,7 @@ mod tests {
         assert_eq!(upload.blob_version, 1);
         assert!(upload.single_use);
         assert_eq!(upload.display_duration_seconds, Some(3_600));
+        assert_eq!(upload.expiry_seconds, Some(3_600));
         assert_eq!(upload.expires_at, "2023-11-14T23:13:20.000Z");
         assert_eq!(
             STANDARD
@@ -11103,6 +11105,7 @@ mod tests {
         .expect("ordinary native overlay wrapped-key upload");
         assert!(!reusable.single_use);
         assert_eq!(reusable.display_duration_seconds, None);
+        assert_eq!(reusable.expiry_seconds, Some(3_600));
 
         let source = include_str!("broker.rs");
         let production = source
@@ -11367,6 +11370,7 @@ mod tests {
             wrapped_body["display_duration_seconds"].as_u64(),
             Some(3_600)
         );
+        assert_eq!(wrapped_body["expiry_seconds"].as_u64(), Some(3_600));
         assert!(
             wrapped_body["sender_signature_b64"]
                 .as_str()
