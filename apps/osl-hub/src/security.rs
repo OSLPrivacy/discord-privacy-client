@@ -177,6 +177,13 @@ pub struct ScopeSecurityDto {
     pub decrypt_display_enabled: bool,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhatsAppWhitelistKind {
+    pub id: String,
+    pub name: String,
+}
+
 /// The minimum friend state needed to create a manual peer-messaging lease.
 /// Key material stays in the original core; callers receive only stable local
 /// and public identity identifiers.
@@ -1118,6 +1125,25 @@ pub fn set_friend_alias(
     let updated = metadata.clone();
     write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
     person_dto(core, &person_id, &updated, &load_security_preferences()?)
+}
+
+const WHATSAPP_WHITELIST_KINDS: [(&str, &str); 6] = [
+    ("direct_message", "direct message"),
+    ("group_chat", "group chat"),
+    ("channel", "channel"),
+    ("community", "community"),
+    ("community_group", "community group"),
+    ("broadcast_list", "broadcast list"),
+];
+
+pub fn list_whatsapp_whitelist_kinds() -> Vec<WhatsAppWhitelistKind> {
+    WHATSAPP_WHITELIST_KINDS
+        .into_iter()
+        .map(|(id, name)| WhatsAppWhitelistKind {
+            id: id.to_owned(),
+            name: name.to_owned(),
+        })
+        .collect()
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -4460,6 +4486,32 @@ mod tests {
     use super::*;
 
     const TEST_FILE_KEY: [u8; 32] = [0x91; 32];
+
+    #[test]
+    fn task_4200_whatsapp_finish_line_names_the_full_kind_list() {
+        let kinds = list_whatsapp_whitelist_kinds();
+        let names = kinds
+            .iter()
+            .map(|kind| kind.name.as_str())
+            .collect::<Vec<_>>();
+        println!(
+            "TASK4200_WHATSAPP count={} names={}",
+            names.len(),
+            names.join(", ")
+        );
+        assert_eq!(
+            names,
+            vec![
+                "direct message",
+                "group chat",
+                "channel",
+                "community",
+                "community group",
+                "broadcast list",
+            ]
+        );
+        assert_eq!(kinds.len(), names.len());
+    }
 
     struct FileBackedSecurityHarness {
         dir: std::path::PathBuf,

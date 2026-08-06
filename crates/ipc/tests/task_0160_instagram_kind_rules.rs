@@ -2,12 +2,14 @@ use ipc::commands::{cmd_osl_read_auto_whitelist_rule, cmd_osl_save_auto_whitelis
 use ipc::state::AppState;
 
 #[test]
-fn three_instagram_kind_rule_lookups_return_independently_saved_choices() {
+fn instagram_kind_rule_lookups_return_independently_saved_choices_for_the_full_list() {
     let state = AppState::new();
     let saved = [
         ("instagram:direct_message", "always"),
         ("instagram:group_chat", "ask me"),
         ("instagram:public_post", "only if a friend"),
+        ("instagram:story", "always"),
+        ("instagram:reel", "ask me"),
     ];
 
     for (rule_key, choice) in saved {
@@ -41,7 +43,7 @@ fn three_instagram_kind_rule_lookups_return_independently_saved_choices() {
         proof.join(" | ")
     );
 
-    assert_eq!(lookups.len(), 3);
+    assert_eq!(lookups.len(), saved.len());
     assert_eq!(lookups[0].app_kind, "instagram:direct_message");
     assert_eq!(lookups[0].choice, "always");
     assert_eq!(
@@ -68,6 +70,24 @@ fn three_instagram_kind_rule_lookups_return_independently_saved_choices() {
             .as_ref()
             .map(|place| (place.app.as_str(), place.kind.as_str())),
         Some(("instagram", "public_post"))
+    );
+    assert_eq!(lookups[3].app_kind, "instagram:story");
+    assert_eq!(lookups[3].choice, "always");
+    assert_eq!(
+        lookups[3]
+            .allowed_place
+            .as_ref()
+            .map(|place| (place.app.as_str(), place.kind.as_str())),
+        Some(("instagram", "story"))
+    );
+    assert_eq!(lookups[4].app_kind, "instagram:reel");
+    assert_eq!(lookups[4].choice, "ask me");
+    assert_eq!(
+        lookups[4]
+            .allowed_place
+            .as_ref()
+            .map(|place| (place.app.as_str(), place.kind.as_str())),
+        Some(("instagram", "reel"))
     );
     assert_ne!(lookups[0].choice, lookups[1].choice);
     assert_ne!(lookups[1].choice, lookups[2].choice);

@@ -43,16 +43,26 @@ pub enum InstagramWhitelistKind {
     DirectMessage,
     GroupChat,
     PublicPost,
+    Story,
+    Reel,
 }
 
 impl InstagramWhitelistKind {
-    pub const ALL: [Self; 3] = [Self::DirectMessage, Self::GroupChat, Self::PublicPost];
+    pub const ALL: [Self; 5] = [
+        Self::DirectMessage,
+        Self::GroupChat,
+        Self::PublicPost,
+        Self::Story,
+        Self::Reel,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
             Self::DirectMessage => "direct_message",
             Self::GroupChat => "group_chat",
             Self::PublicPost => "public_post",
+            Self::Story => "story",
+            Self::Reel => "reel",
         }
     }
 
@@ -61,6 +71,80 @@ impl InstagramWhitelistKind {
             Self::DirectMessage => "direct message",
             Self::GroupChat => "group chat",
             Self::PublicPost => "public post",
+            Self::Story => "story",
+            Self::Reel => "reel",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TelegramWhitelistKind {
+    DirectMessage,
+    GroupChat,
+    Channel,
+    PublicPost,
+    Supergroup,
+    SavedMessages,
+}
+
+impl TelegramWhitelistKind {
+    pub const ALL: [Self; 6] = [
+        Self::DirectMessage,
+        Self::GroupChat,
+        Self::Channel,
+        Self::PublicPost,
+        Self::Supergroup,
+        Self::SavedMessages,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct_message",
+            Self::GroupChat => "group_chat",
+            Self::Channel => "channel",
+            Self::PublicPost => "public_post",
+            Self::Supergroup => "supergroup",
+            Self::SavedMessages => "saved_messages",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct message",
+            Self::GroupChat => "group chat",
+            Self::Channel => "channel",
+            Self::PublicPost => "public post",
+            Self::Supergroup => "supergroup",
+            Self::SavedMessages => "saved messages",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalWhitelistKind {
+    DirectMessage,
+    GroupChat,
+    Story,
+}
+
+impl SignalWhitelistKind {
+    pub const ALL: [Self; 3] = [Self::DirectMessage, Self::GroupChat, Self::Story];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct_message",
+            Self::GroupChat => "group_chat",
+            Self::Story => "story",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct message",
+            Self::GroupChat => "group chat",
+            Self::Story => "story",
         }
     }
 }
@@ -81,8 +165,20 @@ pub fn parse_instagram_whitelist_kind(input: &str) -> Result<InstagramWhitelistK
         .ok_or_else(|| format!("OSL: unknown Instagram whitelist kind '{input}'"))
 }
 
+pub fn parse_telegram_whitelist_kind(input: &str) -> Result<TelegramWhitelistKind, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
+    TelegramWhitelistKind::ALL
+        .into_iter()
+        .find(|kind| normalized == kind.id() || normalized == kind.name())
+        .ok_or_else(|| format!("OSL: unknown Telegram whitelist kind '{input}'"))
+}
+
 pub fn instagram_auto_whitelist_rule_key(kind: InstagramWhitelistKind) -> String {
     format!("instagram:{}", kind.id())
+}
+
+pub fn telegram_auto_whitelist_rule_key(kind: TelegramWhitelistKind) -> String {
+    format!("telegram:{}", kind.id())
 }
 
 pub fn instagram_allowed_place_kind_for_rule_key(rule_key: &str) -> Option<&'static str> {
@@ -93,11 +189,24 @@ pub fn instagram_allowed_place_kind_for_rule_key(rule_key: &str) -> Option<&'sta
         .map(InstagramWhitelistKind::id)
 }
 
+pub fn telegram_allowed_place_kind_for_rule_key(rule_key: &str) -> Option<&'static str> {
+    let rest = rule_key.strip_prefix("telegram:")?;
+    TelegramWhitelistKind::ALL
+        .into_iter()
+        .find(|kind| rest == kind.id())
+        .map(TelegramWhitelistKind::id)
+}
+
 pub fn auto_whitelist_rule_key_for_place(app: &str, kind: &str) -> Result<String, String> {
     let normalized_app = app.trim().to_ascii_lowercase().replace('-', "_");
     if normalized_app == "instagram" {
         return Ok(instagram_auto_whitelist_rule_key(
             parse_instagram_whitelist_kind(kind)?,
+        ));
+    }
+    if normalized_app == "telegram" {
+        return Ok(telegram_auto_whitelist_rule_key(
+            parse_telegram_whitelist_kind(kind)?,
         ));
     }
     normalize_auto_whitelist_app_kind(app)
@@ -109,6 +218,11 @@ pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> 
         if app == "instagram" {
             return Ok(instagram_auto_whitelist_rule_key(
                 parse_instagram_whitelist_kind(kind)?,
+            ));
+        }
+        if app == "telegram" {
+            return Ok(telegram_auto_whitelist_rule_key(
+                parse_telegram_whitelist_kind(kind)?,
             ));
         }
     }
