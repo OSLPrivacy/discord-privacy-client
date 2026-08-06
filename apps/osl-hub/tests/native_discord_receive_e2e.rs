@@ -300,6 +300,22 @@ impl RelayServer {
             .iter()
             .any(|row| row.id == id)
     }
+
+    fn reset_wrapped_key_consumption_for(&self, recipient_id: &str) -> usize {
+        let mut reset = 0usize;
+        for row in self
+            .state
+            .lock()
+            .unwrap()
+            .wrapped_keys
+            .values_mut()
+            .filter(|row| row.recipient_id == recipient_id && row.single_use && row.consumed)
+        {
+            row.consumed = false;
+            reset += 1;
+        }
+        reset
+    }
 }
 
 impl Drop for RelayServer {
@@ -953,6 +969,15 @@ impl Peer {
             .expect("a context has been opened for this peer");
         set_scope_security(&self.security, scope, 3600, enabled)
             .expect("set decrypted display for this scope");
+    }
+
+    fn remove_peer_replay_ledger_for_task1373(&self) -> bool {
+        self.activate();
+        match fs::remove_file(self.dir.join("hub_peer_replay.json")) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => panic!("TASK1373 replay ledger removal failed: {error}"),
+        }
     }
 
     /// Add + verify `other` as a friend and open the first-party OSL Chat
@@ -1940,6 +1965,99 @@ fn reveal_once_consumes_on_b() {
     );
     if let Some(leaked) = file_containing(&storage.root, FIXTURE.as_bytes()) {
         panic!("view-once plaintext reached persistent storage at {leaked:?}");
+    }
+
+    drop(alice);
+    drop(bob);
+    drop(storage);
+}
+
+#[test]
+fn task_1373_two_machine_view_once_check_refuses_second_open() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task-1373-view-once");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice", &relay_url, "b1373a");
+    let bob = Peer::new(&storage, "bob", &relay_url, "b1373b");
+    alice.open_native_context_to(&bob.friend_code);
+    bob.open_native_context_to(&alice.friend_code);
+
+    const MARKED_CONTENT: &str = "TASK1373 marked content";
+    alice.activate();
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        MARKED_CONTENT.to_owned(),
+        true,
+    )
+    .expect("TASK1373 prepare view-once message");
+    let honest = relay.posted_row(&alice.identity_id, &bob.identity_id);
+
+    bob.activate();
+    let listed = drain_native_discord_overlay_text(&bob.core, &bob.security, &bob.broker)
+        .expect("TASK1373 B lists the view-once row");
+    assert_eq!(
+        listed.pending_view_once.len(),
+        1,
+        "TASK1373 pending view-once count"
+    );
+
+    let opened = reveal_native_discord_overlay_view_once(
+        &bob.core,
+        &bob.security,
+        &bob.broker,
+        &prepared.prepared.message_id,
+    )
+    .expect("TASK1373 B opens the view-once row once");
+    assert!(
+        opened.plaintext == MARKED_CONTENT,
+        "TASK1373 first open returned the marked content"
+    );
+    assert!(
+        opened.view_once_consumed,
+        "TASK1373 first open reports view-once consumption"
+    );
+    assert!(
+        !relay.still_pending(&honest.id),
+        "TASK1373 first open removes the relay row"
+    );
+
+    relay.inject(
+        &alice.identity_id,
+        &bob.identity_id,
+        &honest.scope_id,
+        &honest.bundle_b64,
+    );
+
+    if std::env::var_os("OSL_TASK1373_DISABLE_VIEW_ONCE_REMOVAL_ON_B").is_some() {
+        let replay_ledger_removed = bob.remove_peer_replay_ledger_for_task1373();
+        let wrapped_key_resets = relay.reset_wrapped_key_consumption_for(&bob.identity_id);
+        println!(
+            "TASK1373 disabled_view_once_removal_on_b replay_ledger_removed={replay_ledger_removed} wrapped_key_resets={wrapped_key_resets}"
+        );
+    }
+
+    let second_open = reveal_native_discord_overlay_view_once(
+        &bob.core,
+        &bob.security,
+        &bob.broker,
+        &prepared.prepared.message_id,
+    );
+    match second_open {
+        Ok(opened) if opened.plaintext == MARKED_CONTENT => {
+            println!("TASK1373 second_open_returned_marked_content=true");
+            panic!("TASK1373 second open returned marked content");
+        }
+        Ok(_) => panic!("TASK1373 second open returned different plaintext"),
+        Err(error) => {
+            println!("TASK1373 second_open_refused={error}");
+        }
     }
 
     drop(alice);
