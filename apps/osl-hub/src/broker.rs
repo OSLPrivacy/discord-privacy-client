@@ -10856,18 +10856,13 @@ mod tests {
         }
     }
 
-    fn set_test_license(
-        core: &HubCoreState,
-        state: keystore::LicenseState,
-        raw_status: &str,
-    ) {
-        *core.osl.license_state.lock().expect("license state lock") =
-            keystore::LicenseStateDto {
-                state,
-                raw_status: raw_status.to_owned(),
-                current_period_end: None,
-                last_validated_at: None,
-            };
+    fn set_test_license(core: &HubCoreState, state: keystore::LicenseState, raw_status: &str) {
+        *core.osl.license_state.lock().expect("license state lock") = keystore::LicenseStateDto {
+            state,
+            raw_status: raw_status.to_owned(),
+            current_period_end: None,
+            last_validated_at: None,
+        };
     }
 
     fn native_peer_payload(
@@ -10958,10 +10953,7 @@ mod tests {
             wire
         });
         let free_refusal = free_result.expect_err("Free account must be refused by name");
-        assert_eq!(
-            free_refusal,
-            ipc::tier_gate::VIEW_ONCE_MESSAGE_PRO_REFUSAL
-        );
+        assert_eq!(free_refusal, ipc::tier_gate::VIEW_ONCE_MESSAGE_PRO_REFUSAL);
         assert_eq!(free_created_count, 0);
 
         let free_ordinary_wire = prepare_direct_manual_v3(
