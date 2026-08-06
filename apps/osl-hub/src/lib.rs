@@ -257,6 +257,8 @@ pub mod security;
 pub mod security_credentials;
 pub mod sensitive_warning;
 #[cfg(feature = "core")]
+pub mod service_burn_selection;
+#[cfg(feature = "core")]
 pub mod service_scope_index;
 pub mod signal_destination_binding;
 #[cfg(feature = "core")]
