@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -181,6 +182,106 @@ pub struct SharedConversationPlace {
     pub server: Option<ConversationPlaceParent>,
     #[serde(default)]
     pub channel: Option<ConversationPlaceParent>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MailboxFolderCandidate {
+    pub folder_id: String,
+    pub label: String,
+}
+
+impl MailboxFolderCandidate {
+    pub fn new(folder_id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            folder_id: folder_id.into(),
+            label: label.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MailboxMessageCandidate {
+    pub folder_id: String,
+    pub message_id: String,
+    pub subject: String,
+    pub time: i64,
+    pub sender: String,
+    pub body: String,
+}
+
+impl MailboxMessageCandidate {
+    pub fn new(
+        folder_id: impl Into<String>,
+        message_id: impl Into<String>,
+        subject: impl Into<String>,
+        time: i64,
+        sender: impl Into<String>,
+        body: impl Into<String>,
+    ) -> Self {
+        Self {
+            folder_id: folder_id.into(),
+            message_id: message_id.into(),
+            subject: subject.into(),
+            time,
+            sender: sender.into(),
+            body: body.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MailboxReaderSnapshot {
+    pub folders: Vec<MailboxFolderCandidate>,
+    pub messages: Vec<MailboxMessageCandidate>,
+}
+
+impl MailboxReaderSnapshot {
+    pub fn new(
+        folders: impl IntoIterator<Item = MailboxFolderCandidate>,
+        messages: impl IntoIterator<Item = MailboxMessageCandidate>,
+    ) -> Self {
+        Self {
+            folders: folders.into_iter().collect(),
+            messages: messages.into_iter().collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedMailboxFolder {
+    pub service_id: String,
+    pub account_id: String,
+    pub folder_id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedMailboxMessageSummary {
+    pub service_id: String,
+    pub account_id: String,
+    pub folder_id: String,
+    pub message_id: String,
+    pub subject: String,
+    pub time: i64,
+    pub sender: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedMailboxMessage {
+    pub service_id: String,
+    pub account_id: String,
+    pub folder_id: String,
+    pub message_id: String,
+    pub subject: String,
+    pub time: i64,
+    pub sender: String,
+    pub body: String,
 }
 
 /// Local metadata for isolated service profiles. It intentionally stores no
@@ -605,6 +706,95 @@ pub fn read_shared_conversation_places(
         .collect()
 }
 
+pub fn read_shared_mailbox_folders(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+    service_filled_mailbox: &MailboxReaderSnapshot,
+) -> Result<Vec<SharedMailboxFolder>, String> {
+    validate_mailbox_reader_binding(owner_osl_user_id, service_id, account_id)?;
+    validate_mailbox_folders(&service_filled_mailbox.folders)?;
+
+    service_filled_mailbox
+        .folders
+        .iter()
+        .map(|folder| {
+            Ok(SharedMailboxFolder {
+                service_id: service_id.to_owned(),
+                account_id: account_id.to_owned(),
+                folder_id: folder.folder_id.clone(),
+                label: folder.label.clone(),
+            })
+        })
+        .collect()
+}
+
+pub fn read_shared_mailbox_messages(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+    folder_id: &str,
+    service_filled_mailbox: &MailboxReaderSnapshot,
+) -> Result<Vec<SharedMailboxMessageSummary>, String> {
+    validate_mailbox_reader_binding(owner_osl_user_id, service_id, account_id)?;
+    validate_mailbox_folders(&service_filled_mailbox.folders)?;
+    ensure_mailbox_folder_exists(&service_filled_mailbox.folders, folder_id)?;
+
+    service_filled_mailbox
+        .messages
+        .iter()
+        .filter(|message| message.folder_id == folder_id)
+        .map(|message| {
+            validate_mailbox_message(message)?;
+            Ok(SharedMailboxMessageSummary {
+                service_id: service_id.to_owned(),
+                account_id: account_id.to_owned(),
+                folder_id: message.folder_id.clone(),
+                message_id: message.message_id.clone(),
+                subject: message.subject.clone(),
+                time: message.time,
+                sender: message.sender.clone(),
+            })
+        })
+        .collect()
+}
+
+pub fn open_shared_mailbox_message(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+    folder_id: &str,
+    message_id: &str,
+    service_filled_mailbox: &MailboxReaderSnapshot,
+) -> Result<SharedMailboxMessage, String> {
+    validate_mailbox_reader_binding(owner_osl_user_id, service_id, account_id)?;
+    validate_mailbox_folders(&service_filled_mailbox.folders)?;
+    ensure_mailbox_folder_exists(&service_filled_mailbox.folders, folder_id)?;
+    validate_mailbox_text(message_id, "mailbox message id", 180)?;
+
+    let mut matches = service_filled_mailbox
+        .messages
+        .iter()
+        .filter(|message| message.folder_id == folder_id && message.message_id == message_id);
+    let Some(message) = matches.next() else {
+        return Err("mailbox message not found".to_owned());
+    };
+    if matches.next().is_some() {
+        return Err("mailbox message is duplicated".to_owned());
+    }
+    validate_mailbox_message(message)?;
+    Ok(SharedMailboxMessage {
+        service_id: service_id.to_owned(),
+        account_id: account_id.to_owned(),
+        folder_id: message.folder_id.clone(),
+        message_id: message.message_id.clone(),
+        subject: message.subject.clone(),
+        time: message.time,
+        sender: message.sender.clone(),
+        body: message.body.clone(),
+    })
+}
+
 fn service_capability_facts_for_kind(service_id: ServiceKind) -> Option<ServiceCapabilityFacts> {
     SERVICE_CAPABILITY_FACTS
         .iter()
@@ -795,6 +985,85 @@ fn validate_conversation_place_text(value: &str, label: &str) -> Result<(), Stri
         Ok(())
     } else {
         Err(format!("{label} is invalid"))
+    }
+}
+
+fn validate_mailbox_reader_binding(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+) -> Result<(), String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    validate_messaging_risk_account_id(account_id)?;
+    validate_mail_service_id(service_id)
+}
+
+fn validate_mail_service_id(service_id: &str) -> Result<(), String> {
+    match service_id {
+        "email" | "gmail" | "outlook" | "proton" | "tuta" | "yahoo" | "aol" | "gmx"
+        | "maildotcom" | "icloud" => Ok(()),
+        _ => Err("unknown mail service".to_owned()),
+    }
+}
+
+fn validate_mailbox_folders(folders: &[MailboxFolderCandidate]) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for folder in folders {
+        validate_mailbox_text(&folder.folder_id, "mailbox folder id", 128)?;
+        validate_mailbox_text(&folder.label, "mailbox folder label", 128)?;
+        if !seen.insert(folder.folder_id.as_str()) {
+            return Err("mailbox folder is duplicated".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn ensure_mailbox_folder_exists(
+    folders: &[MailboxFolderCandidate],
+    folder_id: &str,
+) -> Result<(), String> {
+    validate_mailbox_text(folder_id, "mailbox folder id", 128)?;
+    if folders.iter().any(|folder| folder.folder_id == folder_id) {
+        Ok(())
+    } else {
+        Err("mailbox folder not found".to_owned())
+    }
+}
+
+fn validate_mailbox_message(message: &MailboxMessageCandidate) -> Result<(), String> {
+    validate_mailbox_text(&message.folder_id, "mailbox folder id", 128)?;
+    validate_mailbox_text(&message.message_id, "mailbox message id", 180)?;
+    validate_mailbox_text(&message.subject, "mailbox message subject", 512)?;
+    validate_mailbox_text(&message.sender, "mailbox message sender", 254)?;
+    validate_mailbox_body(&message.body)?;
+    if message.time > 0 {
+        Ok(())
+    } else {
+        Err("mailbox message time is invalid".to_owned())
+    }
+}
+
+fn validate_mailbox_text(value: &str, label: &str, max_bytes: usize) -> Result<(), String> {
+    if value.trim() == value
+        && !value.is_empty()
+        && value.len() <= max_bytes
+        && !value.chars().any(|character| character.is_control())
+    {
+        Ok(())
+    } else {
+        Err(format!("{label} is invalid"))
+    }
+}
+
+fn validate_mailbox_body(value: &str) -> Result<(), String> {
+    if value.len() <= 256 * 1024
+        && value
+            .chars()
+            .all(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'))
+    {
+        Ok(())
+    } else {
+        Err("mailbox message body is invalid".to_owned())
     }
 }
 
