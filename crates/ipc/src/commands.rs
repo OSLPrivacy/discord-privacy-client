@@ -16989,6 +16989,30 @@ fn human_timer_label(seconds: u64) -> String {
     format!("{seconds} {unit_name}")
 }
 
+// ---- Row ownership proof ladder ----
+
+pub use crate::row_ownership_ladder::{
+    RowOwnershipEvidenceKindDto, RowOwnershipLadderDto, RowOwnershipMarkingAdmissionDto,
+};
+
+pub fn cmd_osl_read_row_ownership_ladder(
+    state: &AppState,
+) -> Result<RowOwnershipLadderDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    Ok(crate::row_ownership_ladder::row_ownership_ladder())
+}
+
+pub fn cmd_osl_check_row_ownership_marking_admission(
+    state: &AppState,
+    app_name: String,
+    evidence_kind: String,
+) -> Result<RowOwnershipMarkingAdmissionDto, String> {
+    record_activity_on_command_entry();
+    let _ = state;
+    crate::row_ownership_ladder::check_row_ownership_marking_admission(app_name, evidence_kind)
+}
+
 // ---- Phase 9-D: onboarding tour + VPN warning ----
 
 /// DTO mirroring [`crate::app_preferences::TourState`]. One
