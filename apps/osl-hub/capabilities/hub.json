@@ -41,6 +41,7 @@
     "allow-cancel-scrub-index",
     "allow-get-autoscrub-run-fl",
     "allow-start-autoscrub-reviewed-run",
+    "allow-request-autoscrub-run-action",
     "allow-request-autoscrub-global-stop",
     "allow-list-linked-services",
     "allow-get-core-readiness",

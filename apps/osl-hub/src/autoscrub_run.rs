@@ -1265,6 +1265,7 @@ pub enum AutoScrubRunPhase {
     Running,
     Stopping,
     Blocked,
+    Skipped,
     Complete,
     Failed,
 }
@@ -1290,17 +1291,72 @@ pub enum AutoScrubQuitGuardState {
     Refused,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoScrubRunActionKind {
+    OpenAccount,
+    TryAgainAfterSignIn,
+    SkipThisAccount,
+    StopAllScanning,
+}
+
+impl AutoScrubRunActionKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::OpenAccount => "Open account",
+            Self::TryAgainAfterSignIn => "Try again after sign-in",
+            Self::SkipThisAccount => "Skip this account",
+            Self::StopAllScanning => "Stop all scanning",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoScrubRunAction {
+    pub action: AutoScrubRunActionKind,
+    pub label: &'static str,
+}
+
+impl AutoScrubRunAction {
+    fn new(action: AutoScrubRunActionKind) -> Self {
+        Self {
+            action,
+            label: action.label(),
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoScrubRunSummary {
     pub run_id: String,
     pub service_id: ServiceKind,
+    pub account_id: String,
     pub phase: AutoScrubRunPhase,
     pub reviewed_item_count: u32,
     pub remaining_item_count: u32,
     pub stop_requested: bool,
     pub mutation_allowed: bool,
     pub last_outcome: AutoScrubRunOutcome,
+    pub account_actions: Vec<AutoScrubRunAction>,
+}
+
+impl fmt::Debug for AutoScrubRunSummary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AutoScrubRunSummary")
+            .field("run_id", &self.run_id)
+            .field("service_id", &self.service_id)
+            .field("account_id", &"[REDACTED]")
+            .field("phase", &self.phase)
+            .field("reviewed_item_count", &self.reviewed_item_count)
+            .field("remaining_item_count", &self.remaining_item_count)
+            .field("stop_requested", &self.stop_requested)
+            .field("mutation_allowed", &self.mutation_allowed)
+            .field("last_outcome", &self.last_outcome)
+            .field("account_actions", &self.account_actions)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1319,6 +1375,7 @@ pub struct AutoScrubFleetStatus {
     pub global_stop_requested: bool,
     pub unattended_execution_allowed: bool,
     pub quit_guard: AutoScrubQuitGuardEstimate,
+    pub fleet_actions: Vec<AutoScrubRunAction>,
     pub runs: Vec<AutoScrubRunSummary>,
 }
 
@@ -1337,6 +1394,13 @@ pub struct AutoScrubReviewedRunRequest {
     pub plan_digest: String,
     pub reviewed_item_count: u32,
     pub consent: AutoScrubRunConsent,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutoScrubRunActionRequest {
+    pub run_id: String,
+    pub action: AutoScrubRunActionKind,
 }
 
 #[derive(Default)]
@@ -1385,6 +1449,20 @@ pub fn request_global_stop(state: &AppState) -> Result<AutoScrubFleetStatus, Str
     Ok(store.request_global_stop())
 }
 
+pub fn request_account_action(
+    state: &AppState,
+    request: AutoScrubRunActionRequest,
+) -> Result<AutoScrubFleetStatus, String> {
+    require_pro(state)?;
+    if !valid_opaque(&request.run_id, 80) {
+        return Err("AutoScrub account action request is invalid".to_owned());
+    }
+    let mut store = run_store()
+        .lock()
+        .map_err(|_| "AutoScrub run store is unavailable".to_owned())?;
+    store.request_account_action(request)
+}
+
 fn require_pro(state: &AppState) -> Result<(), String> {
     if ipc::tier_gate::is_paid_equivalent(state) {
         Ok(())
@@ -1405,13 +1483,79 @@ impl AutoScrubRunStore {
         self.runs.push(AutoScrubRunSummary {
             run_id: format!("autoscrub-run-{:04}", self.next_sequence),
             service_id: request.service_id,
+            account_id: request.account_id,
             phase: AutoScrubRunPhase::Running,
             reviewed_item_count: request.reviewed_item_count,
             remaining_item_count: request.reviewed_item_count,
             stop_requested: false,
             mutation_allowed: false,
             last_outcome: AutoScrubRunOutcome::Held,
+            account_actions: Vec::new(),
         });
+        Ok(self.fleet())
+    }
+
+    fn request_account_action(
+        &mut self,
+        request: AutoScrubRunActionRequest,
+    ) -> Result<AutoScrubFleetStatus, String> {
+        if request.action == AutoScrubRunActionKind::StopAllScanning {
+            return Ok(self.request_global_stop());
+        }
+        if self.global_stop_requested {
+            return Err(
+                "AutoScrub account action is unavailable after Stop all scanning".to_owned(),
+            );
+        }
+        let run = self
+            .runs
+            .iter_mut()
+            .find(|run| run.run_id == request.run_id)
+            .ok_or_else(|| "AutoScrub run was not found".to_owned())?;
+        match request.action {
+            AutoScrubRunActionKind::OpenAccount => {
+                if matches!(
+                    run.phase,
+                    AutoScrubRunPhase::Complete
+                        | AutoScrubRunPhase::Skipped
+                        | AutoScrubRunPhase::Stopping
+                ) {
+                    return Err("AutoScrub account action is unavailable for this run".to_owned());
+                }
+                run.phase = AutoScrubRunPhase::Running;
+                run.stop_requested = false;
+                run.last_outcome = AutoScrubRunOutcome::Held;
+            }
+            AutoScrubRunActionKind::TryAgainAfterSignIn => {
+                if !matches!(
+                    run.phase,
+                    AutoScrubRunPhase::Blocked | AutoScrubRunPhase::Failed
+                ) {
+                    return Err(
+                        "AutoScrub sign-in retry is available only after an account stop"
+                            .to_owned(),
+                    );
+                }
+                run.phase = AutoScrubRunPhase::Running;
+                run.stop_requested = false;
+                run.last_outcome = AutoScrubRunOutcome::Held;
+            }
+            AutoScrubRunActionKind::SkipThisAccount => {
+                if matches!(
+                    run.phase,
+                    AutoScrubRunPhase::Complete
+                        | AutoScrubRunPhase::Skipped
+                        | AutoScrubRunPhase::Stopping
+                ) {
+                    return Err("AutoScrub account action is unavailable for this run".to_owned());
+                }
+                run.phase = AutoScrubRunPhase::Skipped;
+                run.stop_requested = false;
+                run.mutation_allowed = false;
+                run.last_outcome = AutoScrubRunOutcome::Held;
+            }
+            AutoScrubRunActionKind::StopAllScanning => unreachable!(),
+        }
         Ok(self.fleet())
     }
 
@@ -1431,13 +1575,23 @@ impl AutoScrubRunStore {
 
     fn fleet(&self) -> AutoScrubFleetStatus {
         let open_run_count = self.open_runs();
+        let runs = self
+            .runs
+            .iter()
+            .cloned()
+            .map(|mut run| {
+                run.account_actions = account_actions_for(&run, self.global_stop_requested);
+                run
+            })
+            .collect();
         AutoScrubFleetStatus {
             contract: CONTRACT,
             open_run_count,
             global_stop_requested: self.global_stop_requested,
             unattended_execution_allowed: false,
             quit_guard: self.quit_guard(open_run_count),
-            runs: self.runs.clone(),
+            fleet_actions: fleet_actions_for(open_run_count, self.global_stop_requested),
+            runs,
         }
     }
 
@@ -1476,6 +1630,41 @@ impl AutoScrubRunStore {
             honest_remaining_seconds_estimate: Some(honest_stop_estimate_seconds(&self.runs)),
             reason: "OSL is stopping after the checked local items already in review.",
         }
+    }
+}
+
+fn account_actions_for(
+    run: &AutoScrubRunSummary,
+    global_stop_requested: bool,
+) -> Vec<AutoScrubRunAction> {
+    if global_stop_requested || run.stop_requested {
+        return Vec::new();
+    }
+    match run.phase {
+        AutoScrubRunPhase::ReviewRequired | AutoScrubRunPhase::Running => vec![
+            AutoScrubRunAction::new(AutoScrubRunActionKind::OpenAccount),
+            AutoScrubRunAction::new(AutoScrubRunActionKind::SkipThisAccount),
+        ],
+        AutoScrubRunPhase::Blocked | AutoScrubRunPhase::Failed => vec![
+            AutoScrubRunAction::new(AutoScrubRunActionKind::TryAgainAfterSignIn),
+            AutoScrubRunAction::new(AutoScrubRunActionKind::SkipThisAccount),
+        ],
+        AutoScrubRunPhase::Stopping | AutoScrubRunPhase::Skipped | AutoScrubRunPhase::Complete => {
+            Vec::new()
+        }
+    }
+}
+
+fn fleet_actions_for(
+    open_run_count: usize,
+    global_stop_requested: bool,
+) -> Vec<AutoScrubRunAction> {
+    if open_run_count == 0 || global_stop_requested {
+        Vec::new()
+    } else {
+        vec![AutoScrubRunAction::new(
+            AutoScrubRunActionKind::StopAllScanning,
+        )]
     }
 }
 
@@ -2306,9 +2495,17 @@ mod production_fleet_tests {
         service_id: ServiceKind,
         reviewed_item_count: u32,
     ) -> AutoScrubReviewedRunRequest {
+        reviewed_request_for(service_id, "acct-discord-1", reviewed_item_count)
+    }
+
+    fn reviewed_request_for(
+        service_id: ServiceKind,
+        account_id: &str,
+        reviewed_item_count: u32,
+    ) -> AutoScrubReviewedRunRequest {
         AutoScrubReviewedRunRequest {
             service_id,
-            account_id: "acct-discord-1".to_owned(),
+            account_id: account_id.to_owned(),
             review_token: format!("review-token-{reviewed_item_count}"),
             plan_digest: "a".repeat(64),
             reviewed_item_count,
@@ -2361,6 +2558,110 @@ mod production_fleet_tests {
             r#"{"serviceId":"discord","accountId":"acct-1","reviewToken":"review-1","planDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewedItemCount":1}"#,
         )
         .is_err());
+    }
+
+    #[test]
+    fn task1441_skip_advances_to_next_account_and_retains_partial_results() {
+        let _guard = crate::global_keystore_test_lock();
+        reset_run_store_for_test();
+        let state = state_with_license(LicenseState::Paid, "ACTIVE");
+
+        let first = start_reviewed_run(
+            &state,
+            reviewed_request_for(ServiceKind::Discord, "acct-alpha", 4),
+        )
+        .expect("first reviewed AutoScrub account");
+        let first_run_id = first.runs[0].run_id.clone();
+        start_reviewed_run(
+            &state,
+            reviewed_request_for(ServiceKind::Telegram, "acct-beta", 3),
+        )
+        .expect("second reviewed AutoScrub account");
+
+        {
+            let mut store = run_store().lock().expect("AutoScrub test run store lock");
+            let first = store
+                .runs
+                .iter_mut()
+                .find(|run| run.run_id == first_run_id)
+                .expect("first run remains in the store");
+            first.remaining_item_count = 2;
+            first.last_outcome = AutoScrubRunOutcome::Prepared;
+        }
+
+        let before = fleet_status(&state).expect("fleet status before skip");
+        let before_active = before
+            .runs
+            .iter()
+            .find(|run| run.phase == AutoScrubRunPhase::Running)
+            .expect("one account is active before skip");
+        let checked_before = before_active.reviewed_item_count - before_active.remaining_item_count;
+        assert_eq!(before_active.account_id, "acct-alpha");
+        assert_eq!(checked_before, 2);
+        assert!(before
+            .fleet_actions
+            .iter()
+            .any(|action| action.label == "Stop all scanning"));
+        assert!(before_active
+            .account_actions
+            .iter()
+            .any(|action| action.label == "Open account"));
+        assert!(before_active
+            .account_actions
+            .iter()
+            .any(|action| action.label == "Skip this account"));
+
+        let after = request_account_action(
+            &state,
+            AutoScrubRunActionRequest {
+                run_id: first_run_id.clone(),
+                action: AutoScrubRunActionKind::SkipThisAccount,
+            },
+        )
+        .expect("skip this account action succeeds");
+        let skipped = after
+            .runs
+            .iter()
+            .find(|run| run.run_id == first_run_id)
+            .expect("skipped account remains in returned results");
+        let after_active = after
+            .runs
+            .iter()
+            .find(|run| run.phase == AutoScrubRunPhase::Running)
+            .expect("next account is active after skip");
+        let checked_after = skipped.reviewed_item_count - skipped.remaining_item_count;
+
+        assert_eq!(skipped.account_id, "acct-alpha");
+        assert_eq!(skipped.phase, AutoScrubRunPhase::Skipped);
+        assert_eq!(checked_after, checked_before);
+        assert_eq!(after_active.account_id, "acct-beta");
+        assert_eq!(after.open_run_count, 1);
+        assert!(!skipped.mutation_allowed);
+        assert_eq!(
+            AutoScrubRunActionKind::TryAgainAfterSignIn.label(),
+            "Try again after sign-in"
+        );
+
+        println!(
+            "task1441_action_labels={},{},{},{}",
+            AutoScrubRunActionKind::OpenAccount.label(),
+            AutoScrubRunActionKind::TryAgainAfterSignIn.label(),
+            AutoScrubRunActionKind::SkipThisAccount.label(),
+            AutoScrubRunActionKind::StopAllScanning.label()
+        );
+        println!(
+            "task1441_before_active_account={}",
+            before_active.account_id
+        );
+        println!("task1441_after_active_account={}", after_active.account_id);
+        println!("task1441_skipped_account={}", skipped.account_id);
+        println!("task1441_skipped_phase={:?}", skipped.phase);
+        println!("task1441_skipped_checked_before={checked_before}");
+        println!("task1441_skipped_checked_after={checked_after}");
+        println!(
+            "task1441_open_run_count_after_skip={}",
+            after.open_run_count
+        );
     }
 
     #[test]

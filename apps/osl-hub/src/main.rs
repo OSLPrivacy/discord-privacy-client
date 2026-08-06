@@ -1338,6 +1338,14 @@ fn start_autoscrub_reviewed_run(
 }
 
 #[tauri::command]
+fn request_autoscrub_run_action(
+    state: State<'_, HubCoreState>,
+    request: autoscrub_run::AutoScrubRunActionRequest,
+) -> Result<AutoScrubFleetStatus, String> {
+    autoscrub_run::request_account_action(&state.osl, request)
+}
+
+#[tauri::command]
 fn request_autoscrub_global_stop(
     state: State<'_, HubCoreState>,
 ) -> Result<AutoScrubFleetStatus, String> {
@@ -10735,6 +10743,7 @@ mod tauri_command_acl_tests {
         assert_registered_and_acl_granted(&[
             "get_autoscrub_run_fl",
             "start_autoscrub_reviewed_run",
+            "request_autoscrub_run_action",
             "request_autoscrub_global_stop",
         ]);
     }

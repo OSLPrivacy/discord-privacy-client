@@ -264,6 +264,11 @@ description = "Start one explicitly reviewed local AutoScrub run only after nati
 commands.allow = ["start_autoscrub_reviewed_run"]
 
 [[permission]]
+identifier = "allow-request-autoscrub-run-action"
+description = "Apply one bounded AutoScrub run action from the trusted bundled UI; skip retains prior progress and grants no mutation authority."
+commands.allow = ["request_autoscrub_run_action"]
+
+[[permission]]
 identifier = "allow-request-autoscrub-global-stop"
 description = "Request a global stop for local AutoScrub runs; the native run state remains responsible for bounded halt progress."
 commands.allow = ["request_autoscrub_global_stop"]

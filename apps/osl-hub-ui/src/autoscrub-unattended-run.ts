@@ -8,6 +8,7 @@ import {
   parseAutoscrubUnattendedContract,
   parseAutoscrubUnattendedRunStarted,
   type AutoScrubFleetStatus,
+  type AutoScrubRunActionKind,
   type AutoScrubReviewedRunRequest,
   type AutoscrubUnattendedGateResult,
   type AutoscrubUnattendedRunResult,
@@ -40,6 +41,16 @@ export async function loadAutoScrubRunFleetStatus(): Promise<AutoScrubFleetStatu
 export async function requestAutoScrubGlobalStop(): Promise<AutoScrubFleetStatus | null> {
   if (!isTauriRuntime()) return null;
   return parseAutoScrubFleetStatus(await invoke<unknown>("request_autoscrub_global_stop"));
+}
+
+export async function requestAutoScrubRunAction(
+  runId: string,
+  action: AutoScrubRunActionKind,
+): Promise<AutoScrubFleetStatus | null> {
+  if (!isTauriRuntime()) return null;
+  return parseAutoScrubFleetStatus(await invoke<unknown>("request_autoscrub_run_action", {
+    request: { runId, action },
+  }));
 }
 
 export async function startAutoScrubReviewedRun(request: AutoScrubReviewedRunRequest): Promise<AutoScrubFleetStatus | null> {

@@ -113,6 +113,7 @@ describe("Scrub index registration", () => {
       "cancel_scrub_index",
       "get_autoscrub_run_fl",
       "start_autoscrub_reviewed_run",
+      "request_autoscrub_run_action",
       "request_autoscrub_global_stop",
     ] as const;
 

@@ -603,6 +603,7 @@ macro_rules! hub_tauri_commands {
             execute_mass_cleanup_batch,
             get_autoscrub_run_fl,
             start_autoscrub_reviewed_run,
+            request_autoscrub_run_action,
             request_autoscrub_global_stop,
             compose_scrub_erasure_request,
             validate_hub_activation_code,
@@ -2783,9 +2784,10 @@ mod tauri_registration_surface_tests {
     #[test]
     fn autoscrub_run_lifecycle_commands_are_registered_and_acl_granted() {
         let (handlers, permissions, capability) = registration_inputs();
-        const AUTOSCRUB_RUN_LIFECYCLE_COMMANDS: [&str; 3] = [
+        const AUTOSCRUB_RUN_LIFECYCLE_COMMANDS: [&str; 4] = [
             "get_autoscrub_run_fl",
             "start_autoscrub_reviewed_run",
+            "request_autoscrub_run_action",
             "request_autoscrub_global_stop",
         ];
         let expected_permissions = AUTOSCRUB_RUN_LIFECYCLE_COMMANDS
