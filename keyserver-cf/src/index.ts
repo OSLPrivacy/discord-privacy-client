@@ -111,6 +111,7 @@ import {
   drainPaymentAlertOutbox,
   sweepDeliveredPaymentAlerts,
 } from "./lib/payment-alert-outbox.js";
+import type { PrepaidRedemptionReadiness } from "./lib/prepaid-redemption-readiness.js";
 import { sweepExpiredControlInboxRows } from "./lib/control-inbox-sweep.js";
 import { sweepExpiredSpaceEvents } from "./lib/space-event-sweep.js";
 
@@ -318,6 +319,7 @@ async function dispatch(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
+  paymentReadiness?: PrepaidRedemptionReadiness,
 ): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -564,7 +566,7 @@ async function dispatch(
       return withCors(await handleCryptoDonationStatus(request, env), request);
     }
     if (path === "/v1/internal/crypto/settle") {
-      return await handleCryptoSettlement(request, env, ctx);
+      return await handleCryptoSettlement(request, env, ctx, paymentReadiness);
     }
     if (path === "/v1/internal/comp/batches") {
       return await handleCompBatchIssue(request, env);
@@ -584,6 +586,15 @@ async function dispatch(
   }
 
   return error(405, `method not allowed: ${method}`);
+}
+
+export async function dispatchForDormantPaymentTest(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  paymentReadiness: PrepaidRedemptionReadiness,
+): Promise<Response> {
+  return await dispatch(request, env, ctx, paymentReadiness);
 }
 
 /**
