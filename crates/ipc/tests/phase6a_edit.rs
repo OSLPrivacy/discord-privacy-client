@@ -15,7 +15,10 @@
 //! `TempDir` keyed off a fixed test secret so failures are
 //! deterministic.
 
-use ipc::commands::{cmd_osl_burn_message, cmd_osl_load_channel_history, cmd_osl_persist_edit};
+use ipc::commands::{
+    cmd_osl_burn_message, cmd_osl_load_channel_history, cmd_osl_persist_edit,
+    cmd_osl_persist_outbound,
+};
 use ipc::state::AppState;
 use store::{MessageStore, StoredMessage};
 use tempfile::TempDir;
@@ -134,6 +137,92 @@ fn task_1359_direct_commands_return_reply_parent_id_and_sender_edit_revision() {
     assert_eq!(edited.edit_revision, 2);
     println!("task_1359_sender_edit_revision_count=1");
     println!("task_1359_sender_edit_revision={}", edited.edit_revision);
+}
+
+#[test]
+fn task_1360_direct_actions_create_one_reply_and_one_edit_in_each_available_conversation_kind() {
+    let tmp = TempDir::new().unwrap();
+    let state = fresh_state(tmp.path());
+    {
+        let mut guard = state.identity.lock().unwrap();
+        *guard = Some(keystore::generate_identity("sender-1360".to_string()));
+    }
+
+    let conversation_kinds = [
+        ("direct", "direct-1360-channel"),
+        ("group", "group-1360-channel"),
+        ("channel", "channel-1360-channel"),
+        // Discord threads arrive at this backend path as their selected
+        // message channel id, so the direct persistence action covers them by
+        // writing the thread channel id independently from a server channel.
+        ("thread", "thread-1360-channel"),
+    ];
+
+    let mut reply_count = 0usize;
+    let mut edit_count = 0usize;
+    let mut covered_kinds = Vec::new();
+
+    for (kind, channel_id) in conversation_kinds {
+        let message_id = format!("{kind}-1360-message");
+        let reply_parent_id = format!("{kind}-1360-parent");
+        let reply_plaintext = format!("{kind} reply plaintext");
+        let edit_plaintext = format!("{kind} edit plaintext");
+
+        let written = cmd_osl_persist_outbound(
+            &state,
+            channel_id.to_string(),
+            message_id.clone(),
+            reply_plaintext,
+            Some(reply_parent_id.clone()),
+        )
+        .expect("reply action succeeds")
+        .expect("reply action returns stored row");
+        assert_eq!(written.channel_id, channel_id);
+        assert_eq!(
+            written.reply_parent_id.as_deref(),
+            Some(reply_parent_id.as_str())
+        );
+        assert_eq!(written.edit_revision, 1);
+        reply_count += 1;
+
+        let edited = cmd_osl_persist_edit(&state, message_id.clone(), edit_plaintext.clone(), None)
+            .expect("edit action succeeds")
+            .expect("edit action returns stored row");
+        assert_eq!(edited.channel_id, channel_id);
+        assert_eq!(edited.sender_discord_id, "sender-1360");
+        assert_eq!(edited.plaintext, edit_plaintext);
+        assert_eq!(
+            edited.reply_parent_id.as_deref(),
+            Some(reply_parent_id.as_str())
+        );
+        assert_eq!(edited.edit_revision, 2);
+        edit_count += 1;
+
+        let history = cmd_osl_load_channel_history(&state, channel_id.to_string(), Some(10))
+            .expect("conversation history loads");
+        assert_eq!(
+            history.len(),
+            1,
+            "one persisted message for {kind} conversation"
+        );
+        assert_eq!(history[0].discord_message_id, message_id);
+        assert_eq!(
+            history[0].reply_parent_id.as_deref(),
+            Some(reply_parent_id.as_str())
+        );
+        assert_eq!(history[0].edit_revision, 2);
+        covered_kinds.push(kind);
+    }
+
+    assert_eq!(reply_count, 4);
+    assert_eq!(edit_count, 4);
+    assert_eq!(covered_kinds, ["direct", "group", "channel", "thread"]);
+    println!(
+        "task_1360_available_conversation_kinds={}",
+        covered_kinds.join(",")
+    );
+    println!("task_1360_reply_action_count={reply_count}");
+    println!("task_1360_edit_action_count={edit_count}");
 }
 
 #[test]
