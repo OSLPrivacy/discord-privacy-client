@@ -99,6 +99,104 @@ export interface SpaceMessage {
   readonly senderId: string;
 }
 
+export interface OslEnclaveThread {
+  readonly threadId: string;
+  readonly channelName: string;
+}
+
+export interface OslEnclaveThreadMessage {
+  readonly messageId: string;
+  readonly threadId: string;
+  readonly channelName: string;
+  readonly body: string;
+}
+
+export interface OslEnclaveThreadStore {
+  readonly threads: ReadonlyMap<string, OslEnclaveThread>;
+  readonly messages: readonly OslEnclaveThreadMessage[];
+}
+
+export type OslEnclaveThreadRefusal =
+  | { readonly ok: false; readonly reason: "unknownThread" }
+  | { readonly ok: false; readonly reason: "threadChannelMismatch"; readonly actualChannelName: string };
+
+export type OslEnclaveThreadReadResult =
+  | { readonly ok: true; readonly messages: readonly OslEnclaveThreadMessage[] }
+  | OslEnclaveThreadRefusal;
+
+export type OslEnclaveThreadAppendResult =
+  | { readonly ok: true; readonly store: OslEnclaveThreadStore }
+  | OslEnclaveThreadRefusal;
+
+export function createOslEnclaveThreadStore(
+  threads: readonly OslEnclaveThread[],
+  messages: readonly OslEnclaveThreadMessage[] = [],
+): OslEnclaveThreadStore {
+  const byId = new Map<string, OslEnclaveThread>();
+  for (const thread of threads) {
+    requireLocalId(thread.threadId);
+    requireLocalId(thread.channelName);
+    if (byId.has(thread.threadId)) throw new Error("Duplicate Enclave thread");
+    byId.set(thread.threadId, { threadId: thread.threadId, channelName: thread.channelName });
+  }
+  for (const message of messages) {
+    requireThreadMessage(message);
+    const owner = byId.get(message.threadId);
+    if (!owner) throw new Error("Unknown Enclave thread message");
+    if (owner.channelName !== message.channelName) throw new Error("Enclave thread message channel mismatch");
+  }
+  return { threads: byId, messages: messages.map((message) => ({ ...message })) };
+}
+
+function requireThreadMessage(message: OslEnclaveThreadMessage): void {
+  requireLocalId(message.messageId);
+  requireLocalId(message.threadId);
+  requireLocalId(message.channelName);
+}
+
+function requireThreadChannel(
+  store: OslEnclaveThreadStore,
+  threadId: string,
+  channelName: string,
+): { readonly ok: true; readonly thread: OslEnclaveThread } | OslEnclaveThreadRefusal {
+  requireLocalId(threadId);
+  requireLocalId(channelName);
+  const thread = store.threads.get(threadId);
+  if (!thread) return { ok: false, reason: "unknownThread" };
+  if (thread.channelName !== channelName) {
+    return { ok: false, reason: "threadChannelMismatch", actualChannelName: thread.channelName };
+  }
+  return { ok: true, thread };
+}
+
+export function readOslEnclaveThreadMessages(
+  store: OslEnclaveThreadStore,
+  channelName: string,
+  threadId: string,
+): OslEnclaveThreadReadResult {
+  const thread = requireThreadChannel(store, threadId, channelName);
+  if (!thread.ok) return thread;
+  return {
+    ok: true,
+    messages: store.messages.filter((message) => (
+      message.threadId === threadId && message.channelName === channelName
+    )),
+  };
+}
+
+export function appendOslEnclaveThreadMessage(
+  store: OslEnclaveThreadStore,
+  message: OslEnclaveThreadMessage,
+): OslEnclaveThreadAppendResult {
+  requireThreadMessage(message);
+  const thread = requireThreadChannel(store, message.threadId, message.channelName);
+  if (!thread.ok) return thread;
+  return {
+    ok: true,
+    store: { threads: new Map(store.threads), messages: [...store.messages, { ...message }] },
+  };
+}
+
 interface FilterState {
   readonly hiddenChannelIds: readonly string[];
   readonly blockedMemberIds: readonly string[];
