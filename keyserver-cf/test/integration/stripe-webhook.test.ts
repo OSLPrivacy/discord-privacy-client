@@ -16,7 +16,136 @@ function browserClaimToken(): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
+async function paymentWriteCounts(): Promise<Record<string, number>> {
+  const tables = [
+    "stripe_event_claims",
+    "stripe_events",
+    "subscriptions",
+    "licenses",
+    "stripe_subscription_observations",
+    "stripe_checkout_claims",
+    "commerce_events",
+    "donation_events",
+    "payment_alert_outbox",
+  ];
+  const counts: Record<string, number> = {};
+  for (const table of tables) {
+    const row = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+      .first<{ count: number }>();
+    counts[table] = row?.count ?? 0;
+  }
+  return counts;
+}
+
+async function stripeEventMarkerCounts(eventId: string): Promise<{
+  completed: number;
+  claims: number;
+}> {
+  const row = await env.DB.prepare(
+    `SELECT
+       (SELECT COUNT(*) FROM stripe_events WHERE event_id = ?) AS completed,
+       (SELECT COUNT(*) FROM stripe_event_claims WHERE event_id = ?) AS claims`,
+  ).bind(eventId, eventId).first<{ completed: number; claims: number }>();
+  return {
+    completed: row?.completed ?? 0,
+    claims: row?.claims ?? 0,
+  };
+}
+
 describe("POST /v1/stripe/webhook signature", () => {
+  it("TASK 3189 accepts only Stripe-signed payment callbacks before writes", async () => {
+    const signedEventId = `evt_task3189_signed_${crypto.randomUUID().replace(/-/g, "")}a`;
+    const tamperedEventId = `${signedEventId.slice(0, -1)}b`;
+    const unsignedEventId = `evt_task3189_unsigned_${crypto.randomUUID().replace(/-/g, "")}`;
+    const signedBody = JSON.stringify({
+      id: signedEventId,
+      type: "ping.unhandled",
+      livemode: true,
+      created: Math.floor(Date.now() / 1000),
+      data: { object: {} },
+    });
+    const tamperedBody = signedBody.replace(signedEventId, tamperedEventId);
+    expect(tamperedBody.length).toBe(signedBody.length);
+    expect(
+      [...signedBody].filter((char, index) => char !== tamperedBody[index]),
+    ).toHaveLength(1);
+    const signature = await signStripeWebhook(signedBody);
+
+    const accepted = await SELF.fetch("http://test/v1/stripe/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": signature,
+      },
+      body: signedBody,
+    });
+    const acceptedBody = (await accepted.json()) as { received: boolean; kind?: string };
+    expect(accepted.status).toBe(200);
+    expect(acceptedBody).toMatchObject({ received: true, kind: "noop" });
+    expect(await stripeEventMarkerCounts(signedEventId)).toEqual({
+      completed: 1,
+      claims: 1,
+    });
+
+    const afterAccepted = await paymentWriteCounts();
+    const tampered = await SELF.fetch("http://test/v1/stripe/webhook", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "stripe-signature": signature,
+      },
+      body: tamperedBody,
+    });
+    const tamperedBodyJson = (await tampered.json()) as { error?: string };
+    expect(tampered.status).toBe(401);
+    expect(tamperedBodyJson.error).toBe("bad-signature");
+    expect(await paymentWriteCounts()).toEqual(afterAccepted);
+    expect(await stripeEventMarkerCounts(tamperedEventId)).toEqual({
+      completed: 0,
+      claims: 0,
+    });
+
+    const unsignedBody = JSON.stringify({
+      id: unsignedEventId,
+      type: "ping.unhandled",
+      livemode: true,
+      created: Math.floor(Date.now() / 1000),
+      data: { object: {} },
+    });
+    const unsigned = await SELF.fetch("http://test/v1/stripe/webhook", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: unsignedBody,
+    });
+    const unsignedBodyJson = (await unsigned.json()) as { error?: string };
+    expect(unsigned.status).toBe(401);
+    expect(unsignedBodyJson.error).toBe("bad-signature");
+    expect(await paymentWriteCounts()).toEqual(afterAccepted);
+    expect(await stripeEventMarkerCounts(unsignedEventId)).toEqual({
+      completed: 0,
+      claims: 0,
+    });
+
+    console.log(
+      `TASK3189 signed_status=${accepted.status} signed_received=${acceptedBody.received} signed_kind=${acceptedBody.kind}`,
+    );
+    console.log(
+      `TASK3189 signed_event_completed=1 signed_event_claims=1`,
+    );
+    console.log(
+      `TASK3189 tampered_changed_characters=1 tampered_status=${tampered.status} tampered_error=${tamperedBodyJson.error}`,
+    );
+    console.log(
+      `TASK3189 tampered_event_completed=0 tampered_event_claims=0`,
+    );
+    console.log(
+      `TASK3189 unsigned_status=${unsigned.status} unsigned_error=${unsignedBodyJson.error}`,
+    );
+    console.log(
+      `TASK3189 unsigned_event_completed=0 unsigned_event_claims=0`,
+    );
+  });
+
   it("rejects a validly signed Stripe test mode event", async () => {
     const body = JSON.stringify({
       id: uniqueEventId(),
