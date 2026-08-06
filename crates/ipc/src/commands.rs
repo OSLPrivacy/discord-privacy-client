@@ -15937,11 +15937,61 @@ pub fn cmd_osl_new_place(
             result: "unlisted".to_string(),
             prompt: false,
         }),
+        crate::auto_whitelist_rules::AutoWhitelistChoice::OnlyIfAFriend => {
+            let Some(person_id) = new_place_person_id(&place) else {
+                return Ok(NewPlaceAutoWhitelistDto {
+                    app_kind,
+                    stable_id: place.stable_id,
+                    rule_choice: choice.label().to_string(),
+                    result: "skipped".to_string(),
+                    prompt: false,
+                });
+            };
+            let is_accepted_friend = state
+                .friend_ids
+                .lock()
+                .expect("friend_ids mutex poisoned")
+                .iter()
+                .any(|accepted| accepted == &person_id);
+            if !is_accepted_friend {
+                return Ok(NewPlaceAutoWhitelistDto {
+                    app_kind,
+                    stable_id: place.stable_id,
+                    rule_choice: choice.label().to_string(),
+                    result: "skipped".to_string(),
+                    prompt: false,
+                });
+            }
+            let dir =
+                keystore::osl_config_dir().map_err(|e| format!("OSL: allowed places dir: {e}"))?;
+            let stable_id = place.stable_id.clone();
+            crate::allowed_places::add_allowed_place_record(&dir, place)
+                .map_err(|e| format!("OSL: allowed place: {e}"))?;
+            Ok(NewPlaceAutoWhitelistDto {
+                app_kind,
+                stable_id,
+                rule_choice: choice.label().to_string(),
+                result: "allowed".to_string(),
+                prompt: false,
+            })
+        }
         other => Err(format!(
             "OSL: auto-whitelist rule '{}' is not implemented for new places",
             other.label()
         )),
     }
+}
+
+fn new_place_person_id(place: &crate::allowed_places::AllowedPlaceRecord) -> Option<String> {
+    if place.kind != "direct_message" {
+        return None;
+    }
+    let expected_prefix = format!("{}:{}:{}:", place.app, place.account, place.kind);
+    place
+        .stable_id
+        .strip_prefix(&expected_prefix)
+        .filter(|person_id| !person_id.is_empty())
+        .map(str::to_owned)
 }
 
 fn validate_new_place_record(
