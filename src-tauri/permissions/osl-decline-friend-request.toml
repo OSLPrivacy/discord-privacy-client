@@ -1,0 +1,6 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+[[permission]]
+identifier = "allow-osl-decline-friend-request"
+description = "Permits the main webview to invoke `osl_decline_friend_request` and move a saved pending friend request to declined."
+commands.allow = ["osl_decline_friend_request"]
