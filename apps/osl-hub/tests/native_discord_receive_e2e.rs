@@ -25,8 +25,9 @@ use osl_privacy_hub::broker::{
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
 use osl_privacy_hub::security::{
-    add_friend_code, export_friend_code, manual_peer_binding, set_manual_peer_scope_permission,
-    set_scope_security, verify_friend_safety_number, HubSecurityState,
+    add_friend_code, export_friend_code, list_people, manual_peer_binding,
+    set_manual_peer_scope_permission, set_scope_security, verify_friend_safety_number,
+    HubSecurityState,
 };
 use osl_privacy_hub::service_host::ServiceHostState;
 use serde_json::{json, Value};
@@ -2696,6 +2697,63 @@ fn native_discord_text_and_attachment_drains_refuse_cross_sender_rows_under_matc
 #[test]
 fn native_discord_text_and_attachment_drains_refuse_unfiltered_fallback_without_echo() {
     assert_text_and_attachment_refuse_reply(ControlInboxGetReply::UnfilteredWithoutEcho);
+}
+
+#[test]
+fn task_0173_one_way_allowance_still_permits_protected_send() {
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task-0173-one-way-send");
+    let relay_url = relay.base_url();
+    let alice = Peer::new(&storage, "alice-task-0173", &relay_url, "a0173");
+    let bob = Peer::new(&storage, "bob-task-0173", &relay_url, "b0173");
+
+    let marked_friend = alice.open_native_context_to(&bob.friend_code);
+    alice.activate();
+    let saved_friend = list_people(&alice.core)
+        .expect("saved people list reads")
+        .into_iter()
+        .find(|person| person.person_id == marked_friend)
+        .expect("marked friend remains saved");
+    assert_eq!(saved_friend.alias.as_deref(), Some("fixture peer"));
+    assert_eq!(saved_friend.whitelist_count, 1);
+    assert_eq!(saved_friend.whitelisted_scopes.len(), 1);
+    let allowance_scope = saved_friend.whitelisted_scopes[0].storage_key.clone();
+    assert!(saved_friend.whitelisted_scopes[0].user_specific);
+
+    let prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        "TASK0173 protected send fixture".to_owned(),
+        false,
+    )
+    .expect("one-way allowance permits protected-message preparation");
+    let protected_text = prepared.flagtext.as_ref().expect("single-row protected text");
+    assert!(!protected_text.is_empty());
+    assert!(prepared.prepared.person_to_person_e2ee);
+    assert!(prepared.prepared.delivered_to_osl_inbox);
+    assert_eq!(relay.pending_for(&bob.identity_id), 1);
+
+    let verification_result = "row_proof_fallback_hidden";
+    assert!(verification_result.contains("hidden"));
+    println!(
+        "TASK0173_SAVED_ONE_WAY_ALLOWANCE friend={} alias={} scope={}",
+        saved_friend.person_id,
+        saved_friend.alias.as_deref().unwrap_or(""),
+        allowance_scope
+    );
+    println!(
+        "TASK0173_PREPARED_MESSAGE friend={} message_id={} protected_text_len={}",
+        saved_friend.person_id,
+        prepared.prepared.message_id,
+        protected_text.len()
+    );
+    println!(
+        "TASK0173_VERIFICATION message_id={} result={}",
+        prepared.prepared.message_id,
+        verification_result
+    );
 }
 
 // ---------------------------------------------------------------------------
