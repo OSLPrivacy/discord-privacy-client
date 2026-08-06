@@ -298,6 +298,26 @@ where
     place(product_send_authority)
 }
 
+pub const ALLOWED_PLACE_CHECK_STAGE: &str = "allowed-place-check";
+pub const ALLOWED_PLACE_CONFIRMED_STAGE: &str = "allowed-place-confirmed";
+pub const INCOMING_READ_ACTION_STAGE: &str = "read";
+
+pub fn with_allowed_place_before_incoming_read<T, CheckAllowed, ReadIncoming>(
+    trace: &mut Vec<&'static str>,
+    check_allowed: CheckAllowed,
+    read_incoming: ReadIncoming,
+) -> Result<T, String>
+where
+    CheckAllowed: FnOnce() -> Result<String, String>,
+    ReadIncoming: FnOnce(String) -> Result<T, String>,
+{
+    trace.push(ALLOWED_PLACE_CHECK_STAGE);
+    let scope_binding = check_allowed()?;
+    trace.push(ALLOWED_PLACE_CONFIRMED_STAGE);
+    trace.push(INCOMING_READ_ACTION_STAGE);
+    read_incoming(scope_binding)
+}
+
 #[cfg(any(test, feature = "discord-qa-shell"))]
 pub fn canonical_native_visible_row_qa_build_hash(value: Option<&str>) -> Result<String, String> {
     let value = value.ok_or_else(|| "The QA build hash is unavailable".to_owned())?;
@@ -864,8 +884,9 @@ mod native_visible_row_qa_command_tests {
     use super::{
         canonical_native_visible_row_qa_build_hash, finish_native_visible_row_qa_request,
         prepare_native_visible_row_qa_request, recorded_executable_hash_matches_rebuild,
-        require_native_discord_product_send_authority, with_native_discord_product_send_authority,
-        ActiveServiceHost,
+        require_native_discord_product_send_authority, with_allowed_place_before_incoming_read,
+        with_native_discord_product_send_authority, ActiveServiceHost, ALLOWED_PLACE_CHECK_STAGE,
+        ALLOWED_PLACE_CONFIRMED_STAGE, INCOMING_READ_ACTION_STAGE,
     };
     use crate::native_discord_adapter::{
         deidentify_prepared_visual_structure, DiscordCarrierLayout, DiscordCarrierPadding,
@@ -942,6 +963,81 @@ mod native_visible_row_qa_command_tests {
         assert!(carrier
             .split_whitespace()
             .eq(TEST_FLAGTEXT.split_whitespace()));
+    }
+
+    #[test]
+    fn task_0121_allowed_place_trace_records_one_read_action() {
+        let mut trace = Vec::new();
+        let read_reached = Cell::new(false);
+        let read_scope = with_allowed_place_before_incoming_read(
+            &mut trace,
+            || Ok("scope-binding-0121".to_owned()),
+            |scope_binding| {
+                read_reached.set(true);
+                Ok(scope_binding)
+            },
+        )
+        .expect("an allowed place reaches the incoming row read");
+        let read_actions = trace
+            .iter()
+            .filter(|stage| **stage == INCOMING_READ_ACTION_STAGE)
+            .count();
+
+        println!("task_0121_allowed_place_trace={}", trace.join(" -> "));
+        println!(
+            "task_0121_read_action action={} count={read_actions}",
+            INCOMING_READ_ACTION_STAGE
+        );
+
+        assert_eq!(
+            trace,
+            [
+                ALLOWED_PLACE_CHECK_STAGE,
+                ALLOWED_PLACE_CONFIRMED_STAGE,
+                INCOMING_READ_ACTION_STAGE,
+            ]
+        );
+        assert!(read_reached.get());
+        assert_eq!(read_scope, "scope-binding-0121");
+        assert_eq!(read_actions, 1);
+
+        let mut refused_trace = Vec::new();
+        let refused_read_reached = Cell::new(false);
+        let refused = with_allowed_place_before_incoming_read(
+            &mut refused_trace,
+            || Err("place not allowed".to_owned()),
+            |_| {
+                refused_read_reached.set(true);
+                Ok(())
+            },
+        );
+        match refused {
+            Err(error) => assert_eq!(error, "place not allowed"),
+            Ok(_) => panic!("an unallowed place must refuse before reading incoming rows"),
+        }
+        assert_eq!(refused_trace, [ALLOWED_PLACE_CHECK_STAGE]);
+        assert!(!refused_read_reached.get());
+
+        let source = include_str!("main.rs");
+        let command_start = source
+            .find("#[tauri::command]\nasync fn rehydrate_native_discord_overlay_history(")
+            .expect("native Discord rehydrate command remains present");
+        let command_tail = &source[command_start..];
+        let command_end = command_tail
+            .find("#[tauri::command]\nasync fn list_osl_chat_history(")
+            .expect("native Discord rehydrate command body remains bounded");
+        let command = &command_tail[..command_end];
+        let gate = command
+            .find("with_allowed_place_before_incoming_read(")
+            .expect("native Discord rehydrate command gates incoming row reads");
+        let allowed_place = command
+            .find("native_discord_allowed_place_scope_binding(&app)")
+            .expect("native Discord rehydrate command checks the allowed place");
+        let read = command
+            .find("read_visible_message_rows(")
+            .expect("native Discord rehydrate command reads incoming rows");
+        assert!(gate < allowed_place);
+        assert!(allowed_place < read);
     }
 
     #[cfg(feature = "discord-qa-shell")]

@@ -200,9 +200,10 @@ use osl_privacy_hub::hub_command_surface::{
     require_native_discord_product_send_authority,
     require_review_ui_identity_binding_from_verifier, service_kind_id,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
-    start_autoscrub_reviewed_run_inner, with_native_discord_product_send_authority,
-    BrowserFootprintConsentRequest, CheckedHost, DiscordGuidedDeletionPlanState,
-    GuidedDeletionRunAuthorityInput, NativeDiscordProductSendAuthority,
+    start_autoscrub_reviewed_run_inner, with_allowed_place_before_incoming_read,
+    with_native_discord_product_send_authority, BrowserFootprintConsentRequest, CheckedHost,
+    DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
+    NativeDiscordProductSendAuthority,
 };
 use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
@@ -2987,6 +2988,32 @@ fn native_discord_scope_binding(app: &tauri::AppHandle) -> Result<String, String
         })
 }
 
+fn native_discord_allowed_place_scope_binding(app: &tauri::AppHandle) -> Result<String, String> {
+    let core = app.state::<HubCoreState>();
+    let broker = app.state::<HubBrokerState>();
+    app.state::<OverlaySessionState>()
+        .with_bootstrap_context(|context_token, host| {
+            broker.validate_active_host(context_token, host)?;
+            let target = broker
+                .manual_burn_target(context_token)?
+                .ok_or_else(|| "The native Discord friend context is unavailable".to_owned())?;
+            security::require_manual_peer_scope_approved(
+                &core,
+                &target.service_id,
+                &target.account_id,
+                target.person_id.clone(),
+                target.scope.clone(),
+            )?;
+            serde_json::to_string(&(
+                target.service_id,
+                target.account_id,
+                target.person_id,
+                target.scope,
+            ))
+            .map_err(|_| "The native Discord friend context is unavailable".to_owned())
+        })
+}
+
 #[tauri::command]
 async fn set_native_discord_protected_overlay_open(
     app: tauri::AppHandle,
@@ -4780,18 +4807,30 @@ async fn rehydrate_native_discord_overlay_history(
                 rows: Vec::new(),
             });
         }
-        // The one leg that reaches Discord. It is refused outright whenever any
-        // other accessibility operation holds the single non-blocking gate, and
-        // that refusal is a bare `Err` with no label of its own -- so it needs one
-        // here or the whole read disappears without trace.
-        let rows = qa_named_rehydrate_refusal(
-            native_discord_overlay::REHYDRATE_READ_UNAVAILABLE,
-            osl_privacy_hub::native_discord_adapter::read_visible_message_rows(
-                &app.state::<NativeWindowHostState>(),
-                &owner,
-                &scope_binding,
-                MAX_VISIBLE_CARRIER_ROWS,
-            ),
+        let mut allowed_place_trace = Vec::new();
+        let rows = with_allowed_place_before_incoming_read(
+            &mut allowed_place_trace,
+            || native_discord_allowed_place_scope_binding(&app),
+            |allowed_scope_binding| {
+                if allowed_scope_binding != scope_binding {
+                    return Err(
+                        "The native Discord friend context changed before reading rows".to_owned(),
+                    );
+                }
+                // The one leg that reaches Discord. It is refused outright whenever any
+                // other accessibility operation holds the single non-blocking gate, and
+                // that refusal is a bare `Err` with no label of its own -- so it needs one
+                // here or the whole read disappears without trace.
+                qa_named_rehydrate_refusal(
+                    native_discord_overlay::REHYDRATE_READ_UNAVAILABLE,
+                    osl_privacy_hub::native_discord_adapter::read_visible_message_rows(
+                        &app.state::<NativeWindowHostState>(),
+                        &owner,
+                        &allowed_scope_binding,
+                        MAX_VISIBLE_CARRIER_ROWS,
+                    ),
+                )
+            },
         )?;
         qa_named_rehydrate_refusal(
             native_discord_overlay::REHYDRATE_CONTEXT_CHANGED,
