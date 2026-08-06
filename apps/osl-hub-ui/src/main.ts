@@ -43,6 +43,12 @@ import { deviceTransferManifestScreen } from "./device-transfer";
 import { initialOldDeviceCopyDecision, oldDeviceCopyDecisionView } from "./device-transfer-source";
 import { renderDeadmanScreen, selectDeadmanAction } from "./deadman";
 import { groupOnboardingApps } from "./onboarding-app-groups";
+import {
+  dragHomeTileArrangement,
+  moveHomeTileArrangement,
+  normalizeHomeTileArrangement,
+  toggleHomeTileVisibility,
+} from "./home-tile-arrangement";
 import { peopleDestinationHeaderMarkup } from "./people-destination-header";
 import { lastBackendFailure, recordBackendFailure } from "./backend-failure";
 import { unlockAttemptWarning } from "./unlock-attempts";
@@ -4580,9 +4586,14 @@ function workspaceContent(): string {
   const byId = new Map(homeApps.map((app) => [app.id, app]));
   const moduleById = new Map(modules.map((module) => [module.id, module]));
   const defaultIds = [...homeApps.map((app) => app.id), ...modules.map((module) => module.id)];
-  const orderedIds = [...homeTileOrder.filter((id) => defaultIds.includes(id as HomeAppId)), ...defaultIds.filter((id) => !homeTileOrder.includes(id))];
+  const arranged = normalizeHomeTileArrangement(defaultIds, {
+    order: homeTileOrder,
+    hidden: [...hiddenHomeTiles],
+  });
+  const orderedIds = arranged.order;
+  const arrangedHidden = new Set(arranged.hidden);
   const renderHomeTile = (id: string, index: number): string => {
-    const hidden = hiddenHomeTiles.has(id);
+    const hidden = arrangedHidden.has(id);
     if (hidden && !homeEditMode) return "";
     const controls = homeEditMode ? `<span class="tile-edit-controls"><button class="tile-remove" type="button" data-tile-toggle="${escapeHtml(id)}" aria-label="${hidden ? "Show" : "Remove"} ${escapeHtml(id)}">${hidden ? "+" : "−"}</button><span class="tile-keyboard-controls"><button type="button" data-tile-move="${escapeHtml(id)}:-1" ${index === 0 ? "disabled" : ""} aria-label="Move before">←</button><button type="button" data-tile-move="${escapeHtml(id)}:1" ${index === orderedIds.length - 1 ? "disabled" : ""} aria-label="Move after">→</button></span></span>` : "";
     const module = moduleById.get(id as typeof modules[number]["id"]);
@@ -8237,34 +8248,34 @@ function moveHomeTile(raw: string): void {
   const separator = raw.lastIndexOf(":");
   const id = raw.slice(0, separator);
   const delta = Number(raw.slice(separator + 1));
-  const defaults = currentHomeTileIds();
-  const order = [...homeTileOrder.filter((item) => defaults.includes(item)), ...defaults.filter((item) => !homeTileOrder.includes(item))];
-  const index = order.indexOf(id);
-  const target = index + delta;
-  if (index < 0 || !Number.isSafeInteger(delta) || Math.abs(delta) !== 1 || target < 0 || target >= order.length) return;
-  [order[index], order[target]] = [order[target], order[index]];
-  homeTileOrder = order;
+  const arranged = moveHomeTileArrangement(currentHomeTileIds(), {
+    order: homeTileOrder,
+    hidden: [...hiddenHomeTiles],
+  }, id, delta);
+  homeTileOrder = arranged.order;
+  hiddenHomeTiles = new Set(arranged.hidden);
   saveHomeTilePreferences();
   render();
 }
 
 function reorderHomeTile(sourceId: string | null, targetId: string | null): void {
-  if (!sourceId || !targetId || sourceId === targetId) return;
-  const defaults = currentHomeTileIds();
-  const order = [...homeTileOrder.filter((item) => defaults.includes(item)), ...defaults.filter((item) => !homeTileOrder.includes(item))];
-  const source = order.indexOf(sourceId);
-  const target = order.indexOf(targetId);
-  if (source < 0 || target < 0) return;
-  order.splice(source, 1);
-  order.splice(target, 0, sourceId);
-  homeTileOrder = order;
+  const arranged = dragHomeTileArrangement(currentHomeTileIds(), {
+    order: homeTileOrder,
+    hidden: [...hiddenHomeTiles],
+  }, sourceId, targetId);
+  homeTileOrder = arranged.order;
+  hiddenHomeTiles = new Set(arranged.hidden);
   saveHomeTilePreferences();
   render();
 }
 
 function toggleHomeTile(id: string): void {
-  if (!currentHomeTileIds().includes(id)) return;
-  if (hiddenHomeTiles.has(id)) hiddenHomeTiles.delete(id); else hiddenHomeTiles.add(id);
+  const arranged = toggleHomeTileVisibility(currentHomeTileIds(), {
+    order: homeTileOrder,
+    hidden: [...hiddenHomeTiles],
+  }, id);
+  homeTileOrder = arranged.order;
+  hiddenHomeTiles = new Set(arranged.hidden);
   saveHomeTilePreferences();
   render();
 }
