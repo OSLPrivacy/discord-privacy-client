@@ -15540,9 +15540,11 @@ const SAVED_FRIEND_REQUEST_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 #[serde(rename_all = "camelCase")]
 pub struct SavedFriendRequestDto {
     pub request_id: String,
+    pub relationship_id: String,
     pub requester_id: String,
     pub target_id: String,
     pub scope_key: String,
+    pub invite_redemption_count: u32,
     pub state: crate::friend_request::StoredFriendState,
     pub display_name: String,
     pub block_state: crate::friend_request::StoredFriendBlockState,
@@ -15641,9 +15643,11 @@ fn saved_friend_request_dto(
     let friend = saved_friend_record_for_entry(file, entry);
     SavedFriendRequestDto {
         request_id: entry.request_id.clone(),
+        relationship_id: entry.relationship_id.clone(),
         requester_id: entry.requester_id.clone(),
         target_id: entry.target_id.clone(),
         scope_key: entry.scope_key.clone(),
+        invite_redemption_count: entry.invite_redemption_count,
         state,
         display_name: friend
             .map(|record| record.display_name.clone())
@@ -15774,9 +15778,11 @@ pub fn cmd_osl_create_friend_request(
     let now_ms = now_unix_secs().max(0) as u64 * 1000;
     let entry = crate::friend_request::StoredFriendRequestFileEntry {
         request_id: request_id.to_string(),
+        relationship_id: saved_friend_record_id(requester_id, target_id),
         requester_id: requester_id.to_string(),
         target_id: target_id.to_string(),
         scope_key,
+        invite_redemption_count: 1,
         received_at_ms: now_ms,
         expires_at_ms: now_ms + SAVED_FRIEND_REQUEST_TTL_MS,
     };
@@ -15929,8 +15935,15 @@ pub fn cmd_osl_accept_saved_friend_request(
     let dir = saved_friend_request_dir()?;
     let mut file = load_saved_friend_request_file_with_dir(&dir)?;
     let request_id = request_id.trim();
-    let entry = remove_saved_request_by_id(&mut file.pending, request_id)
+    let pending_index = file
+        .pending
+        .iter()
+        .position(|request| request.request_id == request_id)
         .ok_or_else(|| "OSL: friend request is not pending".to_string())?;
+    if file.pending[pending_index].invite_redemption_count != 1 {
+        return Err("OSL: invite already reused".to_string());
+    }
+    let entry = file.pending.remove(pending_index);
     update_saved_friend_record(
         &mut file,
         &entry.requester_id,

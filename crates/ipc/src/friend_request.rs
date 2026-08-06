@@ -321,11 +321,19 @@ impl fmt::Debug for FriendRequest {
 #[serde(deny_unknown_fields)]
 pub struct StoredFriendRequestFileEntry {
     pub request_id: String,
+    #[serde(default)]
+    pub relationship_id: String,
     pub requester_id: String,
     pub target_id: String,
     pub scope_key: String,
+    #[serde(default = "default_invite_redemption_count")]
+    pub invite_redemption_count: u32,
     pub received_at_ms: u64,
     pub expires_at_ms: u64,
+}
+
+fn default_invite_redemption_count() -> u32 {
+    1
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -780,9 +788,11 @@ mod tests {
     fn stored_file_request(label: &str, scope: Scope) -> StoredFriendRequestFileEntry {
         StoredFriendRequestFileEntry {
             request_id: format!("request-{label}"),
+            relationship_id: format!("relationship-{label}"),
             requester_id: format!("requester-{label}"),
             target_id: format!("target-{label}"),
             scope_key: scope.storage_key(),
+            invite_redemption_count: 1,
             received_at_ms: 1000,
             expires_at_ms: 2000,
         }
