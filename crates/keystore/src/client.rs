@@ -188,6 +188,9 @@ struct UsernameClaimRequest<'a> {
     request_id: String,
     signature_b64: String,
     timestamp_ms: i64,
+    service: &'static str,
+    service_account_id: &'a str,
+    public_name_proof: AccountOwnershipProof,
 }
 
 #[derive(Deserialize)]
@@ -962,8 +965,9 @@ impl KeyServerClient {
     }
 
     /// Claim `username` for the loaded identity.  The claim binds the exact
-    /// signed friend code and a fresh request nonce; there is no ambient
-    /// keyserver credential.
+    /// signed friend code, a fresh request nonce, and a short account proof
+    /// for the named Discord account; there is no ambient keyserver
+    /// credential.
     pub fn claim_username(
         &self,
         identity: &Identity,
@@ -975,6 +979,15 @@ impl KeyServerClient {
                 "username must already be normalized".into(),
             ));
         }
+        let service_account_id = identity.discord_snowflake.as_deref().ok_or_else(|| {
+            Error::Transport("username claim requires a Discord account proof".into())
+        })?;
+        let mut challenge =
+            self.request_ownership_challenge(service_account_id, &identity.user_id, true)?;
+        let proof_now = (unix_timestamp_ms().max(0) / 1000) as u64;
+        let public_name_proof =
+            AccountOwnershipProof::from_challenge(identity, &mut challenge, proof_now)
+                .map_err(|error| Error::Transport(format!("username proof refused: {error}")))?;
         let request_id = URL_SAFE_NO_PAD.encode(crypto::random::random_bytes(32));
         let timestamp_ms = unix_timestamp_ms();
         let message = username_claim_msg(
@@ -993,6 +1006,9 @@ impl KeyServerClient {
             request_id,
             signature_b64,
             timestamp_ms,
+            service: "discord",
+            service_account_id,
+            public_name_proof,
         };
         let bytes = serde_json::to_vec(&body)?;
         let response = self.send_request(

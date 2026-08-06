@@ -273,6 +273,13 @@ export async function unregisterUserIfCurrent(
         .bind(userId, userId, expectedCurrentEd25519Pub),
       db
         .prepare(
+          `DELETE FROM public_name_proofs
+          WHERE owner_user_id = ?
+            AND ${ownsCurrentKey}`,
+        )
+        .bind(userId, userId, expectedCurrentEd25519Pub),
+      db
+        .prepare(
           `DELETE FROM opk_pool
           WHERE user_id = ?
             AND ${ownsCurrentKey}`,

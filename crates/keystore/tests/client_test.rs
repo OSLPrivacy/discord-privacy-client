@@ -324,13 +324,26 @@ fn multi_response_server(responses: Vec<Vec<u8>>) -> (u16, mpsc::Receiver<Vec<u8
                 .unwrap();
             let mut buf = [0u8; 4096];
             let mut acc = Vec::new();
-            loop {
+            let header_end = loop {
                 let n = stream.read(&mut buf).unwrap();
                 assert!(n > 0, "request ended before headers");
                 acc.extend_from_slice(&buf[..n]);
-                if acc.windows(4).any(|w| w == b"\r\n\r\n") {
-                    break;
+                if let Some(p) = acc.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break p;
                 }
+            };
+            let header_text = std::str::from_utf8(&acc[..header_end]).unwrap();
+            let content_len = header_text
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            let mut body_so_far = acc[header_end + 4..].len();
+            while body_so_far < content_len {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0, "request ended before body");
+                acc.extend_from_slice(&buf[..n]);
+                body_so_far += n;
             }
             let _ = tx.send(acc);
             stream.write_all(&response).unwrap();
@@ -339,8 +352,7 @@ fn multi_response_server(responses: Vec<Vec<u8>>) -> (u16, mpsc::Receiver<Vec<u8
     (port, rx)
 }
 
-type ResponseHandler = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
-
+#[allow(dead_code)]
 fn multi_response_server_from_requests(
     handlers: Vec<ResponseHandler>,
 ) -> (u16, mpsc::Receiver<Vec<u8>>) {
@@ -370,6 +382,8 @@ fn multi_response_server_from_requests(
     });
     (port, rx)
 }
+
+type ResponseHandler = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
 
 fn active_account_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -446,6 +460,75 @@ fn fetch_pubkeys_url_encodes_special_chars() {
     let req_bytes = rx.recv().unwrap();
     let req_text = std::str::from_utf8(&req_bytes).unwrap();
     assert!(req_text.contains("/v1/pubkeys/liam%40discord"));
+}
+
+#[test]
+fn username_claim_carries_public_name_proof_from_named_app_account() {
+    let mut identity = generate_identity("osl1_owner".to_string());
+    identity.discord_snowflake = Some("123456789012345678".to_string());
+    let nonce = [0x5au8; 32];
+    let challenge_body = format!(
+        r#"{{"challenge_version":1,"service":"discord","nonce":"{}","service_account_id":"123456789012345678","owner_user_id":"osl1_owner","issued_at_unix_seconds":1800000000,"expires_at_unix_seconds":1800000300,"spent":false}}"#,
+        STANDARD.encode(nonce)
+    );
+    let claim_body = br#"{"username":"rust_0312","user_id":"osl1_owner"}"#;
+    let response = |status: &[u8], body: &[u8]| {
+        let mut response = Vec::new();
+        response.extend_from_slice(status);
+        response.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
+        response.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+        response.extend_from_slice(body);
+        response
+    };
+    let (port, rx) = multi_response_server(vec![
+        response(b"HTTP/1.1 201 Created\r\n", challenge_body.as_bytes()),
+        response(b"HTTP/1.1 200 OK\r\n", claim_body),
+    ]);
+
+    let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();
+    let claimed = client
+        .claim_username(&identity, "rust_0312", "OSLFR1.mock-invite-for-rust-0312")
+        .expect("mock worker accepts public-name proof claim");
+    assert_eq!(claimed.username, "rust_0312");
+    assert_eq!(claimed.user_id, "osl1_owner");
+
+    let challenge_request = String::from_utf8(rx.recv().unwrap()).unwrap();
+    assert!(challenge_request
+        .to_ascii_lowercase()
+        .starts_with("post /v1/account-ownership/challenge http/1.1\r\n"));
+    let challenge_json: serde_json::Value =
+        serde_json::from_str(challenge_request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(challenge_json["service"], "discord");
+    assert_eq!(challenge_json["service_account_id"], "123456789012345678");
+    assert_eq!(challenge_json["owner_user_id"], "osl1_owner");
+    assert_eq!(challenge_json["consent"], true);
+
+    let claim_request = String::from_utf8(rx.recv().unwrap()).unwrap();
+    assert!(claim_request
+        .to_ascii_lowercase()
+        .starts_with("post /v1/usernames/claim http/1.1\r\n"));
+    let claim_json: serde_json::Value =
+        serde_json::from_str(claim_request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(claim_json["username"], "rust_0312");
+    assert_eq!(claim_json["user_id"], "osl1_owner");
+    assert_eq!(claim_json["service"], "discord");
+    assert_eq!(claim_json["service_account_id"], "123456789012345678");
+    assert_eq!(
+        claim_json["public_name_proof"]["platform_id"],
+        "123456789012345678"
+    );
+    assert_eq!(
+        claim_json["public_name_proof"]["e"]["owner_user_id"],
+        "osl1_owner"
+    );
+    assert_eq!(
+        claim_json["public_name_proof"]["e"]["nonce_b64"],
+        STANDARD.encode(nonce)
+    );
+    let signature = claim_json["public_name_proof"]["e"]["signature_b64"]
+        .as_str()
+        .unwrap();
+    assert_eq!(STANDARD.decode(signature).unwrap().len(), 64);
 }
 
 fn query_value(target: &str, key: &str) -> String {
