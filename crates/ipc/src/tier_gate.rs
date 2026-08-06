@@ -123,6 +123,20 @@ pub fn is_paid_equivalent(state: &AppState) -> bool {
 /// only SENDING is gated. Decryption is a privacy feature, not a
 /// paid feature.
 pub fn check_attachment_allowed(state: &AppState) -> Result<(), TierGateError> {
+    check_paid_feature_allowed(state, "encrypted attachments")
+}
+
+/// View-once creation is paid-only, but opening a view-once message is not.
+/// This mirrors the attachment split: a free recipient must be able to read a
+/// protected message that a paid sender created for them.
+pub fn check_view_once_create_allowed(state: &AppState) -> Result<(), TierGateError> {
+    check_paid_feature_allowed(state, "view-once messages")
+}
+
+fn check_paid_feature_allowed(
+    state: &AppState,
+    feature: &'static str,
+) -> Result<(), TierGateError> {
     if is_paid_equivalent(state) {
         return Ok(());
     }
@@ -133,7 +147,7 @@ pub fn check_attachment_allowed(state: &AppState) -> Result<(), TierGateError> {
         .raw_status
         .clone();
     Err(TierGateError::PaidFeatureRequired {
-        feature: "encrypted attachments".to_string(),
+        feature: feature.to_string(),
         raw_license_state,
     })
 }
@@ -260,6 +274,27 @@ mod tests {
             } => {
                 assert_eq!(feature, "encrypted attachments");
                 assert_eq!(raw_license_state, "EXPIRED");
+            }
+        }
+    }
+
+    #[test]
+    fn view_once_create_uses_the_same_paid_split_but_names_itself() {
+        let paid = AppState::new();
+        install(&paid, paid_state());
+        assert!(check_view_once_create_allowed(&paid).is_ok());
+
+        let free = AppState::new();
+        install(&free, free_state());
+        let err = check_view_once_create_allowed(&free)
+            .expect_err("free user should be blocked from creating view-once");
+        match err {
+            TierGateError::PaidFeatureRequired {
+                feature,
+                raw_license_state,
+            } => {
+                assert_eq!(feature, "view-once messages");
+                assert_eq!(raw_license_state, "Unconfigured");
             }
         }
     }
