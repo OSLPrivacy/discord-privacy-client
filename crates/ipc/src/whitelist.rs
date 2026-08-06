@@ -86,6 +86,99 @@ pub struct ScopeAuthCtx<'a> {
     pub membership: &'a ScopeMembership,
 }
 
+/// One action a group-visible member receives for an outbound send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectDeliveryAction {
+    /// The public carrier text posted to the native chat.
+    PlainCover,
+    /// A protected payload recipient slot addressed to this member.
+    ProtectedPayload,
+}
+
+impl DirectDeliveryAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DirectDeliveryAction::PlainCover => "plain_cover",
+            DirectDeliveryAction::ProtectedPayload => "protected_payload",
+        }
+    }
+}
+
+/// Direct per-member delivery plan for one outbound send.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectMemberDeliveryPlan {
+    pub member_discord_id: String,
+    pub actions: Vec<DirectDeliveryAction>,
+}
+
+impl DirectMemberDeliveryPlan {
+    pub fn contains_cover_only(&self) -> bool {
+        self.actions.as_slice() == [DirectDeliveryAction::PlainCover]
+    }
+
+    pub fn action_names(&self) -> Vec<&'static str> {
+        self.actions.iter().map(|action| action.as_str()).collect()
+    }
+}
+
+/// Plan what one native group member receives directly from this send.
+///
+/// Group members always see the native carrier row. Authorization controls only
+/// whether that visible row is accompanied by a protected recipient slot.
+pub fn direct_member_delivery_plan(
+    peer_map: &PeerMap,
+    ctx: &ScopeAuthCtx,
+    scope: &Scope,
+    channel_members: &[String],
+    self_discord_id: &str,
+    member_discord_id: &str,
+) -> DirectMemberDeliveryPlan {
+    let mut actions = Vec::new();
+    if member_discord_id != self_discord_id
+        && member_receives_native_cover(ctx, scope, channel_members, member_discord_id)
+    {
+        actions.push(DirectDeliveryAction::PlainCover);
+    }
+    if member_discord_id != self_discord_id
+        && should_encrypt_to(peer_map, ctx, scope, member_discord_id)
+    {
+        actions.push(DirectDeliveryAction::ProtectedPayload);
+    }
+    DirectMemberDeliveryPlan {
+        member_discord_id: member_discord_id.to_owned(),
+        actions,
+    }
+}
+
+fn member_receives_native_cover(
+    ctx: &ScopeAuthCtx,
+    scope: &Scope,
+    channel_members: &[String],
+    member_discord_id: &str,
+) -> bool {
+    if channel_members
+        .iter()
+        .any(|member| member.as_str() == member_discord_id)
+    {
+        return true;
+    }
+    match scope.kind {
+        ScopeKind::Dm => scope.id == member_discord_id,
+        ScopeKind::Gc => ctx.membership.is_gc_member(&scope.id, member_discord_id),
+        ScopeKind::ServerChannel => match (&scope.server_id, &scope.channel_id) {
+            (Some(server), Some(channel)) => {
+                ctx.membership
+                    .is_channel_member(server, channel, member_discord_id)
+            }
+            _ => false,
+        },
+        ScopeKind::ServerFull => scope
+            .server_id
+            .as_ref()
+            .is_some_and(|server| ctx.membership.is_server_member(server, member_discord_id)),
+    }
+}
+
 /// W1 canonical authorization: should an outgoing message in `scope`
 /// be encrypted to `recipient`? Implements the locked precedence
 ///
@@ -1200,5 +1293,108 @@ mod should_encrypt_to_tests {
         ));
         let b = gc_build(true, &[PEER]);
         assert!(!should_encrypt_to(&p, &gc_ctx(&b), &Scope::gc(GCID), PEER));
+    }
+
+    #[test]
+    fn task_0129_unticked_group_member_direct_delivery_plan_contains_cover_only() {
+        const SELF: &str = "900000000000000129";
+        const UNTICKED: &str = "900000000000129001";
+        const STILL_TICKED: &str = "900000000000129002";
+
+        let scope = Scope::gc(GCID);
+        let channel_members = vec![
+            SELF.to_string(),
+            UNTICKED.to_string(),
+            STILL_TICKED.to_string(),
+        ];
+        let mut peer_map = PeerMap::new();
+        for member in [UNTICKED, STILL_TICKED] {
+            peer_map.insert(
+                member.to_string(),
+                peer(
+                    vec![WhitelistEntry::Gc {
+                        id: GCID.to_string(),
+                        user_specific: true,
+                    }],
+                    vec![],
+                ),
+            );
+        }
+        let built = gc_build(false, &[UNTICKED, STILL_TICKED]);
+
+        let before = direct_member_delivery_plan(
+            &peer_map,
+            &gc_ctx(&built),
+            &scope,
+            &channel_members,
+            SELF,
+            UNTICKED,
+        );
+        assert_eq!(
+            before.actions.as_slice(),
+            [
+                DirectDeliveryAction::PlainCover,
+                DirectDeliveryAction::ProtectedPayload
+            ]
+        );
+
+        {
+            let entry = peer_map
+                .get_mut(UNTICKED)
+                .expect("unticked member entry exists");
+            entry
+                .outgoing_whitelists
+                .retain(|whitelist| !whitelist_entry_matches_scope(whitelist, &scope));
+            entry.burned_scopes.push(BurnedScope::Gc {
+                id: GCID.to_string(),
+                burned_at: "2026-08-06T00:00:00Z".to_string(),
+            });
+        }
+
+        let after = direct_member_delivery_plan(
+            &peer_map,
+            &gc_ctx(&built),
+            &scope,
+            &channel_members,
+            SELF,
+            UNTICKED,
+        );
+        let still_ticked = direct_member_delivery_plan(
+            &peer_map,
+            &gc_ctx(&built),
+            &scope,
+            &channel_members,
+            SELF,
+            STILL_TICKED,
+        );
+        println!(
+            "TASK 0129 before_untick member={} direct_delivery_plan={}",
+            before.member_discord_id,
+            before.action_names().join("+")
+        );
+        println!(
+            "TASK 0129 after_untick member={} direct_delivery_plan={} contains_cover_only={}",
+            after.member_discord_id,
+            after.action_names().join("+"),
+            after.contains_cover_only()
+        );
+        println!(
+            "TASK 0129 still_ticked member={} direct_delivery_plan={}",
+            still_ticked.member_discord_id,
+            still_ticked.action_names().join("+")
+        );
+
+        assert!(
+            after.contains_cover_only(),
+            "unticked group member must receive only the plain cover from then on"
+        );
+        assert_eq!(
+            still_ticked.actions.as_slice(),
+            [
+                DirectDeliveryAction::PlainCover,
+                DirectDeliveryAction::ProtectedPayload
+            ],
+            "other ticked members must remain protected recipients"
+        );
     }
 }
