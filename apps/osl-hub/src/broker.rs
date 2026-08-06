@@ -9072,6 +9072,12 @@ fn validate_context(context: &HubConversationContext) -> Result<(), String> {
             return Err("OSL broker participant set contains duplicates".to_owned());
         }
     }
+    if context.conversation_kind == HubConversationKind::Dm {
+        unique.insert(&context.self_osl_id);
+        if unique.len() != 2 {
+            return Err("OSL broker direct messages require exactly two members".to_owned());
+        }
+    }
     Ok(())
 }
 
@@ -15556,6 +15562,75 @@ mod tests {
         invalid.participant_osl_ids.pop();
         invalid.service_id = "instagram.evil".to_owned();
         assert!(validate_context(&invalid).is_err());
+    }
+
+    #[test]
+    fn task1309_direct_messages_reject_a_third_member() {
+        fn active_conversation_count(broker: &HubBrokerState) -> usize {
+            broker
+                .inner
+                .lock()
+                .expect("broker lock")
+                .active
+                .iter()
+                .count()
+        }
+
+        fn direct_members(context: &HubConversationContext) -> Vec<String> {
+            let mut members = vec![context.self_osl_id.clone()];
+            members.extend(context.participant_osl_ids.iter().cloned());
+            members.sort();
+            members.dedup();
+            members
+        }
+
+        let broker = HubBrokerState::default();
+        let before = active_conversation_count(&broker);
+        eprintln!("task1309: before conversation count={before}");
+        assert_eq!(before, 0);
+
+        let maple_dm = HubConversationContext {
+            service_id: "osl-chat".to_owned(),
+            account_id: "maple-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "maple-dm".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec!["Ben".to_owned()],
+            self_osl_id: "Ava".to_owned(),
+        };
+        let lease = broker.activate(maple_dm.clone(), 1).unwrap();
+        let stored = broker.context_for(&lease.context_token).unwrap();
+        let after_create = active_conversation_count(&broker);
+        let stored_members = direct_members(&stored);
+        eprintln!(
+            "task1309: after create conversation count={after_create}; {} members={}",
+            stored.conversation_id,
+            stored_members.join(", ")
+        );
+        assert_eq!(after_create, 1);
+        assert_eq!(stored.conversation_id, "maple-dm");
+        assert_eq!(stored_members, vec!["Ava".to_owned(), "Ben".to_owned()]);
+
+        let mut third_member = maple_dm;
+        third_member.participant_osl_ids = vec!["Ben".to_owned(), "Cy".to_owned()];
+        let refusal = broker.activate(third_member, 2).unwrap_err();
+        eprintln!("task1309: three member refusal={refusal}");
+        assert_eq!(
+            refusal,
+            "OSL broker direct messages require exactly two members"
+        );
+
+        let still_stored = broker.context_for(&lease.context_token).unwrap();
+        let after_refusal = active_conversation_count(&broker);
+        let still_members = direct_members(&still_stored);
+        eprintln!(
+            "task1309: after refusal conversation count={after_refusal}; {} members={}",
+            still_stored.conversation_id,
+            still_members.join(", ")
+        );
+        assert_eq!(after_refusal, 1);
+        assert_eq!(still_stored.conversation_id, "maple-dm");
+        assert_eq!(still_members, vec!["Ava".to_owned(), "Ben".to_owned()]);
     }
 
     #[test]
