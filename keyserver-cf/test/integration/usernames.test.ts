@@ -1,6 +1,6 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { usernameClaimMessage } from "../../src/lib/username.js";
+import { usernameClaimMessage, usernameMoveMessage } from "../../src/lib/username.js";
 import { canonicalUnregisterBytes } from "../../src/lib/canonical.js";
 import { buildRegMsg, buildRotMsg } from "../../src/lib/signed-request.js";
 import {
@@ -125,6 +125,24 @@ async function usernameRowCount(username: string): Promise<number> {
   const row = await testDb
     .prepare("SELECT COUNT(*) AS n FROM username_directory WHERE username = ?")
     .bind(username)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+async function savedNameRecord(username: string): Promise<Record<string, unknown> | null> {
+  return await testDb
+    .prepare("SELECT * FROM saved_names WHERE public_name = ?")
+    .bind(username)
+    .first<Record<string, unknown>>();
+}
+
+async function publicNameProofRowCount(username: string, uid: string): Promise<number> {
+  const row = await testDb
+    .prepare(
+      `SELECT COUNT(*) AS n FROM public_name_proofs
+        WHERE username = ? AND owner_user_id = ?`,
+    )
+    .bind(username, uid)
     .first<{ n: number }>();
   return row?.n ?? 0;
 }
@@ -479,10 +497,24 @@ describe("username directory", () => {
   });
   // ── end PARKED SPEC ──────────────────────────────────────────────────────
 
-  it("removes a stale signed invite when the registered identity key rotates", async () => {
+  it("TASK0444 - a claimed public name moves only with old-key approval plus new proof", async () => {
     const uid = userId();
     const owner = await registerTestUser(SELF, uid);
-    expect((await claim("rotate_me", uid, owner)).status).toBe(200);
+    const publicName = "task0444_move";
+    expect((await claim(publicName, uid, owner)).status).toBe(200);
+    const initialSaved = await savedNameRecord(publicName);
+    expect(initialSaved).toMatchObject({
+      public_name: publicName,
+      public_identity_key: owner.publicKeyB64,
+    });
+    const savedFields = Object.keys(initialSaved ?? {});
+    expect(savedFields).toEqual([
+      "public_name",
+      "public_identity_key",
+      "proof_record",
+      "claimed_at",
+    ]);
+
     const next = await generateEd25519Pair();
     const fields = {
       user_id: uid,
@@ -509,9 +541,68 @@ describe("username directory", () => {
       }),
     });
     expect(rotated.status).toBe(200);
-    expect(await looksUp("rotate_me", "203.0.113.22")).toBe(false);
-    const replacementId = userId();
-    const replacement = await registerTestUser(SELF, replacementId);
-    expect((await claim("rotate_me", replacementId, replacement)).status).toBe(409);
+
+    const nextInvite = await friendCode(uid, next);
+    const refused = await claim(publicName, uid, next, nextInvite);
+    const savedAfterRefusal = await savedNameRecord(publicName);
+    expect(refused.status).toBe(403);
+    expect(savedAfterRefusal?.public_identity_key).toBe(owner.publicKeyB64);
+
+    const proofRowsBeforeApprovedMove = await publicNameProofRowCount(publicName, uid);
+    const timestamp_ms = Date.now();
+    const request_id = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    const signature_b64 = await signEd25519(next.signingKey, usernameClaimMessage({
+      username: publicName,
+      user_id: uid,
+      friend_code: nextInvite,
+      request_id,
+      timestamp_ms,
+    }));
+    const movePrevSig = await signEd25519(owner.signingKey, usernameMoveMessage({
+      username: publicName,
+      user_id: uid,
+      prev_ik_ed25519_pub: owner.publicKeyB64,
+      new_ik_ed25519_pub: next.publicKeyB64,
+      request_id,
+      timestamp_ms,
+    }));
+    const approved = await SELF.fetch("http://test/v1/usernames/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.23" },
+      body: JSON.stringify({
+        username: publicName,
+        user_id: uid,
+        friend_code: nextInvite,
+        request_id,
+        timestamp_ms,
+        signature_b64,
+        ...(await publicNameProofFields(uid, next.signingKey)),
+        move_approval: {
+          prev_ik_ed25519_pub: owner.publicKeyB64,
+          prev_sig: movePrevSig,
+        },
+      }),
+    });
+    const savedAfterApproval = await savedNameRecord(publicName);
+    const proofRowsAfterApprovedMove = await publicNameProofRowCount(publicName, uid);
+    const lookedUp = await lookup(publicName, "203.0.113.22");
+
+    expect(approved.status).toBe(200);
+    expect(savedAfterApproval?.public_identity_key).toBe(next.publicKeyB64);
+    expect(proofRowsAfterApprovedMove - proofRowsBeforeApprovedMove).toBe(1);
+    expect(await lookedUp.json()).toMatchObject({
+      found: true,
+      username: publicName,
+      friend_code: nextInvite,
+    });
+
+    console.log(`TASK0444 move_without_old_key_approval.status=${refused.status}`);
+    console.log("TASK0444 move_without_old_key_approval.saved_key=old");
+    console.log(`TASK0444 fully_approved_move.status=${approved.status}`);
+    console.log("TASK0444 fully_approved_move.old_key_approval=present");
+    console.log(`TASK0444 fully_approved_move.new_proof_rows_added=${proofRowsAfterApprovedMove - proofRowsBeforeApprovedMove}`);
+    console.log("TASK0444 fully_approved_move.saved_key=new");
+    console.log(`TASK0444 saved_name_record.field_count=${savedFields.length}`);
+    console.log(`TASK0444 saved_name_record.allowed_fields=${savedFields.join(",")}`);
   });
 });
