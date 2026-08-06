@@ -2547,10 +2547,13 @@ async fn osl_prose_token_send(
         if let Ok(scope) = TryInto::<ipc::scope::Scope>::try_into(scope_input) {
             let blobs_path = dir.join("scope_blobs.json");
             let mut blobs = ipc::scope_blobs_file::load(&blobs_path);
-            ipc::scope_blobs_file::record_blob(
+            ipc::scope_blobs_file::record_blob_with_capability(
                 &mut blobs,
                 scope.storage_key(),
-                r.blob_id.clone(),
+                ipc::scope_blobs_file::RecordedBlob {
+                    blob_id: r.blob_id.clone(),
+                    burn_capability: r.burn_capability.clone(),
+                },
             );
             if let Err(e) = ipc::scope_blobs_file::write(&blobs_path, &blobs) {
                 tracing::warn!(error = %e, "OSL: scope_blobs persist failed (send still succeeded)");
@@ -2583,6 +2586,7 @@ async fn osl_prose_token_send(
 struct ScopeBurnBlobsDto {
     deleted: u32,
     failed: u32,
+    affected_scope: String,
 }
 
 #[tauri::command]
@@ -2599,14 +2603,20 @@ async fn osl_scope_burn_blobs(
         let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: config_dir: {e}"))?;
         let path = dir.join("scope_blobs.json");
         let mut file = ipc::scope_blobs_file::load(&path);
-        let blob_ids = ipc::scope_blobs_file::take_blobs(&mut file, &scope.storage_key());
+        let affected_scope = scope.storage_key();
+        let blobs = ipc::scope_blobs_file::take_blobs_for_burn(&mut file, &affected_scope);
         let mut deleted = 0u32;
         let mut failed = 0u32;
-        for id in &blob_ids {
-            match ipc::prose_token::prose_token_burn_id(&dir, &scope_for_token, id) {
+        for recorded in &blobs {
+            match ipc::prose_token::prose_token_burn_recorded(
+                &dir,
+                &scope_for_token,
+                &recorded.blob_id,
+                recorded.burn_capability.as_deref(),
+            ) {
                 Ok(()) => deleted += 1,
                 Err(e) => {
-                    tracing::warn!(blob_id = %id, error = %e, "OSL: scope_burn_blobs delete failed");
+                    tracing::warn!(blob_id = %recorded.blob_id, error = %e, "OSL: scope_burn_blobs delete failed");
                     failed += 1;
                 }
             }
@@ -2615,12 +2625,16 @@ async fn osl_scope_burn_blobs(
             tracing::warn!(error = %e, "OSL: scope_blobs persist (post-burn clear) failed");
         }
         tracing::info!(
-            scope = %scope.storage_key(),
+            scope = %affected_scope,
             deleted,
             failed,
             "OSL: scope_burn_blobs"
         );
-        Ok(ScopeBurnBlobsDto { deleted, failed })
+        Ok(ScopeBurnBlobsDto {
+            deleted,
+            failed,
+            affected_scope,
+        })
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?

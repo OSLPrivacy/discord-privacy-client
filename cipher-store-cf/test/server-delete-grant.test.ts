@@ -2,6 +2,7 @@ import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { DELETE_GRANT_RECORD } from "../src/lib/delete-grant.js";
 import { sha256Hex } from "../src/lib/digest.js";
+import { senderOwnCopyBurnCommand } from "../src/lib/sender-own-copy-burn-command.js";
 import { d1All, d1Count, d1First, d1Run } from "./helpers/workerd.js";
 
 const ORIGIN = "https://cipher.test";
@@ -13,9 +14,20 @@ const MESSAGE = "message:0405";
 const OWNER = "identity:sender-0405";
 const BURN_SCOPE = "discord:9000000000000405:direct_message:stored-copy";
 
-async function seedProtectedStoredCopy() {
+interface ProtectedStoredCopyFixture {
+  id: string;
+  fetchCap: string;
+  ackCap: string;
+  manageCap: string;
+  message: string;
+  owner: string;
+  burnScope: string;
+  deliveryTag?: string;
+}
+
+async function seedProtectedStoredCopyFixture(fixture: ProtectedStoredCopyFixture) {
   const now = Math.floor(Date.now() / 1000);
-  const fetchDigest = await sha256Hex(FETCH_CAP);
+  const fetchDigest = await sha256Hex(fixture.fetchCap);
   await d1Run(
     `INSERT INTO blob_capability_index (
        blob_id, fetch_digest_sha256_hex, ack_digest_sha256_hex,
@@ -23,20 +35,32 @@ async function seedProtectedStoredCopy() {
        size_bytes, expires_at, created_at,
        delete_grant_message, delete_grant_owner, burn_scope
      ) VALUES (?, ?, ?, ?, 'single-ack', 'undelivered', ?, ?, ?, ?, ?, ?, ?)`,
-    ID,
+    fixture.id,
     fetchDigest,
-    await sha256Hex(ACK_CAP),
-    await sha256Hex(MANAGE_CAP),
-    "5".repeat(32),
+    await sha256Hex(fixture.ackCap),
+    await sha256Hex(fixture.manageCap),
+    fixture.deliveryTag ?? "5".repeat(32),
     1,
     now + 3600,
     now,
-    MESSAGE,
-    OWNER,
-    BURN_SCOPE,
+    fixture.message,
+    fixture.owner,
+    fixture.burnScope,
   );
   await env.PAYLOADS.put(fetchDigest, new Uint8Array([7]));
   return fetchDigest;
+}
+
+async function seedProtectedStoredCopy() {
+  return seedProtectedStoredCopyFixture({
+    id: ID,
+    fetchCap: FETCH_CAP,
+    ackCap: ACK_CAP,
+    manageCap: MANAGE_CAP,
+    message: MESSAGE,
+    owner: OWNER,
+    burnScope: BURN_SCOPE,
+  });
 }
 
 function senderDeleteGrant(): string {
@@ -109,5 +133,47 @@ describe("TASK 0405 server delete-grant validation", () => {
     expect(response.status).toBe(204);
     expect(await d1Count("SELECT COUNT(*) FROM blob_capability_index WHERE blob_id = ?", ID)).toBe(0);
     await expect(env.PAYLOADS.head(fetchDigest)).resolves.toBeNull();
+  });
+});
+
+describe("TASK 0406 sender own-copy burn command", () => {
+  it("deletes its permitted copy and reports the exact affected scope", async () => {
+    const fixture = {
+      id: "04060000000000000000000000000000",
+      fetchCap: "f4060000000000000000000000000000",
+      ackCap: "a4060000000000000000000000000000",
+      manageCap: "d4060000000000000000000000000000",
+      message: "message:0406",
+      owner: "identity:sender-0406",
+      burnScope: "discord:9000000000000406:direct_message:stored-copy",
+    };
+    const fetchDigest = await seedProtectedStoredCopyFixture(fixture);
+    const grant = JSON.stringify({
+      record: DELETE_GRANT_RECORD,
+      message: fixture.message,
+      owner: fixture.owner,
+      scope: fixture.burnScope,
+    });
+
+    const report = await senderOwnCopyBurnCommand({
+      fetch: SELF.fetch.bind(SELF),
+      origin: ORIGIN,
+      blobId: fixture.id,
+      manageCap: fixture.manageCap,
+      senderDeleteGrant: grant,
+    });
+
+    const remainingRows = await d1Count("SELECT COUNT(*) FROM blob_capability_index WHERE blob_id = ?", fixture.id);
+    expect(report).toEqual({
+      deleted: true,
+      status: 204,
+      affected_scope: fixture.burnScope,
+    });
+    expect(remainingRows).toBe(0);
+    await expect(env.PAYLOADS.head(fetchDigest)).resolves.toBeNull();
+
+    console.log(
+      `TASK0406 sender_command=sender_own_copy_burn deleted=${report.deleted ? 1 : 0} status=${report.status} affected_scope=${report.affected_scope} remaining_rows=${remainingRows} payload_deleted=yes`,
+    );
   });
 });

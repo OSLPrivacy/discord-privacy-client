@@ -21,7 +21,7 @@ use base64::Engine as _;
 use reqwest::blocking::Client;
 use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Built-in production cipher-store. Release clients are pinned to this
@@ -79,6 +79,48 @@ pub struct BlobCapabilities {
     pub ack_cap: [u8; FETCH_TOKEN_BYTES],
     pub manage_cap: [u8; FETCH_TOKEN_BYTES],
     pub delivery_tag: [u8; FETCH_TOKEN_BYTES],
+}
+
+const DELETE_GRANT_RECORD: &str = "osl/delete-grant/v1";
+
+/// Sender-only grant that authorizes deletion of one stored copy in one scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeleteGrantRecord {
+    record: &'static str,
+    message: String,
+    owner: String,
+    scope: String,
+}
+
+impl DeleteGrantRecord {
+    pub fn new(
+        message: impl Into<String>,
+        owner: impl Into<String>,
+        scope: impl Into<String>,
+    ) -> Self {
+        Self {
+            record: DELETE_GRANT_RECORD,
+            message: message.into(),
+            owner: owner.into(),
+            scope: scope.into(),
+        }
+    }
+
+    pub fn scope(&self) -> &str {
+        &self.scope
+    }
+
+    fn header_value(&self) -> Result<String, CipherStoreError> {
+        serde_json::to_string(self).map_err(|error| {
+            CipherStoreError::ParseError(format!("delete grant serialization failed: {error}"))
+        })
+    }
+}
+
+/// Result reported by the sender's own-copy burn command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnCopyBurnReport {
+    pub affected_scope: String,
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -788,6 +830,32 @@ impl CipherStoreClient {
         )
     }
 
+    /// Permanently burn the sender's own stored copy with both authorities the
+    /// Worker requires: the sender-derived manage capability and the scoped
+    /// sender delete grant bound to this message.
+    pub fn burn_own_copy(
+        &self,
+        id_hex: &str,
+        manage_cap: &[u8; FETCH_TOKEN_BYTES],
+        delete_grant: &DeleteGrantRecord,
+    ) -> Result<OwnCopyBurnReport, CipherStoreError> {
+        let response = self
+            .http
+            .delete(format!("{}/v1/blob/{id_hex}", self.base_url))
+            .header("x-osl-manage-cap", hex_lower(manage_cap))
+            .header("x-osl-delete-grant", delete_grant.header_value()?)
+            .send()?;
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            return Err(CipherStoreError::RateLimited);
+        }
+        if !response.status().is_success() {
+            return Err(status_error(response));
+        }
+        Ok(OwnCopyBurnReport {
+            affected_scope: delete_grant.scope().to_owned(),
+        })
+    }
+
     fn no_content(
         &self,
         method: &str,
@@ -1317,6 +1385,66 @@ mod tests {
         assert!(requests[3].contains("x-osl-ack-cap: 02020202020202020202020202020202"));
         assert!(requests[4].starts_with("delete /v1/blob/00000000000000000000000000000000"));
         assert!(requests[4].contains("x-osl-manage-cap: 03030303030303030303030303030303"));
+    }
+
+    #[test]
+    fn task_0406_sender_own_copy_burn_passes_delete_grant_and_reports_scope() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            request
+        });
+        let client = CipherStoreClient::new(format!("http://{address}")).unwrap();
+        let grant = DeleteGrantRecord::new(
+            "message:0406",
+            "identity:sender-0406",
+            "discord:9000000000000406:direct_message:own-copy",
+        );
+
+        let report = client
+            .burn_own_copy(
+                "04060000000000000000000000000000",
+                &[0xd4; FETCH_TOKEN_BYTES],
+                &grant,
+            )
+            .unwrap();
+
+        let request = server.join().unwrap();
+        let request_lower = request.to_ascii_lowercase();
+        assert!(request_lower.starts_with("delete /v1/blob/04060000000000000000000000000000"));
+        assert!(request_lower.contains("x-osl-manage-cap: d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"));
+        let grant_line = request
+            .lines()
+            .find(|line| {
+                line.to_ascii_lowercase()
+                    .starts_with("x-osl-delete-grant: ")
+            })
+            .expect("sender delete grant header is present");
+        let grant_json = grant_line
+            .split_once(": ")
+            .map(|(_, value)| value)
+            .expect("header has a value");
+        let sent_grant: serde_json::Value = serde_json::from_str(grant_json).unwrap();
+        assert_eq!(sent_grant["record"], DELETE_GRANT_RECORD);
+        assert_eq!(sent_grant["message"], "message:0406");
+        assert_eq!(sent_grant["owner"], "identity:sender-0406");
+        assert_eq!(
+            sent_grant["scope"],
+            "discord:9000000000000406:direct_message:own-copy"
+        );
+        assert_eq!(
+            report.affected_scope,
+            "discord:9000000000000406:direct_message:own-copy"
+        );
+        println!(
+            "TASK0406 rust_sender_command=burn_own_copy delete_grant_header=present affected_scope={} status=204",
+            report.affected_scope
+        );
     }
 
     /// A window shorter than the seven-day default floor is refused outright
