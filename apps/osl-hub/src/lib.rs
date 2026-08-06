@@ -132,6 +132,7 @@ pub mod scrub_hosted {
     pub mod reader;
     pub mod verify_surface;
     pub mod x_web;
+    pub mod yahoo_mail;
 }
 #[cfg(all(feature = "core", feature = "desktop"))]
 pub mod revocation_drain_timer;
