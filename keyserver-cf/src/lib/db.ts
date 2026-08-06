@@ -286,6 +286,13 @@ export async function unregisterUserIfCurrent(
         )
         .bind(userId, userId, expectedCurrentEd25519Pub),
       db
+        .prepare(
+          `DELETE FROM public_name_proofs
+          WHERE owner_user_id = ?
+            AND ${ownsCurrentKey}`,
+        )
+        .bind(userId, userId, expectedCurrentEd25519Pub),
+      db
         .prepare("DELETE FROM users WHERE user_id = ? AND ik_ed25519_pub = ?")
         .bind(userId, expectedCurrentEd25519Pub),
     ]);

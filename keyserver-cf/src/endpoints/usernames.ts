@@ -1,8 +1,9 @@
 import type { Env } from "../env.js";
 import { getUserForVerify } from "../lib/db.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
-import { badRequest, conflict, json, tooMany, unauthorized } from "../lib/http.js";
-import { isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/validation.js";
+import { sha256Hex } from "../lib/account-ownership-challenge.js";
+import { badRequest, conflict, forbidden, json, tooMany, unauthorized } from "../lib/http.js";
+import { isDiscordSnowflake, isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/validation.js";
 import { verifySignedRequest } from "../lib/signed-request.js";
 import {
   USERNAME_FRESHNESS_MS,
@@ -12,6 +13,42 @@ import {
   validNormalizedUsername,
   validateFriendCode,
 } from "../lib/username.js";
+
+const PUBLIC_NAME_PROOF_TTL_SECONDS = 5 * 60;
+
+interface PublicNameProofInput {
+  service: "discord";
+  service_account_id: string;
+  name: string;
+  token: string;
+}
+
+interface PublicNameProofRow {
+  service: string;
+  service_account_sha256: string;
+  owner_user_id: string;
+  name: string;
+  issued_at_unix_seconds: number;
+  expires_at_unix_seconds: number;
+  consumed_at_unix_seconds: number | null;
+}
+
+function parsePublicNameProof(value: unknown): PublicNameProofInput | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const proof = value as Record<string, unknown>;
+  const keys = Object.keys(proof).sort().join(",");
+  if (keys !== "name,service,service_account_id,token") return null;
+  if (proof.service !== "discord") return null;
+  if (typeof proof.service_account_id !== "string" || !isDiscordSnowflake(proof.service_account_id)) return null;
+  if (!validNormalizedUsername(proof.name)) return null;
+  if (!isHighEntropyRequestId(proof.token)) return null;
+  return {
+    service: "discord",
+    service_account_id: proof.service_account_id,
+    name: proof.name,
+    token: proof.token,
+  };
+}
 
 /// Every lookup answer is padded to exactly this many bytes of JSON.
 ///
@@ -105,9 +142,14 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   if (!isNonEmptyBase64(body.signature_b64)) return badRequest("signature_b64 invalid");
   if (typeof body.timestamp_ms !== "number" || !Number.isSafeInteger(body.timestamp_ms) || body.timestamp_ms <= 0) return badRequest("timestamp_ms invalid");
   if (Math.abs(Date.now() - body.timestamp_ms) > USERNAME_FRESHNESS_MS) return badRequest("timestamp_ms stale");
+  const publicNameProof = parsePublicNameProof(body.public_name_proof);
+  if (!publicNameProof) return badRequest("public_name_proof invalid");
 
   const username = body.username;
   const userId = body.user_id;
+  if (publicNameProof.name !== username) {
+    return forbidden("public name proof is for a different name");
+  }
   const current = await getUserForVerify(env.DB, userId);
   if (!current) return unauthorized("registered identity required");
   const validInvite = await validateFriendCode(body.friend_code, userId, current.ik_ed25519_pub);
@@ -121,6 +163,55 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   });
   if (!await verifySignedRequest(current.ik_ed25519_pub, message, body.signature_b64)) {
     return unauthorized("username claim signature invalid");
+  }
+  const nowUnixSeconds = Math.floor(Date.now() / 1000);
+  const [proofTokenSha256, serviceAccountSha256] = await Promise.all([
+    sha256Hex(new TextEncoder().encode(publicNameProof.token)),
+    sha256Hex(new TextEncoder().encode(publicNameProof.service_account_id)),
+  ]);
+  let publicNameProofRow: PublicNameProofRow | null;
+  try {
+    publicNameProofRow = await env.DB.prepare(
+      `SELECT service, service_account_sha256, owner_user_id, name,
+              issued_at_unix_seconds, expires_at_unix_seconds,
+              consumed_at_unix_seconds
+         FROM public_name_proofs
+        WHERE token_sha256 = ?`,
+    ).bind(proofTokenSha256).first<PublicNameProofRow>();
+  } catch {
+    return badRequest("public_name_proof storage unavailable");
+  }
+  if (!publicNameProofRow) return forbidden("public name proof was not issued");
+  if (
+    publicNameProofRow.service !== publicNameProof.service ||
+    publicNameProofRow.service_account_sha256 !== serviceAccountSha256 ||
+    publicNameProofRow.owner_user_id !== userId ||
+    publicNameProofRow.name !== username
+  ) {
+    return forbidden("public name proof binding mismatch");
+  }
+  if (
+    publicNameProofRow.expires_at_unix_seconds -
+      publicNameProofRow.issued_at_unix_seconds >
+        PUBLIC_NAME_PROOF_TTL_SECONDS
+  ) {
+    return forbidden("public name proof lifetime is too long");
+  }
+  if (nowUnixSeconds >= publicNameProofRow.expires_at_unix_seconds) {
+    return forbidden("public name proof has expired");
+  }
+  if (publicNameProofRow.consumed_at_unix_seconds !== null) {
+    return conflict("public name proof already consumed");
+  }
+  const boundAccount = await env.DB.prepare(
+    `SELECT 1 FROM account_ownership_proof_bindings
+      WHERE service = ?1
+        AND service_account_sha256 = ?2
+        AND owner_user_id = ?3
+      LIMIT 1`,
+  ).bind(publicNameProof.service, serviceAccountSha256, userId).first();
+  if (!boundAccount) {
+    return forbidden("public name proof account is not bound to this identity");
   }
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", message));
   const now = new Date().toISOString();
@@ -138,12 +229,47 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   try {
     result = await env.DB.batch([
       env.DB.prepare("DELETE FROM username_claim_receipts WHERE expires_at < ?").bind(Math.floor(Date.now() / 1000)),
+      env.DB.prepare("DELETE FROM public_name_proofs WHERE expires_at_unix_seconds <= ?").bind(nowUnixSeconds),
+      env.DB.prepare(
+        `UPDATE public_name_proofs
+            SET consumed_at_unix_seconds = ?5
+          WHERE token_sha256 = ?1
+            AND service = ?2
+            AND service_account_sha256 = ?3
+            AND owner_user_id = ?4
+            AND name = ?6
+            AND consumed_at_unix_seconds IS NULL
+            AND expires_at_unix_seconds > ?5
+            AND (expires_at_unix_seconds - issued_at_unix_seconds) <= ?7`,
+      ).bind(
+        proofTokenSha256,
+        publicNameProof.service,
+        serviceAccountSha256,
+        userId,
+        nowUnixSeconds,
+        username,
+        PUBLIC_NAME_PROOF_TTL_SECONDS,
+      ),
       env.DB.prepare(
         `INSERT INTO username_claim_receipts (user_id, request_digest, expires_at)
          SELECT ?1, ?2, ?3 WHERE EXISTS (
            SELECT 1 FROM users WHERE user_id = ?1 AND ik_ed25519_pub = ?4
+         ) AND EXISTS (
+           SELECT 1 FROM public_name_proofs
+            WHERE token_sha256 = ?5
+              AND owner_user_id = ?1
+              AND name = ?6
+              AND consumed_at_unix_seconds = ?7
          )`,
-      ).bind(userId, digest, Math.floor(Date.now() / 1000) + 10 * 60, current.ik_ed25519_pub),
+      ).bind(
+        userId,
+        digest,
+        Math.floor(Date.now() / 1000) + 10 * 60,
+        current.ik_ed25519_pub,
+        proofTokenSha256,
+        username,
+        nowUnixSeconds,
+      ),
       env.DB.prepare(
         `DELETE FROM username_directory
           WHERE user_id = ?1 AND username <> ?2
@@ -187,7 +313,8 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
     }
     throw error;
   }
-  if ((result[1]?.meta?.changes ?? 0) !== 1) return conflict("username claim replayed or identity changed");
-  if ((result[3]?.meta?.changes ?? 0) !== 1) return conflict("username is unavailable");
+  if ((result[2]?.meta?.changes ?? 0) !== 1) return conflict("public name proof already consumed");
+  if ((result[3]?.meta?.changes ?? 0) !== 1) return conflict("username claim replayed or identity changed");
+  if ((result[5]?.meta?.changes ?? 0) !== 1) return conflict("username is unavailable");
   return json({ username, user_id: userId }, { status: 200 });
 }
