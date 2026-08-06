@@ -10072,6 +10072,7 @@ pub fn cmd_osl_accept_friend_request(
 
     let scope = request.scope_grant.scope().clone();
     adopt_friend_request_scope(state, &requester_discord_id, &scope)?;
+    record_accepted_friend_relationship(state, &requester_discord_id);
 
     let scope_kind_str = match scope.kind {
         crate::scope::ScopeKind::Dm => "dm",
@@ -10082,6 +10083,27 @@ pub fn cmd_osl_accept_friend_request(
     let _ = cmd_osl_unburn_scope(state, scope_kind_str.to_string(), scope.id);
 
     Ok(())
+}
+
+fn record_accepted_friend_relationship(state: &AppState, requester_discord_id: &str) {
+    let self_discord_id = {
+        let identity = state.identity_slot();
+        identity
+            .as_ref()
+            .and_then(|identity| identity.discord_snowflake.as_deref())
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_owned)
+    };
+
+    let mut friend_ids = state.friend_ids.lock().expect("friend_ids mutex poisoned");
+    for id in self_discord_id
+        .into_iter()
+        .chain(std::iter::once(requester_discord_id.to_owned()))
+    {
+        if !friend_ids.iter().any(|existing| existing == &id) {
+            friend_ids.push(id);
+        }
+    }
 }
 
 const PENDING_FRIEND_REQUESTS_FILE: &str = "pending_friend_requests.json";
