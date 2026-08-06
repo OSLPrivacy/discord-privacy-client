@@ -24,8 +24,10 @@ pub use defaults::{
     SIGNAL_DESKTOP_NATIVE_PRIMARY_WINDOW_CLASS, SIGNAL_DESKTOP_NATIVE_WINDOW_TITLE,
 };
 pub use defaults_web::{
-    capabilities_from_profile, x_web_default_capability_profile, x_web_default_profile,
-    x_web_default_trusted_signing_key_b64,
+    capabilities_from_profile, instagram_web_default_profile,
+    instagram_web_default_trusted_signing_key_b64, messenger_web_default_profile,
+    messenger_web_default_trusted_signing_key_b64, x_web_default_capability_profile,
+    x_web_default_profile, x_web_default_trusted_signing_key_b64,
 };
 pub use envelope::{
     canonical_profile_digest, EnvelopeError, SignedProfile, ADAPTER_PROFILE_ENVELOPE_DOMAIN,
@@ -43,11 +45,11 @@ pub use schema::{
     PROFILE_DOC_VERSION,
 };
 pub use schema::{
-    canonical_profile_payload_bytes, sign_profile_doc, verify_profile_doc, AppDescriptor,
-    AuthorityRequirements, FallbackCondition, FallbackStrategy, HarmlessCanary, ProfileError,
-    ProfilePayload, ProfileRevision, SelectorKind, SelectorStrategy, SignedProfileDoc,
-    SupportLevel, TypedSelector, PROFILE_DOC_DOMAIN, PROFILE_DOC_ENVELOPE_VERSION,
-    PROFILE_DOC_SCHEMA_VERSION,
+    canonical_profile_payload_bytes, selector_kind_count, sign_profile_doc, verify_profile_doc,
+    AppDescriptor, AuthorityRequirements, FallbackCondition, FallbackStrategy, HarmlessCanary,
+    ProfileError, ProfilePayload, ProfileRevision, SelectorKind, SelectorStrategy,
+    SignedProfileDoc, SupportLevel, TypedSelector, ALL_SELECTOR_KINDS, PROFILE_DOC_DOMAIN,
+    PROFILE_DOC_ENVELOPE_VERSION, PROFILE_DOC_SCHEMA_VERSION, TASK_4073_SELECTOR_KIND_COUNT_BEFORE,
 };
 pub use score::{
     score, CandidateEvidence, CandidateSelection, CandidateSurface, EvidenceSignal, ScoredCandidate,

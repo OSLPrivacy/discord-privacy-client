@@ -471,9 +471,28 @@ pub enum SelectorKind {
     ConversationTitle,
     MessageList,
     MessageRow,
+    MessageRowAuthor,
     ComposerInput,
     SendButton,
     SentState,
+}
+
+pub const ALL_SELECTOR_KINDS: [SelectorKind; 9] = [
+    SelectorKind::AppRoot,
+    SelectorKind::AccountBadge,
+    SelectorKind::ConversationTitle,
+    SelectorKind::MessageList,
+    SelectorKind::MessageRow,
+    SelectorKind::MessageRowAuthor,
+    SelectorKind::ComposerInput,
+    SelectorKind::SendButton,
+    SelectorKind::SentState,
+];
+
+pub const TASK_4073_SELECTOR_KIND_COUNT_BEFORE: usize = 8;
+
+pub const fn selector_kind_count() -> usize {
+    ALL_SELECTOR_KINDS.len()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1270,6 +1289,52 @@ mod tests {
         let err = payload.validate_for_use(NOW).unwrap_err();
 
         assert_eq!(err, ProfileError::MissingMessageRowSelector);
+    }
+
+    #[test]
+    fn task_4073_page_control_table_accepts_row_author_and_refuses_unknown_kind() {
+        let before = TASK_4073_SELECTOR_KIND_COUNT_BEFORE;
+        let after = selector_kind_count();
+        println!("TASK4073_SELECTOR_KIND_COUNT_BEFORE={before}");
+        println!("TASK4073_SELECTOR_KIND_COUNT_AFTER={after}");
+        assert_eq!(after, before + 1);
+        assert_eq!(after, 9);
+        assert!(ALL_SELECTOR_KINDS.contains(&SelectorKind::MessageRowAuthor));
+
+        let mut table = serde_json::to_value(sample_payload()).unwrap();
+        table["selectors"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "kind": "message_row_author",
+                "strategy": {
+                    "kind": "accessibility",
+                    "role": "text",
+                    "name": null,
+                    "automation_id": "row-author"
+                },
+                "required": true
+            }));
+        let loaded = serde_json::from_value::<ProfilePayload>(table.clone());
+        let load_errors = usize::from(loaded.is_err());
+        println!("TASK4073_ROW_AUTHOR_TABLE_KIND=message_row_author load_errors={load_errors}");
+        let loaded = loaded.unwrap();
+        loaded.validate_for_use(NOW).unwrap();
+        assert!(loaded
+            .selectors
+            .iter()
+            .any(|selector| selector.kind == SelectorKind::MessageRowAuthor));
+
+        table["selectors"].as_array_mut().unwrap()[0]["kind"] = serde_json::json!("made_up_kind");
+        let made_up = serde_json::from_value::<ProfilePayload>(table);
+        if made_up.is_ok() {
+            println!("TASK4073_UNKNOWN_KIND_LOADED=made_up_kind");
+            panic!("table using made-up kind loaded: made_up_kind");
+        }
+        let err = made_up.unwrap_err().to_string();
+        println!("TASK4073_UNKNOWN_KIND_REFUSED=made_up_kind");
+        println!("TASK4073_UNKNOWN_KIND_ERROR={err}");
+        assert!(err.contains("made_up_kind"));
     }
 
     #[test]

@@ -10,10 +10,18 @@ use crate::schema::{
 };
 use std::collections::BTreeSet;
 
-const X_WEB_DEFAULT_SIGNING_KEY_B64: &str = "my2s2WkkDdRIj4x0FR0PWxPfhotOc27nI5rmxlsMr40=";
-const X_WEB_DEFAULT_PAYLOAD_B64: &str = "eyJkb21haW4iOiJvc2wvYWRhcHRlci1wcm9maWxlL3YxIiwic2NoZW1hX3ZlcnNpb24iOjEsImFkYXB0ZXJfaWQiOiJ4LndlYi5maXhlZC1vcmlnaW4iLCJhcHAiOnsic3RhYmxlX2lkIjoieCIsImRpc3BsYXlfbmFtZSI6IlgiLCJzZXJ2aWNlX2ZhbWlseSI6Im1lc3NhZ2luZyIsIm1pbl9hcHBfdmVyc2lvbiI6bnVsbH0sInJldmlzaW9uIjp7Im51bWJlciI6MSwibGFiZWwiOiIyMDI2LTA4LTAyLXgtd2ViLXJldmlld2VkLXYxIn0sImlzc3VlZF9hdF91bml4X3NlY29uZHMiOjE3ODU2Mjg4MDAsImV4cGlyZXNfYXRfdW5peF9zZWNvbmRzIjoxOTI0OTkyMDAwLCJzdXBwb3J0Ijoic3VwcG9ydGVkIiwiYXV0aG9yaXR5Ijp7InVzZXJfY29uc2VudF9yZXF1aXJlZCI6dHJ1ZSwiYWNjb3VudF9iaW5kaW5nX3JlcXVpcmVkIjp0cnVlLCJyZWxlYXNlX2F1dGhvcml0eV9yZXF1aXJlZCI6dHJ1ZSwiaGFybWxlc3NfY2FuYXJ5X3JlcXVpcmVkIjp0cnVlfSwic2VsZWN0b3JzIjpbeyJraW5kIjoiYXBwX3Jvb3QiLCJzdHJhdGVneSI6eyJraW5kIjoiYWNjZXNzaWJpbGl0eSIsInJvbGUiOiJkb2N1bWVudCIsIm5hbWUiOm51bGwsImF1dG9tYXRpb25faWQiOm51bGx9LCJyZXF1aXJlZCI6dHJ1ZX0seyJraW5kIjoiY29udmVyc2F0aW9uX3RpdGxlIiwic3RyYXRlZ3kiOnsia2luZCI6ImFjY2Vzc2liaWxpdHkiLCJyb2xlIjoiaGVhZGluZyIsIm5hbWUiOm51bGwsImF1dG9tYXRpb25faWQiOm51bGx9LCJyZXF1aXJlZCI6dHJ1ZX0seyJraW5kIjoibWVzc2FnZV9saXN0Iiwic3RyYXRlZ3kiOnsia2luZCI6ImFjY2Vzc2liaWxpdHkiLCJyb2xlIjoibGlzdCIsIm5hbWUiOm51bGwsImF1dG9tYXRpb25faWQiOm51bGx9LCJyZXF1aXJlZCI6dHJ1ZX0seyJraW5kIjoibWVzc2FnZV9yb3ciLCJzdHJhdGVneSI6eyJraW5kIjoiYWNjZXNzaWJpbGl0eSIsInJvbGUiOiJsaXN0aXRlbSIsIm5hbWUiOm51bGwsImF1dG9tYXRpb25faWQiOm51bGx9LCJyZXF1aXJlZCI6dHJ1ZX0seyJraW5kIjoiY29tcG9zZXJfaW5wdXQiLCJzdHJhdGVneSI6eyJraW5kIjoiYWNjZXNzaWJpbGl0eSIsInJvbGUiOiJ0ZXh0Ym94IiwibmFtZSI6bnVsbCwiYXV0b21hdGlvbl9pZCI6bnVsbH0sInJlcXVpcmVkIjp0cnVlfV0sImZhbGxiYWNrcyI6W10sImNhbmFyeSI6eyJzZWxlY3RvciI6ImFwcF9yb290IiwiZXhwZWN0ZWRfdGV4dCI6Ik1lc3NhZ2VzIiwibWF4X2FnZV9zZWNvbmRzIjozNjAwfX0=";
+const X_WEB_DEFAULT_SIGNING_KEY_B64: &str = "mpX2e2k29ZUsUPzxT8ljDNf50CLWJyRG2TuCvUGps8M=";
+const X_WEB_DEFAULT_PAYLOAD_B64: &str = "eyJkb21haW4iOiJvc2wvYWRhcHRlci1wcm9maWxlL3YxIiwic2NoZW1hX3ZlcnNpb24iOjEsImFkYXB0ZXJfaWQiOiJ4LndlYi5maXhlZC1vcmlnaW4iLCJhcHAiOnsic3RhYmxlX2lkIjoieCIsImRpc3BsYXlfbmFtZSI6IlgiLCJzZXJ2aWNlX2ZhbWlseSI6Im1lc3NhZ2luZyIsIm1pbl9hcHBfdmVyc2lvbiI6bnVsbH0sInJldmlzaW9uIjp7Im51bWJlciI6MiwibGFiZWwiOiIyMDI2LTA4LTA2LXgtd2ViLXJvdy1hdXRob3ItdjIifSwiaXNzdWVkX2F0X3VuaXhfc2Vjb25kcyI6MTc4NTYyODgwMCwiZXhwaXJlc19hdF91bml4X3NlY29uZHMiOjE5MjQ5OTIwMDAsInN1cHBvcnQiOiJzdXBwb3J0ZWQiLCJhdXRob3JpdHkiOnsidXNlcl9jb25zZW50X3JlcXVpcmVkIjp0cnVlLCJhY2NvdW50X2JpbmRpbmdfcmVxdWlyZWQiOnRydWUsInJlbGVhc2VfYXV0aG9yaXR5X3JlcXVpcmVkIjp0cnVlLCJoYXJtbGVzc19jYW5hcnlfcmVxdWlyZWQiOnRydWV9LCJzZWxlY3RvcnMiOlt7ImtpbmQiOiJhcHBfcm9vdCIsInN0cmF0ZWd5Ijp7ImtpbmQiOiJhY2Nlc3NpYmlsaXR5Iiwicm9sZSI6ImRvY3VtZW50IiwibmFtZSI6bnVsbCwiYXV0b21hdGlvbl9pZCI6bnVsbH0sInJlcXVpcmVkIjp0cnVlfSx7ImtpbmQiOiJjb252ZXJzYXRpb25fdGl0bGUiLCJzdHJhdGVneSI6eyJraW5kIjoiYWNjZXNzaWJpbGl0eSIsInJvbGUiOiJoZWFkaW5nIiwibmFtZSI6bnVsbCwiYXV0b21hdGlvbl9pZCI6bnVsbH0sInJlcXVpcmVkIjp0cnVlfSx7ImtpbmQiOiJtZXNzYWdlX2xpc3QiLCJzdHJhdGVneSI6eyJraW5kIjoiYWNjZXNzaWJpbGl0eSIsInJvbGUiOiJsaXN0IiwibmFtZSI6bnVsbCwiYXV0b21hdGlvbl9pZCI6bnVsbH0sInJlcXVpcmVkIjp0cnVlfSx7ImtpbmQiOiJtZXNzYWdlX3JvdyIsInN0cmF0ZWd5Ijp7ImtpbmQiOiJhY2Nlc3NpYmlsaXR5Iiwicm9sZSI6Imxpc3RpdGVtIiwibmFtZSI6bnVsbCwiYXV0b21hdGlvbl9pZCI6bnVsbH0sInJlcXVpcmVkIjp0cnVlfSx7ImtpbmQiOiJtZXNzYWdlX3Jvd19hdXRob3IiLCJzdHJhdGVneSI6eyJraW5kIjoiYWNjZXNzaWJpbGl0eSIsInJvbGUiOiJ0ZXh0IiwibmFtZSI6bnVsbCwiYXV0b21hdGlvbl9pZCI6bnVsbH0sInJlcXVpcmVkIjp0cnVlfSx7ImtpbmQiOiJjb21wb3Nlcl9pbnB1dCIsInN0cmF0ZWd5Ijp7ImtpbmQiOiJhY2Nlc3NpYmlsaXR5Iiwicm9sZSI6InRleHRib3giLCJuYW1lIjpudWxsLCJhdXRvbWF0aW9uX2lkIjpudWxsfSwicmVxdWlyZWQiOnRydWV9XSwiZmFsbGJhY2tzIjpbXSwiY2FuYXJ5Ijp7InNlbGVjdG9yIjoiYXBwX3Jvb3QiLCJleHBlY3RlZF90ZXh0IjoiTWVzc2FnZXMiLCJtYXhfYWdlX3NlY29uZHMiOjM2MDB9fQ==";
 const X_WEB_DEFAULT_SIGNATURE_B64: &str =
-    "LSsGOcJFXw+e0BhiTwcUW2+xqhyx+7XXsI9VkcTkaX+7378yjhPMc4X5hE9/zXk1looBKQ8T/SS7XSiQmzroDA==";
+    "RcFnMdQtFsb3BxDJGey1dW5zKUhTyQfQ4TLBxNRJq/VIGODBSG5cbX2DxzCc8fusnAzPva+wI12oTRwy9J6FBw==";
+const INSTAGRAM_WEB_DEFAULT_SIGNING_KEY_B64: &str = "5d3NWWnBzY+DY1gIe5kFcyK07V49hsFYwX2higeQ99g=";
+const INSTAGRAM_WEB_DEFAULT_PAYLOAD_B64: &str = "eyJkb21haW4iOiJvc2wvYWRhcHRlci1wcm9maWxlL3YxIiwic2NoZW1hX3ZlcnNpb24iOjEsImFkYXB0ZXJfaWQiOiJpbnN0YWdyYW0ud2ViLmZpeGVkLW9yaWdpbiIsImFwcCI6eyJzdGFibGVfaWQiOiJpbnN0YWdyYW0iLCJkaXNwbGF5X25hbWUiOiJJbnN0YWdyYW0iLCJzZXJ2aWNlX2ZhbWlseSI6Im1lc3NhZ2luZyIsIm1pbl9hcHBfdmVyc2lvbiI6bnVsbH0sInJldmlzaW9uIjp7Im51bWJlciI6MiwibGFiZWwiOiIyMDI2LTA4LTA2LWluc3RhZ3JhbS13ZWItcm93LWF1dGhvci12MSJ9LCJpc3N1ZWRfYXRfdW5peF9zZWNvbmRzIjoxNzg1NjI4ODAwLCJleHBpcmVzX2F0X3VuaXhfc2Vjb25kcyI6MTkyNDk5MjAwMCwic3VwcG9ydCI6InN1cHBvcnRlZCIsImF1dGhvcml0eSI6eyJ1c2VyX2NvbnNlbnRfcmVxdWlyZWQiOnRydWUsImFjY291bnRfYmluZGluZ19yZXF1aXJlZCI6dHJ1ZSwicmVsZWFzZV9hdXRob3JpdHlfcmVxdWlyZWQiOnRydWUsImhhcm1sZXNzX2NhbmFyeV9yZXF1aXJlZCI6dHJ1ZX0sInNlbGVjdG9ycyI6W3sia2luZCI6ImFwcF9yb290Iiwic3RyYXRlZ3kiOnsia2luZCI6ImFjY2Vzc2liaWxpdHkiLCJyb2xlIjoiZG9jdW1lbnQiLCJuYW1lIjpudWxsLCJhdXRvbWF0aW9uX2lkIjpudWxsfSwicmVxdWlyZWQiOnRydWV9LHsia2luZCI6ImNvbnZlcnNhdGlvbl90aXRsZSIsInN0cmF0ZWd5Ijp7ImtpbmQiOiJhY2Nlc3NpYmlsaXR5Iiwicm9sZSI6ImhlYWRpbmciLCJuYW1lIjpudWxsLCJhdXRvbWF0aW9uX2lkIjpudWxsfSwicmVxdWlyZWQiOnRydWV9LHsia2luZCI6Im1lc3NhZ2VfbGlzdCIsInN0cmF0ZWd5Ijp7ImtpbmQiOiJhY2Nlc3NpYmlsaXR5Iiwicm9sZSI6Imxpc3QiLCJuYW1lIjpudWxsLCJhdXRvbWF0aW9uX2lkIjpudWxsfSwicmVxdWlyZWQiOnRydWV9LHsia2luZCI6Im1lc3NhZ2Vfcm93Iiwic3RyYXRlZ3kiOnsia2luZCI6ImFjY2Vzc2liaWxpdHkiLCJyb2xlIjoibGlzdGl0ZW0iLCJuYW1lIjpudWxsLCJhdXRvbWF0aW9uX2lkIjpudWxsfSwicmVxdWlyZWQiOnRydWV9LHsia2luZCI6Im1lc3NhZ2Vfcm93X2F1dGhvciIsInN0cmF0ZWd5Ijp7ImtpbmQiOiJhY2Nlc3NpYmlsaXR5Iiwicm9sZSI6InRleHQiLCJuYW1lIjpudWxsLCJhdXRvbWF0aW9uX2lkIjpudWxsfSwicmVxdWlyZWQiOnRydWV9LHsia2luZCI6ImNvbXBvc2VyX2lucHV0Iiwic3RyYXRlZ3kiOnsia2luZCI6ImFjY2Vzc2liaWxpdHkiLCJyb2xlIjoidGV4dGJveCIsIm5hbWUiOm51bGwsImF1dG9tYXRpb25faWQiOm51bGx9LCJyZXF1aXJlZCI6dHJ1ZX1dLCJmYWxsYmFja3MiOltdLCJjYW5hcnkiOnsic2VsZWN0b3IiOiJhcHBfcm9vdCIsImV4cGVjdGVkX3RleHQiOiJJbnN0YWdyYW0iLCJtYXhfYWdlX3NlY29uZHMiOjM2MDB9fQ==";
+const INSTAGRAM_WEB_DEFAULT_SIGNATURE_B64: &str =
+    "c/hF4EbqAilXrc+CYqVkrMmccf4MkC2/PxNTuNmSUV7JfJ1D0adzyM0Z/GweFEziDUmGKTCpffH3lPjFYWM0AQ==";
+const MESSENGER_WEB_DEFAULT_SIGNING_KEY_B64: &str = "xfUmK81eHoZM92Yz1bpxPzw8kwI5f1Cz7esQJydeGhY=";
+const MESSENGER_WEB_DEFAULT_PAYLOAD_B64: &str = "eyJkb21haW4iOiJvc2wvYWRhcHRlci1wcm9maWxlL3YxIiwic2NoZW1hX3ZlcnNpb24iOjEsImFkYXB0ZXJfaWQiOiJtZXNzZW5nZXIud2ViLmZpeGVkLW9yaWdpbiIsImFwcCI6eyJzdGFibGVfaWQiOiJtZXNzZW5nZXIiLCJkaXNwbGF5X25hbWUiOiJNZXNzZW5nZXIiLCJzZXJ2aWNlX2ZhbWlseSI6Im1lc3NhZ2luZyIsIm1pbl9hcHBfdmVyc2lvbiI6bnVsbH0sInJldmlzaW9uIjp7Im51bWJlciI6MiwibGFiZWwiOiIyMDI2LTA4LTA2LW1lc3Nlbmdlci13ZWItcm93LWF1dGhvci12MSJ9LCJpc3N1ZWRfYXRfdW5peF9zZWNvbmRzIjoxNzg1NjI4ODAwLCJleHBpcmVzX2F0X3VuaXhfc2Vjb25kcyI6MTkyNDk5MjAwMCwic3VwcG9ydCI6InN1cHBvcnRlZCIsImF1dGhvcml0eSI6eyJ1c2VyX2NvbnNlbnRfcmVxdWlyZWQiOnRydWUsImFjY291bnRfYmluZGluZ19yZXF1aXJlZCI6dHJ1ZSwicmVsZWFzZV9hdXRob3JpdHlfcmVxdWlyZWQiOnRydWUsImhhcm1sZXNzX2NhbmFyeV9yZXF1aXJlZCI6dHJ1ZX0sInNlbGVjdG9ycyI6W3sia2luZCI6ImFwcF9yb290Iiwic3RyYXRlZ3kiOnsia2luZCI6ImFjY2Vzc2liaWxpdHkiLCJyb2xlIjoiZG9jdW1lbnQiLCJuYW1lIjpudWxsLCJhdXRvbWF0aW9uX2lkIjpudWxsfSwicmVxdWlyZWQiOnRydWV9LHsia2luZCI6ImNvbnZlcnNhdGlvbl90aXRsZSIsInN0cmF0ZWd5Ijp7ImtpbmQiOiJhY2Nlc3NpYmlsaXR5Iiwicm9sZSI6ImhlYWRpbmciLCJuYW1lIjpudWxsLCJhdXRvbWF0aW9uX2lkIjpudWxsfSwicmVxdWlyZWQiOnRydWV9LHsia2luZCI6Im1lc3NhZ2VfbGlzdCIsInN0cmF0ZWd5Ijp7ImtpbmQiOiJhY2Nlc3NpYmlsaXR5Iiwicm9sZSI6Imxpc3QiLCJuYW1lIjpudWxsLCJhdXRvbWF0aW9uX2lkIjpudWxsfSwicmVxdWlyZWQiOnRydWV9LHsia2luZCI6Im1lc3NhZ2Vfcm93Iiwic3RyYXRlZ3kiOnsia2luZCI6ImFjY2Vzc2liaWxpdHkiLCJyb2xlIjoibGlzdGl0ZW0iLCJuYW1lIjpudWxsLCJhdXRvbWF0aW9uX2lkIjpudWxsfSwicmVxdWlyZWQiOnRydWV9LHsia2luZCI6Im1lc3NhZ2Vfcm93X2F1dGhvciIsInN0cmF0ZWd5Ijp7ImtpbmQiOiJhY2Nlc3NpYmlsaXR5Iiwicm9sZSI6InRleHQiLCJuYW1lIjpudWxsLCJhdXRvbWF0aW9uX2lkIjpudWxsfSwicmVxdWlyZWQiOnRydWV9LHsia2luZCI6ImNvbXBvc2VyX2lucHV0Iiwic3RyYXRlZ3kiOnsia2luZCI6ImFjY2Vzc2liaWxpdHkiLCJyb2xlIjoidGV4dGJveCIsIm5hbWUiOm51bGwsImF1dG9tYXRpb25faWQiOm51bGx9LCJyZXF1aXJlZCI6dHJ1ZX1dLCJmYWxsYmFja3MiOltdLCJjYW5hcnkiOnsic2VsZWN0b3IiOiJhcHBfcm9vdCIsImV4cGVjdGVkX3RleHQiOiJNZXNzZW5nZXIiLCJtYXhfYWdlX3NlY29uZHMiOjM2MDB9fQ==";
+const MESSENGER_WEB_DEFAULT_SIGNATURE_B64: &str =
+    "QUxAKiqkjOQmrPOKhlHcfIWMwZf7TLtq+E0EWfwYcynhnkDyGuF7sbkWE6zUtF4hiULxG467yNLIkXVb1Vf1DA==";
 
 /// Signed selector/canary payload for the first reviewed web surface.
 pub fn x_web_default_profile() -> SignedProfileDoc {
@@ -28,6 +36,36 @@ pub fn x_web_default_profile() -> SignedProfileDoc {
 /// Trust anchor for [`x_web_default_profile`].
 pub fn x_web_default_trusted_signing_key_b64() -> &'static str {
     X_WEB_DEFAULT_SIGNING_KEY_B64
+}
+
+/// Signed selector/canary payload for the reviewed Instagram web surface.
+pub fn instagram_web_default_profile() -> SignedProfileDoc {
+    SignedProfileDoc {
+        envelope_version: PROFILE_DOC_ENVELOPE_VERSION,
+        payload_b64: INSTAGRAM_WEB_DEFAULT_PAYLOAD_B64.to_owned(),
+        signature_b64: INSTAGRAM_WEB_DEFAULT_SIGNATURE_B64.to_owned(),
+        signing_key_b64: INSTAGRAM_WEB_DEFAULT_SIGNING_KEY_B64.to_owned(),
+    }
+}
+
+/// Trust anchor for [`instagram_web_default_profile`].
+pub fn instagram_web_default_trusted_signing_key_b64() -> &'static str {
+    INSTAGRAM_WEB_DEFAULT_SIGNING_KEY_B64
+}
+
+/// Signed selector/canary payload for the reviewed Messenger web surface.
+pub fn messenger_web_default_profile() -> SignedProfileDoc {
+    SignedProfileDoc {
+        envelope_version: PROFILE_DOC_ENVELOPE_VERSION,
+        payload_b64: MESSENGER_WEB_DEFAULT_PAYLOAD_B64.to_owned(),
+        signature_b64: MESSENGER_WEB_DEFAULT_SIGNATURE_B64.to_owned(),
+        signing_key_b64: MESSENGER_WEB_DEFAULT_SIGNING_KEY_B64.to_owned(),
+    }
+}
+
+/// Trust anchor for [`messenger_web_default_profile`].
+pub fn messenger_web_default_trusted_signing_key_b64() -> &'static str {
+    MESSENGER_WEB_DEFAULT_SIGNING_KEY_B64
 }
 
 /// Capability grants paired with the signed web payload.
@@ -83,7 +121,7 @@ pub fn capabilities_from_profile(profile: &ProfileDoc) -> BTreeSet<Capability> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::verify_profile_doc;
+    use crate::schema::{verify_profile_doc, SelectorKind};
 
     const NOW: u64 = 1_800_000_000;
 
@@ -100,5 +138,45 @@ mod tests {
         assert!(grants.contains(&Capability::PlaceProtectedPayload));
         assert!(!grants.contains(&Capability::SendProtectedPayload));
         assert!(!grants.contains(&Capability::VerifySendOutcome));
+    }
+
+    #[test]
+    fn task_4073_three_web_app_tables_can_point_at_row_author() {
+        let profiles = [
+            (
+                "x",
+                x_web_default_profile(),
+                x_web_default_trusted_signing_key_b64(),
+            ),
+            (
+                "instagram",
+                instagram_web_default_profile(),
+                instagram_web_default_trusted_signing_key_b64(),
+            ),
+            (
+                "messenger",
+                messenger_web_default_profile(),
+                messenger_web_default_trusted_signing_key_b64(),
+            ),
+        ];
+        let apps_with_row_author = profiles
+            .into_iter()
+            .filter_map(|(app, signed, trusted)| {
+                let payload = verify_profile_doc(&signed, trusted, NOW).unwrap();
+                let has_row_author = payload
+                    .selectors
+                    .iter()
+                    .any(|selector| selector.kind == SelectorKind::MessageRowAuthor);
+                has_row_author.then_some(app)
+            })
+            .collect::<Vec<_>>();
+
+        println!("TASK4073_WEB_APPS_WITH_ROW_AUTHOR_BEFORE=0");
+        println!(
+            "TASK4073_WEB_APPS_WITH_ROW_AUTHOR_AFTER={} apps={}",
+            apps_with_row_author.len(),
+            apps_with_row_author.join(",")
+        );
+        assert_eq!(apps_with_row_author, ["x", "instagram", "messenger"]);
     }
 }
