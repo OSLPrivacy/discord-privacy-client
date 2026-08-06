@@ -15610,6 +15610,15 @@ pub struct SavedFriendRequestListDto {
     pub blocked: Vec<SavedFriendRequestDto>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedFriendsTabsQueryDto {
+    pub online: Vec<SavedFriendRequestDto>,
+    pub all: Vec<SavedFriendRequestDto>,
+    pub pending: Vec<SavedFriendRequestDto>,
+    pub blocked: Vec<SavedFriendRequestDto>,
+}
+
 fn saved_friend_request_dir() -> Result<PathBuf, String> {
     keystore::osl_config_dir().map_err(|e| format!("OSL: friend request dir: {e}"))
 }
@@ -15893,6 +15902,67 @@ pub fn cmd_osl_list_friend_requests(state: &AppState) -> Result<SavedFriendReque
                 )
             })
             .collect(),
+    })
+}
+
+pub fn cmd_osl_query_friends_tabs(state: &AppState) -> Result<SavedFriendsTabsQueryDto, String> {
+    record_activity_on_command_entry();
+    let dir = saved_friend_request_dir()?;
+    let file = load_saved_friend_request_file_with_dir(&dir)?;
+    let online_ids = state
+        .guild_list
+        .lock()
+        .expect("guild_list mutex poisoned")
+        .iter()
+        .flat_map(|guild| guild.member_ids.iter().cloned())
+        .collect::<std::collections::HashSet<_>>();
+    let all = file
+        .accepted
+        .iter()
+        .map(|entry| {
+            saved_friend_request_dto(
+                &file,
+                entry,
+                crate::friend_request::StoredFriendState::Accepted,
+                crate::friend_request::StoredFriendBlockState::NotBlocked,
+            )
+        })
+        .collect::<Vec<_>>();
+    let online = all
+        .iter()
+        .filter(|row| online_ids.contains(&row.target_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let pending = file
+        .pending
+        .iter()
+        .map(|entry| {
+            saved_friend_request_dto(
+                &file,
+                entry,
+                crate::friend_request::StoredFriendState::Pending,
+                crate::friend_request::StoredFriendBlockState::NotBlocked,
+            )
+        })
+        .collect();
+    let blocked = file
+        .blocked
+        .iter()
+        .map(|entry| {
+            saved_friend_request_dto(
+                &file,
+                entry,
+                crate::friend_request::StoredFriendState::Declined,
+                crate::friend_request::StoredFriendBlockState::BlockedByLocal,
+            )
+        })
+        .collect();
+
+    Ok(SavedFriendsTabsQueryDto {
+        online,
+        all,
+        pending,
+        blocked,
     })
 }
 
