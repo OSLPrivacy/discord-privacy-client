@@ -11954,6 +11954,63 @@ function longRunningButtonAuditForTest(): BusyButtonAuditRow[] {
   });
 }
 
+type OslChatEnterAuditState = {
+  name: string;
+  category: "screen" | "dialog" | "text-box" | "disabled-send" | "enabled-send";
+  mark: string;
+  found: boolean;
+  deliveries: number;
+  markDisposition: "retained" | "refused" | "cleared-by-send";
+};
+
+type OslChatEnterAuditReport = {
+  markerPrefix: string;
+  statesFound: number;
+  statesTried: number;
+  deliberateDeliveries: number;
+  accidentalDeliveries: number;
+  states: OslChatEnterAuditState[];
+};
+
+function seedOslChatEnterAuditState(options: {
+  friend?: Partial<HubPerson> & { personId: string };
+  active?: boolean;
+  approved?: boolean;
+  busy?: boolean;
+  draft?: string;
+  settingsOpen?: boolean;
+}): void {
+  const friend = options.friend ? testHubPerson(options.friend) : null;
+  hubPeople = friend ? [friend] : [];
+  route = "osl-chat";
+  activeOslChatPersonId = options.active && friend ? friend.personId : null;
+  activeOslChatContext = options.approved && friend
+    ? {
+        contextToken: `audit-context-${friend.personId}`,
+        serviceId: "osl-chat",
+        accountId: "osl-main",
+        personId: friend.personId,
+        peerOslUserId: friend.oslUserId,
+        scopeApproved: true,
+      } as ManualPeerContext
+    : null;
+  oslChatBusy = options.busy ?? false;
+  oslChatSettingsPersonId = options.settingsOpen && friend ? friend.personId : null;
+  oslChatDraft = options.draft ?? "";
+  oslChatMessages.clear();
+}
+
+function auditSendButtonDisabled(markup: string): boolean {
+  return /class="osl-chat-send"[^>]*\bdisabled\b/u.test(markup);
+}
+
+async function auditOslChatSubmitEnter(): Promise<number> {
+  const before = activeOslChatPersonId ? (oslChatMessages.get(activeOslChatPersonId) ?? []).length : 0;
+  await sendOslChat({ preventDefault: () => undefined } as SubmitEvent);
+  const after = activeOslChatPersonId ? (oslChatMessages.get(activeOslChatPersonId) ?? []).length : 0;
+  return after - before;
+}
+
 export const __oslHubUiTest = {
   reset(patch: OslHubUiTestStatePatch = {}): void {
     applyOslHubUiTestState(patch);
@@ -12486,6 +12543,176 @@ export const __oslHubUiTest = {
   /** Run one OSL Chat delivery tick, exactly as the cadence would. */
   deliverOslChats(): Promise<void> {
     return oslChatDelivery.sync();
+  },
+  async auditOslChatEnterNeverAccidentalSendForTest(): Promise<OslChatEnterAuditReport> {
+    const markerPrefix = "OSL3550-ENTER-MARK";
+    const states: OslChatEnterAuditState[] = [];
+    const record = (
+      name: string,
+      category: OslChatEnterAuditState["category"],
+      mark: string,
+      found: boolean,
+      deliveries: number,
+      markDisposition: OslChatEnterAuditState["markDisposition"],
+    ): void => {
+      states.push({
+        name,
+        category,
+        mark,
+        found,
+        deliveries,
+        markDisposition,
+      });
+    };
+
+    seedOslChatEnterAuditState({});
+    record(
+      "screen-empty-thread",
+      "screen",
+      `${markerPrefix}-screen-empty-thread`,
+      oslChatContent().includes('class="osl-chat-thread is-empty"'),
+      0,
+      "refused",
+    );
+
+    const verifiedFriend = {
+      personId: "task-3550-peer",
+      alias: "Task 3550 Peer",
+      safetyNumberVerified: true,
+      pendingKeyChange: false,
+    };
+    const unverifiedFriend = { ...verifiedFriend, safetyNumberVerified: false };
+
+    seedOslChatEnterAuditState({
+      friend: unverifiedFriend,
+      active: true,
+      draft: `${markerPrefix}-screen-unverified-friend`,
+    });
+    record(
+      "screen-unverified-friend",
+      "screen",
+      `${markerPrefix}-screen-unverified-friend`,
+      oslChatContent().includes("Unverified"),
+      await auditOslChatSubmitEnter(),
+      oslChatDraft.includes(`${markerPrefix}-screen-unverified-friend`) ? "retained" : "refused",
+    );
+
+    seedOslChatEnterAuditState({
+      friend: verifiedFriend,
+      active: true,
+      draft: `${markerPrefix}-screen-not-ready`,
+    });
+    record(
+      "screen-not-ready",
+      "screen",
+      `${markerPrefix}-screen-not-ready`,
+      oslChatContent().includes("Chat is not ready."),
+      await auditOslChatSubmitEnter(),
+      oslChatDraft.includes(`${markerPrefix}-screen-not-ready`) ? "retained" : "refused",
+    );
+
+    seedOslChatEnterAuditState({
+      friend: verifiedFriend,
+      active: true,
+      approved: true,
+      draft: `${markerPrefix}-dialog-chat-settings`,
+      settingsOpen: true,
+    });
+    record(
+      "dialog-chat-settings",
+      "dialog",
+      `${markerPrefix}-dialog-chat-settings`,
+      oslChatContent().includes('id="osl-chat-settings-dialog"'),
+      0,
+      oslChatDraft.includes(`${markerPrefix}-dialog-chat-settings`) ? "retained" : "refused",
+    );
+
+    seedOslChatEnterAuditState({
+      friend: verifiedFriend,
+      active: true,
+      approved: true,
+      draft: `${markerPrefix}-textbox-composer\n`,
+    });
+    record(
+      "textbox-composer",
+      "text-box",
+      `${markerPrefix}-textbox-composer`,
+      oslChatContent().includes('id="osl-chat-draft"'),
+      0,
+      oslChatDraft.includes(`${markerPrefix}-textbox-composer`) ? "retained" : "refused",
+    );
+
+    seedOslChatEnterAuditState({ friend: verifiedFriend, active: true, approved: true, draft: "" });
+    record(
+      "disabled-send-empty-draft",
+      "disabled-send",
+      `${markerPrefix}-disabled-send-empty-draft`,
+      auditSendButtonDisabled(oslChatContent()),
+      await auditOslChatSubmitEnter(),
+      "refused",
+    );
+
+    const oversizeMark = `${markerPrefix}-disabled-send-oversize-draft`;
+    seedOslChatEnterAuditState({
+      friend: verifiedFriend,
+      active: true,
+      approved: true,
+      draft: `${oversizeMark}${"x".repeat(OSL_CHAT_MAX_DRAFT_BYTES)}`,
+    });
+    record(
+      "disabled-send-oversize-draft",
+      "disabled-send",
+      oversizeMark,
+      auditSendButtonDisabled(oslChatContent()),
+      await auditOslChatSubmitEnter(),
+      oslChatDraft.includes(oversizeMark) ? "retained" : "refused",
+    );
+
+    const busyMark = `${markerPrefix}-disabled-send-busy`;
+    seedOslChatEnterAuditState({
+      friend: verifiedFriend,
+      active: true,
+      approved: true,
+      busy: true,
+      draft: busyMark,
+    });
+    record(
+      "disabled-send-busy",
+      "disabled-send",
+      busyMark,
+      auditSendButtonDisabled(oslChatContent()),
+      await auditOslChatSubmitEnter(),
+      oslChatDraft.includes(busyMark) ? "retained" : "refused",
+    );
+
+    const deliberateMark = `${markerPrefix}-deliberate-enabled-send`;
+    seedOslChatEnterAuditState({
+      friend: verifiedFriend,
+      active: true,
+      approved: true,
+      draft: deliberateMark,
+    });
+    record(
+      "deliberate-enabled-send",
+      "enabled-send",
+      deliberateMark,
+      !auditSendButtonDisabled(oslChatContent()),
+      await auditOslChatSubmitEnter(),
+      oslChatDraft.length === 0 ? "cleared-by-send" : "retained",
+    );
+
+    return {
+      markerPrefix,
+      statesFound: states.filter((state) => state.found).length,
+      statesTried: states.length,
+      deliberateDeliveries: states
+        .filter((state) => state.name === "deliberate-enabled-send")
+        .reduce((sum, state) => sum + state.deliveries, 0),
+      accidentalDeliveries: states
+        .filter((state) => state.name !== "deliberate-enabled-send")
+        .reduce((sum, state) => sum + state.deliveries, 0),
+      states,
+    };
   },
   /** The rendered timeline for one conversation. */
   oslChatConversation(personId: string): OslChatMessage[] {
