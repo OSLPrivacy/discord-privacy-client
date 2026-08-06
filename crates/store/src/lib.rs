@@ -1003,6 +1003,29 @@ impl MessageStore {
         Ok(Some(self.materialize(&mid_bi, row)?))
     }
 
+    pub fn count_message_records(
+        &self,
+        discord_message_ids: &[String],
+    ) -> Result<usize, StoreError> {
+        let target_mids: Vec<Vec<u8>> = discord_message_ids
+            .iter()
+            .map(|id| self.bi(cipher::BI_MESSAGE_ID, id))
+            .collect::<Result<_, _>>()?;
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut remaining = 0usize;
+        for mid_bi in &target_mids {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM messages WHERE mid_bi = ?1",
+                params![mid_bi],
+                |row| row.get(0),
+            )?;
+            remaining += usize::try_from(count).map_err(|_| {
+                StoreError::Corrupted("selected message record count overflow".to_string())
+            })?;
+        }
+        Ok(remaining)
+    }
+
     /// List the most-recently-decrypted messages for a channel,
     /// newest-first, capped at `limit`.
     ///
