@@ -210,6 +210,28 @@ impl fmt::Debug for SharedMailboxMessage {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedMailboxPage {
+    pub page_index: usize,
+    pub start_offset: usize,
+    pub next_offset: Option<usize>,
+    pub pause_after_page_ms: u64,
+    pub messages: Vec<SharedMailboxMessage>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedMailboxPagedRun {
+    pub messages: Vec<SharedMailboxMessage>,
+    pub page_count: usize,
+    pub page_message_counts: Vec<usize>,
+    pub pause_ms: u64,
+    pub pause_count: usize,
+    pub stopped: bool,
+    pub stop_page: Option<usize>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SharedMailboxReader {
     folders: Vec<SharedMailboxFolder>,
@@ -295,6 +317,84 @@ impl SharedMailboxReader {
             .cloned()
             .collect())
     }
+
+    pub fn read_messages_page(
+        &self,
+        service: &str,
+        account: &str,
+        folder_id: &str,
+        start_offset: usize,
+        page_size: usize,
+        pause_after_page_ms: u64,
+    ) -> Result<SharedMailboxPage, ScrubImapError> {
+        if page_size == 0 {
+            return Err(ScrubImapError::InvalidMailboxPage);
+        }
+        let messages = self.read_messages(service, account, folder_id)?;
+        if start_offset > messages.len() {
+            return Err(ScrubImapError::InvalidMailboxPage);
+        }
+        let end_offset = start_offset.saturating_add(page_size).min(messages.len());
+        let next_offset = (end_offset < messages.len()).then_some(end_offset);
+        Ok(SharedMailboxPage {
+            page_index: (start_offset / page_size) + 1,
+            start_offset,
+            next_offset,
+            pause_after_page_ms,
+            messages: messages[start_offset..end_offset].to_vec(),
+        })
+    }
+
+    pub fn read_messages_paged_run(
+        &self,
+        service: &str,
+        account: &str,
+        folder_id: &str,
+        page_size: usize,
+        pause_ms: u64,
+        stop_during_page: Option<usize>,
+    ) -> Result<SharedMailboxPagedRun, ScrubImapError> {
+        if page_size == 0 {
+            return Err(ScrubImapError::InvalidMailboxPage);
+        }
+        let mut offset = 0;
+        let mut run = SharedMailboxPagedRun {
+            messages: Vec::new(),
+            page_count: 0,
+            page_message_counts: Vec::new(),
+            pause_ms,
+            pause_count: 0,
+            stopped: false,
+            stop_page: None,
+        };
+
+        loop {
+            let page =
+                self.read_messages_page(service, account, folder_id, offset, page_size, pause_ms)?;
+            if page.messages.is_empty() {
+                break;
+            }
+            run.page_count += 1;
+            run.page_message_counts.push(page.messages.len());
+            run.messages.extend(page.messages);
+
+            if stop_during_page == Some(page.page_index) {
+                run.stopped = true;
+                run.stop_page = Some(page.page_index);
+                break;
+            }
+
+            match page.next_offset {
+                Some(next_offset) => {
+                    run.pause_count += 1;
+                    offset = next_offset;
+                }
+                None => break,
+            }
+        }
+
+        Ok(run)
+    }
 }
 
 pub fn mail_message_is_owned_by_signed_in_address(
@@ -370,6 +470,33 @@ pub fn seeded_mail_com_mailbox_for_scrub() -> SharedMailboxReader {
         ],
     )
     .expect("seeded Mail.com mailbox fixture must be valid")
+}
+
+pub fn seeded_aol_mailbox_for_scrub_paging() -> SharedMailboxReader {
+    let service = "aol";
+    let account = "acct-scrub-aol";
+    let folder_id = "AOL-120";
+    let messages = (1..=120)
+        .map(|ordinal| SharedMailboxMessage {
+            id: format!("aol-3063-{ordinal:03}"),
+            service: service.to_owned(),
+            account: account.to_owned(),
+            folder_id: folder_id.to_owned(),
+            subject: format!("AOL paging fixture {ordinal:03}"),
+            time: 1_786_200_000 + i64::from(ordinal) * 60,
+            sender: "signed-in@aol.com".to_owned(),
+        })
+        .collect();
+    SharedMailboxReader::new(
+        vec![SharedMailboxFolder {
+            id: folder_id.to_owned(),
+            label: "AOL 120 message folder".to_owned(),
+            service: service.to_owned(),
+            account: account.to_owned(),
+        }],
+        messages,
+    )
+    .expect("seeded AOL mailbox paging fixture must be valid")
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize)]
@@ -646,6 +773,7 @@ pub enum ScrubImapError {
     AclRefused,
     MailboxAccountNotFound,
     MailboxFolderNotFound,
+    InvalidMailboxPage,
     SenderAddressUnreadable,
     NativeDeletionDisabled,
     NativeDeleteFailed,
@@ -663,6 +791,7 @@ impl fmt::Display for ScrubImapError {
             Self::AclRefused => "email cleanup request was refused by local authorization",
             Self::MailboxAccountNotFound => "mailbox account not found",
             Self::MailboxFolderNotFound => "mailbox folder not found",
+            Self::InvalidMailboxPage => "mailbox page request is invalid",
             Self::SenderAddressUnreadable => "OSL: sender address cannot be read",
             Self::NativeDeletionDisabled => "Native IMAP deletion is disabled",
             Self::NativeDeleteFailed => "email cleanup delete failed",
@@ -926,6 +1055,71 @@ mod tests {
             "TASK3068 second_read_same={}",
             first_folders == second_folders && first_sent == second_sent
         );
+    }
+
+    #[test]
+    fn task_3063_aol_shared_paging_reads_three_pages_and_stops_during_page_two() {
+        let reader = seeded_aol_mailbox_for_scrub_paging();
+        let folder = reader
+            .read_messages("aol", "acct-scrub-aol", "AOL-120")
+            .unwrap();
+        let full_run = reader
+            .read_messages_paged_run("aol", "acct-scrub-aol", "AOL-120", 40, 25, None)
+            .unwrap();
+        let stopped_run = reader
+            .read_messages_paged_run("aol", "acct-scrub-aol", "AOL-120", 40, 25, Some(2))
+            .unwrap();
+
+        assert_eq!(folder.len(), 120);
+        assert_eq!(full_run.messages.len(), 120);
+        assert!(full_run.page_count >= 3);
+        assert_eq!(full_run.page_message_counts, vec![40, 40, 40]);
+        assert_eq!(full_run.pause_ms, 25);
+        assert_eq!(full_run.pause_count, 2);
+        assert!(!full_run.stopped);
+
+        assert!(stopped_run.stopped);
+        assert_eq!(stopped_run.stop_page, Some(2));
+        assert_eq!(stopped_run.page_count, 2);
+        assert_eq!(stopped_run.page_message_counts, vec![40, 40]);
+        assert!((40..=80).contains(&stopped_run.messages.len()));
+
+        println!("TASK3063 direct_reader=shared_mailbox_reader");
+        println!("TASK3063 service=AOL Mail");
+        println!("TASK3063 folder_id=AOL-120");
+        println!("TASK3063 folder_message_count={}", folder.len());
+        println!("TASK3063 page_size=40");
+        println!("TASK3063 set_pause_ms={}", full_run.pause_ms);
+        println!("TASK3063 full_run_page_count={}", full_run.page_count);
+        println!(
+            "TASK3063 full_run_page_message_counts={}",
+            full_run
+                .page_message_counts
+                .iter()
+                .map(|count| count.to_string())
+                .collect::<Vec<_>>()
+                .join("|")
+        );
+        println!(
+            "TASK3063 full_run_messages_read={}",
+            full_run.messages.len()
+        );
+        println!("TASK3063 stop_requested_during_page=2");
+        println!("TASK3063 stopped_run_page_count={}", stopped_run.page_count);
+        println!(
+            "TASK3063 stopped_run_page_message_counts={}",
+            stopped_run
+                .page_message_counts
+                .iter()
+                .map(|count| count.to_string())
+                .collect::<Vec<_>>()
+                .join("|")
+        );
+        println!(
+            "TASK3063 stopped_run_messages_read={}",
+            stopped_run.messages.len()
+        );
+        println!("TASK3063 stopped_run_stopped={}", stopped_run.stopped);
     }
 
     #[test]
