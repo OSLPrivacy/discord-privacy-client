@@ -10118,6 +10118,7 @@ fn cmd_osl_send_typed_friend_request_with_dir(
     dir: &Path,
 ) -> Result<SendFriendRequestResult, String> {
     guard_friend_request_peer_binding(state, &peer_discord_id)?;
+    guard_friend_request_not_blocked(dir, &peer_discord_id)?;
     let scope = request.scope_grant.scope().clone();
     if scope.kind == crate::scope::ScopeKind::Dm && scope.id != peer_discord_id {
         return Err("OSL: friend request DM scope does not match peer".to_string());
@@ -10189,6 +10190,7 @@ pub fn cmd_osl_accept_friend_request(
 }
 
 const PENDING_FRIEND_REQUESTS_FILE: &str = "pending_friend_requests.json";
+const BLOCKED_PEOPLE_FILE: &str = "blocked_people.json";
 
 #[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -10196,6 +10198,14 @@ pub struct PendingFriendRequestRecord {
     pub peer_discord_id: String,
     pub scope_storage_key: String,
     pub created_at_unix_seconds: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockedPersonRecord {
+    pub peer_discord_id: String,
+    pub state: String,
+    pub blocked_at_unix_seconds: u64,
 }
 
 #[derive(Clone, serde::Serialize, PartialEq, Eq)]
@@ -10213,6 +10223,10 @@ pub struct SendFriendRequestResult {
 
 fn pending_friend_requests_path(dir: &Path) -> PathBuf {
     dir.join(PENDING_FRIEND_REQUESTS_FILE)
+}
+
+fn blocked_people_path(dir: &Path) -> PathBuf {
+    dir.join(BLOCKED_PEOPLE_FILE)
 }
 
 /// A6-F2: the pending social graph — who is trying to reach the user and who
@@ -10274,6 +10288,87 @@ fn save_pending_friend_requests(
         .map_err(|_| "OSL: pending friend request storage is unavailable".to_string())
 }
 
+fn load_blocked_people(path: &Path) -> Result<Vec<BlockedPersonRecord>, String> {
+    let blob = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("OSL: blocked people storage is unavailable".to_string()),
+    };
+    let plain = crate::main_password::maybe_decrypt(&blob)
+        .map_err(|_| "OSL: blocked people storage is unreadable".to_string())?;
+    let records: Vec<BlockedPersonRecord> = serde_json::from_slice(&plain)
+        .map_err(|_| "OSL: blocked people storage is unreadable".to_string())?;
+    if records
+        .iter()
+        .any(|record| record.peer_discord_id.trim().is_empty() || record.state != "Blocked")
+    {
+        return Err("OSL: blocked people storage is unreadable".to_string());
+    }
+    if !crate::main_password::has_enc_magic(&blob) {
+        save_blocked_people(path, &records)?;
+    }
+    Ok(records)
+}
+
+fn save_blocked_people(path: &Path, records: &[BlockedPersonRecord]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|_| "OSL: blocked people storage is unavailable".to_string())?;
+    }
+    let bytes = serde_json::to_vec_pretty(records)
+        .map_err(|_| "OSL: blocked people storage is unavailable".to_string())?;
+    let sealed = crate::main_password::maybe_encrypt(&bytes)
+        .map_err(|_| "OSL: blocked people storage is unavailable".to_string())?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &sealed)
+        .map_err(|_| "OSL: blocked people storage is unavailable".to_string())?;
+    std::fs::rename(&tmp, path)
+        .map_err(|_| "OSL: blocked people storage is unavailable".to_string())
+}
+
+fn persist_blocked_person(dir: &Path, peer_discord_id: &str) -> Result<(), String> {
+    let path = blocked_people_path(dir);
+    let mut records = load_blocked_people(&path)?;
+    if let Some(record) = records
+        .iter_mut()
+        .find(|record| record.peer_discord_id == peer_discord_id)
+    {
+        record.state = "Blocked".to_string();
+    } else {
+        records.push(BlockedPersonRecord {
+            peer_discord_id: peer_discord_id.to_string(),
+            state: "Blocked".to_string(),
+            blocked_at_unix_seconds: now_unix_secs() as u64,
+        });
+    }
+    save_blocked_people(&path, &records)
+}
+
+fn guard_friend_request_not_blocked(dir: &Path, peer_discord_id: &str) -> Result<(), String> {
+    if load_blocked_people(&blocked_people_path(dir))?
+        .iter()
+        .any(|record| record.peer_discord_id == peer_discord_id)
+    {
+        return Err("OSL: friend request peer is blocked".to_string());
+    }
+    Ok(())
+}
+
+fn remove_pending_friend_requests_for_peer(
+    dir: &Path,
+    peer_discord_id: &str,
+) -> Result<usize, String> {
+    let path = pending_friend_requests_path(dir);
+    let mut records = load_pending_friend_requests(&path)?;
+    let before = records.len();
+    records.retain(|record| record.peer_discord_id != peer_discord_id);
+    let removed = before - records.len();
+    if removed > 0 {
+        save_pending_friend_requests(&path, &records)?;
+    }
+    Ok(removed)
+}
+
 fn local_friend_authority(
     identity: &keystore::Identity,
 ) -> Result<crate::friend_request::VerifiedFriendAuthority, String> {
@@ -10324,6 +10419,7 @@ fn cmd_osl_send_friend_request_with_dir(
     dir: &Path,
 ) -> Result<SendFriendRequestResult, String> {
     guard_friend_request_peer_binding(state, &peer_discord_id)?;
+    guard_friend_request_not_blocked(dir, &peer_discord_id)?;
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -10368,6 +10464,50 @@ fn cmd_osl_send_friend_request_with_dir(
     Ok(SendFriendRequestResult { request, pending })
 }
 
+pub fn cmd_osl_create_friend_request(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<SendFriendRequestResult, String> {
+    cmd_osl_send_friend_request(state, peer_discord_id, scope_input)
+}
+
+pub fn cmd_osl_list_friend_requests(
+    _state: &AppState,
+) -> Result<Vec<PendingFriendRequestRecord>, String> {
+    record_activity_on_command_entry();
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: pending friend request dir: {e}"))?;
+    cmd_osl_list_friend_requests_with_dir(&dir)
+}
+
+fn cmd_osl_list_friend_requests_with_dir(
+    dir: &Path,
+) -> Result<Vec<PendingFriendRequestRecord>, String> {
+    load_pending_friend_requests(&pending_friend_requests_path(dir))
+}
+
+pub fn cmd_osl_list_blocked_people(_state: &AppState) -> Result<Vec<BlockedPersonRecord>, String> {
+    record_activity_on_command_entry();
+    let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: blocked people dir: {e}"))?;
+    load_blocked_people(&blocked_people_path(&dir))
+}
+
+pub fn cmd_osl_person_blocked(_state: &AppState, person_id: String) -> Result<bool, String> {
+    record_activity_on_command_entry();
+    person_blocked(&person_id)
+}
+
+pub fn person_blocked(person_id: &str) -> Result<bool, String> {
+    if person_id.trim().is_empty() {
+        return Err("OSL: blocked person is missing".to_string());
+    }
+    let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: blocked people dir: {e}"))?;
+    Ok(load_blocked_people(&blocked_people_path(&dir))?
+        .iter()
+        .any(|record| record.peer_discord_id == person_id))
+}
+
 #[cfg(test)]
 fn persist_typed_friend_request_with_dir(
     state: &AppState,
@@ -10376,6 +10516,7 @@ fn persist_typed_friend_request_with_dir(
     dir: &Path,
 ) -> Result<PendingFriendRequestResult, String> {
     guard_friend_request_peer_binding(state, &peer_discord_id)?;
+    guard_friend_request_not_blocked(dir, &peer_discord_id)?;
     let _peer_authority = peer_friend_authority(state, &peer_discord_id)?;
     let scope = request.scope_grant.scope().clone();
     if scope.kind == crate::scope::ScopeKind::Dm && scope.id != peer_discord_id {
@@ -15681,6 +15822,67 @@ pub fn cmd_osl_decline_or_revoke_friend_request(
     Ok(FriendRequestDecisionResult {
         decision: FriendRequestDecision::RevokedAcceptedGrant,
         revoked_grant: true,
+    })
+}
+
+pub fn cmd_osl_decline_friend_request(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<FriendRequestDecisionResult, String> {
+    cmd_osl_decline_or_revoke_friend_request(state, peer_discord_id, scope_input, false)
+}
+
+pub fn cmd_osl_block_friend_request(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<FriendRequestDecisionResult, String> {
+    record_activity_on_command_entry();
+    if peer_discord_id.trim().is_empty() {
+        return Err("OSL: friend request peer is missing".to_string());
+    }
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let scope_binds_peer = scope.kind != crate::scope::ScopeKind::Dm || scope.id == peer_discord_id;
+    if !scope_binds_peer {
+        return Ok(FriendRequestDecisionResult {
+            decision: FriendRequestDecision::DeclinedPending,
+            revoked_grant: false,
+        });
+    }
+
+    let accepted_grant_exists = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm_guard
+            .get(&peer_discord_id)
+            .map(|pe| {
+                pe.outgoing_whitelists
+                    .iter()
+                    .any(|w| whitelist_entry_matches(w, &scope))
+            })
+            .unwrap_or(false)
+    };
+
+    local_unwhitelist_apply(
+        state,
+        peer_discord_id.clone(),
+        crate::scope::ScopeInput::from(&scope),
+        true,
+        /* wipe_local_decrypt */ false,
+    )?;
+    let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: blocked people dir: {e}"))?;
+    let _ = remove_pending_friend_requests_for_peer(&dir, &peer_discord_id)?;
+    persist_blocked_person(&dir, &peer_discord_id)?;
+
+    Ok(FriendRequestDecisionResult {
+        decision: if accepted_grant_exists {
+            FriendRequestDecision::RevokedAcceptedGrant
+        } else {
+            FriendRequestDecision::DeclinedPending
+        },
+        revoked_grant: accepted_grant_exists,
     })
 }
 

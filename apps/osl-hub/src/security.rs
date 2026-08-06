@@ -1285,6 +1285,7 @@ pub fn set_friend_scope_reach(
 ) -> Result<PersonDto, String> {
     require_unlocked()?;
     validate_person_id(&person_id)?;
+    require_person_not_blocked(&person_id)?;
     let _transition = security
         .transition
         .lock()
@@ -1704,6 +1705,7 @@ fn manual_peer_scope_approved_for_binding(
     binding: &ManualPeerBinding,
     scope_input: ScopeInput,
 ) -> Result<bool, String> {
+    require_person_not_blocked(&binding.person_id)?;
     require_exact_manual_peer_scope_input(&scope_input, "OSL manual peer scope is invalid")?;
     let scope: Scope = scope_input
         .try_into()
@@ -1756,6 +1758,13 @@ pub fn require_manual_peer_scope_approved(
         return Err("Approve encryption for this friend before continuing".to_owned());
     }
     Ok(binding)
+}
+
+pub fn require_person_not_blocked(person_id: &str) -> Result<(), String> {
+    if ipc::commands::person_blocked(person_id)? {
+        return Err("OSL action refused for blocked person".to_owned());
+    }
+    Ok(())
 }
 
 pub fn manual_peer_scope_id(
@@ -1922,6 +1931,7 @@ pub fn set_manual_peer_scope_permission(
     enabled: bool,
 ) -> Result<(), String> {
     let binding = manual_peer_binding(core, person_id)?;
+    require_person_not_blocked(&binding.person_id)?;
     require_exact_manual_peer_scope_input(&scope_input, "OSL manual peer scope is invalid")?;
     let scope: Scope = scope_input
         .clone()
@@ -4588,6 +4598,128 @@ mod tests {
             server_id: None,
             channel_id: None,
         }
+    }
+
+    fn task_0273_direct_trace_actions(
+        core: &HubCoreState,
+        security: &HubSecurityState,
+        person_id: &str,
+        account_id: &str,
+    ) -> Vec<&'static str> {
+        let scope_id = manual_peer_scope_id("osl-chat", account_id, person_id).unwrap();
+        let scope = dm_scope_input(scope_id);
+        let mut actions = Vec::new();
+        if require_manual_peer_scope_approved(
+            core,
+            "osl-chat",
+            account_id,
+            person_id.to_owned(),
+            scope.clone(),
+        )
+        .is_ok()
+        {
+            actions.push("protected_read");
+        }
+        if require_manual_peer_scope_approved(
+            core,
+            "osl-chat",
+            account_id,
+            person_id.to_owned(),
+            scope.clone(),
+        )
+        .is_ok()
+        {
+            actions.push("protected_send");
+        }
+        if set_friend_scope_reach(
+            core,
+            security,
+            "osl-chat",
+            account_id,
+            person_id.to_owned(),
+            true,
+        )
+        .is_ok()
+        {
+            actions.push("account_reach");
+        }
+        actions
+    }
+
+    #[test]
+    fn task_0273_blocked_person_direct_trace_has_zero_osl_actions_on_every_reachable_account() {
+        let harness = FileBackedSecurityHarness::new("task-0273-blocked-direct-trace");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core);
+        let (person_id, metadata, peer) = test_friend(73);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+
+        let reachable_accounts = ["osl-main", "account-0273-a", "account-0273-b"];
+        for account_id in reachable_accounts {
+            let scope_id = manual_peer_scope_id("osl-chat", account_id, &person_id).unwrap();
+            set_manual_peer_scope_permission(
+                &core,
+                &security,
+                "osl-chat",
+                account_id,
+                person_id.clone(),
+                dm_scope_input(scope_id),
+                true,
+            )
+            .expect("fixture account is reachable before blocking");
+        }
+
+        let unblocked_total: usize = reachable_accounts
+            .iter()
+            .map(|account_id| {
+                task_0273_direct_trace_actions(&core, &security, &person_id, account_id).len()
+            })
+            .sum();
+        println!("TASK0273 unblocked_probe.total_osl_actions={unblocked_total}");
+        assert_eq!(unblocked_total, reachable_accounts.len() * 3);
+
+        write_encrypted_json(
+            &harness.path().join("blocked_people.json"),
+            &vec![ipc::commands::BlockedPersonRecord {
+                peer_discord_id: person_id.clone(),
+                state: "Blocked".to_owned(),
+                blocked_at_unix_seconds: 1_786_000_273,
+            }],
+        )
+        .unwrap();
+        let blocked = ipc::commands::person_blocked(&person_id).unwrap();
+        println!(
+            "TASK0273 blocked_query.person={} state={}",
+            person_id,
+            if blocked { "Blocked" } else { "not_blocked" }
+        );
+        assert!(blocked);
+
+        let mut blocked_total = 0usize;
+        for account_id in reachable_accounts {
+            let actions = task_0273_direct_trace_actions(&core, &security, &person_id, account_id);
+            blocked_total += actions.len();
+            println!(
+                "TASK0273 reachable_account={} blocked_direct_trace.osl_actions={} trace={}",
+                account_id,
+                actions.len(),
+                actions.join(" -> ")
+            );
+            assert!(
+                actions.is_empty(),
+                "blocked account {account_id} still reached OSL actions: {actions:?}"
+            );
+        }
+        println!("TASK0273 reachable_accounts={}", reachable_accounts.len());
+        println!("TASK0273 blocked_direct_trace.total_osl_actions={blocked_total}");
+        assert_eq!(blocked_total, 0);
     }
 
     #[test]

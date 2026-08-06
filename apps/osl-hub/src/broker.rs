@@ -2144,6 +2144,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
     send_order: Option<AuthenticatedSenderOrder>,
 ) -> Result<PreparedPeerProseEnvelope, String> {
     let manual = broker.manual_peer_for(context_token)?;
+    security::require_person_not_blocked(&manual.person_id)?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -3816,6 +3817,8 @@ fn authenticate_oriented_prose_pointer(
     if sender_person_id != manual.person_id {
         return Err(PeerProsePointerFailure::Rejected.into());
     }
+    security::require_person_not_blocked(&manual.person_id)
+        .map_err(|_| PeerProsePointerFailure::Rejected)?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -4096,6 +4099,7 @@ fn prepare_peer_inbox_text_with_route_clients(
     let _carrier_decision = ai_carrier.select_for_shipping_send();
     let manual = broker.manual_peer_for(context_token)?;
     let context = broker.context_for(context_token)?;
+    security::require_person_not_blocked(&manual.person_id)?;
     let now = ipc::main_password::now_unix_secs_pub();
     let ttl_seconds = security::scope_security(manual.scope.clone())?.ttl_seconds;
     let expires_at = now.checked_add(i64::from(ttl_seconds)).ok_or_else(|| {
@@ -4674,6 +4678,7 @@ fn drain_peer_inbox_text(
 ) -> Result<OpenedNativeOverlayTextBatch, String> {
     let manual = broker.manual_peer_for(context_token)?;
     let context = broker.context_for(context_token)?;
+    security::require_person_not_blocked(&manual.person_id)?;
     let display = security::scope_security(manual.scope.clone())?;
     let allow_messages = display.decrypt_display_enabled;
     // The conversation this drain is bound to, named the way the burn ledger
@@ -5452,6 +5457,7 @@ pub fn load_osl_chat_history(
 ) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
     let context_token = broker.active_osl_chat_context_token()?;
     let manual = broker.manual_peer_for(&context_token)?;
+    security::require_person_not_blocked(&manual.person_id)?;
     let display = security::scope_security(manual.scope.clone())?;
     if !display.decrypt_display_enabled {
         return Err("Turn on decrypted text for this conversation before opening it".to_owned());
@@ -5520,6 +5526,7 @@ fn begin_peer_attachment(
     };
     let manual = broker.manual_peer_for(&context_token)?;
     let context = broker.context_for(&context_token)?;
+    security::require_person_not_blocked(&manual.person_id)?;
     security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -5634,6 +5641,7 @@ fn deliver_peer_attachment(
     };
     let manual = broker.manual_peer_for(&context_token)?;
     let context = broker.context_for(&context_token)?;
+    security::require_person_not_blocked(&manual.person_id)?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -5804,6 +5812,7 @@ fn native_overlay_attachment_plans(
     };
     let manual = broker.manual_peer_for(&context_token)?;
     let context = broker.context_for(&context_token)?;
+    security::require_person_not_blocked(&manual.person_id).map_err(|_| ERROR.to_owned())?;
     let decrypt_display_enabled = security::scope_security(manual.scope.clone())
         .map_err(|_| ERROR.to_owned())?
         .decrypt_display_enabled;
@@ -5955,6 +5964,7 @@ fn commit_peer_attachment_open(
         broker.active_native_manual_context_token()?
     };
     let manual = broker.manual_peer_for(&context_token)?;
+    security::require_person_not_blocked(&manual.person_id).map_err(|_| ERROR.to_owned())?;
     security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -7849,6 +7859,7 @@ fn prepare_peer_attachment_at(
 ) -> Result<PreparedPeerAttachment, String> {
     const PREPARE_ERROR: &str = "OSL could not prepare a single manual peer attachment";
     let manual = broker.manual_peer_for(context_token)?;
+    security::require_person_not_blocked(&manual.person_id)?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
@@ -7959,6 +7970,7 @@ pub fn open_peer_attachment(
     if sender_person_id != manual.person_id {
         return Err(OPEN_ERROR.to_owned());
     }
+    security::require_person_not_blocked(&manual.person_id).map_err(|_| OPEN_ERROR.to_owned())?;
     let verified = security::require_manual_peer_scope_approved(
         core,
         &manual.service_id,
