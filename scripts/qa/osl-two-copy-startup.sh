@@ -5,6 +5,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 name_a="OSL Copy A"
 name_b="OSL Copy B"
+identity_a="osl-copy-a-disposable"
+identity_b="osl-copy-b-disposable"
 port_a="47291"
 port_b="47292"
 root="${TMPDIR:-/tmp}/osl-two-copy-startup"
@@ -23,6 +25,8 @@ options:
   --root <path>       Root used for default per-copy data folders.
   --name-a <name>     Display/test name for copy A.
   --name-b <name>     Display/test name for copy B.
+  --identity-a <name> Disposable test identity name for copy A.
+  --identity-b <name> Disposable test identity name for copy B.
   --port-a <port>     Loopback/control port for copy A.
   --port-b <port>     Loopback/control port for copy B.
   --data-a <path>     Data folder for copy A.
@@ -53,6 +57,16 @@ while [[ $# -gt 0 ]]; do
     --name-b)
       need_value "$@"
       name_b="$2"
+      shift 2
+      ;;
+    --identity-a)
+      need_value "$@"
+      identity_a="$2"
+      shift 2
+      ;;
+    --identity-b)
+      need_value "$@"
+      identity_b="$2"
       shift 2
       ;;
     --port-a)
@@ -105,6 +119,10 @@ valid_port() {
   [[ "$1" =~ ^[0-9]+$ ]] && (( "$1" >= 1 && "$1" <= 65535 ))
 }
 
+valid_identity_name() {
+  [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]
+}
+
 fail_contract() {
   printf 'osl-two-copy-startup: %s\n' "$1" >&2
   exit 1
@@ -113,6 +131,11 @@ fail_contract() {
 [[ -n "$name_a" ]] || fail_contract "copy A name is empty"
 [[ -n "$name_b" ]] || fail_contract "copy B name is empty"
 [[ "$name_a" != "$name_b" ]] || fail_contract "shared name: ${name_a}"
+[[ -n "$identity_a" ]] || fail_contract "copy A disposable identity name is empty"
+[[ -n "$identity_b" ]] || fail_contract "copy B disposable identity name is empty"
+valid_identity_name "$identity_a" || fail_contract "copy A disposable identity name must use only letters, numbers, dot, underscore, or hyphen"
+valid_identity_name "$identity_b" || fail_contract "copy B disposable identity name must use only letters, numbers, dot, underscore, or hyphen"
+[[ "$identity_a" != "$identity_b" ]] || fail_contract "shared disposable identity name: ${identity_a}"
 valid_port "$port_a" || fail_contract "invalid copy A port: ${port_a}"
 valid_port "$port_b" || fail_contract "invalid copy B port: ${port_b}"
 [[ "$port_a" != "$port_b" ]] || fail_contract "shared port: ${port_a}"
@@ -121,12 +144,13 @@ data_a="$(normalize_path "$data_a")"
 data_b="$(normalize_path "$data_b")"
 [[ "$data_a" != "$data_b" ]] || fail_contract "shared data folder: ${data_a}"
 
-printf 'TASK0029 two-copy-startup copy=A name=%q port=%s data_folder=%q\n' \
-  "$name_a" "$port_a" "$data_a"
-printf 'TASK0029 two-copy-startup copy=B name=%q port=%s data_folder=%q\n' \
-  "$name_b" "$port_b" "$data_b"
+printf 'TASK0029 two-copy-startup copy=A name=%q identity_name=%q port=%s data_folder=%q\n' \
+  "$name_a" "$identity_a" "$port_a" "$data_a"
+printf 'TASK0029 two-copy-startup copy=B name=%q identity_name=%q port=%s data_folder=%q\n' \
+  "$name_b" "$identity_b" "$port_b" "$data_b"
 printf 'TASK0029 two-copy-startup different_data_folders=true\n'
 printf 'TASK0029 two-copy-startup different_ports=true\n'
+printf 'TASK0030 two-copy-identity different_identity_names=true\n'
 
 if [[ ${#command_args[@]} -eq 0 ]]; then
   exit 0
@@ -138,6 +162,7 @@ mkdir -p \
 
 env \
   OSL_COPY_NAME="$name_a" \
+  OSL_DISPOSABLE_IDENTITY_NAME="$identity_a" \
   OSL_COPY_PORT="$port_a" \
   OSL_COPY_DATA_DIR="$data_a" \
   XDG_CONFIG_HOME="${data_a}/config" \
@@ -149,6 +174,7 @@ pid_a=$!
 
 env \
   OSL_COPY_NAME="$name_b" \
+  OSL_DISPOSABLE_IDENTITY_NAME="$identity_b" \
   OSL_COPY_PORT="$port_b" \
   OSL_COPY_DATA_DIR="$data_b" \
   XDG_CONFIG_HOME="${data_b}/config" \
