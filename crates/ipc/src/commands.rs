@@ -10334,6 +10334,62 @@ pub fn cmd_osl_create_friend_request(
     cmd_osl_send_friend_request(state, peer_discord_id, scope_input)
 }
 
+/// Resolve an exact public OSL name and create a pending DM friend request for
+/// the identity that owns it.
+pub fn cmd_osl_create_friend_request_by_osl_name(
+    state: &AppState,
+    public_osl_name: String,
+) -> Result<SendFriendRequestResult, String> {
+    record_activity_on_command_entry();
+    if !keystore::client::is_normalized_username(&public_osl_name) {
+        return Err("OSL: public OSL name must be exact and normalized".to_string());
+    }
+
+    let identity = state
+        .identity_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let client = state
+        .keyserver_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: key server not configured".to_string())?;
+
+    let resolved = client
+        .resolve_username(&public_osl_name)
+        .map_err(|error| format!("OSL: public OSL name lookup failed: {error}"))?
+        .ok_or_else(|| "OSL: public OSL name was not found".to_string())?;
+    if resolved.user_id == identity.user_id {
+        return Err("OSL: refusing friend request for local self binding".to_string());
+    }
+
+    let pubkeys = client
+        .fetch_pubkeys(&resolved.user_id)
+        .map_err(|error| format!("OSL: public OSL name identity lookup failed: {error}"))?;
+    if pubkeys.user_id != resolved.user_id
+        || pubkeys.ik_ed25519_pub != STANDARD.encode(resolved.ed25519_public)
+    {
+        return Err(
+            "OSL: public OSL name identity bundle does not bind to the directory row".to_string(),
+        );
+    }
+    keystore::client::validate_peer_bundle(&pubkeys)
+        .map_err(|_| "OSL: public OSL name identity bundle verification failed".to_string())?;
+
+    let peer_id = resolved.user_id;
+    {
+        let mut peer_map = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let peer = peer_map.entry(peer_id.clone()).or_default();
+        peer.osl_user_id = Some(peer_id.clone());
+        peer.tofu_key_bundle = Some(fetched_key_bundle(&pubkeys));
+    }
+    persist_peer_map_now(state);
+
+    let scope = crate::scope::Scope::dm(&peer_id);
+    cmd_osl_send_friend_request_with_dir_for_command(state, peer_id, (&scope).into())
+}
+
 fn cmd_osl_send_friend_request_with_dir(
     state: &AppState,
     peer_discord_id: String,
@@ -10384,6 +10440,16 @@ fn cmd_osl_send_friend_request_with_dir(
     save_pending_friend_requests(&path, &records)?;
 
     Ok(SendFriendRequestResult { request, pending })
+}
+
+fn cmd_osl_send_friend_request_with_dir_for_command(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<SendFriendRequestResult, String> {
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: pending friend request dir: {e}"))?;
+    cmd_osl_send_friend_request_with_dir(state, peer_discord_id, scope_input, &dir)
 }
 
 pub fn cmd_osl_list_friend_requests(
