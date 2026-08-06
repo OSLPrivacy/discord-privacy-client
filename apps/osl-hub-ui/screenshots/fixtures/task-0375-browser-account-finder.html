@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>TASK 0375 browser account finder fixture</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      globalThis.__OSL_HUB_SKIP_AUTO_BOOTSTRAP = true;
+      const { __oslHubUiTest } = await import("/src/main.ts");
+      const runId = "TASK0375-browser-fixture";
+      const browserId = "chrome";
+      const profile = "Default";
+      const account = "task-0375@example.invalid";
+
+      __oslHubUiTest.reset({
+        route: "onboarding",
+        onboardingRoute: "browser",
+        coreReady: true,
+        storageMethod: "fixture",
+        bootstrapStatus: "ready",
+      });
+      __oslHubUiTest.setBrowserProfilesForTest([
+        { browserId, profile, displayName: "Personal" },
+        { browserId: "firefox", profile: "work", displayName: "Work" },
+      ]);
+      __oslHubUiTest.setSelectedBrowserProfilesForTest(["chrome:Default"]);
+      __oslHubUiTest.setBrowserFootprintForTest({
+        imports: [{
+          browserId,
+          profile,
+          account,
+          scope: "history-footprint",
+          runId,
+          observationCount: 1,
+          snapshotDeleted: true,
+        }],
+        observations: [{
+          browserId,
+          browserProfileAccount: account,
+          browserProfileId: profile,
+          importRunId: runId,
+          observedAtUnixMs: 1785984000000,
+        }],
+      });
+      __oslHubUiTest.paintOnboardingRouteForTest("browser");
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      globalThis.__TASK0375_READY = true;
+      globalThis.__TASK0375_TREE_TEXT = document.body.innerText;
+      globalThis.__TASK0375_FACTS = {
+        title: document.querySelector("#route-heading")?.textContent?.trim() ?? "",
+        checked: document.querySelector('input[data-browser-profile="chrome:Default"]')?.checked === true,
+        checkSelected: [...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Check selected"),
+        deleteArea: [...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Delete area"),
+        notNow: [...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Not now"),
+        back: [...document.querySelectorAll("button")].some((button) => button.textContent?.trim() === "Back"),
+      };
+    </script>
+  </body>
+</html>

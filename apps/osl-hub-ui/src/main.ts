@@ -2422,7 +2422,7 @@ function browserImportContent(): string {
       ? `<p class="saved-account-truth">No readable saved browser areas were found. OSL has not opened any browser database.</p>`
       : `<p class="saved-account-truth">No supported browser detected.</p>`;
   const ready = savedAccountsReady
-    ? `<div class="saved-account-browser-note"><strong>Saved browser account hints protected</strong><small>Encrypted locally. Login stores and passwords were not read.</small>${browserFootprintImports.map((receipt) => `<button class="button compact" type="button" data-revoke-browser-footprint="${escapeHtml(browserProfileKey({ browserId: receipt.browserId, profile: receipt.profile, displayName: receipt.profile }))}">Delete ${escapeHtml(receipt.browserId)} · ${escapeHtml(receipt.profile)}</button>`).join("")}</div>`
+    ? `<div class="saved-account-browser-note"><strong>Saved browser account hints protected</strong><small>Encrypted locally. Login stores and passwords were not read.</small>${browserFootprintImports.map((receipt) => `<button class="button compact" type="button" data-revoke-browser-footprint="${escapeHtml(browserProfileKey({ browserId: receipt.browserId, profile: receipt.profile, displayName: receipt.profile }))}" aria-label="Delete ${escapeHtml(receipt.browserId)} · ${escapeHtml(receipt.profile)} browser area">Delete area</button>`).join("")}</div>`
     : "";
   const failure = browserImportFailureNotice
     ? `<p class="saved-account-browser-error" role="alert">${escapeHtml(browserImportFailureNotice)}</p>`
@@ -2437,7 +2437,7 @@ function browserImportContent(): string {
   const importEnabled = selectionReady && !browserReadinessBusy && !browserImportBusy;
   const importLabel = browserImportBusy
     ? "Checking selected areas..."
-    : selectionReady ? "Check selected areas" : "Choose areas";
+    : selectionReady ? "Check selected" : "Choose areas";
   const secondaryLabel = browserImportBusy ? "Wait for scan..." : "Not now";
   return `<h1 id="route-heading" tabindex="-1">Find saved browser accounts</h1><p class="compact-lead onboarding-centered-copy">Optional. Consent separately to each browser area OSL may inspect.</p>${detectedBrowsers}${progress}${ready}${failure}<p class="saved-account-truth">OSL never reads browser databases before consent. After consent it copies one bounded history snapshot, reads that copy, deletes it, and never opens passwords or login stores.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="import-saved-accounts" type="button" ${importEnabled ? "" : "disabled"}>${importLabel}</button><button class="browser-import-skip" id="continue-browser-import" type="button" ${browserImportBusy || browserImportCancelling ? "disabled" : ""}>${secondaryLabel}</button></div>`;
 }
@@ -10189,6 +10189,15 @@ export const __oslHubUiTest = {
     route = destination;
     return destination === "onboarding" ? onboardingShellMarkup() : workspaceShellMarkup();
   },
+  paintOnboardingRouteForTest(destination: OnboardingRoute): void {
+    route = "onboarding";
+    onboardingRoute = onboardingRouteForBuild(destination);
+    forceOnboardingPaint = true;
+    renderOnboarding();
+  },
+  flushRenderForTest(): void {
+    renderNow();
+  },
   bindOnboarding(): void {
     bindOnboarding();
   },
@@ -10291,6 +10300,18 @@ export const __oslHubUiTest = {
   /** Seed detected browser areas before rendering the consent route in UI tests. */
   setBrowserProfilesForTest(profiles: BrowserProfileDescriptor[]): void {
     setBrowserProfiles(profiles);
+  },
+  setSelectedBrowserProfilesForTest(keys: string[]): void {
+    selectedBrowserProfileKeys.clear();
+    for (const key of keys) {
+      if (browserProfiles.some((profile) => browserProfileKey(profile) === key)) {
+        selectedBrowserProfileKeys.add(key);
+      }
+    }
+  },
+  setBrowserFootprintForTest(hydration: BrowserFootprintHydration): void {
+    browserFootprintOwner = core.readiness.activeOslUserId;
+    applyNativeBrowserFootprint(hydration);
   },
   /** D80: binds the real unlock form handler against a caller-supplied DOM so
    * the credential path can be driven end to end rather than string-matched. */
@@ -10405,7 +10426,11 @@ export const __oslHubUiTest = {
   },
 };
 
-if (!runningUnderVitest) {
+const skipAutoBootstrap = Boolean(
+  (globalThis as { __OSL_HUB_SKIP_AUTO_BOOTSTRAP?: unknown }).__OSL_HUB_SKIP_AUTO_BOOTSTRAP,
+);
+
+if (!runningUnderVitest && !skipAutoBootstrap) {
   const desktopWindow = getCurrentWindow();
   bindWindowLifecycleRealignment(
     window,

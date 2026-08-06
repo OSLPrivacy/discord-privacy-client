@@ -555,7 +555,7 @@ describe("fresh-account continuation", () => {
     expect(browser).not.toContain("Manual export");
     expect(browser).not.toContain("Prepare export in");
     expect(browser).not.toContain("How it works");
-    expect(browser).toContain('selectionReady ? "Check selected areas" : "Choose areas"');
+    expect(browser).toContain('selectionReady ? "Check selected" : "Choose areas"');
     expect(browser).not.toContain("Import selected · pending");
     expect(browser).toContain("OSL never reads browser databases before consent.");
     expect(browser).toContain("The encrypted account hints were saved and verified.");
