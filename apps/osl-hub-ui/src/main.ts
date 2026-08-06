@@ -10317,6 +10317,12 @@ export const __oslHubUiTest = {
     onboardingRoute = onboardingRouteForBuild(destination);
     return onboardingContent();
   },
+  renderOnboardingTourStepForTest(step: number): string {
+    route = "onboarding";
+    onboardingRoute = "tutorial";
+    onboardingTourStep = step;
+    return onboardingContent();
+  },
   /**
    * Supply the account-recovery back end. The shipping build has none (no Tauri
    * command turns a password recovery phrase into a recovery token), so tests
