@@ -262,6 +262,8 @@ pub mod sensitive_warning;
 pub mod service_scope_index;
 pub mod signal_destination_binding;
 #[cfg(feature = "core")]
+pub mod signal_extra_device_sender;
+#[cfg(feature = "core")]
 pub mod spaces;
 #[cfg(feature = "core")]
 pub mod startup_gate;
