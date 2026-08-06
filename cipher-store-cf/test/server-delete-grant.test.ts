@@ -23,6 +23,7 @@ interface ProtectedStoredCopyFixture {
   owner: string;
   burnScope: string;
   deliveryTag?: string;
+  payload?: Uint8Array;
 }
 
 async function seedProtectedStoredCopyFixture(fixture: ProtectedStoredCopyFixture) {
@@ -47,7 +48,7 @@ async function seedProtectedStoredCopyFixture(fixture: ProtectedStoredCopyFixtur
     fixture.owner,
     fixture.burnScope,
   );
-  await env.PAYLOADS.put(fetchDigest, new Uint8Array([7]));
+  await env.PAYLOADS.put(fetchDigest, fixture.payload ?? new Uint8Array([7]));
   return fetchDigest;
 }
 
@@ -174,6 +175,78 @@ describe("TASK 0406 sender own-copy burn command", () => {
 
     console.log(
       `TASK0406 sender_command=sender_own_copy_burn deleted=${report.deleted ? 1 : 0} status=${report.status} affected_scope=${report.affected_scope} remaining_rows=${remainingRows} payload_deleted=yes`,
+    );
+  });
+});
+
+describe("TASK 0413 sender own-copy burn on a two-copy fixture", () => {
+  it("burns the sender copy while leaving the recipient copy readable", async () => {
+    const message = "message:0413";
+    const burnScope = "discord:9000000000000413:direct_message:stored-protected-message";
+    const sender = {
+      id: "04130000000000000000000000000001",
+      fetchCap: "f4130000000000000000000000000001",
+      ackCap: "a4130000000000000000000000000001",
+      manageCap: "d4130000000000000000000000000001",
+      message,
+      owner: "identity:sender-0413",
+      burnScope,
+      deliveryTag: "1".repeat(32),
+      payload: new TextEncoder().encode("sender-copy-0413"),
+    };
+    const recipient = {
+      id: "04130000000000000000000000000002",
+      fetchCap: "f4130000000000000000000000000002",
+      ackCap: "a4130000000000000000000000000002",
+      manageCap: "d4130000000000000000000000000002",
+      message,
+      owner: "identity:recipient-0413",
+      burnScope,
+      deliveryTag: "2".repeat(32),
+      payload: new TextEncoder().encode("recipient-copy-0413"),
+    };
+    const senderFetchDigest = await seedProtectedStoredCopyFixture(sender);
+    const recipientFetchDigest = await seedProtectedStoredCopyFixture(recipient);
+    const grant = JSON.stringify({
+      record: DELETE_GRANT_RECORD,
+      message: sender.message,
+      owner: sender.owner,
+      scope: sender.burnScope,
+    });
+
+    const report = await senderOwnCopyBurnCommand({
+      fetch: SELF.fetch.bind(SELF),
+      origin: ORIGIN,
+      blobId: sender.id,
+      manageCap: sender.manageCap,
+      senderDeleteGrant: grant,
+    });
+
+    const senderRemaining = await d1Count("SELECT COUNT(*) FROM blob_capability_index WHERE blob_id = ?", sender.id);
+    const recipientRemaining = await d1Count("SELECT COUNT(*) FROM blob_capability_index WHERE blob_id = ?", recipient.id);
+    const senderReadAfter = await SELF.fetch(`${ORIGIN}/v1/blob/${sender.id}`, {
+      headers: { "x-osl-fetch-cap": sender.fetchCap },
+    });
+    const recipientReadAfter = await SELF.fetch(`${ORIGIN}/v1/blob/${recipient.id}`, {
+      headers: { "x-osl-fetch-cap": recipient.fetchCap },
+    });
+    const recipientBody = new TextDecoder().decode(await recipientReadAfter.arrayBuffer());
+
+    expect(report).toEqual({
+      deleted: true,
+      status: 204,
+      affected_scope: burnScope,
+    });
+    expect(senderRemaining).toBe(0);
+    expect(recipientRemaining).toBe(1);
+    await expect(env.PAYLOADS.head(senderFetchDigest)).resolves.toBeNull();
+    await expect(env.PAYLOADS.head(recipientFetchDigest)).resolves.toMatchObject({ size: recipient.payload.byteLength });
+    expect(senderReadAfter.status).toBe(404);
+    expect(recipientReadAfter.status).toBe(200);
+    expect(recipientBody).toBe("recipient-copy-0413");
+
+    console.log(
+      `TASK0413 sender_command=sender_own_copy_burn fixture_copies=2 deleted=${report.deleted ? 1 : 0} sender_status=${report.status} sender_remaining=${senderRemaining} sender_read_status=${senderReadAfter.status} recipient_remaining=${recipientRemaining} recipient_read_status=${recipientReadAfter.status} recipient_body=${recipientBody} affected_scope=${report.affected_scope}`,
     );
   });
 });
