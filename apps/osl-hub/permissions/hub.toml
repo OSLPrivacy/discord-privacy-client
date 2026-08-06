@@ -79,6 +79,11 @@ description = "Allow only the trusted main OSL window to read bounded encrypted-
 commands.allow = ["list_osl_chat_history"]
 
 [[permission]]
+identifier = "allow-add-osl-chat-reaction"
+description = "Allow only the trusted main OSL window to add one bounded emoji reaction from the unlocked identity to one opaque message id in the active first-party OSL Chat."
+commands.allow = ["add_osl_chat_reaction"]
+
+[[permission]]
 identifier = "allow-select-osl-chat-attachment"
 description = "Allow only the trusted main OSL window to choose, encrypt, upload, and deliver one Pro attachment for the exact active verified OSL friend scope."
 commands.allow = ["select_osl_chat_attachment"]

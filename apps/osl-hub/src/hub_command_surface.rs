@@ -608,6 +608,7 @@ macro_rules! hub_tauri_commands {
             reveal_native_discord_overlay_view_once,
             open_osl_chat_text,
             list_osl_chat_history,
+            add_osl_chat_reaction,
             select_osl_chat_attachment,
             accept_osl_chat_clipboard_image_attachment,
             list_osl_chat_attachments,

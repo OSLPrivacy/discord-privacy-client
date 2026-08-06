@@ -125,6 +125,7 @@
     "allow-prepare-osl-chat-text",
     "allow-open-osl-chat-text",
     "allow-list-osl-chat-history",
+    "allow-add-osl-chat-reaction",
     "allow-select-osl-chat-attachment",
     "allow-accept-osl-chat-clipboard-image-attachment",
     "allow-list-osl-chat-attachments",

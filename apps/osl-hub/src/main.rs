@@ -9,9 +9,9 @@ use osl_privacy_hub::ai_carrier::{
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
-    OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, PreparedCoreMessage,
-    PreparedHubAttachment, PreparedLocalProtectedMessage, PreparedNativeOverlayText,
-    PreparedPeerProseMessage,
+    OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, OslChatReactionResult,
+    PreparedCoreMessage, PreparedHubAttachment, PreparedLocalProtectedMessage,
+    PreparedNativeOverlayText, PreparedPeerProseMessage,
 };
 use osl_privacy_hub::browser_companion::{
     BrowserAccountMode, BrowserCompanionAction, BrowserCompanionState, BrowserCompanionStatus,
@@ -5124,6 +5124,30 @@ async fn list_osl_chat_history(
     })
     .await
     .map_err(|error| format!("OSL Chat history worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn add_osl_chat_reaction(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    message_id: String,
+    emoji: String,
+) -> Result<OslChatReactionResult, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may react to OSL Chats".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        broker::add_osl_chat_reaction(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubBrokerState>(),
+            message_id,
+            emoji,
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat reaction worker failed: {error}"))?
 }
 
 #[tauri::command]
