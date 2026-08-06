@@ -92,8 +92,9 @@ use osl_privacy_hub::scrub_index::{
 };
 use osl_privacy_hub::scrub_setup_store::{ScrubSetupCommand, ScrubSetupState, ScrubSetupSummary};
 use osl_privacy_hub::security::{
-    self, AddFriendResult, FriendCodeExport, GroupMemberPermissionRecord, HubRevocationStatusDto,
-    HubScopeBurnResult, HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
+    self, AddFriendResult, FriendAccountReachChoiceRecord, FriendCodeExport,
+    GroupMemberPermissionRecord, HubRevocationStatusDto, HubScopeBurnResult, HubSecurityState,
+    PersonDto, RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -6317,6 +6318,35 @@ async fn list_group_member_permissions(
 }
 
 #[tauri::command]
+async fn set_hub_friend_account_reach_choice(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    person_id: String,
+    service_id: String,
+    account_id: String,
+    broadened: bool,
+) -> Result<FriendAccountReachChoiceRecord, String> {
+    let _session = session.transition.lock().await;
+    security::set_friend_account_reach_choice(
+        &security_state,
+        person_id,
+        service_id,
+        account_id,
+        broadened,
+    )
+}
+
+#[tauri::command]
+async fn list_hub_friend_account_reach_choices(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    person_id: String,
+) -> Result<Vec<FriendAccountReachChoiceRecord>, String> {
+    let _session = session.transition.lock().await;
+    security::list_friend_account_reach_choices(&security_state, person_id)
+}
+
+#[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn set_active_hub_friend_permission(
     app: tauri::AppHandle,
@@ -9663,7 +9693,7 @@ fn main() {
                 panic!("OSL test-only runtime switches refused startup: {error}")
             });
     startup_breadcrumb("setup_before"); // STARTUP-TRACE
-    let builder = builder.setup(|app| {
+    let builder = builder.setup(move |app| {
         startup_breadcrumb("setup_enter"); // STARTUP-TRACE
         let profiles =
             osl_privacy_hub::adapter_profile_boot::load_verified_adapter_profiles_at_boot()

@@ -159,6 +159,8 @@
     "allow-add-group-member-permission",
     "allow-remove-group-member-permission",
     "allow-list-group-member-permissions",
+    "allow-set-hub-friend-account-reach-choice",
+    "allow-list-hub-friend-account-reach-choices",
     "allow-set-active-hub-friend-permission",
     "allow-set-active-hub-friend-reach",
     "allow-revoke-active-hub-friend-scope",

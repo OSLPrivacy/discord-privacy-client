@@ -804,6 +804,16 @@ description = "List saved member permissions for one exact local group or server
 commands.allow = ["list_group_member_permissions"]
 
 [[permission]]
+identifier = "allow-set-hub-friend-account-reach-choice"
+description = "Save one verified friend's reach choice for one exact local service account in encrypted device-local state."
+commands.allow = ["set_hub_friend_account_reach_choice"]
+
+[[permission]]
+identifier = "allow-list-hub-friend-account-reach-choices"
+description = "List one verified friend's saved reach choices across local service accounts from encrypted device-local state."
+commands.allow = ["list_hub_friend_account_reach_choices"]
+
+[[permission]]
 identifier = "allow-set-active-hub-friend-permission"
 description = "Grant or revoke one verified person's permission for only the exact active hosted context."
 commands.allow = ["set_active_hub_friend_permission"]

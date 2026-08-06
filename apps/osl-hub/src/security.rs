@@ -173,6 +173,15 @@ pub struct GroupMemberPermissionRecord {
     pub allowed: bool,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendAccountReachChoiceRecord {
+    pub person_id: String,
+    pub service_id: String,
+    pub account_id: String,
+    pub broadened: bool,
+}
+
 /// The minimum friend state needed to create a manual peer-messaging lease.
 /// Key material stays in the original core; callers receive only stable local
 /// and public identity identifiers.
@@ -546,6 +555,13 @@ struct SecurityPreferences {
     /// not inferred from a missing grant.
     #[serde(default)]
     group_member_permissions: BTreeMap<String, BTreeMap<String, bool>>,
+    /// Friend reach choices scoped to one local service account. The legacy
+    /// peer-map `broadened` bit is person-wide; this ledger records the account
+    /// selection independently so two local accounts can make different reach
+    /// choices for the same verified friend.
+    #[serde(default)]
+    friend_account_reach_choices:
+        BTreeMap<String, BTreeMap<String, FriendAccountReachChoiceRecord>>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -1198,6 +1214,56 @@ pub fn list_group_member_permissions_for_group(
     let prefs =
         load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
     Ok(group_member_permission_records_for_group(&prefs, &group_id))
+}
+
+pub fn set_friend_account_reach_choice(
+    security: &HubSecurityState,
+    person_id: String,
+    service_id: String,
+    account_id: String,
+    broadened: bool,
+) -> Result<FriendAccountReachChoiceRecord, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    validate_account_reach_component(&service_id, "OSL service identifier is invalid")?;
+    validate_account_reach_component(&account_id, "OSL account identifier is invalid")?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend account reach state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    ensure_friend_exists(&dir, &person_id)?;
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    let record = FriendAccountReachChoiceRecord {
+        person_id: person_id.clone(),
+        service_id: service_id.clone(),
+        account_id: account_id.clone(),
+        broadened,
+    };
+    prefs
+        .friend_account_reach_choices
+        .entry(person_id)
+        .or_default()
+        .insert(
+            account_reach_storage_key(&service_id, &account_id),
+            record.clone(),
+        );
+    write_encrypted_json(&path, &prefs)?;
+    Ok(record)
+}
+
+pub fn list_friend_account_reach_choices(
+    _security: &HubSecurityState,
+    person_id: String,
+) -> Result<Vec<FriendAccountReachChoiceRecord>, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let dir = config_dir()?;
+    ensure_friend_exists(&dir, &person_id)?;
+    let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
+    Ok(friend_account_reach_choice_records(&prefs, &person_id))
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -3877,6 +3943,18 @@ fn group_member_permission_records_for_group(
         .collect()
 }
 
+fn friend_account_reach_choice_records(
+    prefs: &SecurityPreferences,
+    person_id: &str,
+) -> Vec<FriendAccountReachChoiceRecord> {
+    prefs
+        .friend_account_reach_choices
+        .get(person_id)
+        .into_iter()
+        .flat_map(|accounts| accounts.values().cloned())
+        .collect()
+}
+
 fn manual_approved_scopes_for_person(
     prefs: &SecurityPreferences,
     person_id: &str,
@@ -3895,6 +3973,18 @@ fn manual_approved_scopes_for_person(
             user_specific: true,
         })
         .collect()
+}
+
+fn account_reach_storage_key(service_id: &str, account_id: &str) -> String {
+    format!("{service_id}:{account_id}")
+}
+
+fn ensure_friend_exists(dir: &Path, person_id: &str) -> Result<(), String> {
+    if load_people_file(dir)?.people.contains_key(person_id) {
+        Ok(())
+    } else {
+        Err("OSL friend is unknown".to_owned())
+    }
 }
 
 fn person_dto(
@@ -4026,6 +4116,18 @@ fn validate_person_id(value: &str) -> Result<(), String> {
 }
 
 fn validate_group_member_permission_id(value: &str, message: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+    {
+        return Err(message.to_owned());
+    }
+    Ok(())
+}
+
+fn validate_account_reach_component(value: &str, message: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 128
         || value
@@ -4679,6 +4781,52 @@ mod tests {
         assert_eq!(records[1].group_id, "group-0114");
         assert_eq!(records[1].member_id, "member-0114-b");
         assert!(records[1].allowed);
+    }
+
+    #[test]
+    fn direct_friend_account_reach_commands_list_two_account_choices_for_same_friend() {
+        let harness = FileBackedSecurityHarness::new("friend-account-reach-commands");
+        let security = HubSecurityState::default();
+        let (person_id, metadata, _peer) = test_friend(240);
+        write_people(harness.path(), &person_id, metadata);
+
+        let first = set_friend_account_reach_choice(
+            &security,
+            person_id.clone(),
+            "discord".to_owned(),
+            "account-0240-a".to_owned(),
+            true,
+        )
+        .unwrap();
+        let second = set_friend_account_reach_choice(
+            &security,
+            person_id.clone(),
+            "discord".to_owned(),
+            "account-0240-b".to_owned(),
+            false,
+        )
+        .unwrap();
+        assert!(first.broadened);
+        assert!(!second.broadened);
+
+        let records = list_friend_account_reach_choices(&security, person_id.clone()).unwrap();
+        let account_choices = records
+            .iter()
+            .map(|record| format!("{}={}", record.account_id, record.broadened))
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "friend_account_reach_choices person_id={} account_count={} account_choices={}",
+            person_id,
+            records.len(),
+            account_choices
+        );
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| record.person_id == person_id));
+        assert_eq!(records[0].account_id, "account-0240-a");
+        assert!(records[0].broadened);
+        assert_eq!(records[1].account_id, "account-0240-b");
+        assert!(!records[1].broadened);
     }
 
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {

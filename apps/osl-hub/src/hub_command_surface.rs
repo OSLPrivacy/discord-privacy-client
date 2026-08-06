@@ -701,6 +701,8 @@ macro_rules! hub_tauri_commands {
             add_group_member_permission,
             remove_group_member_permission,
             list_group_member_permissions,
+            set_hub_friend_account_reach_choice,
+            list_hub_friend_account_reach_choices,
             set_active_hub_friend_permission,
             set_active_hub_friend_reach,
             revoke_active_hub_friend_scope,
@@ -2031,6 +2033,20 @@ mod tauri_registration_surface_tests {
                 "add_group_member_permission",
                 "remove_group_member_permission",
                 "list_group_member_permissions",
+            ],
+        );
+    }
+
+    #[test]
+    fn friend_account_reach_choice_commands_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "set_hub_friend_account_reach_choice",
+                "list_hub_friend_account_reach_choices",
             ],
         );
     }
