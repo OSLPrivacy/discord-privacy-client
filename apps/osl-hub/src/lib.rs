@@ -38,6 +38,7 @@ pub mod browser_companion;
 pub mod browser_footprint;
 #[cfg(feature = "core")]
 pub mod browser_profile_scan;
+pub mod bundled_model_pack;
 pub mod build_integrity;
 pub mod burn_authorize;
 pub mod burn_contract;
