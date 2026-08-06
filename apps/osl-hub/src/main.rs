@@ -5123,6 +5123,56 @@ async fn list_osl_chat_history(
 }
 
 #[tauri::command]
+async fn search_osl_chat_history(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    query: String,
+) -> Result<Vec<broker::OslChatHistorySearchResult>, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may search OSL Chat history".to_owned());
+    }
+    screenshot::apply_to_window(&caller, active_osl_capture_protection()).map_err(|_| {
+        "Windows capture resistance is required to search OSL Chat history".to_owned()
+    })?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        broker::search_osl_chat_history(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubBrokerState>(),
+            query,
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat history search worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn open_osl_chat_history_result(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    result_id: String,
+) -> Result<broker::OslChatHistoryOpenResult, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may open OSL Chat history results".to_owned());
+    }
+    screenshot::apply_to_window(&caller, active_osl_capture_protection()).map_err(|_| {
+        "Windows capture resistance is required to open OSL Chat history results".to_owned()
+    })?;
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        broker::open_osl_chat_history_result(
+            &app.state::<HubCoreState>(),
+            &app.state::<HubBrokerState>(),
+            result_id,
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat history result worker failed: {error}"))?
+}
+
+#[tauri::command]
 async fn select_osl_chat_attachment(
     app: tauri::AppHandle,
     caller: tauri::WebviewWindow,

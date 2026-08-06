@@ -122,6 +122,8 @@
     "allow-create-osl-chat-group-conversation",
     "allow-open-osl-chat-text",
     "allow-list-osl-chat-history",
+    "allow-search-osl-chat-history",
+    "allow-open-osl-chat-history-result",
     "allow-select-osl-chat-attachment",
     "allow-list-osl-chat-attachments",
     "allow-open-osl-chat-attachment",

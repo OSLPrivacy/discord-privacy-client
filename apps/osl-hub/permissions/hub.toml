@@ -79,6 +79,16 @@ description = "Allow only the trusted main OSL window to read bounded encrypted-
 commands.allow = ["list_osl_chat_history"]
 
 [[permission]]
+identifier = "allow-search-osl-chat-history"
+description = "Allow only the trusted main OSL window to search decrypted in-memory history rows for the currently active first-party OSL Chat."
+commands.allow = ["search_osl_chat_history"]
+
+[[permission]]
+identifier = "allow-open-osl-chat-history-result"
+description = "Allow only the trusted main OSL window to reopen a stable search result in the currently active first-party OSL Chat history."
+commands.allow = ["open_osl_chat_history_result"]
+
+[[permission]]
 identifier = "allow-select-osl-chat-attachment"
 description = "Allow only the trusted main OSL window to choose, encrypt, upload, and deliver one Pro attachment for the exact active verified OSL friend scope."
 commands.allow = ["select_osl_chat_attachment"]

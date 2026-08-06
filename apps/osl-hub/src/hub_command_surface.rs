@@ -763,6 +763,8 @@ macro_rules! hub_tauri_commands {
             reveal_native_discord_overlay_view_once,
             open_osl_chat_text,
             list_osl_chat_history,
+            search_osl_chat_history,
+            open_osl_chat_history_result,
             select_osl_chat_attachment,
             list_osl_chat_attachments,
             intake_osl_chat_clipboard_image,
@@ -2045,6 +2047,17 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["create_osl_chat_group_conversation"],
+        );
+    }
+
+    #[test]
+    fn osl_chat_history_search_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["search_osl_chat_history", "open_osl_chat_history_result"],
         );
     }
 

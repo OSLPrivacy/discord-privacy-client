@@ -1066,6 +1066,74 @@ pub fn create_osl_chat_group_conversation(
     ipc::commands::cmd_osl_create_group_conversation(&core.osl, name, selected_member_ids)
 }
 
+const OSL_CHAT_HISTORY_SEARCH_CAP: u32 = 1_000;
+const OSL_CHAT_HISTORY_SEARCH_RESULT_LIMIT: usize = 50;
+const OSL_CHAT_HISTORY_RESULT_PREFIX: &str = "osl-chat-history-v1:";
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OslChatHistorySearchResult {
+    pub result_id: String,
+    pub position: u32,
+    pub message: ipc::commands::StoredMessageDto,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OslChatHistoryOpenResult {
+    pub result_id: String,
+    pub position: u32,
+    pub total_messages: u32,
+    pub previous: Option<ipc::commands::StoredMessageDto>,
+    pub message: ipc::commands::StoredMessageDto,
+    pub next: Option<ipc::commands::StoredMessageDto>,
+}
+
+fn osl_chat_history_result_id(message_id: &str) -> String {
+    format!("{OSL_CHAT_HISTORY_RESULT_PREFIX}{message_id}")
+}
+
+fn message_id_from_osl_chat_history_result(result_id: &str) -> Result<&str, String> {
+    let message_id = result_id
+        .strip_prefix(OSL_CHAT_HISTORY_RESULT_PREFIX)
+        .ok_or_else(|| "OSL Chat history result is not from this search surface".to_owned())?;
+    if message_id.is_empty() || message_id.len() > 96 {
+        return Err("OSL Chat history result id is malformed".to_owned());
+    }
+    Ok(message_id)
+}
+
+fn active_osl_chat_history_channel(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+) -> Result<String, String> {
+    let context_token = broker.active_osl_chat_context_token()?;
+    let manual = broker.manual_peer_for(&context_token)?;
+    let display = security::scope_security(manual.scope.clone())?;
+    if !display.decrypt_display_enabled {
+        return Err("Turn on decrypted text for this conversation before opening it".to_owned());
+    }
+    security::require_manual_peer_scope_approved(
+        core,
+        &manual.service_id,
+        &manual.account_id,
+        manual.person_id.clone(),
+        manual.scope.clone(),
+    )?;
+    scope_storage_key(&manual.scope)
+}
+
+fn load_ordered_osl_chat_history(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    limit: u32,
+) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
+    let channel_id = active_osl_chat_history_channel(core, broker)?;
+    let mut rows = ipc::commands::cmd_osl_load_channel_history(&core.osl, channel_id, Some(limit))?;
+    rows.reverse();
+    Ok(rows)
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct OslChatOpenedReplyThread {
@@ -5512,24 +5580,60 @@ pub fn load_osl_chat_history(
     core: &HubCoreState,
     broker: &HubBrokerState,
 ) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
-    let context_token = broker.active_osl_chat_context_token()?;
-    let manual = broker.manual_peer_for(&context_token)?;
-    let display = security::scope_security(manual.scope.clone())?;
-    if !display.decrypt_display_enabled {
-        return Err("Turn on decrypted text for this conversation before opening it".to_owned());
+    let channel_id = active_osl_chat_history_channel(core, broker)?;
+    ipc::commands::cmd_osl_load_channel_history(&core.osl, channel_id, Some(200))
+}
+
+pub fn search_osl_chat_history(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    query: String,
+) -> Result<Vec<OslChatHistorySearchResult>, String> {
+    if query.is_empty() || query.len() > 4_096 {
+        return Err("OSL Chat history search query is invalid".to_owned());
     }
-    security::require_manual_peer_scope_approved(
-        core,
-        &manual.service_id,
-        &manual.account_id,
-        manual.person_id,
-        manual.scope.clone(),
-    )?;
-    ipc::commands::cmd_osl_load_channel_history(
-        &core.osl,
-        scope_storage_key(&manual.scope)?,
-        Some(200),
-    )
+    let rows = load_ordered_osl_chat_history(core, broker, OSL_CHAT_HISTORY_SEARCH_CAP)?;
+    let mut results = Vec::new();
+    for (index, message) in rows.into_iter().enumerate() {
+        if !message.plaintext.contains(&query) {
+            continue;
+        }
+        results.push(OslChatHistorySearchResult {
+            result_id: osl_chat_history_result_id(&message.discord_message_id),
+            position: u32::try_from(index + 1).unwrap_or(u32::MAX),
+            message,
+        });
+        if results.len() == OSL_CHAT_HISTORY_SEARCH_RESULT_LIMIT {
+            break;
+        }
+    }
+    Ok(results)
+}
+
+pub fn open_osl_chat_history_result(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    result_id: String,
+) -> Result<OslChatHistoryOpenResult, String> {
+    let message_id = message_id_from_osl_chat_history_result(&result_id)?;
+    let rows = load_ordered_osl_chat_history(core, broker, OSL_CHAT_HISTORY_SEARCH_CAP)?;
+    let total_messages = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+    let Some(index) = rows
+        .iter()
+        .position(|message| message.discord_message_id == message_id)
+    else {
+        return Err("OSL Chat history result is no longer in this conversation".to_owned());
+    };
+    Ok(OslChatHistoryOpenResult {
+        result_id,
+        position: u32::try_from(index + 1).unwrap_or(u32::MAX),
+        total_messages,
+        previous: index
+            .checked_sub(1)
+            .and_then(|previous| rows.get(previous).cloned()),
+        message: rows[index].clone(),
+        next: rows.get(index + 1).cloned(),
+    })
 }
 
 pub fn begin_native_overlay_attachment(
