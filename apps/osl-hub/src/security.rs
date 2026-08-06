@@ -193,6 +193,8 @@ pub struct ScopeSecurityDto {
 pub struct AllowedPlaceDirectionStateDto {
     /// `none`, `one-way`, or `two-way`.
     pub state: String,
+    /// `visible` only when the reciprocal direct-message whitelist exists.
+    pub verification_state: String,
     pub saved_directions: usize,
     pub first_to_second: bool,
     pub second_to_first: bool,
@@ -3981,8 +3983,15 @@ fn compare_allowed_place_direction_state_from_prefs(
         _ => unreachable!("only two directions are compared"),
     }
     .to_owned();
+    let verification_state = if saved_directions == 2 {
+        "visible"
+    } else {
+        "hidden"
+    }
+    .to_owned();
     Ok(AllowedPlaceDirectionStateDto {
         state,
+        verification_state,
         saved_directions,
         first_to_second,
         second_to_first,
@@ -6941,6 +6950,68 @@ key"
         );
         assert_eq!(two_way.saved_directions, 2);
         assert_eq!(two_way.state, "two-way");
+        assert!(two_way.first_to_second);
+        assert!(two_way.second_to_first);
+    }
+
+    #[test]
+    fn verification_state_is_visible_only_for_two_way_allowed_place_direction() {
+        let harness = FileBackedSecurityHarness::new("task0171-verification-state");
+        let first_account = "900000000000000172";
+        let second_account = "900000000000000173";
+        let first_to_second =
+            allowed_place_direction_key("discord", first_account, "direct_message", second_account);
+        let second_to_first =
+            allowed_place_direction_key("discord", second_account, "direct_message", first_account);
+        let prefs_path = harness.path().join(SECURITY_PREFS_FILE);
+        let mut prefs = SecurityPreferences {
+            version: 2,
+            ..SecurityPreferences::default()
+        };
+        prefs.allowed_place_directions.insert(first_to_second);
+        write_encrypted_json(&prefs_path, &prefs).unwrap();
+
+        let one_way = compare_allowed_place_direction_state(
+            "discord".to_owned(),
+            first_account.to_owned(),
+            second_account.to_owned(),
+            "direct_message".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "TASK0171 verification_command=compare_allowed_place_direction_state saved_directions={} whitelist_state={} verification_state={} first_to_second={} second_to_first={}",
+            one_way.saved_directions,
+            one_way.state,
+            one_way.verification_state,
+            one_way.first_to_second,
+            one_way.second_to_first
+        );
+        assert_eq!(one_way.saved_directions, 1);
+        assert_eq!(one_way.state, "one-way");
+        assert_eq!(one_way.verification_state, "hidden");
+        assert!(one_way.first_to_second);
+        assert!(!one_way.second_to_first);
+
+        prefs.allowed_place_directions.insert(second_to_first);
+        write_encrypted_json(&prefs_path, &prefs).unwrap();
+        let two_way = compare_allowed_place_direction_state(
+            "discord".to_owned(),
+            first_account.to_owned(),
+            second_account.to_owned(),
+            "direct_message".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "TASK0171 verification_command=compare_allowed_place_direction_state saved_directions={} whitelist_state={} verification_state={} first_to_second={} second_to_first={}",
+            two_way.saved_directions,
+            two_way.state,
+            two_way.verification_state,
+            two_way.first_to_second,
+            two_way.second_to_first
+        );
+        assert_eq!(two_way.saved_directions, 2);
+        assert_eq!(two_way.state, "two-way");
+        assert_eq!(two_way.verification_state, "visible");
         assert!(two_way.first_to_second);
         assert!(two_way.second_to_first);
     }
