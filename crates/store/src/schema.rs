@@ -133,6 +133,13 @@ CREATE INDEX IF NOT EXISTS idx_messages_chan_seq
 CREATE INDEX IF NOT EXISTS idx_messages_channel
     ON messages(channel_id, decrypted_at DESC);
 
+CREATE TABLE IF NOT EXISTS message_timers (
+    mid_bi BLOB PRIMARY KEY,
+    minutes INTEGER NOT NULL CHECK (minutes > 0),
+    action_version INTEGER NOT NULL DEFAULT 1 CHECK (action_version > 0),
+    FOREIGN KEY (mid_bi) REFERENCES messages(mid_bi) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS message_device_acks (
     mid_bi BLOB NOT NULL,
     device_bi BLOB NOT NULL,
