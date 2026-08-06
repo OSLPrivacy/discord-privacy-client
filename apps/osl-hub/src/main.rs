@@ -95,9 +95,9 @@ use osl_privacy_hub::scrub_index::{
 };
 use osl_privacy_hub::scrub_setup_store::{ScrubSetupCommand, ScrubSetupState, ScrubSetupSummary};
 use osl_privacy_hub::security::{
-    self, AddFriendResult, FriendAccountReachChoiceRecord, FriendCodeExport,
-    GroupMemberPermissionRecord, HubRevocationStatusDto, HubScopeBurnResult, HubSecurityState,
-    PersonDto, RemoveFriendResult, ScopeSecurityDto,
+    self, AddFriendResult, AppNotificationChoiceRecord, FriendAccountReachChoiceRecord,
+    FriendCodeExport, GroupMemberPermissionRecord, HubRevocationStatusDto, HubScopeBurnResult,
+    HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -1881,6 +1881,7 @@ fn set_hub_notifications_enabled(
 #[tauri::command]
 async fn list_hub_app_notifications(
     core: State<'_, HubCoreState>,
+    security_state: State<'_, HubSecurityState>,
     state: State<'_, HubNotificationState>,
     session: State<'_, HubAccountSessionState>,
 ) -> Result<Vec<HubAppNotification>, String> {
@@ -1891,6 +1892,9 @@ async fn list_hub_app_notifications(
         .map_err(|_| "OSL notification state is unavailable".to_owned())?
     {
         return Err("OSL notifications require explicit local opt-in".to_owned());
+    }
+    if !security::app_notification_enabled_before_notice(&security_state, "osl-hub".to_owned())? {
+        return Ok(Vec::new());
     }
     let people = security::list_people(&core)?;
     Ok(people
@@ -1906,6 +1910,26 @@ async fn list_hub_app_notifications(
             created_at: "Pending verification".to_owned(),
         })
         .collect())
+}
+
+#[tauri::command]
+async fn set_hub_app_notification_choice(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    app_id: String,
+    enabled: bool,
+) -> Result<AppNotificationChoiceRecord, String> {
+    let _session = session.transition.lock().await;
+    security::set_app_notification_choice(&security_state, app_id, enabled)
+}
+
+#[tauri::command]
+async fn list_hub_app_notification_choices(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<AppNotificationChoiceRecord>, String> {
+    let _session = session.transition.lock().await;
+    security::list_app_notification_choices(&security_state)
 }
 
 #[tauri::command]

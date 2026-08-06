@@ -182,6 +182,13 @@ pub struct FriendAccountReachChoiceRecord {
     pub broadened: bool,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppNotificationChoiceRecord {
+    pub app_id: String,
+    pub enabled: bool,
+}
+
 /// The minimum friend state needed to create a manual peer-messaging lease.
 /// Key material stays in the original core; callers receive only stable local
 /// and public identity identifiers.
@@ -562,6 +569,11 @@ struct SecurityPreferences {
     #[serde(default)]
     friend_account_reach_choices:
         BTreeMap<String, BTreeMap<String, FriendAccountReachChoiceRecord>>,
+    /// Per-app local notification choices. A missing app-specific choice is
+    /// fail-closed for notice creation; callers must persist the app's explicit
+    /// opt-in before any notice for that app is made.
+    #[serde(default)]
+    app_notification_choices: BTreeMap<String, bool>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -1264,6 +1276,45 @@ pub fn list_friend_account_reach_choices(
     ensure_friend_exists(&dir, &person_id)?;
     let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
     Ok(friend_account_reach_choice_records(&prefs, &person_id))
+}
+
+pub fn set_app_notification_choice(
+    security: &HubSecurityState,
+    app_id: String,
+    enabled: bool,
+) -> Result<AppNotificationChoiceRecord, String> {
+    require_unlocked()?;
+    validate_app_notification_id(&app_id)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL app notification state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs
+        .app_notification_choices
+        .insert(app_id.clone(), enabled);
+    write_encrypted_json(&path, &prefs)?;
+    Ok(AppNotificationChoiceRecord { app_id, enabled })
+}
+
+pub fn list_app_notification_choices(
+    _security: &HubSecurityState,
+) -> Result<Vec<AppNotificationChoiceRecord>, String> {
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    Ok(app_notification_choice_records(&prefs))
+}
+
+pub fn app_notification_enabled_before_notice(
+    _security: &HubSecurityState,
+    app_id: String,
+) -> Result<bool, String> {
+    require_unlocked()?;
+    validate_app_notification_id(&app_id)?;
+    let prefs = load_security_preferences()?;
+    Ok(app_notification_choice_enabled(&prefs, &app_id))
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -3974,6 +4025,27 @@ fn friend_account_reach_choice_records(
         .collect()
 }
 
+fn app_notification_choice_records(
+    prefs: &SecurityPreferences,
+) -> Vec<AppNotificationChoiceRecord> {
+    prefs
+        .app_notification_choices
+        .iter()
+        .map(|(app_id, enabled)| AppNotificationChoiceRecord {
+            app_id: app_id.clone(),
+            enabled: *enabled,
+        })
+        .collect()
+}
+
+fn app_notification_choice_enabled(prefs: &SecurityPreferences, app_id: &str) -> bool {
+    prefs
+        .app_notification_choices
+        .get(app_id)
+        .copied()
+        .unwrap_or(false)
+}
+
 fn manual_approved_scopes_for_person(
     prefs: &SecurityPreferences,
     person_id: &str,
@@ -4154,6 +4226,18 @@ fn validate_account_reach_component(value: &str, message: &str) -> Result<(), St
             .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
     {
         return Err(message.to_owned());
+    }
+    Ok(())
+}
+
+fn validate_app_notification_id(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 64
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+    {
+        return Err("OSL app notification identifier is invalid".to_owned());
     }
     Ok(())
 }
@@ -4927,6 +5011,36 @@ mod tests {
         );
         assert_eq!(ticked_trace, "active");
         assert_eq!(unticked_trace, "skipped");
+    }
+
+    #[test]
+    fn direct_app_notification_lookups_return_enabled_for_one_app_and_disabled_for_another() {
+        let _harness = FileBackedSecurityHarness::new("app-notification-choices");
+        let security = HubSecurityState::default();
+
+        let discord = set_app_notification_choice(&security, "discord".to_owned(), true).unwrap();
+        let telegram =
+            set_app_notification_choice(&security, "telegram".to_owned(), false).unwrap();
+        assert!(discord.enabled);
+        assert!(!telegram.enabled);
+
+        let discord_lookup =
+            app_notification_enabled_before_notice(&security, "discord".to_owned()).unwrap();
+        let telegram_lookup =
+            app_notification_enabled_before_notice(&security, "telegram".to_owned()).unwrap();
+        println!(
+            "app_notification_direct_lookups discord={} telegram={}",
+            discord_lookup, telegram_lookup
+        );
+        assert!(discord_lookup);
+        assert!(!telegram_lookup);
+
+        let choices = list_app_notification_choices(&security).unwrap();
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[0].app_id, "discord");
+        assert!(choices[0].enabled);
+        assert_eq!(choices[1].app_id, "telegram");
+        assert!(!choices[1].enabled);
     }
 
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {
