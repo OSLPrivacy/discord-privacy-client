@@ -6227,6 +6227,181 @@ mod tests {
         assert!(stored.burned_manual_scopes.contains(&burned_scope));
     }
 
+    /// TASK 3558. Unavailable friend states must fail before prepare,
+    /// placement, or delivery side effects are allowed to run.
+    #[test]
+    fn task_3558_unavailable_friends_refuse_prepare_placement_and_send() {
+        #[derive(Default)]
+        struct Counts {
+            prepare: usize,
+            placement: usize,
+            delivery: usize,
+            refused: usize,
+        }
+
+        fn approved_scope_input(person_id: &str) -> ScopeInput {
+            dm_scope_input(manual_peer_scope_id("osl-chat", "osl-main", person_id).unwrap())
+        }
+
+        fn attempt_stage(
+            core: &HubCoreState,
+            security: &HubSecurityState,
+            person_id: &str,
+            stage: &str,
+            mark: &str,
+            counts: &mut Counts,
+        ) -> Result<(), String> {
+            let scope_input = approved_scope_input(person_id);
+            let binding = require_manual_peer_scope_approved(
+                core,
+                "osl-chat",
+                "osl-main",
+                person_id.to_owned(),
+                scope_input.clone(),
+            )?;
+            match stage {
+                "prepare" => {
+                    counts.prepare += 1;
+                    Ok(())
+                }
+                "placement" => {
+                    counts.placement += 1;
+                    Ok(())
+                }
+                "send" => {
+                    counts.delivery += 1;
+                    record_peer_prose_blob(
+                        security,
+                        scope_input,
+                        format!("{mark}-{person_id}-delivery"),
+                        Some(format!("{mark}-capability")),
+                    )?;
+                    assert_eq!(binding.person_id, person_id);
+                    Ok(())
+                }
+                _ => unreachable!("unknown task 3558 stage"),
+            }
+        }
+
+        let harness = FileBackedSecurityHarness::new("task-3558-unavailable-friends");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences {
+                version: 2,
+                ..SecurityPreferences::default()
+            },
+        )
+        .unwrap();
+
+        let nonexistent_person_id = person_id(&STANDARD.encode([0x35u8; ED25519_PUBLIC_BYTES]));
+
+        let (pending_person_id, mut pending_metadata, pending_peer) = test_friend(52);
+        pending_metadata.safety_number_verified = false;
+
+        let (removed_person_id, removed_metadata, removed_peer) = test_friend(53);
+        write_people(harness.path(), &removed_person_id, removed_metadata);
+        install_peer_map(&core, harness.path(), &removed_person_id, removed_peer);
+        let removed_binding = manual_peer_binding(&core, removed_person_id.clone()).unwrap();
+        let removed_scope_input = approved_scope_input(&removed_person_id);
+        let removed_grant = ScopedTrustGrant::for_manual_peer(
+            &removed_binding,
+            "osl-chat",
+            "osl-main",
+            removed_scope_input,
+            ScopedTrustConsent::ExplicitUserAction,
+        )
+        .unwrap();
+        apply_scoped_trust_grant(&security, &removed_binding, &removed_grant).unwrap();
+        let removed = remove_friend(&core, &security, removed_person_id.clone()).unwrap();
+        assert_eq!(removed.approvals_withdrawn, 1);
+        assert!(removed.peer_key_removed);
+
+        let (unaccepted_person_id, unaccepted_metadata, unaccepted_peer) = test_friend(54);
+
+        let mut people = PeopleFile {
+            version: PEOPLE_SCHEMA_VERSION,
+            ..PeopleFile::default()
+        };
+        people
+            .people
+            .insert(pending_person_id.clone(), pending_metadata);
+        people
+            .people
+            .insert(unaccepted_person_id.clone(), unaccepted_metadata);
+        write_encrypted_json(&harness.path().join(PEOPLE_FILE), &people).unwrap();
+
+        let mut peers = ipc::peer_map::PeerMap::new();
+        peers.insert(pending_person_id.clone(), pending_peer);
+        peers.insert(unaccepted_person_id.clone(), unaccepted_peer);
+        write_encrypted_json(&harness.path().join("peer_map.json"), &peers).unwrap();
+        *core.osl.peer_map.lock().unwrap() = peers;
+
+        let states = [
+            ("nonexistent", nonexistent_person_id),
+            ("pending", pending_person_id),
+            ("removed", removed_person_id),
+            ("unaccepted", unaccepted_person_id),
+        ];
+        let stages = ["prepare", "placement", "send"];
+        let mark = "TASK3558-UNAVAILABLE-FRIENDS";
+        let mut total = Counts::default();
+
+        for (state_name, person_id) in &states {
+            let mut state_counts = Counts::default();
+            for stage in stages {
+                let before = (
+                    total.prepare + state_counts.prepare,
+                    total.placement + state_counts.placement,
+                    total.delivery + state_counts.delivery,
+                );
+                match attempt_stage(&core, &security, &person_id, stage, mark, &mut state_counts) {
+                    Ok(()) => {
+                        panic!("TASK3558 {state_name} {stage} unexpectedly reached side effects")
+                    }
+                    Err(error) => {
+                        state_counts.refused += 1;
+                        let after = (
+                            total.prepare + state_counts.prepare,
+                            total.placement + state_counts.placement,
+                            total.delivery + state_counts.delivery,
+                        );
+                        assert_eq!(
+                            after, before,
+                            "TASK3558 {state_name} {stage} refusal changed side-effect counts"
+                        );
+                        println!(
+                            "TASK3558_ATTEMPT mark={mark} state={state_name} stage={stage} result=refused error={error:?}"
+                        );
+                    }
+                }
+            }
+            assert_eq!(state_counts.refused, 3);
+            assert_eq!(state_counts.prepare, 0);
+            assert_eq!(state_counts.placement, 0);
+            assert_eq!(state_counts.delivery, 0);
+            println!(
+                "TASK3558_STATE mark={mark} state={state_name} attempts=3 refused=3 prepare_count=0 placement_count=0 delivery_count=0"
+            );
+            total.refused += state_counts.refused;
+            total.prepare += state_counts.prepare;
+            total.placement += state_counts.placement;
+            total.delivery += state_counts.delivery;
+        }
+
+        assert_eq!(states.len(), 4);
+        assert_eq!(stages.len(), 3);
+        assert_eq!(total.refused, 12);
+        assert_eq!(total.prepare, 0);
+        assert_eq!(total.placement, 0);
+        assert_eq!(total.delivery, 0);
+        println!(
+            "TASK3558_REPORT mark={mark} friend_states=4 attempts_per_state=3 refused_attempts=12 prepare_count=0 placement_count=0 delivery_count=0"
+        );
+    }
+
     #[test]
     fn remove_friend_rolls_back_peer_map_on_people_write_failure() {
         let harness = FileBackedSecurityHarness::new("remove-rollback-peer-map");
