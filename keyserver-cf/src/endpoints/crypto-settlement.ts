@@ -79,6 +79,7 @@ export async function handleCryptoSettlement(
     path,
     evidence,
   ))) {
+    await recordCryptoSettlementRefusal(env.DB, evidence, "bad-signature");
     return unauthorized("invalid watcher signature");
   }
   const expectedEventId = `evt_${await sha256Hex(
@@ -457,6 +458,33 @@ async function claimPaymentReference(
     return conflict("payment reference is already assigned to another invoice");
   }
   return null;
+}
+
+async function recordCryptoSettlementRefusal(
+  db: D1Database,
+  evidence: WatcherSettlementEvidence,
+  reason: "bad-signature",
+): Promise<void> {
+  const invoiceIdHash = await sha256Hex(evidence.invoice_id);
+  const refusalId = `csr_${crypto.randomUUID().replace(/-/g, "")}${
+    crypto.randomUUID().replace(/-/g, "")
+  }`;
+  try {
+    await db.prepare(
+      `INSERT INTO crypto_settlement_refusals (
+         refusal_id, invoice_id_hash, event_id, payment_method, reason, attempted_at
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      refusalId,
+      invoiceIdHash,
+      evidence.event_id,
+      evidence.payment_method,
+      reason,
+      Math.floor(Date.now() / 1000),
+    ).run();
+  } catch {
+    console.error("[crypto-settlement] failed to record settlement refusal");
+  }
 }
 
 export async function sweepAnonymousCryptoInvoices(db: D1Database): Promise<number> {
