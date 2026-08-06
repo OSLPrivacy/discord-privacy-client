@@ -487,6 +487,16 @@ describe("GET /v1/wrapped-keys/:content_id", () => {
     return `http://test/v1/wrapped-keys/${encodeURIComponent(contentId)}?${q}`;
   }
 
+  async function serverClaimCount(contentId: string): Promise<number> {
+    const row = await testDb
+      .prepare(
+        "SELECT COUNT(*) AS count FROM consuming_get_receipts WHERE target_id = ?",
+      )
+      .bind(contentId)
+      .first<{ count: number }>();
+    return row?.count ?? 0;
+  }
+
   it("404s for unknown content_id", async () => {
     const res = await SELF.fetch(await signedGetUrl("unknown-id"));
     expect(res.status).toBe(404);
@@ -505,6 +515,37 @@ describe("GET /v1/wrapped-keys/:content_id", () => {
     expect(j.sender_id).toBe(body.sender_id);
     expect(j.wrapped_share_blob).toBe(body.wrapped_share_blob);
     expect(j.single_use).toBe(false);
+  });
+
+  it("view-once send flag requires exactly one server claim before read", async () => {
+    const body = await seedWrappedKey({
+      single_use: true,
+      display_duration_seconds: 10,
+    });
+    const stored = await testDb
+      .prepare(
+        `SELECT single_use, display_duration_seconds
+           FROM wrapped_keys WHERE content_id = ?`,
+      )
+      .bind(body.content_id)
+      .first<{ single_use: number; display_duration_seconds: number | null }>();
+    expect(stored).toEqual({
+      single_use: 1,
+      display_duration_seconds: 10,
+    });
+    expect(await serverClaimCount(body.content_id as string)).toBe(0);
+
+    const read = await SELF.fetch(await signedGetUrl(body.content_id as string));
+    expect(read.status).toBe(200);
+    const opened = (await read.json()) as Record<string, unknown>;
+    expect(opened.content_id).toBe(body.content_id);
+    expect(opened.single_use).toBe(true);
+    expect(opened.display_duration_seconds).toBe(10);
+    expect(await serverClaimCount(body.content_id as string)).toBe(1);
+
+    console.log(
+      `TASK0558 view_once_send_flag=${stored?.single_use} read_status=${read.status} server_claims=${await serverClaimCount(body.content_id as string)}`,
+    );
   });
 
   it("410s a past-expiry row and tombstones it", async () => {
