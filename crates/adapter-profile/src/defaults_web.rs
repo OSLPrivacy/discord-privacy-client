@@ -5,7 +5,7 @@
 
 use crate::schema::{
     ActionLevel, AdapterAuthority, AdapterService, AdapterSurface, BindingRequirement, Capability,
-    CapabilityGrant, ProfileDoc, SendOutcomeContract, SignedProfileDoc,
+    CapabilityGrant, ProfileDoc, SelectorStrategy, SendOutcomeContract, SignedProfileDoc,
     PROFILE_DOC_ENVELOPE_VERSION, PROFILE_DOC_VERSION,
 };
 use std::collections::BTreeSet;
@@ -80,6 +80,107 @@ pub fn capabilities_from_profile(profile: &ProfileDoc) -> BTreeSet<Capability> {
         .unwrap_or_default()
 }
 
+/// Semantic target names an email web-service connection asks the browser
+/// driver to locate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EmailWebControlTarget {
+    pub name: &'static str,
+    pub strategy: EmailWebControlStrategy,
+    pub required: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmailWebControlStrategy {
+    Accessibility {
+        role: &'static str,
+        name: Option<&'static str>,
+    },
+    Css {
+        selector: &'static str,
+    },
+}
+
+impl EmailWebControlStrategy {
+    pub fn to_selector_strategy(self) -> SelectorStrategy {
+        match self {
+            EmailWebControlStrategy::Accessibility { role, name } => {
+                SelectorStrategy::Accessibility {
+                    role: role.to_owned(),
+                    name: name.map(str::to_owned),
+                    automation_id: None,
+                }
+            }
+            EmailWebControlStrategy::Css { selector } => SelectorStrategy::Css {
+                selector: selector.to_owned(),
+            },
+        }
+    }
+}
+
+const PROTON_WEB_CONTROL_TARGETS: &[EmailWebControlTarget] = &[
+    EmailWebControlTarget {
+        name: "floating compose",
+        strategy: EmailWebControlStrategy::Accessibility {
+            role: "dialog",
+            name: Some("New message"),
+        },
+        required: true,
+    },
+    EmailWebControlTarget {
+        name: "body",
+        strategy: EmailWebControlStrategy::Accessibility {
+            role: "textbox",
+            name: None,
+        },
+        required: true,
+    },
+    EmailWebControlTarget {
+        name: "Send",
+        strategy: EmailWebControlStrategy::Accessibility {
+            role: "button",
+            name: Some("Send"),
+        },
+        required: true,
+    },
+    EmailWebControlTarget {
+        name: "folders",
+        strategy: EmailWebControlStrategy::Accessibility {
+            role: "navigation",
+            name: Some("Folders"),
+        },
+        required: true,
+    },
+    EmailWebControlTarget {
+        name: "labels",
+        strategy: EmailWebControlStrategy::Accessibility {
+            role: "navigation",
+            name: Some("Labels"),
+        },
+        required: true,
+    },
+    EmailWebControlTarget {
+        name: "threads",
+        strategy: EmailWebControlStrategy::Accessibility {
+            role: "list",
+            name: Some("Messages"),
+        },
+        required: true,
+    },
+    EmailWebControlTarget {
+        name: "reading pane",
+        strategy: EmailWebControlStrategy::Accessibility {
+            role: "region",
+            name: Some("Reading pane"),
+        },
+        required: true,
+    },
+];
+
+/// Reviewed target mapping for Proton Mail's fixed official web origin.
+pub fn proton_web_control_targets() -> &'static [EmailWebControlTarget] {
+    PROTON_WEB_CONTROL_TARGETS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +201,30 @@ mod tests {
         assert!(grants.contains(&Capability::PlaceProtectedPayload));
         assert!(!grants.contains(&Capability::SendProtectedPayload));
         assert!(!grants.contains(&Capability::VerifySendOutcome));
+    }
+
+    #[test]
+    fn task_1242_proton_mapping_contains_all_seven_named_targets() {
+        let names = proton_web_control_targets()
+            .iter()
+            .filter(|target| target.required)
+            .map(|target| target.name)
+            .collect::<Vec<_>>();
+
+        println!("proton target count={}", names.len());
+        println!("proton targets={}", names.join(","));
+
+        assert_eq!(
+            names,
+            vec![
+                "floating compose",
+                "body",
+                "Send",
+                "folders",
+                "labels",
+                "threads",
+                "reading pane",
+            ]
+        );
     }
 }
