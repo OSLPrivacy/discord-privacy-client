@@ -3835,6 +3835,17 @@ pub fn cmd_osl_burn_sender_message_records_both_sides(
     })
 }
 
+pub fn cmd_osl_burn_sender_message_records_choice(
+    state: &AppState,
+    scope_choice: &str,
+    discord_message_ids: Vec<String>,
+) -> Result<BurnSenderMessageRecordsBothSidesDto, String> {
+    match scope_choice {
+        "both-sides" => cmd_osl_burn_sender_message_records_both_sides(state, discord_message_ids),
+        other => Err(format!("OSL: unknown scope: {other}")),
+    }
+}
+
 fn validate_selected_sender_message_records(discord_message_ids: &[String]) -> Result<(), String> {
     if discord_message_ids.is_empty() {
         return Err("OSL: select at least one sender message record to burn".to_string());
