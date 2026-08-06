@@ -109,6 +109,40 @@ pub struct DeleteMessageRecordsOutcome {
     pub remaining_local_count: usize,
 }
 
+pub const MESSAGE_ROW_ACTION_OUT_OF_DATE_REASON: &str = "out-of-date";
+
+/// A request prepared from the currently visible message row.
+///
+/// `row_name` is non-authoritative UI provenance. The actual replay guard is
+/// the sealed row selected by `discord_message_id` plus the monotonic
+/// `content_version` and `action_version` observed when the request was
+/// prepared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageRowActionRequest {
+    pub row_name: String,
+    pub discord_message_id: String,
+    pub content_version: i64,
+    pub action_version: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessageTimerChangeApplied {
+    pub before_minutes: u32,
+    pub after_minutes: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageTimerChangeOutcome {
+    Applied(MessageTimerChangeApplied),
+    Refused { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageRowDeleteOutcome {
+    Deleted,
+    Refused { reason: String },
+}
+
 /// Durable progress for one sender-owned both-sides burn target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SenderMessageBurnStep {
@@ -506,6 +540,44 @@ fn check_id(field: &str, value: &str) -> Result<(), StoreError> {
         )));
     }
     Ok(())
+}
+
+fn live_message_content_version(
+    conn: &Connection,
+    mid_bi: &[u8],
+) -> Result<Option<i64>, StoreError> {
+    conn.query_row(
+        "SELECT content_version FROM messages WHERE mid_bi = ?1 AND burned = 0",
+        params![mid_bi],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(StoreError::from)
+}
+
+fn live_message_action_versions(
+    conn: &Connection,
+    mid_bi: &[u8],
+) -> Result<Option<(i64, i64)>, StoreError> {
+    conn.query_row(
+        "SELECT m.content_version, t.action_version
+           FROM messages m
+           JOIN message_timers t ON t.mid_bi = m.mid_bi
+          WHERE m.mid_bi = ?1 AND m.burned = 0",
+        params![mid_bi],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(StoreError::from)
+}
+
+fn request_matches_live_row(
+    conn: &Connection,
+    mid_bi: &[u8],
+    content_version: i64,
+    action_version: i64,
+) -> Result<bool, StoreError> {
+    Ok(live_message_action_versions(conn, mid_bi)? == Some((content_version, action_version)))
 }
 
 /// Next ordering counter. `seq` replaces the plaintext `decrypted_at` index:
@@ -1029,6 +1101,194 @@ impl MessageStore {
         let Some(row) = row_opt else { return Ok(None) };
         validate_attachment_manifest(&conn, &self.key, &self.index_key, &mid_bi)?;
         Ok(Some(self.materialize(&mid_bi, row)?))
+    }
+
+    /// Record the timer a newly materialized live row currently carries.
+    pub fn record_message_timer_minutes(
+        &self,
+        discord_message_id: &str,
+        minutes: u32,
+    ) -> Result<(), StoreError> {
+        if minutes == 0 {
+            return Err(StoreError::InvalidId(
+                "message timer minutes must be positive".to_string(),
+            ));
+        }
+        check_id("discord_message_id", discord_message_id)?;
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let Some(content_version) = live_message_content_version(&tx, &mid_bi)? else {
+            return Err(StoreError::NotFound(discord_message_id.to_string()));
+        };
+        if content_version < 1 {
+            return Err(StoreError::Corrupted(
+                "message content version must be positive".to_string(),
+            ));
+        }
+        validate_attachment_manifest(&tx, &self.key, &self.index_key, &mid_bi)?;
+        tx.execute(
+            "INSERT INTO message_timers (mid_bi, minutes, action_version) VALUES (?1, ?2, 1)
+             ON CONFLICT(mid_bi) DO UPDATE SET
+                minutes = excluded.minutes,
+                action_version = message_timers.action_version + 1",
+            params![&mid_bi, i64::from(minutes)],
+        )?;
+        self.commit(tx)
+    }
+
+    pub fn message_timer_minutes(
+        &self,
+        discord_message_id: &str,
+    ) -> Result<Option<u32>, StoreError> {
+        check_id("discord_message_id", discord_message_id)?;
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let minutes: Option<i64> = conn
+            .query_row(
+                "SELECT t.minutes
+                   FROM message_timers t
+                   JOIN messages m ON m.mid_bi = t.mid_bi
+                  WHERE t.mid_bi = ?1 AND m.burned = 0",
+                params![&mid_bi],
+                |row| row.get(0),
+            )
+            .optional()?;
+        minutes
+            .map(|value| {
+                u32::try_from(value).map_err(|_| {
+                    StoreError::Corrupted("message timer minutes are out of range".to_string())
+                })
+            })
+            .transpose()
+    }
+
+    pub fn prepare_message_row_action_request(
+        &self,
+        row_name: &str,
+        discord_message_id: &str,
+    ) -> Result<MessageRowActionRequest, StoreError> {
+        check_id("row_name", row_name)?;
+        check_id("discord_message_id", discord_message_id)?;
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, discord_message_id)?;
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let Some((content_version, action_version)) = live_message_action_versions(&conn, &mid_bi)?
+        else {
+            return Err(StoreError::NotFound(discord_message_id.to_string()));
+        };
+        if content_version < 1 || action_version < 1 {
+            return Err(StoreError::Corrupted(
+                "message action version must be positive".to_string(),
+            ));
+        }
+        validate_attachment_manifest(&conn, &self.key, &self.index_key, &mid_bi)?;
+        Ok(MessageRowActionRequest {
+            row_name: row_name.to_string(),
+            discord_message_id: discord_message_id.to_string(),
+            content_version,
+            action_version,
+        })
+    }
+
+    pub fn change_message_timer_minutes(
+        &self,
+        request: &MessageRowActionRequest,
+        expected_before_minutes: u32,
+        after_minutes: u32,
+    ) -> Result<MessageTimerChangeOutcome, StoreError> {
+        check_id("row_name", &request.row_name)?;
+        check_id("discord_message_id", &request.discord_message_id)?;
+        if request.content_version < 1
+            || request.action_version < 1
+            || expected_before_minutes == 0
+            || after_minutes == 0
+        {
+            return Ok(MessageTimerChangeOutcome::Refused {
+                reason: MESSAGE_ROW_ACTION_OUT_OF_DATE_REASON.to_string(),
+            });
+        }
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, &request.discord_message_id)?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        if !request_matches_live_row(
+            &tx,
+            &mid_bi,
+            request.content_version,
+            request.action_version,
+        )? {
+            return Ok(MessageTimerChangeOutcome::Refused {
+                reason: MESSAGE_ROW_ACTION_OUT_OF_DATE_REASON.to_string(),
+            });
+        }
+        validate_attachment_manifest(&tx, &self.key, &self.index_key, &mid_bi)?;
+        let before: Option<i64> = tx
+            .query_row(
+                "SELECT minutes FROM message_timers WHERE mid_bi = ?1",
+                params![&mid_bi],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if before != Some(i64::from(expected_before_minutes)) {
+            return Ok(MessageTimerChangeOutcome::Refused {
+                reason: MESSAGE_ROW_ACTION_OUT_OF_DATE_REASON.to_string(),
+            });
+        }
+        tx.execute(
+            "UPDATE message_timers
+                SET minutes = ?2,
+                    action_version = action_version + 1
+              WHERE mid_bi = ?1",
+            params![&mid_bi, i64::from(after_minutes)],
+        )?;
+        self.commit(tx)?;
+        Ok(MessageTimerChangeOutcome::Applied(
+            MessageTimerChangeApplied {
+                before_minutes: expected_before_minutes,
+                after_minutes,
+            },
+        ))
+    }
+
+    pub fn delete_message_by_row_action_request(
+        &self,
+        request: &MessageRowActionRequest,
+    ) -> Result<MessageRowDeleteOutcome, StoreError> {
+        check_id("row_name", &request.row_name)?;
+        check_id("discord_message_id", &request.discord_message_id)?;
+        if request.content_version < 1 || request.action_version < 1 {
+            return Ok(MessageRowDeleteOutcome::Refused {
+                reason: MESSAGE_ROW_ACTION_OUT_OF_DATE_REASON.to_string(),
+            });
+        }
+        let mid_bi = self.bi(cipher::BI_MESSAGE_ID, &request.discord_message_id)?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        if !request_matches_live_row(
+            &tx,
+            &mid_bi,
+            request.content_version,
+            request.action_version,
+        )? {
+            return Ok(MessageRowDeleteOutcome::Refused {
+                reason: MESSAGE_ROW_ACTION_OUT_OF_DATE_REASON.to_string(),
+            });
+        }
+        validate_attachment_manifest(&tx, &self.key, &self.index_key, &mid_bi)?;
+        shred_row(&tx, &mid_bi)?;
+        shred_attachment_rows(&tx, &mid_bi)?;
+        tx.execute(
+            "DELETE FROM attachment_manifests WHERE mid_bi = ?1",
+            params![&mid_bi],
+        )?;
+        tx.execute(
+            "DELETE FROM message_timers WHERE mid_bi = ?1",
+            params![&mid_bi],
+        )?;
+        schema::mark_shred_checkpoint_pending(&tx)?;
+        self.commit(tx)?;
+        checkpoint_after_shred(&conn)?;
+        self.sync_anchor_after_checkpoint(&mut conn)?;
+        Ok(MessageRowDeleteOutcome::Deleted)
     }
 
     /// List the most-recently-decrypted messages for a channel,
