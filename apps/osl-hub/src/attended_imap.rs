@@ -1094,6 +1094,15 @@ mod tests {
         }
     }
 
+    fn deleted_targets_in_folder(mailbox: &ImapMailbox, folder: &str) -> Vec<String> {
+        mailbox
+            .deleted
+            .iter()
+            .filter(|(_, mailbox_name, _)| mailbox_name == folder)
+            .map(|(_, _, message_id)| message_id.clone())
+            .collect()
+    }
+
     #[test]
     fn attended_imap_auth_types_retain_zeroizing_credentials() {
         let secret = "unit-test-imap-password";
@@ -1400,6 +1409,67 @@ mod tests {
         println!(
             "TASK0410 expired_grant refusal={expired_refusal:?} deleted_count={}",
             expired_mailbox.deleted_count()
+        );
+    }
+
+    #[test]
+    fn task_1227_check_folder_burn_cannot_widen_itself() {
+        let owner = "owner-maple-1";
+        let account = "acct-maple-1";
+        let message_id = "maple-mail-1";
+        let mut mailbox = ImapMailbox::from_messages(vec![
+            ImapMessageSnapshot {
+                owner_osl_user_id: owner.to_owned(),
+                account_id: account.to_owned(),
+                mailbox: "Red".to_owned(),
+                message_id: message_id.to_owned(),
+                uid: 10,
+                fingerprint: message_fingerprint(account, "Red", message_id, 10),
+                authored_by_self: true,
+            },
+            ImapMessageSnapshot {
+                owner_osl_user_id: owner.to_owned(),
+                account_id: account.to_owned(),
+                mailbox: "Blue".to_owned(),
+                message_id: message_id.to_owned(),
+                uid: 20,
+                fingerprint: message_fingerprint(account, "Blue", message_id, 20),
+                authored_by_self: true,
+            },
+        ]);
+
+        let red_targets_before = deleted_targets_in_folder(&mailbox, "Red");
+        assert_eq!(red_targets_before.len(), 0);
+        println!(
+            "TASK1227 red_count_before={} red_targets_before={red_targets_before:?}",
+            red_targets_before.len()
+        );
+
+        let prepared = prepare_delete(&mailbox, owner, account, "Red", message_id).unwrap();
+        let receipt = delete_prepared(&mut mailbox, &prepared).unwrap();
+        assert_eq!(receipt.mailbox, "Red");
+        assert_eq!(receipt.message_id, message_id);
+        let red_targets_after = deleted_targets_in_folder(&mailbox, "Red");
+        assert_eq!(red_targets_after, vec![message_id.to_owned()]);
+        println!(
+            "TASK1227 red_delete_result message_id={} red_count_after={} red_targets_after={red_targets_after:?}",
+            receipt.message_id,
+            red_targets_after.len()
+        );
+
+        let mut widened_to_blue = prepared.clone();
+        widened_to_blue.mailbox = "Blue".to_owned();
+        let blue_refusal = delete_prepared(&mut mailbox, &widened_to_blue).unwrap_err();
+        assert_eq!(blue_refusal, ImapPolicyError::FingerprintMismatch);
+        println!(
+            "TASK1227 blue_refusal=Blue is refused as outside folder Red reason={blue_refusal:?}"
+        );
+
+        let red_targets_after_blue = deleted_targets_in_folder(&mailbox, "Red");
+        assert_eq!(red_targets_after_blue, vec![message_id.to_owned()]);
+        println!(
+            "TASK1227 red_final_count={} red_final_targets={red_targets_after_blue:?}",
+            red_targets_after_blue.len()
         );
     }
 
