@@ -27,6 +27,8 @@ pub mod ai_carrier;
 pub mod ai_consent;
 pub mod attended_imap;
 #[cfg(feature = "core")]
+pub mod bad_message_rules;
+#[cfg(feature = "core")]
 pub mod autoscrub_bridge;
 #[cfg(feature = "core")]
 pub mod autoscrub_run;
