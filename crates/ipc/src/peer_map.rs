@@ -162,6 +162,44 @@ pub struct PeerEntry {
     /// silently replacing any already-pinned transport key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tofu_key_bundle: Option<crate::tofu::KeyBundle>,
+
+    /// Direct-chat OSL-RN agreement retained with this conversation.
+    ///
+    /// This is public proof material and monotone security state, not ratchet
+    /// secret state. The sealed per-peer session stays in `rn_sessions/`; this
+    /// record ties the DM peer entry to the verified capability and prekey
+    /// proof that justified raising the conversation to OSL-RN.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_chat_security: Option<DirectChatSecurityState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DirectChatSecurityState {
+    pub version: u32,
+    pub agreed_wire_version: u8,
+    pub state: DirectChatSecurityLevel,
+    pub peer_proof: DirectChatPeerProof,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectChatSecurityLevel {
+    OslRn,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DirectChatPeerProof {
+    pub peer_osl_user_id: String,
+    pub ik_x25519_pub: String,
+    pub ik_ed25519_pub: String,
+    pub ik_mlkem768_pub: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ik_ratchet_initial_pub: Option<String>,
+    pub rn_capabilities: u32,
+    pub registration_sig: String,
+    pub spk_pub: String,
+    pub spk_signature: String,
+    pub spk_rotated_at: String,
 }
 
 /// One outgoing whitelist entry for a peer. Variants correspond to

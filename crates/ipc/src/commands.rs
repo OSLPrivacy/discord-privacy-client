@@ -4751,8 +4751,8 @@ fn try_encrypt_rn_first_contact_from_state(
     let store = rn_session_store_for_first_contact(&dir)?;
     let sealer = keystore::select_best_sealer();
 
-    let caps = match verified_rn_capabilities_for_live_peer(state, &peer_entry) {
-        Ok(caps) => caps,
+    let verified = match verified_rn_peer_proof_for_live_peer(state, &peer_entry) {
+        Ok(verified) => verified,
         Err(e) => {
             if store
                 .load_pin(peer_identity.as_bytes())
@@ -4764,6 +4764,7 @@ fn try_encrypt_rn_first_contact_from_state(
             return Ok(None);
         }
     };
+    let caps = verified.capabilities;
 
     let pin = store
         .load_pin(peer_identity.as_bytes())
@@ -4782,7 +4783,7 @@ fn try_encrypt_rn_first_contact_from_state(
     };
 
     let peer_bundle = rn_peer_bundle_from_prekey_response(&prekey_bundle)?;
-    try_encrypt_rn_first_contact_with_bundle(
+    let wire = try_encrypt_rn_first_contact_with_bundle(
         rn_wire_in_enabled,
         &store,
         sealer.as_ref(),
@@ -4792,18 +4793,40 @@ fn try_encrypt_rn_first_contact_from_state(
         caps,
         prekey_bundle.ik_mlkem768_pub.as_str(),
         plaintext,
-    )
+    )?;
+    if wire.is_some() {
+        persist_direct_chat_security_state(state, peer_did, &verified.pubkeys, &prekey_bundle)?;
+    }
+    Ok(wire)
 }
 
 fn verified_rn_capabilities_for_live_peer(
     state: &AppState,
     peer_entry: &crate::peer_map::PeerEntry,
 ) -> Result<keystore::client::PeerCapabilities, String> {
+    verified_rn_peer_proof_for_live_peer(state, peer_entry).map(|verified| verified.capabilities)
+}
+
+struct VerifiedRnPeerProof {
+    capabilities: keystore::client::PeerCapabilities,
+    pubkeys: keystore::client::PubkeysResponse,
+}
+
+fn verified_rn_peer_proof_for_live_peer(
+    state: &AppState,
+    peer_entry: &crate::peer_map::PeerEntry,
+) -> Result<VerifiedRnPeerProof, String> {
     let Some(osl_user_id) = peer_entry.osl_user_id.as_deref() else {
-        return Ok(keystore::client::PeerCapabilities::Absent);
+        return Ok(VerifiedRnPeerProof {
+            capabilities: keystore::client::PeerCapabilities::Absent,
+            pubkeys: absent_pubkeys_response(),
+        });
     };
     if is_discord_snowflake_shaped(osl_user_id) {
-        return Ok(keystore::client::PeerCapabilities::Absent);
+        return Ok(VerifiedRnPeerProof {
+            capabilities: keystore::client::PeerCapabilities::Absent,
+            pubkeys: absent_pubkeys_response(),
+        });
     }
     let resp = {
         let ks = state.keyserver_slot();
@@ -4815,12 +4838,106 @@ fn verified_rn_capabilities_for_live_peer(
             .map_err(|_| "OSL: OSL-RN first contact: peer key fetch refused".to_string())?
     };
     if !rn_pubkeys_response_matches_live_peer(peer_entry, &resp) {
-        return Ok(keystore::client::PeerCapabilities::Unverified);
+        return Ok(VerifiedRnPeerProof {
+            capabilities: keystore::client::PeerCapabilities::Unverified,
+            pubkeys: resp,
+        });
     }
     if resp.user_id != osl_user_id {
-        return Ok(keystore::client::PeerCapabilities::Unverified);
+        return Ok(VerifiedRnPeerProof {
+            capabilities: keystore::client::PeerCapabilities::Unverified,
+            pubkeys: resp,
+        });
     }
-    Ok(keystore::client::verify_peer_capabilities(&resp))
+    let capabilities = keystore::client::verify_peer_capabilities(&resp);
+    Ok(VerifiedRnPeerProof {
+        capabilities,
+        pubkeys: resp,
+    })
+}
+
+fn absent_pubkeys_response() -> keystore::client::PubkeysResponse {
+    keystore::client::PubkeysResponse {
+        user_id: String::new(),
+        ik_x25519_pub: String::new(),
+        ik_ed25519_pub: String::new(),
+        ik_mlkem768_pub: String::new(),
+        registered_at: String::new(),
+        last_rotated_at: None,
+        ik_ratchet_initial_pub: None,
+        rn_capabilities: None,
+        registration_sig: None,
+        identity_scheme: None,
+        identity_bundle_version: None,
+        identity_revision: None,
+        ik_root_ed25519_pub: None,
+        identity_bundle_proof_sig: None,
+    }
+}
+
+fn persist_direct_chat_security_state(
+    state: &AppState,
+    peer_did: &str,
+    pubkeys: &keystore::client::PubkeysResponse,
+    prekey: &keystore::client::PrekeyBundleResponse,
+) -> Result<(), String> {
+    let security = direct_chat_security_state(pubkeys, prekey)?;
+    {
+        let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let entry = pm.get_mut(peer_did).ok_or_else(|| {
+            format!(
+                "OSL: direct-chat security state: missing peer {}",
+                crate::log_id::log_id(peer_did)
+            )
+        })?;
+        entry.direct_chat_security = Some(security);
+    }
+
+    let dir = keystore::osl_config_dir()
+        .map_err(|e| format!("OSL: direct-chat security state dir: {e}"))?;
+    let path = dir.join("peer_map.json");
+    let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+    crate::peer_map::write_peer_map(&path, &pm).map_err(|e| {
+        record_persist_error(state, "direct-chat security peer_map.json", &e);
+        format!("OSL: direct-chat security state persist failed: {e}")
+    })
+}
+
+fn direct_chat_security_state(
+    pubkeys: &keystore::client::PubkeysResponse,
+    prekey: &keystore::client::PrekeyBundleResponse,
+) -> Result<crate::peer_map::DirectChatSecurityState, String> {
+    if pubkeys.user_id != prekey.user_id
+        || pubkeys.ik_x25519_pub != prekey.ik_x25519_pub
+        || pubkeys.ik_ed25519_pub != prekey.ik_ed25519_pub
+        || pubkeys.ik_mlkem768_pub != prekey.ik_mlkem768_pub
+        || pubkeys.ik_ratchet_initial_pub != prekey.ik_ratchet_initial_pub
+    {
+        return Err("OSL: direct-chat security state proof mismatch".to_string());
+    }
+    let rn_capabilities = pubkeys
+        .rn_capabilities
+        .ok_or_else(|| "OSL: direct-chat security state missing RN capability proof".to_string())?;
+    let registration_sig = pubkeys.registration_sig.clone().ok_or_else(|| {
+        "OSL: direct-chat security state missing registration signature".to_string()
+    })?;
+    Ok(crate::peer_map::DirectChatSecurityState {
+        version: 1,
+        agreed_wire_version: osl_ratchet_next::WIRE_VERSION_RN,
+        state: crate::peer_map::DirectChatSecurityLevel::OslRn,
+        peer_proof: crate::peer_map::DirectChatPeerProof {
+            peer_osl_user_id: pubkeys.user_id.clone(),
+            ik_x25519_pub: pubkeys.ik_x25519_pub.clone(),
+            ik_ed25519_pub: pubkeys.ik_ed25519_pub.clone(),
+            ik_mlkem768_pub: pubkeys.ik_mlkem768_pub.clone(),
+            ik_ratchet_initial_pub: pubkeys.ik_ratchet_initial_pub.clone(),
+            rn_capabilities,
+            registration_sig,
+            spk_pub: prekey.spk_pub.clone(),
+            spk_signature: prekey.spk_signature.clone(),
+            spk_rotated_at: prekey.spk_rotated_at.clone(),
+        },
+    })
 }
 
 fn rn_pubkeys_response_matches_live_peer(
