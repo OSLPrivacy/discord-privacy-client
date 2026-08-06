@@ -433,7 +433,7 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     });
   });
 
-  it("records four already handled retries without issuing extra codes", async () => {
+  it("records nineteen simultaneous already handled retries without issuing extra codes", async () => {
     const keys = await deliveryKeys();
     const invoice = await quote("btc", keys.publicKey);
     const subscriptionId = `crypto_${invoice.invoice_id}`;
@@ -448,47 +448,43 @@ describe("anonymous node-verified lifetime Pro flow", () => {
     };
 
     const before = await codeCount();
-    const responses: Array<{ ok?: unknown; duplicate?: unknown; status?: unknown }> = [];
-    const send = async (): Promise<void> => {
+    let releaseRequests!: () => void;
+    const releaseGate = new Promise<void>((resolve) => {
+      releaseRequests = resolve;
+    });
+    const send = async (): Promise<{ ok?: unknown; duplicate?: unknown; status?: unknown }> => {
+      await releaseGate;
       const response = await handleCryptoSettlement(new Request(
         "http://test/v1/internal/crypto/settle",
         { method: "POST", headers, body },
       ), checkoutEnv(), undefined, redemptionReady);
       expect(response.status).toBe(200);
-      responses.push(
-        await response.json() as { ok?: unknown; duplicate?: unknown; status?: unknown },
-      );
+      return await response.json() as { ok?: unknown; duplicate?: unknown; status?: unknown };
     };
 
-    await send();
-    const afterFirst = await codeCount();
-    for (let attempt = 1; attempt < 5; attempt += 1) await send();
+    const attempts = Array.from({ length: 20 }, () => send());
+    releaseRequests();
+    const responses = await Promise.all(attempts);
     const afterAll = await codeCount();
     const attemptRecords = responses.map((response) => {
       if (response.ok === true && response.duplicate === false && response.status === "delivery_ready") {
-        return "issued code";
+        return "created";
       }
       if (response.ok === true && response.duplicate === true && response.status === "delivery_ready") {
         return "already handled";
       }
       return "unexpected";
     });
+    const created = attemptRecords.filter((record) => record === "created").length;
     const alreadyHandled = attemptRecords.filter((record) => record === "already handled").length;
 
     expect(before).toBe(0);
-    expect(responses[0]).toEqual({ ok: true, duplicate: false, status: "delivery_ready" });
-    expect(afterFirst).toBe(1);
     expect(afterAll).toBe(1);
-    expect(attemptRecords).toEqual([
-      "issued code",
-      "already handled",
-      "already handled",
-      "already handled",
-      "already handled",
-    ]);
-    expect(alreadyHandled).toBe(4);
+    expect(created).toBe(1);
+    expect(alreadyHandled).toBe(19);
+    expect(attemptRecords.every((record) => record !== "unexpected")).toBe(true);
     console.error(
-      `TASK 3196: code count before=${before}; after first=${afterFirst}; after all five=${afterAll}; attempts=${attemptRecords.join(", ")}; already handled attempts=${alreadyHandled}`,
+      `TASK 3739 extends 3196: code count before=${before}; after all twenty=${afterAll}; results=${attemptRecords.join(", ")}; created results=${created}; already handled results=${alreadyHandled}`,
     );
   });
 
