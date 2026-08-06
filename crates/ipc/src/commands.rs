@@ -13614,6 +13614,36 @@ pub fn cmd_osl_new_place(
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AllowedPlaceSearchResultDto {
+    pub app: String,
+    pub account: String,
+    pub kind: String,
+    pub stable_id: String,
+    pub place_name: String,
+    pub person_name: String,
+}
+
+pub fn cmd_osl_search_allowed_places(
+    app_data_dir: PathBuf,
+    query: String,
+) -> Result<Vec<AllowedPlaceSearchResultDto>, String> {
+    record_activity_on_command_entry();
+    let results = crate::allowed_places::search_allowed_place_records(&app_data_dir, &query)
+        .map_err(|error| format!("OSL: {error}"))?
+        .into_iter()
+        .map(|place| AllowedPlaceSearchResultDto {
+            app: place.app,
+            account: place.account,
+            kind: place.kind,
+            stable_id: place.stable_id,
+            place_name: place.place_name,
+            person_name: place.person_name,
+        })
+        .collect();
+    Ok(results)
+}
+
 /// 7d-A: flatten every peer's outgoing_whitelists into a single
 /// list of DTOs for the settings-menu Whitelist Manager. Order
 /// is stable: peers sorted by Discord snowflake (string), then
