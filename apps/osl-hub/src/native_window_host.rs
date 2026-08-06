@@ -82,6 +82,60 @@ const WHATSAPP_PRIMARY_WINDOW_TITLE: &str = "WhatsApp";
 const OUTLOOK_CLASSIC_PRIMARY_WINDOW_CLASS: &str = "rctrl_renwnd32";
 #[cfg(any(target_os = "windows", test))]
 const OUTLOOK_NEW_PRIMARY_WINDOW_CLASS: &str = "WinUIDesktopWin32WindowClass";
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[cfg(any(target_os = "windows", test))]
+struct OutlookDesktopControlTarget {
+    name: &'static str,
+    scope: &'static str,
+    control_type: &'static str,
+    ui_names: &'static [&'static str],
+}
+
+#[cfg(any(target_os = "windows", test))]
+const OUTLOOK_DESKTOP_CONTROL_TARGETS: &[OutlookDesktopControlTarget] = &[
+    OutlookDesktopControlTarget {
+        name: "ribbon New Mail",
+        scope: "ribbon",
+        control_type: "Button",
+        ui_names: &["New Mail", "New Email"],
+    },
+    OutlookDesktopControlTarget {
+        name: "body",
+        scope: "compose",
+        control_type: "Document",
+        ui_names: &["Message body", "Body"],
+    },
+    OutlookDesktopControlTarget {
+        name: "Send",
+        scope: "compose",
+        control_type: "Button",
+        ui_names: &["Send"],
+    },
+    OutlookDesktopControlTarget {
+        name: "reading pane",
+        scope: "mail",
+        control_type: "Pane",
+        ui_names: &["Reading Pane", "Reading pane"],
+    },
+    OutlookDesktopControlTarget {
+        name: "folders",
+        scope: "mail",
+        control_type: "Tree",
+        ui_names: &["Folders", "Folder Pane", "Navigation Pane"],
+    },
+    OutlookDesktopControlTarget {
+        name: "conversation view",
+        scope: "mail",
+        control_type: "List",
+        ui_names: &["Conversation View", "Conversation view", "Message List"],
+    },
+];
+
+#[cfg(any(target_os = "windows", test))]
+fn outlook_desktop_control_targets() -> &'static [OutlookDesktopControlTarget] {
+    OUTLOOK_DESKTOP_CONTROL_TARGETS
+}
 // The containment gates below are necessary but not sufficient evidence that
 // each Electron/client build preserves interaction and compositing semantics.
 // Flip only after exact Windows builds pass the dedicated compatibility suite.
@@ -9979,6 +10033,34 @@ mod tests {
             fixed_secondary_launch(NativeAppId::Outlook),
             FixedSecondaryLaunch::Unsupported
         );
+    }
+
+    #[test]
+    fn outlook_desktop_mapping_lists_all_six_named_targets() {
+        let names = outlook_desktop_control_targets()
+            .iter()
+            .map(|target| target.name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "ribbon New Mail",
+                "body",
+                "Send",
+                "reading pane",
+                "folders",
+                "conversation view",
+            ]
+        );
+        assert!(outlook_desktop_control_targets()
+            .iter()
+            .all(|target| !target.scope.is_empty()
+                && !target.control_type.is_empty()
+                && !target.ui_names.is_empty()));
+
+        println!("outlook desktop target count={}", names.len());
+        println!("outlook desktop targets={}", names.join(","));
     }
 
     #[test]
