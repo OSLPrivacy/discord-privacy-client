@@ -39,7 +39,7 @@
 //! material or conversation content. The ledger holds opaque scope keys, opaque
 //! random message ids, byte counts, digests of *sealed* bytes, and timestamps.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -1440,6 +1440,10 @@ mod tests {
         root(label).join(OPEN_CLOCK_FILE)
     }
 
+    fn timed_delete_path(label: &str) -> PathBuf {
+        root(label).join(TIMED_DELETE_FILE)
+    }
+
     fn parts() -> Vec<AcceptedPart> {
         vec![AcceptedPart {
             index: 0,
@@ -1476,8 +1480,6 @@ mod tests {
             sender_osl_user_id: "task1342-sender".to_owned(),
             plaintext: body.to_owned(),
             decrypted_at: at,
-            reply_parent_id: None,
-            edit_revision: 1,
             burned: false,
         }
     }
@@ -2275,6 +2277,22 @@ mod tests {
 
         let first_after_texts = exact_history_texts(&first_store, channel, &exact_text);
         let second_after_texts = exact_history_texts(&second_store, channel, &exact_text);
+        if !first_after_texts.is_empty() {
+            println!(
+                "TASK0547B_STILL_PRESENT local_copy={} exact_text={} count={}",
+                first_name,
+                first_after_texts[0],
+                first_after_texts.len()
+            );
+        }
+        if !second_after_texts.is_empty() {
+            println!(
+                "TASK0547B_STILL_PRESENT local_copy={} exact_text={} count={}",
+                second_name,
+                second_after_texts[0],
+                second_after_texts.len()
+            );
+        }
         assert!(first_after_texts.is_empty());
         assert!(second_after_texts.is_empty());
         println!(
