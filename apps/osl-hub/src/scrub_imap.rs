@@ -7,6 +7,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::thread;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -219,6 +225,80 @@ pub trait SharedMailboxReader {
     fn list_messages(&self, folder: &str) -> Result<Vec<SharedMailboxMessage>, ScrubImapError>;
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedMailboxMessagePage {
+    pub messages: Vec<SharedMailboxMessage>,
+    pub next_cursor: Option<String>,
+}
+
+pub trait SharedMailboxPagedReader {
+    fn list_folders(&self) -> Result<Vec<String>, ScrubImapError>;
+    fn list_message_page(
+        &self,
+        folder: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<SharedMailboxMessagePage, ScrubImapError>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedMailboxPagingOptions {
+    pub page_size: usize,
+    pub pause_between_pages: Duration,
+}
+
+impl SharedMailboxPagingOptions {
+    pub const fn new(page_size: usize, pause_between_pages: Duration) -> Self {
+        Self {
+            page_size,
+            pause_between_pages,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SharedMailboxPagingStop {
+    stop_requested: Arc<AtomicBool>,
+}
+
+impl SharedMailboxPagingStop {
+    pub fn request_stop(&self) {
+        self.stop_requested.store(true, Ordering::Release);
+    }
+
+    pub fn is_requested(&self) -> bool {
+        self.stop_requested.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedMailboxPagingCompletion {
+    Complete,
+    Stopped,
+}
+
+impl SharedMailboxPagingCompletion {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedMailboxPagingReport {
+    pub provider: String,
+    pub folder: String,
+    pub total_messages: usize,
+    pub pages_read: usize,
+    pub pause_millis: u64,
+    pub pauses_observed: usize,
+    pub completion: SharedMailboxPagingCompletion,
+}
+
 pub fn read_gmx_shared_mailbox(
     reader: &dyn SharedMailboxReader,
 ) -> Result<SharedMailboxSnapshot, ScrubImapError> {
@@ -251,6 +331,58 @@ pub fn read_gmx_shared_mailbox(
     Ok(SharedMailboxSnapshot {
         provider: "gmx".to_string(),
         folders: snapshot_folders,
+    })
+}
+
+pub fn read_tuta_shared_folder_paged(
+    reader: &dyn SharedMailboxPagedReader,
+    folder: &str,
+    options: SharedMailboxPagingOptions,
+    stop: &SharedMailboxPagingStop,
+) -> Result<SharedMailboxPagingReport, ScrubImapError> {
+    if options.page_size == 0 {
+        return Err(ScrubImapError::SharedMailboxReadFailed);
+    }
+    let folders = reader.list_folders()?;
+    if !folders.iter().any(|candidate| candidate == folder) {
+        return Err(ScrubImapError::SharedMailboxMissingFolder);
+    }
+
+    let mut cursor = None;
+    let mut total_messages = 0;
+    let mut pages_read = 0;
+    let mut pauses_observed = 0;
+    let completion = loop {
+        let page = reader.list_message_page(folder, cursor.as_deref(), options.page_size)?;
+        pages_read += 1;
+        total_messages += page.messages.len();
+
+        if stop.is_requested() {
+            break SharedMailboxPagingCompletion::Stopped;
+        }
+
+        let Some(next_cursor) = page.next_cursor else {
+            break SharedMailboxPagingCompletion::Complete;
+        };
+
+        pauses_observed += 1;
+        if !options.pause_between_pages.is_zero() {
+            thread::sleep(options.pause_between_pages);
+        }
+        if stop.is_requested() {
+            break SharedMailboxPagingCompletion::Stopped;
+        }
+        cursor = Some(next_cursor);
+    };
+
+    Ok(SharedMailboxPagingReport {
+        provider: "tuta".to_string(),
+        folder: folder.to_string(),
+        total_messages,
+        pages_read,
+        pause_millis: u64::try_from(options.pause_between_pages.as_millis()).unwrap_or(u64::MAX),
+        pauses_observed,
+        completion,
     })
 }
 
