@@ -97,6 +97,39 @@ pub const fn aol_control_mapping() -> &'static [WebsiteNamedControlRequest] {
     &AOL_CONTROL_REQUESTS
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct VisibleMailMessage {
+    pub message_id: String,
+    pub mailbox: String,
+    pub sender_address: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum MailOwnerCheckError {
+    SenderAddressUnreadable,
+}
+
+impl MailOwnerCheckError {
+    pub const fn reason(&self) -> &'static str {
+        match self {
+            Self::SenderAddressUnreadable => "OSL: sender address cannot be read",
+        }
+    }
+}
+
+pub fn mail_message_is_owned_by_signed_in_address(
+    signed_in_address: &str,
+    message: &VisibleMailMessage,
+) -> Result<bool, MailOwnerCheckError> {
+    let sender = message
+        .sender_address
+        .as_deref()
+        .map(str::trim)
+        .filter(|sender| !sender.is_empty())
+        .ok_or(MailOwnerCheckError::SenderAddressUnreadable)?;
+    Ok(sender.eq_ignore_ascii_case(signed_in_address.trim()))
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ServiceControlMappingError {
     MissingNamedTarget(&'static str),
@@ -393,5 +426,96 @@ mod tests {
         );
 
         assert_eq!(refused_missing_names, expected_names);
+    }
+
+    #[test]
+    fn task_3044_shared_mail_owner_check_uses_sender_address_only_and_refuses_unreadable_sender() {
+        let signed_in_address = "signed-in@example.test";
+        let messages = vec![
+            VisibleMailMessage {
+                message_id: "sent-3044-1".to_owned(),
+                mailbox: "Sent".to_owned(),
+                sender_address: Some("signed-in@example.test".to_owned()),
+            },
+            VisibleMailMessage {
+                message_id: "sent-3044-2".to_owned(),
+                mailbox: "Sent".to_owned(),
+                sender_address: Some("Signed-In@Example.Test".to_owned()),
+            },
+            VisibleMailMessage {
+                message_id: "sent-3044-3".to_owned(),
+                mailbox: "Sent".to_owned(),
+                sender_address: Some(" signed-in@example.test ".to_owned()),
+            },
+            VisibleMailMessage {
+                message_id: "inbox-3044-1".to_owned(),
+                mailbox: "Inbox".to_owned(),
+                sender_address: Some("friend-one@example.test".to_owned()),
+            },
+            VisibleMailMessage {
+                message_id: "inbox-3044-2".to_owned(),
+                mailbox: "Inbox".to_owned(),
+                sender_address: Some("alerts@example.test".to_owned()),
+            },
+            VisibleMailMessage {
+                message_id: "inbox-3044-3".to_owned(),
+                mailbox: "Inbox".to_owned(),
+                sender_address: Some("team@example.test".to_owned()),
+            },
+        ];
+
+        let mut sent_yes = 0;
+        let mut inbox_no = 0;
+        for message in &messages {
+            let owned = mail_message_is_owned_by_signed_in_address(signed_in_address, message)
+                .expect("seeded message sender is readable");
+            println!(
+                "TASK3044 message={} mailbox={} owned={owned}",
+                message.message_id, message.mailbox
+            );
+            match message.mailbox.as_str() {
+                "Sent" if owned => sent_yes += 1,
+                "Inbox" if !owned => inbox_no += 1,
+                _ => panic!("unexpected ownership verdict for {message:?}"),
+            }
+        }
+
+        let unreadable = VisibleMailMessage {
+            message_id: "unreadable-3044".to_owned(),
+            mailbox: "Sent".to_owned(),
+            sender_address: None,
+        };
+        let unreadable_error =
+            mail_message_is_owned_by_signed_in_address(signed_in_address, &unreadable)
+                .expect_err("unreadable sender address is refused");
+
+        println!("TASK3044 check=mail_message_is_owned_by_signed_in_address");
+        println!("TASK3044 signed_in_address={signed_in_address}");
+        println!("TASK3044 sent_seeded_yes_count={sent_yes}");
+        println!("TASK3044 inbox_seeded_no_count={inbox_no}");
+        println!("TASK3044 unreadable_sender_refused=true");
+        println!(
+            "TASK3044 unreadable_sender_error={}",
+            unreadable_error.reason()
+        );
+
+        assert_eq!(sent_yes, 3);
+        assert_eq!(inbox_no, 3);
+        assert_eq!(
+            unreadable_error.reason(),
+            "OSL: sender address cannot be read"
+        );
+        assert!(
+            mail_message_is_owned_by_signed_in_address(
+                signed_in_address,
+                &VisibleMailMessage {
+                    message_id: "blank-sender-3044".to_owned(),
+                    mailbox: "Sent".to_owned(),
+                    sender_address: Some(" ".to_owned()),
+                },
+            )
+            .is_err(),
+            "blank sender addresses must fail closed too"
+        );
     }
 }
