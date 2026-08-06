@@ -819,6 +819,14 @@ pub struct TimedDeleteTwoCopyReport {
     pub delete_at_unix_seconds: i64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimedDeleteTwoCopyExpiryReport {
+    pub local_copy_names: [String; 2],
+    pub expired_records: [usize; 2],
+    pub removed_records: [usize; 2],
+    pub shredded_cache_rows: [usize; 2],
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TimedDeleteExpiryReport {
     pub expired_records: usize,
@@ -1029,6 +1037,34 @@ pub fn cmd_record_timed_delete_for_two_local_copies_at_paths(
         record_count: 2,
         message_locator: record.message_locator,
         delete_at_unix_seconds: record.delete_at_unix_seconds,
+    })
+}
+
+/// Expire the scheduled timed-delete rows for both named local chat-machine
+/// copies as one command boundary.
+#[allow(clippy::too_many_arguments)]
+pub fn expire_timed_delete_records_for_two_local_copies_at_paths(
+    first_copy_name: &str,
+    first_path: &Path,
+    first_shred: &store::MessageStore,
+    second_copy_name: &str,
+    second_path: &Path,
+    second_shred: &store::MessageStore,
+    key: &[u8; 32],
+    now: i64,
+) -> Result<TimedDeleteTwoCopyExpiryReport, String> {
+    if !valid_timed_delete_component(first_copy_name)
+        || !valid_timed_delete_component(second_copy_name)
+    {
+        return Err("OSL timed-delete local copy name is invalid".to_owned());
+    }
+    let first = expire_timed_delete_records_at_path(first_path, key, now, first_shred)?;
+    let second = expire_timed_delete_records_at_path(second_path, key, now, second_shred)?;
+    Ok(TimedDeleteTwoCopyExpiryReport {
+        local_copy_names: [first_copy_name.to_owned(), second_copy_name.to_owned()],
+        expired_records: [first.expired_records, second.expired_records],
+        removed_records: [first.removed_records, second.removed_records],
+        shredded_cache_rows: [first.shredded_cache_rows, second.shredded_cache_rows],
     })
 }
 
@@ -1511,6 +1547,15 @@ mod tests {
             .into_iter()
             .filter(|message| message.plaintext.contains(mark))
             .count()
+    }
+
+    fn exact_history_texts(store: &store::MessageStore, channel: &str, text: &str) -> Vec<String> {
+        store
+            .list_by_channel(channel, 10)
+            .unwrap()
+            .into_iter()
+            .filter_map(|message| (message.plaintext == text).then_some(message.plaintext))
+            .collect()
     }
 
     // ---- two clocks ----
@@ -2201,6 +2246,108 @@ mod tests {
             second_expired.expired_records,
             second_expired.removed_records,
             second_expired.shredded_cache_rows
+        );
+    }
+
+    #[test]
+    fn task_0547_server_timer_expiry_once_removes_both_named_copies() {
+        let root = root("task-0547");
+        let first_name = "task0547-alice-named-copy";
+        let second_name = "task0547-bob-named-copy";
+        let first_ledger = root.join(first_name).join(TIMED_DELETE_FILE);
+        let second_ledger = root.join(second_name).join(TIMED_DELETE_FILE);
+        let first_store_dir = root.join(first_name).join("message-store");
+        let second_store_dir = root.join(second_name).join("message-store");
+        std::fs::create_dir_all(first_ledger.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(second_ledger.parent().unwrap()).unwrap();
+
+        let first_store = store::MessageStore::open(&first_store_dir, &KEY).unwrap();
+        let second_store = store::MessageStore::open(&second_store_dir, &KEY).unwrap();
+        let channel = "task0547-chat";
+        let message_id = format!("task0547-{}", uuid::Uuid::new_v4().simple());
+        let exact_text = format!("TASK0547-MARK-{}", uuid::Uuid::new_v4().simple());
+        let sent_at = 1_970_000_000i64;
+        let delete_at = sent_at + 60;
+        let message = stored_message(&message_id, channel, &exact_text, sent_at);
+        first_store.put(&message).unwrap();
+        second_store.put(&message).unwrap();
+
+        let record = TimedDeleteRecord {
+            app_id: "osl-chat".to_owned(),
+            conversation_id: channel.to_owned(),
+            message_locator: message_id.clone(),
+            sent_at_unix_seconds: sent_at,
+            delete_at_unix_seconds: delete_at,
+            protection: TimedDeleteProtection::Protected,
+        };
+        let fanout = cmd_record_timed_delete_for_two_local_copies_at_paths(
+            first_name,
+            &first_ledger,
+            second_name,
+            &second_ledger,
+            &KEY,
+            record,
+        )
+        .unwrap();
+        assert_eq!(fanout.record_count, 2);
+
+        let first_before_texts = exact_history_texts(&first_store, channel, &exact_text);
+        let second_before_texts = exact_history_texts(&second_store, channel, &exact_text);
+        assert_eq!(first_before_texts, vec![exact_text.clone()]);
+        assert_eq!(second_before_texts, vec![exact_text.clone()]);
+        println!(
+            "TASK0547_BEFORE local_copy={} exact_text={} count={}",
+            first_name,
+            first_before_texts[0],
+            first_before_texts.len()
+        );
+        println!(
+            "TASK0547_BEFORE local_copy={} exact_text={} count={}",
+            second_name,
+            second_before_texts[0],
+            second_before_texts.len()
+        );
+
+        let expiry = expire_timed_delete_records_for_two_local_copies_at_paths(
+            first_name,
+            &first_ledger,
+            &first_store,
+            second_name,
+            &second_ledger,
+            &second_store,
+            &KEY,
+            delete_at,
+        )
+        .unwrap();
+        assert_eq!(expiry.expired_records, [1, 1]);
+        assert_eq!(expiry.removed_records, [1, 1]);
+        assert_eq!(expiry.shredded_cache_rows, [1, 1]);
+        println!(
+            "TASK0547_EXPIRY_ONCE local_copies={},{} expired_records={:?} removed_records={:?} shredded_cache_rows={:?}",
+            expiry.local_copy_names[0],
+            expiry.local_copy_names[1],
+            expiry.expired_records,
+            expiry.removed_records,
+            expiry.shredded_cache_rows
+        );
+
+        let first_after_texts = exact_history_texts(&first_store, channel, &exact_text);
+        let second_after_texts = exact_history_texts(&second_store, channel, &exact_text);
+        assert!(first_after_texts.is_empty());
+        assert!(second_after_texts.is_empty());
+        println!(
+            "TASK0547_AFTER_REFRESH local_copy={} exact_text={} count={} marked_absent={}",
+            first_name,
+            exact_text,
+            first_after_texts.len(),
+            first_after_texts.is_empty()
+        );
+        println!(
+            "TASK0547_AFTER_REFRESH local_copy={} exact_text={} count={} marked_absent={}",
+            second_name,
+            exact_text,
+            second_after_texts.len(),
+            second_after_texts.is_empty()
         );
     }
 
