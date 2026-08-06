@@ -609,6 +609,7 @@ macro_rules! hub_tauri_commands {
             open_osl_chat_text,
             list_osl_chat_history,
             add_osl_chat_reaction,
+            remove_osl_chat_reaction,
             select_osl_chat_attachment,
             accept_osl_chat_clipboard_image_attachment,
             list_osl_chat_attachments,

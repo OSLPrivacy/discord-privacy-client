@@ -1128,7 +1128,46 @@ pub struct OslChatReactionResult {
     pub emoji: String,
     pub identity_osl_user_id: String,
     pub added: bool,
+    pub removed: bool,
     pub reaction_count: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslChatMessageReaction {
+    pub emoji: String,
+    pub count: usize,
+    pub mine: bool,
+}
+
+#[derive(Clone, Serialize)]
+pub struct OslChatHistoryRow {
+    pub discord_message_id: String,
+    pub channel_id: String,
+    pub sender_discord_id: String,
+    pub sender_osl_user_id: String,
+    pub plaintext: String,
+    pub decrypted_at: i64,
+    pub burned: bool,
+    pub reactions: Vec<OslChatMessageReaction>,
+}
+
+impl OslChatHistoryRow {
+    fn from_stored(
+        row: ipc::commands::StoredMessageDto,
+        reactions: Vec<OslChatMessageReaction>,
+    ) -> Self {
+        Self {
+            discord_message_id: row.discord_message_id,
+            channel_id: row.channel_id,
+            sender_discord_id: row.sender_discord_id,
+            sender_osl_user_id: row.sender_osl_user_id,
+            plaintext: row.plaintext,
+            decrypted_at: row.decrypted_at,
+            burned: row.burned,
+            reactions,
+        }
+    }
 }
 
 /// Plaintext is deliberately nested only in the established non-Debug DTO.
@@ -5428,8 +5467,9 @@ fn drain_peer_inbox_text(
 pub fn load_osl_chat_history(
     core: &HubCoreState,
     broker: &HubBrokerState,
-) -> Result<Vec<ipc::commands::StoredMessageDto>, String> {
+) -> Result<Vec<OslChatHistoryRow>, String> {
     let context_token = broker.active_osl_chat_context_token()?;
+    let context = broker.context_for(&context_token)?;
     let manual = broker.manual_peer_for(&context_token)?;
     let display = security::scope_security(manual.scope.clone())?;
     if !display.decrypt_display_enabled {
@@ -5442,11 +5482,32 @@ pub fn load_osl_chat_history(
         manual.person_id,
         manual.scope.clone(),
     )?;
-    ipc::commands::cmd_osl_load_channel_history(
+    let rows = ipc::commands::cmd_osl_load_channel_history(
         &core.osl,
         scope_storage_key(&manual.scope)?,
         Some(200),
-    )
+    )?;
+    let (identity, file_key) = local_protected_identity(core, &context)?;
+    let dir = keystore::osl_config_dir()
+        .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+    let _transition = broker
+        .osl_chat_reaction_transition
+        .lock()
+        .map_err(|_| "OSL Chat reaction state is unavailable".to_owned())?;
+    let ledger = load_osl_chat_reaction_ledger(&dir.join(OSL_CHAT_REACTIONS_FILE), &file_key)?;
+    let scope_key_sha256 = sha256_hex(context.conversation_id.as_bytes());
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let reactions = reaction_summary_for_message(
+                &ledger,
+                &scope_key_sha256,
+                &row.discord_message_id,
+                &identity.user_id,
+            );
+            OslChatHistoryRow::from_stored(row, reactions)
+        })
+        .collect())
 }
 
 pub fn add_osl_chat_reaction(
@@ -5472,6 +5533,31 @@ pub fn add_osl_chat_reaction(
         &identity.user_id,
         &emoji,
         ipc::main_password::now_unix_secs_pub(),
+    )
+}
+
+pub fn remove_osl_chat_reaction(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    message_id: String,
+    emoji: String,
+) -> Result<OslChatReactionResult, String> {
+    let context_token = broker.active_osl_chat_context_token()?;
+    let context = broker.context_for(&context_token)?;
+    let (identity, file_key) = local_protected_identity(core, &context)?;
+    let dir = keystore::osl_config_dir()
+        .map_err(|_| "OSL Privacy account storage is unavailable".to_owned())?;
+    let _transition = broker
+        .osl_chat_reaction_transition
+        .lock()
+        .map_err(|_| "OSL Chat reaction state is unavailable".to_owned())?;
+    remove_osl_chat_reaction_at_path(
+        &dir.join(OSL_CHAT_REACTIONS_FILE),
+        &file_key,
+        &context.conversation_id,
+        &message_id,
+        &identity.user_id,
+        &emoji,
     )
 }
 
@@ -9201,6 +9287,30 @@ fn reaction_count_for_message(
         .count()
 }
 
+fn reaction_summary_for_message(
+    ledger: &OslChatReactionLedger,
+    scope_key_sha256: &str,
+    message_id: &str,
+    identity_osl_user_id: &str,
+) -> Vec<OslChatMessageReaction> {
+    let mut reactions = BTreeMap::<String, OslChatMessageReaction>::new();
+    for record in ledger.records.values().filter(|record| {
+        record.scope_key_sha256 == scope_key_sha256 && record.message_id == message_id
+    }) {
+        let summary =
+            reactions
+                .entry(record.emoji.clone())
+                .or_insert_with(|| OslChatMessageReaction {
+                    emoji: record.emoji.clone(),
+                    count: 0,
+                    mine: false,
+                });
+        summary.count = summary.count.saturating_add(1);
+        summary.mine |= record.identity_osl_user_id == identity_osl_user_id;
+    }
+    reactions.into_values().collect()
+}
+
 fn add_osl_chat_reaction_at_path(
     path: &Path,
     file_key: &[u8; 32],
@@ -9250,6 +9360,38 @@ fn add_osl_chat_reaction_at_path(
         emoji: emoji.to_owned(),
         identity_osl_user_id: identity_osl_user_id.to_owned(),
         added,
+        removed: false,
+        reaction_count: reaction_count_for_message(&ledger, &scope_key_sha256, message_id),
+    })
+}
+
+fn remove_osl_chat_reaction_at_path(
+    path: &Path,
+    file_key: &[u8; 32],
+    scope_key: &str,
+    message_id: &str,
+    identity_osl_user_id: &str,
+    emoji: &str,
+) -> Result<OslChatReactionResult, String> {
+    validate_osl_chat_reaction_inputs(message_id, identity_osl_user_id, emoji)?;
+    if scope_key.is_empty() {
+        return Err("OSL Chat reaction scope is invalid".to_owned());
+    }
+    let scope_key_sha256 = sha256_hex(scope_key.as_bytes());
+    let record_key =
+        osl_chat_reaction_record_key(&scope_key_sha256, message_id, identity_osl_user_id, emoji);
+    let mut ledger = load_osl_chat_reaction_ledger(path, file_key)?;
+    let removed = ledger.records.remove(&record_key).is_some();
+    if removed {
+        ledger.version = OSL_CHAT_REACTION_VERSION;
+        write_osl_chat_reaction_ledger(path, &ledger, file_key)?;
+    }
+    Ok(OslChatReactionResult {
+        message_id: message_id.to_owned(),
+        emoji: emoji.to_owned(),
+        identity_osl_user_id: identity_osl_user_id.to_owned(),
+        added: false,
+        removed,
         reaction_count: reaction_count_for_message(&ledger, &scope_key_sha256, message_id),
     })
 }

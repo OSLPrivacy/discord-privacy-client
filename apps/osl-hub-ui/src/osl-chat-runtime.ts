@@ -166,6 +166,7 @@ export function oslChatHistoryMessages(
       body: row.plaintext,
       state: incoming ? "received" as const : "sent" as const,
       timestampLabel: formatTimestamp(row.createdAt),
+      reactions: row.reactions,
     };
   });
 }

@@ -99,6 +99,20 @@ export interface OslChatHistoryRow {
   plaintext: string;
   createdAt: number;
   decryptedAt: number;
+  reactions: OslChatMessageReaction[];
+}
+export interface OslChatMessageReaction {
+  emoji: string;
+  count: number;
+  mine: boolean;
+}
+export interface OslChatReactionResult {
+  messageId: string;
+  emoji: string;
+  identityOslUserId: string;
+  added: boolean;
+  removed: boolean;
+  reactionCount: number;
 }
 export interface PreparedHubAttachment {
   sealedB64: string;
@@ -519,26 +533,39 @@ export async function listOslChatHistory(): Promise<OslChatHistoryRow[] | null> 
     if (!Array.isArray(value) || value.length > 200) return null;
     const rows = value.map((entry) => {
       if (!isRecord(entry)
-        || !exact(entry, ["discord_message_id", "channel_id", "sender_discord_id", "sender_osl_user_id", "plaintext", "decrypted_at", "burned"])
+        || !exact(entry, ["discord_message_id", "channel_id", "sender_discord_id", "sender_osl_user_id", "plaintext", "decrypted_at", "burned", "reactions"])
         || !safe(entry.discord_message_id, 96)
         || !isContextId(entry.channel_id)
         || !isContextId(entry.sender_osl_user_id)
         || !isHubPlaintext(entry.plaintext)
         || !Number.isSafeInteger(entry.decrypted_at)
         || Number(entry.decrypted_at) <= 0
-        || typeof entry.burned !== "boolean") return null;
+        || typeof entry.burned !== "boolean"
+        || !Array.isArray(entry.reactions)
+        || entry.reactions.length > 24) return null;
+      const reactions = entry.reactions.map(parseOslChatMessageReaction);
+      if (reactions.some((reaction) => reaction === null)) return null;
       return {
         messageId: entry.discord_message_id as string,
         senderOslUserId: entry.sender_osl_user_id as string,
         plaintext: entry.plaintext as string,
         createdAt: entry.decrypted_at as number,
         decryptedAt: entry.decrypted_at as number,
+        reactions: reactions as OslChatMessageReaction[],
       };
     });
     return checkedBackendResponse("list_osl_chat_history",
       rows.some((row) => row === null) ? null : rows as OslChatHistoryRow[],
       "a history row did not match the expected shape");
   } catch (error) { recordBackendFailure("list_osl_chat_history", error); return null; }
+}
+
+export async function addOslChatReaction(messageId: string, emoji: string): Promise<OslChatReactionResult | null> {
+  return updateOslChatReaction("add_osl_chat_reaction", messageId, emoji);
+}
+
+export async function removeOslChatReaction(messageId: string, emoji: string): Promise<OslChatReactionResult | null> {
+  return updateOslChatReaction("remove_osl_chat_reaction", messageId, emoji);
 }
 
 export async function preparePeerProseText(
@@ -1880,9 +1907,59 @@ export function parseDecryptedHubPlaintext(raw: unknown): string | null {
   return isHubPlaintext(raw) ? raw : null;
 }
 
+function parseOslChatMessageReaction(raw: unknown): OslChatMessageReaction | null {
+  if (!isRecord(raw)
+    || !exact(raw, ["emoji", "count", "mine"])
+    || !safeReactionEmoji(raw.emoji)
+    || !Number.isSafeInteger(raw.count)
+    || Number(raw.count) <= 0
+    || Number(raw.count) > 10_000
+    || typeof raw.mine !== "boolean") return null;
+  return {
+    emoji: raw.emoji,
+    count: Number(raw.count),
+    mine: raw.mine,
+  };
+}
+
+function parseOslChatReactionResult(raw: unknown): OslChatReactionResult | null {
+  if (!isRecord(raw)
+    || !exact(raw, ["messageId", "emoji", "identityOslUserId", "added", "removed", "reactionCount"])
+    || !safe(raw.messageId, 96)
+    || !safeReactionEmoji(raw.emoji)
+    || !isContextId(raw.identityOslUserId)
+    || typeof raw.added !== "boolean"
+    || typeof raw.removed !== "boolean"
+    || !Number.isSafeInteger(raw.reactionCount)
+    || Number(raw.reactionCount) < 0
+    || Number(raw.reactionCount) > 10_000) return null;
+  return {
+    messageId: raw.messageId,
+    emoji: raw.emoji,
+    identityOslUserId: raw.identityOslUserId,
+    added: raw.added,
+    removed: raw.removed,
+    reactionCount: Number(raw.reactionCount),
+  };
+}
+
+async function updateOslChatReaction(
+  command: "add_osl_chat_reaction" | "remove_osl_chat_reaction",
+  messageId: string,
+  emoji: string,
+): Promise<OslChatReactionResult | null> {
+  if (!isTauriRuntime() || !safe(messageId, 96) || !safeReactionEmoji(emoji)) return null;
+  try {
+    return checkedBackendResponse(command,
+      parseOslChatReactionResult(await invoke<unknown>(command, { messageId, emoji })),
+      "the reaction result did not match the expected shape");
+  } catch (error) { recordBackendFailure(command, error, [messageId, emoji]); return null; }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function exact(value: Record<string, unknown>, keys: string[]): boolean { const actual = Object.keys(value); return actual.length === keys.length && actual.every((key) => keys.includes(key)); }
 function safe(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && !/[<>\u0000-\u001f\u007f]/.test(value); }
+function safeReactionEmoji(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 64 && value.trim() === value && !/[\u0000-\u001f\u007f]/.test(value); }
 function safePlaintext(value: unknown, max: number): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && !/[\u0000\u007f]/.test(value); }
 function normalizeSupportMatrixStatus(value: unknown): SupportMatrixRowStatus | null {
   if (typeof value !== "string") return null;

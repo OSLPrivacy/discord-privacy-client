@@ -130,6 +130,7 @@ describe("first-party OSL Chat IPC", () => {
       plaintext: "line one\nline two",
       decrypted_at: 1_900_000_000,
       burned: false,
+      reactions: [{ emoji: "👍", count: 1, mine: true }],
     }]);
     await expect(listOslChatHistory()).resolves.toEqual([{
       messageId: "peer-0123456789abcdef0123456789abcdef",
@@ -137,6 +138,7 @@ describe("first-party OSL Chat IPC", () => {
       plaintext: "line one\nline two",
       createdAt: 1_900_000_000,
       decryptedAt: 1_900_000_000,
+      reactions: [{ emoji: "👍", count: 1, mine: true }],
     }]);
     expect(mocks.invoke).toHaveBeenCalledWith("list_osl_chat_history");
   });

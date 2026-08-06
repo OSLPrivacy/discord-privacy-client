@@ -5238,6 +5238,11 @@ code {
 .osl-chat-message.is-outgoing .osl-chat-message-meta { justify-content: flex-end; }
 .osl-chat-message-text { margin: 0; padding: 9px 11px; border: 1px solid var(--line); background: var(--panel); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
 .osl-chat-message.is-outgoing .osl-chat-message-text { border-color: color-mix(in srgb, var(--brand) 42%, var(--line)); background: color-mix(in srgb, var(--brand) 5%, var(--panel)); }
+.osl-chat-reactions { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-start; min-height: 24px; }
+.osl-chat-message.is-outgoing .osl-chat-reactions { justify-content: flex-end; }
+.osl-chat-reaction { min-width: 30px; min-height: 24px; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); font-size: 11px; }
+.osl-chat-reaction.is-mine { border-color: color-mix(in srgb, var(--brand) 45%, var(--line)); color: var(--text); background: color-mix(in srgb, var(--brand) 8%, var(--panel)); }
+.osl-chat-reaction.is-add { color: var(--subtle); }
 .osl-chat-message footer { display: flex; justify-content: flex-end; color: var(--muted); font-size: 11px; }
 .osl-chat-composer { padding: 12px 24px 14px; border-top: 1px solid var(--line); display: grid; gap: 5px; }
 .osl-chat-composer > label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }

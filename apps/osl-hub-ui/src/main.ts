@@ -133,7 +133,7 @@ import {
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslChatReaction, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, removeOslChatReaction, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import { peerIntegrityMarkup } from "./peer-integrity";
@@ -7421,6 +7421,13 @@ function bindWorkspace(): void {
   document.querySelector<HTMLButtonElement>("#osl-chat-back")?.addEventListener("click", () => void closeOslChat());
   document.querySelector<HTMLButtonElement>("#osl-chat-refresh")?.addEventListener("click", () => void refreshOslChat());
   document.querySelector<HTMLButtonElement>("#osl-chat-approve")?.addEventListener("click", () => void approveOslChat());
+  document.querySelectorAll<HTMLButtonElement>("[data-osl-chat-reaction]").forEach((button) => button.addEventListener("click", () => {
+    void toggleOslChatReaction(
+      button.dataset.oslChatReaction ?? "",
+      button.dataset.oslChatEmoji ?? "",
+      button.dataset.oslChatReactionMine === "true",
+    );
+  }));
   const oslChatDraftInput = document.querySelector<HTMLTextAreaElement>("#osl-chat-draft");
   oslChatDraftInput?.addEventListener("input", () => {
     // The Send button's disabled state and the byte counter are computed in
@@ -8347,6 +8354,7 @@ async function openOslChat(personId: string): Promise<void> {
             body: row.plaintext,
             state: incoming ? "received" : "sent",
             timestampLabel: new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(row.decryptedAt * 1_000)),
+            reactions: row.reactions,
           };
         });
         oslChatMessages.set(personId, [...durableMessages, ...queuedViewOnce].slice(-200));
@@ -8524,6 +8532,42 @@ async function refreshOslChat(): Promise<void> {
   }
 }
 
+async function toggleOslChatReaction(messageId: string, emoji: string, mine: boolean): Promise<void> {
+  const context = activeOslChatContext;
+  const personId = activeOslChatPersonId;
+  if (!context?.scopeApproved || !personId || oslChatBusy) return;
+  const result = mine
+    ? await removeOslChatReaction(messageId, emoji)
+    : await addOslChatReaction(messageId, emoji);
+  if (!result || activeOslChatContext?.contextToken !== context.contextToken) {
+    showToast("Reaction was not saved");
+    return;
+  }
+  const messages = [...(oslChatMessages.get(personId) ?? [])];
+  const message = messages.find((candidate) => candidate.messageId === result.messageId);
+  if (!message) return;
+  const reactions = [...(message.reactions ?? [])];
+  const index = reactions.findIndex((reaction) => reaction.emoji === result.emoji);
+  if (result.removed) {
+    if (index >= 0) {
+      const current = reactions[index]!;
+      const count = Math.max(0, current.count - 1);
+      if (count === 0) reactions.splice(index, 1);
+      else reactions[index] = { ...current, count, mine: false };
+    }
+  } else if (result.added) {
+    if (index >= 0) {
+      const current = reactions[index]!;
+      reactions[index] = { ...current, count: current.count + 1, mine: true };
+    } else {
+      reactions.push({ emoji: result.emoji, count: 1, mine: true });
+    }
+  }
+  message.reactions = reactions;
+  oslChatMessages.set(personId, messages);
+  render();
+}
+
 async function sendOslChatAttachment(): Promise<void> {
   if (!activeOslChatContext?.scopeApproved || oslChatBusy) return;
   oslChatBusy = true;
@@ -8570,6 +8614,7 @@ async function sendOslChat(event: SubmitEvent): Promise<void> {
     body: draft,
     state: "sent" as const,
     timestampLabel: oslChatTimestamp(),
+    reactions: [],
   }];
   oslChatMessages.set(personId, messages);
   setOslChatDraft("");
