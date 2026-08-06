@@ -988,6 +988,56 @@ pub struct DiscordHeadlessQaPoll {
     pub fetched: u32,
 }
 
+pub const OPEN_NATIVE_DISCORD_OVERLAY_TEXT_COMMAND: &str = "open_native_discord_overlay_text";
+pub const NATIVE_DISCORD_OVERLAY_TEXT_COMMAND_CALLER_LABEL: &str = "native-discord-overlay";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeDiscordOverlayTextCommandResult<Opened> {
+    pub command_called: &'static str,
+    pub opened: Opened,
+}
+
+/// The production command flow behind `open_native_discord_overlay_text`.
+///
+/// `main.rs` supplies the Tauri state and receipt hooks; tests supply fixture
+/// closures that exercise the same ordering with the real broker drain.
+pub fn open_native_discord_overlay_text_command_flow<
+    Opened,
+    SnapshotContext,
+    Drain,
+    RecordPoll,
+    RecheckContext,
+    RecordOpened,
+>(
+    caller_label: &str,
+    snapshot_context: SnapshotContext,
+    drain: Drain,
+    record_poll: RecordPoll,
+    mut recheck_context: RecheckContext,
+    record_opened: RecordOpened,
+) -> Result<NativeDiscordOverlayTextCommandResult<Opened>, String>
+where
+    SnapshotContext: FnOnce() -> Result<(u64, ActiveServiceHost), String>,
+    Drain: FnOnce() -> Result<Opened, String>,
+    RecordPoll: FnOnce(Result<&Opened, &str>) -> Result<(), String>,
+    RecheckContext: FnMut(u64, &ActiveServiceHost) -> Result<(), String>,
+    RecordOpened: FnOnce(&Opened) -> Result<(), String>,
+{
+    if caller_label != NATIVE_DISCORD_OVERLAY_TEXT_COMMAND_CALLER_LABEL {
+        return Err("Only the trusted native Discord overlay may receive text".to_owned());
+    }
+    let (context_epoch, host) = snapshot_context()?;
+    let opened = drain();
+    record_poll(opened.as_ref().map_err(String::as_str))?;
+    let opened = opened?;
+    recheck_context(context_epoch, &host)?;
+    record_opened(&opened)?;
+    Ok(NativeDiscordOverlayTextCommandResult {
+        command_called: OPEN_NATIVE_DISCORD_OVERLAY_TEXT_COMMAND,
+        opened,
+    })
+}
+
 #[cfg(feature = "discord-qa-shell")]
 #[allow(clippy::too_many_arguments)]
 pub fn poll_native_discord_headless_qa_restart_proof_flow<

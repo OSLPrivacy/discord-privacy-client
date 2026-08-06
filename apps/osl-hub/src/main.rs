@@ -198,7 +198,8 @@ use native_discord_overlay::OverlaySessionState;
 use osl_privacy_hub::hub_command_surface::{
     build_review_ui_identity_binding_verifier, checked_browser_footprint_binding,
     checked_hosted_session_scan_flow, compose_erasure_request_for_user,
-    read_icloud_mailbox_for_scrub_with_driver, read_icloud_mailbox_pages_for_scrub_with_driver,
+    open_native_discord_overlay_text_command_flow, read_icloud_mailbox_for_scrub_with_driver,
+    read_icloud_mailbox_pages_for_scrub_with_driver,
     read_protected_email_live_run_progress_with_driver,
     read_protected_email_open_message_with_driver, read_proton_mailbox_for_scrub_with_driver,
     require_native_discord_product_send_authority,
@@ -5143,26 +5144,39 @@ async fn open_native_discord_overlay_text(
     caller: tauri::WebviewWindow,
     session: State<'_, HubAccountSessionState>,
 ) -> Result<OpenedNativeOverlayTextBatch, String> {
-    if caller.label() != native_discord_overlay::OVERLAY_LABEL {
+    let caller_label = caller.label().to_owned();
+    if caller_label != native_discord_overlay::OVERLAY_LABEL {
         return Err("Only the trusted native Discord overlay may receive text".to_owned());
     }
     let _session = session.transition.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
-        let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
-        let opened = broker::drain_native_discord_overlay_text(
-            &app.state::<HubCoreState>(),
-            &app.state::<HubSecurityState>(),
-            &app.state::<HubBrokerState>(),
-        );
-        #[cfg(feature = "discord-qa-shell")]
-        osl_privacy_hub::discord_qa_inbound_receipt::record_poll(
-            opened.as_ref().map_err(String::as_str),
+        let result = open_native_discord_overlay_text_command_flow(
+            &caller_label,
+            || require_overlay_context_snapshot(&app),
+            || {
+                broker::drain_native_discord_overlay_text(
+                    &app.state::<HubCoreState>(),
+                    &app.state::<HubSecurityState>(),
+                    &app.state::<HubBrokerState>(),
+                )
+            },
+            |opened| {
+                #[cfg(feature = "discord-qa-shell")]
+                osl_privacy_hub::discord_qa_inbound_receipt::record_poll(opened)?;
+                #[cfg(not(feature = "discord-qa-shell"))]
+                let _ = opened;
+                Ok(())
+            },
+            |context_epoch, host| require_same_overlay_context(&app, context_epoch, host),
+            |opened| {
+                #[cfg(feature = "discord-qa-shell")]
+                osl_privacy_hub::discord_qa_inbound_receipt::record(opened)?;
+                #[cfg(not(feature = "discord-qa-shell"))]
+                let _ = opened;
+                Ok(())
+            },
         )?;
-        let opened = opened?;
-        require_same_overlay_context(&app, context_epoch, &host)?;
-        #[cfg(feature = "discord-qa-shell")]
-        osl_privacy_hub::discord_qa_inbound_receipt::record(&opened)?;
-        Ok(opened)
+        Ok(result.opened)
     })
     .await
     .map_err(|error| format!("OSL native overlay worker failed: {error}"))?
