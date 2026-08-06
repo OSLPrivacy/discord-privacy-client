@@ -1,10 +1,60 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const runtimeSource = readFileSync(new URL("./osl-chat-runtime.ts", import.meta.url), "utf8");
 const serversViewSource = readFileSync(new URL("./osl-servers-view.ts", import.meta.url), "utf8");
 const enclavesSurfaceSource = readFileSync(new URL("./osl-enclaves.ts", import.meta.url), "utf8");
+
+const mocks = vi.hoisted(() => ({
+  emitTo: vi.fn(),
+  invoke: vi.fn(),
+  listen: vi.fn(() => Promise.resolve(() => undefined)),
+  window: {
+    isFullscreen: vi.fn(() => Promise.resolve(false)),
+    setFullscreen: vi.fn(() => Promise.resolve()),
+    onResized: vi.fn(() => Promise.resolve(() => undefined)),
+    isMaximized: vi.fn(() => Promise.resolve(false)),
+    minimize: vi.fn(() => Promise.resolve()),
+    toggleMaximize: vi.fn(() => Promise.resolve()),
+    close: vi.fn(() => Promise.resolve()),
+    setFocus: vi.fn(() => Promise.resolve()),
+  },
+}));
+
+vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/event", () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => mocks.window }));
+vi.mock("./logos", () => ({
+  browserLogo: (id: string) => `<span data-logo="${id}">${id}</span>`,
+  providerLogo: (id: string) => `<span data-logo="${id}">${id}</span>`,
+  serviceLogo: (id: string) => `<span data-logo="${id}">${id}</span>`,
+}));
+
+const localStore = new Map<string, string>();
+let ui: typeof import("./main");
+
+beforeAll(async () => {
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => localStore.get(key) ?? null,
+    setItem: (key: string, value: string) => { localStore.set(key, value); },
+    removeItem: (key: string) => { localStore.delete(key); },
+    clear: () => { localStore.clear(); },
+  });
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
+  vi.resetModules();
+  ui = await import("./main");
+}, 300_000);
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
+
+beforeEach(() => {
+  localStore.clear();
+});
 
 function functionSource(name: string, nextName: string): string {
   const start = source.indexOf(`function ${name}`);
@@ -108,6 +158,24 @@ describe("first-party OSL Chats integration", () => {
     expect(chatSettings).not.toMatch(/keyserver|ratchet|receipt|browser profile|provider adapter/iu);
     expect(binding).toContain("persistOslChatPreviewVisibility()");
     expect(binding).not.toMatch(/localStorage\.setItem\(\s*oslChatPreviewStorageKey/u);
+  });
+
+  it("connects changed and corrupt build warnings to an open chat without disabling send", () => {
+    for (const status of ["mismatch", "unknown"] as const) {
+      ui.__oslHubUiTest.reset({
+        route: "osl-chat",
+        coreReady: true,
+        hubPeople: [{ personId: "friend-1", alias: "Rose", safetyNumberVerified: true }],
+        activeOslChatPersonId: "friend-1",
+        activeOslChatScopeApproved: true,
+        oslChatDraft: "Hello",
+        buildIntegrityStatus: status,
+      });
+      const markup = ui.__oslHubUiTest.renderWorkspaceContent("osl-chat");
+      expect(markup, status).toContain(`data-osl-build-integrity="${status}"`);
+      expect(markup, status).toContain("Build verification warning");
+      expect(markup, status).toMatch(/class="osl-chat-send" type="submit"(?![^>]* disabled)[^>]*>/u);
+    }
   });
 
   it("ships OSL Enclaves without claiming provider-server access", () => {

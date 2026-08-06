@@ -93,6 +93,7 @@ export interface PreparedOslChatText {
   viewOnce: boolean;
   deliveredToOslInbox: true;
 }
+export type BuildIntegrityStatus = "verified" | "mismatch" | "unknown";
 export interface OslChatHistoryRow {
   messageId: string;
   senderOslUserId: string;
@@ -510,6 +511,19 @@ export async function openOslChatText(): Promise<NativeDiscordOverlayOpenedBatch
       "the opened batch did not match the expected shape");
   }
   catch (error) { recordBackendFailure("open_osl_chat_text", error); return null; }
+}
+
+function parseBuildIntegrityStatus(value: unknown): BuildIntegrityStatus | null {
+  return value === "verified" || value === "mismatch" || value === "unknown" ? value : null;
+}
+
+export async function loadBuildIntegrityStatus(): Promise<BuildIntegrityStatus | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return checkedBackendResponse("build_integrity_status",
+      parseBuildIntegrityStatus(await invoke<unknown>("build_integrity_status")),
+      "the build integrity status did not match the expected shape");
+  } catch (error) { recordBackendFailure("build_integrity_status", error); return null; }
 }
 
 export async function listOslChatHistory(): Promise<OslChatHistoryRow[] | null> {

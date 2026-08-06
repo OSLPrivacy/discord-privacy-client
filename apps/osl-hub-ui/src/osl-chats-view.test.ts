@@ -121,6 +121,23 @@ describe("OSL chats view", () => {
     expect(oslChatsViewMarkup(model({ draft: "Hello", busy: true }))).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
   });
 
+  it("shows changed and corrupt build warnings without blocking message sending", () => {
+    for (const [status, detail] of [
+      ["mismatch", "This app copy does not match OSL&#39;s signed build list."],
+      ["unknown", "OSL could not verify this app copy against its signed build list."],
+    ] as const) {
+      const markup = oslChatsViewMarkup(model({ draft: "Hello", buildIntegrity: status }));
+      expect(markup, status).toContain(`data-osl-build-integrity="${status}"`);
+      expect(markup, status).toContain("Build verification warning");
+      expect(markup, status).toContain(detail);
+      expect(markup, status).toMatch(/data-osl-chat-send-context="1"[^>]*(?<!disabled)>/u);
+      expect(markup, status).toMatch(/class="osl-chat-send" type="submit"(?![^>]* disabled)[^>]*>/u);
+    }
+
+    expect(oslChatsViewMarkup(model({ draft: "Hello", buildIntegrity: "verified" })))
+      .not.toContain("Build verification warning");
+  });
+
   it("accepts the backend maximum and blocks the first draft the backend would reject", () => {
     expect(oslChatDraftBytes("🔐")).toBe(4);
     const backendMaximum = 1024 * 1024;

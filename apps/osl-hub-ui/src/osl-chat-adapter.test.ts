@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("./preferences", () => ({ isTauriRuntime: mocks.isTauriRuntime }));
 
-import { activateOslChatContext, closeOslChatContext, listOslChatHistory, openOslChatText, prepareOslChatText } from "./adapters";
+import { activateOslChatContext, closeOslChatContext, listOslChatHistory, loadBuildIntegrityStatus, openOslChatText, prepareOslChatText } from "./adapters";
 
 function personRow(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
   return {
@@ -97,6 +97,18 @@ describe("first-party OSL Chat IPC", () => {
     expect(mocks.invoke.mock.calls).toEqual([
       ["prepare_osl_chat_text", { plaintext: "hello\nworld", viewOnce: false }],
       ["open_osl_chat_text"],
+    ]);
+  });
+
+  it("loads the native build verification verdict without accepting malformed proof states", async () => {
+    mocks.invoke.mockResolvedValueOnce("mismatch").mockResolvedValueOnce("unknown").mockResolvedValueOnce("corrupt");
+    await expect(loadBuildIntegrityStatus()).resolves.toBe("mismatch");
+    await expect(loadBuildIntegrityStatus()).resolves.toBe("unknown");
+    await expect(loadBuildIntegrityStatus()).resolves.toBeNull();
+    expect(mocks.invoke.mock.calls).toEqual([
+      ["build_integrity_status"],
+      ["build_integrity_status"],
+      ["build_integrity_status"],
     ]);
   });
 

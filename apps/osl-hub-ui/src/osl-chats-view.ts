@@ -147,7 +147,10 @@ export interface OslChatsViewModel {
    * that is why the composer copy never promises removal on its own.
    */
   deletionUnconfirmed?: number;
+  buildIntegrity?: OslChatBuildIntegrityStatus | null;
 }
+
+export type OslChatBuildIntegrityStatus = "verified" | "mismatch" | "unknown";
 
 /**
  * Which sender-facing receipt state the latest outgoing message has actually
@@ -339,6 +342,14 @@ function deletionUnconfirmedRow(count: number): string {
   return `<p class="osl-chat-deletion-unconfirmed warning" role="status" data-osl-deletion-unconfirmed="${count}" data-deletion-status="not-confirmed"><strong>Deletion was not confirmed</strong><small>OSL asked for ${copies} it sent to be deleted, and has not been able to confirm it. It keeps trying. Until it can confirm, assume the copy is still there.</small></p>`;
 }
 
+function buildIntegrityWarningRow(status: OslChatBuildIntegrityStatus | null | undefined): string {
+  if (status === "verified" || !status) return "";
+  const detail = status === "mismatch"
+    ? "This app copy does not match OSL's signed build list. You can still send messages, but update or reinstall OSL before trusting this build."
+    : "OSL could not verify this app copy against its signed build list. You can still send messages, but update or reinstall OSL before trusting this build.";
+  return `<p class="osl-chat-build-warning warning" role="status" data-osl-build-integrity="${status}"><strong>Build verification warning</strong><small>${escapeHtml(detail)}</small></p>`;
+}
+
 function emptyThread(): string {
   return `<section class="osl-chat-thread is-empty" aria-label="OSL direct chat">
     <p>Select a friend.</p>
@@ -366,6 +377,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     ${unconfirmed}
     <header class="osl-chat-thread-header">${avatar(friend.nickname, "is-thread")}<div><h2>${escapeHtml(friend.nickname)}</h2><span>${friend.ready ? "Ready" : "Connecting"} · ${friend.verified ? "Verified" : "Unverified"}</span></div><button class="osl-chat-thread-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Chat settings">${settingsIcon}</button></header>
     <div class="osl-chat-message-list" role="log" aria-live="polite" aria-relevant="additions text">${messages}</div>
+    ${buildIntegrityWarningRow(model.buildIntegrity)}
     ${deletionUnconfirmedRow(model.deletionUnconfirmed ?? 0)}
     <form class="osl-chat-composer" data-osl-chat-compose="${escapeHtml(friend.personId)}">
       <label for="osl-chat-draft">Message</label>
