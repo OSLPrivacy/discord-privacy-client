@@ -172,6 +172,25 @@ pub struct OutlookWebScrubMailboxRead {
     pub inbox: Vec<OutlookWebScrubMessageSummary>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TutaScrubMessageSummary {
+    pub message_id: String,
+    pub folder_id: String,
+    pub subject: String,
+    pub time: i64,
+    pub sender: String,
+    pub owner_label: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TutaScrubMailboxRead {
+    pub folders: Vec<SharedMailboxFolder>,
+    pub sent: Vec<TutaScrubMessageSummary>,
+    pub inbox: Vec<TutaScrubMessageSummary>,
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RegistryDocument {
@@ -533,6 +552,40 @@ pub fn read_outlook_web_scrub_mailbox(
     })
 }
 
+pub fn read_tuta_scrub_mailbox(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    signed_in_address: &str,
+    service_filled_mailbox: &MailboxReaderSnapshot,
+) -> Result<TutaScrubMailboxRead, String> {
+    let folders = read_shared_mailbox_folders(
+        owner_osl_user_id,
+        "tuta",
+        account_id,
+        service_filled_mailbox,
+    )?;
+    let sent = read_shared_mailbox_messages(
+        owner_osl_user_id,
+        "tuta",
+        account_id,
+        "Sent",
+        service_filled_mailbox,
+    )?;
+    let inbox = read_shared_mailbox_messages(
+        owner_osl_user_id,
+        "tuta",
+        account_id,
+        "Inbox",
+        service_filled_mailbox,
+    )?;
+
+    Ok(TutaScrubMailboxRead {
+        folders,
+        sent: tuta_scrub_summaries(signed_in_address, sent)?,
+        inbox: tuta_scrub_summaries(signed_in_address, inbox)?,
+    })
+}
+
 fn outlook_web_scrub_summaries(
     signed_in_address: &str,
     messages: Vec<SharedMailboxMessageSummary>,
@@ -550,6 +603,38 @@ fn outlook_web_scrub_summaries(
             )
             .map_err(|error| error.reason().to_owned())?;
             Ok(OutlookWebScrubMessageSummary {
+                message_id: message.message_id,
+                folder_id: message.folder_id,
+                subject: message.subject,
+                time: message.time,
+                sender: message.sender,
+                owner_label: if owned {
+                    "yours".to_owned()
+                } else {
+                    "not_yours".to_owned()
+                },
+            })
+        })
+        .collect()
+}
+
+fn tuta_scrub_summaries(
+    signed_in_address: &str,
+    messages: Vec<SharedMailboxMessageSummary>,
+) -> Result<Vec<TutaScrubMessageSummary>, String> {
+    messages
+        .into_iter()
+        .map(|message| {
+            let owned = mail_message_is_owned_by_signed_in_address(
+                signed_in_address,
+                &VisibleMailMessage {
+                    message_id: message.message_id.clone(),
+                    mailbox: message.folder_id.clone(),
+                    sender_address: Some(message.sender.clone()),
+                },
+            )
+            .map_err(|error| error.reason().to_owned())?;
+            Ok(TutaScrubMessageSummary {
                 message_id: message.message_id,
                 folder_id: message.folder_id,
                 subject: message.subject,
@@ -1323,6 +1408,148 @@ mod tests {
                     "SCRUB-OW-SENT-THIRD",
                     1_786_024_800_000,
                     "Owner@Outlook.Example",
+                ),
+            ]
+        );
+        assert_eq!(marked.owner_label, "yours");
+        assert_eq!(read.inbox.len(), 2);
+        assert!(read
+            .inbox
+            .iter()
+            .all(|message| message.owner_label == "not_yours"));
+    }
+
+    #[test]
+    fn task_3074_tuta_shared_mailbox_reader_returns_seeded_scrub_mailbox() {
+        let owner = "osl_task_3074_owner";
+        let account = "acct-task-3074-tuta";
+        let signed_in = "owner@tuta.example";
+        let mailbox = MailboxReaderSnapshot::new(
+            [
+                MailboxFolderCandidate::new("Inbox", "Inbox"),
+                MailboxFolderCandidate::new("Sent", "Sent"),
+                MailboxFolderCandidate::new("Archive", "Archive"),
+                MailboxFolderCandidate::new("Trash", "Trash"),
+            ],
+            [
+                MailboxMessageCandidate::new(
+                    "Sent",
+                    "sent-task-3074-001",
+                    "SCRUB-TU-MINE",
+                    1_786_104_000_000,
+                    signed_in,
+                    "Tuta message that belongs to the signed-in mailbox.",
+                ),
+                MailboxMessageCandidate::new(
+                    "Sent",
+                    "sent-task-3074-002",
+                    "SCRUB-TU-SENT-SECOND",
+                    1_786_107_600_000,
+                    signed_in.to_ascii_uppercase(),
+                    "Second sent Tuta message.",
+                ),
+                MailboxMessageCandidate::new(
+                    "Sent",
+                    "sent-task-3074-003",
+                    "SCRUB-TU-SENT-THIRD",
+                    1_786_111_200_000,
+                    "Owner@Tuta.Example",
+                    "Third sent Tuta message.",
+                ),
+                MailboxMessageCandidate::new(
+                    "Inbox",
+                    "inbox-task-3074-001",
+                    "SCRUB-TU-INBOX-FIRST",
+                    1_786_114_800_000,
+                    "friend-one@example.test",
+                    "Inbox negative control one.",
+                ),
+                MailboxMessageCandidate::new(
+                    "Inbox",
+                    "inbox-task-3074-002",
+                    "SCRUB-TU-INBOX-SECOND",
+                    1_786_118_400_000,
+                    "alerts@example.test",
+                    "Inbox negative control two.",
+                ),
+            ],
+        );
+
+        let read = read_tuta_scrub_mailbox(owner, account, signed_in, &mailbox)
+            .expect("seeded Tuta mailbox reads through the shared mailbox reader");
+        println!("TASK3074_DIRECT_READER=tuta_shared_mailbox_reader");
+        println!("TASK3074_FOLDER_COUNT={}", read.folders.len());
+        for folder in &read.folders {
+            println!(
+                "TASK3074_FOLDER id=\"{}\" label=\"{}\" service={} account={}",
+                folder.folder_id, folder.label, folder.service_id, folder.account_id
+            );
+        }
+        println!("TASK3074_SENT_MESSAGE_COUNT={}", read.sent.len());
+        for message in &read.sent {
+            println!(
+                "TASK3074_SENT_MESSAGE id={} subject=\"{}\" time={} sender=\"{}\" called={}",
+                message.message_id,
+                message.subject,
+                message.time,
+                message.sender,
+                message.owner_label
+            );
+        }
+        for message in &read.inbox {
+            println!(
+                "TASK3074_INBOX_NEGATIVE id={} subject=\"{}\" sender=\"{}\" called={}",
+                message.message_id, message.subject, message.sender, message.owner_label
+            );
+        }
+        let marked = read
+            .sent
+            .iter()
+            .find(|message| message.subject == "SCRUB-TU-MINE")
+            .expect("seeded marker is present in Sent");
+        println!(
+            "TASK3074_MARKED marker=SCRUB-TU-MINE called={}",
+            marked.owner_label
+        );
+        println!(
+            "TASK3074_INBOX_NOT_YOURS_COUNT={}",
+            read.inbox
+                .iter()
+                .filter(|message| message.owner_label == "not_yours")
+                .count()
+        );
+
+        assert_eq!(read.folders.len(), 4);
+        assert_eq!(
+            read.folders
+                .iter()
+                .map(|folder| folder.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Inbox", "Sent", "Archive", "Trash"]
+        );
+        assert_eq!(read.sent.len(), 3);
+        assert_eq!(
+            read.sent
+                .iter()
+                .map(|message| {
+                    (
+                        message.subject.as_str(),
+                        message.time,
+                        message.sender.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                ("SCRUB-TU-MINE", 1_786_104_000_000, "owner@tuta.example",),
+                (
+                    "SCRUB-TU-SENT-SECOND",
+                    1_786_107_600_000,
+                    "OWNER@TUTA.EXAMPLE",
+                ),
+                (
+                    "SCRUB-TU-SENT-THIRD",
+                    1_786_111_200_000,
+                    "Owner@Tuta.Example",
                 ),
             ]
         );
