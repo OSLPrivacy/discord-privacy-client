@@ -13,6 +13,7 @@ use crate::secure_local_store::{RecordId, SecureLocalStore, SecureLocalStoreErro
 use crate::tofu::KeyBundle;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -365,6 +366,8 @@ pub struct StoredFriendRecord {
     pub state: StoredFriendState,
     pub display_name: String,
     pub block_state: StoredFriendBlockState,
+    #[serde(default)]
+    pub choices: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -582,6 +585,12 @@ fn validate_stored_friend_record(friend: &StoredFriendRecord) -> Result<(), Frie
     {
         return Err(FriendRequestError::InvalidRequest);
     }
+    for (name, choice) in &friend.choices {
+        crate::app_preferences::parse_behaviour_choice_name(name)
+            .map_err(|_| FriendRequestError::InvalidRequest)?;
+        crate::app_preferences::normalize_behaviour_choice_value(choice)
+            .map_err(|_| FriendRequestError::InvalidRequest)?;
+    }
     Ok(())
 }
 
@@ -796,6 +805,7 @@ mod tests {
             state,
             display_name: format!("Friend {label}"),
             block_state: StoredFriendBlockState::NotBlocked,
+            choices: BTreeMap::new(),
         }
     }
 

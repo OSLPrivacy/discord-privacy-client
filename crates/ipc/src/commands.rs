@@ -14,6 +14,7 @@ use crypto::{aead, ed25519, hkdf, random, x25519};
 use keystore::{generate_identity, select_best_sealer, BurnScope, KeyServerClient};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16392,6 +16393,7 @@ pub struct SavedFriendRequestDto {
     pub state: crate::friend_request::StoredFriendState,
     pub display_name: String,
     pub block_state: crate::friend_request::StoredFriendBlockState,
+    pub choices: BTreeMap<String, String>,
     pub request_fingerprint: String,
     pub received_at_ms: u64,
     pub expires_at_ms: u64,
@@ -16495,10 +16497,24 @@ fn saved_friend_request_dto(
             .map(|record| record.display_name.clone())
             .unwrap_or_default(),
         block_state,
+        choices: friend
+            .map(|record| record.choices.clone())
+            .unwrap_or_default(),
         request_fingerprint: friend_request_fingerprint(entry),
         received_at_ms: entry.received_at_ms,
         expires_at_ms: entry.expires_at_ms,
     }
+}
+
+fn new_friend_default_choices(state: &AppState) -> BTreeMap<String, String> {
+    state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .behaviour_choices
+        .iter()
+        .map(|(name, choice)| (name.clone(), choice.clone()))
+        .collect()
 }
 
 fn update_saved_friend_record(
@@ -16508,16 +16524,22 @@ fn update_saved_friend_record(
     display_name: Option<&str>,
     state: crate::friend_request::StoredFriendState,
     block_state: crate::friend_request::StoredFriendBlockState,
+    accepted_choices: Option<BTreeMap<String, String>>,
 ) -> Result<(), String> {
     let display_name = display_name.map(str::trim).filter(|name| !name.is_empty());
     if let Some(record) = file.friends.iter_mut().find(|friend| {
         friend.local_identity_id == local_identity_id
             && friend.remote_identity_id == remote_identity_id
     }) {
+        let first_accept = record.state != crate::friend_request::StoredFriendState::Accepted
+            && state == crate::friend_request::StoredFriendState::Accepted;
         record.state = state;
         record.block_state = block_state;
         if let Some(display_name) = display_name {
             record.display_name = display_name.to_string();
+        }
+        if first_accept {
+            record.choices = accepted_choices.unwrap_or_default();
         }
         return Ok(());
     }
@@ -16532,6 +16554,11 @@ fn update_saved_friend_record(
                 .ok_or_else(|| "OSL: friend display name is missing".to_string())?
                 .to_string(),
             block_state,
+            choices: if state == crate::friend_request::StoredFriendState::Accepted {
+                accepted_choices.unwrap_or_default()
+            } else {
+                BTreeMap::new()
+            },
         });
     Ok(())
 }
@@ -16633,6 +16660,7 @@ pub fn cmd_osl_create_friend_request(
         Some(display_name),
         crate::friend_request::StoredFriendState::Pending,
         crate::friend_request::StoredFriendBlockState::NotBlocked,
+        None,
     )?;
     file.pending.push(entry.clone());
     save_saved_friend_request_file_with_dir(&dir, &file)?;
@@ -16773,6 +16801,7 @@ pub fn cmd_osl_accept_saved_friend_request(
     let request_id = request_id.trim();
     let entry = remove_saved_request_by_id(&mut file.pending, request_id)
         .ok_or_else(|| "OSL: friend request is not pending".to_string())?;
+    let choices = new_friend_default_choices(state);
     update_saved_friend_record(
         &mut file,
         &entry.requester_id,
@@ -16780,6 +16809,7 @@ pub fn cmd_osl_accept_saved_friend_request(
         None,
         crate::friend_request::StoredFriendState::Accepted,
         crate::friend_request::StoredFriendBlockState::NotBlocked,
+        Some(choices),
     )?;
     file.accepted.push(entry.clone());
     save_saved_friend_request_file_with_dir(&dir, &file)?;
@@ -16809,6 +16839,7 @@ pub fn cmd_osl_decline_saved_friend_request(
         None,
         crate::friend_request::StoredFriendState::Declined,
         crate::friend_request::StoredFriendBlockState::NotBlocked,
+        None,
     )?;
     file.declined_or_revoked.push(entry.clone());
     save_saved_friend_request_file_with_dir(&dir, &file)?;
@@ -16838,6 +16869,7 @@ pub fn cmd_osl_block_saved_friend_request(
         None,
         crate::friend_request::StoredFriendState::Declined,
         crate::friend_request::StoredFriendBlockState::BlockedByLocal,
+        None,
     )?;
     file.blocked.push(entry.clone());
     save_saved_friend_request_file_with_dir(&dir, &file)?;
