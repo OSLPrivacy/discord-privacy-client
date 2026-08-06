@@ -195,4 +195,23 @@ describe("confirming a saved recovery kit is believed immediately", () => {
     // to the step.
     expect(resumeOnboardingRoute(storage, RESUME_KEY)).toBe("recovery");
   });
+
+  it("TASK0334 advances only from the explicit no-secret state and records that choice", () => {
+    const without = recoveryKitReducer(initialRecoveryKitState(null, true), { kind: "continue" });
+    const withNoSecret = recoveryKitReducer(initialRecoveryKitState(null, false), { kind: "continue" });
+
+    console.log(
+      `TASK0334 without.state=${recoveryKitView(without.state).mode} outcome=${without.outcome} recorded=${without.state.noRecoverySecretAcknowledged}`,
+    );
+    console.log(
+      `TASK0334 with.state=${recoveryKitView(withNoSecret.state).mode} outcome=${withNoSecret.outcome} recorded=${withNoSecret.state.noRecoverySecretAcknowledged}`,
+    );
+
+    expect(recoveryKitView(without.state).mode).toBe("reveal-required");
+    expect(without.outcome).toBe("rejected");
+    expect(without.state.noRecoverySecretAcknowledged).toBe(false);
+    expect(recoveryKitView(withNoSecret.state).mode).toBe("unavailable");
+    expect(withNoSecret.outcome).toBe("leave-recovery");
+    expect(withNoSecret.state.noRecoverySecretAcknowledged).toBe(true);
+  });
 });

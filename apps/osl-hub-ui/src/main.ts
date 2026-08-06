@@ -376,6 +376,9 @@ function requireRoot(): HTMLDivElement {
   return element;
 }
 const runningUnderVitest = Boolean(import.meta.vitest || (typeof process !== "undefined" && process.env.VITEST));
+const fixedNoRecoverySecretFixture = !runningUnderVitest
+  && import.meta.env.DEV
+  && new URLSearchParams(window.location.search).get("osl-fixture") === "no-recovery-secret";
 const root = runningUnderVitest
   ? (globalThis.document?.querySelector<HTMLDivElement>("#app") ?? globalThis.document?.createElement("div") ?? {} as HTMLDivElement)
   : requireRoot();
@@ -1539,7 +1542,7 @@ function commitRender(): void {
     refreshActiveBrowserAccountsReady();
     if (route === "onboarding") renderOnboarding();
     else renderWorkspace();
-    bindDesktopTitlebar();
+    if (!fixedNoRecoverySecretFixture) bindDesktopTitlebar();
     const focusKey = route === "onboarding"
       ? `${route}:${onboardingRoute}`
       : route === "settings"
@@ -6756,7 +6759,7 @@ async function toggleDiscordQaTranscriptVisibility(): Promise<void> {
   render();
 }
 
-if (!runningUnderVitest) {
+if (!runningUnderVitest && !fixedNoRecoverySecretFixture) {
   bindAttachmentProgressEvents();
   bindAttachmentDeletionEvents();
   void listen<void>(MAIN_WINDOW_CAPTURE_REFUSED_EVENT, () => {
@@ -6820,7 +6823,7 @@ function applyNativeDiscordComposerUnreachable(
   }
 }
 
-if (!runningUnderVitest) {
+if (!runningUnderVitest && !fixedNoRecoverySecretFixture) {
   void listen<{ reason?: unknown; unreachable?: unknown }>(
     NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT,
     ({ payload }) => {
@@ -9883,7 +9886,7 @@ async function bootstrap(): Promise<void> {
   }
 }
 
-if (!runningUnderVitest) {
+if (!runningUnderVitest && !fixedNoRecoverySecretFixture) {
   window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { if (themeChoice === "system") applyTheme("system"); });
   window.addEventListener("keydown", (event) => {
     if (event.key !== "F11" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -10061,6 +10064,8 @@ type OslHubUiTestStatePatch = {
   hubIdentitiesLoad?: IdentityListLoad;
   bootstrapStatus?: BootstrapStatus;
   enclaveAudienceRecords?: unknown[];
+  recoveryBundle?: { userId: string; identityPhrase: string | null; passwordPhrase: string } | null;
+  recoveryKitUnsaved?: boolean;
 };
 
 function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPerson {
@@ -10118,6 +10123,10 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   protectionPreset = patch.protectionPreset ?? loadProtectionPreset();
   inboxFilter = patch.inboxFilter ?? "all";
   resetAccountRecovery();
+  recoveryBundle = patch.recoveryBundle ?? null;
+  recoverySavedAcknowledged = false;
+  recoveryShownWithoutProtection = false;
+  void recoveryKitUnsavedFlag.set(patch.recoveryKitUnsaved ?? false);
   oslMailNotifications = patch.oslMailNotifications ?? (localStorage.getItem(oslMailNotificationsStorageKey) !== "false");
   oslMailThreadSyncUnavailable = false;
   oslMailThreads = [];
@@ -10381,38 +10390,48 @@ export const __oslHubUiTest = {
 };
 
 if (!runningUnderVitest) {
-  const desktopWindow = getCurrentWindow();
-  bindWindowLifecycleRealignment(
-    window,
-    desktopWindow,
-    document,
-    scheduleNativeHostRealignment,
-  );
-  void bindMainWindowFocusChanges(
-    (handler) => desktopWindow.onFocusChanged(handler),
-    {
+  if (fixedNoRecoverySecretFixture) {
+    applyOslHubUiTestState({
+      route: "onboarding",
+      onboardingRoute: "recovery",
+      recoveryBundle: null,
+      recoveryKitUnsaved: false,
+    });
+    render();
+  } else {
+    const desktopWindow = getCurrentWindow();
+    bindWindowLifecycleRealignment(
+      window,
+      desktopWindow,
+      document,
       scheduleNativeHostRealignment,
-      hasRecoverySecrets: () => Boolean(recoveryBundle || newIdentityRecoveryPhrase),
-      proveRecoveryCaptureProtection,
-      invalidateRecoveryCapture: () => recoveryCaptureGate.invalidate(),
-      setScreenshotProtectionEnabled: (enabled) => { screenshotProtectionEnabled = enabled; },
-      render,
-    },
-  ).catch(() => undefined);
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") {
-      recoveryCaptureGate.invalidate();
-      screenshotProtectionEnabled = false;
-      newIdentityRecoveryPhrase = null;
-      if (recoveryBundle || (route === "settings" && settingsSection === "account")) render();
-      return;
-    }
-    if (recoveryBundle || newIdentityRecoveryPhrase) {
-      void proveRecoveryCaptureProtection().then(() => render());
-    }
-  });
-  window.addEventListener("error", (event) => { event.preventDefault(); containBackgroundFailure(); });
-  window.addEventListener(unhandledRejectionEventType, handleUnhandledRejection);
-  void bootstrap();
-  scheduleOslChatBackgroundSync(1_000);
+    );
+    void bindMainWindowFocusChanges(
+      (handler) => desktopWindow.onFocusChanged(handler),
+      {
+        scheduleNativeHostRealignment,
+        hasRecoverySecrets: () => Boolean(recoveryBundle || newIdentityRecoveryPhrase),
+        proveRecoveryCaptureProtection,
+        invalidateRecoveryCapture: () => recoveryCaptureGate.invalidate(),
+        setScreenshotProtectionEnabled: (enabled) => { screenshotProtectionEnabled = enabled; },
+        render,
+      },
+    ).catch(() => undefined);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        recoveryCaptureGate.invalidate();
+        screenshotProtectionEnabled = false;
+        newIdentityRecoveryPhrase = null;
+        if (recoveryBundle || (route === "settings" && settingsSection === "account")) render();
+        return;
+      }
+      if (recoveryBundle || newIdentityRecoveryPhrase) {
+        void proveRecoveryCaptureProtection().then(() => render());
+      }
+    });
+    window.addEventListener("error", (event) => { event.preventDefault(); containBackgroundFailure(); });
+    window.addEventListener(unhandledRejectionEventType, handleUnhandledRejection);
+    void bootstrap();
+    scheduleOslChatBackgroundSync(1_000);
+  }
 }
