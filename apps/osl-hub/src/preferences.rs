@@ -1,9 +1,13 @@
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::OnboardingPreferences;
+use crate::models::{
+    default_home_tile_order, is_default_home_tile, HomeTileArrangementInput,
+    HomeTileArrangementRead, OnboardingPreferences, DEFAULT_HOME_TILE_ORDER,
+};
 
 const PREVIEW_STATE_VERSION: u8 = 1;
 const MAX_PREFERENCES_BYTES: u64 = 16 * 1024;
@@ -13,6 +17,8 @@ const MAX_PREFERENCES_BYTES: u64 = 16 * 1024;
 struct PreferencesDocument {
     version: u8,
     onboarding: OnboardingPreferences,
+    #[serde(default)]
+    home_tiles_by_user: BTreeMap<String, StoredHomeTileArrangement>,
 }
 
 impl Default for PreferencesDocument {
@@ -20,6 +26,7 @@ impl Default for PreferencesDocument {
         Self {
             version: PREVIEW_STATE_VERSION,
             onboarding: OnboardingPreferences::default(),
+            home_tiles_by_user: BTreeMap::new(),
         }
     }
 }
@@ -27,17 +34,34 @@ impl Default for PreferencesDocument {
 pub struct PreviewState {
     path: PathBuf,
     onboarding: Mutex<OnboardingPreferences>,
+    home_tiles_by_user: Mutex<BTreeMap<String, StoredHomeTileArrangement>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredHomeTileArrangement {
+    order: Vec<String>,
+    hidden: Vec<String>,
 }
 
 impl PreviewState {
     pub fn load(path: PathBuf) -> Self {
-        let onboarding = read_preferences(&path)
-            .map(|document| document.onboarding.fail_closed())
-            .unwrap_or_default();
+        let document = read_preferences(&path).unwrap_or_default();
+        let onboarding = document.onboarding.fail_closed();
+        let home_tiles_by_user = document
+            .home_tiles_by_user
+            .into_iter()
+            .filter_map(|(owner, arrangement)| {
+                validate_owner_key(&owner)
+                    .ok()
+                    .map(|owner| (owner, sanitize_arrangement(arrangement)))
+            })
+            .collect();
 
         Self {
             path,
             onboarding: Mutex::new(onboarding),
+            home_tiles_by_user: Mutex::new(home_tiles_by_user),
         }
     }
 
@@ -53,7 +77,12 @@ impl PreviewState {
         preferences: OnboardingPreferences,
     ) -> Result<OnboardingPreferences, String> {
         let preferences = preferences.fail_closed();
-        write_preferences(&self.path, &preferences)
+        let home_tiles_by_user = self
+            .home_tiles_by_user
+            .lock()
+            .map_err(|_| "home tile preferences lock is unavailable".to_owned())?
+            .clone();
+        write_preferences(&self.path, &preferences, &home_tiles_by_user)
             .map_err(|error| format!("could not save preview preferences: {error}"))?;
 
         let mut current = self
@@ -66,6 +95,54 @@ impl PreviewState {
 
     pub fn reset(&self) -> Result<OnboardingPreferences, String> {
         self.save(OnboardingPreferences::default())
+    }
+
+    pub fn get_home_tile_arrangement(
+        &self,
+        owner_user_id: &str,
+    ) -> Result<HomeTileArrangementRead, String> {
+        let owner_user_id = validate_owner_key(owner_user_id)?;
+        let home_tiles_by_user = self
+            .home_tiles_by_user
+            .lock()
+            .map_err(|_| "home tile preferences lock is unavailable".to_owned())?;
+        Ok(read_arrangement(
+            home_tiles_by_user.get(&owner_user_id).cloned(),
+        ))
+    }
+
+    pub fn save_home_tile_arrangement(
+        &self,
+        owner_user_id: &str,
+        arrangement: HomeTileArrangementInput,
+    ) -> Result<HomeTileArrangementRead, String> {
+        let owner_user_id = validate_owner_key(owner_user_id)?;
+        let stored = sanitize_arrangement(StoredHomeTileArrangement {
+            order: arrangement.order,
+            hidden: arrangement.hidden,
+        });
+
+        let onboarding = self
+            .onboarding
+            .lock()
+            .map_err(|_| "preview preferences lock is unavailable".to_owned())?
+            .clone();
+        let mut home_tiles_by_user = self
+            .home_tiles_by_user
+            .lock()
+            .map_err(|_| "home tile preferences lock is unavailable".to_owned())?
+            .clone();
+        home_tiles_by_user.insert(owner_user_id.clone(), stored.clone());
+
+        write_preferences(&self.path, &onboarding, &home_tiles_by_user)
+            .map_err(|error| format!("could not save home tile preferences: {error}"))?;
+
+        let mut current = self
+            .home_tiles_by_user
+            .lock()
+            .map_err(|_| "home tile preferences lock is unavailable".to_owned())?;
+        *current = home_tiles_by_user;
+        Ok(read_arrangement(Some(stored)))
     }
 }
 
@@ -81,10 +158,15 @@ fn read_preferences(path: &Path) -> Option<PreferencesDocument> {
     (document.version == PREVIEW_STATE_VERSION).then_some(document)
 }
 
-fn write_preferences(path: &Path, preferences: &OnboardingPreferences) -> Result<(), String> {
+fn write_preferences(
+    path: &Path,
+    preferences: &OnboardingPreferences,
+    home_tiles_by_user: &BTreeMap<String, StoredHomeTileArrangement>,
+) -> Result<(), String> {
     let document = PreferencesDocument {
         version: PREVIEW_STATE_VERSION,
         onboarding: preferences.clone(),
+        home_tiles_by_user: home_tiles_by_user.clone(),
     };
     let bytes = serde_json::to_vec_pretty(&document)
         .map_err(|_| "preferences could not be encoded".to_owned())?;
@@ -92,6 +174,71 @@ fn write_preferences(path: &Path, preferences: &OnboardingPreferences) -> Result
         return Err("preview preferences exceed the size limit".to_owned());
     }
     crate::atomic_file::write_recoverable(path, &bytes, "preview preferences")
+}
+
+fn validate_owner_key(owner_user_id: &str) -> Result<String, String> {
+    let owner_user_id = owner_user_id.trim();
+    if owner_user_id.is_empty()
+        || owner_user_id.len() > 128
+        || !owner_user_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'@'))
+    {
+        return Err("home tile owner identity is invalid".to_owned());
+    }
+    Ok(owner_user_id.to_owned())
+}
+
+fn sanitize_arrangement(arrangement: StoredHomeTileArrangement) -> StoredHomeTileArrangement {
+    let mut seen = HashSet::<String>::new();
+    let mut order = Vec::<String>::with_capacity(DEFAULT_HOME_TILE_ORDER.len());
+    for tile in arrangement.order {
+        if is_default_home_tile(&tile) && seen.insert(tile.clone()) {
+            order.push(tile);
+        }
+    }
+    for tile in DEFAULT_HOME_TILE_ORDER {
+        if seen.insert((*tile).to_owned()) {
+            order.push((*tile).to_owned());
+        }
+    }
+
+    let hidden_set = arrangement
+        .hidden
+        .into_iter()
+        .filter(|tile| is_default_home_tile(tile))
+        .collect::<HashSet<_>>();
+    let hidden = order
+        .iter()
+        .filter(|tile| hidden_set.contains(*tile))
+        .cloned()
+        .collect();
+
+    StoredHomeTileArrangement { order, hidden }
+}
+
+fn read_arrangement(arrangement: Option<StoredHomeTileArrangement>) -> HomeTileArrangementRead {
+    let arrangement =
+        arrangement
+            .map(sanitize_arrangement)
+            .unwrap_or_else(|| StoredHomeTileArrangement {
+                order: default_home_tile_order(),
+                hidden: Vec::new(),
+            });
+    let hidden = arrangement.hidden.into_iter().collect::<HashSet<_>>();
+    let mut visible_tiles = Vec::new();
+    let mut hidden_tiles = Vec::new();
+    for tile in arrangement.order {
+        if hidden.contains(&tile) {
+            hidden_tiles.push(tile);
+        } else {
+            visible_tiles.push(tile);
+        }
+    }
+    HomeTileArrangementRead {
+        visible_tiles,
+        hidden_tiles,
+    }
 }
 
 #[cfg(test)]
@@ -205,6 +352,127 @@ mod tests {
         let recovered = PreviewState::load(path.clone());
         assert_eq!(recovered.get().unwrap(), expected);
         assert!(path.exists());
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn task_0812_per_user_tile_arrangement_direct_reads_return_ordered_visible_and_hidden_lists() {
+        let path = temporary_file();
+        let state = PreviewState::load(path.clone());
+
+        let default = state
+            .get_home_tile_arrangement("user-a")
+            .expect("default arrangement");
+        println!(
+            "TASK0812 default_visible_tiles={}",
+            default.visible_tiles.join(",")
+        );
+        println!(
+            "TASK0812 default_hidden_tiles={}",
+            if default.hidden_tiles.is_empty() {
+                "(none)".to_owned()
+            } else {
+                default.hidden_tiles.join(",")
+            }
+        );
+        assert_eq!(default.visible_tiles, default_home_tile_order());
+        assert!(default.hidden_tiles.is_empty());
+
+        let saved = state
+            .save_home_tile_arrangement(
+                "user-a",
+                HomeTileArrangementInput {
+                    order: vec![
+                        "scrub".to_owned(),
+                        "discord".to_owned(),
+                        "unknown-tile".to_owned(),
+                        "gmail".to_owned(),
+                        "discord".to_owned(),
+                    ],
+                    hidden: vec![
+                        "discord".to_owned(),
+                        "unknown-tile".to_owned(),
+                        "osl-mail".to_owned(),
+                        "discord".to_owned(),
+                    ],
+                },
+            )
+            .expect("save user-a arrangement");
+        println!(
+            "TASK0812 user_a_saved_visible_tiles={}",
+            saved.visible_tiles.join(",")
+        );
+        println!(
+            "TASK0812 user_a_saved_hidden_tiles={}",
+            saved.hidden_tiles.join(",")
+        );
+
+        let user_b = state
+            .save_home_tile_arrangement(
+                "user-b",
+                HomeTileArrangementInput {
+                    order: vec!["telegram".to_owned(), "discord".to_owned()],
+                    hidden: vec!["telegram".to_owned()],
+                },
+            )
+            .expect("save user-b arrangement");
+        println!(
+            "TASK0812 user_b_visible_tiles={}",
+            user_b.visible_tiles.join(",")
+        );
+        println!(
+            "TASK0812 user_b_hidden_tiles={}",
+            user_b.hidden_tiles.join(",")
+        );
+
+        let direct = state
+            .get_home_tile_arrangement("user-a")
+            .expect("direct read user-a");
+        println!(
+            "TASK0812 user_a_direct_visible_tiles={}",
+            direct.visible_tiles.join(",")
+        );
+        println!(
+            "TASK0812 user_a_direct_hidden_tiles={}",
+            direct.hidden_tiles.join(",")
+        );
+
+        let reloaded = PreviewState::load(path.clone())
+            .get_home_tile_arrangement("user-a")
+            .expect("reload user-a arrangement");
+        println!(
+            "TASK0812 user_a_reloaded_visible_tiles={}",
+            reloaded.visible_tiles.join(",")
+        );
+        println!(
+            "TASK0812 user_a_reloaded_hidden_tiles={}",
+            reloaded.hidden_tiles.join(",")
+        );
+
+        assert_eq!(
+            direct.visible_tiles,
+            vec![
+                "scrub",
+                "gmail",
+                "telegram",
+                "signal",
+                "whatsapp",
+                "outlook",
+                "proton",
+                "yahoo",
+                "aol",
+                "gmx",
+                "maildotcom",
+                "icloud",
+                "tuta",
+                "osl-chats",
+                "osl-notes"
+            ]
+        );
+        assert_eq!(direct.hidden_tiles, vec!["discord", "osl-mail"]);
+        assert_eq!(reloaded, direct);
+        assert_eq!(user_b.hidden_tiles, vec!["telegram"]);
+
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 }
