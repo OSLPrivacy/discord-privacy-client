@@ -697,7 +697,7 @@ fn reopen_with_future_schema_version_refuses() {
     // A normal reopen before the future stamp is the nonempty valid-schema
     // positive control. It rejects a test that only observes a refusal from a
     // database that was never valid under this binary.
-    assert_eq!(schema_version(&path), 9);
+    assert_eq!(schema_version(&path), 10);
     let baseline = MessageStore::open(&path, SECRET_A).unwrap();
     assert!(baseline.get("current-schema-positive").unwrap().is_some());
     drop(baseline);

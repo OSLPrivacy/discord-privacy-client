@@ -229,7 +229,7 @@ fn schema_v8_field_census_and_raw_wal_plaintext_guards_are_nonvacuous() {
         .unwrap();
     assert_eq!(
         schema_version,
-        9u32.to_le_bytes(),
+        10u32.to_le_bytes(),
         "{BOUNDARY_SCHEMA_V8_FIELD_CENSUS} must inspect the current schema"
     );
     assert_eq!(
@@ -528,7 +528,7 @@ fn v7_burn_timestamp_migration_scrubs_column_and_preserves_reopen_and_burn() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 9u32.to_le_bytes());
+    assert_eq!(version, 10u32.to_le_bytes());
     drop(conn);
     for (name, bytes) in store_files(tmp.path()) {
         assert!(

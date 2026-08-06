@@ -608,7 +608,7 @@ impl MessageStore {
             None => None,
         };
         // A range against SCHEMA_VERSION rather than a hardcoded Some(7)|Some(8)|
-        // Some(9): the literal list silently stops matching the moment the schema
+        // Some(9)|Some(10): the literal list silently stops matching the moment the schema
         // advances, which is exactly how this refusal started firing on databases
         // it was never meant to reject.
         if existing_anchor.is_some()
@@ -681,14 +681,13 @@ impl MessageStore {
                 // continue to advance the binding transactionally.
                 //
                 // Spelled `SCHEMA_VERSION`, never a literal. A duplicate
-                // `(Some(9), Some(binding))` arm was merged in beside this one
-                // and shadowed it -- harmless only because 9 *is* the current
-                // version. On the next schema bump that stale literal would
-                // have gone on claiming "no migration needed" for a database
-                // that had just become one version stale, silently skipping
-                // its migration. That is the same trap the pre-mutation guard
-                // above documents: a hardcoded version list stops tracking the
-                // schema the moment the schema moves.
+                // `(Some(9), Some(binding))` arm was once merged in beside this
+                // one and shadowed it. That stale literal would have gone on
+                // claiming "no migration needed" for a database that had just
+                // become one version stale, silently skipping its migration.
+                // That is the same trap the pre-mutation guard above documents:
+                // a hardcoded version list stops tracking the schema the moment
+                // the schema moves.
                 (Some(schema::SCHEMA_VERSION), Some(binding)) => Some(binding),
                 // The pre-mutation guard above returns for an existing
                 // pre-v7 anchor.  An absent local/provider record remains the
