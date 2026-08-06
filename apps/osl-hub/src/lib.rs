@@ -81,6 +81,7 @@ pub mod entitlement_refresh;
 pub mod execution_consent;
 pub mod external_overlay;
 pub(crate) mod firefox_migration_coordinator;
+pub mod front_window_grab;
 pub mod hosted_audience;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;
