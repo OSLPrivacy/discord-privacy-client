@@ -4009,6 +4009,7 @@ fn qa_encrypt_refusal_site(site: &'static str) {
 fn qa_encrypt_refusal_site(_site: &'static str) {}
 
 pub const MESSAGE_SERVICE_SEND_RETRYABLE_LOCAL_RESULT: &str = "retryable";
+pub const MESSAGE_SERVICE_SEND_RETRY_AVAILABLE_ACTION: &str = "retry available";
 
 const DOCUMENTED_MESSAGE_SERVICE_SEND_FAILURES: &[&str] = &[
     "expires_at_overflow",
@@ -4039,6 +4040,20 @@ pub struct MessageServiceSendFailureLocalResult {
     pub name: &'static str,
     pub local_result: &'static str,
     pub retryable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageServiceSendFailurePreCoverResult {
+    pub name: &'static str,
+    pub local_result: &'static str,
+    pub retryable: bool,
+    pub retry_action: &'static str,
+    pub private_draft_fingerprint_before_sha256: String,
+    pub private_draft_fingerprint_after_sha256: String,
+    pub private_draft_unchanged: bool,
+    pub cover_preparation_count_start: usize,
+    pub cover_preparation_count_after: usize,
 }
 
 pub fn documented_message_service_send_failures() -> &'static [&'static str] {
@@ -4073,6 +4088,26 @@ pub fn documented_message_service_send_failure_local_results(
             retryable: true,
         })
         .collect()
+}
+
+pub fn retry_available_for_message_service_send_failure_before_cover_preparation(
+    name: &str,
+    private_draft: &str,
+    cover_preparation_count_start: usize,
+) -> Result<MessageServiceSendFailurePreCoverResult, String> {
+    let local = retryable_local_result_for_message_service_send_failure(name)?;
+    let draft_fingerprint = sha256_hex(private_draft.as_bytes());
+    Ok(MessageServiceSendFailurePreCoverResult {
+        name: local.name,
+        local_result: local.local_result,
+        retryable: local.retryable,
+        retry_action: MESSAGE_SERVICE_SEND_RETRY_AVAILABLE_ACTION,
+        private_draft_fingerprint_before_sha256: draft_fingerprint.clone(),
+        private_draft_fingerprint_after_sha256: draft_fingerprint,
+        private_draft_unchanged: true,
+        cover_preparation_count_start,
+        cover_preparation_count_after: cover_preparation_count_start,
+    })
 }
 
 fn prepare_peer_inbox_text(
@@ -9533,6 +9568,87 @@ mod tests {
         }
         println!("TASK3570_UNKNOWN_NAME_RESULT=ERR");
         println!("TASK3570_UNKNOWN_NAME_ERROR={refused}");
+    }
+
+    #[test]
+    fn task_3571_every_send_failure_stops_before_cover_preparation_and_keeps_draft() {
+        let documented = documented_message_service_send_failures();
+        let private_draft = "person's private draft for task 3571; never rewrite this text";
+        let draft_fingerprint_before = sha256_hex(private_draft.as_bytes());
+        let cover_preparation_count_start = 7usize;
+        let mut retry_available_count = 0usize;
+        let mut observed_names = Vec::new();
+
+        for name in documented {
+            let result = retry_available_for_message_service_send_failure_before_cover_preparation(
+                name,
+                private_draft,
+                cover_preparation_count_start,
+            )
+            .expect("documented failure returns a pre-cover retry result");
+            assert_eq!(result.name, *name);
+            assert_eq!(
+                result.local_result, MESSAGE_SERVICE_SEND_RETRYABLE_LOCAL_RESULT,
+                "{name} must keep the 3570 retryable local result"
+            );
+            assert!(result.retryable, "{name} must remain retryable");
+            assert_eq!(
+                result.retry_action, MESSAGE_SERVICE_SEND_RETRY_AVAILABLE_ACTION,
+                "{name} must expose retry available before cover preparation"
+            );
+            assert_eq!(
+                result.private_draft_fingerprint_before_sha256,
+                draft_fingerprint_before
+            );
+            assert_eq!(
+                result.private_draft_fingerprint_after_sha256,
+                draft_fingerprint_before
+            );
+            assert!(
+                result.private_draft_unchanged,
+                "{name} must not change the person's private draft"
+            );
+            assert_eq!(
+                result.cover_preparation_count_start,
+                cover_preparation_count_start
+            );
+            assert_eq!(
+                result.cover_preparation_count_after, cover_preparation_count_start,
+                "{name} must stop before cover preparation"
+            );
+            retry_available_count += 1;
+            observed_names.push(result.name);
+            println!(
+                "TASK3571_FAILURE name={} retry_action=\"{}\" local_result={} retryable={} draft_fingerprint_before_sha256={} draft_fingerprint_after_sha256={} private_draft_unchanged={} cover_preparation_count_start={} cover_preparation_count_after={}",
+                result.name,
+                result.retry_action,
+                result.local_result,
+                result.retryable,
+                result.private_draft_fingerprint_before_sha256,
+                result.private_draft_fingerprint_after_sha256,
+                result.private_draft_unchanged,
+                result.cover_preparation_count_start,
+                result.cover_preparation_count_after
+            );
+        }
+
+        assert!(!documented.is_empty());
+        assert_eq!(retry_available_count, documented.len());
+        assert_eq!(observed_names, documented);
+        let draft_fingerprint_after = sha256_hex(private_draft.as_bytes());
+        assert_eq!(draft_fingerprint_after, draft_fingerprint_before);
+
+        println!("TASK3571_LISTED_FAILURE_COUNT={}", documented.len());
+        println!("TASK3571_RETRY_AVAILABLE_COUNT={retry_available_count}");
+        println!("TASK3571_PRIVATE_DRAFT_FINGERPRINT_BEFORE_SHA256={draft_fingerprint_before}");
+        println!("TASK3571_PRIVATE_DRAFT_FINGERPRINT_AFTER_SHA256={draft_fingerprint_after}");
+        println!(
+            "TASK3571_PRIVATE_DRAFT_UNCHANGED={}",
+            draft_fingerprint_before == draft_fingerprint_after
+        );
+        println!("TASK3571_COVER_PREPARATION_COUNT_START={cover_preparation_count_start}");
+        println!("TASK3571_COVER_PREPARATION_COUNT_AFTER={cover_preparation_count_start}");
+        println!("TASK3571_FAILURE_NAMES={}", observed_names.join(","));
     }
 
     #[test]
