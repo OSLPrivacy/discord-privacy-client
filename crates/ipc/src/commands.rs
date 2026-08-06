@@ -3749,14 +3749,48 @@ pub fn cmd_osl_attachment_cache_get(
         return Ok(None);
     };
     match store
-        .get_attachment(&discord_message_id, &random_filename)
+        .get_attachment_record(&discord_message_id, &random_filename)
         .map_err(|e| format!("OSL: get_attachment: {e}"))?
     {
-        Some((mime, bytes)) => Ok(Some(AttachmentCacheDto {
-            mime,
-            bytes_b64: STANDARD.encode(&bytes),
-        })),
+        Some(attachment) => {
+            guard_picture_cache_access(
+                state,
+                &attachment.mime,
+                attachment.sender_discord_id.as_deref(),
+            )?;
+            Ok(Some(AttachmentCacheDto {
+                mime: attachment.mime,
+                bytes_b64: STANDARD.encode(&attachment.plaintext),
+            }))
+        }
         None => Ok(None),
+    }
+}
+
+fn guard_picture_cache_access(
+    state: &AppState,
+    mime: &str,
+    sender_discord_id: Option<&str>,
+) -> Result<(), String> {
+    if !mime.starts_with("image/") {
+        return Ok(());
+    }
+    let Some(sender) = sender_discord_id else {
+        return Ok(());
+    };
+    let is_self = state
+        .identity_slot()
+        .as_ref()
+        .and_then(|identity| identity.discord_snowflake.as_deref())
+        == Some(sender);
+    if is_self {
+        return Ok(());
+    }
+    let friends = state.friend_ids.lock().expect("friend_ids mutex poisoned");
+    if friends.iter().any(|friend_id| friend_id == sender) {
+        Ok(())
+    } else {
+        Err("OSL: picture access blocked".to_string())
     }
 }
 

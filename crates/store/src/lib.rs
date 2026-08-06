@@ -128,6 +128,15 @@ pub struct MessageStore {
     anchor: Option<anchor::AnchorBinding>,
 }
 
+/// Decrypted cached attachment plus the metadata needed by callers that enforce
+/// presentation-time policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredAttachment {
+    pub mime: String,
+    pub plaintext: Vec<u8>,
+    pub sender_discord_id: Option<String>,
+}
+
 /// Complete cryptographic and selector state needed to authenticate a live
 /// message row.
 struct MessageRow {
@@ -1632,6 +1641,18 @@ impl MessageStore {
         discord_message_id: &str,
         random_filename: &str,
     ) -> Result<Option<(String, Vec<u8>)>, StoreError> {
+        Ok(self
+            .get_attachment_record(discord_message_id, random_filename)?
+            .map(|attachment| (attachment.mime, attachment.plaintext)))
+    }
+
+    /// Fetch a previously-persisted decrypted attachment with its authenticated
+    /// sender metadata.
+    pub fn get_attachment_record(
+        &self,
+        discord_message_id: &str,
+        random_filename: &str,
+    ) -> Result<Option<StoredAttachment>, StoreError> {
         check_id("discord_message_id", discord_message_id)?;
         check_id("random_filename", random_filename)?;
         let cache_key = format!("{discord_message_id}/{random_filename}");
@@ -1748,7 +1769,25 @@ impl MessageStore {
                 "attachment body length does not match sealed metadata".to_string(),
             ));
         }
-        Ok(Some((meta.mime, pt)))
+        Ok(Some(StoredAttachment {
+            mime: meta.mime,
+            plaintext: pt,
+            sender_discord_id: meta.sender_discord_id,
+        }))
+    }
+
+    /// Count live cached attachments. Intended for targeted diagnostics and
+    /// regression tests; it does not decrypt attachment bodies.
+    pub fn live_attachment_count(&self) -> Result<usize, StoreError> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM attachments WHERE burned = 0",
+            [],
+            |row| row.get(0),
+        )?;
+        usize::try_from(count).map_err(|_| {
+            StoreError::Corrupted("live attachment count does not fit usize".to_string())
+        })
     }
 
     /// Bound the attachments table's disk footprint by trimming oldest rows
