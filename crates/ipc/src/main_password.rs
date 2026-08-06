@@ -1770,6 +1770,8 @@ pub const AT_REST_STATE_FILES: &[&str] = &[
     "burned_scopes.json",
     "app_preferences.json",
     "sender_key_state.json",
+    "allowed_places.json",
+    "auto_whitelist_rules.json",
     "membership.json",
     "scope_ttl.json",
     "scope_blobs.json",
@@ -2377,6 +2379,8 @@ pub fn burn_wipe_all(dir: &Path) -> Result<(), String> {
         // identity/password.
         "app_preferences.json",
         "sender_key_state.json",
+        "allowed_places.json",
+        "auto_whitelist_rules.json",
     ];
     for name in top {
         let path = dir.join(name);

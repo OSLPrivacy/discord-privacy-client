@@ -40,6 +40,8 @@ pub struct ReloadReport {
     pub prekey_opks: usize,
     pub sender_keys_loaded: bool,
     pub sender_keys_count: usize,
+    pub allowed_places_loaded: bool,
+    pub auto_whitelist_rules_loaded: bool,
     pub app_prefs_loaded: bool,
     pub scope_membership_loaded: bool,
     pub scope_membership_observations: usize,
@@ -90,6 +92,8 @@ pub fn reload_encrypted_state_after_unlock(
         "whitelist_state.json",
         "app_preferences.json",
         "sender_key_state.json",
+        "allowed_places.json",
+        "auto_whitelist_rules.json",
         // Probe-2 Rust Bug 5: these were sealed under file_storage_key
         // too but were missing from the quarantine sweep. A stale-key
         // blob would silently fall back to default — the burn kill-
@@ -306,6 +310,26 @@ pub fn reload_encrypted_state_after_unlock(
             .sender_key_state
             .lock()
             .expect("sender_key_state mutex poisoned") = live;
+    }
+
+    let allowed_places_path = config_dir.join("allowed_places.json");
+    if allowed_places_path.exists() {
+        let places = crate::allowed_places::load_allowed_places(&allowed_places_path);
+        *state
+            .allowed_places
+            .lock()
+            .expect("allowed_places mutex poisoned") = places;
+        report.allowed_places_loaded = true;
+    }
+
+    let auto_rules_path = config_dir.join("auto_whitelist_rules.json");
+    if auto_rules_path.exists() {
+        let rules = crate::auto_whitelist_rules::load_auto_whitelist_rules(&auto_rules_path);
+        *state
+            .auto_whitelist_rules
+            .lock()
+            .expect("auto_whitelist_rules mutex poisoned") = rules;
+        report.auto_whitelist_rules_loaded = true;
     }
 
     // membership.json — dynamic recipient observations. Same encrypted-at-rest

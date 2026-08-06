@@ -1267,6 +1267,44 @@ pub(crate) fn persist_sender_key_state_now(state: &AppState) {
     }
 }
 
+fn persist_auto_whitelist_rules_now(state: &AppState) {
+    let dir = match keystore::osl_config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            record_persist_error(state, "auto_whitelist_rules dir resolve", e);
+            return;
+        }
+    };
+    let path = dir.join("auto_whitelist_rules.json");
+    let rules = state
+        .auto_whitelist_rules
+        .lock()
+        .expect("auto_whitelist_rules mutex poisoned")
+        .clone();
+    if let Err(e) = crate::auto_whitelist_rules::write_auto_whitelist_rules(&path, &rules) {
+        record_persist_error(state, "auto_whitelist_rules.json", e);
+    }
+}
+
+fn persist_allowed_places_now(state: &AppState) {
+    let dir = match keystore::osl_config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            record_persist_error(state, "allowed_places dir resolve", e);
+            return;
+        }
+    };
+    let path = dir.join("allowed_places.json");
+    let places = state
+        .allowed_places
+        .lock()
+        .expect("allowed_places mutex poisoned")
+        .clone();
+    if let Err(e) = crate::allowed_places::write_allowed_places(&path, &places) {
+        record_persist_error(state, "allowed_places.json", e);
+    }
+}
+
 pub fn persist_whitelist_state_now(state: &AppState) {
     let dir = match keystore::osl_config_dir() {
         Ok(d) => d,
@@ -14231,6 +14269,8 @@ const OSL_EXPORT_MAGIC: &[u8] = b"OSLDATA1";
 const OSL_EXPORT_FILES: &[&str] = &[
     "peer_map.json",
     "whitelist_state.json",
+    "allowed_places.json",
+    "auto_whitelist_rules.json",
     "sender_key_state.json",
     "channels.json",
     "burned_scopes.json",
@@ -15962,11 +16002,22 @@ pub fn cmd_osl_membership_update(
 /// genuinely empty).
 pub fn cmd_osl_membership_get(state: &AppState, channel_id: String) -> Result<Vec<String>, String> {
     record_activity_on_command_entry();
-    let g = state
-        .channel_members
+    let cached = {
+        let g = state
+            .channel_members
+            .lock()
+            .expect("channel_members mutex poisoned");
+        g.get(&channel_id).cloned()
+    };
+    if let Some(members) = cached {
+        return Ok(members);
+    }
+    let durable = state
+        .scope_membership
         .lock()
-        .expect("channel_members mutex poisoned");
-    Ok(g.get(&channel_id).cloned().unwrap_or_default())
+        .expect("scope_membership mutex poisoned")
+        .members_for_key(&crate::membership::gc_key(&channel_id));
+    Ok(durable)
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -16676,6 +16727,44 @@ pub fn cmd_osl_get_guild_list(state: &AppState) -> Result<Vec<GuildDto>, String>
     Ok(g.clone())
 }
 
+pub fn cmd_osl_save_allowed_place(
+    state: &AppState,
+    record: crate::allowed_places::AllowedPlaceRecord,
+) -> Result<crate::allowed_places::AllowedPlaceRecord, String> {
+    record_activity_on_command_entry();
+    if record.app.trim().is_empty()
+        || record.account.trim().is_empty()
+        || record.kind.trim().is_empty()
+        || record.stable_id.trim().is_empty()
+    {
+        return Err("OSL: allowed place is incomplete".to_owned());
+    }
+    let saved = {
+        let mut places = state
+            .allowed_places
+            .lock()
+            .expect("allowed_places mutex poisoned");
+        places.save(record)
+    };
+    persist_allowed_places_now(state);
+    Ok(saved)
+}
+
+pub fn cmd_osl_query_allowed_place(
+    state: &AppState,
+    stable_id: String,
+) -> Result<Option<crate::allowed_places::AllowedPlaceQuery>, String> {
+    record_activity_on_command_entry();
+    if stable_id.trim().is_empty() {
+        return Err("OSL: allowed place stable_id is empty".to_owned());
+    }
+    let places = state
+        .allowed_places
+        .lock()
+        .expect("allowed_places mutex poisoned");
+    Ok(places.query(&stable_id))
+}
+
 /// Adds one stable channel identity under its server identity.
 ///
 /// This is the direct command boundary for server-channel discovery. The
@@ -16887,11 +16976,15 @@ pub fn cmd_osl_save_auto_whitelist_rule(
     choice: AutoWhitelistChoice,
 ) -> Result<AutoWhitelistRule, String> {
     record_activity_on_command_entry();
-    let mut rules = state
-        .auto_whitelist_rules
-        .lock()
-        .expect("auto_whitelist_rules mutex poisoned");
-    Ok(rules.save(app_kind, choice))
+    let saved = {
+        let mut rules = state
+            .auto_whitelist_rules
+            .lock()
+            .expect("auto_whitelist_rules mutex poisoned");
+        rules.save(app_kind, choice)
+    };
+    persist_auto_whitelist_rules_now(state);
+    Ok(saved)
 }
 
 pub fn cmd_osl_query_auto_whitelist_rule(
@@ -16959,6 +17052,7 @@ pub fn cmd_osl_save_signal_auto_whitelist_rule(
             .expect("auto_whitelist_rules mutex poisoned");
         rules.save(kind.auto_rule_app_kind(), choice);
     }
+    persist_auto_whitelist_rules_now(state);
     Ok(signal_rule_lookup(kind, account, place, choice))
 }
 
@@ -17463,6 +17557,8 @@ fn cmd_osl_burn_engage_finish(
         "burned_scopes.json",
         "app_preferences.json",
         "sender_key_state.json",
+        "allowed_places.json",
+        "auto_whitelist_rules.json",
         // Probe-2 Rust Bug 3: membership.json was leaking across burns
         // (scope-membership accrual survived intact and fed the new
         // identity's recipient resolution). Wipe it explicitly.

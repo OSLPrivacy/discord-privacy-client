@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 /// The kind of app a saved auto-whitelist rule applies to.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -184,6 +185,31 @@ impl AutoWhitelistRules {
             valid_choices: AutoWhitelistChoice::ALL.to_vec(),
         }
     }
+}
+
+pub fn load_auto_whitelist_rules(path: &Path) -> AutoWhitelistRules {
+    let Ok(blob) = std::fs::read(path) else {
+        return AutoWhitelistRules::default();
+    };
+    let plain = match crate::main_password::maybe_decrypt_file(path, &blob) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "OSL: load auto_whitelist_rules.json decrypt failed");
+            return AutoWhitelistRules::default();
+        }
+    };
+    serde_json::from_slice(&plain).unwrap_or_default()
+}
+
+pub fn write_auto_whitelist_rules(path: &Path, rules: &AutoWhitelistRules) -> Result<(), String> {
+    let body = serde_json::to_vec_pretty(rules)
+        .map_err(|e| format!("OSL: serialize auto_whitelist_rules: {e}"))?;
+    let out = crate::main_password::maybe_encrypt(&body)
+        .map_err(|e| format!("OSL: encrypt auto_whitelist_rules: {e}"))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &out).map_err(|e| format!("OSL: write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("OSL: rename {}: {e}", path.display()))?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

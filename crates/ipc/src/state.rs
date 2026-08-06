@@ -336,6 +336,11 @@ pub struct AppState {
     /// is the caller's responsibility.
     pub app_preferences: Mutex<crate::app_preferences::AppPreferences>,
 
+    /// Saved allowed places keyed by their stable id. These are user-visible
+    /// place approvals, separate from the auto-whitelist rules that decide
+    /// what to do when a future place is observed.
+    pub allowed_places: Mutex<crate::allowed_places::SavedAllowedPlaces>,
+
     /// Saved auto-whitelist naming rules, keyed by app kind. These do not
     /// bypass concrete whitelist/friend recipient checks; they only store the
     /// user's policy for future whitelist opportunities.
@@ -442,6 +447,7 @@ impl Default for AppState {
             channel_messages: Mutex::new(HashMap::new()),
             channel_threads: Mutex::new(HashMap::new()),
             app_preferences: Mutex::new(crate::app_preferences::AppPreferences::default()),
+            allowed_places: Mutex::new(crate::allowed_places::SavedAllowedPlaces::default()),
             auto_whitelist_rules: Mutex::new(
                 crate::auto_whitelist_rules::AutoWhitelistRules::default(),
             ),
