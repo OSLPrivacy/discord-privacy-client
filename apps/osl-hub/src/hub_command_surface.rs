@@ -31,6 +31,7 @@ use crate::service_host::ActiveServiceHost;
 use serde::Deserialize;
 #[cfg(feature = "discord-qa-shell")]
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 
 pub fn build_review_ui_identity_binding_verifier(
@@ -296,6 +297,96 @@ where
     let product_send_authority =
         require_native_discord_product_send_authority(composer, scope_binding, layout)?;
     place(product_send_authority)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhotoPostImageInput {
+    pub image_id: String,
+    pub png_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageCopyForCommand {
+    pub image_copy_id: String,
+    pub png_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageCopyCommandResult {
+    pub image_copy_ids: Vec<String>,
+    pub image_copies: Vec<ImageCopyForCommand>,
+}
+
+pub fn direct_photo_post_command_image_copies(
+    images: Vec<PhotoPostImageInput>,
+    pointer: [u8; stego::IMAGE_HIDDEN_POINTER_BYTES],
+    check_mark: [u8; stego::IMAGE_HIDDEN_CHECK_MARK_BYTES],
+) -> Result<ImageCopyCommandResult, String> {
+    image_hidden_photo_command_copies("direct-post", images, pointer, check_mark)
+}
+
+pub fn story_photo_command_image_copies(
+    images: Vec<PhotoPostImageInput>,
+    pointer: [u8; stego::IMAGE_HIDDEN_POINTER_BYTES],
+    check_mark: [u8; stego::IMAGE_HIDDEN_CHECK_MARK_BYTES],
+) -> Result<ImageCopyCommandResult, String> {
+    image_hidden_photo_command_copies("story", images, pointer, check_mark)
+}
+
+pub fn ordinary_text_send_command_image_copies() -> ImageCopyCommandResult {
+    ImageCopyCommandResult {
+        image_copy_ids: Vec::new(),
+        image_copies: Vec::new(),
+    }
+}
+
+fn image_hidden_photo_command_copies(
+    command: &'static str,
+    images: Vec<PhotoPostImageInput>,
+    pointer: [u8; stego::IMAGE_HIDDEN_POINTER_BYTES],
+    check_mark: [u8; stego::IMAGE_HIDDEN_CHECK_MARK_BYTES],
+) -> Result<ImageCopyCommandResult, String> {
+    let image_copies = images
+        .into_iter()
+        .map(|image| {
+            let png_bytes =
+                stego::encode_png_hidden_pointer_bytes(&image.png_bytes, pointer, check_mark)
+                    .map_err(|error| format!("OSL image hiding failed: {error}"))?;
+            let image_copy_id = image_copy_id(command, &image.image_id, &png_bytes);
+            Ok(ImageCopyForCommand {
+                image_copy_id,
+                png_bytes,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let image_copy_ids = image_copies
+        .iter()
+        .map(|copy| copy.image_copy_id.clone())
+        .collect();
+    Ok(ImageCopyCommandResult {
+        image_copy_ids,
+        image_copies,
+    })
+}
+
+fn image_copy_id(command: &str, image_id: &str, png_bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"OSL image-copy command v1");
+    digest.update(command.as_bytes());
+    digest.update([0]);
+    digest.update(image_id.as_bytes());
+    digest.update([0]);
+    digest.update(png_bytes);
+    let digest = digest.finalize();
+    format!("image-copy-{}", hex_prefix(&digest, 12))
+}
+
+fn hex_prefix(bytes: &[u8], count: usize) -> String {
+    let mut out = String::with_capacity(count * 2);
+    for byte in bytes.iter().take(count) {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
 }
 
 #[cfg(any(test, feature = "discord-qa-shell"))]
@@ -862,15 +953,17 @@ pub fn checked_browser_footprint_binding(
 #[cfg(test)]
 mod native_visible_row_qa_command_tests {
     use super::{
-        canonical_native_visible_row_qa_build_hash, finish_native_visible_row_qa_request,
+        canonical_native_visible_row_qa_build_hash, direct_photo_post_command_image_copies,
+        finish_native_visible_row_qa_request, ordinary_text_send_command_image_copies,
         prepare_native_visible_row_qa_request, recorded_executable_hash_matches_rebuild,
-        require_native_discord_product_send_authority, with_native_discord_product_send_authority,
-        ActiveServiceHost,
+        require_native_discord_product_send_authority, story_photo_command_image_copies,
+        with_native_discord_product_send_authority, ActiveServiceHost, PhotoPostImageInput,
     };
     use crate::native_discord_adapter::{
         deidentify_prepared_visual_structure, DiscordCarrierLayout, DiscordCarrierPadding,
         DiscordCarrierRowKind, NativeDiscordComposerState, NativeVisibleRowQaTriState,
     };
+    use base64::Engine;
     use std::cell::{Cell, RefCell};
 
     const TEST_FLAGTEXT: &str = "ok i will weekend again with you get what i was thinking usual";
@@ -942,6 +1035,109 @@ mod native_visible_row_qa_command_tests {
         assert!(carrier
             .split_whitespace()
             .eq(TEST_FLAGTEXT.split_whitespace()));
+    }
+
+    #[test]
+    fn task_0661_photo_posts_and_stories_return_image_copy_ids_text_send_returns_none() {
+        let pointer = [
+            0x06, 0x61, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xa0, 0xb0, 0xc0,
+            0xd0, 0xe0, 0xf0, 0x0f, 0x1e, 0x2d,
+        ];
+        let check_mark = [0xca, 0xfe, 0x66, 0x10];
+        let source_png = fixture_png();
+
+        let direct = direct_photo_post_command_image_copies(
+            vec![PhotoPostImageInput {
+                image_id: "direct-photo-fixture".to_owned(),
+                png_bytes: source_png.clone(),
+            }],
+            pointer,
+            check_mark,
+        )
+        .expect("direct photo post command uses image hiding");
+        let story = story_photo_command_image_copies(
+            vec![PhotoPostImageInput {
+                image_id: "story-photo-fixture".to_owned(),
+                png_bytes: source_png,
+            }],
+            pointer,
+            check_mark,
+        )
+        .expect("story command uses image hiding");
+        let text = ordinary_text_send_command_image_copies();
+
+        let direct_decoded =
+            stego::decode_png_hidden_pointer_bytes(&direct.image_copies[0].png_bytes)
+                .unwrap()
+                .expect("direct post image copy carries the hidden pointer");
+        let story_decoded =
+            stego::decode_png_hidden_pointer_bytes(&story.image_copies[0].png_bytes)
+                .unwrap()
+                .expect("story image copy carries the hidden pointer");
+
+        println!(
+            "TASK0661 direct_post_image_copy_ids={}",
+            direct.image_copy_ids.join(",")
+        );
+        println!(
+            "TASK0661 direct_post_image_copy_count={}",
+            direct.image_copy_ids.len()
+        );
+        println!(
+            "TASK0661 direct_post_decoded_pointer_hex={}",
+            hex(&direct_decoded.pointer)
+        );
+        println!(
+            "TASK0661 story_image_copy_ids={}",
+            story.image_copy_ids.join(",")
+        );
+        println!(
+            "TASK0661 story_image_copy_count={}",
+            story.image_copy_ids.len()
+        );
+        println!(
+            "TASK0661 story_decoded_pointer_hex={}",
+            hex(&story_decoded.pointer)
+        );
+        println!(
+            "TASK0661 text_send_image_copy_ids={}",
+            if text.image_copy_ids.is_empty() {
+                "none".to_owned()
+            } else {
+                text.image_copy_ids.join(",")
+            }
+        );
+        println!(
+            "TASK0661 text_send_image_copy_count={}",
+            text.image_copy_ids.len()
+        );
+
+        assert_eq!(direct.image_copy_ids.len(), 1);
+        assert!(direct.image_copy_ids[0].starts_with("image-copy-"));
+        assert_eq!(story.image_copy_ids.len(), 1);
+        assert!(story.image_copy_ids[0].starts_with("image-copy-"));
+        assert_eq!(direct_decoded.pointer, pointer);
+        assert_eq!(direct_decoded.check_mark, check_mark);
+        assert_eq!(story_decoded.pointer, pointer);
+        assert_eq!(story_decoded.check_mark, check_mark);
+        assert!(text.image_copy_ids.is_empty());
+        assert!(text.image_copies.is_empty());
+    }
+
+    fn fixture_png() -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAICAIAAABChommAAABM0lEQVR42gEoAdf+ABFbyxxgxCdlvTJqtj1vr0h0qFN5oV5+mmmDk3SIjH+NhYqSfgAUaMIfbbsqcrQ1d61AfKZLgZ9Whphhi5FskIp3lYOCmnyNn3UAF3W5InqyLX+rOISkQ4mdTo6WWZOPZJiIb52BeqJ6hadzkKxsABqCsCWHqTCMojuRm0aWlFGbjVyghmelf3KqeH2vcYi0apO5YwAdj6colKAzmZk+npJJo4tUqIRfrX1qsnZ1t2+AvGiLwWGWxloAIJyeK6GXNqaQQauJTLCCV7V7Yrp0bb9teMRmg8lfjs5YmdNRACOplS6ujjmzh0S4gE+9eVrCcmXHa3DMZHvRXYbWVpHbT5zgSAAmtowxu4U8wH5HxXdSynBdz2lo1GJz2Vt+3lSJ402U6Eaf7T/16JBhoW65AQAAAABJRU5ErkJggg==",
+            )
+            .expect("fixture PNG base64 decodes")
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            out.push_str(&format!("{byte:02x}"));
+        }
+        out
     }
 
     #[cfg(feature = "discord-qa-shell")]
