@@ -108,9 +108,9 @@ impl AuthorizedFetch {
     }
 }
 
-/// Exactly one fetch-shaped action follows every realtime reply.  A matching
-/// carrier pointer authorizes the real fetch; all other replies produce the
-/// ordinary capability-negative decoy instead.
+/// Fetch-shaped actions that follow realtime replies. Empty replies schedule no
+/// store work; real replies keep one ordinary capability-negative decoy, and a
+/// matching carrier pointer also authorizes the real fetch.
 pub enum ScheduledFetch {
     Authorized(AuthorizedFetch),
     Decoy(DecoyFetch),
@@ -253,11 +253,9 @@ impl RealtimeClient {
         let wakeup = parse_wakeup(frame)?;
         // T1-51's empty response is a zero/zero decoy. It is not a wakeup,
         // even if a caller accidentally retained a pointer with an all-zero id.
-        // It still schedules a capability-negative fetch so a fetch after a
-        // reply cannot reveal whether that reply matched a local pointer.
+        // Every idle client receives the same empty frame, so a pretend fetch
+        // there hides nothing and only spends the store's fetch budget.
         if wakeup.0 == [0; ID_BYTES] && wakeup.1.is_zero() {
-            self.scheduled_fetches
-                .push_back(ScheduledFetch::Decoy(DecoyFetch::random()));
             return Ok(());
         }
         let key = WakeupKey {
@@ -276,10 +274,9 @@ impl RealtimeClient {
                     blob_id: wakeup.1,
                     pointer,
                 }));
-        } else {
-            self.scheduled_fetches
-                .push_back(ScheduledFetch::Decoy(DecoyFetch::random()));
         }
+        self.scheduled_fetches
+            .push_back(ScheduledFetch::Decoy(DecoyFetch::random()));
         Ok(())
     }
 
