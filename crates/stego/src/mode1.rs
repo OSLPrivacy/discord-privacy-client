@@ -279,6 +279,20 @@ pub const SHRUNK_TOKEN_PAYLOAD_BITS: u32 =
 /// Domain separator for the compact shared-key cover token.
 pub const SHRUNK_TOKEN_MAC_DOMAIN: &[u8] = b"osl/mode1-token/shrunk/v1";
 
+/// Saved cover-message version emitted before the shared-key shrink. The cover
+/// carries the full 20-byte seed.
+pub const OLD_COVER_MESSAGE_VERSION: u8 = 1;
+
+/// Saved cover-message version emitted after the shared-key shrink. The cover
+/// carries only an 8-byte handle; callers derive the seed from shared state.
+pub const NEW_COVER_MESSAGE_VERSION: u8 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoverMessageToken {
+    OldSeed([u8; TOKEN_ID_BYTES]),
+    SharedKeyHandle([u8; SHRUNK_TOKEN_ID_BYTES]),
+}
+
 type HmacSha256 = Hmac<Sha256>;
 
 /// The 32-bit detection tag a receiver checks to tell an OSL prose token from
@@ -443,6 +457,35 @@ pub fn decode_shrunk_token(mac_key: &[u8], msg: &str) -> Option<[u8; SHRUNK_TOKE
         return None;
     }
     Some(id)
+}
+
+/// Decode a saved cover message whose envelope already names the cover version.
+///
+/// This is the compatibility boundary for task 0072: old saved rows keep using
+/// the 20-byte seed reader, while new rows use the compact shared-key handle.
+/// Unknown versions are refused explicitly instead of being treated as ordinary
+/// chat.
+pub fn decode_cover_message_token(
+    cipher: &ConversationCipher,
+    mac_key: &[u8],
+    version: u8,
+    msg: &str,
+) -> Result<CoverMessageToken> {
+    match version {
+        OLD_COVER_MESSAGE_VERSION => decode_token(cipher, mac_key, msg)
+            .map(CoverMessageToken::OldSeed)
+            .ok_or(Error::CoverMessageDecode {
+                version,
+                kind: "old cover message",
+            }),
+        NEW_COVER_MESSAGE_VERSION => decode_shrunk_token(mac_key, msg)
+            .map(CoverMessageToken::SharedKeyHandle)
+            .ok_or(Error::CoverMessageDecode {
+                version,
+                kind: "new cover message",
+            }),
+        other => Err(Error::UnknownCoverMessageVersion(other)),
+    }
 }
 
 /// Bigram-codec decode path. Parses the message into vocab indices,
