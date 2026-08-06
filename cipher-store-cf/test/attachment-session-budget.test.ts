@@ -48,6 +48,7 @@ function sessionRequest(sizeBytes: number, token = randomToken(), ttl = SEVEN_DA
       "x-osl-ttl-seconds": String(ttl),
       "x-osl-fetch-token": token,
       "x-osl-size-bytes": String(sizeBytes),
+      "x-osl-account-tier": "pro",
       "content-length": "0",
     },
   });
