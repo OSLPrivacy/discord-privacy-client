@@ -919,6 +919,11 @@ description = "Burn only the exact active trusted service/account context and re
 commands.allow = ["burn_active_hub_context"]
 
 [[permission]]
+identifier = "allow-list-active-hub-context-burn-choices"
+description = "List the exact burn scopes available for the active trusted server channel: this channel or the whole server; reads no message content and changes nothing."
+commands.allow = ["list_active_hub_context_burn_choices"]
+
+[[permission]]
 identifier = "allow-get-hub-revocation-status"
 description = "Read whether the burn notices already queued for one canonical OSL scope key have been acknowledged by the peers who had access; reads no message content and changes nothing."
 commands.allow = ["get_hub_revocation_status"]
