@@ -2,6 +2,8 @@ use serde::Serialize;
 
 pub const TEST_ONLY_RUNTIME_SWITCH_LIST: &str = "osl-test-only-runtime-switches";
 pub const TEST_ONLY_RUNTIME_SWITCH_ENV: &str = "OSL_TEST_ONLY_RUNTIME_SWITCHES";
+pub const TEST_ONLY_ENVIRONMENT_CONTROL_LIST: &str = "osl-test-only-environment-controls";
+pub const TEST_ONLY_ENVIRONMENT_CONTROL_ENV: &str = "OSL_TEST_ONLY_ENVIRONMENT_CONTROLS";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum PasswordScreenAccess {
@@ -49,10 +51,41 @@ impl SafeSending {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum OnlineState {
+    Online,
+    Offline,
+}
+
+impl OnlineState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Online => "online",
+            Self::Offline => "offline",
+        }
+    }
+
+    fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "online" => Some(Self::Online),
+            "offline" => Some(Self::Offline),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct ResolvedTestOnlyRunTimeSwitches {
     pub password_screen_access: PasswordScreenAccess,
     pub safe_sending: SafeSending,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ResolvedTestOnlyEnvironmentControls {
+    pub machine_time_unix_seconds: i64,
+    pub service_time_unix_seconds: i64,
+    pub time_zone: String,
+    pub online_state: OnlineState,
 }
 
 impl Default for PasswordScreenAccess {
@@ -64,6 +97,23 @@ impl Default for PasswordScreenAccess {
 impl Default for SafeSending {
     fn default() -> Self {
         Self::LiveSendRequiresAuthority
+    }
+}
+
+impl Default for OnlineState {
+    fn default() -> Self {
+        Self::Online
+    }
+}
+
+impl Default for ResolvedTestOnlyEnvironmentControls {
+    fn default() -> Self {
+        Self {
+            machine_time_unix_seconds: 1_970_000_000,
+            service_time_unix_seconds: 1_970_000_000,
+            time_zone: "UTC".to_owned(),
+            online_state: OnlineState::Online,
+        }
     }
 }
 
@@ -87,6 +137,33 @@ pub const TEST_ONLY_RUNTIME_SWITCHES: &[RunTimeSwitchDescriptor] = &[
         default: "live-send-requires-authority",
         allowed: &["live-send-requires-authority", "dry-run-send-for-test"],
         behavior: "safe sending",
+    },
+];
+
+pub const TEST_ONLY_ENVIRONMENT_CONTROLS: &[RunTimeSwitchDescriptor] = &[
+    RunTimeSwitchDescriptor {
+        name: "machine_time",
+        default: "1970000000",
+        allowed: &["unix seconds >= 0"],
+        behavior: "disposable test machine clock",
+    },
+    RunTimeSwitchDescriptor {
+        name: "service_time",
+        default: "1970000000",
+        allowed: &["unix seconds >= 0"],
+        behavior: "disposable test service clock",
+    },
+    RunTimeSwitchDescriptor {
+        name: "time_zone",
+        default: "UTC",
+        allowed: &["ASCII IANA-like zone name"],
+        behavior: "disposable test local time zone",
+    },
+    RunTimeSwitchDescriptor {
+        name: "online_state",
+        default: "online",
+        allowed: &["online", "offline"],
+        behavior: "disposable test network state",
     },
 ];
 
@@ -237,6 +314,12 @@ pub fn read_startup_test_only_runtime_switches() -> Result<ResolvedTestOnlyRunTi
     read_startup_test_only_runtime_switches_from_assignments(split_assignments(&raw))
 }
 
+pub fn read_startup_test_only_environment_controls(
+) -> Result<ResolvedTestOnlyEnvironmentControls, String> {
+    let raw = std::env::var(TEST_ONLY_ENVIRONMENT_CONTROL_ENV).unwrap_or_default();
+    read_startup_test_only_environment_controls_from_assignments(split_assignments(&raw))
+}
+
 pub fn read_startup_test_only_runtime_switches_from_assignments<I, S>(
     assignments: I,
 ) -> Result<ResolvedTestOnlyRunTimeSwitches, String>
@@ -245,6 +328,16 @@ where
     S: AsRef<str>,
 {
     read_test_only_runtime_switches(assignments)
+}
+
+pub fn read_startup_test_only_environment_controls_from_assignments<I, S>(
+    assignments: I,
+) -> Result<ResolvedTestOnlyEnvironmentControls, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    read_test_only_environment_controls(assignments)
 }
 
 pub fn read_test_only_runtime_switches<I, S>(
@@ -287,6 +380,80 @@ where
     Ok(switches)
 }
 
+pub fn read_test_only_environment_controls<I, S>(
+    assignments: I,
+) -> Result<ResolvedTestOnlyEnvironmentControls, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut controls = ResolvedTestOnlyEnvironmentControls::default();
+    for assignment in assignments {
+        let assignment = assignment.as_ref().trim();
+        if assignment.is_empty() {
+            continue;
+        }
+        let (name, value) = assignment.split_once('=').ok_or_else(|| {
+            format!(
+                "time control assignment \"{assignment}\" in list \"{TEST_ONLY_ENVIRONMENT_CONTROL_LIST}\" must be name=value"
+            )
+        })?;
+        match name {
+            "machine_time" => {
+                controls.machine_time_unix_seconds = parse_unix_seconds(name, value)?;
+            }
+            "service_time" => {
+                controls.service_time_unix_seconds = parse_unix_seconds(name, value)?;
+            }
+            "time_zone" => {
+                controls.time_zone = parse_time_zone(value)?;
+            }
+            "online_state" => {
+                controls.online_state = OnlineState::from_str(value).ok_or_else(|| {
+                    unknown_time_control_value_error(name, value, OnlineState::default().as_str())
+                })?;
+            }
+            _ => {
+                return Err(format!(
+                    "unknown time control \"{name}\" in list \"{TEST_ONLY_ENVIRONMENT_CONTROL_LIST}\""
+                ));
+            }
+        }
+    }
+    Ok(controls)
+}
+
+fn parse_unix_seconds(name: &str, value: &str) -> Result<i64, String> {
+    let parsed = value
+        .parse::<i64>()
+        .map_err(|_| unknown_time_control_value_error(name, value, "unix seconds >= 0"))?;
+    if parsed < 0 {
+        return Err(unknown_time_control_value_error(
+            name,
+            value,
+            "unix seconds >= 0",
+        ));
+    }
+    Ok(parsed)
+}
+
+fn parse_time_zone(value: &str) -> Result<String, String> {
+    let valid = !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'-' | b'+'));
+    if valid {
+        Ok(value.to_owned())
+    } else {
+        Err(unknown_time_control_value_error(
+            "time_zone",
+            value,
+            "ASCII IANA-like zone name",
+        ))
+    }
+}
+
 fn unknown_value_error(name: &str, value: &str, default: &str) -> String {
     let allowed = TEST_ONLY_RUNTIME_SWITCHES
         .iter()
@@ -295,6 +462,17 @@ fn unknown_value_error(name: &str, value: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_owned());
     format!(
         "unknown value \"{value}\" for switch \"{name}\" in list \"{TEST_ONLY_RUNTIME_SWITCH_LIST}\"; allowed: {allowed}"
+    )
+}
+
+fn unknown_time_control_value_error(name: &str, value: &str, default: &str) -> String {
+    let allowed = TEST_ONLY_ENVIRONMENT_CONTROLS
+        .iter()
+        .find(|control| control.name == name)
+        .map(|control| control.allowed.join(", "))
+        .unwrap_or_else(|| default.to_owned());
+    format!(
+        "unknown value \"{value}\" for time control \"{name}\" in list \"{TEST_ONLY_ENVIRONMENT_CONTROL_LIST}\"; allowed: {allowed}"
     )
 }
 
@@ -369,5 +547,107 @@ mod tests {
         assert!(unsafe_error.contains("password_screen_access default is unsafe"));
         assert!(unsafe_error.contains("safe_sending default is unsafe"));
         assert!(unsafe_error.contains("safe_sending sending is enabled-for-test"));
+    }
+
+    fn task_3609k_render(label: &str, controls: &ResolvedTestOnlyEnvironmentControls) -> String {
+        format!(
+            "TASK3609K_{label} machine_time={} service_time={} time_zone={} online_state={}",
+            controls.machine_time_unix_seconds,
+            controls.service_time_unix_seconds,
+            controls.time_zone,
+            controls.online_state.as_str()
+        )
+    }
+
+    fn task_3609k_unchanged_tuple(
+        controls: &ResolvedTestOnlyEnvironmentControls,
+        changed_name: &str,
+    ) -> Vec<String> {
+        let mut unchanged = Vec::new();
+        if changed_name != "machine_time" {
+            unchanged.push(format!(
+                "machine_time={}",
+                controls.machine_time_unix_seconds
+            ));
+        }
+        if changed_name != "service_time" {
+            unchanged.push(format!(
+                "service_time={}",
+                controls.service_time_unix_seconds
+            ));
+        }
+        if changed_name != "time_zone" {
+            unchanged.push(format!("time_zone={}", controls.time_zone));
+        }
+        if changed_name != "online_state" {
+            unchanged.push(format!("online_state={}", controls.online_state.as_str()));
+        }
+        unchanged
+    }
+
+    #[test]
+    fn task_3609k_controls_machine_service_zone_and_online_independently() {
+        let base = read_test_only_environment_controls(std::iter::empty::<&str>()).unwrap();
+        assert_eq!(
+            task_3609k_render("BASE", &base),
+            "TASK3609K_BASE machine_time=1970000000 service_time=1970000000 time_zone=UTC online_state=online"
+        );
+
+        let all_changed = read_test_only_environment_controls([
+            "machine_time=1970000101",
+            "service_time=1970000202",
+            "time_zone=America/Los_Angeles",
+            "online_state=offline",
+        ])
+        .unwrap();
+        let all_changed_line = task_3609k_render("ALL_CHANGED", &all_changed);
+        println!("{all_changed_line}");
+        assert_eq!(
+            all_changed_line,
+            "TASK3609K_ALL_CHANGED machine_time=1970000101 service_time=1970000202 time_zone=America/Los_Angeles online_state=offline"
+        );
+
+        for (label, changed_name, assignment, expected) in [
+            (
+                "MACHINE_ONLY",
+                "machine_time",
+                "machine_time=1970000101",
+                "TASK3609K_MACHINE_ONLY machine_time=1970000101 service_time=1970000000 time_zone=UTC online_state=online",
+            ),
+            (
+                "SERVICE_ONLY",
+                "service_time",
+                "service_time=1970000202",
+                "TASK3609K_SERVICE_ONLY machine_time=1970000000 service_time=1970000202 time_zone=UTC online_state=online",
+            ),
+            (
+                "TIME_ZONE_ONLY",
+                "time_zone",
+                "time_zone=America/Los_Angeles",
+                "TASK3609K_TIME_ZONE_ONLY machine_time=1970000000 service_time=1970000000 time_zone=America/Los_Angeles online_state=online",
+            ),
+            (
+                "ONLINE_ONLY",
+                "online_state",
+                "online_state=offline",
+                "TASK3609K_ONLINE_ONLY machine_time=1970000000 service_time=1970000000 time_zone=UTC online_state=offline",
+            ),
+        ] {
+            let controls = read_test_only_environment_controls([assignment]).unwrap();
+            let line = task_3609k_render(label, &controls);
+            println!("{line}");
+            assert_eq!(line, expected);
+            assert_eq!(
+                task_3609k_unchanged_tuple(&controls, changed_name),
+                task_3609k_unchanged_tuple(&base, changed_name)
+            );
+        }
+
+        let refused = read_test_only_environment_controls(["clock_speed=warp"]).unwrap_err();
+        println!("TASK3609K_UNKNOWN_TIME_CONTROL_REFUSED={refused}");
+        assert_eq!(
+            refused,
+            "unknown time control \"clock_speed\" in list \"osl-test-only-environment-controls\""
+        );
     }
 }
