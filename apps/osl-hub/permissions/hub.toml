@@ -769,6 +769,21 @@ description = "Set or clear a bounded nickname in encrypted device-local People 
 commands.allow = ["set_hub_friend_nickname"]
 
 [[permission]]
+identifier = "allow-add-allowed-place-record"
+description = "Save one bounded allowed-place record in encrypted device-local state."
+commands.allow = ["add_allowed_place_record"]
+
+[[permission]]
+identifier = "allow-remove-allowed-place-record"
+description = "Remove one saved allowed-place record from encrypted device-local state."
+commands.allow = ["remove_allowed_place_record"]
+
+[[permission]]
+identifier = "allow-query-allowed-place-record"
+description = "Query one saved allowed-place record from encrypted device-local state."
+commands.allow = ["query_allowed_place_record"]
+
+[[permission]]
 identifier = "allow-set-active-hub-friend-permission"
 description = "Grant or revoke one verified person's permission for only the exact active hosted context."
 commands.allow = ["set_active_hub_friend_permission"]

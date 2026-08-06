@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
+pub use ipc::allowed_places::AllowedPlaceRecord;
+
 use crate::core_bridge::HubCoreState;
 
 const FRIEND_CODE_PREFIX: &str = "OSLFR1.";
@@ -59,6 +61,7 @@ const MAX_VISIBLE_WHITELIST_SCOPES: usize = 512;
 const DM_REACH_STORAGE_KEY: &str = "dm";
 const MAX_REACH_NARROWED_SCOPES_PER_PERSON: usize = 512;
 const MAX_STORAGE_KEY_BYTES: usize = 512;
+const MAX_ALLOWED_PLACE_FIELD_BYTES: usize = 512;
 const X25519_PUBLIC_BYTES: usize = 32;
 const ED25519_PUBLIC_BYTES: usize = 32;
 const ED25519_SIGNATURE_BYTES: usize = 64;
@@ -533,6 +536,11 @@ struct SecurityPreferences {
     /// so it can never outlive one.
     #[serde(default)]
     manual_approved_scope_people: BTreeMap<String, String>,
+    /// Local allow decisions for places where protected OSL behavior is
+    /// permitted. Keyed by the canonical stable id so the decision reopens with
+    /// the same account-scoped security preferences as the rest of saved OSL.
+    #[serde(default)]
+    allowed_places: BTreeMap<String, AllowedPlaceRecord>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -1106,6 +1114,66 @@ pub fn set_friend_alias(
     let updated = metadata.clone();
     write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
     person_dto(core, &person_id, &updated, &load_security_preferences()?)
+}
+
+pub fn add_allowed_place_record(
+    security: &HubSecurityState,
+    record: AllowedPlaceRecord,
+) -> Result<AllowedPlaceRecord, String> {
+    require_unlocked()?;
+    validate_allowed_place_record(&record)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL allowed-place state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs
+        .allowed_places
+        .insert(record.stable_id.clone(), record.clone());
+    write_encrypted_json(&path, &prefs)?;
+    Ok(record)
+}
+
+pub fn remove_allowed_place_record(
+    security: &HubSecurityState,
+    stable_id: String,
+) -> Result<bool, String> {
+    require_unlocked()?;
+    validate_allowed_place_id(&stable_id, "OSL allowed-place identifier is invalid")?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL allowed-place state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let removed = prefs.allowed_places.remove(&stable_id).is_some();
+    if removed {
+        prefs.version = 2;
+        write_encrypted_json(&path, &prefs)?;
+    }
+    Ok(removed)
+}
+
+pub fn query_allowed_place_record(
+    _security: &HubSecurityState,
+    stable_id: String,
+) -> Result<Option<AllowedPlaceRecord>, String> {
+    require_unlocked()?;
+    validate_allowed_place_id(&stable_id, "OSL allowed-place identifier is invalid")?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(prefs.allowed_places.get(&stable_id).cloned())
+}
+
+pub fn list_allowed_place_records(
+    _security: &HubSecurityState,
+) -> Result<Vec<AllowedPlaceRecord>, String> {
+    require_unlocked()?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(prefs.allowed_places.values().cloned().collect())
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -3747,6 +3815,29 @@ fn load_security_preferences() -> Result<SecurityPreferences, String> {
     load_encrypted_json::<SecurityPreferences>(&path)
 }
 
+fn validate_allowed_place_record(record: &AllowedPlaceRecord) -> Result<(), String> {
+    validate_allowed_place_id(&record.app, "OSL allowed-place app is invalid")?;
+    validate_allowed_place_id(&record.account, "OSL allowed-place account is invalid")?;
+    validate_allowed_place_id(&record.kind, "OSL allowed-place kind is invalid")?;
+    validate_allowed_place_id(&record.stable_id, "OSL allowed-place identifier is invalid")?;
+    let expected_prefix = format!("{}:{}:{}:", record.app, record.account, record.kind);
+    if !record.stable_id.starts_with(&expected_prefix) {
+        return Err("OSL allowed-place identifier is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_allowed_place_id(value: &str, message: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > MAX_ALLOWED_PLACE_FIELD_BYTES
+        || value.contains('\0')
+        || value.chars().any(char::is_whitespace)
+    {
+        return Err(message.to_owned());
+    }
+    Ok(())
+}
+
 fn manual_approved_scopes_for_person(
     prefs: &SecurityPreferences,
     person_id: &str,
@@ -4446,6 +4537,45 @@ mod tests {
             ipc::main_password::set_file_storage_key(self.previous_file_key);
             let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    #[test]
+    fn direct_allowed_place_record_survives_close_reopen_query() {
+        let harness = FileBackedSecurityHarness::new("allowed-place-restart");
+        let security = HubSecurityState::default();
+        let record =
+            AllowedPlaceRecord::discord_direct_message("900000000000000001", "900000000000000003");
+        let stable_id = record.stable_id.clone();
+
+        let added = add_allowed_place_record(&security, record.clone()).unwrap();
+        assert_eq!(added, record);
+        let sealed_path = harness.path().join(SECURITY_PREFS_FILE);
+        let sealed = std::fs::read(&sealed_path).expect("security prefs written");
+        assert!(ipc::main_password::has_enc_magic(&sealed));
+        drop(security);
+
+        let reopened = HubSecurityState::default();
+        let queried = query_allowed_place_record(&reopened, stable_id.clone())
+            .unwrap()
+            .expect("saved allowed place after reopen");
+        let listed = list_allowed_place_records(&reopened).unwrap();
+        println!(
+            "TASK0104 allowed_place_restart added=1 closed=1 reopened=1 query_count={} query.app={} query.account={} query.kind={} query.stable_id={}",
+            listed.len(),
+            queried.app,
+            queried.account,
+            queried.kind,
+            queried.stable_id
+        );
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(queried.app, "discord");
+        assert_eq!(queried.account, "900000000000000001");
+        assert_eq!(queried.kind, "direct_message");
+        assert_eq!(
+            queried.stable_id,
+            "discord:900000000000000001:direct_message:900000000000000003"
+        );
     }
 
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {

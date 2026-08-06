@@ -651,6 +651,9 @@ macro_rules! hub_tauri_commands {
             remove_hub_friend,
             list_hub_people,
             set_hub_friend_nickname,
+            add_allowed_place_record,
+            remove_allowed_place_record,
+            query_allowed_place_record,
             set_active_hub_friend_permission,
             set_active_hub_friend_reach,
             revoke_active_hub_friend_scope,
@@ -1915,6 +1918,21 @@ mod tauri_registration_surface_tests {
             .len(),
             1,
             "explicit consent must hydrate only the exact owner/browser/profile/import scope"
+        );
+    }
+
+    #[test]
+    fn allowed_place_commands_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "add_allowed_place_record",
+                "remove_allowed_place_record",
+                "query_allowed_place_record",
+            ],
         );
     }
 
