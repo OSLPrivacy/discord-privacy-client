@@ -339,6 +339,11 @@ description = "Allow only the trusted main OSL window to decrypt and re-read thi
 commands.allow = ["view_hub_recovery_phrase"]
 
 [[permission]]
+identifier = "allow-check-hub-recovery-words"
+description = "Allow only the trusted main OSL window to verify selected 1-based password-recovery phrase words against their positions, after the owner's current main password is supplied and verified."
+commands.allow = ["check_hub_recovery_words"]
+
+[[permission]]
 identifier = "allow-get-recovery-kit-unsaved"
 description = "Read only the encrypted, account-scoped recovery-kit saved acknowledgement used to prevent recovery onboarding from being bypassed after WebView storage is cleared."
 commands.allow = ["get_hub_recovery_kit_unsaved"]

@@ -1,0 +1,8 @@
+"$schema" = "../gen/schemas/desktop-schema.json"
+
+# Recovery-kit confirmation. Requires current password and reports only
+# per-position match booleans, not the expected phrase words.
+[[permission]]
+identifier = "allow-osl-check-recovery-words"
+description = "Permits a trusted local OSL window to invoke `osl_check_recovery_words` (verify selected 1-based password-recovery phrase words against their positions)."
+commands.allow = ["osl_check_recovery_words"]

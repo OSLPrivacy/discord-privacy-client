@@ -13714,6 +13714,88 @@ pub fn cmd_osl_view_recovery_phrase(current: String) -> Result<String, String> {
     crate::main_password::view_recovery_phrase(&dir, &current)
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryWordRetypeEntryDto {
+    pub position: u8,
+    pub word: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryWordRetypeMatchDto {
+    pub position: u8,
+    pub matched: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryWordRetypeCheckDto {
+    pub ok: bool,
+    pub checked: Vec<RecoveryWordRetypeMatchDto>,
+}
+
+pub fn cmd_osl_check_recovery_words(
+    current: String,
+    entries: Vec<RecoveryWordRetypeEntryDto>,
+) -> Result<RecoveryWordRetypeCheckDto, String> {
+    record_activity_on_command_entry();
+    let dir = password_dir()?;
+    let phrase = crate::main_password::view_recovery_phrase(&dir, &current)?;
+    check_recovery_words_against_phrase(&phrase, entries)
+}
+
+pub fn check_recovery_words_against_phrase(
+    phrase: &str,
+    entries: Vec<RecoveryWordRetypeEntryDto>,
+) -> Result<RecoveryWordRetypeCheckDto, String> {
+    let words: Vec<&str> = phrase.split_whitespace().collect();
+    if words.len() != 12 {
+        return Err("OSL: recovery phrase must contain exactly 12 words".to_string());
+    }
+    if entries.is_empty() {
+        return Err("OSL: at least one recovery word is required".to_string());
+    }
+    if entries.len() > words.len() {
+        return Err("OSL: too many recovery words were supplied".to_string());
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut checked = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if !(1..=words.len()).contains(&(entry.position as usize)) {
+            return Err(format!(
+                "OSL: recovery word position {} is outside the 1-12 range",
+                entry.position
+            ));
+        }
+        if !seen.insert(entry.position) {
+            return Err(format!(
+                "OSL: recovery word position {} was supplied more than once",
+                entry.position
+            ));
+        }
+        let supplied = entry.word.trim();
+        if supplied.is_empty()
+            || supplied.len() > 32
+            || !supplied.is_ascii()
+            || supplied.split_whitespace().count() != 1
+        {
+            return Err(format!(
+                "OSL: recovery word position {} must be one BIP39 word",
+                entry.position
+            ));
+        }
+        let matched = words[(entry.position - 1) as usize] == supplied;
+        checked.push(RecoveryWordRetypeMatchDto {
+            position: entry.position,
+            matched,
+        });
+    }
+    let ok = checked.iter().all(|entry| entry.matched);
+    Ok(RecoveryWordRetypeCheckDto { ok, checked })
+}
+
 /// Device transfer: reveal the 12-word phrase that recovers THIS OSL
 /// identity (account) on another device. Reads the entropy the
 /// identity was derived from and renders it as a BIP39 mnemonic. Only

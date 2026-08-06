@@ -1535,6 +1535,18 @@ async fn view_hub_recovery_phrase(current: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn check_hub_recovery_words(
+    current: String,
+    entries: Vec<ipc::commands::RecoveryWordRetypeEntryDto>,
+) -> Result<ipc::commands::RecoveryWordRetypeCheckDto, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ipc::commands::cmd_osl_check_recovery_words(current, entries)
+    })
+    .await
+    .map_err(|_| "OSL recovery word check worker failed".to_string())?
+}
+
+#[tauri::command]
 async fn get_hub_recovery_kit_unsaved() -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(account_recovery::recovery_kit_unsaved)
         .await
