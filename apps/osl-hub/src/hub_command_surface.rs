@@ -506,6 +506,7 @@ macro_rules! hub_tauri_commands {
             get_scrub_index_status,
             cancel_scrub_index,
             list_linked_services,
+            list_scrub_accounts,
             get_core_readiness,
             list_core_features,
             get_hub_license_state,
@@ -1916,6 +1917,12 @@ mod tauri_registration_surface_tests {
             1,
             "explicit consent must hydrate only the exact owner/browser/profile/import scope"
         );
+    }
+
+    #[test]
+    fn list_scrub_accounts_is_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(&handlers, &permissions, &capability, "list_scrub_accounts");
     }
 
     fn pw3_test_checked_host() -> CheckedHost {

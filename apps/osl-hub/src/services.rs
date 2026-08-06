@@ -47,6 +47,15 @@ pub struct ServiceRegistryState {
     next_id: AtomicU64,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubAccountDescriptor {
+    pub service_id: ServiceKind,
+    pub account_id: String,
+    pub account_label: String,
+    pub app_or_browser_label: String,
+}
+
 #[derive(Default)]
 struct RegistryCache {
     loaded: bool,
@@ -84,6 +93,15 @@ impl ServiceRegistryState {
         validate_owner_osl_user_id(owner_osl_user_id)?;
         let cache = self.locked_cache()?;
         Ok(service_registry(&cache.accounts, owner_osl_user_id))
+    }
+
+    pub fn list_scrub_accounts_for_owner(
+        &self,
+        owner_osl_user_id: &str,
+    ) -> Result<Vec<ScrubAccountDescriptor>, String> {
+        validate_owner_osl_user_id(owner_osl_user_id)?;
+        let cache = self.locked_cache()?;
+        Ok(scrub_accounts(&cache.accounts, owner_osl_user_id))
     }
 
     pub fn create_for_owner(
@@ -450,6 +468,48 @@ fn account_dto(account: &AccountRecord) -> LinkedAccountDemo {
     }
 }
 
+fn scrub_account_dto(account: &AccountRecord) -> ScrubAccountDescriptor {
+    ScrubAccountDescriptor {
+        service_id: account.service_id,
+        account_id: account.id.clone(),
+        account_label: account.label.clone(),
+        app_or_browser_label: scrub_app_or_browser_label(account).to_owned(),
+    }
+}
+
+fn scrub_app_or_browser_label(account: &AccountRecord) -> &'static str {
+    match (account.service_id, account.provider) {
+        (ServiceKind::Email, Some(EmailProvider::Gmail)) => "Gmail",
+        (ServiceKind::Email, Some(EmailProvider::Outlook)) => "Outlook",
+        (ServiceKind::Email, Some(EmailProvider::Proton)) => "Proton Mail",
+        (ServiceKind::Email, Some(EmailProvider::Tuta)) => "Tuta Mail",
+        (ServiceKind::Email, Some(EmailProvider::Yahoo)) => "Yahoo Mail",
+        (ServiceKind::Email, Some(EmailProvider::Aol)) => "AOL Mail",
+        (ServiceKind::Email, Some(EmailProvider::Gmx)) => "GMX Mail",
+        (ServiceKind::Email, Some(EmailProvider::Maildotcom)) => "mail.com",
+        (ServiceKind::Email, Some(EmailProvider::Icloud)) => "iCloud Mail",
+        _ => service_descriptor(account.service_id).display_name,
+    }
+}
+
+fn scrub_accounts(
+    accounts: &[AccountRecord],
+    owner_osl_user_id: &str,
+) -> Vec<ScrubAccountDescriptor> {
+    let mut scrub_accounts = accounts
+        .iter()
+        .filter(|account| account.owner_osl_user_id.as_deref() == Some(owner_osl_user_id))
+        .map(scrub_account_dto)
+        .collect::<Vec<_>>();
+    scrub_accounts.sort_by(|left, right| {
+        left.app_or_browser_label
+            .cmp(&right.app_or_browser_label)
+            .then_with(|| left.account_label.cmp(&right.account_label))
+            .then_with(|| left.account_id.cmp(&right.account_id))
+    });
+    scrub_accounts
+}
+
 fn service_registry(accounts: &[AccountRecord], owner_osl_user_id: &str) -> Vec<LinkedServiceDemo> {
     service_descriptors()
         .into_iter()
@@ -768,6 +828,76 @@ mod tests {
                 .email_provider_for_owner(OWNER_A, ServiceKind::Email, &proton.id)
                 .unwrap(),
             Some(EmailProvider::Proton)
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn direct_scrub_account_list_returns_supported_signed_in_accounts_with_labels() {
+        // See new_registry_has_ruled_services_and_no_fake_accounts for why
+        // this lock is needed.
+        let _serial = crate::global_keystore_test_lock();
+        let path = temporary_registry();
+        let state = ServiceRegistryState::load(path.clone());
+        let discord = state
+            .create_for_owner(OWNER_A, ServiceKind::Discord, "Personal Discord".to_owned())
+            .unwrap();
+        let gmail = state
+            .create_with_provider_for_owner(
+                OWNER_A,
+                ServiceKind::Email,
+                "Work Gmail".to_owned(),
+                Some(EmailProvider::Gmail),
+            )
+            .unwrap();
+        let _other_owner = state
+            .create_for_owner(OWNER_B, ServiceKind::Signal, "Other Signal".to_owned())
+            .unwrap();
+
+        let accounts = state.list_scrub_accounts_for_owner(OWNER_A).unwrap();
+        println!(
+            "direct_list_scrub_accounts_fixture={}",
+            serde_json::to_string(&accounts).unwrap()
+        );
+
+        assert_eq!(
+            accounts,
+            vec![
+                ScrubAccountDescriptor {
+                    service_id: ServiceKind::Discord,
+                    account_id: discord.id,
+                    account_label: "Personal Discord".to_owned(),
+                    app_or_browser_label: "Discord".to_owned(),
+                },
+                ScrubAccountDescriptor {
+                    service_id: ServiceKind::Email,
+                    account_id: gmail.id,
+                    account_label: "Work Gmail".to_owned(),
+                    app_or_browser_label: "Gmail".to_owned(),
+                },
+            ],
+            "the direct Scrub account command must return exactly two owner-scoped fixture accounts with app/browser labels"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn direct_scrub_account_list_returns_empty_when_none_exist() {
+        // See new_registry_has_ruled_services_and_no_fake_accounts for why
+        // this lock is needed.
+        let _serial = crate::global_keystore_test_lock();
+        let path = temporary_registry();
+        let state = ServiceRegistryState::load(path.clone());
+
+        let accounts = state.list_scrub_accounts_for_owner(OWNER_A).unwrap();
+        println!(
+            "direct_list_scrub_accounts_empty={}",
+            serde_json::to_string(&accounts).unwrap()
+        );
+        assert_eq!(
+            accounts,
+            Vec::<ScrubAccountDescriptor>::new(),
+            "a profile with no supported signed-in accounts must return an empty list"
         );
         let _ = fs::remove_file(path);
     }

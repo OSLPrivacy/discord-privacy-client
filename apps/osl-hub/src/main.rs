@@ -93,7 +93,7 @@ use osl_privacy_hub::security::{
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
 use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, ServiceScopeIndexState};
-use osl_privacy_hub::services::ServiceRegistryState;
+use osl_privacy_hub::services::{ScrubAccountDescriptor, ServiceRegistryState};
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::tor_pref::{TorPreference, TorPreferenceState};
 use osl_privacy_hub::updates::{
@@ -1176,6 +1176,17 @@ async fn list_linked_services(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     state.list_for_owner(&owner)
+}
+
+#[tauri::command]
+async fn list_scrub_accounts(
+    state: State<'_, ServiceRegistryState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<Vec<ScrubAccountDescriptor>, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    state.list_scrub_accounts_for_owner(&owner)
 }
 
 #[tauri::command]

@@ -264,6 +264,11 @@ description = "Read the static demo service and account registry."
 commands.allow = ["list_linked_services"]
 
 [[permission]]
+identifier = "allow-list-scrub-accounts"
+description = "Read only the active identity's supported signed-in accounts that Scrub can use, with account and app/browser labels."
+commands.allow = ["list_scrub_accounts"]
+
+[[permission]]
 identifier = "allow-create-service-account"
 description = "Create local metadata for one fresh isolated service profile; stores no credentials or cookies."
 commands.allow = ["create_service_account"]
