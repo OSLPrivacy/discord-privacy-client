@@ -24,6 +24,7 @@
     "allow-compose-scrub-erasure-request",
     "allow-build-integrity-status",
     "allow-installed-build-record",
+    "allow-installed-build-chat-warning-status",
     "allow-get-onboarding-preferences",
     "allow-list-hub-app-notifications",
     "allow-set-hub-notifications-enabled",

@@ -133,7 +133,7 @@ import {
 import { checkHubForUpdates, installHubUpdate, openHubReleasesPage, openHubSourceRepository, type UpdateStatus } from "./updates";
 import { createDiscordQaGeometryKeeper } from "./discord-qa-geometry";
 import { browserLogo, serviceLogo, providerLogo } from "./logos";
-import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
+import { activateLocalLoopbackContext, activateManualPeerContext, activateNativeManualPeerContext, activateOslChatContext, addOslFriend, addOslFriendByUsername, burnActiveHubContext, burnHubServiceAccount, captureProtectionEnforced, closeOslChatContext, copyHubFriendInvite, createHubIdentitySlot, decryptLocalProtectedText, executeHubFullCleanup, getHubRevocationStatus, getHubServiceBurnReadiness, getOslUsernameStatus, isHubPlaintext, isNormalizedOslUsername, listHubIdentities, listHubPeople, listOslChatHistory, loadActiveContextSecurity, loadAppNotifications, loadFriendProfile, loadInstalledBuildChatWarningStatus, openOslChatText, openPeerProseText, peerIsVerified, prepareLocalProtectedText, prepareOslChatText, preparePeerProseText, recoverHubIdentitySlot, saveActiveContextSecurity, revokeActiveHubFriendScope, setActiveHubFriendPermission, setActiveHubFriendReach, setHubFriendNickname, setLocalProtectedSheetOpen, setNativeDiscordProtectedOverlayOpen, setNativeDiscordProtectedOverlayOpenForQa, setNotificationsEnabled, setScreenshotProtection, switchHubIdentity, verifyHubPerson, viewHubRecoveryPhrase, type AppNotification, type HubIdentitySlot, type HubPerson, type HubPersonWhitelistScope, type HubServiceBurnReadiness, type InstalledBuildChatWarning, type LocalPrivacyScanResult, type ManualPeerContext, type PersistedLocalPrivacyScanResult } from "./adapters";
 import { blankLocalProtectedModel, isLocalTtlSeconds, loadOrCreateLocalConversationId, localProtectedSheetMarkup, validLocalChatLabel, type LocalProtectedPane, type LocalProtectedSheetModel } from "./local-protected-sheet";
 import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftByteFeedback, peerProtectedSheetMarkup, type PeerProtectedPane, type PeerProtectedSheetModel } from "./peer-protected-sheet";
 import { peerIntegrityMarkup } from "./peer-integrity";
@@ -718,6 +718,7 @@ let ownedConfirmationBusy = false;
 let ownedConfirmationError = "";
 let navigationIntentEpoch = 0;
 let bootstrapEpoch = 0;
+let installedBuildChatWarning: InstalledBuildChatWarning | null = null;
 
 const sidebarStorageKey = "osl-hub-sidebar";
 const hiddenStorageKey = "osl-hub-sidebar-hidden";
@@ -4965,6 +4966,7 @@ function oslChatContent(): string {
     viewOnce: oslChatViewOnce,
     homeLogoUrl: oslVectorLogoUrl,
     deletionUnconfirmed: oslChatDeletionUnconfirmed,
+    buildWarning: installedBuildChatWarning,
   })}${offlineStatus}${receipt}${attachments}${settings}</main>`;
 }
 
@@ -8731,7 +8733,7 @@ async function refreshIdentityScopedState(): Promise<void> {
     throw new Error("OSL Chat could not close before changing identity state");
   }
   resetOslChatUiState(true);
-  const [nextCore, loadedIdentities, profile, people, linkedServices, notifications] = await Promise.all([
+  const [nextCore, loadedIdentities, profile, people, linkedServices, notifications, buildWarning] = await Promise.all([
     loadCoreIntegration().catch(() => structuredClone(unavailableCoreIntegration)),
     listHubIdentities(),
     loadFriendProfile().then(async (value) => {
@@ -8741,6 +8743,7 @@ async function refreshIdentityScopedState(): Promise<void> {
     listHubPeople().then((value) => value ?? []),
     loadLinkedServices().catch(() => []),
     notificationsEnabled ? loadAppNotifications() : Promise.resolve([]),
+    loadInstalledBuildChatWarningStatus(),
   ]);
   core = nextCore;
   refreshActiveBrowserAccountsReady();
@@ -8751,6 +8754,7 @@ async function refreshIdentityScopedState(): Promise<void> {
   hubPeople = people;
   services = linkedServices;
   appNotifications = mergePersistedOslChatNotifications(notifications);
+  installedBuildChatWarning = buildWarning;
   passwordRoleStatus = await loadHubPasswordRoleStatus().catch(() => null);
 }
 
@@ -9273,6 +9277,10 @@ function startReadyWorkspaceLoads(): void {
   void ensureOslChatSecureLocalStore();
   void openMullvadOnStartup();
   void loadHubPasswordRoleStatus().then((status) => { passwordRoleStatus = status; if (route === "settings" && settingsSection === "account") renderWhenIdle(); }).catch(() => undefined);
+  void loadInstalledBuildChatWarningStatus().then((warning) => {
+    installedBuildChatWarning = warning;
+    if (route === "osl-chat") renderWhenIdle();
+  }).catch(() => undefined);
   void refreshUpdateStatus(true);
   void refreshAutoScrubFleetStatus();
   void getOslUsernameStatus("osl").catch(() => null);

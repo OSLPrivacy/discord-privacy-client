@@ -121,6 +121,24 @@ describe("OSL chats view", () => {
     expect(oslChatsViewMarkup(model({ draft: "Hello", busy: true }))).toMatch(/class="osl-chat-send" type="submit"[^>]* disabled/u);
   });
 
+  it("shows the changed-build warning for changed and corrupt proofs while send stays available", () => {
+    for (const [reason, marker] of [["changed", "changed"], ["corruptProof", "corrupt-proof"]] as const) {
+      const markup = oslChatsViewMarkup(model({
+        draft: "Hello",
+        buildWarning: {
+          kind: "changedBuild",
+          reason,
+          message: "OSL build changed after its startup proof. Sending stays available.",
+          messageSendingAvailable: true,
+        },
+      }));
+      expect(markup).toContain(`data-osl-chat-build-warning="${marker}"`);
+      expect(markup).toContain("Changed build warning");
+      expect(markup).toContain('data-message-sending-available="true"');
+      expect(markup).toMatch(/class="osl-chat-send" type="submit"(?![^>]* disabled)[^>]*>/u);
+    }
+  });
+
   it("accepts the backend maximum and blocks the first draft the backend would reject", () => {
     expect(oslChatDraftBytes("🔐")).toBe(4);
     const backendMaximum = 1024 * 1024;

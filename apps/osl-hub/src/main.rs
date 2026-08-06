@@ -45,7 +45,10 @@ use osl_privacy_hub::identity_registry::{
     self, HubIdentityBurnResult, HubIdentityRegistryState, HubIdentitySlotCreation,
     HubIdentitySlotDto, HubIdentitySwitchResult,
 };
-use osl_privacy_hub::installed_build::{record_current_installed_build, InstalledBuildRecord};
+use osl_privacy_hub::installed_build::{
+    installed_build_chat_warning, record_current_installed_build, InstalledBuildChatWarning,
+    InstalledBuildRecord, INSTALLED_BUILD_RECORD_FILE,
+};
 use osl_privacy_hub::main_window_reveal::{
     main_window_reveal, main_window_should_start_hidden, CaptureAffinity, MainWindowReveal,
     PageLoadPhase,
@@ -221,6 +224,8 @@ struct WhatsAppQaProtectionState(Mutex<WhatsAppAccessibilityState>);
 
 #[derive(Default)]
 struct OslChatAttachmentTrayState(Mutex<OslChatAttachmentTray>);
+
+struct InstalledBuildRecordPath(std::path::PathBuf);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -9479,6 +9484,13 @@ fn installed_build_record(state: tauri::State<'_, InstalledBuildRecord>) -> Inst
     state.inner().clone()
 }
 
+#[tauri::command]
+fn installed_build_chat_warning_status(
+    state: State<'_, InstalledBuildRecordPath>,
+) -> Option<InstalledBuildChatWarning> {
+    installed_build_chat_warning(&state.0)
+}
+
 macro_rules! hub_tauri_generate_handler {
     ($($(#[$meta:meta])* $command:ident),* $(,)?) => {
         tauri::generate_handler![$($(#[$meta])* $command,)*]
@@ -9935,6 +9947,9 @@ fn main() {
         // can present a local integrity verdict.
         app.manage(check_current());
         app.manage(record_current_installed_build(&config_dir)?);
+        app.manage(InstalledBuildRecordPath(
+            config_dir.join(INSTALLED_BUILD_RECORD_FILE),
+        ));
         app.manage(OverlaySessionState::default());
         startup_breadcrumb("setup_step_32_overlay_session_state_managed"); // STARTUP-TRACE
         app.manage(native_surface_capture::NativeSurfaceCaptureState::default());
@@ -10528,9 +10543,13 @@ mod tauri_command_acl_tests {
 
     #[test]
     fn task_3168_installed_build_record_is_read_at_startup_and_exposed_to_the_ui() {
-        assert_registered_and_acl_granted(&["installed_build_record"]);
+        assert_registered_and_acl_granted(&[
+            "installed_build_record",
+            "installed_build_chat_warning_status",
+        ]);
         let source = include_str!("main.rs");
         assert!(source.contains("app.manage(record_current_installed_build(&config_dir)?);"));
+        assert!(source.contains("config_dir.join(INSTALLED_BUILD_RECORD_FILE)"));
     }
 
     #[test]

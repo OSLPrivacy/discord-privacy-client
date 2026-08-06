@@ -24,6 +24,11 @@ description = "Read the startup-installed build version and file fingerprint rec
 commands.allow = ["installed_build_record"]
 
 [[permission]]
+identifier = "allow-installed-build-chat-warning-status"
+description = "Read whether the local installed-build proof now requires a non-blocking chat warning; it rehashes only the recorded executable path and never reads message content, keys, credentials or network state."
+commands.allow = ["installed_build_chat_warning_status"]
+
+[[permission]]
 identifier = "allow-compose-scrub-erasure-request"
 description = "Compose a local GDPR/CCPA erasure request for the user to review and send themselves; it performs no network operation."
 commands.allow = ["compose_scrub_erasure_request"]

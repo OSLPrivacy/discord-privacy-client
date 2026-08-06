@@ -689,6 +689,9 @@ mod tests {
         "get_onboarding_preferences",
         "set_hub_screenshot_protection",
         "save_onboarding_preferences",
+        "save_burn_review_state",
+        "get_burn_review_state",
+        "back_burn_review",
         "set_tor_preference",
         "scan_local_privacy",
         "open_hosted_session_scan",
@@ -869,6 +872,8 @@ mod tests {
         "ai_carrier_status",
         "set_ai_carrier_preview_enabled",
         "build_integrity_status",
+        "installed_build_record",
+        "installed_build_chat_warning_status",
     ];
 
     /// The commands that hold an authorized route open across their own send.
