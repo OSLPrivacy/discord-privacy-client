@@ -43,6 +43,7 @@ pub mod control_inbox_dead_letter;
 pub mod control_messages;
 pub mod decoy_mp4;
 pub mod destruct_ack;
+pub mod email_whitelist_kinds;
 pub mod fresh_start;
 pub mod friend_request;
 pub mod group_manifest;

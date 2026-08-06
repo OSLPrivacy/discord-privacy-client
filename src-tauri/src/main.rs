@@ -44,22 +44,22 @@ use ipc::commands::{
     cmd_osl_encrypt_message_v2, cmd_osl_get_identity_info, cmd_osl_get_license_state,
     cmd_osl_get_scope_encryption_state, cmd_osl_get_scope_whitelist_summary,
     cmd_osl_get_self_user_id, cmd_osl_get_tier_gate_status, cmd_osl_list_all_whitelists,
-    cmd_osl_list_burned_scopes, cmd_osl_load_channel_history, cmd_osl_lockout_status,
-    cmd_osl_mark_scope_burned, cmd_osl_password_status, cmd_osl_persist_edit,
-    cmd_osl_register_self_snowflake, cmd_osl_remove_burn_password, cmd_osl_remove_main_password,
-    cmd_osl_remove_stealth_password, cmd_osl_send_burn_marker, cmd_osl_set_burn_password,
-    cmd_osl_set_main_password, cmd_osl_set_main_password_after_recovery,
-    cmd_osl_set_stealth_password, cmd_osl_set_whitelist, cmd_osl_stealth_mode_engage,
-    cmd_osl_stealth_password_status, cmd_osl_toggle_scope_encryption, cmd_osl_unburn_scope,
-    cmd_osl_unwhitelist_scope, cmd_osl_validate_license, cmd_osl_verify_gate_password,
-    cmd_osl_verify_main_password, cmd_osl_verify_recovery_phrase, cmd_osl_view_recovery_phrase,
-    cmd_register, cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode,
-    cmd_x25519_diffie_hellman, AeadOpenRequest, AeadSealRequest, AeadSealResponse,
-    BurnScopeDataDto, BurnedScopeDto, FetchPubkeysResponse, GateVerifyDto,
-    GenerateIdentityResponse, IdentityInfoDto, LockoutStatusDto, PasswordStatusDto,
-    RegisterResponse, ScopeEncryptionState, ScopeWhitelistSummary, StatusResponse,
-    StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse, StoredMessageDto,
-    TierGateStatusDto, WhitelistRowDto,
+    cmd_osl_list_burned_scopes, cmd_osl_list_email_whitelist_kinds,
+    cmd_osl_load_channel_history, cmd_osl_lockout_status, cmd_osl_mark_scope_burned,
+    cmd_osl_password_status, cmd_osl_persist_edit, cmd_osl_register_self_snowflake,
+    cmd_osl_remove_burn_password, cmd_osl_remove_main_password, cmd_osl_remove_stealth_password,
+    cmd_osl_send_burn_marker, cmd_osl_set_burn_password, cmd_osl_set_main_password,
+    cmd_osl_set_main_password_after_recovery, cmd_osl_set_stealth_password,
+    cmd_osl_set_whitelist, cmd_osl_stealth_mode_engage, cmd_osl_stealth_password_status,
+    cmd_osl_toggle_scope_encryption, cmd_osl_unburn_scope, cmd_osl_unwhitelist_scope,
+    cmd_osl_validate_license, cmd_osl_verify_gate_password, cmd_osl_verify_main_password,
+    cmd_osl_verify_recovery_phrase, cmd_osl_view_recovery_phrase, cmd_register,
+    cmd_save_identity, cmd_status, cmd_stego_decode, cmd_stego_encode, cmd_x25519_diffie_hellman,
+    AeadOpenRequest, AeadSealRequest, AeadSealResponse, BurnScopeDataDto, BurnedScopeDto,
+    EmailWhitelistKindDto, FetchPubkeysResponse, GateVerifyDto, GenerateIdentityResponse,
+    IdentityInfoDto, LockoutStatusDto, PasswordStatusDto, RegisterResponse, ScopeEncryptionState,
+    ScopeWhitelistSummary, StatusResponse, StegoDecodeResponse, StegoEncodeRequest,
+    StegoEncodeResponse, StoredMessageDto, TierGateStatusDto, WhitelistRowDto,
 };
 use ipc::scope::ScopeInput;
 use ipc::{AppState, IpcError, IpcResult};
@@ -1154,6 +1154,13 @@ async fn osl_list_all_whitelists(app: tauri::AppHandle) -> Result<Vec<WhitelistR
     })
     .await
     .map_err(|e| format!("OSL: join error: {e}"))?
+}
+
+#[tauri::command]
+async fn osl_list_email_whitelist_kinds() -> Result<Vec<EmailWhitelistKindDto>, String> {
+    tauri::async_runtime::spawn_blocking(cmd_osl_list_email_whitelist_kinds)
+        .await
+        .map_err(|e| format!("OSL: join error: {e}"))
 }
 
 // ===== Phase 7d-B1: main-password gate commands. =====
@@ -3201,6 +3208,7 @@ fn main() {
             osl_clear_license,
             osl_get_tier_gate_status,
             osl_list_all_whitelists,
+            osl_list_email_whitelist_kinds,
             osl_password_status,
             osl_set_main_password,
             osl_change_main_password,

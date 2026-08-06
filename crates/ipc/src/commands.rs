@@ -13073,6 +13073,22 @@ pub struct WhitelistRowDto {
     pub broadened: bool,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EmailWhitelistKindDto {
+    pub name: String,
+}
+
+/// Static email auto-whitelist kind query for settings/rule wiring.
+pub fn cmd_osl_list_email_whitelist_kinds() -> Vec<EmailWhitelistKindDto> {
+    record_activity_on_command_entry();
+    crate::email_whitelist_kinds::EmailWhitelistKind::ALL
+        .iter()
+        .map(|kind| EmailWhitelistKindDto {
+            name: kind.name().to_string(),
+        })
+        .collect()
+}
+
 /// 7d-A: flatten every peer's outgoing_whitelists into a single
 /// list of DTOs for the settings-menu Whitelist Manager. Order
 /// is stable: peers sorted by Discord snowflake (string), then

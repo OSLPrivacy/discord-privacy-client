@@ -7,6 +7,7 @@
   "permissions": [
     "allow-osl-get-identity-info",
     "allow-osl-list-all-whitelists",
+    "allow-osl-list-email-whitelist-kinds",
     "allow-osl-unwhitelist-scope",
     "allow-osl-local-unwhitelist-scope",
     "allow-osl-toggle-scope-encryption",
