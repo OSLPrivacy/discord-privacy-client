@@ -6,6 +6,7 @@ const READ_KEY_RE = /^[0-9a-f]{32}$/;
 
 export interface DeleteGrantRecord {
   record: typeof DELETE_GRANT_RECORD;
+  message: string;
   owner: string;
   scope: string;
 }
@@ -33,6 +34,8 @@ export type DeleteGrantParseResult =
   | { ok: true; grant: DeleteGrantRecord }
   | { ok: false; code: "not_delete_grant" | "malformed_delete_grant" };
 
+type DeleteGrantParseFailureCode = Extract<DeleteGrantParseResult, { ok: false }>["code"];
+
 export type MessageReadKeyParseResult =
   | { ok: true; key: MessageReadKeyRecord }
   | { ok: false; code: "not_message_read_key" | "malformed_message_read_key" };
@@ -42,6 +45,27 @@ export type StoredProtectedMessageGrantCreationResult =
   | {
     ok: false;
     code: "malformed_message_read_key" | "malformed_delete_grant";
+  };
+
+export interface DeleteGrantValidationInput {
+  grant: string | unknown;
+  message: string;
+  owner: string;
+  burnScope: string;
+  allowedBurnScope: string;
+}
+
+export type DeleteGrantValidationResult =
+  | { ok: true; grant: DeleteGrantRecord }
+  | {
+    ok: false;
+    code:
+      | DeleteGrantParseFailureCode
+      | "malformed_delete_request"
+      | "delete_grant_message_mismatch"
+      | "delete_grant_owner_mismatch"
+      | "delete_grant_scope_mismatch"
+      | "delete_grant_scope_not_allowed";
   };
 
 function parseRecord(input: string | unknown): Record<string, unknown> | null {
@@ -70,16 +94,17 @@ export function parseDeleteGrantRecord(input: string | unknown): DeleteGrantPars
   }
   if (record === null) return { ok: false, code: "malformed_delete_grant" };
   if (record.record !== DELETE_GRANT_RECORD) return { ok: false, code: "not_delete_grant" };
-  if (!hasExactly(record, ["record", "owner", "scope"])) {
+  if (!hasExactly(record, ["record", "message", "owner", "scope"])) {
     return { ok: false, code: "malformed_delete_grant" };
   }
-  if (!validName(record.owner) || !validName(record.scope)) {
+  if (!validName(record.message) || !validName(record.owner) || !validName(record.scope)) {
     return { ok: false, code: "malformed_delete_grant" };
   }
   return {
     ok: true,
     grant: {
       record: DELETE_GRANT_RECORD,
+      message: record.message,
       owner: record.owner,
       scope: record.scope,
     },
@@ -129,6 +154,7 @@ export function createStoredProtectedMessageGrants(
 
   const senderDeleteGrant: DeleteGrantRecord = {
     record: DELETE_GRANT_RECORD,
+    message: input.message,
     owner: input.sender,
     scope: input.scope,
   };
@@ -143,4 +169,34 @@ export function createStoredProtectedMessageGrants(
       senderDeleteGrants: [parsedDeleteGrant.grant],
     },
   };
+}
+
+export function validateDeleteGrant(
+  input: DeleteGrantValidationInput,
+): DeleteGrantValidationResult {
+  const parsed = parseDeleteGrantRecord(input.grant);
+  if (!parsed.ok) return parsed;
+
+  if (
+    !validName(input.message)
+    || !validName(input.owner)
+    || !validName(input.burnScope)
+    || !validName(input.allowedBurnScope)
+  ) {
+    return { ok: false, code: "malformed_delete_request" };
+  }
+  if (input.burnScope !== input.allowedBurnScope) {
+    return { ok: false, code: "delete_grant_scope_not_allowed" };
+  }
+  if (parsed.grant.message !== input.message) {
+    return { ok: false, code: "delete_grant_message_mismatch" };
+  }
+  if (parsed.grant.owner !== input.owner) {
+    return { ok: false, code: "delete_grant_owner_mismatch" };
+  }
+  if (parsed.grant.scope !== input.burnScope) {
+    return { ok: false, code: "delete_grant_scope_mismatch" };
+  }
+
+  return parsed;
 }
