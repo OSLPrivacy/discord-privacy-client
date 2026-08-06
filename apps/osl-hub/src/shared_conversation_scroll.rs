@@ -31,6 +31,8 @@ pub enum SharedConversationScrollStop {
     EndOfPlace,
     NoNewMessages,
     PageLimitReached,
+    PauseRequested,
+    StopRequested,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -40,6 +42,7 @@ pub struct SharedConversationScrollPageLog {
     pub messages_on_screen: usize,
     pub new_messages_read: usize,
     pub cumulative_messages_read: usize,
+    pub gate_after_page: SharedConversationScrollGateState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -48,6 +51,7 @@ pub struct SharedConversationScrollRead {
     pub messages: Vec<SharedPlaceMessage>,
     pub page_log: Vec<SharedConversationScrollPageLog>,
     pub stop_reason: SharedConversationScrollStop,
+    pub stopped_on_page_number: Option<usize>,
 }
 
 impl SharedConversationScrollRead {
@@ -65,12 +69,49 @@ pub trait SharedConversationScrollablePlace {
     fn scroll_one_screen(&mut self) -> Result<bool, String>;
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedConversationScrollGateState {
+    Running,
+    PauseAfterCurrentPage,
+    StopAfterCurrentPage,
+}
+
+pub trait SharedConversationScrollGate {
+    fn state_between_pages(&self) -> Result<SharedConversationScrollGateState, String>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoSharedConversationScrollGate;
+
+impl SharedConversationScrollGate for NoSharedConversationScrollGate {
+    fn state_between_pages(&self) -> Result<SharedConversationScrollGateState, String> {
+        Ok(SharedConversationScrollGateState::Running)
+    }
+}
+
 pub fn read_shared_conversation_messages_one_page_at_a_time<P>(
     place: &mut P,
     page_limit: usize,
 ) -> Result<SharedConversationScrollRead, String>
 where
     P: SharedConversationScrollablePlace,
+{
+    read_shared_conversation_messages_one_page_at_a_time_with_gate(
+        place,
+        page_limit,
+        &NoSharedConversationScrollGate,
+    )
+}
+
+pub fn read_shared_conversation_messages_one_page_at_a_time_with_gate<P, G>(
+    place: &mut P,
+    page_limit: usize,
+    gate: &G,
+) -> Result<SharedConversationScrollRead, String>
+where
+    P: SharedConversationScrollablePlace,
+    G: SharedConversationScrollGate + ?Sized,
 {
     if page_limit == 0 {
         return Err("shared conversation scroll page limit must be at least one".to_owned());
@@ -93,18 +134,41 @@ where
             }
         }
 
+        let gate_after_page = gate.state_between_pages()?;
         page_log.push(SharedConversationScrollPageLog {
             page_number,
             messages_on_screen,
             new_messages_read,
             cumulative_messages_read: messages.len(),
+            gate_after_page,
         });
+
+        match gate_after_page {
+            SharedConversationScrollGateState::Running => {}
+            SharedConversationScrollGateState::PauseAfterCurrentPage => {
+                return Ok(SharedConversationScrollRead {
+                    messages,
+                    page_log,
+                    stop_reason: SharedConversationScrollStop::PauseRequested,
+                    stopped_on_page_number: Some(page_number),
+                });
+            }
+            SharedConversationScrollGateState::StopAfterCurrentPage => {
+                return Ok(SharedConversationScrollRead {
+                    messages,
+                    page_log,
+                    stop_reason: SharedConversationScrollStop::StopRequested,
+                    stopped_on_page_number: Some(page_number),
+                });
+            }
+        }
 
         if page_number == page_limit {
             return Ok(SharedConversationScrollRead {
                 messages,
                 page_log,
                 stop_reason: SharedConversationScrollStop::PageLimitReached,
+                stopped_on_page_number: None,
             });
         }
 
@@ -113,6 +177,7 @@ where
                 messages,
                 page_log,
                 stop_reason: SharedConversationScrollStop::NoNewMessages,
+                stopped_on_page_number: None,
             });
         }
 
@@ -121,6 +186,7 @@ where
                 messages,
                 page_log,
                 stop_reason: SharedConversationScrollStop::EndOfPlace,
+                stopped_on_page_number: None,
             });
         }
     }
@@ -141,8 +207,8 @@ fn validate_message(message: &SharedPlaceMessage) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        read_shared_conversation_messages_one_page_at_a_time, SharedConversationScrollStop,
-        SharedConversationScrollablePlace, SharedPlaceMessage,
+        read_shared_conversation_messages_one_page_at_a_time, SharedConversationScrollGateState,
+        SharedConversationScrollStop, SharedConversationScrollablePlace, SharedPlaceMessage,
     };
 
     struct FixedPagePlace {
@@ -204,7 +270,9 @@ mod tests {
         assert!(read
             .page_log
             .iter()
-            .all(|entry| entry.messages_on_screen == 40 && entry.new_messages_read == 40));
+            .all(|entry| entry.messages_on_screen == 40
+                && entry.new_messages_read == 40
+                && entry.gate_after_page == SharedConversationScrollGateState::Running));
     }
 
     #[test]
@@ -220,5 +288,6 @@ mod tests {
             SharedConversationScrollStop::PageLimitReached
         );
         assert_eq!(place.scrolls, 1);
+        assert_eq!(read.stopped_on_page_number, None);
     }
 }
