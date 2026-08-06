@@ -117,6 +117,13 @@ use tauri_plugin_updater::UpdaterExt;
 #[cfg(feature = "whatsapp-qa-identity")]
 use zeroize::{Zeroize, Zeroizing};
 
+fn allowed_place_store_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|dir| dir.join("osl-core"))
+        .map_err(|error| format!("OSL allowed-place storage is unavailable: {error}"))
+}
+
 /// Diagnostics-only startup breadcrumb trace. TEMPORARY: added to bracket the
 /// exact point where a freshly built binary hangs during launch before any
 /// window is created. Every call site is marked `// STARTUP-TRACE` so the
@@ -6227,6 +6234,49 @@ async fn list_hub_people(
 }
 
 #[tauri::command]
+async fn add_allowed_place_record(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    record: ipc::allowed_places::AllowedPlaceRecord,
+) -> Result<osl_privacy_hub::allowed_place_commands::AllowedPlaceCommandJson, String> {
+    let _session = session.transition.lock().await;
+    let store = allowed_place_store_dir(&app)?;
+    osl_privacy_hub::allowed_place_commands::add_allowed_place_json(&store, record)
+}
+
+#[tauri::command]
+async fn remove_allowed_place_record(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    stable_id: String,
+) -> Result<osl_privacy_hub::allowed_place_commands::AllowedPlaceCommandJson, String> {
+    let _session = session.transition.lock().await;
+    let store = allowed_place_store_dir(&app)?;
+    osl_privacy_hub::allowed_place_commands::remove_allowed_place_json(&store, stable_id)
+}
+
+#[tauri::command]
+async fn list_allowed_place_records(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<osl_privacy_hub::allowed_place_commands::AllowedPlaceCommandJson, String> {
+    let _session = session.transition.lock().await;
+    let store = allowed_place_store_dir(&app)?;
+    osl_privacy_hub::allowed_place_commands::list_allowed_places_json(&store)
+}
+
+#[tauri::command]
+async fn query_allowed_place_allowed(
+    app: tauri::AppHandle,
+    session: State<'_, HubAccountSessionState>,
+    query: ipc::allowed_places::AllowedPlaceQuery,
+) -> Result<osl_privacy_hub::allowed_place_commands::AllowedPlaceCommandJson, String> {
+    let _session = session.transition.lock().await;
+    let store = allowed_place_store_dir(&app)?;
+    osl_privacy_hub::allowed_place_commands::allowed_place_allowed_json(&store, query)
+}
+
+#[tauri::command]
 async fn set_hub_friend_nickname(
     core: State<'_, HubCoreState>,
     security_state: State<'_, HubSecurityState>,
@@ -9400,6 +9450,12 @@ fn main() {
 
 #[cfg(not(feature = "signal-qa-shell"))]
 fn main() {
+    if let Some(exit_code) =
+        osl_privacy_hub::allowed_place_commands::run_allowed_place_cli_from_env()
+    {
+        std::process::exit(exit_code);
+    }
+
     #[cfg(feature = "discord-qa-shell")]
     {
         // This is deliberately before the guardian, breadcrumbs, plugins,

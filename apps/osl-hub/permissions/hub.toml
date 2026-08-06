@@ -764,6 +764,26 @@ description = "List bounded People metadata from encrypted local state."
 commands.allow = ["list_hub_people"]
 
 [[permission]]
+identifier = "allow-add-allowed-place-record"
+description = "Save one bounded allowed-place record in device-local app command storage."
+commands.allow = ["add_allowed_place_record"]
+
+[[permission]]
+identifier = "allow-remove-allowed-place-record"
+description = "Remove one saved allowed-place record from device-local app command storage."
+commands.allow = ["remove_allowed_place_record"]
+
+[[permission]]
+identifier = "allow-list-allowed-place-records"
+description = "List bounded allowed-place records from device-local app command storage."
+commands.allow = ["list_allowed_place_records"]
+
+[[permission]]
+identifier = "allow-query-allowed-place-allowed"
+description = "Return whether one app, account, kind, and stable id is in the device-local allowed-place list."
+commands.allow = ["query_allowed_place_allowed"]
+
+[[permission]]
 identifier = "allow-set-hub-friend-nickname"
 description = "Set or clear a bounded nickname in encrypted device-local People state."
 commands.allow = ["set_hub_friend_nickname"]

@@ -5,6 +5,8 @@
 pub mod account_identity_authority;
 #[cfg(feature = "core")]
 pub mod account_recovery;
+#[cfg(feature = "core")]
+pub mod allowed_place_commands;
 pub mod adapter_profile_boot;
 pub mod adapters;
 #[cfg(feature = "core")]

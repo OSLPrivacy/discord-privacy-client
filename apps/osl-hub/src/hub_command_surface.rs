@@ -650,6 +650,10 @@ macro_rules! hub_tauri_commands {
             verify_hub_friend_safety_number,
             remove_hub_friend,
             list_hub_people,
+            add_allowed_place_record,
+            remove_allowed_place_record,
+            list_allowed_place_records,
+            query_allowed_place_allowed,
             set_hub_friend_nickname,
             set_active_hub_friend_permission,
             set_active_hub_friend_reach,
@@ -1598,6 +1602,22 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["view_hub_recovery_phrase"],
+        );
+    }
+
+    #[test]
+    fn allowed_place_commands_are_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "add_allowed_place_record",
+                "remove_allowed_place_record",
+                "list_allowed_place_records",
+                "query_allowed_place_allowed",
+            ],
         );
     }
 
