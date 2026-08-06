@@ -388,6 +388,25 @@ pub fn setup_main_password(
     })
 }
 
+/// Replace the local main password after the owner proves possession of the
+/// password-recovery phrase.
+pub fn reset_main_password_after_recovery(
+    state: &HubCoreState,
+    recovery_phrase: String,
+    new_password: String,
+) -> Result<HubPasswordReadiness, String> {
+    ipc::main_password::validate_new_password(&new_password).map_err(|_| {
+        "OSL main password must contain 6 to 128 printable keyboard characters".to_owned()
+    })?;
+    let _lifecycle = state
+        .lifecycle_lock
+        .lock()
+        .map_err(|_| "OSL account lifecycle is unavailable".to_owned())?;
+    let token = ipc::commands::cmd_osl_verify_recovery_phrase(&state.osl, recovery_phrase)?;
+    ipc::commands::cmd_osl_set_main_password_after_recovery(&state.osl, new_password, token)?;
+    Ok(readiness(state))
+}
+
 /// Verify a locally-entered duress PIN and, only on the burn-password role,
 /// run the full fixed-root cleanup path that returns the user-visible report.
 pub fn enter_duress_pin_for_full_wipe_report(
@@ -774,6 +793,71 @@ mod tests {
         );
         assert_eq!(result.reload_issue_count, 0);
         assert!(dir.join("password_marker.json").exists());
+        ipc::main_password::set_file_storage_key(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn password_reset_command_requires_phrase_approval_and_replaces_the_unlock_password() {
+        let _guard = crate::global_keystore_test_lock();
+        let _reset = KeystoreGlobalReset;
+        let dir = temp_dir("password-reset-command");
+        std::fs::create_dir_all(&dir).unwrap();
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(Some(dir.clone()));
+
+        let state = HubCoreState::default();
+        *state.osl.identity.lock().unwrap() = Some(keystore::identity_from_entropy(
+            [31; 16],
+            "osl_password_reset_disposable".to_owned(),
+        ));
+        let old_password = "old-reset-pass-0302";
+        let new_password = "new-reset-pass-0302";
+        let phrase = ipc::commands::cmd_osl_set_main_password(old_password.to_owned())
+            .expect("set disposable account password");
+        ipc::main_password::set_file_storage_key(None);
+
+        let wrong_phrase = phrase
+            .split_whitespace()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let refused =
+            reset_main_password_after_recovery(&state, wrong_phrase, new_password.to_owned())
+                .expect_err("password reset must wait for phrase approval");
+        assert!(refused.contains("attempts_used"), "{refused}");
+        assert!(
+            ipc::commands::cmd_osl_verify_main_password(new_password.to_owned()).is_err(),
+            "new password must not work before phrase approval"
+        );
+        ipc::main_password::set_file_storage_key(None);
+        ipc::commands::cmd_osl_verify_main_password(old_password.to_owned())
+            .expect("old password still unlocks before phrase approval");
+        println!("0302 PRE-APPROVAL OLD PASSWORD UNLOCKED");
+        ipc::main_password::set_file_storage_key(None);
+
+        let readiness =
+            reset_main_password_after_recovery(&state, phrase.clone(), new_password.to_owned())
+                .expect("phrase-approved password reset completes");
+        assert!(readiness.main_password_set);
+        assert!(readiness.unlocked);
+        println!("0302 PHRASE APPROVAL: accepted");
+
+        ipc::main_password::set_file_storage_key(None);
+        let old_refusal = ipc::commands::cmd_osl_verify_main_password(old_password.to_owned())
+            .expect_err("old password must be refused after reset");
+        assert!(old_refusal.contains("attempts_used"), "{old_refusal}");
+        println!("0302 OLD PASSWORD REFUSED: {old_refusal}");
+
+        ipc::main_password::set_file_storage_key(None);
+        ipc::commands::cmd_osl_verify_main_password(new_password.to_owned())
+            .expect("new password unlocks after reset");
+        assert!(
+            ipc::main_password::get_file_storage_key().is_some(),
+            "new password must install the disposable account file key"
+        );
+        println!("0302 NEW PASSWORD UNLOCKED: file_storage_key_installed=true");
+
         ipc::main_password::set_file_storage_key(None);
         let _ = std::fs::remove_dir_all(dir);
     }

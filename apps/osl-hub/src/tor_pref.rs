@@ -727,6 +727,7 @@ mod tests {
         "import_hub_osl_identity_phrase",
         "setup_hub_main_password",
         "view_hub_recovery_phrase",
+        "reset_hub_main_password_after_recovery",
         "get_hub_recovery_kit_unsaved",
         "set_hub_recovery_kit_unsaved",
         "lock_hub_session",
