@@ -1,0 +1,35 @@
+{
+  "controls": [
+    {
+      "name": "password",
+      "role": "textbox"
+    },
+    {
+      "name": "Unlock",
+      "role": "button"
+    },
+    {
+      "name": "Forgot password",
+      "role": "button"
+    },
+    {
+      "name": "Back",
+      "role": "button"
+    }
+  ],
+  "fixture": "unlock-fixed-fixture-v1",
+  "image": {
+    "bytes": 19419,
+    "colors": 795,
+    "height": 768,
+    "path": "/home/liamw/osl-exec-f/evidence/task-0355-unlock-screen/unlock.png",
+    "sha256": "add355ab2024fa8d0a62ac71e750b4a8732fd6ad488b3505c315bc807dc5e01f",
+    "width": 1024
+  },
+  "schema": "osl-task-0355-unlock-screen-tree-v1",
+  "screen": "1024x768x24",
+  "title": {
+    "name": "Unlock",
+    "role": "heading"
+  }
+}

@@ -128,7 +128,7 @@ describe("clean onboarding sign in", () => {
   });
 
   // Protects the shape of the unlock screen: mark, ONE password field, ONE
-  // action. The heading was renamed "Enter your password" -> "Sign in" on
+  // action. The heading was renamed "Enter your password" -> "Unlock" on
   // 2026-08-06 and nothing else about the screen moved, so the old heading is
   // pinned as an absence and the new one is pinned in the same anchored
   // position under the mark. (The D80 rule this screen carries -- that no
@@ -139,7 +139,7 @@ describe("clean onboarding sign in", () => {
   it("keeps password unlock to one field and one action", () => {
     expect(source).toContain('class="password-form unlock-form"');
     expect(source).toContain('class="unlock-logo-stage"');
-    expect(source).toMatch(/class="unlock-logo-stage"[\s\S]*?src="\$\{oslVectorLogoUrl\}"[\s\S]*?>Sign in<\/h1>/);
+    expect(source).toMatch(/class="unlock-logo-stage"[\s\S]*?src="\$\{oslVectorLogoUrl\}"[\s\S]*?>Unlock<\/h1>/);
     expect(source).not.toContain(">Enter your password</h1>");
     // Still exactly one credential row and one submit in the unlock branch.
     const unlock = source.slice(source.indexOf('<section class="unlock-card"'), source.indexOf("</section>`;", source.indexOf('<section class="unlock-card"')));
