@@ -54,6 +54,15 @@ pub struct WebsitePage {
     target_id: Option<String>,
 }
 
+impl WebsitePage {
+    pub fn synthetic(url: String) -> Self {
+        Self {
+            url,
+            target_id: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsiteTextPlacement {
     pub page: WebsitePage,

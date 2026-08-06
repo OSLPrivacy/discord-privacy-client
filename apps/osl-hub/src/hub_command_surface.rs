@@ -110,6 +110,8 @@ pub struct OrdinarySendProgressRequest {
 pub struct OrdinarySendProgressStep {
     pub name: String,
     pub completed: bool,
+    #[serde(default)]
+    pub run_count: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -168,6 +170,11 @@ impl OrdinarySendProgress {
     }
 
     fn with_derived_confirmation(mut self) -> Self {
+        for step in &mut self.steps {
+            if step.completed && step.run_count == 0 {
+                step.run_count = 1;
+            }
+        }
         self.final_confirmation = self.steps.len() == ORDINARY_SEND_STEPS.len()
             && self.steps.iter().all(|step| step.completed);
         self
@@ -175,7 +182,10 @@ impl OrdinarySendProgress {
 
     fn mark_completed(&mut self, name: &str) {
         if let Some(step) = self.steps.iter_mut().find(|step| step.name == name) {
-            step.completed = true;
+            if !step.completed {
+                step.completed = true;
+                step.run_count = step.run_count.saturating_add(1);
+            }
         }
         self.final_confirmation = self.steps.iter().all(|step| step.completed);
     }
@@ -270,6 +280,7 @@ fn new_ordinary_send_progress(send_id: &str) -> OrdinarySendProgress {
             .map(|name| OrdinarySendProgressStep {
                 name: (*name).to_owned(),
                 completed: false,
+                run_count: 0,
             })
             .collect(),
         final_confirmation: false,
@@ -290,16 +301,6 @@ where
             name: name.to_owned(),
         })
         .map_err(|error| error.to_string())
-}
-
-fn hex_prefix(bytes: &[u8], len: usize) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(len * 2);
-    for byte in bytes.iter().take(len) {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
 }
 
 pub fn read_protected_email_open_message_with_driver<D>(
