@@ -8184,6 +8184,72 @@ key"
     }
 
     #[test]
+    fn server_channel_burn_removes_the_marked_channel_message() {
+        let harness = FileBackedSecurityHarness::new("server-channel-burn-removes-mark");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        let channel_id = "task0530-server-channel";
+        let mark = "TASK0530 marked channel message still present";
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+        write_scope_blobs(
+            &harness.path().join("scope_blobs.json"),
+            &ipc::scope_blobs_file::ScopeBlobsFile::default(),
+        )
+        .unwrap();
+        let history_dir = harness.path().join("task0530-message-store");
+        let store = store::MessageStore::open(&history_dir, &[0x53; 32]).unwrap();
+        store
+            .put(&store::StoredMessage {
+                discord_message_id: "task0530-marked-channel-message".to_owned(),
+                channel_id: channel_id.to_owned(),
+                sender_discord_id: "task0530-sender".to_owned(),
+                sender_osl_user_id: "task0530-sender".to_owned(),
+                plaintext: mark.to_owned(),
+                decrypted_at: 1_900_530_000,
+                burned: false,
+            })
+            .unwrap();
+        *core.osl.message_store.lock().unwrap() = Some(store);
+
+        let result = burn_scope(
+            &core,
+            &security,
+            ScopeInput {
+                kind: ScopeKind::ServerChannel,
+                id: "task0530-server:task0530-server-channel".to_owned(),
+                server_id: Some("task0530-server".to_owned()),
+                channel_id: Some(channel_id.to_owned()),
+            },
+            Vec::new(),
+            true,
+            Vec::new(),
+        )
+        .expect("server-channel burn succeeds");
+        let after = ipc::commands::cmd_osl_load_channel_history(
+            &core.osl,
+            channel_id.to_owned(),
+            Some(10),
+        )
+        .expect("load channel history after burn");
+        let still_present = after.iter().any(|row| row.plaintext == mark);
+        println!(
+            "TASK0530 server_channel_burn rows_destroyed={} marked_channel_message_still_present={} marked=\"{}\"",
+            result.rows_destroyed, still_present, mark
+        );
+
+        assert!(
+            !still_present,
+            "marked channel message still present: marked=\"{}\" channel_id=\"{}\"",
+            mark, channel_id
+        );
+        assert_eq!(result.rows_destroyed, 1);
+    }
+
+    #[test]
     fn t1_t63_scope_burn_enters_dispatch_before_remote_effects() {
         let harness = FileBackedSecurityHarness::new("t1-63-burn-dispatch");
         let core = HubCoreState::default();
