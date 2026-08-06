@@ -57,6 +57,14 @@ function visibleText(markup: string): string {
   return markup.replace(/<[^>]*>/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
+function renderedTileIds(markup: string): string[] {
+  return [...markup.matchAll(/<article[^>]*\bdata-tile-id="([^"]+)"/gu)].map((match) => match[1]);
+}
+
+function routeTitle(markup: string): string {
+  return markup.match(/<h1\b[^>]*\bid="route-heading"[^>]*>([^<]+)<\/h1>/u)?.[1] ?? "";
+}
+
 function functionSource(source: string, name: string, nextName: string): string {
   const start = source.indexOf(`function ${name}`);
   const end = source.indexOf(`function ${nextName}`, start + 1);
@@ -462,6 +470,39 @@ describe("home interaction regressions", () => {
     expect(source).toContain("data-tile-move");
     expect(source).toContain("data-tile-toggle");
     expect(source).toContain("saveHomeTilePreferences");
+  });
+
+  it("refuses an arrangement that hides every Home tile and saves one kept tile", () => {
+    const { __oslHubUiTest } = ui;
+    __oslHubUiTest.reset({ route: "home" });
+
+    const allTileIds = __oslHubUiTest.homeTileIdsForTest();
+    const refused = __oslHubUiTest.saveHomeTileArrangementForTest(allTileIds);
+    console.info(`TASK_0815 all-hidden saved=${refused.saved} error="${refused.error}" hidden=${refused.hiddenIds.length}`);
+
+    expect(allTileIds.length).toBeGreaterThan(1);
+    expect(refused).toEqual({
+      saved: false,
+      error: "Home must keep at least one tile visible.",
+      hiddenIds: allTileIds,
+    });
+    expect(localStore.get("osl-home-tile-hidden-v1")).toBeUndefined();
+
+    const keptTile = "osl-chats";
+    const saved = __oslHubUiTest.saveHomeTileArrangementForTest(allTileIds.filter((id) => id !== keptTile));
+    const homeMarkup = __oslHubUiTest.renderWorkspaceContent("home");
+    const homeTitle = routeTitle(homeMarkup);
+    const visibleTiles = renderedTileIds(homeMarkup);
+    console.info(`TASK_0815 one-kept saved=${saved.saved} kept=${keptTile} visible=${visibleTiles.length} title=${homeTitle}`);
+
+    expect(saved).toEqual({
+      saved: true,
+      error: null,
+      hiddenIds: allTileIds.filter((id) => id !== keptTile),
+    });
+    expect(JSON.parse(localStore.get("osl-home-tile-hidden-v1") ?? "null")).toEqual(allTileIds.filter((id) => id !== keptTile));
+    expect(visibleTiles).toEqual([keptTile]);
+    expect(homeTitle).toBe("Home");
   });
 
   it("preserves explicit native intent and never silently falls back to the web", () => {

@@ -735,6 +735,7 @@ const hiddenHomeTilesStorageKey = "osl-home-tile-hidden-v1";
 const savedAccountModeStorageKey = "osl-saved-account-mode-v1";
 const savedNativeAppsStorageKey = "osl-saved-native-apps-v1";
 const detectedAccountChoicesStorageKey = "osl-detected-account-choices-v1";
+const HOME_TILE_ARRANGEMENT_REFUSAL = "Home must keep at least one tile visible.";
 const discordSessionModeStorageKey = "osl-discord-session-mode-v1";
 const telegramSessionModeStorageKey = "osl-telegram-session-mode-v1";
 const signalSessionModeStorageKey = "osl-signal-session-mode-v1";
@@ -8222,6 +8223,27 @@ function currentHomeTileIds(): string[] {
   ];
 }
 
+type HomeTileArrangementSaveResult = {
+  saved: boolean;
+  error: string | null;
+  hiddenIds: string[];
+};
+
+function checkHomeTileArrangement(hiddenIds: ReadonlySet<string>): string | null {
+  const current = currentHomeTileIds();
+  return current.some((id) => !hiddenIds.has(id)) ? null : HOME_TILE_ARRANGEMENT_REFUSAL;
+}
+
+function saveHomeTileArrangement(nextHiddenHomeTiles: ReadonlySet<string>): HomeTileArrangementSaveResult {
+  const current = currentHomeTileIds();
+  const hidden = new Set([...nextHiddenHomeTiles].filter((id) => current.includes(id)));
+  const error = checkHomeTileArrangement(hidden);
+  if (error) return { saved: false, error, hiddenIds: [...hidden] };
+  hiddenHomeTiles = hidden;
+  saveHomeTilePreferences();
+  return { saved: true, error: null, hiddenIds: [...hiddenHomeTiles] };
+}
+
 function moveHomeTile(raw: string): void {
   const separator = raw.lastIndexOf(":");
   const id = raw.slice(0, separator);
@@ -8253,8 +8275,13 @@ function reorderHomeTile(sourceId: string | null, targetId: string | null): void
 
 function toggleHomeTile(id: string): void {
   if (!currentHomeTileIds().includes(id)) return;
-  if (hiddenHomeTiles.has(id)) hiddenHomeTiles.delete(id); else hiddenHomeTiles.add(id);
-  saveHomeTilePreferences();
+  const nextHiddenHomeTiles = new Set(hiddenHomeTiles);
+  if (nextHiddenHomeTiles.has(id)) nextHiddenHomeTiles.delete(id); else nextHiddenHomeTiles.add(id);
+  const result = saveHomeTileArrangement(nextHiddenHomeTiles);
+  if (!result.saved) {
+    showToast(result.error ?? HOME_TILE_ARRANGEMENT_REFUSAL);
+    return;
+  }
   render();
 }
 
@@ -10108,6 +10135,9 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   activeOslChatPersonId = null;
   serviceAccountPickerOpen = false;
   friendsDialogOpen = false;
+  homeEditMode = false;
+  homeTileOrder = [];
+  hiddenHomeTiles.clear();
   ownedConfirmation = null;
   ownedConfirmationBusy = false;
   ownedConfirmationError = "";
@@ -10159,6 +10189,12 @@ export const __oslHubUiTest = {
   renderWorkspaceContent(destination?: Route): string {
     if (destination) route = destination;
     return workspaceContent();
+  },
+  homeTileIdsForTest(): string[] {
+    return currentHomeTileIds();
+  },
+  saveHomeTileArrangementForTest(hiddenIds: string[]): HomeTileArrangementSaveResult {
+    return saveHomeTileArrangement(new Set(hiddenIds));
   },
   renderSettingsSection(section: SettingsSection): string {
     route = "settings";
