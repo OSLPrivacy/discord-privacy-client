@@ -559,8 +559,9 @@ fn valid_media_type_byte(byte: u8) -> bool {
 }
 
 fn validate_size(size: u64) -> Result<u64, NativeAttachmentJobError> {
-    crate::attachment_limits::check_attachment_size(
+    crate::attachment_limits::check_attachment_request(
         size,
+        1,
         crate::attachment_limits::AttachmentAccountTier::Pro,
     )
     .map(|()| size)
