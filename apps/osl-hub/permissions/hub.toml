@@ -179,6 +179,21 @@ description = "Apply or remove Windows capture resistance for the trusted OSL Pr
 commands.allow = ["set_hub_screenshot_protection"]
 
 [[permission]]
+identifier = "allow-save-burn-review-state"
+description = "Persist only the local burn review choices the trusted Hub UI is currently displaying."
+commands.allow = ["save_burn_review_state"]
+
+[[permission]]
+identifier = "allow-get-burn-review-state"
+description = "Read the current local burn review choices without issuing a burn."
+commands.allow = ["get_burn_review_state"]
+
+[[permission]]
+identifier = "allow-back-burn-review"
+description = "Discard the local burn review choices and return cancelled without local or remote burn authority."
+commands.allow = ["back_burn_review"]
+
+[[permission]]
 identifier = "allow-copy-hub-friend-invite"
 description = "Copy only the freshly signed friend invite obtained from the active unlocked Rust identity to the Windows clipboard; accepts no content and cannot read the clipboard."
 commands.allow = ["copy_hub_friend_invite"]
