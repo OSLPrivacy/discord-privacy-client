@@ -494,6 +494,7 @@ macro_rules! hub_tauri_commands {
             set_hub_notifications_enabled,
             set_hub_screenshot_protection,
             save_onboarding_preferences,
+            save_scrub_setup,
             set_tor_preference,
             scan_local_privacy,
             open_hosted_session_scan,
@@ -1616,6 +1617,18 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["check_hub_password_reset_phrase"],
+        );
+    }
+
+    #[test]
+    fn save_scrub_setup_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(&handlers, &permissions, &capability, "save_scrub_setup");
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["save_scrub_setup"],
         );
     }
 

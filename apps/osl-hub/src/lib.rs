@@ -136,6 +136,7 @@ pub mod rn_attribution;
 #[cfg(feature = "core")]
 pub mod rn_recovery;
 pub mod scrub_hosted_port;
+pub mod scrub_setup_store;
 /// **Binding Ledger 9, the seam ledger.** Adapters declared vs adapters with a
 /// live carry receipt, ratcheted in both directions against
 /// `carry-receipts/seam-ledger-baseline.json`. Test-only because its inputs --

@@ -87,6 +87,7 @@ use osl_privacy_hub::scrub_index::{
     ScrubIndexChunkRequest, ScrubIndexInitializeRequest, ScrubIndexManifest, ScrubIndexState,
     ScrubIndexStatus,
 };
+use osl_privacy_hub::scrub_setup_store::{ScrubSetupCommand, ScrubSetupState, ScrubSetupSummary};
 use osl_privacy_hub::security::{
     self, AddFriendResult, FriendCodeExport, HubRevocationStatusDto, HubScopeBurnResult,
     HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
@@ -645,6 +646,14 @@ fn save_onboarding_preferences(
     preferences: OnboardingPreferences,
 ) -> Result<OnboardingPreferences, String> {
     state.save(preferences)
+}
+
+#[tauri::command]
+fn save_scrub_setup(
+    state: State<'_, ScrubSetupState>,
+    command: ScrubSetupCommand,
+) -> Result<ScrubSetupSummary, String> {
+    state.save_command(command)
 }
 
 /// Persist the explicit connection route selected during onboarding.
@@ -5716,7 +5725,9 @@ async fn set_osl_chat_capture_preference(
     local_opt_in: bool,
 ) -> Result<ChatCaptureProtectionDto, String> {
     if caller.label() != "main" {
-        return Err("Only the trusted OSL window may change OSL Chat capture protection".to_owned());
+        return Err(
+            "Only the trusted OSL window may change OSL Chat capture protection".to_owned(),
+        );
     }
     let _session = session.transition.lock().await;
     let binding = security::manual_peer_binding(&core, person_id)?;
@@ -9669,6 +9680,7 @@ fn main() {
         app.manage(PreviewState::load(
             config_dir.join("preview-preferences.json"),
         ));
+        app.manage(ScrubSetupState::load(config_dir.join("scrub-setup.json")));
         startup_breadcrumb("setup_step_14_preview_state_managed"); // STARTUP-TRACE
         app.manage(TorPreferenceState::load_with_arti_proxy_config(
             config_dir.join("tor-preference.json"),

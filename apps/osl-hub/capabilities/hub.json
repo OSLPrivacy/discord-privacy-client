@@ -29,6 +29,7 @@
     "allow-set-hub-screenshot-protection",
     "allow-copy-hub-friend-invite",
     "allow-save-onboarding-preferences",
+    "allow-save-scrub-setup",
     "allow-set-tor-preference",
     "allow-set-osl-chat-capture-preference",
     "allow-scan-local-privacy",

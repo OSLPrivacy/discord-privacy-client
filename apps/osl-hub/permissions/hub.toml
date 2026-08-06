@@ -194,6 +194,11 @@ description = "Save the local, non-sensitive OSL Privacy preview preferences."
 commands.allow = ["save_onboarding_preferences"]
 
 [[permission]]
+identifier = "allow-save-scrub-setup"
+description = "Save the local Scrub setup account count, automatic schedule, and notice setting selected during trusted setup."
+commands.allow = ["save_scrub_setup"]
+
+[[permission]]
 identifier = "allow-set-tor-preference"
 description = "Persist the explicit OSL network route before encrypted text can be sent."
 commands.allow = ["set_tor_preference"]
