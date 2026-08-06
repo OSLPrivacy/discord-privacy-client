@@ -269,6 +269,26 @@ pub struct NativeDiscordProductSendAuthority {
     pub carrier: String,
 }
 
+pub const ALLOWED_PLACE_CHECK_STAGE: &str = "allowed-place-check";
+pub const ALLOWED_PLACE_CONFIRMED_STAGE: &str = "allowed-place-confirmed";
+pub const PROTECTED_MESSAGE_PATH_STAGE: &str = "protected-message-path";
+
+pub fn with_allowed_place_before_protected_message_path<Allowed, Output, CheckAllowed, Protected>(
+    trace: &mut Vec<&'static str>,
+    check_allowed_place: CheckAllowed,
+    protected_message_path: Protected,
+) -> Result<Output, String>
+where
+    CheckAllowed: FnOnce() -> Result<Allowed, String>,
+    Protected: FnOnce(Allowed) -> Result<Output, String>,
+{
+    trace.push(ALLOWED_PLACE_CHECK_STAGE);
+    let allowed = check_allowed_place()?;
+    trace.push(ALLOWED_PLACE_CONFIRMED_STAGE);
+    trace.push(PROTECTED_MESSAGE_PATH_STAGE);
+    protected_message_path(allowed)
+}
+
 pub fn require_native_discord_product_send_authority(
     composer: &NativeDiscordComposerState,
     scope_binding: &str,
@@ -858,8 +878,10 @@ mod native_visible_row_qa_command_tests {
     use super::{
         canonical_native_visible_row_qa_build_hash, finish_native_visible_row_qa_request,
         prepare_native_visible_row_qa_request, recorded_executable_hash_matches_rebuild,
-        require_native_discord_product_send_authority, with_native_discord_product_send_authority,
-        ActiveServiceHost,
+        require_native_discord_product_send_authority,
+        with_allowed_place_before_protected_message_path,
+        with_native_discord_product_send_authority, ActiveServiceHost, ALLOWED_PLACE_CHECK_STAGE,
+        ALLOWED_PLACE_CONFIRMED_STAGE, PROTECTED_MESSAGE_PATH_STAGE,
     };
     use crate::native_discord_adapter::{
         deidentify_prepared_visual_structure, DiscordCarrierLayout, DiscordCarrierPadding,
@@ -936,6 +958,81 @@ mod native_visible_row_qa_command_tests {
         assert!(carrier
             .split_whitespace()
             .eq(TEST_FLAGTEXT.split_whitespace()));
+    }
+
+    #[test]
+    fn task_0120_allowed_place_command_trace_reaches_protected_message_path() {
+        let mut trace = Vec::new();
+        let protected_path_reached = Cell::new(false);
+        let reached = with_allowed_place_before_protected_message_path(
+            &mut trace,
+            || Ok("allowed place"),
+            |allowed_place| {
+                protected_path_reached.set(true);
+                assert_eq!(allowed_place, "allowed place");
+                Ok(PROTECTED_MESSAGE_PATH_STAGE)
+            },
+        )
+        .expect("an allowed place reaches the protected-message path");
+
+        println!(
+            "task_0120_allowed_place_command_trace={}",
+            trace.join(" -> ")
+        );
+        println!("task_0120_reached={reached}");
+
+        assert_eq!(
+            trace,
+            [
+                ALLOWED_PLACE_CHECK_STAGE,
+                ALLOWED_PLACE_CONFIRMED_STAGE,
+                PROTECTED_MESSAGE_PATH_STAGE,
+            ]
+        );
+        assert!(protected_path_reached.get());
+        assert_eq!(reached, PROTECTED_MESSAGE_PATH_STAGE);
+
+        let mut refused_trace = Vec::new();
+        let refused_path_reached = Cell::new(false);
+        let refused = with_allowed_place_before_protected_message_path(
+            &mut refused_trace,
+            || -> Result<&'static str, String> { Err("place not allowed".to_owned()) },
+            |_| {
+                refused_path_reached.set(true);
+                Ok(PROTECTED_MESSAGE_PATH_STAGE)
+            },
+        );
+        match refused {
+            Err(error) => assert_eq!(error, "place not allowed"),
+            Ok(_) => panic!("an unallowed place must refuse before protected-message path"),
+        }
+        println!(
+            "task_0120_unallowed_place_command_trace={}",
+            refused_trace.join(" -> ")
+        );
+        assert_eq!(refused_trace, [ALLOWED_PLACE_CHECK_STAGE]);
+        assert!(!refused_path_reached.get());
+
+        let source = include_str!("main.rs");
+        let command_start = source
+            .find("#[tauri::command]\nfn send_native_discord_overlay_carrier(")
+            .expect("native Discord carrier command remains present");
+        let command_tail = &source[command_start..];
+        let command_end = command_tail
+            .find("struct NativeDiscordOverlayStateDto {")
+            .expect("native Discord carrier command body remains bounded");
+        let command = &command_tail[..command_end];
+        let gate = command
+            .find("with_allowed_place_before_protected_message_path(")
+            .expect("native Discord carrier command gates protected-message path");
+        let allowed_place = command
+            .find("native_discord_allowed_place_scope_binding(&app)")
+            .expect("native Discord carrier command checks the allowed place");
+        let protected_path = command
+            .find("composer.place_carrier(")
+            .expect("native Discord carrier command reaches protected-message placement");
+        assert!(gate < allowed_place);
+        assert!(allowed_place < protected_path);
     }
 
     #[cfg(feature = "discord-qa-shell")]

@@ -193,9 +193,10 @@ use osl_privacy_hub::hub_command_surface::{
     require_native_discord_product_send_authority,
     require_review_ui_identity_binding_from_verifier, service_kind_id,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
-    start_autoscrub_reviewed_run_inner, with_native_discord_product_send_authority,
-    BrowserFootprintConsentRequest, CheckedHost, DiscordGuidedDeletionPlanState,
-    GuidedDeletionRunAuthorityInput, NativeDiscordProductSendAuthority,
+    start_autoscrub_reviewed_run_inner, with_allowed_place_before_protected_message_path,
+    with_native_discord_product_send_authority, BrowserFootprintConsentRequest, CheckedHost,
+    DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
+    NativeDiscordProductSendAuthority,
 };
 use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
@@ -2968,6 +2969,32 @@ fn native_discord_scope_binding(app: &tauri::AppHandle) -> Result<String, String
         })
 }
 
+fn native_discord_allowed_place_scope_binding(app: &tauri::AppHandle) -> Result<String, String> {
+    let core = app.state::<HubCoreState>();
+    let broker = app.state::<HubBrokerState>();
+    app.state::<OverlaySessionState>()
+        .with_bootstrap_context(|context_token, host| {
+            broker.validate_active_host(context_token, host)?;
+            let target = broker
+                .manual_burn_target(context_token)?
+                .ok_or_else(|| "The native Discord friend context is unavailable".to_owned())?;
+            security::require_manual_peer_scope_approved(
+                &core,
+                &target.service_id,
+                &target.account_id,
+                target.person_id.clone(),
+                target.scope.clone(),
+            )?;
+            serde_json::to_string(&(
+                target.service_id,
+                target.account_id,
+                target.person_id,
+                target.scope,
+            ))
+            .map_err(|_| "The native Discord friend context is unavailable".to_owned())
+        })
+}
+
 #[tauri::command]
 async fn set_native_discord_protected_overlay_open(
     app: tauri::AppHandle,
@@ -3359,40 +3386,50 @@ fn send_native_discord_overlay_carrier(
     }
     let owner = active_unlocked_osl_user_id(&app.state::<HubCoreState>())?;
     let (epoch, host) = require_overlay_context_snapshot(&app)?;
-    let scope_binding = native_discord_scope_binding(&app)?;
-    require_same_overlay_context(&app, epoch, &host)?;
-    let composer = app.state::<NativeDiscordComposerState>();
-    with_native_discord_product_send_authority(
-        &composer,
-        &scope_binding,
-        layout,
-        |product_send_authority| {
-            let overlay_state = app.state::<OverlaySessionState>();
-            let carrier_placement = overlay_state.begin_carrier_placement()?;
-            require_engaged_lock(&app)?;
-            let placement_scope_binding = native_discord_scope_binding(&app)?;
-            if placement_scope_binding != scope_binding {
-                drop(carrier_placement);
-                return Err("The native Discord friend context changed before placement".to_owned());
-            }
+    let mut command_trace = Vec::new();
+    with_allowed_place_before_protected_message_path(
+        &mut command_trace,
+        || native_discord_allowed_place_scope_binding(&app),
+        |scope_binding| {
             require_same_overlay_context(&app, epoch, &host)?;
-            let placement_context =
-                NativeDiscordPlacementContext::new(&placement_scope_binding, mode);
-            let receipt = composer.place_carrier(
-                &app.state::<NativeWindowHostState>(),
-                &owner,
-                &placement_scope_binding,
-                Some(&placement_context),
-                mode,
-                chars_per_second,
-                &product_send_authority.carrier,
-            );
-            drop(carrier_placement);
-            require_same_overlay_context(&app, epoch, &host)?;
-            if let Some(window) = app.get_webview_window(native_discord_overlay::OVERLAY_LABEL) {
-                let _ = window.set_focus();
-            }
-            Ok(receipt)
+            let composer = app.state::<NativeDiscordComposerState>();
+            with_native_discord_product_send_authority(
+                &composer,
+                &scope_binding,
+                layout,
+                |product_send_authority| {
+                    let overlay_state = app.state::<OverlaySessionState>();
+                    let carrier_placement = overlay_state.begin_carrier_placement()?;
+                    require_engaged_lock(&app)?;
+                    let placement_scope_binding = native_discord_scope_binding(&app)?;
+                    if placement_scope_binding != scope_binding {
+                        drop(carrier_placement);
+                        return Err(
+                            "The native Discord friend context changed before placement".to_owned()
+                        );
+                    }
+                    require_same_overlay_context(&app, epoch, &host)?;
+                    let placement_context =
+                        NativeDiscordPlacementContext::new(&placement_scope_binding, mode);
+                    let receipt = composer.place_carrier(
+                        &app.state::<NativeWindowHostState>(),
+                        &owner,
+                        &placement_scope_binding,
+                        Some(&placement_context),
+                        mode,
+                        chars_per_second,
+                        &product_send_authority.carrier,
+                    );
+                    drop(carrier_placement);
+                    require_same_overlay_context(&app, epoch, &host)?;
+                    if let Some(window) =
+                        app.get_webview_window(native_discord_overlay::OVERLAY_LABEL)
+                    {
+                        let _ = window.set_focus();
+                    }
+                    Ok(receipt)
+                },
+            )
         },
     )
 }
