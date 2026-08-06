@@ -2460,10 +2460,76 @@ mod password_policy_tests {
         write_lockout(dir, &lock).unwrap();
     }
 
+    fn gate_attempt_label(result: GatePasswordAttemptResult) -> &'static str {
+        match result {
+            GatePasswordAttemptResult::Main(_) => "main",
+            GatePasswordAttemptResult::Stealth => "stealth",
+            GatePasswordAttemptResult::Burn => "burn",
+            GatePasswordAttemptResult::Wrong { .. } => "wrong",
+            GatePasswordAttemptResult::Duress { .. } => "duress",
+        }
+    }
+
     #[test]
     fn six_character_passwords_can_be_created_and_unlocked() {
         assert!(validate_password("aB3!z9").is_ok());
         assert!(validate_new_password("aB3!z9").is_ok());
+    }
+
+    #[test]
+    fn saved_burn_password_is_only_gate_entry_that_returns_burn_action_for_disposable_account() {
+        let _serial = crate::test_process_globals::serialize();
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        let account_dir = dir.path().join("disposable-account-0308");
+        std::fs::create_dir_all(&account_dir).unwrap();
+
+        let main_password = "main-password-0308";
+        let burn_password = "burn-password-0308";
+        write_marker(dir.path(), &build_fast_test_marker(main_password)).unwrap();
+        set_burn_password(dir.path(), main_password, burn_password).unwrap();
+
+        let saved = read_marker(dir.path()).unwrap();
+        assert!(
+            saved.burn_password_hash_b64.is_some(),
+            "the burn password must be stored separately on disk"
+        );
+        assert_ne!(
+            saved.burn_password_hash_b64.as_deref(),
+            Some(saved.password_hash_b64.as_str()),
+            "the burn password hash must not be the main password hash"
+        );
+
+        set_file_storage_key(None);
+        let main = gate_attempt_label(
+            verify_gate_password_attempt(dir.path(), main_password).expect("main password checks"),
+        );
+        set_file_storage_key(None);
+        let wrong = gate_attempt_label(
+            verify_gate_password_attempt(dir.path(), "wrong-password-0308")
+                .expect("wrong password checks"),
+        );
+        let burn = gate_attempt_label(
+            verify_gate_password_attempt(dir.path(), burn_password).expect("burn password checks"),
+        );
+        let burn_action_count = [main, wrong, burn]
+            .into_iter()
+            .filter(|label| *label == "burn")
+            .count();
+
+        println!(
+            "0308 burn password store disposable-account results: main={main} wrong={wrong} burn={burn} burn_action_count={burn_action_count}"
+        );
+        assert_eq!(main, "main");
+        assert_eq!(wrong, "wrong");
+        assert_eq!(burn, "burn");
+        assert_eq!(burn_action_count, 1);
+        assert!(
+            account_dir.exists(),
+            "the disposable account fixture exists"
+        );
+
+        set_file_storage_key(None);
     }
 
     #[test]
