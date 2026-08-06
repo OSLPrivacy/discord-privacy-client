@@ -6,7 +6,7 @@
 //! those inputs encrypted and deterministically reproduce findings from disk.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::attachment_scan::{
     scan_attachments, AttachmentAnalyzers, LocalAttachmentCandidate, UninspectedAttachment,
@@ -86,6 +86,31 @@ pub struct LocalPrivacyScanResult {
     pub uninspected_attachments: Vec<UninspectedAttachment>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedReviewMatch {
+    pub full_text: String,
+    pub reason: &'static str,
+    pub service: String,
+    pub place: String,
+    pub date: String,
+    pub time: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewResultAccountGroup {
+    pub account_id: String,
+    pub matches: Vec<SavedReviewMatch>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewResultStoreOutput {
+    pub groups: Vec<ReviewResultAccountGroup>,
+    pub total_matches: usize,
+}
+
 /// Scan bounded caller-provided text entirely in process memory.
 ///
 /// Invalid or oversized records are rejected rather than partially scanned.
@@ -94,6 +119,47 @@ pub struct LocalPrivacyScanResult {
 /// before offering jump/delete actions.
 pub fn scan_local_messages(messages: Vec<LocalMessageCandidate>) -> LocalPrivacyScanResult {
     scan_local_messages_with_analyzers(messages, AttachmentAnalyzers::default())
+}
+
+pub fn group_saved_matches_by_account(
+    messages: Vec<LocalMessageCandidate>,
+) -> ReviewResultStoreOutput {
+    let mut grouped = BTreeMap::<String, Vec<SavedReviewMatch>>::new();
+    for message in messages.into_iter().take(MAX_MESSAGES) {
+        if !valid_candidate(&message) {
+            continue;
+        }
+        let (date, time) = match message.created_at_unix_ms {
+            Some(unix_ms) => utc_date_time(unix_ms),
+            None => ("unknown".to_owned(), "unknown".to_owned()),
+        };
+        for (_, _, reason) in classify(&message.text) {
+            grouped
+                .entry(message.account_id.clone())
+                .or_default()
+                .push(SavedReviewMatch {
+                    full_text: message.text.clone(),
+                    reason,
+                    service: service_label(&message.service_id).to_owned(),
+                    place: message.conversation_id.clone(),
+                    date: date.clone(),
+                    time: time.clone(),
+                });
+        }
+    }
+
+    let total_matches = grouped.values().map(Vec::len).sum();
+    let groups = grouped
+        .into_iter()
+        .map(|(account_id, matches)| ReviewResultAccountGroup {
+            account_id,
+            matches,
+        })
+        .collect();
+    ReviewResultStoreOutput {
+        groups,
+        total_matches,
+    }
 }
 
 /// Reject oversized attachment IPC inputs before they are cloned, decoded, or
@@ -310,6 +376,45 @@ fn unsafe_attachment_metadata_char(value: char) -> bool {
 
 fn valid_id_byte(byte: u8) -> bool {
     byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+}
+
+fn service_label(service_id: &str) -> &str {
+    match service_id {
+        "discord" => "Discord",
+        "telegram" => "Telegram",
+        "whatsapp" => "WhatsApp",
+        "email" => "Email",
+        "signal" => "Signal",
+        other => other,
+    }
+}
+
+fn utc_date_time(unix_ms: i64) -> (String, String) {
+    let seconds = unix_ms.div_euclid(1_000);
+    let days = seconds.div_euclid(86_400);
+    let second_of_day = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = second_of_day / 3_600;
+    let minute = (second_of_day % 3_600) / 60;
+    (
+        format!("{year:04}-{month:02}-{day:02}"),
+        format!("{hour:02}:{minute:02}"),
+    )
+}
+
+fn civil_from_days(days_since_unix_epoch: i64) -> (i64, u32, u32) {
+    let z = days_since_unix_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += if month <= 2 { 1 } else { 0 };
+    (year, month as u32, day as u32)
 }
 
 fn classify(text: &str) -> Vec<(PrivacyRiskCategory, u8, &'static str)> {
@@ -594,6 +699,25 @@ mod tests {
         }
     }
 
+    fn fixture_message(
+        service_id: &str,
+        account_id: &str,
+        conversation_id: &str,
+        created_at_unix_ms: i64,
+        text: &str,
+    ) -> LocalMessageCandidate {
+        LocalMessageCandidate {
+            service_id: service_id.to_owned(),
+            account_id: account_id.to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            message_locator: format!("{conversation_id}:message"),
+            authored_by_self: true,
+            created_at_unix_ms: Some(created_at_unix_ms),
+            text: text.to_owned(),
+            attachments: Vec::new(),
+        }
+    }
+
     #[test]
     fn flags_high_confidence_local_risks_without_persisting() {
         let result = scan_local_messages(vec![
@@ -605,6 +729,86 @@ mod tests {
         assert_eq!(result.findings.len(), 3);
         assert_eq!(result.analysis_location, "this_device_only");
         assert!(!result.persisted);
+    }
+
+    #[test]
+    fn task_1444_direct_results_output_groups_two_fixture_matches_with_all_location_fields() {
+        let output = group_saved_matches_by_account(vec![
+            fixture_message(
+                "discord",
+                "discord-account-alpha-1444",
+                "dm:task-1444-alpha",
+                1_786_008_600_000,
+                "password: correct horse battery staple",
+            ),
+            fixture_message(
+                "telegram",
+                "telegram-account-beta-1444",
+                "chat:task-1444-beta",
+                1_786_013_100_000,
+                "recovery phrase: maple bridge cloud midnight",
+            ),
+            fixture_message(
+                "discord",
+                "discord-account-alpha-1444",
+                "dm:task-1444-alpha",
+                1_786_008_600_000,
+                "Want to get coffee tomorrow?",
+            ),
+        ]);
+        println!(
+            "TASK1444_DIRECT_RESULT command=group_saved_matches_by_account group_count={} total_matches={}",
+            output.groups.len(),
+            output.total_matches
+        );
+        for group in &output.groups {
+            println!(
+                "TASK1444_GROUP account_id={} match_count={}",
+                group.account_id,
+                group.matches.len()
+            );
+            for item in &group.matches {
+                println!(
+                    "TASK1444_MATCH account_id={} full_text=\"{}\" reason=\"{}\" service=\"{}\" place=\"{}\" date={} time={}",
+                    group.account_id,
+                    item.full_text,
+                    item.reason,
+                    item.service,
+                    item.place,
+                    item.date,
+                    item.time
+                );
+            }
+        }
+
+        assert_eq!(output.groups.len(), 2);
+        assert_eq!(output.total_matches, 2);
+        assert_eq!(output.groups[0].account_id, "discord-account-alpha-1444");
+        assert_eq!(output.groups[0].matches.len(), 1);
+        assert_eq!(
+            output.groups[0].matches[0],
+            SavedReviewMatch {
+                full_text: "password: correct horse battery staple".to_owned(),
+                reason: "This looks like a password, API key, or access credential.",
+                service: "Discord".to_owned(),
+                place: "dm:task-1444-alpha".to_owned(),
+                date: "2026-08-06".to_owned(),
+                time: "09:30".to_owned(),
+            }
+        );
+        assert_eq!(output.groups[1].account_id, "telegram-account-beta-1444");
+        assert_eq!(output.groups[1].matches.len(), 1);
+        assert_eq!(
+            output.groups[1].matches[0],
+            SavedReviewMatch {
+                full_text: "recovery phrase: maple bridge cloud midnight".to_owned(),
+                reason: "This may expose account or wallet recovery material.",
+                service: "Telegram".to_owned(),
+                place: "chat:task-1444-beta".to_owned(),
+                date: "2026-08-06".to_owned(),
+                time: "10:45".to_owned(),
+            }
+        );
     }
 
     #[test]
