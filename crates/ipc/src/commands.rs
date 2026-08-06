@@ -16013,6 +16013,164 @@ pub fn cmd_osl_set_update_channel(
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrivacyLevelRuleSetDto {
+    pub level: String,
+    pub label: String,
+    pub before_send_warnings: bool,
+    pub attachment_cleaning: bool,
+    pub cleanup_review_days: u16,
+    pub public_post_checks: bool,
+    pub vpn_required_actions: bool,
+    pub protected_contacts_required: bool,
+}
+
+impl PrivacyLevelRuleSetDto {
+    fn from_parts(
+        level: crate::app_preferences::PrivacyLevel,
+        rules: crate::app_preferences::PrivacyLevelRuleSet,
+    ) -> Self {
+        Self {
+            level: level.id().to_owned(),
+            label: level.label().to_owned(),
+            before_send_warnings: rules.before_send_warnings,
+            attachment_cleaning: rules.attachment_cleaning,
+            cleanup_review_days: rules.cleanup_review_days,
+            public_post_checks: rules.public_post_checks,
+            vpn_required_actions: rules.vpn_required_actions,
+            protected_contacts_required: rules.protected_contacts_required,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrivacyProtectionChoicesDto {
+    pub level: String,
+    pub label: String,
+    pub warnings: String,
+    pub cleanup: String,
+    pub app_exceptions: String,
+    pub contact_rules: String,
+}
+
+impl PrivacyProtectionChoicesDto {
+    fn from_parts(
+        level: crate::app_preferences::PrivacyLevel,
+        rules: crate::app_preferences::PrivacyLevelRuleSet,
+    ) -> Self {
+        let warnings = match (rules.before_send_warnings, rules.public_post_checks) {
+            (false, false) => "warnings_off",
+            (true, false) => "before_send_warnings",
+            (false, true) => "public_post_warnings",
+            (true, true) => "before_send_and_public_post_warnings",
+        };
+        let cleanup = match (rules.attachment_cleaning, rules.cleanup_review_days) {
+            (false, 0) => "cleanup_off".to_owned(),
+            (false, days) => format!("cleanup_review_{days}_days"),
+            (true, days) => format!("attachment_cleaning_plus_{days}_day_review"),
+        };
+        let app_exceptions = if rules.public_post_checks || rules.vpn_required_actions {
+            "app_exceptions_restricted"
+        } else if rules.before_send_warnings
+            || rules.attachment_cleaning
+            || rules.cleanup_review_days > 0
+        {
+            "app_exceptions_reviewed"
+        } else {
+            "app_exceptions_allowed"
+        };
+        let contact_rules = if rules.protected_contacts_required {
+            "protected_contacts_required"
+        } else if rules.before_send_warnings
+            || rules.attachment_cleaning
+            || rules.cleanup_review_days > 0
+        {
+            "verified_contacts_suggested"
+        } else {
+            "contacts_optional"
+        };
+
+        Self {
+            level: level.id().to_owned(),
+            label: level.label().to_owned(),
+            warnings: warnings.to_owned(),
+            cleanup,
+            app_exceptions: app_exceptions.to_owned(),
+            contact_rules: contact_rules.to_owned(),
+        }
+    }
+}
+
+fn saved_privacy_level_and_rules(
+    state: &AppState,
+) -> (
+    crate::app_preferences::PrivacyLevel,
+    crate::app_preferences::PrivacyLevelRuleSet,
+) {
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    let level = prefs.privacy_level;
+    let rules = prefs
+        .privacy_level_rule_sets
+        .get(level.id())
+        .copied()
+        .unwrap_or_else(|| crate::app_preferences::PrivacyLevelRuleSet::for_level(level));
+    (level, rules)
+}
+
+pub fn cmd_osl_save_privacy_level_rule_set(
+    state: &AppState,
+    level: String,
+    config_dir: Option<PathBuf>,
+) -> Result<PrivacyLevelRuleSetDto, String> {
+    record_activity_on_command_entry();
+    let level = crate::app_preferences::parse_privacy_level(&level)?;
+    let rules = crate::app_preferences::PrivacyLevelRuleSet::for_level(level);
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.privacy_level = level;
+        prefs
+            .privacy_level_rule_sets
+            .insert(level.id().to_owned(), rules);
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(PrivacyLevelRuleSetDto::from_parts(level, rules))
+}
+
+pub fn cmd_osl_read_privacy_level_rule_set(
+    state: &AppState,
+    level: String,
+) -> Result<PrivacyLevelRuleSetDto, String> {
+    record_activity_on_command_entry();
+    let level = crate::app_preferences::parse_privacy_level(&level)?;
+    let rules = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .privacy_level_rule_sets
+        .get(level.id())
+        .copied()
+        .unwrap_or_else(|| crate::app_preferences::PrivacyLevelRuleSet::for_level(level));
+    Ok(PrivacyLevelRuleSetDto::from_parts(level, rules))
+}
+
+pub fn cmd_osl_read_privacy_protection_choices(
+    state: &AppState,
+) -> Result<PrivacyProtectionChoicesDto, String> {
+    record_activity_on_command_entry();
+    let (level, rules) = saved_privacy_level_and_rules(state);
+    Ok(PrivacyProtectionChoicesDto::from_parts(level, rules))
+}
+
 // ---- Phase 9-D: onboarding tour + VPN warning ----
 
 /// DTO mirroring [`crate::app_preferences::TourState`]. One
