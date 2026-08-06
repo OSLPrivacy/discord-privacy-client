@@ -3,6 +3,7 @@
 import type { Env } from "../env.js";
 import { isPadmeLength, MAX_LIVE_BLOB_BYTES, MAX_LIVE_BLOB_ROWS } from "../lib/blob-limits.js";
 import { applyBurn } from "../lib/burn-policy.js";
+import { parseDeleteGrant } from "../lib/delete-grant.js";
 import { constantTimeEqualHex, sha256Hex } from "../lib/digest.js";
 import { error, json, notFound } from "../lib/http.js";
 import { R2PayloadStore } from "../lib/payload-store.js";
@@ -16,6 +17,7 @@ export const MAX_BLOB_BYTES = 64 * 1024;
 const CAP_RE = /^[0-9a-f]{32}$/;
 const DIGEST_RE = /^[0-9a-f]{64}$/;
 const ID_RE = /^[0-9a-f]{32}$/;
+const DELETE_BINDING_RE = /^[A-Za-z0-9:._@<>-]{1,512}$/;
 
 function hexHeader(request: Request, name: string, re: RegExp): string | null {
   const value = request.headers.get(name)?.trim().toLowerCase();
@@ -29,9 +31,41 @@ function uploadHeaders(request: Request) {
   const manageDigest = hexHeader(request, "x-osl-manage-digest", DIGEST_RE);
   const deliveryTag = hexHeader(request, "x-osl-delivery-tag", ID_RE);
   const objectClass = request.headers.get("x-osl-object-class");
-  if (!blobId || !fetchDigest || !ackDigest || !manageDigest || !deliveryTag
-      || (objectClass !== "single-ack" && objectClass !== "multi-fetch")) return null;
-  return { blobId, fetchDigest, ackDigest, manageDigest, deliveryTag, objectClass };
+  const deleteMessage = optionalDeleteBinding(request, "x-osl-delete-message");
+  const deleteOwner = optionalDeleteBinding(request, "x-osl-delete-owner");
+  const burnScope = optionalDeleteBinding(request, "x-osl-burn-scope");
+  const deleteFieldCount = [deleteMessage, deleteOwner, burnScope]
+    .filter((value) => value !== null).length;
+  if (
+    !blobId
+    || !fetchDigest
+    || !ackDigest
+    || !manageDigest
+    || !deliveryTag
+    || (objectClass !== "single-ack" && objectClass !== "multi-fetch")
+    || deleteMessage === undefined
+    || deleteOwner === undefined
+    || burnScope === undefined
+    || (deleteFieldCount !== 0 && deleteFieldCount !== 3)
+  ) return null;
+  return {
+    blobId,
+    fetchDigest,
+    ackDigest,
+    manageDigest,
+    deliveryTag,
+    objectClass,
+    deleteMessage,
+    deleteOwner,
+    burnScope,
+  };
+}
+
+function optionalDeleteBinding(request: Request, name: string): string | null | undefined {
+  const raw = request.headers.get(name);
+  if (raw === null) return null;
+  const value = raw.trim();
+  return DELETE_BINDING_RE.test(value) ? value : undefined;
 }
 
 export async function handleUpload(request: Request, env: Env): Promise<Response> {
@@ -118,15 +152,31 @@ async function insertBlobRow(
       `INSERT INTO blob_capability_index (
         blob_id, fetch_digest_sha256_hex, ack_digest_sha256_hex,
         manage_digest_sha256_hex, object_class, pool, delivery_tag,
-        size_bytes, expires_at, created_at
+        size_bytes, expires_at, created_at, delete_message, delete_owner,
+        burn_scope
       )
-      SELECT ?, ?, ?, ?, ?, 'undelivered', ?, ?, ?, ?
+      SELECT ?, ?, ?, ?, ?, 'undelivered', ?, ?, ?, ?, ?, ?, ?
        WHERE NOT EXISTS (SELECT 1 FROM blob_capability_index WHERE blob_id = ?)
          AND (SELECT COUNT(*) FROM blob_capability_index) < ?
          AND COALESCE((SELECT SUM(size_bytes) FROM blob_capability_index), 0) <= ? - ?`,
-    ).bind(headers.blobId, headers.fetchDigest, headers.ackDigest, headers.manageDigest,
-      headers.objectClass, headers.deliveryTag, bytes.byteLength, expiresAt, now,
-      headers.blobId, MAX_LIVE_BLOB_ROWS, MAX_LIVE_BLOB_BYTES, bytes.byteLength).run();
+    ).bind(
+      headers.blobId,
+      headers.fetchDigest,
+      headers.ackDigest,
+      headers.manageDigest,
+      headers.objectClass,
+      headers.deliveryTag,
+      bytes.byteLength,
+      expiresAt,
+      now,
+      headers.deleteMessage,
+      headers.deleteOwner,
+      headers.burnScope,
+      headers.blobId,
+      MAX_LIVE_BLOB_ROWS,
+      MAX_LIVE_BLOB_BYTES,
+      bytes.byteLength,
+    ).run();
     return (inserted.meta?.changes ?? 0) === 1;
   } catch (cause) {
     // The primary key is the backstop behind `NOT EXISTS`: a row that landed
@@ -180,6 +230,8 @@ export async function handleFetch(request: Request, env: Env, blobId: string): P
 }
 
 export async function handleDelete(request: Request, env: Env, blobId: string): Promise<Response> {
+  const grantCheck = await validateDeleteGrant(request, env, blobId);
+  if (grantCheck !== null) return grantCheck;
   return applyBurn({
     async manageCapabilityDigestFor(id) {
       if (!ID_RE.test(id)) return null;
@@ -200,4 +252,50 @@ export async function handleDelete(request: Request, env: Env, blobId: string): 
       await env.DB.prepare("DELETE FROM blob_capability_index WHERE blob_id = ?").bind(id).run();
     },
   }, blobId, request.headers.get("x-osl-manage-cap"));
+}
+
+type DeleteGrantRow = {
+  delete_message: string | null;
+  delete_owner: string | null;
+  burn_scope: string | null;
+};
+
+async function validateDeleteGrant(
+  request: Request,
+  env: Env,
+  blobId: string,
+): Promise<Response | null> {
+  if (!ID_RE.test(blobId)) return null;
+  const row = await env.DB.prepare(
+    `SELECT delete_message, delete_owner, burn_scope
+       FROM blob_capability_index
+      WHERE blob_id = ? LIMIT 1`,
+  ).bind(blobId).first<DeleteGrantRow>();
+  if (!row) return null;
+  const expected = [row.delete_message, row.delete_owner, row.burn_scope];
+  const protectedRow = expected.some((value) => value !== null);
+  if (!protectedRow) return null;
+  if (!row.delete_message || !row.delete_owner || !row.burn_scope) {
+    return error(403, "delete_grant_required", "delete grant required");
+  }
+  const header = request.headers.get("x-osl-delete-grant");
+  if (header === null) {
+    return error(403, "delete_grant_required", "delete grant required");
+  }
+  const grant = parseDeleteGrant(header);
+  if (typeof grant === "string") {
+    return error(403, grant, "delete grant refused");
+  }
+  if (
+    grant.message !== row.delete_message
+    || grant.owner !== row.delete_owner
+    || grant.scope !== row.burn_scope
+  ) {
+    return error(403, "delete_grant_scope", "delete grant refused");
+  }
+  const manageCap = request.headers.get("x-osl-manage-cap")?.trim().toLowerCase();
+  if (manageCap !== grant.grant) {
+    return error(403, "delete_grant_capability", "delete grant refused");
+  }
+  return null;
 }
