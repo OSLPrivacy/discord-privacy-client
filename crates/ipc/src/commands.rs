@@ -13398,6 +13398,61 @@ pub fn cmd_osl_read_verification_warning_choice(
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BehaviourChoiceDto {
+    pub name: String,
+    pub choice: String,
+}
+
+pub fn cmd_osl_save_behaviour_choice(
+    state: &AppState,
+    name: String,
+    choice: String,
+    config_dir: Option<PathBuf>,
+) -> Result<BehaviourChoiceDto, String> {
+    record_activity_on_command_entry();
+    let name = crate::app_preferences::parse_behaviour_choice_name(&name)?;
+    let choice = crate::app_preferences::normalize_behaviour_choice_value(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs
+            .behaviour_choices
+            .insert(name.label().to_string(), choice.clone());
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(BehaviourChoiceDto {
+        name: name.label().to_string(),
+        choice,
+    })
+}
+
+pub fn cmd_osl_read_behaviour_choice(
+    state: &AppState,
+    name: String,
+) -> Result<BehaviourChoiceDto, String> {
+    record_activity_on_command_entry();
+    let name = crate::app_preferences::parse_behaviour_choice_name(&name)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .behaviour_choices
+        .get(name.label())
+        .cloned()
+        .unwrap_or_else(|| "default".to_string());
+    Ok(BehaviourChoiceDto {
+        name: name.label().to_string(),
+        choice,
+    })
+}
+
 pub fn cmd_osl_check_verification_warning_on_opening(
     state: &AppState,
     conversation_id: String,

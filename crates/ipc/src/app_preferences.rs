@@ -117,6 +117,57 @@ pub fn parse_verification_warning_choice(
         .ok_or_else(|| format!("OSL: unknown verification warning choice '{choice}'"))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BehaviourChoiceName {
+    Position,
+    RememberPlace,
+    Movement,
+    TrayPicture,
+    Sound,
+    Mute,
+    QuietHours,
+}
+
+impl BehaviourChoiceName {
+    pub const ALL: [Self; 7] = [
+        Self::Position,
+        Self::RememberPlace,
+        Self::Movement,
+        Self::TrayPicture,
+        Self::Sound,
+        Self::Mute,
+        Self::QuietHours,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Position => "position",
+            Self::RememberPlace => "remember place",
+            Self::Movement => "movement",
+            Self::TrayPicture => "tray picture",
+            Self::Sound => "sound",
+            Self::Mute => "mute",
+            Self::QuietHours => "quiet hours",
+        }
+    }
+}
+
+pub fn parse_behaviour_choice_name(name: &str) -> Result<BehaviourChoiceName, String> {
+    let name = name.trim();
+    BehaviourChoiceName::ALL
+        .into_iter()
+        .find(|candidate| candidate.label() == name)
+        .ok_or_else(|| format!("OSL: unknown behaviour choice '{name}'"))
+}
+
+pub fn normalize_behaviour_choice_value(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 256 {
+        return Err("OSL: behaviour choice value is invalid".to_string());
+    }
+    Ok(value.to_string())
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -131,6 +182,8 @@ pub struct AppPreferences {
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
     #[serde(default)]
     pub verification_warning: VerificationWarningChoice,
+    #[serde(default)]
+    pub behaviour_choices: HashMap<String, String>,
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 2;
