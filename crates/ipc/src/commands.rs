@@ -3793,6 +3793,18 @@ pub struct BurnSenderMessageRecordsBothSidesDto {
     pub equal_removal_counts: bool,
 }
 
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct ChatBurnSenderMessageRecordsChoiceDto {
+    pub open_chat_id: String,
+    pub selected_scope: String,
+    pub selected_message_ids: Vec<String>,
+    pub requested_count: usize,
+    pub local_removal_count: usize,
+    pub remote_removal_count: usize,
+    pub remaining_local_count: usize,
+    pub equal_removal_counts: bool,
+}
+
 /// Burn selected sender records on both owned surfaces:
 ///
 /// - physically remove the selected local message rows; and
@@ -3850,6 +3862,52 @@ pub fn cmd_osl_burn_sender_message_records_choice(
         "both-sides" => cmd_osl_burn_sender_message_records_both_sides(state, discord_message_ids),
         other => Err(format!("OSL: unknown scope: {other}")),
     }
+}
+
+/// Resolve a chat burn from the currently open chat, then run the selected burn
+/// scope action against only this user's message ids from that chat.
+pub fn cmd_osl_chat_burn_sender_message_records_choice(
+    state: &AppState,
+    open_chat_id: String,
+    selected_scope: &str,
+) -> Result<ChatBurnSenderMessageRecordsChoiceDto, String> {
+    record_activity_on_command_entry();
+    let self_user_id = state
+        .identity_slot()
+        .as_ref()
+        .map(|identity| identity.user_id.clone())
+        .ok_or_else(|| "OSL: chat burn needs a loaded identity".to_string())?;
+    let selected_message_ids = {
+        let guard = state
+            .message_store
+            .lock()
+            .expect("message_store mutex poisoned");
+        let Some(store) = guard.as_ref() else {
+            return Err("OSL: chat burn needs a message store".to_string());
+        };
+        store
+            .list_by_channel(&open_chat_id, u32::MAX)
+            .map_err(|e| format!("OSL: select open-chat sender records: {e}"))?
+            .into_iter()
+            .filter(|message| message.sender_osl_user_id == self_user_id)
+            .map(|message| message.discord_message_id)
+            .collect::<Vec<_>>()
+    };
+    let result = cmd_osl_burn_sender_message_records_choice(
+        state,
+        selected_scope,
+        selected_message_ids.clone(),
+    )?;
+    Ok(ChatBurnSenderMessageRecordsChoiceDto {
+        open_chat_id,
+        selected_scope: selected_scope.to_owned(),
+        selected_message_ids,
+        requested_count: result.requested_count,
+        local_removal_count: result.local_removal_count,
+        remote_removal_count: result.remote_removal_count,
+        remaining_local_count: result.remaining_local_count,
+        equal_removal_counts: result.equal_removal_counts,
+    })
 }
 
 fn validate_selected_sender_message_records(discord_message_ids: &[String]) -> Result<(), String> {
