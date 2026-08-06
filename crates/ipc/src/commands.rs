@@ -13,6 +13,7 @@ use base64::Engine;
 use crypto::{aead, ed25519, hkdf, random, x25519};
 use keystore::{generate_identity, select_best_sealer, KeyServerClient};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17065,6 +17066,7 @@ pub const DEFAULT_OSL_SITE_UPDATE_MANIFEST_URL: &str =
 
 const UPDATE_SITE_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 const UPDATE_SITE_MAX_BODY_BYTES: usize = 128 * 1024;
+const UPDATE_SITE_MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -17082,6 +17084,41 @@ pub enum SiteUpdateCheckResult {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct SiteUpdateInstallRequest {
+    pub version: String,
+    pub download_address: String,
+    pub expected_fingerprint: String,
+    pub install_path: PathBuf,
+    pub installed_version_path: PathBuf,
+    pub staging_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SiteUpdateInstallResult {
+    Installed {
+        version: String,
+        fingerprint: String,
+        downloaded_file_count_during: usize,
+        downloaded_file_count_after: usize,
+    },
+    Refused {
+        message: String,
+        version: String,
+        fingerprint: String,
+        downloaded_file_count_during: usize,
+        downloaded_file_count_after: usize,
+    },
+    Error {
+        message: String,
+        version: String,
+        fingerprint: String,
+        downloaded_file_count_during: usize,
+        downloaded_file_count_after: usize,
+    },
+}
+
 impl SiteUpdateCheckResult {
     pub fn direct_command_output(&self) -> String {
         match self {
@@ -17094,6 +17131,39 @@ impl SiteUpdateCheckResult {
             ),
             SiteUpdateCheckResult::UpToDate { message } => message.clone(),
             SiteUpdateCheckResult::Error { message } => format!("error: {message}"),
+        }
+    }
+}
+
+impl SiteUpdateInstallResult {
+    pub fn direct_command_output(&self) -> String {
+        match self {
+            SiteUpdateInstallResult::Installed {
+                version,
+                fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after,
+            } => format!(
+                "installed\nversion={version}\nfingerprint={fingerprint}\ndownloaded_file_count_during={downloaded_file_count_during}\ndownloaded_file_count_after={downloaded_file_count_after}"
+            ),
+            SiteUpdateInstallResult::Refused {
+                message,
+                version,
+                fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after,
+            } => format!(
+                "refused: {message}\nversion={version}\nfingerprint={fingerprint}\ndownloaded_file_count_during={downloaded_file_count_during}\ndownloaded_file_count_after={downloaded_file_count_after}"
+            ),
+            SiteUpdateInstallResult::Error {
+                message,
+                version,
+                fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after,
+            } => format!(
+                "error: {message}\nversion={version}\nfingerprint={fingerprint}\ndownloaded_file_count_during={downloaded_file_count_during}\ndownloaded_file_count_after={downloaded_file_count_after}"
+            ),
         }
     }
 }
@@ -17155,6 +17225,217 @@ fn normalize_update_fingerprint(input: &str) -> Option<String> {
         Some(format!("sha256:{}", candidate.to_ascii_lowercase()))
     } else {
         None
+    }
+}
+
+fn bytes_sha256_fingerprint(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    format!("sha256:{hex}")
+}
+
+fn file_sha256_fingerprint(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("installed file cannot be read: {e}"))?;
+    Ok(bytes_sha256_fingerprint(&bytes))
+}
+
+fn installed_site_update_identity(
+    install_path: &Path,
+    installed_version_path: &Path,
+) -> (String, String) {
+    let version = std::fs::read_to_string(installed_version_path)
+        .map(|value| value.trim().to_owned())
+        .unwrap_or_else(|_| "unknown".to_owned());
+    let fingerprint =
+        file_sha256_fingerprint(install_path).unwrap_or_else(|_| "sha256:unavailable".to_owned());
+    (version, fingerprint)
+}
+
+fn downloaded_file_count(staging_dir: &Path) -> usize {
+    std::fs::read_dir(staging_dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|kind| kind.is_file())
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+fn cleanup_downloaded_stage(stage_path: &Path) {
+    if stage_path.exists() {
+        let _ = std::fs::remove_file(stage_path);
+    }
+}
+
+pub fn cmd_osl_install_site_update(request: SiteUpdateInstallRequest) -> SiteUpdateInstallResult {
+    record_activity_on_command_entry();
+    let (current_version, current_fingerprint) =
+        installed_site_update_identity(&request.install_path, &request.installed_version_path);
+    let mut downloaded_file_count_during = downloaded_file_count(&request.staging_dir);
+
+    let expected = match normalize_update_fingerprint(&request.expected_fingerprint) {
+        Some(expected) => expected,
+        None => {
+            return SiteUpdateInstallResult::Error {
+                message: "expected fingerprint is invalid".to_owned(),
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            }
+        }
+    };
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(UPDATE_SITE_HTTP_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => {
+            return SiteUpdateInstallResult::Error {
+                message: format!("update HTTP client could not start: {e}"),
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            }
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&request.staging_dir) {
+        return SiteUpdateInstallResult::Error {
+            message: format!("update staging directory cannot be created: {e}"),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+
+    let stage_path = request.staging_dir.join("site-update.download");
+    cleanup_downloaded_stage(&stage_path);
+    let body = match client
+        .get(&request.download_address)
+        .send()
+        .map_err(|e| format!("update file cannot be reached: {e}"))
+        .and_then(|response| {
+            if !response.status().is_success() {
+                return Err(format!("update file returned HTTP {}", response.status()));
+            }
+            if response
+                .content_length()
+                .is_some_and(|len| len > UPDATE_SITE_MAX_ARTIFACT_BYTES)
+            {
+                return Err("update file is too large".to_owned());
+            }
+            response
+                .bytes()
+                .map_err(|e| format!("update file could not be read: {e}"))
+        }) {
+        Ok(body) => body,
+        Err(message) => {
+            return SiteUpdateInstallResult::Error {
+                message,
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            }
+        }
+    };
+    if u64::try_from(body.len()).unwrap_or(u64::MAX) > UPDATE_SITE_MAX_ARTIFACT_BYTES {
+        return SiteUpdateInstallResult::Error {
+            message: "update file is too large".to_owned(),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+    if let Err(e) = std::fs::write(&stage_path, &body) {
+        return SiteUpdateInstallResult::Error {
+            message: format!("update file cannot be staged: {e}"),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+    downloaded_file_count_during = downloaded_file_count(&request.staging_dir);
+
+    let actual = bytes_sha256_fingerprint(&body);
+    if actual != expected {
+        cleanup_downloaded_stage(&stage_path);
+        let downloaded_file_count_after = downloaded_file_count(&request.staging_dir);
+        let (version, fingerprint) =
+            installed_site_update_identity(&request.install_path, &request.installed_version_path);
+        return SiteUpdateInstallResult::Refused {
+            message: format!("fingerprint mismatch: expected {expected} actual {actual}"),
+            version,
+            fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after,
+        };
+    }
+
+    if let Some(parent) = request.install_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            cleanup_downloaded_stage(&stage_path);
+            return SiteUpdateInstallResult::Error {
+                message: format!("install directory cannot be created: {e}"),
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            };
+        }
+    }
+    if let Some(parent) = request.installed_version_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            cleanup_downloaded_stage(&stage_path);
+            return SiteUpdateInstallResult::Error {
+                message: format!("installed version directory cannot be created: {e}"),
+                version: current_version,
+                fingerprint: current_fingerprint,
+                downloaded_file_count_during,
+                downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+            };
+        }
+    }
+    if let Err(e) = std::fs::copy(&stage_path, &request.install_path) {
+        cleanup_downloaded_stage(&stage_path);
+        return SiteUpdateInstallResult::Error {
+            message: format!("update file cannot be installed: {e}"),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+    cleanup_downloaded_stage(&stage_path);
+    if let Err(e) = std::fs::write(&request.installed_version_path, request.version.as_bytes()) {
+        return SiteUpdateInstallResult::Error {
+            message: format!("installed version cannot be recorded: {e}"),
+            version: current_version,
+            fingerprint: current_fingerprint,
+            downloaded_file_count_during,
+            downloaded_file_count_after: downloaded_file_count(&request.staging_dir),
+        };
+    }
+    let downloaded_file_count_after = downloaded_file_count(&request.staging_dir);
+    let (version, fingerprint) =
+        installed_site_update_identity(&request.install_path, &request.installed_version_path);
+    SiteUpdateInstallResult::Installed {
+        version,
+        fingerprint,
+        downloaded_file_count_during,
+        downloaded_file_count_after,
     }
 }
 
