@@ -34,7 +34,7 @@
 use crypto::pqxdh::SessionKey;
 use crypto::ratchet::{
     canonical_ad, ChainKey, DoubleRatchet, SessionContext, MAX_SKIPPED_PER_CHAIN,
-    SESSION_VERSION_V1, SKIPPED_KEY_TTL,
+    RatchetStateOnDisk, SESSION_VERSION_V1, SKIPPED_KEY_TTL,
 };
 use crypto::{ml_kem_768, pqxdh, x25519};
 use std::time::{Duration, SystemTime};
@@ -428,6 +428,45 @@ fn post_compromise_security_via_dh_step() {
         stale.decrypt(&r3).is_err(),
         "captured pre-rotation snapshot must not decrypt post-rotation messages"
     );
+}
+
+#[test]
+fn task0433_stolen_current_key_opens_current_but_not_old_chat() {
+    let (mut alice, mut bob) = setup_pair();
+
+    let old_0 = alice.encrypt(b"TASK0433 old protected 0").unwrap();
+    let old_1 = alice.encrypt(b"TASK0433 old protected 1").unwrap();
+    assert_eq!(bob.decrypt(&old_0).unwrap(), b"TASK0433 old protected 0");
+    assert_eq!(bob.decrypt(&old_1).unwrap(), b"TASK0433 old protected 1");
+
+    let current = alice.encrypt(b"TASK0433 current protected").unwrap();
+    let stolen_current_key =
+        DoubleRatchet::try_from(RatchetStateOnDisk::from(&bob)).expect("stolen current key");
+
+    let mut current_reader = stolen_current_key.clone();
+    let current_plaintext = current_reader.decrypt(&current).unwrap();
+    assert_eq!(current_plaintext, b"TASK0433 current protected");
+
+    let earlier = [&old_0, &old_1];
+    let mut earlier_locked = 0usize;
+    for protected_message in earlier {
+        let mut replay_reader = stolen_current_key.clone();
+        if replay_reader.decrypt(protected_message).is_err() {
+            earlier_locked += 1;
+        }
+    }
+
+    println!("TASK0433 sent_messages=3 protected_messages=3");
+    println!(
+        "TASK0433 current_opened=true plaintext={}",
+        String::from_utf8(current_plaintext).unwrap()
+    );
+    println!(
+        "TASK0433 earlier_locked={} total_earlier={}",
+        earlier_locked,
+        earlier.len()
+    );
+    assert_eq!(earlier_locked, earlier.len());
 }
 
 #[test]
