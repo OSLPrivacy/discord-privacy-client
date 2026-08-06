@@ -10009,11 +10009,19 @@ fn main() {
         qa_selftest::spawn_trigger_watcher(app.handle().clone());
         #[cfg(feature = "discord-qa-shell")]
         startup_breadcrumb("setup_step_46_qa_selftest_watcher_spawned"); // STARTUP-TRACE
+        update_apply::recover_interrupted_update_before_start_at(
+            &config_dir,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "OSL update recovery clock is unavailable".to_owned())?
+                .as_secs(),
+        )?;
+        startup_breadcrumb("setup_step_47_update_apply_recovered"); // STARTUP-TRACE
         update_apply::mark_update_finished_after_successful_start(
             &config_dir,
             &app.package_info().version.to_string(),
         )?;
-        startup_breadcrumb("setup_step_47_update_apply_marked"); // STARTUP-TRACE
+        startup_breadcrumb("setup_step_48_update_apply_marked"); // STARTUP-TRACE
         startup_breadcrumb("setup_done"); // STARTUP-TRACE
         Ok(())
     });

@@ -191,6 +191,21 @@ pub fn restore_identity_and_friends_from_copy(
     app_config_dir: &Path,
     record: &UpdateStateCopyRecord,
 ) -> Result<UpdateStateCopyCounts, String> {
+    restore_state_from_copy(app_config_dir, record, false)
+}
+
+pub fn restore_identity_friends_and_messages_from_copy(
+    app_config_dir: &Path,
+    record: &UpdateStateCopyRecord,
+) -> Result<UpdateStateCopyCounts, String> {
+    restore_state_from_copy(app_config_dir, record, true)
+}
+
+fn restore_state_from_copy(
+    app_config_dir: &Path,
+    record: &UpdateStateCopyRecord,
+    include_message_history: bool,
+) -> Result<UpdateStateCopyCounts, String> {
     let live_core_dir = app_config_dir.join(HUB_CORE_DIR);
     let copied_core_dir = Path::new(&record.backup_dir).join(HUB_CORE_DIR);
     if !copied_core_dir.is_dir() {
@@ -214,10 +229,23 @@ pub fn restore_identity_and_friends_from_copy(
         &live_core_dir.join(PEOPLE_FILE),
         "friends",
     )?;
+    if include_message_history {
+        replace_optional_file(
+            &copied_core_dir.join(ALLOWED_PLACES_DB),
+            &live_core_dir.join(ALLOWED_PLACES_DB),
+            "allowed places",
+        )?;
+        replace_optional_file(
+            &copied_core_dir.join("store").join(MESSAGE_STORE_DB),
+            &live_core_dir.join("store").join(MESSAGE_STORE_DB),
+            "message history",
+        )?;
+    }
 
     let restored = counts_for_core_dir(&live_core_dir)?;
     if restored.identity_count != record.copied_counts.identity_count
         || restored.friend_count != record.copied_counts.friend_count
+        || (include_message_history && restored.message_count != record.copied_counts.message_count)
     {
         return Err("OSL update state restore count verification failed".to_owned());
     }
