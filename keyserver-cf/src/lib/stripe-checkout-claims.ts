@@ -292,6 +292,52 @@ export async function repairPaidOneTimeCheckoutClaimsWithoutCodes(
   return statements[1]?.meta?.changes ?? 0;
 }
 
+/**
+ * Repair one authenticated browser-bound one-time checkout claim. This is the
+ * buyer-facing recovery path: a paid claim can re-create its missing durable
+ * license row without touching Stripe or starting another charge.
+ */
+export async function repairPaidOneTimeCheckoutClaimWithoutCode(
+  db: D1Database,
+  sessionId: string,
+): Promise<"repaired" | "already_has_code" | "not_repairable"> {
+  const claim = await db.prepare(
+    `SELECT license_hash, subscription_id, status
+       FROM stripe_checkout_claims
+      WHERE session_id = ?`,
+  ).bind(sessionId).first<{
+    license_hash: string;
+    subscription_id: string | null;
+    status: string;
+  }>();
+  if (!claim || claim.status !== "delivery_ready" || !claim.subscription_id?.startsWith("pi_")) {
+    return "not_repairable";
+  }
+  const existing = await db.prepare(
+    "SELECT 1 AS present FROM licenses WHERE license_hash = ?",
+  ).bind(claim.license_hash).first<{ present: number }>();
+  if (existing) return "already_has_code";
+
+  const now = Math.floor(Date.now() / 1000);
+  const entitlementId = oneTimeEntitlementId(claim.license_hash);
+  const statements = await db.batch([
+    db.prepare(
+      `INSERT OR IGNORE INTO subscriptions (
+         subscription_id, customer_id, customer_email, status,
+         current_period_end, cancel_at_period_end, created_at, updated_at,
+         is_comp
+       ) VALUES (?, '', '', 'PENDING', NULL, 0, ?, ?, 0)`,
+    ).bind(entitlementId, now, now),
+    db.prepare(
+      `INSERT OR IGNORE INTO licenses (
+         license_hash, subscription_id, issued_at, grant_seconds,
+         revoked_at, revoked_reason
+       ) VALUES (?, ?, ?, ?, NULL, NULL)`,
+    ).bind(claim.license_hash, entitlementId, now, PREPAID_PRO_GRANT_SECONDS),
+  ]);
+  return (statements[1]?.meta?.changes ?? 0) === 1 ? "repaired" : "already_has_code";
+}
+
 function oneTimeEntitlementId(licenseHash: string): string {
   return `lic_${licenseHash}`;
 }
