@@ -79,6 +79,7 @@ use osl_privacy_hub::osl_mail::{self, OslMailState, OslMailStatus};
 use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput};
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult, HubMainPasswordSetupResult,
+    HubPasswordReadiness,
 };
 use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::PreviewState;
@@ -1530,6 +1531,24 @@ async fn setup_hub_main_password(
     })
     .await
     .map_err(|_| "OSL password setup worker failed".to_string())?
+}
+
+#[tauri::command]
+async fn reset_hub_main_password_after_recovery(
+    app: tauri::AppHandle,
+    recovery_phrase: String,
+    new_password: String,
+) -> Result<HubPasswordReadiness, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<HubCoreState>();
+        password_lifecycle::reset_main_password_after_recovery(
+            &state,
+            recovery_phrase,
+            new_password,
+        )
+    })
+    .await
+    .map_err(|_| "OSL password reset worker failed".to_string())?
 }
 
 /// T15-A3/A4: read the password-recovery phrase back after onboarding.

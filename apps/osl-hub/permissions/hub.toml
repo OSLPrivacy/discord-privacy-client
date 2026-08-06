@@ -354,6 +354,11 @@ description = "Set a strong local main passphrase once for an already-loaded iso
 commands.allow = ["setup_hub_main_password"]
 
 [[permission]]
+identifier = "allow-reset-hub-main-password-after-recovery"
+description = "Replace the local main passphrase only after this device's password-recovery phrase is verified and the one-time recovery approval token is consumed."
+commands.allow = ["reset_hub_main_password_after_recovery"]
+
+[[permission]]
 identifier = "allow-view-hub-recovery-phrase"
 description = "Allow only the trusted main OSL window to decrypt and re-read this device's password-recovery phrase in memory, and only when the owner's current main password is supplied and verified."
 commands.allow = ["view_hub_recovery_phrase"]

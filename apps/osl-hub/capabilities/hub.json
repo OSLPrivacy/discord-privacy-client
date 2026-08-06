@@ -59,6 +59,7 @@
     "allow-create-hub-osl-identity",
     "allow-import-hub-osl-identity-phrase",
     "allow-setup-hub-main-password",
+    "allow-reset-hub-main-password-after-recovery",
     "allow-view-hub-recovery-phrase",
     "allow-check-hub-recovery-word-retype",
     "allow-lock-hub-session",

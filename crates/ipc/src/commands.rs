@@ -14756,6 +14756,18 @@ pub fn cmd_osl_set_main_password_after_recovery(
     crate::main_password::set_main_password_after_recovery(state, &dir, &new_password, &token)
 }
 
+pub fn cmd_osl_reset_main_password_after_recovery(
+    state: &AppState,
+    recovery_phrase: String,
+    new_password: String,
+) -> Result<(), String> {
+    record_activity_on_command_entry();
+    crate::main_password::validate_new_password(&new_password)?;
+    let dir = password_dir()?;
+    let token = crate::main_password::verify_recovery_phrase(state, &dir, &recovery_phrase)?;
+    crate::main_password::set_main_password_after_recovery(state, &dir, &new_password, &token)
+}
+
 pub fn cmd_osl_lockout_status() -> Result<LockoutStatusDto, String> {
     record_activity_on_command_entry();
     let dir = password_dir()?;
