@@ -339,6 +339,11 @@ pub struct AppState {
     pub server_defaults:
         Mutex<std::collections::HashMap<String, crate::whitelist_state::ServerDefaults>>,
 
+    /// Explicit user-facing server member lists, including owner and join time.
+    /// This is separate from `scope_membership`, which is a best-effort
+    /// recipient observation oracle rather than an authoritative roster.
+    pub server_member_lists: Mutex<crate::server_membership::ServerMembershipStore>,
+
     /// 9-TD1.4: most-recent disk-persist failure message. Pre-TD1
     /// every `persist_*_now` swallowed errors silently with a
     /// `tracing::warn!`; the user thought their whitelist / burn /
@@ -416,6 +421,9 @@ impl Default for AppState {
             friend_ids: Mutex::new(Vec::new()),
             guild_list: Mutex::new(Vec::new()),
             server_defaults: Mutex::new(HashMap::new()),
+            server_member_lists: Mutex::new(
+                crate::server_membership::ServerMembershipStore::default(),
+            ),
             last_persist_error: Mutex::new(None),
             license_state: Mutex::new(keystore::LicenseStateDto::default()),
             recovery_guard: Mutex::new(crate::recovery::RecoveryGuard::default()),

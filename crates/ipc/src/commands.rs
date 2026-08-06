@@ -146,6 +146,15 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_get_guild_list", || {
             let _ = cmd_osl_get_guild_list(&state);
         });
+        let _ = cmd_osl_write_server_member_list(
+            &state,
+            "activity-server".to_owned(),
+            "Activity Owner".to_owned(),
+            "2026-08-06T00:00:00Z".to_owned(),
+        );
+        assert_command_marks_activity("cmd_osl_list_server_members", || {
+            let _ = cmd_osl_list_server_members(&state, "activity-server".to_owned());
+        });
         assert_command_marks_activity("cmd_osl_get_server_defaults", || {
             let _ = cmd_osl_get_server_defaults(&state);
         });
@@ -15981,6 +15990,72 @@ pub fn cmd_osl_get_guild_list(state: &AppState) -> Result<Vec<GuildDto>, String>
     record_activity_on_command_entry();
     let g = state.guild_list.lock().expect("guild_list mutex poisoned");
     Ok(g.clone())
+}
+
+/// Create or replace the explicit member list for one server. The owner is
+/// always recorded as a member, with their own join timestamp.
+pub fn cmd_osl_write_server_member_list(
+    state: &AppState,
+    server_id: String,
+    owner_name: String,
+    owner_joined_at: String,
+) -> Result<crate::server_membership::ServerMemberList, String> {
+    record_activity_on_command_entry();
+    let mut lists = state
+        .server_member_lists
+        .lock()
+        .expect("server_member_lists mutex poisoned");
+    lists
+        .upsert_server(server_id, owner_name, owner_joined_at)
+        .map_err(|error| error.to_string())
+}
+
+/// Add one person to a server member list. Returns the count delta: `1` for a
+/// newly-added member and `0` for an existing member.
+pub fn cmd_osl_add_server_member(
+    state: &AppState,
+    server_id: String,
+    member_name: String,
+    joined_at: String,
+) -> Result<usize, String> {
+    record_activity_on_command_entry();
+    let mut lists = state
+        .server_member_lists
+        .lock()
+        .expect("server_member_lists mutex poisoned");
+    lists
+        .add_member(&server_id, member_name, joined_at)
+        .map_err(|error| error.to_string())
+}
+
+/// List the owner and current members for a server, with join timestamps.
+pub fn cmd_osl_list_server_members(
+    state: &AppState,
+    server_id: String,
+) -> Result<crate::server_membership::ServerMemberList, String> {
+    record_activity_on_command_entry();
+    let lists = state
+        .server_member_lists
+        .lock()
+        .expect("server_member_lists mutex poisoned");
+    lists.list(&server_id).map_err(|error| error.to_string())
+}
+
+/// Remove one member by display name. Removing the owner is refused and the
+/// refusal names the owner.
+pub fn cmd_osl_remove_server_member_by_name(
+    state: &AppState,
+    server_id: String,
+    member_name: String,
+) -> Result<usize, String> {
+    record_activity_on_command_entry();
+    let mut lists = state
+        .server_member_lists
+        .lock()
+        .expect("server_member_lists mutex poisoned");
+    lists
+        .remove_member_by_name(&server_id, member_name)
+        .map_err(|error| error.to_string())
 }
 
 /// 9-C2: bulk-whitelist N peers under DM scope (one DM scope per
