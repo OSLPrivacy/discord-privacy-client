@@ -156,7 +156,8 @@ fn task_3110_telegram_send_refused_after_discord_agreement() {
     set_scope_security(&alice_security, activated.scope, 3600, true)
         .expect("enable Telegram decrypted display");
 
-    save_messaging_risk_agreement(&alice_id, "discord").expect("save only Discord risk agreement");
+    save_messaging_risk_agreement(&alice_id, "discord", "discord-account")
+        .expect("save only Discord risk agreement");
     let store_client = ipc::cipher_store_client::CipherStoreClient::new("http://127.0.0.1:9")
         .expect("construct dummy cipher-store client");
     let telegram_refusal = match prepare_active_messaging_service_overlay_text_with_route_clients(

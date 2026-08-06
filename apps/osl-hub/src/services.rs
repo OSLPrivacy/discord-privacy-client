@@ -54,7 +54,20 @@ struct MessagingRiskAgreementDocument {
 struct MessagingRiskAgreementRecord {
     owner_osl_user_id: String,
     service_id: String,
+    #[serde(default)]
+    account_id: String,
     agreed_at: i64,
+    #[serde(default)]
+    wording: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MessagingRiskAgreement {
+    pub service_id: String,
+    pub account_id: String,
+    pub agreed_at: i64,
+    pub wording: Vec<String>,
 }
 
 /// Local metadata for isolated service profiles. It intentionally stores no
@@ -371,14 +384,18 @@ pub fn messaging_risk_refusal(service_id: &str) -> Option<String> {
 pub fn require_messaging_risk_agreed(
     owner_osl_user_id: &str,
     service_id: &str,
+    account_id: &str,
 ) -> Result<(), String> {
     validate_owner_osl_user_id(owner_osl_user_id)?;
+    validate_messaging_risk_account_id(account_id)?;
     let Some(refusal) = messaging_risk_refusal(service_id) else {
         return Ok(());
     };
     let document = load_messaging_risk_agreements()?;
     if document.agreements.iter().any(|agreement| {
-        agreement.owner_osl_user_id == owner_osl_user_id && agreement.service_id == service_id
+        agreement.owner_osl_user_id == owner_osl_user_id
+            && agreement.service_id == service_id
+            && agreement.account_id == account_id
     }) {
         Ok(())
     } else {
@@ -389,23 +406,60 @@ pub fn require_messaging_risk_agreed(
 pub fn save_messaging_risk_agreement(
     owner_osl_user_id: &str,
     service_id: &str,
+    account_id: &str,
 ) -> Result<(), String> {
     validate_owner_osl_user_id(owner_osl_user_id)?;
-    messaging_risk_facts(service_id)?;
+    validate_messaging_risk_account_id(account_id)?;
+    let facts = messaging_risk_facts(service_id)?;
     let mut document = load_messaging_risk_agreements()?;
     let now = ipc::main_password::now_unix_secs_pub();
+    let wording = facts
+        .facts
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
     if let Some(existing) = document.agreements.iter_mut().find(|agreement| {
-        agreement.owner_osl_user_id == owner_osl_user_id && agreement.service_id == service_id
+        agreement.owner_osl_user_id == owner_osl_user_id
+            && agreement.service_id == service_id
+            && agreement.account_id == account_id
     }) {
         existing.agreed_at = now;
+        existing.wording = wording;
     } else {
         document.agreements.push(MessagingRiskAgreementRecord {
             owner_osl_user_id: owner_osl_user_id.to_owned(),
             service_id: service_id.to_owned(),
+            account_id: account_id.to_owned(),
             agreed_at: now,
+            wording,
         });
     }
     write_messaging_risk_agreements(&document)
+}
+
+pub fn read_messaging_risk_agreement(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+) -> Result<Option<MessagingRiskAgreement>, String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    validate_messaging_risk_account_id(account_id)?;
+    messaging_risk_facts(service_id)?;
+    let document = load_messaging_risk_agreements()?;
+    Ok(document
+        .agreements
+        .into_iter()
+        .find(|agreement| {
+            agreement.owner_osl_user_id == owner_osl_user_id
+                && agreement.service_id == service_id
+                && agreement.account_id == account_id
+        })
+        .map(|agreement| MessagingRiskAgreement {
+            service_id: agreement.service_id,
+            account_id: agreement.account_id,
+            agreed_at: agreement.agreed_at,
+            wording: agreement.wording,
+        }))
 }
 
 fn service_capability_facts_for_kind(service_id: ServiceKind) -> Option<ServiceCapabilityFacts> {
@@ -545,6 +599,14 @@ fn valid_account_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
+fn validate_messaging_risk_account_id(account_id: &str) -> Result<(), String> {
+    if valid_account_id(account_id) {
+        Ok(())
+    } else {
+        Err("messaging risk agreement account is invalid".to_owned())
+    }
+}
+
 fn messaging_risk_agreement_path() -> Result<PathBuf, String> {
     Ok(keystore::osl_config_dir()
         .map_err(|_| "OSL account storage is unavailable".to_owned())?
@@ -598,16 +660,21 @@ fn sanitize_messaging_risk_agreements(
     document.agreements.retain(|agreement| {
         validate_owner_osl_user_id(&agreement.owner_osl_user_id).is_ok()
             && messaging_risk_refusal(&agreement.service_id).is_some()
+            && validate_messaging_risk_account_id(&agreement.account_id).is_ok()
             && agreement.agreed_at > 0
+            && agreement.wording == MESSAGING_RISK_FACTS
     });
     document.agreements.sort_by(|left, right| {
         left.owner_osl_user_id
             .cmp(&right.owner_osl_user_id)
             .then_with(|| left.service_id.cmp(&right.service_id))
+            .then_with(|| left.account_id.cmp(&right.account_id))
             .then_with(|| left.agreed_at.cmp(&right.agreed_at))
     });
     document.agreements.dedup_by(|left, right| {
-        left.owner_osl_user_id == right.owner_osl_user_id && left.service_id == right.service_id
+        left.owner_osl_user_id == right.owner_osl_user_id
+            && left.service_id == right.service_id
+            && left.account_id == right.account_id
     });
     document
 }

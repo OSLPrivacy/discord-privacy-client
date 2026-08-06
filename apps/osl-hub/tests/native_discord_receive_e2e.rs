@@ -946,7 +946,7 @@ impl Peer {
         set_scope_security(&self.security, activated.scope.clone(), 3600, true)
             .expect("enable decrypted display for this scope");
         if agree_risk {
-            save_messaging_risk_agreement(&self.identity_id, "discord")
+            save_messaging_risk_agreement(&self.identity_id, "discord", &self.account_id)
                 .expect("save Discord risk agreement for fixture prerequisite");
         }
         *self.scope.lock().unwrap_or_else(|error| error.into_inner()) =
@@ -1068,7 +1068,7 @@ pub fn task_3110_discord_send_is_risk_gated() {
     };
     let pending_after_refusal = relay.pending_for(&bob.identity_id);
 
-    save_messaging_risk_agreement(&alice.identity_id, "discord")
+    save_messaging_risk_agreement(&alice.identity_id, "discord", &alice.account_id)
         .expect("save Discord risk agreement");
     let prepared = prepare_native_discord_overlay_text(
         &alice.core,

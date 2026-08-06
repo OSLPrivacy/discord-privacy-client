@@ -5544,11 +5544,16 @@ async fn create_service_account(
 async fn agree_messaging_service_risk(
     core: State<'_, HubCoreState>,
     session: State<'_, HubAccountSessionState>,
+    registry: State<'_, ServiceRegistryState>,
     service_id: String,
+    account_id: String,
 ) -> Result<(), String> {
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
-    osl_privacy_hub::services::save_messaging_risk_agreement(&owner, &service_id)
+    let service_kind = osl_privacy_hub::services::service_kind_from_id(&service_id)
+        .ok_or_else(|| "unknown service".to_owned())?;
+    registry.require_owned(&owner, service_kind, &account_id)?;
+    osl_privacy_hub::services::save_messaging_risk_agreement(&owner, &service_id, &account_id)
 }
 
 #[tauri::command]

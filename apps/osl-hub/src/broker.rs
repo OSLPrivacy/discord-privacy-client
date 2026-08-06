@@ -4159,7 +4159,11 @@ fn prepare_peer_inbox_text_with_route_clients(
     let _carrier_decision = ai_carrier.select_for_shipping_send();
     let manual = broker.manual_peer_for(context_token)?;
     let context = broker.context_for(context_token)?;
-    require_messaging_risk_agreed(&context.self_osl_id, &context.service_id)?;
+    require_messaging_risk_agreed(
+        &context.self_osl_id,
+        &context.service_id,
+        &context.account_id,
+    )?;
     let now = ipc::main_password::now_unix_secs_pub();
     let ttl_seconds = security::scope_security(manual.scope.clone())?.ttl_seconds;
     let expires_at = now.checked_add(i64::from(ttl_seconds)).ok_or_else(|| {
