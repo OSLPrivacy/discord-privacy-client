@@ -2017,7 +2017,7 @@ function signinPlusIcon(): string {
 
 /**
  * The bare entry screen: mark, one action, one way out. Sign in and Create
- * account are the SAME screen — Liam's ruling, 2026-08-06, which overrides the
+ * account are the SAME screen -- Liam's ruling, 2026-08-06, which overrides the
  * handoff's suggestion that the two keep different corner radii. Only the
  * label, the icon and where the button goes differ, so they are arguments
  * rather than two copies that drift apart.
@@ -2034,16 +2034,21 @@ function entryScreenContent(label: string, icon: string, route: OnboardingRoute)
 }
 
 function welcomeOnboardingContent(): string {
-  const partialIdentity = core.readiness.identityLoaded && core.readiness.bootstrapStatus === "setupRequired";
   const returning = core.readiness.bootstrapStatus === "passwordRequired" || core.readiness.passwordGateRequired;
 
-  // Both entry screens are the same component. The heading, the explainer, the
-  // divider and the "add another identity in Settings" footnote were all removed
-  // by the 2026-08-06 redesign and must not come back. `Ghost-white.svg` carries
-  // its own #080c0d field, which is why the window behind it is that exact value
-  // -- any other and the mark reads as a tile sitting on the app.
   if (returning) return entryScreenContent("Sign in", signinLockIcon(), "unlock");
-  return entryScreenContent(partialIdentity ? "Finish setup" : "Create account", signinPlusIcon(), "create");
+
+  return `<section class="signin-card signin-lock-screen welcome-choice-screen" aria-labelledby="route-heading">
+    <h1 id="route-heading" tabindex="-1">Welcome</h1>
+    <div class="signin-lock-column welcome-choice-column">
+      <img class="signin-ghost-mark" src="${oslGhostMarkUrl}" alt="" width="148" height="148"/>
+      <div class="welcome-choice-actions" aria-label="Welcome actions">
+        <button class="signin-unlock" data-onboarding="create" type="button"><span class="signin-unlock-label">Create</span>${signinPlusIcon()}</button>
+        <button class="signin-unlock" data-onboarding="import" type="button"><span class="signin-unlock-label">Restore</span>${signinArrowIcon()}</button>
+        <button class="signin-unlock" data-onboarding="unlock" type="button"><span class="signin-unlock-label">Unlock</span>${signinLockIcon()}</button>
+      </div>
+    </div>
+  </section>`;
 }
 
 function proSetupContent(): string {
