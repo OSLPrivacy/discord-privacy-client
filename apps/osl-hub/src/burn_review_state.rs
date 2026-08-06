@@ -22,6 +22,16 @@ pub struct BurnReviewBackResult {
     pub remote_removal_count: usize,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnReviewFinalChoiceResult {
+    pub status: String,
+    pub reviewed_message: String,
+    pub burn_mark: String,
+    pub local_removal_count: usize,
+    pub remote_removal_count: usize,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BurnReviewDocument {
@@ -102,6 +112,48 @@ impl BurnReviewState {
         })
     }
 
+    pub fn final_choice_command_checked<LocalBurn, RemoteBurn>(
+        &self,
+        final_choice: &str,
+        reviewed_message: String,
+        burn_mark: String,
+        mut issue_local_burn: LocalBurn,
+        mut issue_remote_burn: RemoteBurn,
+    ) -> Result<BurnReviewFinalChoiceResult, String>
+    where
+        LocalBurn: FnMut(&str, &str) -> usize,
+        RemoteBurn: FnMut(&str, &str) -> usize,
+    {
+        if !valid_label(&reviewed_message, 64) || !valid_label(&burn_mark, 64) {
+            return Err("burn review final choice is invalid".to_owned());
+        }
+        match final_choice {
+            "CONFIRM" => {
+                let local_removal_count = issue_local_burn(&reviewed_message, &burn_mark);
+                let remote_removal_count = issue_remote_burn(&reviewed_message, &burn_mark);
+                self.replace_selection(None)?;
+                Ok(BurnReviewFinalChoiceResult {
+                    status: "burn confirmed".to_owned(),
+                    reviewed_message,
+                    burn_mark,
+                    local_removal_count,
+                    remote_removal_count,
+                })
+            }
+            "BACK" => {
+                self.replace_selection(None)?;
+                Ok(BurnReviewFinalChoiceResult {
+                    status: "burn cancelled".to_owned(),
+                    reviewed_message,
+                    burn_mark,
+                    local_removal_count: 0,
+                    remote_removal_count: 0,
+                })
+            }
+            _ => Err("unknown burn choice".to_owned()),
+        }
+    }
+
     pub fn summary(&self) -> Result<String, String> {
         match self.get_command()? {
             Some(selection) => Ok(format!(
@@ -147,6 +199,17 @@ fn valid_chat(value: &str) -> bool {
         && value.len() <= 128
         && value.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b':' | b'-' | b'_')
+        })
+}
+
+fn valid_label(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && value.bytes().all(|byte| {
+            byte.is_ascii_uppercase()
+                || byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'-' | b'_' | b':')
         })
 }
 
