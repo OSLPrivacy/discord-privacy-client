@@ -1,4 +1,4 @@
-import { SELF } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { usernameClaimMessage } from "../../src/lib/username.js";
 import { canonicalUnregisterBytes } from "../../src/lib/canonical.js";
@@ -12,6 +12,8 @@ import {
   STUB_RATCHET_PUB_B64,
   STUB_X25519_PUB_B64,
 } from "./helpers.js";
+
+const testDb = (env as unknown as { DB: D1Database }).DB;
 
 let sequence = 0;
 const userId = () => `username-user-${Date.now()}-${sequence++}`;
@@ -82,6 +84,31 @@ async function claim(
 }
 
 describe("username directory", () => {
+  it("TASK0443 - a saved-name record has exactly four allowed fields", async () => {
+    const uid = userId();
+    const pair = await registerTestUser(SELF, uid);
+    expect((await claim("minimal_name", uid, pair)).status).toBe(200);
+
+    const saved = await testDb.prepare(
+      "SELECT * FROM saved_names WHERE public_name = ?",
+    ).bind("minimal_name").first<Record<string, unknown>>();
+    expect(saved).not.toBeNull();
+    const fields = Object.keys(saved!);
+    console.log(`TASK0443 saved_name_record.field_count=${fields.length}`);
+    console.log(`TASK0443 saved_name_record.allowed_fields=${fields.join(",")}`);
+
+    expect(fields).toEqual([
+      "public_name",
+      "public_identity_key",
+      "proof_record",
+      "claimed_at",
+    ]);
+    expect(saved!.public_name).toBe("minimal_name");
+    expect(saved!.public_identity_key).toBe(pair.publicKeyB64);
+    expect(typeof saved!.proof_record).toBe("string");
+    expect(typeof saved!.claimed_at).toBe("string");
+  });
+
   it("claims and resolves only an exact normalized username", async () => {
     const uid = userId();
     const pair = await registerTestUser(SELF, uid);
