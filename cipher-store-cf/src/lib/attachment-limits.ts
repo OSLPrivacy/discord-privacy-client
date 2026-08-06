@@ -1,7 +1,26 @@
-export const MAX_DIRECT_ATTACHMENT_BYTES = 26 * 1024 * 1024;
-// Leaves a bounded allowance for chunk framing and AEAD tags without asking
-// the store to infer plaintext size from opaque ciphertext.
-export const MAX_SEALED_ATTACHMENT_BYTES = 513 * 1024 * 1024;
+export const ATTACHMENT_TIER_LIMITS = {
+  free: {
+    tier: "Free",
+    max_file_bytes: 25 * 1024 * 1024,
+    max_files_per_message: 16,
+  },
+  pro: {
+    tier: "Pro",
+    max_file_bytes: 1024 * 1024 * 1024,
+    max_files_per_message: 16,
+  },
+} as const;
+
+export type AttachmentTier = keyof typeof ATTACHMENT_TIER_LIMITS;
+
+export function attachmentLimitForTier(tier: string): typeof ATTACHMENT_TIER_LIMITS[AttachmentTier] | null {
+  return Object.hasOwn(ATTACHMENT_TIER_LIMITS, tier)
+    ? ATTACHMENT_TIER_LIMITS[tier as AttachmentTier]
+    : null;
+}
+
+export const MAX_DIRECT_ATTACHMENT_BYTES = ATTACHMENT_TIER_LIMITS.free.max_file_bytes;
+export const MAX_SEALED_ATTACHMENT_BYTES = ATTACHMENT_TIER_LIMITS.pro.max_file_bytes;
 export const MAX_ATTACHMENT_PART_BYTES = 8 * 1024 * 1024;
 export const MAX_ATTACHMENT_PARTS = Math.ceil(
   MAX_SEALED_ATTACHMENT_BYTES / MAX_ATTACHMENT_PART_BYTES,
