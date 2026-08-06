@@ -1,0 +1,8 @@
+window "OSL Privacy"
+  heading "Choose protection"
+  radiogroup "Protection preset"
+    radio "Basic"
+    radio "Balanced" checked
+    radio "Maximum"
+  button "Back"
+  button "Continue"
