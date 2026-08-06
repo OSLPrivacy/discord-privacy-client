@@ -126,6 +126,16 @@ fn idle_window() -> Duration {
     Duration::from_secs(SESSION_IDLE_LOCK_SECONDS)
 }
 
+fn idle_window_for_state(state: &AppState) -> Option<Duration> {
+    state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .idle_lock_time_choice
+        .seconds()
+        .map(Duration::from_secs)
+}
+
 /// Start the idle clock for a freshly unlocked session. Until this runs, the
 /// idle lock is inert — a never-unlocked process must not lock itself.
 pub fn arm_idle_lock() {
@@ -158,6 +168,21 @@ pub fn idle_lock_is_due_at(now: Instant) -> bool {
     }
 }
 
+/// True when the idle clock is running and this state's configured idle window
+/// has already elapsed. `Never` deliberately returns false.
+pub fn idle_lock_is_due_for_state_at(state: &AppState, now: Instant) -> bool {
+    let Some(window) = idle_window_for_state(state) else {
+        return false;
+    };
+    let slot = last_activity_slot()
+        .lock()
+        .expect("session idle clock mutex poisoned");
+    match *slot {
+        Some(last) => now.saturating_duration_since(last) >= window,
+        None => false,
+    }
+}
+
 /// Record user/command activity. Extends the idle window **unless it has
 /// already elapsed**, in which case the session is due to lock and no amount
 /// of later traffic may reopen it.
@@ -184,7 +209,7 @@ pub fn run_idle_session_lock(state: &AppState) -> bool {
 }
 
 pub fn run_idle_session_lock_at(state: &AppState, now: Instant) -> bool {
-    if !idle_lock_is_due_at(now) {
+    if !idle_lock_is_due_for_state_at(state, now) {
         return false;
     }
     lock_session(state, SessionLockTrigger::Inactivity);
