@@ -27,6 +27,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::str::FromStr;
 
 /// Active stego envelope. Mode 0 is the production `DPC0::<b64>`
 /// path; Mode 1 is the multi-message `DPC1::<sentences>` cover
@@ -81,6 +82,40 @@ impl UpdateChannel {
     }
 }
 
+/// User's choice for whether OSL should start when Windows starts.
+/// This stores only the user's on/off preference; platform-specific
+/// startup registration is handled outside `app_preferences.json`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StartWithWindowsChoice {
+    On,
+    #[default]
+    Off,
+}
+
+impl StartWithWindowsChoice {
+    pub fn as_value(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+}
+
+impl FromStr for StartWithWindowsChoice {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "on" => Ok(Self::On),
+            "off" => Ok(Self::Off),
+            _ => Err(format!(
+                "OSL: unknown start-with-Windows choice {raw:?}; valid choices: on, off"
+            )),
+        }
+    }
+}
+
 /// Whether the OSL window should follow whichever app currently has focus.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -119,6 +154,8 @@ pub struct AppPreferences {
     pub update_channel: UpdateChannel,
     #[serde(default)]
     pub rn_wire_policy_requested: bool,
+    #[serde(default)]
+    pub start_with_windows: StartWithWindowsChoice,
     #[serde(default)]
     pub follow_active_app_choice: FollowActiveAppChoice,
 }

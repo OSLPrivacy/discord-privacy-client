@@ -65,6 +65,8 @@
     "allow-osl-install-update",
     "allow-osl-get-update-channel",
     "allow-osl-set-update-channel",
+    "allow-osl-get-start-with-windows-choice",
+    "allow-osl-save-start-with-windows-choice",
     "core:event:allow-emit",
     "core:event:allow-listen",
     "core:window:allow-close",
