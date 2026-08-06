@@ -99,6 +99,7 @@ pub mod transport;
 // Padmé applies to the stored transport object, outside the AEAD plaintext
 // padding boundary.  Expose it from the shipping IPC crate so the upload path
 // can consume the one canonical implementation as the object envelope lands.
+pub mod auto_whitelist_rules;
 pub mod transport_padding;
 pub mod whitelist;
 pub mod whitelist_state;

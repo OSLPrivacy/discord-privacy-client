@@ -15812,6 +15812,112 @@ pub fn cmd_osl_set_app_preferences(
     Ok(())
 }
 
+// ---- Auto-whitelist rules and newly discovered places ----
+
+pub fn cmd_osl_list_auto_whitelist_rule_choices() -> Result<Vec<String>, String> {
+    record_activity_on_command_entry();
+    Ok(
+        crate::auto_whitelist_rules::AutoWhitelistRule::VALID_CHOICES
+            .iter()
+            .map(|rule| rule.as_label().to_string())
+            .collect(),
+    )
+}
+
+pub fn cmd_osl_save_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: String,
+    rule: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::normalize_app_kind(&app_kind)?;
+    let rule = rule.parse::<crate::auto_whitelist_rules::AutoWhitelistRule>()?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.auto_whitelist_rules.insert(app_kind, rule);
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(rule.as_label().to_string())
+}
+
+pub fn cmd_osl_get_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: String,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::normalize_app_kind(&app_kind)?;
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(prefs
+        .auto_whitelist_rules
+        .get(&app_kind)
+        .copied()
+        .unwrap_or_default()
+        .as_label()
+        .to_string())
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NewPlaceDecisionDto {
+    pub result: String,
+}
+
+pub fn cmd_osl_direct_new_place(
+    state: &AppState,
+    app_data_dir: std::path::PathBuf,
+    app_kind: String,
+    place_kind: String,
+    place_id: String,
+    display_name: Option<String>,
+) -> Result<NewPlaceDecisionDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::normalize_app_kind(&app_kind)?;
+    if place_kind.trim().is_empty() {
+        return Err("OSL: place_kind is empty".to_string());
+    }
+    if place_id.trim().is_empty() {
+        return Err("OSL: place_id is empty".to_string());
+    }
+    let rule = {
+        let prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs
+            .auto_whitelist_rules
+            .get(&app_kind)
+            .copied()
+            .unwrap_or_default()
+    };
+
+    if rule == crate::auto_whitelist_rules::AutoWhitelistRule::Always {
+        crate::allowed_places::add_allowed_place_record(
+            &app_data_dir,
+            &crate::allowed_places::StoredAllowedPlace {
+                app_kind,
+                place_kind,
+                place_id,
+                display_name,
+                found_at_unix_secs: now_unix_secs(),
+            },
+        )?;
+        Ok(NewPlaceDecisionDto {
+            result: "allowed".to_string(),
+        })
+    } else {
+        Ok(NewPlaceDecisionDto {
+            result: rule.as_label().to_string(),
+        })
+    }
+}
+
 // ---- G3.3: auto-updater channel ----
 //
 // Channel persists in the SAME app_preferences.json as every other
