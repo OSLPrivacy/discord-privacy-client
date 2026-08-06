@@ -15993,6 +15993,64 @@ pub fn cmd_osl_read_auto_whitelist_rule(
     })
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct BadMessageRuleDto {
+    pub rule_name: String,
+    pub private_word: String,
+}
+
+pub fn cmd_osl_list_bad_message_rules(state: &AppState) -> Result<Vec<BadMessageRuleDto>, String> {
+    record_activity_on_command_entry();
+    let mut rules: Vec<_> = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .bad_message_rules
+        .values()
+        .map(|rule| BadMessageRuleDto {
+            rule_name: rule.rule_name.clone(),
+            private_word: rule.private_word.clone(),
+        })
+        .collect();
+    rules.sort_by(|a, b| a.rule_name.cmp(&b.rule_name));
+    Ok(rules)
+}
+
+pub fn cmd_osl_save_bad_message_rule(
+    state: &AppState,
+    rule_name: String,
+    private_word: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<BadMessageRuleDto, String> {
+    record_activity_on_command_entry();
+    let rule_name = crate::bad_message_rules::parse_bad_message_rule_name(&rule_name)?
+        .name()
+        .to_string();
+    let private_word = crate::bad_message_rules::parse_private_word(&private_word)?;
+    let rule = crate::bad_message_rules::BadMessageRule {
+        rule_name: rule_name.clone(),
+        private_word: private_word.clone(),
+    };
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs
+            .bad_message_rules
+            .insert(rule_name.clone(), rule.clone());
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(BadMessageRuleDto {
+        rule_name: rule.rule_name,
+        private_word: rule.private_word,
+    })
+}
+
 // ---- G3.3: auto-updater channel ----
 //
 // Channel persists in the SAME app_preferences.json as every other

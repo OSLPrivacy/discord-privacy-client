@@ -163,6 +163,8 @@ pub struct AppPreferences {
     #[serde(default)]
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
     #[serde(default)]
+    pub bad_message_rules: HashMap<String, crate::bad_message_rules::BadMessageRule>,
+    #[serde(default)]
     pub new_friend_account_reach: NewFriendAccountReach,
     #[serde(default)]
     pub new_friend_auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistChoice,
