@@ -16,6 +16,19 @@ export interface MessageReadKeyRecord {
   readKey: string;
 }
 
+export interface StoredProtectedMessageGrantInput {
+  message: string;
+  readKey: string;
+  sender: string;
+  scope: string;
+}
+
+export interface StoredProtectedMessageGrants {
+  message: string;
+  readKeys: [MessageReadKeyRecord];
+  senderDeleteGrants: [DeleteGrantRecord];
+}
+
 export type DeleteGrantParseResult =
   | { ok: true; grant: DeleteGrantRecord }
   | { ok: false; code: "not_delete_grant" | "malformed_delete_grant" };
@@ -23,6 +36,13 @@ export type DeleteGrantParseResult =
 export type MessageReadKeyParseResult =
   | { ok: true; key: MessageReadKeyRecord }
   | { ok: false; code: "not_message_read_key" | "malformed_message_read_key" };
+
+export type StoredProtectedMessageGrantCreationResult =
+  | { ok: true; grants: StoredProtectedMessageGrants }
+  | {
+    ok: false;
+    code: "malformed_message_read_key" | "malformed_delete_grant";
+  };
 
 function parseRecord(input: string | unknown): Record<string, unknown> | null {
   const value = typeof input === "string" ? JSON.parse(input) as unknown : input;
@@ -92,6 +112,35 @@ export function parseMessageReadKeyRecord(input: string | unknown): MessageReadK
       record: MESSAGE_READ_KEY_RECORD,
       message: record.message,
       readKey: record.readKey,
+    },
+  };
+}
+
+export function createStoredProtectedMessageGrants(
+  input: StoredProtectedMessageGrantInput,
+): StoredProtectedMessageGrantCreationResult {
+  const readKey: MessageReadKeyRecord = {
+    record: MESSAGE_READ_KEY_RECORD,
+    message: input.message,
+    readKey: input.readKey,
+  };
+  const parsedReadKey = parseMessageReadKeyRecord(readKey);
+  if (!parsedReadKey.ok) return { ok: false, code: "malformed_message_read_key" };
+
+  const senderDeleteGrant: DeleteGrantRecord = {
+    record: DELETE_GRANT_RECORD,
+    owner: input.sender,
+    scope: input.scope,
+  };
+  const parsedDeleteGrant = parseDeleteGrantRecord(senderDeleteGrant);
+  if (!parsedDeleteGrant.ok) return { ok: false, code: "malformed_delete_grant" };
+
+  return {
+    ok: true,
+    grants: {
+      message: input.message,
+      readKeys: [parsedReadKey.key],
+      senderDeleteGrants: [parsedDeleteGrant.grant],
     },
   };
 }
