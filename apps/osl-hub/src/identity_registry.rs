@@ -406,6 +406,28 @@ fn create_or_recover_identity_slot(
     label: String,
     recovery_phrase: Option<String>,
 ) -> Result<HubIdentitySlotCreation, String> {
+    let sealer = crate::password_lifecycle::persistent_sealer()?;
+    create_or_recover_identity_slot_with_writer(
+        core,
+        registry_state,
+        label,
+        recovery_phrase,
+        sealer.as_ref(),
+        keystore::save_identity,
+    )
+}
+
+fn create_or_recover_identity_slot_with_writer<F>(
+    core: &HubCoreState,
+    registry_state: &HubIdentityRegistryState,
+    label: String,
+    recovery_phrase: Option<String>,
+    sealer: &dyn keystore::Sealer,
+    mut save_identity: F,
+) -> Result<HubIdentitySlotCreation, String>
+where
+    F: FnMut(&Path, &keystore::Identity, &dyn keystore::Sealer) -> keystore::Result<()>,
+{
     require_unlocked()?;
     validate_label(&label)?;
     let _transition = registry_state
@@ -422,7 +444,7 @@ fn create_or_recover_identity_slot(
         .lock()
         .map_err(|_| "OSL identity switch is unavailable".to_owned())?;
     let base = base_dir()?;
-    let mut registry = ensure_current_identity_slotted(core, &base)?;
+    let mut registry = ensure_current_identity_slotted_with_sealer(core, &base, sealer)?;
     if registry.slots.len() >= MAX_IDENTITIES {
         return Err(format!(
             "OSL supports at most {MAX_IDENTITIES} local identities"
@@ -467,10 +489,7 @@ fn create_or_recover_identity_slot(
     }
     std::fs::create_dir(&stage)
         .map_err(|_| "OSL identity staging directory could not be created".to_owned())?;
-    let sealer = crate::password_lifecycle::persistent_sealer()?;
-    if let Err(error) =
-        keystore::save_identity(&stage.join("identity.json"), &identity, sealer.as_ref())
-    {
+    if let Err(error) = save_identity(&stage.join("identity.json"), &identity, sealer) {
         let _ = std::fs::remove_dir_all(&stage);
         return Err(format!("OSL identity could not be sealed: {error}"));
     }
@@ -493,6 +512,15 @@ fn create_or_recover_identity_slot(
 fn ensure_current_identity_slotted(
     core: &HubCoreState,
     base: &Path,
+) -> Result<IdentityRegistryFile, String> {
+    let sealer = crate::password_lifecycle::persistent_sealer()?;
+    ensure_current_identity_slotted_with_sealer(core, base, sealer.as_ref())
+}
+
+fn ensure_current_identity_slotted_with_sealer(
+    core: &HubCoreState,
+    base: &Path,
+    sealer: &dyn keystore::Sealer,
 ) -> Result<IdentityRegistryFile, String> {
     let identity = core
         .osl
@@ -520,7 +548,7 @@ fn ensure_current_identity_slotted(
         .slots
         .entry(slot_id.clone())
         .or_insert_with(|| record_for_identity(&identity, slot_id, "Primary identity".to_owned()));
-    reconcile_slot_directories(base, &mut registry)?;
+    reconcile_slot_directories(base, &mut registry, sealer)?;
     registry.version = REGISTRY_VERSION;
     write_registry(base, &registry)?;
     Ok(registry)
@@ -628,6 +656,7 @@ fn rollback_moved(stage: &Path, base: &Path, moved: &[String]) {
 fn reconcile_slot_directories(
     base: &Path,
     registry: &mut IdentityRegistryFile,
+    sealer: &dyn keystore::Sealer,
 ) -> Result<(), String> {
     let root = base.join(IDENTITIES_DIR);
     let entries = match std::fs::read_dir(&root) {
@@ -635,7 +664,6 @@ fn reconcile_slot_directories(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(_) => return Err("OSL identity slots could not be enumerated".to_owned()),
     };
-    let sealer = crate::password_lifecycle::persistent_sealer()?;
     for entry in entries.take(MAX_IDENTITIES + 1) {
         let entry = entry.map_err(|_| "OSL identity slot could not be inspected".to_owned())?;
         let slot_id = entry.file_name().to_string_lossy().to_string();
@@ -644,11 +672,10 @@ fn reconcile_slot_directories(
         {
             continue;
         }
-        let identity =
-            match keystore::load_identity(&entry.path().join("identity.json"), sealer.as_ref()) {
-                Ok(identity) => identity,
-                Err(_) => continue,
-            };
+        let identity = match keystore::load_identity(&entry.path().join("identity.json"), sealer) {
+            Ok(identity) => identity,
+            Err(_) => continue,
+        };
         if slot_id_for_identity(&identity) != slot_id {
             continue;
         }
@@ -1000,7 +1027,11 @@ pub(crate) fn reset_account_scoped_state(state: &ipc::AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+    use std::io;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    const TEST_FILE_KEY: [u8; 32] = [0x58; 32];
 
     fn temp_base(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -1010,6 +1041,210 @@ mod tests {
         std::env::temp_dir().join(format!(
             "osl-hub-identities-{label}-{}-{nonce}",
             std::process::id()
+        ))
+    }
+
+    struct KeystoreReset;
+
+    impl Drop for KeystoreReset {
+        fn drop(&mut self) {
+            ipc::main_password::set_file_storage_key(None);
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+        }
+    }
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    struct Task3581Snapshot {
+        usable_account_count: usize,
+        usable_key_count: usize,
+        completed_account_count: usize,
+        account_fingerprint: String,
+        key_fingerprint: String,
+    }
+
+    fn short_hex(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+
+    fn identity_key_fingerprint(identity: &keystore::Identity) -> String {
+        let mut hash = Sha256::new();
+        hash.update(identity.ed25519_public.as_bytes());
+        hash.update(identity.x25519_public.as_bytes());
+        hash.update(identity.mlkem_public_bytes);
+        short_hex(&hash.finalize()[..16])
+    }
+
+    fn account_fingerprint(record: &IdentitySlotRecord) -> String {
+        let mut hash = Sha256::new();
+        hash.update(record.slot_id.as_bytes());
+        hash.update(record.osl_user_id.as_bytes());
+        hash.update(record.ed25519_public_b64.as_bytes());
+        short_hex(&hash.finalize()[..16])
+    }
+
+    fn committed_account_count(base: &Path) -> usize {
+        std::fs::read_dir(base.join(IDENTITIES_DIR))
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.flatten())
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter_map(|entry| {
+                let slot_id = entry.file_name().to_string_lossy().to_string();
+                (validate_slot_id(&slot_id).is_ok() && entry.path().join("identity.json").is_file())
+                    .then_some(())
+            })
+            .count()
+    }
+
+    fn usable_key_count(root: &Path, sealer: &dyn keystore::Sealer) -> usize {
+        fn visit(path: &Path, sealer: &dyn keystore::Sealer, count: &mut usize) {
+            let Ok(entries) = std::fs::read_dir(path) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    visit(&path, sealer, count);
+                } else if path.file_name().and_then(|name| name.to_str()) == Some("identity.json")
+                    && keystore::load_identity(&path, sealer).is_ok()
+                {
+                    *count += 1;
+                }
+            }
+        }
+
+        let mut count = 0;
+        visit(root, sealer, &mut count);
+        count
+    }
+
+    fn completed_account_count(base: &Path) -> usize {
+        std::fs::read_dir(base.join(IDENTITIES_DIR))
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.flatten())
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter(|entry| {
+                entry
+                    .path()
+                    .join(crate::account_recovery::RECOVERY_KIT_STATUS_FILE)
+                    .is_file()
+                    && crate::account_recovery::load_recovery_kit_confirmation_time(
+                        &entry
+                            .path()
+                            .join(crate::account_recovery::RECOVERY_KIT_STATUS_FILE),
+                        &TEST_FILE_KEY,
+                    )
+                    .is_ok_and(|confirmed_at| confirmed_at.is_some())
+            })
+            .count()
+    }
+
+    fn task_3581_snapshot(
+        base: &Path,
+        sealer: &dyn keystore::Sealer,
+    ) -> Result<Task3581Snapshot, String> {
+        let registry = load_registry(base)?;
+        let mut usable_records = Vec::new();
+        for record in registry.slots.values() {
+            let dir = slot_dir(base, &record.slot_id)?;
+            let Ok(identity) = keystore::load_identity(&dir.join("identity.json"), sealer) else {
+                continue;
+            };
+            if identity.user_id == record.osl_user_id
+                && slot_id_for_identity(&identity) == record.slot_id
+            {
+                usable_records.push((record, identity));
+            }
+        }
+        assert_eq!(
+            usable_records.len(),
+            1,
+            "TASK_3581_RED usable-account count changed: expected 1 got {} registry_slots={}",
+            usable_records.len(),
+            registry.slots.len()
+        );
+        let (record, identity) = &usable_records[0];
+        Ok(Task3581Snapshot {
+            usable_account_count: usable_records.len(),
+            usable_key_count: usable_key_count(&base.join(IDENTITIES_DIR), sealer),
+            completed_account_count: completed_account_count(base),
+            account_fingerprint: account_fingerprint(record),
+            key_fingerprint: identity_key_fingerprint(identity),
+        })
+    }
+
+    fn print_task_3581(label: &str, snapshot: &Task3581Snapshot) {
+        println!(
+            "TASK_3581_{label} usable_account_count={} usable_key_count={} completed_account_count={} account_fingerprint={} key_fingerprint={}",
+            snapshot.usable_account_count,
+            snapshot.usable_key_count,
+            snapshot.completed_account_count,
+            snapshot.account_fingerprint,
+            snapshot.key_fingerprint
+        );
+    }
+
+    fn assert_task_3581_unchanged(
+        label: &str,
+        expected: &Task3581Snapshot,
+        actual: &Task3581Snapshot,
+    ) {
+        assert_eq!(
+            actual.usable_account_count, 1,
+            "TASK_3581_RED {label} usable-account count changed: expected 1 got {}",
+            actual.usable_account_count
+        );
+        assert_eq!(
+            actual.usable_key_count, 1,
+            "TASK_3581_RED {label} extra or missing usable key: expected 1 got {}",
+            actual.usable_key_count
+        );
+        assert_ne!(
+            actual.completed_account_count, 2,
+            "TASK_3581_RED {label} completed-account count reported 2"
+        );
+        assert_eq!(
+            actual.completed_account_count, 1,
+            "TASK_3581_RED {label} completed-account count changed: expected 1 got {}",
+            actual.completed_account_count
+        );
+        assert_eq!(
+            actual.account_fingerprint, expected.account_fingerprint,
+            "TASK_3581_RED {label} account fingerprint changed"
+        );
+        assert_eq!(
+            actual.key_fingerprint, expected.key_fingerprint,
+            "TASK_3581_RED {label} key fingerprint changed"
+        );
+    }
+
+    fn restart_primary_from_disk(
+        base: &Path,
+        sealer: &dyn keystore::Sealer,
+    ) -> Result<HubCoreState, String> {
+        keystore::set_active_account_dir(None);
+        let selected = select_active_identity_before_bootstrap()?
+            .ok_or_else(|| "restart did not select an active identity".to_owned())?;
+        let active_dir = slot_dir(base, &selected)?;
+        let identity = keystore::load_identity(&active_dir.join("identity.json"), sealer)
+            .map_err(|error| format!("restart could not load identity: {error}"))?;
+        let state = HubCoreState::default();
+        state.osl.install_identity(identity);
+        ipc::main_password::set_file_storage_key(Some(TEST_FILE_KEY));
+        Ok(state)
+    }
+
+    fn storage_full_error() -> keystore::Error {
+        keystore::Error::Io(io::Error::new(
+            io::ErrorKind::StorageFull,
+            "task 3581 simulated full disk",
         ))
     }
 
@@ -1104,6 +1339,126 @@ mod tests {
             select_slot_from_disk(&base).as_deref(),
             Some(complete_slot.as_str())
         );
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn task_3581_full_disk_during_second_identity_key_write_keeps_one_account_after_restart() {
+        let _serial = crate::global_keystore_test_lock();
+        let _reset = KeystoreReset;
+        let base = temp_base("task-3581");
+        std::fs::create_dir_all(&base).unwrap();
+        keystore::set_base_dir_override(Some(base.clone()));
+        keystore::set_active_account_dir(None);
+        ipc::main_password::set_file_storage_key(Some(TEST_FILE_KEY));
+
+        let sealer = keystore::MemorySealer::new();
+        let core = HubCoreState::default();
+        let registry_state = HubIdentityRegistryState::default();
+
+        let mut control_identity = keystore::identity_from_entropy([81; 16], "pending".to_owned());
+        control_identity.user_id = crate::password_lifecycle::native_user_id(&control_identity);
+        let control_slot = slot_id_for_identity(&control_identity);
+        let control_dir = slot_dir(&base, &control_slot).unwrap();
+        keystore::save_identity(
+            &control_dir.join("identity.json"),
+            &control_identity,
+            &sealer,
+        )
+        .expect("control identity writes its usable key");
+        let control_record = record_for_identity(
+            &control_identity,
+            control_slot.clone(),
+            "Control account".to_owned(),
+        );
+        core.osl.install_identity(control_identity);
+        keystore::set_active_account_dir(Some(control_dir.clone()));
+        write_active_marker(&base, &control_slot).unwrap();
+        let mut registry = IdentityRegistryFile {
+            version: REGISTRY_VERSION,
+            ..IdentityRegistryFile::default()
+        };
+        registry
+            .slots
+            .insert(control_slot.clone(), control_record.clone());
+        write_registry(&base, &registry).unwrap();
+        assert_eq!(registry.slots.len(), 1);
+        assert_eq!(committed_account_count(&base), 1);
+        crate::account_recovery::write_recovery_kit_status_with_confirmation(
+            &control_dir.join(crate::account_recovery::RECOVERY_KIT_STATUS_FILE),
+            false,
+            Some(1_786_010_703),
+            &TEST_FILE_KEY,
+        )
+        .unwrap();
+
+        let before = task_3581_snapshot(&base, &sealer).unwrap();
+        assert_eq!(before.usable_account_count, 1);
+        assert_eq!(before.usable_key_count, 1);
+        assert_eq!(before.completed_account_count, 1);
+        print_task_3581("BEFORE", &before);
+
+        let failures: [(
+            &str,
+            fn(&Path, &keystore::Identity, &dyn keystore::Sealer) -> keystore::Result<()>,
+        ); 2] = [
+            ("BEFORE_IDENTITY_JSON_WRITE", |_, _, _| {
+                Err(storage_full_error())
+            }),
+            (
+                "AFTER_USABLE_IDENTITY_JSON_WRITE",
+                |path, identity, sealer| {
+                    keystore::save_identity(path, identity, sealer)?;
+                    Err(storage_full_error())
+                },
+            ),
+        ];
+
+        for (label, writer) in failures {
+            let error = match create_or_recover_identity_slot_with_writer(
+                &core,
+                &registry_state,
+                format!("Second account {label}"),
+                None,
+                &sealer,
+                writer,
+            ) {
+                Ok(_) => panic!("second account creation must report the full disk failure"),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains("No space left on device")
+                    || error.contains("storage")
+                    || error.contains("full disk"),
+                "TASK_3581_RED {label} did not name a disk-full write failure: {error}"
+            );
+            println!("TASK_3581_FAILURE {label} error={error}");
+            let after_failure = task_3581_snapshot(&base, &sealer).unwrap();
+            print_task_3581(&format!("{label}_AFTER_FAILURE"), &after_failure);
+            assert_task_3581_unchanged(label, &before, &after_failure);
+
+            reset_account_scoped_state(&core.osl);
+            let restarted = restart_primary_from_disk(&base, &sealer).unwrap();
+            let after_restart = task_3581_snapshot(&base, &sealer).unwrap();
+            print_task_3581(&format!("{label}_AFTER_RESTART"), &after_restart);
+            assert_task_3581_unchanged(label, &before, &after_restart);
+            assert_eq!(
+                active_user_id(&restarted).unwrap(),
+                registry.slots[&control_slot].osl_user_id
+            );
+            let reloaded_identity = restarted
+                .osl
+                .identity
+                .lock()
+                .unwrap()
+                .as_ref()
+                .cloned()
+                .unwrap();
+            core.osl.install_identity(reloaded_identity);
+            reset_account_scoped_state(&restarted.osl);
+        }
+
+        ipc::main_password::set_file_storage_key(None);
         let _ = std::fs::remove_dir_all(base);
     }
 

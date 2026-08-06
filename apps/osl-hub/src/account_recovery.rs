@@ -171,6 +171,26 @@ fn write_recovery_setup_state(
     crate::atomic_file::write_recoverable(path, &sealed, "OSL recovery-kit status")
 }
 
+pub(crate) fn load_recovery_kit_confirmation_time(
+    path: &Path,
+    key: &[u8; 32],
+) -> Result<Option<i64>, String> {
+    Ok(load_recovery_setup_state(path, key)?.recovery_confirmed_at_unix_seconds)
+}
+
+pub(crate) fn write_recovery_kit_status_with_confirmation(
+    path: &Path,
+    kit_unsaved: bool,
+    recovery_confirmed_at_unix_seconds: Option<i64>,
+    key: &[u8; 32],
+) -> Result<(), String> {
+    write_recovery_setup_state(
+        path,
+        &RecoverySetupState { kit_unsaved, recovery_confirmed_at_unix_seconds },
+        key,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
