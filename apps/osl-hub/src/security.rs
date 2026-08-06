@@ -6385,6 +6385,115 @@ mod tests {
     }
 
     #[test]
+    fn task_0131_absent_place_removal_keeps_allowed_send_preparable() {
+        let harness = FileBackedSecurityHarness::new("task-0131-absent-place-removal");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        let (allowed_person, allowed_metadata, allowed_peer) = test_friend(131);
+        let (absent_person, absent_metadata, absent_peer) = test_friend(132);
+        let people = PeopleFile {
+            version: PEOPLE_SCHEMA_VERSION,
+            people: BTreeMap::from([
+                (allowed_person.clone(), allowed_metadata),
+                (absent_person.clone(), absent_metadata),
+            ]),
+        };
+        write_encrypted_json(&harness.path().join(PEOPLE_FILE), &people).unwrap();
+        let peers = ipc::peer_map::PeerMap::from([
+            (allowed_person.clone(), allowed_peer),
+            (absent_person.clone(), absent_peer),
+        ]);
+        write_encrypted_json(&harness.path().join("peer_map.json"), &peers).unwrap();
+        *core.osl.peer_map.lock().unwrap() = peers;
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences {
+                version: 2,
+                ..SecurityPreferences::default()
+            },
+        )
+        .unwrap();
+
+        let service_id = "osl-chat";
+        let account_id = "osl-main";
+        let allowed_scope_id = manual_peer_scope_id(service_id, account_id, &allowed_person)
+            .expect("allowed place has a valid scope id");
+        let absent_scope_id = manual_peer_scope_id(service_id, account_id, &absent_person)
+            .expect("absent place has a valid scope id");
+        set_manual_peer_scope_permission(
+            &core,
+            &security,
+            service_id,
+            account_id,
+            allowed_person.clone(),
+            dm_scope_input(allowed_scope_id.clone()),
+            true,
+        )
+        .expect("fixture grants the actually allowed place");
+
+        let before_prefs: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        let before_allowed_list: Vec<String> = before_prefs
+            .manual_approved_scopes
+            .iter()
+            .cloned()
+            .collect();
+        let absent_remove_result = set_manual_peer_scope_permission(
+            &core,
+            &security,
+            service_id,
+            account_id,
+            absent_person.clone(),
+            dm_scope_input(absent_scope_id.clone()),
+            false,
+        );
+        let after_prefs: SecurityPreferences =
+            load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+        let after_allowed_list: Vec<String> =
+            after_prefs.manual_approved_scopes.iter().cloned().collect();
+        let prepared = require_manual_peer_scope_approved(
+            &core,
+            service_id,
+            account_id,
+            allowed_person.clone(),
+            dm_scope_input(allowed_scope_id.clone()),
+        )
+        .map(|_| "prepare-action")
+        .unwrap_or("skipped");
+
+        let allowed_place_id =
+            manual_peer_scope_storage_key(service_id, account_id, &allowed_person).unwrap();
+        let absent_place_id =
+            manual_peer_scope_storage_key(service_id, account_id, &absent_person).unwrap();
+        let unchanged = after_allowed_list == before_allowed_list;
+        println!("TASK0131_ABSENT_REMOVE_ID={absent_place_id}");
+        println!(
+            "TASK0131_ABSENT_REMOVE_RESULT={}",
+            absent_remove_result.is_ok()
+        );
+        println!("TASK0131_ALLOWED_PLACE_ID={allowed_place_id}");
+        println!(
+            "TASK0131_ALLOWED_LIST_BEFORE_COUNT={}",
+            before_allowed_list.len()
+        );
+        println!(
+            "TASK0131_ALLOWED_LIST_AFTER_COUNT={}",
+            after_allowed_list.len()
+        );
+        println!("TASK0131_ALLOWED_LIST_BEFORE={before_allowed_list:?}");
+        println!("TASK0131_ALLOWED_LIST_AFTER={after_allowed_list:?}");
+        println!("TASK0131_ALLOWED_LIST_UNCHANGED={unchanged}");
+        println!("TASK0131_ALLOWED_SEND_PREPARE={prepared}");
+
+        assert_ne!(absent_place_id, allowed_place_id);
+        assert_eq!(absent_remove_result, Ok(()));
+        assert_eq!(before_allowed_list, vec![allowed_place_id]);
+        assert_eq!(after_allowed_list, before_allowed_list);
+        assert_eq!(prepared, "prepare-action");
+    }
+
+    #[test]
     fn person_reach_is_never_implied_by_an_ordinary_approval() {
         let gc = Scope::gc("gc-1");
         let channel = Scope::server_channel("space-1", "channel-1");
