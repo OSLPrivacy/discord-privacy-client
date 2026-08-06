@@ -1,4 +1,5 @@
 import type { StripeEvent } from "./stripe.js";
+import { validateOneTimeProPaymentMessage } from "./subscription-state.js";
 
 interface MetricObject {
   id?: unknown;
@@ -9,6 +10,7 @@ interface MetricObject {
   amount_refunded?: unknown;
   amount?: unknown;
   currency?: unknown;
+  metadata?: unknown;
 }
 
 export async function recordVerifiedStripeMetric(
@@ -52,6 +54,14 @@ export async function recordVerifiedStripeMetric(
   ) {
     return;
   }
+  if (
+    (event.type === "checkout.session.completed" ||
+      event.type === "checkout.session.async_payment_succeeded") &&
+    isOneTimeProPayment(object) &&
+    validateOneTimeProPaymentMessage(object)
+  ) {
+    return;
+  }
   await db.prepare(
     `INSERT INTO commerce_events (
        event_id, event_type, stripe_object_id, amount_cents, currency,
@@ -70,6 +80,17 @@ export async function recordVerifiedStripeMetric(
     currency,
     event.created ?? Math.floor(Date.now() / 1000),
   ).run();
+}
+
+function isOneTimeProPayment(object: MetricObject): boolean {
+  if (object.mode !== "payment") return false;
+  if (!object.metadata || typeof object.metadata !== "object" || Array.isArray(object.metadata)) {
+    return false;
+  }
+  const metadata = object.metadata as Record<string, unknown>;
+  return metadata.osl_plan === "pro" &&
+    metadata.osl_purchase === "one-time" &&
+    metadata.osl_fulfillment === "instant-v1";
 }
 
 export interface CommerceSummary {

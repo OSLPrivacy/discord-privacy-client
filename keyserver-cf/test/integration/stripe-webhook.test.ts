@@ -7,6 +7,12 @@ import {
   uniqueSubId,
 } from "./helpers-stripe.js";
 import { sha256Hex } from "../../src/lib/crypto-watcher-auth.js";
+import {
+  ONE_TIME_PRO_AMOUNT_CENTS,
+  ONE_TIME_PRO_AMOUNT_REFUSAL,
+  ONE_TIME_PRO_CURRENCY,
+  ONE_TIME_PRO_CURRENCY_REFUSAL,
+} from "../../src/lib/subscription-state.js";
 
 function browserClaimToken(): string {
   const bytes = new Uint8Array(32);
@@ -14,6 +20,17 @@ function browserClaimToken(): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+async function insertPendingCheckoutClaim(sessionId: string, licenseHash: string): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    `INSERT INTO stripe_checkout_claims (
+       session_id, claim_hash, delivery_public_key_spki,
+       encrypted_license, license_hash, subscription_id, status,
+       created_at, expires_at, delivered_at
+     ) VALUES (?, ?, 'public-key', 'ciphertext', ?, NULL, 'pending', ?, ?, NULL)`,
+  ).bind(sessionId, `claim-${sessionId}`, licenseHash, now, now + 3600).run();
 }
 
 describe("POST /v1/stripe/webhook signature", () => {
@@ -482,48 +499,97 @@ describe("POST /v1/stripe/webhook state machine", () => {
     ).bind(sessionId).first()).toBeNull();
   });
 
-  it("does not activate a paid checkout for the wrong amount", async () => {
-    const sessionId = `cs_live_wrong_amount_${crypto.randomUUID().replace(/-/g, "")}`;
-    const paymentIntentId = `pi_${crypto.randomUUID().replace(/-/g, "")}`;
-    const now = Math.floor(Date.now() / 1000);
-    await env.DB.prepare(
-      `INSERT INTO stripe_checkout_claims (
-         session_id, claim_hash, delivery_public_key_spki,
-         encrypted_license, license_hash, subscription_id, status,
-         created_at, expires_at, delivered_at
-       ) VALUES (?, ?, 'public-key', 'ciphertext', ?, NULL, 'pending', ?, ?, NULL)`,
-    ).bind(
-      sessionId,
-      `claim-${sessionId}`,
-      `license-${sessionId}`,
-      now,
-      now + 3600,
-    ).run();
-
-    const response = await postSignedWebhook(SELF, {
-      id: uniqueEventId(),
-      type: "checkout.session.completed",
-      data: {
-        object: {
-          id: sessionId,
-          mode: "payment",
-          metadata: { osl_plan: "pro", osl_purchase: "one-time", osl_fulfillment: "instant-v1" },
-          payment_status: "paid",
-          payment_intent: paymentIntentId,
-          amount_total: 600,
-          currency: "usd",
-        },
+  it("TASK3190 refuses one-time Pro callbacks unless amount and currency match the bought price", async () => {
+    const cases = [
+      {
+        name: "exact",
+        amount: ONE_TIME_PRO_AMOUNT_CENTS,
+        currency: ONE_TIME_PRO_CURRENCY,
+        accepted: true,
+        reason: undefined,
       },
-    });
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ kind: "noop" });
-    const claim = await env.DB.prepare(
-      "SELECT status FROM stripe_checkout_claims WHERE session_id = ?",
-    ).bind(sessionId).first<{ status: string }>();
-    expect(claim?.status).toBe("pending");
-    expect(await env.DB.prepare(
-      "SELECT 1 AS present FROM subscriptions WHERE subscription_id = ?",
-    ).bind(paymentIntentId).first()).toBeNull();
+      {
+        name: "one_cent_under",
+        amount: ONE_TIME_PRO_AMOUNT_CENTS - 1,
+        currency: ONE_TIME_PRO_CURRENCY,
+        accepted: false,
+        reason: ONE_TIME_PRO_AMOUNT_REFUSAL,
+      },
+      {
+        name: "right_number_wrong_currency",
+        amount: ONE_TIME_PRO_AMOUNT_CENTS,
+        currency: "eur",
+        accepted: false,
+        reason: ONE_TIME_PRO_CURRENCY_REFUSAL,
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const sessionId = `cs_live_task3190_${testCase.name}_${crypto.randomUUID().replace(/-/g, "")}`;
+      const paymentIntentId = `pi_task3190_${testCase.name}_${crypto.randomUUID().replace(/-/g, "")}`;
+      const licenseHash = `license-${sessionId}`;
+      await insertPendingCheckoutClaim(sessionId, licenseHash);
+
+      const response = await postSignedWebhook(SELF, {
+        id: uniqueEventId(),
+        type: "checkout.session.completed",
+        data: {
+          object: {
+            id: sessionId,
+            mode: "payment",
+            metadata: {
+              osl_plan: "pro",
+              osl_purchase: "one-time",
+              osl_fulfillment: "instant-v1",
+            },
+            payment_status: "paid",
+            payment_intent: paymentIntentId,
+            amount_total: testCase.amount,
+            currency: testCase.currency,
+          },
+        },
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { kind: string; reason?: string };
+      expect(body.kind).toBe(testCase.accepted ? "applied" : "noop");
+      if (testCase.reason) expect(body.reason).toBe(testCase.reason);
+
+      const state = await env.DB.prepare(
+        `SELECT
+           (SELECT status FROM stripe_checkout_claims WHERE session_id = ?) AS claim_status,
+           (SELECT COUNT(*) FROM licenses WHERE license_hash = ?) AS license_count,
+           (SELECT COUNT(*) FROM commerce_events WHERE stripe_object_id = ?) AS commerce_count,
+           (SELECT amount_cents FROM commerce_events WHERE stripe_object_id = ?) AS commerce_amount,
+           (SELECT currency FROM commerce_events WHERE stripe_object_id = ?) AS commerce_currency`,
+      ).bind(
+        sessionId,
+        licenseHash,
+        sessionId,
+        sessionId,
+        sessionId,
+      ).first<{
+        claim_status: string;
+        license_count: number;
+        commerce_count: number;
+        commerce_amount: number | null;
+        commerce_currency: string | null;
+      }>();
+      expect(state?.claim_status).toBe(testCase.accepted ? "delivery_ready" : "pending");
+      expect(state?.license_count).toBe(testCase.accepted ? 1 : 0);
+      expect(state?.commerce_count).toBe(testCase.accepted ? 1 : 0);
+      if (testCase.accepted) {
+        expect(state?.commerce_amount).toBe(ONE_TIME_PRO_AMOUNT_CENTS);
+        expect(state?.commerce_currency).toBe(ONE_TIME_PRO_CURRENCY);
+      }
+
+      console.log(`TASK3190 ${testCase.name}.amount_cents=${testCase.amount}`);
+      console.log(`TASK3190 ${testCase.name}.currency=${testCase.currency}`);
+      console.log(`TASK3190 ${testCase.name}.accepted=${testCase.accepted}`);
+      if (!testCase.accepted) {
+        console.log(`TASK3190 ${testCase.name}.refused=true`);
+        console.log(`TASK3190 ${testCase.name}.reason=${body.reason}`);
+      }
+    }
   });
 
   it("applies an invoice paid observation that arrived before checkout completion", async () => {
