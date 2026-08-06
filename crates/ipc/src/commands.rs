@@ -15824,6 +15824,12 @@ pub struct AutoWhitelistRuleDto {
     pub choice: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct InstagramWhitelistKindDto {
+    pub id: String,
+    pub name: String,
+}
+
 pub fn cmd_osl_get_auto_whitelist_rule_choices() -> Result<Vec<AutoWhitelistRuleChoiceDto>, String>
 {
     record_activity_on_command_entry();
@@ -15832,6 +15838,17 @@ pub fn cmd_osl_get_auto_whitelist_rule_choices() -> Result<Vec<AutoWhitelistRule
         .map(|choice| AutoWhitelistRuleChoiceDto {
             id: choice.id().to_string(),
             label: choice.label().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_get_instagram_whitelist_kinds() -> Result<Vec<InstagramWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::InstagramWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| InstagramWhitelistKindDto {
+            id: kind.id().to_string(),
+            name: kind.name().to_string(),
         })
         .collect())
 }
