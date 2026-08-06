@@ -16712,6 +16712,7 @@ pub fn cmd_osl_direct_new_place(
     if place_id.trim().is_empty() {
         return Err("OSL: place_id is empty".to_string());
     }
+    let display_name = display_name.or_else(|| Some(place_id.clone()));
     let rule = {
         let prefs = state
             .app_preferences

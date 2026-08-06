@@ -35,6 +35,7 @@ pub fn add_allowed_place_record(
     app_data_dir: &Path,
     record: &AllowedPlaceRecord,
 ) -> Result<(), String> {
+    validate_allowed_place_record(record)?;
     let conn = open_allowed_places(app_data_dir)?;
     conn.execute(
         "INSERT INTO allowed_places \
@@ -49,6 +50,24 @@ pub fn add_allowed_place_record(
         ],
     )
     .map_err(|e| format!("OSL: insert allowed place: {e}"))?;
+    Ok(())
+}
+
+fn validate_allowed_place_record(record: &AllowedPlaceRecord) -> Result<(), String> {
+    require_present("app_kind", &record.app_kind)?;
+    require_present("place_kind", &record.place_kind)?;
+    require_present("place_id", &record.place_id)?;
+    let Some(display_name) = record.display_name.as_deref() else {
+        return Err("OSL: allowed place display_name is missing".to_string());
+    };
+    require_present("display_name", display_name)?;
+    Ok(())
+}
+
+fn require_present(field: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("OSL: allowed place {field} is missing"));
+    }
     Ok(())
 }
 
