@@ -120,6 +120,40 @@ pub fn cmd_osl_trace_allowed_place_protected_message_path(
     Ok(trace)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WhitelistRuleLookupDto {
+    pub conversation_id: String,
+    pub result: String,
+}
+
+pub fn cmd_osl_save_whitelist_rules(
+    app_data_dir: PathBuf,
+    allowed_conversations: Vec<String>,
+    newly_found_conversation_rule: String,
+) -> Result<(), String> {
+    let rule = crate::whitelist_rules_store::NewlyFoundConversationRule::try_from(
+        newly_found_conversation_rule.as_str(),
+    )
+    .map_err(|e| format!("OSL: whitelist rules save failed: {e}"))?;
+    let rules = crate::whitelist_rules_store::WhitelistRulesFile::new(allowed_conversations, rule);
+    crate::whitelist_rules_store::save_whitelist_rules(app_data_dir, &rules)
+        .map_err(|e| format!("OSL: whitelist rules save failed: {e}"))
+}
+
+pub fn cmd_osl_lookup_whitelist_rule(
+    app_data_dir: PathBuf,
+    conversation_id: String,
+) -> Result<WhitelistRuleLookupDto, String> {
+    let decision =
+        crate::whitelist_rules_store::lookup_whitelist_rule(&app_data_dir, &conversation_id)
+            .map_err(|e| format!("OSL: whitelist rules lookup failed: {e}"))?;
+    Ok(WhitelistRuleLookupDto {
+        conversation_id,
+        result: decision.as_str().to_string(),
+    })
+}
+
 /// Manual "Lock now": drop every live secret immediately, without waiting for
 /// the idle window. This is the Settings action; it is also the correct thing
 /// to call from an OS session-lock notification.

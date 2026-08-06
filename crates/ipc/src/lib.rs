@@ -101,6 +101,7 @@ pub mod transport;
 // can consume the one canonical implementation as the object envelope lands.
 pub mod transport_padding;
 pub mod whitelist;
+pub mod whitelist_rules_store;
 pub mod whitelist_state;
 pub mod wire_v2;
 // OSL-RN (wire 0x10) integration: version selection with downgrade
