@@ -2,8 +2,8 @@ import type { Env } from "../env.js";
 import { getUserForVerify } from "../lib/db.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 import { sha256Hex } from "../lib/account-ownership-challenge.js";
-import { badRequest, conflict, forbidden, json, tooMany, unauthorized } from "../lib/http.js";
-import { isDiscordSnowflake, isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/validation.js";
+import { badRequest, conflict, forbidden, json, notFound, tooMany, unauthorized } from "../lib/http.js";
+import { decodeBase64, isDiscordSnowflake, isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/validation.js";
 import { verifySignedRequest } from "../lib/signed-request.js";
 import {
   USERNAME_FRESHNESS_MS,
@@ -33,6 +33,11 @@ interface PublicNameProofRow {
   consumed_at_unix_seconds: number | null;
 }
 
+interface PublicNameDirectoryRow {
+  name: string;
+  identity_fingerprint: string;
+}
+
 function parsePublicNameProof(value: unknown): PublicNameProofInput | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const proof = value as Record<string, unknown>;
@@ -48,6 +53,31 @@ function parsePublicNameProof(value: unknown): PublicNameProofInput | null {
     name: proof.name,
     token: proof.token,
   };
+}
+
+async function identityFingerprint(ed25519PublicKeyB64: string): Promise<string> {
+  return sha256Hex(decodeBase64(ed25519PublicKeyB64));
+}
+
+export async function handlePublicNameExactSearch(request: Request, env: Env): Promise<Response> {
+  const rlIp = await checkRateLimit(env, callerIp(request), 120, "public-name-exact-search-ip");
+  if (!rlIp.ok) return tooMany(rlIp.retryAfter);
+  let body: Record<string, unknown>;
+  try { body = await request.json() as Record<string, unknown>; }
+  catch { return badRequest("malformed JSON body"); }
+  const keys = Object.keys(body).sort().join(",");
+  if (keys !== "name") return badRequest("public name exact search must contain exactly name");
+  if (!validNormalizedUsername(body.name)) return badRequest("name must already be normalized");
+  const row = await env.DB.prepare(
+    `SELECT name, identity_fingerprint
+       FROM public_name_directory
+      WHERE name = ?`,
+  ).bind(body.name).first<PublicNameDirectoryRow>();
+  if (!row) return notFound("public name not found");
+  return json({
+    name: row.name,
+    identity_fingerprint: row.identity_fingerprint,
+  }, { status: 200 });
 }
 
 /// Every lookup answer is padded to exactly this many bytes of JSON.
@@ -152,6 +182,7 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   }
   const current = await getUserForVerify(env.DB, userId);
   if (!current) return unauthorized("registered identity required");
+  const publicIdentityFingerprint = await identityFingerprint(current.ik_ed25519_pub);
   const validInvite = await validateFriendCode(body.friend_code, userId, current.ik_ed25519_pub);
   if (!validInvite) return badRequest("friend_code is not a valid invite for this identity");
   const message = usernameClaimMessage({
@@ -305,6 +336,19 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
            friend_code = excluded.friend_code, updated_at = excluded.updated_at
          WHERE username_directory.user_id = excluded.user_id`,
       ).bind(username, userId, body.friend_code, now, digest, skeleton),
+      env.DB.prepare(
+        `INSERT INTO public_name_directory
+           (name, identity_fingerprint, claimed_at, updated_at)
+         SELECT ?1, ?2, ?3, ?3
+          WHERE EXISTS (
+            SELECT 1 FROM username_directory
+             WHERE username = ?1 AND user_id = ?4
+          )
+         ON CONFLICT(name) DO UPDATE SET
+           identity_fingerprint = excluded.identity_fingerprint,
+           updated_at = excluded.updated_at
+         WHERE public_name_directory.identity_fingerprint = excluded.identity_fingerprint`,
+      ).bind(username, publicIdentityFingerprint, now, userId),
     ]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -316,5 +360,6 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   if ((result[2]?.meta?.changes ?? 0) !== 1) return conflict("public name proof already consumed");
   if ((result[3]?.meta?.changes ?? 0) !== 1) return conflict("username claim replayed or identity changed");
   if ((result[5]?.meta?.changes ?? 0) !== 1) return conflict("username is unavailable");
+  if ((result[6]?.meta?.changes ?? 0) !== 1) return conflict("public name is unavailable");
   return json({ username, user_id: userId }, { status: 200 });
 }

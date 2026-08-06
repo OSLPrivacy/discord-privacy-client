@@ -290,6 +290,51 @@ describe("username directory", () => {
     expect(expired.status).toBe(403);
   });
 
+  it("TASK0447 - claimed public-name storage and exact search expose only minimal identity data", async () => {
+    const name = "task0447_fixture";
+    const uid = userId();
+    const pair = await registerTestUser(SELF, uid);
+    const expectedFingerprint = await sha256Hex(pair.publicKey);
+    const claimed = await claim(name, uid, pair);
+    expect(claimed.status, await claimed.text()).toBe(200);
+
+    const stored = await testDb.prepare(
+      "SELECT * FROM public_name_directory WHERE name = ?",
+    ).bind(name).first<Record<string, unknown>>();
+    expect(stored).not.toBeNull();
+    const storedKeys = Object.keys(stored ?? {}).sort();
+    console.log(`TASK0447_CLAIMED_FIXTURE_NAME=${name}`);
+    console.log(`TASK0447_STORED_RECORD_FIELD_COUNT=${storedKeys.length}`);
+    console.log(`TASK0447_STORED_RECORD_FIELDS=${storedKeys.join(",")}`);
+    console.log(`TASK0447_STORED_IDENTITY_FINGERPRINT=${stored?.identity_fingerprint}`);
+    expect(storedKeys).toEqual(["claimed_at", "identity_fingerprint", "name", "updated_at"]);
+    expect(stored).toMatchObject({
+      name,
+      identity_fingerprint: expectedFingerprint,
+    });
+
+    const search = await SELF.fetch("http://test/v1/public-names/exact-search", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": "203.0.113.47",
+      },
+      body: JSON.stringify({ name }),
+    });
+    expect(search.status, await search.clone().text()).toBe(200);
+    const searchBody = await search.json() as Record<string, unknown>;
+    const searchKeys = Object.keys(searchBody).sort();
+    console.log(`TASK0447_EXACT_SEARCH_STATUS=${search.status}`);
+    console.log(`TASK0447_EXACT_SEARCH_FIELDS=${searchKeys.join(",")}`);
+    console.log(`TASK0447_EXACT_SEARCH_NAME=${searchBody.name}`);
+    console.log(`TASK0447_EXACT_SEARCH_IDENTITY_FINGERPRINT=${searchBody.identity_fingerprint}`);
+    expect(searchKeys).toEqual(["identity_fingerprint", "name"]);
+    expect(searchBody).toEqual({
+      name,
+      identity_fingerprint: expectedFingerprint,
+    });
+  });
+
   it("claims and resolves only an exact normalized username", async () => {
     const uid = userId();
     const pair = await registerTestUser(SELF, uid);

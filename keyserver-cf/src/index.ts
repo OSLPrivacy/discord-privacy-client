@@ -76,7 +76,11 @@ export { Mailbox } from "./mail/mailbox.js";
 export { Archive } from "./archive/archive.js";
 import { handleUsernameCoverage } from "./endpoints/username-coverage.js";
 import { handleUsernameBucket } from "./endpoints/username-bucket.js";
-import { handleUsernameClaim, handleUsernameLookup } from "./endpoints/usernames.js";
+import {
+  handlePublicNameExactSearch,
+  handleUsernameClaim,
+  handleUsernameLookup,
+} from "./endpoints/usernames.js";
 import {
   handleControlInboxDelete,
   handleControlInboxGet,
@@ -496,6 +500,9 @@ async function dispatch(
       return await handleSpaceEventDrainPost(request, env);
     }
     if (path === "/v1/control-inbox") return await handleControlInboxPost(request, env);
+    if (path === "/v1/public-names/exact-search") {
+      return await handlePublicNameExactSearch(request, env);
+    }
     if (path === "/v1/usernames/claim") return await handleUsernameClaim(request, env);
     if (path === "/v1/usernames/lookup") return await handleUsernameLookup(request, env);
     if (path === "/v1/wrapped-keys") return await handleWrappedKeysPost(request, env);
