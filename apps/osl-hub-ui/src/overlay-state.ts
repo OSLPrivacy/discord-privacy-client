@@ -106,6 +106,7 @@ export interface NativeDiscordOverlayOpened {
   contextVerified: true;
   personToPersonE2ee: true;
   viewOnceConsumed: boolean;
+  displayDurationSeconds?: number;
   createdAt: number;
   expiresAt: number;
 }
@@ -138,6 +139,7 @@ export interface NativeDiscordOverlayOpenedBatch {
 export interface NativeDiscordOverlayPendingViewOnce {
   messageId: string;
   expiresAt: number;
+  displayDurationSeconds: number;
   personToPersonE2ee: true;
 }
 
@@ -387,19 +389,25 @@ export function parseNativeDiscordOverlayAcknowledgment(value: unknown): NativeD
 }
 
 const OPENED_KEYS = ["messageId", "coverPointer", "plaintext", "contextVerified", "personToPersonE2ee", "viewOnceConsumed", "createdAt", "expiresAt"] as const;
-const OPENED_KEYS_WITHOUT_COVER = OPENED_KEYS.filter((key) => key !== "coverPointer");
 
 export function parseNativeDiscordOverlayOpened(value: unknown): NativeDiscordOverlayOpened | null {
   // A message with no single Discord carrier row serialises with the cover key
   // *absent* rather than null, the same shape the prepared receipt already uses,
   // so both arities are accepted and nothing in between is.
   const carriesCover = typeof value === "object" && value !== null && Object.hasOwn(value, "coverPointer");
-  if (!exactRecord(value, carriesCover ? OPENED_KEYS : OPENED_KEYS_WITHOUT_COVER)) return null;
+  const carriesDisplayDuration = typeof value === "object" && value !== null && Object.hasOwn(value, "displayDurationSeconds");
+  const expectedKeys: string[] = OPENED_KEYS.filter((key) => carriesCover || key !== "coverPointer");
+  if (carriesDisplayDuration) expectedKeys.push("displayDurationSeconds");
+  if (!exactRecord(value, expectedKeys)) return null;
   if (!boundedVisible(value.plaintext, MAX_PROTECTED_DRAFT_BYTES) || utf8Length(value.plaintext) > MAX_PROTECTED_DRAFT_BYTES
     || value.contextVerified !== true || value.personToPersonE2ee !== true || typeof value.viewOnceConsumed !== "boolean"
     || !Number.isSafeInteger(value.createdAt) || Number(value.createdAt) <= 0
     || !Number.isSafeInteger(value.expiresAt) || Number(value.expiresAt) <= 0
     || Number(value.createdAt) > Number(value.expiresAt)) return null;
+  if (carriesDisplayDuration && (!value.viewOnceConsumed
+    || !Number.isSafeInteger(value.displayDurationSeconds)
+    || Number(value.displayDurationSeconds) < 1
+    || Number(value.displayDurationSeconds) > 60)) return null;
   // The handle is routing metadata, so it is held to the same shape rules as the
   // outbound cover: one printable line, bounded, or not present at all.
   if (!validAttachmentId(value.messageId)) return null;
@@ -447,8 +455,11 @@ function validAttachmentId(value: unknown): value is string {
 }
 
 export function parseNativeDiscordOverlayPendingViewOnce(value: unknown): NativeDiscordOverlayPendingViewOnce | null {
-  if (!exactRecord(value, ["messageId", "expiresAt", "personToPersonE2ee"])
+  if (!exactRecord(value, ["messageId", "expiresAt", "displayDurationSeconds", "personToPersonE2ee"])
     || !validAttachmentId(value.messageId) || !Number.isSafeInteger(value.expiresAt) || Number(value.expiresAt) <= 0
+    || !Number.isSafeInteger(value.displayDurationSeconds)
+    || Number(value.displayDurationSeconds) < 1
+    || Number(value.displayDurationSeconds) > 60
     || value.personToPersonE2ee !== true) return null;
   return value as unknown as NativeDiscordOverlayPendingViewOnce;
 }

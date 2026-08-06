@@ -1379,13 +1379,18 @@ function appendPendingViewOnce(message: { messageId: string; expiresAt: number }
     // revealed text and the entry it replaces name one message rather than two.
     incomingBubbles.set(
       opened.messageId,
-      appendBubble("incoming", opened.plaintext, "Received · opened once", opened.expiresAt, true),
+      appendBubble("incoming", opened.plaintext, "Received · opened once", openedDisplayExpiresAt(opened), true),
     );
     status.textContent = "View-once message opened in OSL.";
     requestRealtimeDrain();
   })());
   const expiryTimer = window.setTimeout(() => removeBubble(item), overlayExpiryDelayMs(message.expiresAt, Date.now()));
   messageExpiryTimers.set(item, expiryTimer);
+}
+
+function openedDisplayExpiresAt(opened: { expiresAt: number; viewOnceConsumed: boolean; displayDurationSeconds?: number }): number {
+  if (!opened.viewOnceConsumed || opened.displayDurationSeconds === undefined) return opened.expiresAt;
+  return Math.min(opened.expiresAt, Math.floor(Date.now() / 1_000) + opened.displayDurationSeconds);
 }
 
 function requestRealtimeDrain(): void {
@@ -1431,7 +1436,7 @@ async function drainReceived(): Promise<void> {
       // second time -- a row it could not delete, a receipt replay -- updates
       // nothing instead of appending a second bubble for the same text.
       if (incomingBubbles.has(message.messageId)) continue;
-      const item = appendBubble("incoming", message.plaintext, message.viewOnceConsumed ? "Received · opened once" : "Received · opened", message.expiresAt, message.viewOnceConsumed);
+      const item = appendBubble("incoming", message.plaintext, message.viewOnceConsumed ? "Received · opened once" : "Received · opened", openedDisplayExpiresAt(message), message.viewOnceConsumed);
       incomingBubbles.set(message.messageId, item);
       opened += 1;
     }

@@ -265,12 +265,13 @@ export async function getNativeDiscordOverlayQaDiagnostic(): Promise<NativeDisco
   }
 }
 
-export async function prepareNativeDiscordOverlayText(plaintext: string, viewOnce: boolean): Promise<NativeDiscordOverlayPrepared | null> {
+export async function prepareNativeDiscordOverlayText(plaintext: string, viewOnce: boolean, displayDurationSeconds?: number): Promise<NativeDiscordOverlayPrepared | null> {
   if (typeof plaintext !== "string" || !plaintext || utf8Length(plaintext) > MAX_PROTECTED_DRAFT_BYTES
-    || boundedProtectedDraft(plaintext) !== plaintext || typeof viewOnce !== "boolean") return null;
+    || boundedProtectedDraft(plaintext) !== plaintext || typeof viewOnce !== "boolean"
+    || (displayDurationSeconds !== undefined && (!Number.isSafeInteger(displayDurationSeconds) || displayDurationSeconds < 1 || displayDurationSeconds > 60))) return null;
   try {
     return checkedBackendResponse("prepare_native_discord_overlay_text",
-      parseNativeDiscordOverlayPrepared(await invoke<unknown>("prepare_native_discord_overlay_text", { plaintext, viewOnce })),
+      parseNativeDiscordOverlayPrepared(await invoke<unknown>("prepare_native_discord_overlay_text", displayDurationSeconds === undefined ? { plaintext, viewOnce } : { plaintext, viewOnce, displayDurationSeconds })),
       "the prepared message did not match the expected shape");
   } catch (error) { recordBackendFailure("prepare_native_discord_overlay_text", error, [plaintext]); return null; }
 }

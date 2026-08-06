@@ -3807,6 +3807,7 @@ async fn prepare_native_discord_overlay_text(
     session: State<'_, HubAccountSessionState>,
     plaintext: String,
     view_once: bool,
+    display_duration_seconds: Option<u64>,
 ) -> Result<broker::PreparedNativeDiscordOverlayText, String> {
     if caller.label() != native_discord_overlay::OVERLAY_LABEL {
         return Err("Only the trusted native Discord overlay may protect text".to_owned());
@@ -3844,6 +3845,7 @@ async fn prepare_native_discord_overlay_text(
             &app.state::<AiCarrierState>(),
             plaintext,
             view_once,
+            display_duration_seconds,
             &store_client,
             keyserver_client.as_ref(),
         )?;
@@ -3983,6 +3985,7 @@ async fn send_native_discord_qa_atomic_text(
             &app.state::<AiCarrierState>(),
             plaintext,
             view_once,
+            None,
         ) {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -4294,6 +4297,7 @@ async fn send_native_discord_qa_probe(
             &app.state::<AiCarrierState>(),
             QA_PROBE_PLAINTEXT.to_owned(),
             false,
+            None,
         ) {
             // The headless probe never touches Discord, so the carrier
             // flagtext this send produced is deliberately dropped here.
@@ -4511,6 +4515,7 @@ async fn run_native_discord_headless_qa(
                 &app.state::<AiCarrierState>(),
                 QA_PROBE_PLAINTEXT.to_owned(),
                 false,
+                None,
             )?
             .prepared;
             let current = app
@@ -5005,6 +5010,7 @@ async fn prepare_osl_chat_text(
     session: State<'_, HubAccountSessionState>,
     plaintext: String,
     view_once: bool,
+    display_duration_seconds: Option<u64>,
 ) -> Result<PreparedNativeOverlayText, String> {
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may send OSL Chats".to_owned());
@@ -5025,6 +5031,7 @@ async fn prepare_osl_chat_text(
             &app.state::<AiCarrierState>(),
             plaintext,
             view_once,
+            display_duration_seconds,
             &store_client,
             keyserver_client.as_ref(),
         )

@@ -659,6 +659,7 @@ mod tests {
                 context_verified: true,
                 person_to_person_e2ee: true,
                 view_once_consumed: false,
+                display_duration_seconds: None,
                 created_at: 1_899_996_400,
                 expires_at: 1_900_000_000,
             }],

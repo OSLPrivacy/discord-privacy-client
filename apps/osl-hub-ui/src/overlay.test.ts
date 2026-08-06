@@ -562,7 +562,7 @@ describe("trusted composer overlay", () => {
     // handle the renderer needs to paint it over the Discord row it belongs to:
     // an id, and the public cover of that row. Before this, an inbound message
     // was anonymous and could only be appended in key-server inbox order.
-    const opened = { messageId: "peer-fedcba98765432100123456789abcdef", coverPointer: "ordinary looking cover prose", plaintext: "first\n\nthird", contextVerified: true, personToPersonE2ee: true, viewOnceConsumed: true, createdAt: 1_786_996_400, expiresAt: 1_787_000_000 };
+    const opened = { messageId: "peer-fedcba98765432100123456789abcdef", coverPointer: "ordinary looking cover prose", plaintext: "first\n\nthird", contextVerified: true, personToPersonE2ee: true, viewOnceConsumed: true, displayDurationSeconds: 15, createdAt: 1_786_996_400, expiresAt: 1_787_000_000 };
     const acknowledgment = { messageId: prepared.messageId, status: "opened", acknowledgedAt: 1_786_999_900 };
     expect(parseNativeDiscordOverlayState(state)).toEqual(state);
     expect(parseNativeDiscordOverlayPrepared(prepared)).toEqual(prepared);
@@ -574,11 +574,14 @@ describe("trusted composer overlay", () => {
     expect(parseNativeDiscordOverlayOpened(openedWithoutCover)).toEqual(openedWithoutCover);
     expect(parseNativeDiscordOverlayOpened({ ...opened, coverPointer: null })).toBeNull();
     expect(parseNativeDiscordOverlayOpened({ ...opened, coverPointer: "two\nlines" })).toBeNull();
+    expect(parseNativeDiscordOverlayOpened({ ...opened, displayDurationSeconds: 0 })).toBeNull();
+    expect(parseNativeDiscordOverlayOpened({ ...opened, viewOnceConsumed: false })).toBeNull();
     // The handle is held to the id shape the rest of this path already uses.
     expect(parseNativeDiscordOverlayOpened({ ...opened, messageId: "not-a-peer-id" })).toBeNull();
-    const pendingViewOnce = { messageId: "peer-0123456789abcdef0123456789abcdef", expiresAt: prepared.expiresAt, personToPersonE2ee: true };
+    const pendingViewOnce = { messageId: "peer-0123456789abcdef0123456789abcdef", expiresAt: prepared.expiresAt, displayDurationSeconds: 15, personToPersonE2ee: true };
     const batch = { messages: [opened], pendingViewOnce: [pendingViewOnce], acknowledgments: [acknowledgment], fetched: 2, decryptDisplayEnabled: true, deferredRows: 0, unrecognizedWireRows: 0 };
     expect(parseNativeDiscordOverlayOpenedBatch(batch)).toEqual(batch);
+    expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, pendingViewOnce: [{ ...pendingViewOnce, displayDurationSeconds: 61 }] })).toBeNull();
     // A batch that cannot say whether opening was switched on, or how many rows it
     // deferred, is the ambiguous shape this parser now refuses: those two states
     // were previously indistinguishable from an empty inbox.

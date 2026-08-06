@@ -933,6 +933,7 @@ pub fn osl_chat_message_survives_a_lost_wrapped_key_response() {
         &ai_carrier,
         plaintext.clone(),
         true,
+        None,
     )
     .unwrap();
     assert!(prepared.person_to_person_e2ee);
@@ -1137,6 +1138,7 @@ pub fn osl_chat_queues_a_relay_notice_the_key_server_never_accepted() {
         &ai_carrier,
         plaintext.clone(),
         true,
+        None,
     ) {
         Ok(_) => panic!("an unreachable relay notice lane cannot report a delivered send"),
         Err(refusal) => refusal,

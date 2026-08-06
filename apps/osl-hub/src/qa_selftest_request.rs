@@ -1634,6 +1634,7 @@ mod tests {
             context_verified: true,
             person_to_person_e2ee: true,
             view_once_consumed,
+            display_duration_seconds: view_once_consumed.then_some(15),
             created_at: 1_899_996_400,
             expires_at: 1_900_000_000,
         }
@@ -2021,6 +2022,7 @@ mod tests {
         listed.pending_view_once = vec![PendingNativeOverlayText {
             message_id: "peer-00001111222233334444555566667777".to_owned(),
             expires_at: 1_900_000_000,
+            display_duration_seconds: 15,
             person_to_person_e2ee: true,
         }];
         let report = DrainReport::from_batch(&listed);

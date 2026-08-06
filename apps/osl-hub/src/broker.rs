@@ -151,6 +151,8 @@ const MAX_PROSE_COVER_BYTES: usize = 16 * 1024;
 /// renderer rejects outright is a lost message.
 const MAX_NATIVE_OVERLAY_COVER_HANDLE_BYTES: usize = 2_000;
 const MAX_NATIVE_OVERLAY_WRAPPED_SHARE_BYTES: usize = 64 * 1024;
+const DEFAULT_VIEW_ONCE_DISPLAY_DURATION_SECONDS: u64 = 15;
+const MAX_VIEW_ONCE_DISPLAY_DURATION_SECONDS: u64 = 60;
 const MAX_ATTACHMENT_B64_BYTES: usize = 32 * 1024 * 1024;
 const MAX_LOCAL_LEDGER_BYTES: usize = 2 * 1024 * 1024;
 const MAX_LOCAL_LEDGER_ENTRIES: usize = 4_096;
@@ -158,6 +160,25 @@ const LOCAL_PROTECTED_VERSION: u32 = 1;
 const PEER_PROTECTED_VERSION: u32 = 2;
 const PEER_PROTECTED_CHUNK_VERSION: u32 = 4;
 const PEER_PROTECTED_CHUNK_PREFIX: &[u8; 8] = b"OSLTXT4\0";
+
+fn selected_view_once_display_duration(
+    view_once: bool,
+    display_duration_seconds: Option<u64>,
+) -> Result<Option<u64>, String> {
+    if !view_once {
+        return if display_duration_seconds.is_none() {
+            Ok(None)
+        } else {
+            Err("A display duration is only valid for view-once messages".to_owned())
+        };
+    }
+    let seconds = display_duration_seconds.unwrap_or(DEFAULT_VIEW_ONCE_DISPLAY_DURATION_SECONDS);
+    if (1..=MAX_VIEW_ONCE_DISPLAY_DURATION_SECONDS).contains(&seconds) {
+        Ok(Some(seconds))
+    } else {
+        Err("The view-once display duration must be between 1 and 60 seconds".to_owned())
+    }
+}
 const PEER_ATTACHMENT_VERSION: u32 = 1;
 const NATIVE_OVERLAY_RELAY_VERSION: u32 = 1;
 const NATIVE_OVERLAY_RELAY_DOMAIN: &str = "osl-privacy/native-discord-overlay/relay-notice/v1";
@@ -1203,6 +1224,7 @@ struct ControlInboxDeliveryFacts {
 pub struct PendingNativeOverlayText {
     pub message_id: String,
     pub expires_at: i64,
+    pub display_duration_seconds: u64,
     pub person_to_person_e2ee: bool,
 }
 
@@ -1261,6 +1283,8 @@ pub struct OpenedNativeOverlayText {
     pub context_verified: bool,
     pub person_to_person_e2ee: bool,
     pub view_once_consumed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_duration_seconds: Option<u64>,
     pub created_at: i64,
     pub expires_at: i64,
 }
@@ -1383,6 +1407,8 @@ struct PeerProtectedPayload {
     recipient_osl_user_id: String,
     plaintext: String,
     view_once: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    display_duration_seconds: Option<u64>,
     #[serde(default)]
     require_capture_protection: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1471,6 +1497,7 @@ struct NativeTextGroupKey {
     sender_osl_user_id: String,
     recipient_osl_user_id: String,
     view_once: bool,
+    display_duration_seconds: Option<u64>,
     require_capture_protection: bool,
 }
 
@@ -1510,6 +1537,7 @@ struct NativeOverlayAcknowledgmentPayload {
 #[derive(Clone)]
 struct PeerProtectionPolicy {
     view_once: bool,
+    display_duration_seconds: Option<u64>,
     require_capture_protection: bool,
     created_at: i64,
     expires_at: i64,
@@ -1850,6 +1878,7 @@ pub fn prepare_peer_prose_text_with_capture(
         context_token,
         plaintext,
         view_once,
+        None,
         require_capture_protection,
     )
     .map(|envelope| envelope.prepared)
@@ -1872,6 +1901,7 @@ pub fn prepare_peer_prose_text_with_capture_and_store_client(
         context_token,
         plaintext,
         view_once,
+        None,
         require_capture_protection,
         None,
         Some(store_client),
@@ -1911,6 +1941,7 @@ pub fn prepare_whatsapp_qa_peer_prose_text(
         plaintext,
         PeerProtectionPolicy {
             view_once: false,
+            display_duration_seconds: None,
             require_capture_protection: false,
             created_at: now,
             expires_at,
@@ -1988,6 +2019,7 @@ fn prepare_peer_prose_text_inner(
     context_token: &str,
     plaintext: String,
     view_once: bool,
+    display_duration_seconds: Option<u64>,
     require_capture_protection: bool,
 ) -> Result<PreparedPeerProseEnvelope, String> {
     prepare_peer_prose_text_inner_with_chunk(
@@ -1997,6 +2029,7 @@ fn prepare_peer_prose_text_inner(
         context_token,
         plaintext,
         view_once,
+        display_duration_seconds,
         require_capture_protection,
         None,
         None,
@@ -2046,6 +2079,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
     context_token: &str,
     plaintext: String,
     view_once: bool,
+    display_duration_seconds: Option<u64>,
     require_capture_protection: bool,
     chunk: Option<NativeTextChunkMeta>,
     store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
@@ -2064,6 +2098,8 @@ fn prepare_peer_prose_text_inner_with_chunk(
     if i64::from(ttl_seconds) > MAX_PEER_LIFETIME_SECONDS || ttl_seconds == 0 {
         return Err("OSL could not prepare a single manual peer message".to_owned());
     }
+    let display_duration_seconds =
+        selected_view_once_display_duration(view_once, display_duration_seconds)?;
     let now = chunk
         .as_ref()
         .map_or_else(ipc::main_password::now_unix_secs_pub, |chunk| {
@@ -2088,6 +2124,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
         plaintext,
         PeerProtectionPolicy {
             view_once,
+            display_duration_seconds,
             require_capture_protection,
             created_at: now,
             expires_at,
@@ -2191,10 +2228,18 @@ fn build_native_overlay_wrapped_key_upload(
     encrypted_wire: &str,
     view_once: bool,
     ttl_seconds: u32,
+    display_duration_seconds: Option<u64>,
     expires_at: i64,
     share_index: u32,
 ) -> Result<keystore::WrappedKeyUpload, String> {
     const ERROR: &str = "OSL could not prepare the protected message key";
+    let display_duration_seconds =
+        selected_view_once_display_duration(view_once, display_duration_seconds)
+            .map_err(|_| ERROR.to_owned())?;
+    let keyserver_display_duration_seconds = display_duration_seconds
+        .map(u32::try_from)
+        .transpose()
+        .map_err(|_| ERROR.to_owned())?;
     if !valid_peer_message_id(message_id)
         || recipient_id.is_empty()
         || recipient_id.as_bytes().len() > 256
@@ -2216,7 +2261,7 @@ fn build_native_overlay_wrapped_key_upload(
         wrapped_share_blob: STANDARD.encode(encrypted_wire.as_bytes()),
         blob_version: 1,
         single_use: view_once,
-        display_duration_seconds: view_once.then_some(ttl_seconds),
+        display_duration_seconds: keyserver_display_duration_seconds,
         expires_at: keystore::iso_8601_from_unix_seconds(expires_at_unix),
     })
 }
@@ -2229,6 +2274,7 @@ fn post_native_overlay_wrapped_key(
     encrypted_wire: &str,
     view_once: bool,
     ttl_seconds: u32,
+    display_duration_seconds: Option<u64>,
     expires_at: i64,
     share_index: u32,
 ) -> Result<(), String> {
@@ -2238,6 +2284,7 @@ fn post_native_overlay_wrapped_key(
         encrypted_wire,
         view_once,
         ttl_seconds,
+        display_duration_seconds,
         expires_at,
         share_index,
     )?;
@@ -2287,6 +2334,7 @@ fn prepare_direct_manual_v3(
         recipient_osl_user_id: manual.peer_osl_user_id.clone(),
         plaintext,
         view_once: policy.view_once,
+        display_duration_seconds: policy.display_duration_seconds,
         require_capture_protection: policy.require_capture_protection,
         logical_message_id: chunk.map(|value| value.logical_message_id.clone()),
         chunk_index: chunk.map(|value| value.chunk_index),
@@ -3555,7 +3603,7 @@ fn native_overlay_wrapped_key_matches_payload(
         && wrapped.share_index == u32::from(payload.chunk_index.unwrap_or(0))
         && wrapped.blob_version == 1
         && wrapped.single_use == payload.view_once
-        && (wrapped.display_duration_seconds.is_some() == payload.view_once)
+        && wrapped.display_duration_seconds.map(u64::from) == payload.display_duration_seconds
         && expires_at.as_deref() == Some(wrapped.expires_at.as_str())
         && payload.expires_at == notice.expires_at
 }
@@ -3573,6 +3621,7 @@ fn same_peer_protected_payload(left: &PeerProtectedPayload, right: &PeerProtecte
         && left.recipient_osl_user_id == right.recipient_osl_user_id
         && left.plaintext == right.plaintext
         && left.view_once == right.view_once
+        && left.display_duration_seconds == right.display_duration_seconds
         && left.require_capture_protection == right.require_capture_protection
         && left.logical_message_id == right.logical_message_id
         && left.chunk_index == right.chunk_index
@@ -3824,6 +3873,7 @@ pub fn prepare_native_discord_overlay_text(
     ai_carrier: &crate::ai_carrier::AiCarrierState,
     plaintext: String,
     view_once: bool,
+    display_duration_seconds: Option<u64>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
     let context_token = broker.active_native_manual_context_token()?;
     prepare_peer_inbox_text(
@@ -3834,6 +3884,7 @@ pub fn prepare_native_discord_overlay_text(
         &context_token,
         plaintext,
         view_once,
+        display_duration_seconds,
     )
 }
 
@@ -3850,6 +3901,7 @@ pub fn prepare_native_discord_overlay_text_with_route_clients(
     ai_carrier: &crate::ai_carrier::AiCarrierState,
     plaintext: String,
     view_once: bool,
+    display_duration_seconds: Option<u64>,
     store_client: &ipc::cipher_store_client::CipherStoreClient,
     keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
@@ -3862,6 +3914,7 @@ pub fn prepare_native_discord_overlay_text_with_route_clients(
         &context_token,
         plaintext,
         view_once,
+        display_duration_seconds,
         Some(store_client),
         keyserver_client,
     )
@@ -3874,6 +3927,7 @@ pub fn prepare_osl_chat_text(
     ai_carrier: &crate::ai_carrier::AiCarrierState,
     plaintext: String,
     view_once: bool,
+    display_duration_seconds: Option<u64>,
 ) -> Result<PreparedNativeOverlayText, String> {
     let context_token = broker.active_osl_chat_context_token()?;
     // OSL chat has no Discord row, so the carrier flagtext is simply unused.
@@ -3885,6 +3939,7 @@ pub fn prepare_osl_chat_text(
         &context_token,
         plaintext,
         view_once,
+        display_duration_seconds,
     )
     .map(|carrier| carrier.prepared)
 }
@@ -3896,6 +3951,7 @@ pub fn prepare_osl_chat_text_with_route_clients(
     ai_carrier: &crate::ai_carrier::AiCarrierState,
     plaintext: String,
     view_once: bool,
+    display_duration_seconds: Option<u64>,
     store_client: &ipc::cipher_store_client::CipherStoreClient,
     keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayText, String> {
@@ -3908,6 +3964,7 @@ pub fn prepare_osl_chat_text_with_route_clients(
         &context_token,
         plaintext,
         view_once,
+        display_duration_seconds,
         Some(store_client),
         keyserver_client,
     )
@@ -3964,6 +4021,7 @@ fn prepare_peer_inbox_text(
     context_token: &str,
     plaintext: String,
     view_once: bool,
+    display_duration_seconds: Option<u64>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
     prepare_peer_inbox_text_with_route_clients(
         core,
@@ -3973,6 +4031,7 @@ fn prepare_peer_inbox_text(
         context_token,
         plaintext,
         view_once,
+        display_duration_seconds,
         None,
         None,
     )
@@ -3987,6 +4046,7 @@ fn prepare_peer_inbox_text_with_route_clients(
     context_token: &str,
     plaintext: String,
     view_once: bool,
+    display_duration_seconds: Option<u64>,
     store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
     keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
@@ -4006,6 +4066,8 @@ fn prepare_peer_inbox_text_with_route_clients(
     let context = broker.context_for(context_token)?;
     let now = ipc::main_password::now_unix_secs_pub();
     let ttl_seconds = security::scope_security(manual.scope.clone())?.ttl_seconds;
+    let display_duration_seconds =
+        selected_view_once_display_duration(view_once, display_duration_seconds)?;
     let expires_at = now.checked_add(i64::from(ttl_seconds)).ok_or_else(|| {
         qa_encrypt_refusal_site("expires_at_overflow");
         "OSL could not deliver the protected message".to_owned()
@@ -4163,6 +4225,7 @@ fn prepare_peer_inbox_text_with_route_clients(
             context_token,
             chunk_plaintext,
             view_once,
+            display_duration_seconds,
             true,
             Some(meta),
             store_client,
@@ -4194,6 +4257,7 @@ fn prepare_peer_inbox_text_with_route_clients(
             &encrypted_wire,
             view_once,
             ttl_seconds,
+            display_duration_seconds,
             expires_at,
             u32::from(chunk_index),
         )?;
@@ -5050,6 +5114,9 @@ fn drain_peer_inbox_text(
                     pending_view_once.push(PendingNativeOverlayText {
                         message_id: payload.message_id,
                         expires_at: payload.expires_at,
+                        display_duration_seconds: payload
+                            .display_duration_seconds
+                            .unwrap_or(DEFAULT_VIEW_ONCE_DISPLAY_DURATION_SECONDS),
                         person_to_person_e2ee: true,
                     });
                 }
@@ -5137,6 +5204,7 @@ fn drain_peer_inbox_text(
             context_verified: true,
             person_to_person_e2ee: true,
             view_once_consumed: payload.view_once,
+            display_duration_seconds: payload.display_duration_seconds,
             created_at: payload.created_at,
             expires_at: payload.expires_at,
         });
@@ -5209,6 +5277,10 @@ fn drain_peer_inbox_text(
                     pending_view_once.push(PendingNativeOverlayText {
                         message_id: logical_message_id,
                         expires_at: group.template.expires_at,
+                        display_duration_seconds: group
+                            .template
+                            .display_duration_seconds
+                            .unwrap_or(DEFAULT_VIEW_ONCE_DISPLAY_DURATION_SECONDS),
                         person_to_person_e2ee: true,
                     });
                 }
@@ -5314,6 +5386,7 @@ fn drain_peer_inbox_text(
                 context_verified: true,
                 person_to_person_e2ee: true,
                 view_once_consumed: logical.view_once,
+                display_duration_seconds: logical.display_duration_seconds,
                 created_at: logical.created_at,
                 expires_at: logical.expires_at,
             });
@@ -6515,6 +6588,11 @@ fn encode_peer_protected_chunk(payload: &PeerProtectedPayload) -> Result<Vec<u8>
         (None, None) => {}
         _ => return Err("OSL could not prepare a single manual peer message".to_owned()),
     }
+    if let Some(seconds) = payload.display_duration_seconds {
+        let seconds = u16::try_from(seconds)
+            .map_err(|_| "OSL could not prepare a single manual peer message".to_owned())?;
+        encoded.extend_from_slice(&seconds.to_be_bytes());
+    }
     Ok(encoded)
 }
 
@@ -6550,12 +6628,19 @@ fn decode_peer_protected_chunk(encoded: &[u8]) -> Result<PeerProtectedPayload, S
     let logical_message_id = read_bounded_utf8(encoded, &mut offset, 96)?;
     let whole_sha256 = read_bounded_utf8(encoded, &mut offset, 64)?;
     let plaintext = read_bounded_utf8(encoded, &mut offset, MAX_NATIVE_OVERLAY_CHUNK_BYTES)?;
-    let (send_seq, scope_commitment) = if offset == encoded.len() {
+    let (send_seq, scope_commitment) = if offset == encoded.len()
+        || encoded.len().saturating_sub(offset) == std::mem::size_of::<u16>()
+    {
         (None, None)
     } else {
         let send_seq = read_u64(encoded, &mut offset)?;
         let scope_commitment = read_bounded_utf8(encoded, &mut offset, 64)?;
         (Some(send_seq), Some(scope_commitment))
+    };
+    let display_duration_seconds = if offset == encoded.len() {
+        None
+    } else {
+        Some(u64::from(read_u16(encoded, &mut offset)?))
     };
     if offset != encoded.len() {
         return Err(ERROR.to_owned());
@@ -6573,6 +6658,7 @@ fn decode_peer_protected_chunk(encoded: &[u8]) -> Result<PeerProtectedPayload, S
         recipient_osl_user_id,
         plaintext,
         view_once,
+        display_duration_seconds,
         require_capture_protection,
         logical_message_id: Some(logical_message_id),
         chunk_index: Some(chunk_index),
@@ -6797,7 +6883,11 @@ fn validate_oriented_peer_protected_payload(
             && payload.chunk_count.is_none()
             && payload.whole_sha256.is_none()
     };
+    let display_duration_valid =
+        selected_view_once_display_duration(payload.view_once, payload.display_duration_seconds)
+            .is_ok();
     if !chunk_valid
+        || !display_duration_valid
         || !valid_message_id
         || payload.created_at <= 0
         || payload.expires_at <= payload.created_at
@@ -6857,6 +6947,7 @@ fn native_text_group_key(payload: &PeerProtectedPayload) -> Option<NativeTextGro
         sender_osl_user_id: payload.sender_osl_user_id.clone(),
         recipient_osl_user_id: payload.recipient_osl_user_id.clone(),
         view_once: payload.view_once,
+        display_duration_seconds: payload.display_duration_seconds,
         require_capture_protection: payload.require_capture_protection,
     })
 }
@@ -6889,6 +6980,7 @@ fn same_native_text_group(left: &PeerProtectedPayload, right: &PeerProtectedPayl
         && left.sender_osl_user_id == right.sender_osl_user_id
         && left.recipient_osl_user_id == right.recipient_osl_user_id
         && left.view_once == right.view_once
+        && left.display_duration_seconds == right.display_duration_seconds
         && left.require_capture_protection == right.require_capture_protection
         && left.logical_message_id == right.logical_message_id
         && left.chunk_count == right.chunk_count
@@ -10818,6 +10910,7 @@ mod tests {
             recipient_osl_user_id: manual.peer_osl_user_id.clone(),
             plaintext: plaintext.to_owned(),
             view_once,
+            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: None,
             chunk_index: None,
@@ -10839,6 +10932,7 @@ mod tests {
             FIXTURE.to_owned(),
             PeerProtectionPolicy {
                 view_once: false,
+                display_duration_seconds: None,
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
@@ -10969,6 +11063,7 @@ mod tests {
             FIXTURE.to_owned(),
             PeerProtectionPolicy {
                 view_once: false,
+                display_duration_seconds: None,
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
@@ -11070,6 +11165,7 @@ mod tests {
             encrypted_wire,
             true,
             3_600,
+            Some(15),
             1_700_003_600,
             2,
         )
@@ -11082,7 +11178,7 @@ mod tests {
         assert_eq!(upload.share_index, 2);
         assert_eq!(upload.blob_version, 1);
         assert!(upload.single_use);
-        assert_eq!(upload.display_duration_seconds, Some(3_600));
+        assert_eq!(upload.display_duration_seconds, Some(15));
         assert_eq!(upload.expires_at, "2023-11-14T23:13:20.000Z");
         assert_eq!(
             STANDARD
@@ -11097,6 +11193,7 @@ mod tests {
             encrypted_wire,
             false,
             3_600,
+            None,
             1_700_003_600,
             0,
         )
@@ -11306,6 +11403,7 @@ mod tests {
             protected_wire,
             true,
             3_600,
+            Some(15),
             1_700_003_600,
             0,
         )
@@ -11363,10 +11461,7 @@ mod tests {
         );
         assert_eq!(wrapped_body["share_index"].as_u64(), Some(0));
         assert_eq!(wrapped_body["single_use"].as_bool(), Some(true));
-        assert_eq!(
-            wrapped_body["display_duration_seconds"].as_u64(),
-            Some(3_600)
-        );
+        assert_eq!(wrapped_body["display_duration_seconds"].as_u64(), Some(15));
         assert!(
             wrapped_body["sender_signature_b64"]
                 .as_str()
@@ -12094,6 +12189,7 @@ mod tests {
             context_verified: true,
             person_to_person_e2ee: true,
             view_once_consumed: true,
+            display_duration_seconds: Some(15),
             created_at: 1_786_996_400,
             expires_at: 1_787_000_000,
         };
@@ -12102,6 +12198,7 @@ mod tests {
             pending_view_once: vec![PendingNativeOverlayText {
                 message_id: "peer-0123456789abcdef0123456789abcdef".to_owned(),
                 expires_at: 1_787_000_100,
+                display_duration_seconds: 15,
                 person_to_person_e2ee: true,
             }],
             acknowledgments: Vec::new(),
@@ -12113,6 +12210,7 @@ mod tests {
         .unwrap();
         assert_eq!(value["fetched"], 2);
         assert_eq!(value["messages"][0]["createdAt"], 1_786_996_400i64);
+        assert_eq!(value["messages"][0]["displayDurationSeconds"], 15);
         assert_eq!(value["messages"][0]["expiresAt"], 1_787_000_000i64);
         assert_eq!(value["messages"][0]["plaintext"], "first\n\nthird");
         // The correlation handle every received message now carries, so the
@@ -12130,6 +12228,7 @@ mod tests {
             value["pendingViewOnce"][0]["messageId"],
             "peer-0123456789abcdef0123456789abcdef"
         );
+        assert_eq!(value["pendingViewOnce"][0]["displayDurationSeconds"], 15);
         assert!(value["pendingViewOnce"][0].get("plaintext").is_none());
         // A batch states its own display setting and its own deferred-row debt,
         // so "nothing for you" can no longer be confused with "opening is off"
@@ -12148,6 +12247,7 @@ mod tests {
             context_verified: true,
             person_to_person_e2ee: true,
             view_once_consumed: false,
+            display_duration_seconds: None,
             created_at: 1_786_996_400,
             expires_at: 1_787_000_000,
         })
@@ -12169,6 +12269,7 @@ mod tests {
                 context_verified: true,
                 person_to_person_e2ee: true,
                 view_once_consumed: false,
+                display_duration_seconds: None,
                 created_at: 1_786_996_400,
                 expires_at: 1_787_000_000,
             }
@@ -12293,6 +12394,7 @@ mod tests {
             recipient_osl_user_id: "self-liam".to_owned(),
             plaintext: "private".to_owned(),
             view_once: false,
+            display_duration_seconds: None,
             require_capture_protection: false,
             logical_message_id: None,
             chunk_index: None,
@@ -12661,6 +12763,9 @@ mod tests {
             pending_view_once: vec![PendingNativeOverlayText {
                 message_id: bob_side.message_id.clone(),
                 expires_at: bob_side.expires_at,
+                display_duration_seconds: bob_side
+                    .display_duration_seconds
+                    .unwrap_or(DEFAULT_VIEW_ONCE_DISPLAY_DURATION_SECONDS),
                 person_to_person_e2ee: true,
             }],
             acknowledgments: Vec::new(),
@@ -12719,6 +12824,7 @@ mod tests {
             FIXTURE.to_owned(),
             PeerProtectionPolicy {
                 view_once: true,
+                display_duration_seconds: None,
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
@@ -12986,6 +13092,7 @@ mod tests {
             recipient_osl_user_id: alice.user_id.clone(),
             plaintext: "private".to_owned(),
             view_once: true,
+            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: None,
             chunk_index: None,
@@ -13077,6 +13184,7 @@ mod tests {
             recipient_osl_user_id: context.self_osl_id.clone(),
             plaintext: "private".to_owned(),
             view_once: true,
+            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: None,
             chunk_index: None,
@@ -14422,6 +14530,7 @@ mod tests {
             "private chat".to_owned(),
             PeerProtectionPolicy {
                 view_once: false,
+                display_duration_seconds: None,
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
@@ -14617,6 +14726,7 @@ mod tests {
             recipient_osl_user_id: "osl-alice".to_owned(),
             plaintext: multiline.to_owned(),
             view_once: true,
+            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: None,
             chunk_index: None,
@@ -14750,6 +14860,7 @@ mod tests {
             "private hello".to_owned(),
             PeerProtectionPolicy {
                 view_once: true,
+                display_duration_seconds: None,
                 require_capture_protection: true,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
@@ -14820,6 +14931,7 @@ mod tests {
             "private reply".to_owned(),
             PeerProtectionPolicy {
                 view_once: false,
+                display_duration_seconds: None,
                 require_capture_protection: false,
                 created_at: 1_700_000_002,
                 expires_at: 1_700_003_602,
@@ -15075,6 +15187,7 @@ mod tests {
             chunk_plaintext.clone(),
             PeerProtectionPolicy {
                 view_once: false,
+                display_duration_seconds: None,
                 require_capture_protection: true,
                 created_at: meta.created_at,
                 expires_at: meta.expires_at,
@@ -15191,6 +15304,7 @@ mod tests {
             recipient_osl_user_id: "osl-bob".to_owned(),
             plaintext: "chunk".to_owned(),
             view_once: false,
+            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: Some("peer-99990000111122223333444455556666".to_owned()),
             chunk_index: Some(0),
@@ -15638,6 +15752,7 @@ mod tests {
             ]
             .join(" "),
             view_once: false,
+            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: None,
             chunk_index: None,
@@ -15958,6 +16073,7 @@ ok i will weekend again with you",
                 recipient_osl_user_id: "recipient".to_owned(),
                 plaintext: plaintext.to_owned(),
                 view_once: false,
+                display_duration_seconds: None,
                 require_capture_protection: true,
                 logical_message_id: None,
                 chunk_index: None,
@@ -16635,6 +16751,7 @@ ok i will weekend again with you",
             "i said this myself".to_owned(),
             PeerProtectionPolicy {
                 view_once: false,
+                display_duration_seconds: None,
                 require_capture_protection: false,
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
@@ -16813,6 +16930,7 @@ ok i will weekend again with you",
             recipient_osl_user_id: context.self_osl_id.clone(),
             plaintext: plaintext.clone(),
             view_once: false,
+            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: Some("peer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned()),
             chunk_index: Some(0),
@@ -16911,6 +17029,7 @@ ok i will weekend again with you",
             recipient_osl_user_id: "osl-self-inbound".to_owned(),
             plaintext: "x".to_owned(),
             view_once: false,
+            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: None,
             chunk_index: None,
@@ -16939,6 +17058,7 @@ ok i will weekend again with you",
             recipient_osl_user_id: "osl-self-inbound".to_owned(),
             plaintext: "screen-capture gated recovery phrase material".to_owned(),
             view_once: false,
+            display_duration_seconds: None,
             require_capture_protection: true,
             logical_message_id: None,
             chunk_index: None,
