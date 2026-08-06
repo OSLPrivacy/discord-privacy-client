@@ -1622,7 +1622,7 @@ async function onRemoveWhitelist(row) {
   // Whitelist Manager has no channel-roster/self-id context). Same
   // local-state mutation as the in-Discord path via the shared
   // helper. Operator-accepted "removed locally" semantics.
-  const result = await oslInvoke("osl_local_unwhitelist_scope", {
+  const result = await oslInvoke("osl_unwhitelist_scope", {
     peerDiscordId: row.peer_discord_id,
     scopeInput,
     revokeBroadened: false,
