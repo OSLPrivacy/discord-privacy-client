@@ -329,15 +329,31 @@ pub fn import_native_identity_phrase(
         return Err("OSL identity import is not available in the current access state".to_owned());
     }
     let dir = isolated_account_dir()?;
+    import_native_identity_phrase_using(state, &current, &dir, phrase, persistent_sealer)
+}
+
+fn import_native_identity_phrase_using<F>(
+    state: &HubCoreState,
+    current: &HubPasswordReadiness,
+    dir: &Path,
+    phrase: String,
+    select_sealer: F,
+) -> Result<HubIdentitySetupResult, String>
+where
+    F: FnOnce() -> Result<Box<dyn Sealer>, String>,
+{
+    if !current.can_import_identity_phrase {
+        return Err("OSL identity import is not available in the current access state".to_owned());
+    }
     ensure_empty_identity_slot(&state.osl, &dir)?;
     let entropy = parse_identity_phrase(&phrase)?;
     let mut identity = keystore::identity_from_entropy(entropy, "osl-pending".to_owned());
     identity.user_id = native_user_id(&identity);
-    let sealer = persistent_sealer()?;
+    let sealer = select_sealer()?;
     let result = install_identity(
         &state.osl,
         identity,
-        &dir,
+        dir,
         sealer.as_ref(),
         None,
         !current.main_password_set,
@@ -753,6 +769,72 @@ mod tests {
         assert!(state.osl.identity.lock().unwrap().is_some());
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn task_0461_recovery_phrase_restores_same_identity_on_second_device() {
+        let _guard = crate::global_keystore_test_lock();
+        let _reset = KeystoreGlobalReset;
+        let root = temp_dir("task-0461-second-device-restore");
+        let first_device = root.join("first-device");
+        let second_device = root.join("second-device");
+        let first_state = HubCoreState::default();
+        let second_state = HubCoreState::default();
+        let fresh = readiness_from(false, false, true, 0, 0);
+        let first_sealer = keystore::MemorySealer::new();
+
+        let created = create_native_identity_after_owner_authorization_signoff_using(
+            &first_state,
+            &fresh,
+            &first_device,
+            &first_sealer,
+            HubIdentityCreationOwnerSignoff::owner_authorized_for_new_identity(),
+        )
+        .expect("RECORD-0461 source identity creation succeeds");
+        let identity_phrase = created
+            .identity_recovery_phrase
+            .clone()
+            .expect("RECORD-0461 source identity returns a recovery phrase");
+        let phrase_word_count = identity_phrase.split_whitespace().count();
+        bip39::Mnemonic::parse_in_normalized(bip39::Language::English, identity_phrase.trim())
+            .expect("RECORD-0461 recovery phrase is valid BIP39");
+
+        let recovered = import_native_identity_phrase_using(
+            &second_state,
+            &fresh,
+            &second_device,
+            identity_phrase,
+            || Ok(Box::new(keystore::MemorySealer::new())),
+        )
+        .unwrap_or_else(|error| panic!("RECORD-0461 restore error: {error}"));
+
+        assert_eq!(
+            recovered.user_id, created.user_id,
+            "RECORD-0461 second-device restore must recreate the same OSL user id"
+        );
+        assert!(
+            recovered.identity_recovery_phrase.is_none(),
+            "RECORD-0461 import must not echo the owner's recovery phrase"
+        );
+        assert!(
+            first_device.join("identity.json").is_file(),
+            "RECORD-0461 source identity file must exist"
+        );
+        assert!(
+            second_device.join("identity.json").is_file(),
+            "RECORD-0461 restored identity file must exist"
+        );
+
+        println!(
+            "RECORD-0461 restore_result=accepted phrase_word_count={} restored_user_matches={} first_identity_file={} second_identity_file={} restored_phrase_echoed={}",
+            phrase_word_count,
+            recovered.user_id == created.user_id,
+            first_device.join("identity.json").is_file(),
+            second_device.join("identity.json").is_file(),
+            recovered.identity_recovery_phrase.is_some()
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
