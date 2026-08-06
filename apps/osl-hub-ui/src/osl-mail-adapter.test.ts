@@ -6,6 +6,7 @@ vi.mock("./preferences", () => ({ isTauriRuntime: () => true }));
 
 import {
   OSL_MAIL_STATUS_CONTRACT,
+  OSL_MAIL_NAMED_SEND_REQUIRED,
   burnOslMailbox,
   loadOslMailStatus,
   parseOslMailDeleteReceipt,
@@ -15,6 +16,7 @@ import {
   parseOslMailThreadSummary,
   registerOslMailStatusAdapterTests,
   sendOslMail,
+  sendOslMailWithChoice,
   type OslMailAddress,
   type OslMailProvisionedStatus,
   type OslMailStatus,
@@ -113,6 +115,41 @@ describe("OSL Mail strict adapter", () => {
     await expect(sendOslMail("friend@oslprivacy.com", "Hi", "Body")).resolves.toBeNull();
     invoke.mockResolvedValueOnce({ clientMessageId: id, acceptedAt: 100, recipient: "friend@oslprivacy.com", transit: "oslE2ee", receiptSha256: hash });
     await expect(sendOslMail("friend@oslprivacy.com", "Hi", "Body")).resolves.toMatchObject({ transit: "oslE2ee" });
+  });
+
+  it("TASK 1224 requires named Send so Enter never sends mail", async () => {
+    const sentMessages: string[] = [];
+    const sender = vi.fn(async (_recipient: string, _subject: string, body: string) => {
+      sentMessages.push(body);
+      return {
+        clientMessageId: id,
+        acceptedAt: 100,
+        recipient: "friend@oslprivacy.com",
+        transit: "oslE2ee" as const,
+        receiptSha256: hash,
+      };
+    });
+
+    console.log(`TASK 1224 before named Send count=${sender.mock.calls.length}`);
+    expect(sender).toHaveBeenCalledTimes(0);
+
+    const named = await sendOslMailWithChoice("Send", "friend@oslprivacy.com", "Hi", "MAPLE-4172", sender);
+    console.log(`TASK 1224 named Send outcome=${named.outcome} body=${sentMessages[0] ?? ""} count=${sender.mock.calls.length}`);
+    expect(named.outcome).toBe("sent");
+    expect(sentMessages).toEqual(["MAPLE-4172"]);
+    expect(sender).toHaveBeenCalledTimes(1);
+
+    const enter = await sendOslMailWithChoice("Enter", "friend@oslprivacy.com", "Hi", "MAPLE-4172", sender);
+    console.log(`TASK 1224 Enter outcome=${enter.outcome} reason=${enter.outcome === "refused" ? enter.reason : ""} count=${sender.mock.calls.length}`);
+    expect(enter).toEqual({ outcome: "refused", reason: OSL_MAIL_NAMED_SEND_REQUIRED });
+    expect(sender).toHaveBeenCalledTimes(1);
+
+    const doubleEnter = await sendOslMailWithChoice("Double Enter", "friend@oslprivacy.com", "Hi", "MAPLE-4172", sender);
+    console.log(`TASK 1224 Double Enter outcome=${doubleEnter.outcome} reason=${doubleEnter.outcome === "refused" ? doubleEnter.reason : ""} count=${sender.mock.calls.length}`);
+    expect(doubleEnter).toEqual({ outcome: "refused", reason: OSL_MAIL_NAMED_SEND_REQUIRED });
+    expect(sender).toHaveBeenCalledTimes(1);
+    expect(sentMessages).toEqual(["MAPLE-4172"]);
+    console.log(`TASK 1224 sent message=${sentMessages[0]} final count=${sender.mock.calls.length}`);
   });
 
   it("fails closed on invalid lists, acknowledgments, and burn confirmations", async () => {

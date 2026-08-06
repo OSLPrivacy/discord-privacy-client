@@ -166,10 +166,12 @@ import { oslMailStage, type OslMailStage } from "./desktop-service-policy";
 import { webSurfaceLabel, type WebSurfaceCapability } from "./web-surface-label";
 import { homeProtectionState } from "./home-protection-state";
 import {
+  OSL_MAIL_NAMED_SEND_REQUIRED,
   burnOslMailbox,
   loadOslMailStatus,
   provisionOslMail,
-  sendOslMail,
+  sendOslMailWithChoice,
+  type OslMailSendChoice,
   type OslMailBurnReceipt,
   type OslMailDeleteReceipt,
   type OslMailRetrievedThread,
@@ -5145,17 +5147,23 @@ async function provisionOslMailFromProfile(): Promise<void> {
   if (route === "osl-mail") render();
 }
 
-async function sendOslMailForm(form: HTMLFormElement): Promise<void> {
+async function sendOslMailForm(form: HTMLFormElement, choice: OslMailSendChoice): Promise<void> {
   const recipient = form.querySelector<HTMLInputElement>("#osl-mail-to")?.value ?? "";
   const subject = form.querySelector<HTMLInputElement>("#osl-mail-subject")?.value ?? "";
   const body = form.querySelector<HTMLTextAreaElement>("#osl-mail-body")?.value ?? "";
+  if (choice !== "Send") {
+    oslMailError = OSL_MAIL_NAMED_SEND_REQUIRED;
+    render();
+    return;
+  }
   if (!recipient.endsWith("@oslprivacy.com")) {
     oslMailError = "External outbound mail is unavailable in v1";
     render();
     return;
   }
-  oslMailSendReceipt = await sendOslMail(recipient, subject, body);
-  oslMailError = oslMailSendReceipt ? null : "Send was refused";
+  const result = await sendOslMailWithChoice(choice, recipient, subject, body);
+  oslMailSendReceipt = result.outcome === "sent" ? result.receipt : null;
+  oslMailError = result.outcome === "sent" ? null : result.reason;
   if (route === "osl-mail") render();
 }
 
@@ -7560,7 +7568,11 @@ function bindWorkspace(): void {
   });
   document.querySelector<HTMLFormElement>("#osl-mail-compose-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
-    void sendOslMailForm(event.currentTarget as HTMLFormElement);
+    void sendOslMailForm(event.currentTarget as HTMLFormElement, "Enter");
+  });
+  document.querySelector<HTMLButtonElement>("#osl-mail-send")?.addEventListener("click", (event) => {
+    const form = (event.currentTarget as HTMLButtonElement).form;
+    if (form) void sendOslMailForm(form, "Send");
   });
   document.querySelector<HTMLFormElement>("#osl-mail-burn-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
