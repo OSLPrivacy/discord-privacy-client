@@ -175,6 +175,85 @@ impl fmt::Debug for ImapMessageSummary {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedMailboxAuthorship {
+    Yours,
+    NotYours,
+}
+
+impl SharedMailboxAuthorship {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Yours => "yours",
+            Self::NotYours => "not_yours",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedMailboxMessage {
+    pub subject: String,
+    pub time: String,
+    pub sender: String,
+    pub authorship: SharedMailboxAuthorship,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedMailboxFolder {
+    pub name: String,
+    pub messages: Vec<SharedMailboxMessage>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedMailboxSnapshot {
+    pub provider: String,
+    pub folders: Vec<SharedMailboxFolder>,
+}
+
+pub trait SharedMailboxReader {
+    fn list_folders(&self) -> Result<Vec<String>, ScrubImapError>;
+    fn list_messages(&self, folder: &str) -> Result<Vec<SharedMailboxMessage>, ScrubImapError>;
+}
+
+pub fn read_gmx_shared_mailbox(
+    reader: &dyn SharedMailboxReader,
+) -> Result<SharedMailboxSnapshot, ScrubImapError> {
+    let folders = reader.list_folders()?;
+    if !folders.iter().any(|folder| folder == "Sent") {
+        return Err(ScrubImapError::SharedMailboxMissingFolder);
+    }
+
+    let mut snapshot_folders = Vec::with_capacity(folders.len());
+    for folder in folders {
+        let authorship = if folder == "Sent" {
+            SharedMailboxAuthorship::Yours
+        } else {
+            SharedMailboxAuthorship::NotYours
+        };
+        let messages = reader
+            .list_messages(&folder)?
+            .into_iter()
+            .map(|message| SharedMailboxMessage {
+                authorship,
+                ..message
+            })
+            .collect();
+        snapshot_folders.push(SharedMailboxFolder {
+            name: folder,
+            messages,
+        });
+    }
+
+    Ok(SharedMailboxSnapshot {
+        provider: "gmx".to_string(),
+        folders: snapshot_folders,
+    })
+}
+
 #[derive(Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnerFacingDryRunPreview {
@@ -450,6 +529,8 @@ pub enum ScrubImapError {
     NativeDeletionDisabled,
     NativeDeleteFailed,
     NativeQueryFailed,
+    SharedMailboxMissingFolder,
+    SharedMailboxReadFailed,
 }
 
 impl fmt::Display for ScrubImapError {
@@ -464,6 +545,8 @@ impl fmt::Display for ScrubImapError {
             Self::NativeDeletionDisabled => "Native IMAP deletion is disabled",
             Self::NativeDeleteFailed => "email cleanup delete failed",
             Self::NativeQueryFailed => "email cleanup verification failed",
+            Self::SharedMailboxMissingFolder => "shared mailbox folder is missing",
+            Self::SharedMailboxReadFailed => "shared mailbox could not be read",
         };
         f.write_str(message)
     }
@@ -532,6 +615,51 @@ mod tests {
                 .outcomes
                 .get(&uid)
                 .unwrap_or(&QueryAfterDelete::Unknown))
+        }
+    }
+
+    struct SeededGmxMailbox;
+
+    impl SharedMailboxReader for SeededGmxMailbox {
+        fn list_folders(&self) -> Result<Vec<String>, ScrubImapError> {
+            Ok(["Inbox", "Sent", "Drafts", "Trash"]
+                .into_iter()
+                .map(str::to_string)
+                .collect())
+        }
+
+        fn list_messages(&self, folder: &str) -> Result<Vec<SharedMailboxMessage>, ScrubImapError> {
+            let rows = match folder {
+                "Inbox" => vec![
+                    (
+                        "SCRUB-GX-INBOX-A",
+                        "2026-08-06T09:10:00Z",
+                        "friend-a@example.test",
+                    ),
+                    (
+                        "SCRUB-GX-INBOX-B",
+                        "2026-08-06T09:20:00Z",
+                        "friend-b@example.test",
+                    ),
+                ],
+                "Sent" => vec![
+                    ("SCRUB-GX-MINE", "2026-08-06T10:00:00Z", "owner@gmx.test"),
+                    ("SCRUB-GX-SENT-2", "2026-08-06T10:05:00Z", "owner@gmx.test"),
+                    ("SCRUB-GX-SENT-3", "2026-08-06T10:10:00Z", "owner@gmx.test"),
+                ],
+                "Drafts" | "Trash" => Vec::new(),
+                _ => return Err(ScrubImapError::SharedMailboxReadFailed),
+            };
+
+            Ok(rows
+                .into_iter()
+                .map(|(subject, time, sender)| SharedMailboxMessage {
+                    subject: subject.to_string(),
+                    time: time.to_string(),
+                    sender: sender.to_string(),
+                    authorship: SharedMailboxAuthorship::NotYours,
+                })
+                .collect())
         }
     }
 
@@ -766,5 +894,65 @@ mod tests {
             adapter.calls, native_calls_after_success,
             "replayed UI authority must not reach native IMAP"
         );
+    }
+
+    #[test]
+    fn task_3065_seeded_gmx_mailbox_returns_folders_sent_metadata_and_yours_attribution() {
+        let snapshot = read_gmx_shared_mailbox(&SeededGmxMailbox).unwrap();
+        let folder_names = snapshot
+            .folders
+            .iter()
+            .map(|folder| folder.name.as_str())
+            .collect::<Vec<_>>();
+        let sent = snapshot
+            .folders
+            .iter()
+            .find(|folder| folder.name == "Sent")
+            .expect("seeded GMX mailbox must include Sent");
+        let inbox = snapshot
+            .folders
+            .iter()
+            .find(|folder| folder.name == "Inbox")
+            .expect("seeded GMX mailbox must include Inbox");
+        let mine = sent
+            .messages
+            .iter()
+            .find(|message| message.subject == "SCRUB-GX-MINE")
+            .expect("seeded GMX Sent mailbox must include SCRUB-GX-MINE");
+        let inbox_labels = inbox
+            .messages
+            .iter()
+            .map(|message| format!("{}={}", message.subject, message.authorship.label()))
+            .collect::<Vec<_>>();
+
+        println!("TASK3065_PROVIDER={}", snapshot.provider);
+        println!("TASK3065_FOLDER_COUNT={}", folder_names.len());
+        println!("TASK3065_FOLDERS={}", folder_names.join(","));
+        println!("TASK3065_SENT_COUNT={}", sent.messages.len());
+        for message in &sent.messages {
+            println!(
+                "TASK3065_SENT_MESSAGE={}|{}|{}",
+                message.subject, message.time, message.sender
+            );
+            assert!(!message.subject.is_empty());
+            assert!(!message.time.is_empty());
+            assert!(!message.sender.is_empty());
+        }
+        println!(
+            "TASK3065_SCRUB_GX_MINE_OWNERSHIP={}",
+            mine.authorship.label()
+        );
+        println!("TASK3065_INBOX_COUNT={}", inbox.messages.len());
+        println!("TASK3065_INBOX_OWNERSHIP={}", inbox_labels.join(","));
+
+        assert_eq!(snapshot.provider, "gmx");
+        assert_eq!(folder_names, vec!["Inbox", "Sent", "Drafts", "Trash"]);
+        assert_eq!(sent.messages.len(), 3);
+        assert_eq!(mine.authorship, SharedMailboxAuthorship::Yours);
+        assert_eq!(inbox.messages.len(), 2);
+        assert!(inbox
+            .messages
+            .iter()
+            .all(|message| message.authorship == SharedMailboxAuthorship::NotYours));
     }
 }
