@@ -250,6 +250,8 @@ pub mod native_surface_capture;
 #[cfg(feature = "core")]
 pub mod hub_command_surface;
 pub mod imap_verify;
+#[cfg(feature = "core")]
+pub mod runtime_switches;
 pub mod scrub_imap;
 #[cfg(feature = "core")]
 pub mod scrub_index;
