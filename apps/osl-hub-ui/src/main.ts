@@ -3260,7 +3260,7 @@ function bindOnboarding(): void {
     onboardingRoute = "cover";
     render();
   });
-  document.querySelector("#continue-defaults-review")?.addEventListener("click", () => { onboardingRoute = "tor"; render(); });
+  document.querySelector("#continue-defaults-review")?.addEventListener("click", () => { onboardingRoute = "sending"; render(); });
   document.querySelectorAll<HTMLInputElement>('input[name="tor-route"]').forEach((input) => input.addEventListener("change", () => {
     if (input.checked && (input.value === "tor" || input.value === "direct")) {
       torOnboarding = chooseTorRoute(torOnboarding, input.value);
@@ -3270,7 +3270,7 @@ function bindOnboarding(): void {
   document.querySelector<HTMLButtonElement>("[data-tor-choice-continue]")?.addEventListener("click", () => {
     if (torOnboarding.choice === null) return;
     void invoke("set_tor_preference", { preference: torOnboarding.choice }).then(() => {
-      onboardingRoute = "sending";
+      onboardingRoute = "defaults";
       render();
     }).catch(() => {
       // Do not advance: without native persistence the send boundary remains
@@ -3341,7 +3341,7 @@ function bindOnboarding(): void {
     if (next === "browser") void refreshBrowserImportReadiness();
     if (next === "mullvad") void refreshMullvadSetup();
   }));
-  document.querySelector("#continue-onboarding-privacy")?.addEventListener("click", () => { onboardingRoute = "defaults"; render(); });
+  document.querySelector("#continue-onboarding-privacy")?.addEventListener("click", () => { onboardingRoute = "tor"; render(); });
   document.querySelector<HTMLInputElement>("#window-capture-enabled")?.addEventListener("change", async (event) => {
     windowCaptureEnabled = (event.currentTarget as HTMLInputElement).checked;
     await setScreenshotProtection(windowCaptureEnabled).catch(() => false);
@@ -10101,6 +10101,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   route = patch.route ?? "home";
   onboardingRoute = patch.onboardingRoute ?? "welcome";
   setup = { ...defaultSetup, ...patch.setup };
+  torOnboarding = initialTorOnboardingState();
   settingsSection = "account";
   activeService = null;
   activeHomeAppId = null;
@@ -10356,6 +10357,7 @@ export const __oslHubUiTest = {
     mullvadSetupNotice: string;
     ownedConfirmationKind: OwnedConfirmation["kind"] | null;
     ownedConfirmationPersonId: string | null;
+    torChoice: TorOnboardingState["choice"];
   } {
     return {
       route,
@@ -10373,6 +10375,7 @@ export const __oslHubUiTest = {
       ownedConfirmationPersonId: ownedConfirmation?.kind === "verifyFriend" || ownedConfirmation?.kind === "removeFriend"
         ? ownedConfirmation.personId
         : null,
+      torChoice: torOnboarding.choice,
     };
   },
 };

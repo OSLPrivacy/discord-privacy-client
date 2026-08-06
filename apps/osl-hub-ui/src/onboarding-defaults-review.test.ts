@@ -97,18 +97,18 @@ describe("review defaults onboarding", () => {
     expect(review).not.toMatch(/keyserver|ratchet|receipt|browser profile|provider adapter/iu);
   });
 
-  // Protects: this screen sits between the protection presets and send setup, and
-  // both neighbours still render, so the route order cannot silently strand it.
+  // Protects: this screen sits between the explicit Tor choice and send setup,
+  // and both neighbours still render, so the route order cannot silently strand it.
   it("is wired between protection presets, the explicit Tor choice, and send setup", () => {
     const branches = { detected: false, install: false };
     const { reviewDefaultsOnboardingContent, sendingSetupContent } = ui;
 
-    expect(nextOnboardingRoute("privacy", branches)).toBe("defaults");
-    expect(previousOnboardingRoute("defaults", branches)).toBe("privacy");
-    expect(nextOnboardingRoute("defaults", branches)).toBe("tor");
-    expect(previousOnboardingRoute("tor", branches)).toBe("defaults");
-    expect(nextOnboardingRoute("tor", branches)).toBe("sending");
-    expect(previousOnboardingRoute("sending", branches)).toBe("tor");
+    expect(nextOnboardingRoute("privacy", branches)).toBe("tor");
+    expect(previousOnboardingRoute("tor", branches)).toBe("privacy");
+    expect(nextOnboardingRoute("tor", branches)).toBe("defaults");
+    expect(previousOnboardingRoute("defaults", branches)).toBe("tor");
+    expect(nextOnboardingRoute("defaults", branches)).toBe("sending");
+    expect(previousOnboardingRoute("sending", branches)).toBe("defaults");
     expect(reviewDefaultsOnboardingContent()).toContain('id="continue-defaults-review"');
     expect(sendingSetupContent()).toContain('data-send-mode="manual"');
     expect(sendingSetupContent()).toContain('id="finish-onboarding"');
