@@ -103,6 +103,7 @@ use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, Service
 use osl_privacy_hub::services::ServiceRegistryState;
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::tor_pref::{TorPreference, TorPreferenceState};
+use osl_privacy_hub::update_apply;
 use osl_privacy_hub::update_state_backup;
 use osl_privacy_hub::updates::{
     bounded_plain_notes, bounded_version, RELEASES_URL, SOURCE_REPOSITORY_URL,
@@ -1970,10 +1971,27 @@ async fn install_hub_update(
     if update.version != expected_version {
         return Err("The available update changed; check again before installing".to_owned());
     }
+    let previous_version = app.package_info().version.to_string();
     let app_config_dir = app
         .path()
         .app_config_dir()
         .map_err(|_| "OSL account storage is unavailable before update".to_owned())?;
+    let current_exe =
+        std::env::current_exe().map_err(|_| "OSL update install path is unavailable".to_owned())?;
+    let install_dir = current_exe
+        .parent()
+        .ok_or_else(|| "OSL update install path is unavailable".to_owned())?;
+    let built_file = current_exe
+        .file_name()
+        .ok_or_else(|| "OSL update install path is unavailable".to_owned())?
+        .to_string_lossy()
+        .to_string();
+    let pending_apply = update_apply::begin_update_apply(
+        &app_config_dir,
+        install_dir,
+        &previous_version,
+        &expected_version,
+    )?;
     update_state_backup::copy_identity_and_history_before_update(
         &app_config_dir,
         &expected_version,
@@ -1982,6 +2000,7 @@ async fn install_hub_update(
         .download_and_install(|_, _| {}, || {})
         .await
         .map_err(|_| "The update could not be verified and was not installed".to_owned())?;
+    update_apply::record_replaced_built_files(pending_apply, vec![built_file])?;
     app.restart();
 }
 
@@ -10058,6 +10077,11 @@ fn main() {
         qa_selftest::spawn_trigger_watcher(app.handle().clone());
         #[cfg(feature = "discord-qa-shell")]
         startup_breadcrumb("setup_step_46_qa_selftest_watcher_spawned"); // STARTUP-TRACE
+        update_apply::mark_update_finished_after_successful_start(
+            &config_dir,
+            &app.package_info().version.to_string(),
+        )?;
+        startup_breadcrumb("setup_step_47_update_apply_marked"); // STARTUP-TRACE
         startup_breadcrumb("setup_done"); // STARTUP-TRACE
         Ok(())
     });

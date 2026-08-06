@@ -152,6 +152,7 @@ pub mod secure_disk_backend;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;
+pub mod update_apply;
 #[cfg(feature = "core")]
 pub mod update_state_backup;
 pub mod updates;
