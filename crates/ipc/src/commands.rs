@@ -14363,6 +14363,14 @@ mod account_transfer_tests {
         state
     }
 
+    fn state_with_transfer_identity(entropy: [u8; 16], snowflake: &str) -> AppState {
+        let state = AppState::new();
+        let mut identity = keystore::identity_from_entropy(entropy, format!("user-{snowflake}"));
+        identity.discord_snowflake = Some(snowflake.to_string());
+        state.install_identity(identity);
+        state
+    }
+
     fn open_export(encoded: &str, entropy: [u8; 16]) -> serde_json::Value {
         let raw = STANDARD.decode(encoded).unwrap();
         let offset = OSL_EXPORT_MAGIC.len() + crypto::aead::NONCE_SIZE;
@@ -14376,6 +14384,222 @@ mod account_transfer_tests {
         )
         .unwrap();
         serde_json::from_slice(&plaintext).unwrap()
+    }
+
+    fn transfer_phrase(entropy: [u8; 16]) -> String {
+        bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
+            .unwrap()
+            .to_string()
+    }
+
+    fn mutate_one_backup_byte(blob_b64: &str) -> String {
+        let mut raw = STANDARD.decode(blob_b64).unwrap();
+        let last = raw.last_mut().expect("export blob is non-empty");
+        *last ^= 0x01;
+        STANDARD.encode(raw)
+    }
+
+    fn count_records(
+        dir: &Path,
+        identity_secret: &[u8; 32],
+    ) -> (usize, Option<String>, Option<String>) {
+        if !dir.join("store/messages.sqlite").exists() {
+            return (0, None, None);
+        }
+        let store = MessageStore::open(&dir.join("store"), identity_secret).unwrap();
+        let rows = store.list_by_channel("CHANNEL-0461", 10).unwrap();
+        let name = rows.first().map(|row| row.discord_message_id.clone());
+        let fingerprint = rows.first().map(|row| row.plaintext.clone());
+        (rows.len(), name, fingerprint)
+    }
+
+    fn recover_account_from_export_with_password_confirmation(
+        state: &AppState,
+        blob_b64: String,
+        phrase: String,
+        new_password: &str,
+        confirm_password: &str,
+        dir: &Path,
+    ) -> Result<(), String> {
+        if new_password != confirm_password {
+            return Err("OSL: passwords differ; backup restore was not started".to_string());
+        }
+        cmd_osl_recover_account_from_export_with_dir(state, blob_b64, phrase, dir)
+    }
+
+    #[test]
+    fn task_0461_malformed_second_device_restore_is_refused_without_records() {
+        let _guard = crate::test_process_globals::serialize();
+        let _reset = FileKeyReset;
+        crate::main_password::set_file_storage_key(None);
+
+        const SNOWFLAKE: &str = "0461";
+        const RECORD_NAME: &str = "RECORD-0461";
+        const FINGERPRINT: &str = "JADE-0461";
+        const PASSWORD: &str = "restore-password-0461";
+        let entropy = [0x46; 16];
+        let phrase = transfer_phrase(entropy);
+
+        let source_dir = TempDir::new().unwrap();
+        let source = state_with_transfer_identity(entropy, SNOWFLAKE);
+        let source_identity = source.identity_slot().as_ref().unwrap().clone();
+        {
+            let store = MessageStore::open(
+                &source_dir.path().join("store"),
+                source_identity.x25519_secret.as_bytes(),
+            )
+            .unwrap();
+            store
+                .put(&StoredMessage {
+                    discord_message_id: RECORD_NAME.to_string(),
+                    channel_id: "CHANNEL-0461".to_string(),
+                    sender_discord_id: "sender-0461".to_string(),
+                    sender_osl_user_id: "sender-osl-0461".to_string(),
+                    plaintext: FINGERPRINT.to_string(),
+                    decrypted_at: 46,
+                    burned: false,
+                })
+                .unwrap();
+        }
+        let (source_count, source_name, source_fingerprint) =
+            count_records(source_dir.path(), source_identity.x25519_secret.as_bytes());
+        assert_eq!(source_count, 1);
+        assert_eq!(source_name.as_deref(), Some(RECORD_NAME));
+        assert_eq!(source_fingerprint.as_deref(), Some(FINGERPRINT));
+        println!("TASK0461_SEEDED_BACKUP_FINGERPRINT={FINGERPRINT}");
+        println!("TASK0461_SEEDED_RECORD_NAME={RECORD_NAME}");
+        println!("TASK0461_SEEDED_RECORD_COUNT={source_count}");
+
+        let backup = cmd_osl_export_data_with_dir(&source, source_dir.path()).unwrap();
+        let backup_digest = {
+            let mut hasher = Sha256::new();
+            hasher.update(backup.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+        println!("TASK0461_BACKUP_SHA256={backup_digest}");
+
+        let imported_identity = decode_export_identity(
+            open_export(&backup, entropy).get("identity").unwrap(),
+            entropy,
+        )
+        .unwrap();
+        let imported_secret = *imported_identity.x25519_secret.as_bytes();
+
+        let clean_dir = TempDir::new().unwrap();
+        let clean = state_with_transfer_identity([0x51; 16], SNOWFLAKE);
+        let (clean_before, _, _) = count_records(clean_dir.path(), &imported_secret);
+        assert_eq!(clean_before, 0);
+        println!("TASK0461_CLEAN_PROFILE_COUNT_BEFORE={clean_before}");
+        recover_account_from_export_with_password_confirmation(
+            &clean,
+            backup.clone(),
+            phrase.clone(),
+            PASSWORD,
+            PASSWORD,
+            clean_dir.path(),
+        )
+        .unwrap();
+        let clean_identity_secret = *clean
+            .identity_slot()
+            .as_ref()
+            .unwrap()
+            .x25519_secret
+            .as_bytes();
+        let (clean_count, clean_name, clean_fingerprint) =
+            count_records(clean_dir.path(), &clean_identity_secret);
+        assert_eq!(clean_count, 1);
+        assert_eq!(clean_name.as_deref(), Some(RECORD_NAME));
+        assert_eq!(clean_fingerprint.as_deref(), Some(FINGERPRINT));
+        println!("TASK0461_CLEAN_RESTORE_NAME={}", clean_name.unwrap());
+        println!("TASK0461_CLEAN_RESTORE_COUNT={clean_count}");
+        println!(
+            "TASK0461_CLEAN_RESTORE_FINGERPRINT={}",
+            clean_fingerprint.unwrap()
+        );
+        println!("TASK0461_JADE_READABLE={FINGERPRINT}");
+
+        let bad_byte_dir = TempDir::new().unwrap();
+        let bad_byte = state_with_transfer_identity([0x52; 16], SNOWFLAKE);
+        let (bad_byte_before, _, _) = count_records(bad_byte_dir.path(), &imported_secret);
+        assert_eq!(bad_byte_before, 0);
+        println!("TASK0461_BAD_BYTES_COUNT_BEFORE={bad_byte_before}");
+        let bad_byte_err = recover_account_from_export_with_password_confirmation(
+            &bad_byte,
+            mutate_one_backup_byte(&backup),
+            phrase.clone(),
+            PASSWORD,
+            PASSWORD,
+            bad_byte_dir.path(),
+        )
+        .unwrap_err();
+        assert!(bad_byte_err.contains("file is corrupt"), "{bad_byte_err}");
+        let (bad_byte_after, _, _) = count_records(bad_byte_dir.path(), &imported_secret);
+        assert_eq!(bad_byte_after, 0);
+        println!("TASK0461_BAD_BYTES_REFUSED=backup bytes changed");
+        println!("TASK0461_BAD_BYTES_ERROR={bad_byte_err}");
+        println!("TASK0461_BAD_BYTES_COUNT_AFTER={bad_byte_after}");
+
+        let bad_phrase_dir = TempDir::new().unwrap();
+        let bad_phrase = state_with_transfer_identity([0x53; 16], SNOWFLAKE);
+        let (bad_phrase_before, _, _) = count_records(bad_phrase_dir.path(), &imported_secret);
+        assert_eq!(bad_phrase_before, 0);
+        println!("TASK0461_BAD_PHRASE_COUNT_BEFORE={bad_phrase_before}");
+        let bad_phrase_err = recover_account_from_export_with_password_confirmation(
+            &bad_phrase,
+            backup.clone(),
+            transfer_phrase([0x47; 16]),
+            PASSWORD,
+            PASSWORD,
+            bad_phrase_dir.path(),
+        )
+        .unwrap_err();
+        assert!(
+            bad_phrase_err.contains("phrase doesn't match"),
+            "{bad_phrase_err}"
+        );
+        let (bad_phrase_after, _, _) = count_records(bad_phrase_dir.path(), &imported_secret);
+        assert_eq!(bad_phrase_after, 0);
+        println!("TASK0461_BAD_PHRASE_REFUSED=phrase wrong");
+        println!("TASK0461_BAD_PHRASE_ERROR={bad_phrase_err}");
+        println!("TASK0461_BAD_PHRASE_COUNT_AFTER={bad_phrase_after}");
+
+        let bad_password_dir = TempDir::new().unwrap();
+        let bad_password = state_with_transfer_identity([0x54; 16], SNOWFLAKE);
+        let (bad_password_before, _, _) = count_records(bad_password_dir.path(), &imported_secret);
+        assert_eq!(bad_password_before, 0);
+        println!("TASK0461_BAD_PASSWORD_COUNT_BEFORE={bad_password_before}");
+        let bad_password_err = recover_account_from_export_with_password_confirmation(
+            &bad_password,
+            backup,
+            phrase,
+            PASSWORD,
+            "changed-restore-password-0461",
+            bad_password_dir.path(),
+        )
+        .unwrap_err();
+        assert!(
+            bad_password_err.contains("passwords differ"),
+            "{bad_password_err}"
+        );
+        let (bad_password_after, _, _) = count_records(bad_password_dir.path(), &imported_secret);
+        assert_eq!(bad_password_after, 0);
+        println!("TASK0461_BAD_PASSWORD_REFUSED=passwords differ");
+        println!("TASK0461_BAD_PASSWORD_ERROR={bad_password_err}");
+        println!("TASK0461_BAD_PASSWORD_COUNT_AFTER={bad_password_after}");
+
+        let (final_count, final_name, final_fingerprint) =
+            count_records(clean_dir.path(), &clean_identity_secret);
+        assert_eq!(final_count, 1);
+        assert_eq!(final_name.as_deref(), Some(RECORD_NAME));
+        assert_eq!(final_fingerprint.as_deref(), Some(FINGERPRINT));
+        println!("TASK0461_FINAL_RECORD_NAME={}", final_name.unwrap());
+        println!("TASK0461_FINAL_RECORD_COUNT={final_count}");
+        println!(
+            "TASK0461_FINAL_RECORD_FINGERPRINT={}",
+            final_fingerprint.unwrap()
+        );
+
+        crate::main_password::set_file_storage_key(None);
     }
 
     #[test]

@@ -1078,6 +1078,7 @@ mod tests {
                 Scope::dm("peer-secret-a113"),
             )],
             declined_or_revoked: vec![stored_file_request("revoked", Scope::gc("gc-secret-a113"))],
+            blocked: Vec::new(),
         };
 
         crate::main_password::set_file_storage_key(Some([0xA1; 32]));
@@ -1126,6 +1127,7 @@ mod tests {
             pending: Vec::new(),
             accepted: Vec::new(),
             declined_or_revoked: Vec::new(),
+            blocked: Vec::new(),
         };
 
         crate::main_password::set_file_storage_key(Some([0x20; 32]));
