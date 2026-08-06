@@ -5,8 +5,8 @@
 
 use crate::schema::{
     ActionLevel, AdapterAuthority, AdapterService, AdapterSurface, BindingRequirement, Capability,
-    CapabilityGrant, ProfileDoc, SendOutcomeContract, SignedProfileDoc,
-    PROFILE_DOC_ENVELOPE_VERSION, PROFILE_DOC_VERSION,
+    CapabilityGrant, ProfileDoc, SelectorKind, SelectorStrategy, SendOutcomeContract,
+    SignedProfileDoc, TypedSelector, PROFILE_DOC_ENVELOPE_VERSION, PROFILE_DOC_VERSION,
 };
 use std::collections::BTreeSet;
 
@@ -80,6 +80,97 @@ pub fn capabilities_from_profile(profile: &ProfileDoc) -> BTreeSet<Capability> {
         .unwrap_or_default()
 }
 
+pub const MAIL_COM_WEB_TARGET_NAMES: [&str; 6] = [
+    "compose",
+    "body",
+    "Send",
+    "folders",
+    "thread view",
+    "reading pane",
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MailComWebTarget {
+    pub name: &'static str,
+    pub selector: TypedSelector,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissingMailComWebTarget {
+    pub name: &'static str,
+}
+
+/// Data-only targets for Mail.com's reviewed fixed-origin webmail surface.
+pub fn mail_com_web_mail_targets() -> Vec<MailComWebTarget> {
+    vec![
+        mail_com_accessibility_target(
+            "compose",
+            SelectorKind::ComposeButton,
+            "button",
+            Some("Compose E-mail"),
+        ),
+        mail_com_accessibility_target(
+            "body",
+            SelectorKind::BodyInput,
+            "textbox",
+            Some("Message body"),
+        ),
+        mail_com_accessibility_target("Send", SelectorKind::SendButton, "button", Some("Send")),
+        mail_com_accessibility_target(
+            "folders",
+            SelectorKind::FolderList,
+            "navigation",
+            Some("Folders"),
+        ),
+        mail_com_accessibility_target(
+            "thread view",
+            SelectorKind::ThreadView,
+            "list",
+            Some("E-mail list"),
+        ),
+        mail_com_accessibility_target(
+            "reading pane",
+            SelectorKind::ReadingPane,
+            "region",
+            Some("Reading pane"),
+        ),
+    ]
+}
+
+pub fn validate_mail_com_web_mail_targets(
+    targets: &[MailComWebTarget],
+) -> Result<(), MissingMailComWebTarget> {
+    for required in MAIL_COM_WEB_TARGET_NAMES {
+        if !targets
+            .iter()
+            .any(|target| target.name == required && target.selector.required)
+        {
+            return Err(MissingMailComWebTarget { name: required });
+        }
+    }
+    Ok(())
+}
+
+fn mail_com_accessibility_target(
+    name: &'static str,
+    kind: SelectorKind,
+    role: &'static str,
+    accessible_name: Option<&'static str>,
+) -> MailComWebTarget {
+    MailComWebTarget {
+        name,
+        selector: TypedSelector {
+            kind,
+            strategy: SelectorStrategy::Accessibility {
+                role: role.to_owned(),
+                name: accessible_name.map(str::to_owned),
+                automation_id: None,
+            },
+            required: true,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +191,38 @@ mod tests {
         assert!(grants.contains(&Capability::PlaceProtectedPayload));
         assert!(!grants.contains(&Capability::SendProtectedPayload));
         assert!(!grants.contains(&Capability::VerifySendOutcome));
+    }
+
+    #[test]
+    fn task_1267_mail_com_mapping_contains_all_six_named_targets_and_refuses_missing_by_name() {
+        let targets = mail_com_web_mail_targets();
+        let names = targets.iter().map(|target| target.name).collect::<Vec<_>>();
+
+        assert_eq!(names, MAIL_COM_WEB_TARGET_NAMES);
+        assert!(targets.iter().all(|target| target.selector.required));
+        validate_mail_com_web_mail_targets(&targets).expect("complete Mail.com mapping is valid");
+
+        let mut refused = Vec::new();
+        for missing in MAIL_COM_WEB_TARGET_NAMES {
+            let incomplete = targets
+                .iter()
+                .filter(|target| target.name != missing)
+                .cloned()
+                .collect::<Vec<_>>();
+            let err = validate_mail_com_web_mail_targets(&incomplete)
+                .expect_err("mapping missing a required target must be refused");
+            assert_eq!(err.name, missing);
+            refused.push(err.name);
+        }
+
+        println!(
+            "TASK1267 mail_com_targets={} names={}",
+            targets.len(),
+            names.join("|")
+        );
+        for name in &names {
+            println!("TASK1267 named_target={name}");
+        }
+        println!("TASK1267 refused_missing={}", refused.join("|"));
     }
 }
