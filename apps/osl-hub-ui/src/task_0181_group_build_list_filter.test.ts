@@ -109,6 +109,11 @@ describe("TASK 0181 group build list filter", () => {
 
     expect(sourceIds).toEqual([PERSON]);
     expect(sourceCountBefore).toBe(1);
+    if (!goodResult.names.includes(PERSON)) {
+      throw new Error(
+        `TASK0181 missing ${PERSON} from group build list: count=${goodResult.count} names=${goodResult.names.join(",")}`,
+      );
+    }
     expect(goodResult).toEqual({ count: 1, names: [PERSON] });
     expect(changed).toEqual(["relationships.0.type"]);
     expect(refusedAsNotEligible).toBe(true);
