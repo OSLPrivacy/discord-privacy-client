@@ -157,6 +157,9 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_get_app_preferences", || {
             let _ = cmd_osl_get_app_preferences(&state);
         });
+        assert_command_marks_activity("cmd_osl_get_ask_before_irreversible_actions_choice", || {
+            let _ = cmd_osl_get_ask_before_irreversible_actions_choice(&state);
+        });
         assert_command_marks_activity("cmd_osl_query_auto_whitelist_rule", || {
             let _ = cmd_osl_query_auto_whitelist_rule(&state, AutoWhitelistAppKind::Chat);
         });
@@ -16888,6 +16891,46 @@ pub fn cmd_osl_set_update_channel(
         crate::app_preferences::write_app_preferences(&path, &g)?;
     }
     Ok(())
+}
+
+// ---- Task 3154: ask before irreversible actions ----
+
+pub fn cmd_osl_get_ask_before_irreversible_actions_choice(
+    state: &AppState,
+) -> Result<crate::app_preferences::AskBeforeIrreversibleActionsChoice, String> {
+    record_activity_on_command_entry();
+    let g = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(g.ask_before_irreversible_actions)
+}
+
+pub fn cmd_osl_set_ask_before_irreversible_actions_choice(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<crate::app_preferences::AskBeforeIrreversibleActionsChoice, String> {
+    record_activity_on_command_entry();
+    let choice =
+        crate::app_preferences::AskBeforeIrreversibleActionsChoice::parse(choice.as_str())?;
+    {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.ask_before_irreversible_actions = choice;
+    }
+    if let Some(dir) = config_dir {
+        let g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        let path = dir.join("app_preferences.json");
+        crate::app_preferences::write_app_preferences(&path, &g)?;
+    }
+    Ok(choice)
 }
 
 // ---- Phase 9-D: onboarding tour + VPN warning ----

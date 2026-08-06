@@ -74,6 +74,37 @@ impl UpdateChannel {
     }
 }
 
+/// Whether the app should ask again before executing an irreversible action.
+///
+/// Default = `On`; fresh installs should make the user explicitly confirm
+/// anything that cannot be undone unless they later choose otherwise.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AskBeforeIrreversibleActionsChoice {
+    #[default]
+    On,
+    Off,
+}
+
+impl AskBeforeIrreversibleActionsChoice {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "on" => Ok(Self::On),
+            "off" => Ok(Self::Off),
+            other => Err(format!(
+                "OSL: invalid ask-before-irreversible-actions choice '{other}'"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -84,6 +115,8 @@ pub struct AppPreferences {
     pub tour: TourState,
     #[serde(default)]
     pub update_channel: UpdateChannel,
+    #[serde(default)]
+    pub ask_before_irreversible_actions: AskBeforeIrreversibleActionsChoice,
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 2;

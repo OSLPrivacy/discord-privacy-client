@@ -65,6 +65,8 @@
     "allow-osl-install-update",
     "allow-osl-get-update-channel",
     "allow-osl-set-update-channel",
+    "allow-osl-get-ask-before-irreversible-actions-choice",
+    "allow-osl-set-ask-before-irreversible-actions-choice",
     "core:event:allow-emit",
     "core:event:allow-listen",
     "core:window:allow-close",

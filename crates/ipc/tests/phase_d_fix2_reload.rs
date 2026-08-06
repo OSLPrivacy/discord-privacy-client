@@ -60,6 +60,8 @@ fn reload_repopulates_app_preferences_from_disk() {
             last_slide: 9,
         },
         update_channel: ipc::app_preferences::UpdateChannel::Stable,
+        ask_before_irreversible_actions:
+            ipc::app_preferences::AskBeforeIrreversibleActionsChoice::On,
     };
     write_app_preferences(&dir.path().join("app_preferences.json"), &prefs).unwrap();
 
@@ -334,6 +336,8 @@ fn reload_overwrites_bootstrap_defaults() {
             last_slide: 9,
         },
         update_channel: ipc::app_preferences::UpdateChannel::Stable,
+        ask_before_irreversible_actions:
+            ipc::app_preferences::AskBeforeIrreversibleActionsChoice::On,
     };
     write_app_preferences(&dir.path().join("app_preferences.json"), &prefs_on_disk).unwrap();
 
