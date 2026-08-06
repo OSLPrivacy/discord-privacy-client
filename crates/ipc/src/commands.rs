@@ -15,6 +15,7 @@ use keystore::{generate_identity, select_best_sealer, KeyServerClient};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::{MessageStore, StoreError, StoredMessage};
 
@@ -16770,6 +16771,302 @@ pub fn cmd_osl_check_for_updates(
             }
         }
     }
+}
+
+/// Canonical public update feed for direct site checks. This is the same
+/// `hub-latest` release feed the website distribution contract names as the
+/// source of truth for version and artifact identity.
+pub const DEFAULT_OSL_SITE_UPDATE_MANIFEST_URL: &str =
+    "https://github.com/OSLPrivacy/discord-privacy-client/releases/download/hub-latest/latest.json";
+
+const UPDATE_SITE_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+const UPDATE_SITE_MAX_BODY_BYTES: usize = 128 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SiteUpdateCheckResult {
+    UpdateAvailable {
+        version: String,
+        download_address: String,
+        expected_fingerprint: String,
+    },
+    UpToDate {
+        message: String,
+    },
+    Error {
+        message: String,
+    },
+}
+
+impl SiteUpdateCheckResult {
+    pub fn direct_command_output(&self) -> String {
+        match self {
+            SiteUpdateCheckResult::UpdateAvailable {
+                version,
+                download_address,
+                expected_fingerprint,
+            } => format!(
+                "version={version}\ndownload_address={download_address}\nexpected_fingerprint={expected_fingerprint}"
+            ),
+            SiteUpdateCheckResult::UpToDate { message } => message.clone(),
+            SiteUpdateCheckResult::Error { message } => format!("error: {message}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedSemver {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+fn parse_update_semver(input: &str) -> Result<ParsedSemver, String> {
+    let cleaned = input.strip_prefix('v').unwrap_or(input);
+    let core = cleaned
+        .split(['-', '+'])
+        .next()
+        .ok_or_else(|| "version is invalid".to_owned())?;
+    let mut parts = core.split('.');
+    let major = parts
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .ok_or_else(|| "version must be semantic MAJOR.MINOR.PATCH".to_owned())?;
+    let minor = parts
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .ok_or_else(|| "version must be semantic MAJOR.MINOR.PATCH".to_owned())?;
+    let patch = parts
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .ok_or_else(|| "version must be semantic MAJOR.MINOR.PATCH".to_owned())?;
+    if parts.next().is_some() {
+        return Err("version must be semantic MAJOR.MINOR.PATCH".to_owned());
+    }
+    Ok(ParsedSemver {
+        major,
+        minor,
+        patch,
+    })
+}
+
+fn compare_update_versions(a: ParsedSemver, b: ParsedSemver) -> std::cmp::Ordering {
+    (a.major, a.minor, a.patch).cmp(&(b.major, b.minor, b.patch))
+}
+
+fn json_string<'a>(value: &'a serde_json::Value, names: &[&str]) -> Option<&'a str> {
+    names.iter().find_map(|name| value.get(*name)?.as_str())
+}
+
+fn normalize_update_fingerprint(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    let candidate = trimmed
+        .strip_prefix("sha256:")
+        .or_else(|| trimmed.strip_prefix("sha-256:"))
+        .or_else(|| trimmed.strip_prefix("SHA256:"))
+        .or_else(|| trimmed.strip_prefix("SHA-256:"))
+        .unwrap_or(trimmed)
+        .trim();
+    if candidate.len() == 64 && candidate.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(format!("sha256:{}", candidate.to_ascii_lowercase()))
+    } else {
+        None
+    }
+}
+
+fn platform_entry<'a>(
+    manifest: &'a serde_json::Value,
+    target: &str,
+    arch: &str,
+) -> Option<&'a serde_json::Value> {
+    let platforms = manifest.get("platforms")?.as_object()?;
+    let requested = format!("{target}-{arch}");
+    platforms
+        .get(&requested)
+        .or_else(|| platforms.get("windows-x86_64"))
+        .or_else(|| platforms.values().next())
+}
+
+fn update_download_address(
+    manifest: &serde_json::Value,
+    platform: Option<&serde_json::Value>,
+) -> Result<String, String> {
+    platform
+        .and_then(|entry| json_string(entry, &["url", "download_url", "downloadAddress"]))
+        .or_else(|| json_string(manifest, &["url", "download_url", "downloadAddress"]))
+        .map(str::to_owned)
+        .ok_or_else(|| "update manifest carries no download address".to_owned())
+}
+
+fn update_fingerprint_from_manifest(
+    manifest: &serde_json::Value,
+    platform: Option<&serde_json::Value>,
+) -> Option<String> {
+    platform
+        .and_then(|entry| {
+            json_string(
+                entry,
+                &[
+                    "expected_fingerprint",
+                    "expectedFingerprint",
+                    "fingerprint",
+                    "sha256",
+                    "sha256_hex",
+                ],
+            )
+        })
+        .or_else(|| {
+            json_string(
+                manifest,
+                &[
+                    "expected_fingerprint",
+                    "expectedFingerprint",
+                    "fingerprint",
+                    "sha256",
+                    "sha256_hex",
+                ],
+            )
+        })
+        .and_then(normalize_update_fingerprint)
+}
+
+fn fetch_bounded_text(
+    client: &reqwest::blocking::Client,
+    url: &str,
+) -> Result<Option<String>, String> {
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("site cannot be reached: {e}"))?;
+    if response.status() == reqwest::StatusCode::NO_CONTENT {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(format!("site returned HTTP {}", response.status()));
+    }
+    if response
+        .content_length()
+        .is_some_and(|len| len > u64::try_from(UPDATE_SITE_MAX_BODY_BYTES).unwrap_or(u64::MAX))
+    {
+        return Err("site response is too large".to_owned());
+    }
+    let bytes = response
+        .bytes()
+        .map_err(|e| format!("site response could not be read: {e}"))?;
+    if bytes.len() > UPDATE_SITE_MAX_BODY_BYTES {
+        return Err("site response is too large".to_owned());
+    }
+    String::from_utf8(bytes.to_vec())
+        .map(Some)
+        .map_err(|_| "site response is not UTF-8".to_owned())
+}
+
+fn checksum_url_for_manifest(manifest_url: &str) -> Result<String, String> {
+    let base = reqwest::Url::parse(manifest_url)
+        .map_err(|e| format!("update manifest URL is invalid: {e}"))?;
+    base.join("SHA256SUMS.txt")
+        .map(|url| url.to_string())
+        .map_err(|e| format!("checksum URL is invalid: {e}"))
+}
+
+fn asset_name_from_download_address(download_address: &str) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(download_address)
+        .map_err(|e| format!("download address is invalid: {e}"))?;
+    parsed
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "download address has no asset name".to_owned())
+}
+
+fn checksum_for_asset(checksums: &str, asset: &str) -> Option<String> {
+    checksums.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        let digest = parts.next()?;
+        let name = parts.next()?.trim_start_matches('*');
+        if parts.next().is_some() || name != asset {
+            return None;
+        }
+        normalize_update_fingerprint(digest)
+    })
+}
+
+fn update_fingerprint_from_checksums(
+    client: &reqwest::blocking::Client,
+    manifest_url: &str,
+    download_address: &str,
+) -> Result<String, String> {
+    let checksums_url = checksum_url_for_manifest(manifest_url)?;
+    let asset = asset_name_from_download_address(download_address)?;
+    let Some(checksums) = fetch_bounded_text(client, &checksums_url)? else {
+        return Err("checksum list returned no content".to_owned());
+    };
+    checksum_for_asset(&checksums, &asset)
+        .ok_or_else(|| format!("SHA256SUMS.txt has no valid entry for {asset}"))
+}
+
+pub fn cmd_osl_check_site_for_update(
+    current_version: String,
+    manifest_url: String,
+    target: String,
+    arch: String,
+) -> SiteUpdateCheckResult {
+    record_activity_on_command_entry();
+    match check_site_for_update(current_version, manifest_url, target, arch) {
+        Ok(result) => result,
+        Err(message) => {
+            tracing::warn!(
+                target: "osl::updater",
+                %message,
+                "[OSL updater] direct site check failed"
+            );
+            SiteUpdateCheckResult::Error { message }
+        }
+    }
+}
+
+fn check_site_for_update(
+    current_version: String,
+    manifest_url: String,
+    target: String,
+    arch: String,
+) -> Result<SiteUpdateCheckResult, String> {
+    let current = parse_update_semver(&current_version)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(UPDATE_SITE_HTTP_TIMEOUT)
+        .build()
+        .map_err(|e| format!("update HTTP client could not start: {e}"))?;
+
+    let Some(body) = fetch_bounded_text(&client, &manifest_url)? else {
+        return Ok(SiteUpdateCheckResult::UpToDate {
+            message: "you are up to date".to_owned(),
+        });
+    };
+    let manifest: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("site returned invalid JSON: {e}"))?;
+    let version = json_string(&manifest, &["version"])
+        .ok_or_else(|| "update manifest carries no version".to_owned())?
+        .to_owned();
+    let offered = parse_update_semver(&version)?;
+    if compare_update_versions(current, offered) != std::cmp::Ordering::Less {
+        return Ok(SiteUpdateCheckResult::UpToDate {
+            message: "you are up to date".to_owned(),
+        });
+    }
+
+    let platform = platform_entry(&manifest, &target, &arch);
+    let download_address = update_download_address(&manifest, platform)?;
+    let expected_fingerprint = update_fingerprint_from_manifest(&manifest, platform).map_or_else(
+        || update_fingerprint_from_checksums(&client, &manifest_url, &download_address),
+        Ok,
+    )?;
+
+    Ok(SiteUpdateCheckResult::UpdateAvailable {
+        version,
+        download_address,
+        expected_fingerprint,
+    })
 }
 
 /// G3.3: JS-facing result of an install attempt. The *success* path
