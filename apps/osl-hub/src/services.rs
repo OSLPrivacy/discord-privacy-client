@@ -103,6 +103,66 @@ pub enum ServiceAccountRunStatus {
     Waiting,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceMessagePlaceType {
+    Conversation,
+    Dm,
+    Group,
+    Server,
+    Channel,
+    Thread,
+}
+
+impl ServiceMessagePlaceType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ServiceMessagePlaceType::Conversation => "conversation",
+            ServiceMessagePlaceType::Dm => "dm",
+            ServiceMessagePlaceType::Group => "group",
+            ServiceMessagePlaceType::Server => "server",
+            ServiceMessagePlaceType::Channel => "channel",
+            ServiceMessagePlaceType::Thread => "thread",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceMessagePlace {
+    pub place_type: ServiceMessagePlaceType,
+    pub place_id: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceMessageSnapshot {
+    pub place_type: ServiceMessagePlaceType,
+    pub place_id: String,
+    pub message_id: String,
+    pub author_id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceMessageReadBatch {
+    pub service_id: ServiceKind,
+    pub account_id: String,
+    pub place_count: usize,
+    pub message_count: usize,
+    pub messages: Vec<ServiceMessageSnapshot>,
+}
+
+pub trait AccountServiceMessageConnection {
+    fn service_id(&self) -> ServiceKind;
+    fn account_id(&self) -> &str;
+    fn read_messages(
+        &self,
+        place: &ServiceMessagePlace,
+    ) -> Result<Vec<ServiceMessageSnapshot>, String>;
+}
+
 #[derive(Default)]
 struct RegistryCache {
     loaded: bool,
@@ -129,6 +189,58 @@ impl ServiceAccountActionRunLogEntry {
     pub fn duration_ticks(&self) -> u64 {
         self.end_tick.saturating_sub(self.start_tick)
     }
+}
+
+pub fn read_messages_through_approved_account_service_connection(
+    queue: &ServiceAccountRunQueue,
+    connection: &dyn AccountServiceMessageConnection,
+    places: &[ServiceMessagePlace],
+) -> Result<ServiceMessageReadBatch, String> {
+    if connection.service_id() != queue.service_id {
+        return Err("service message reader connection is bound to the wrong service".to_owned());
+    }
+    if !valid_account_id(connection.account_id()) {
+        return Err("service message reader connection account id is invalid".to_owned());
+    }
+    let active_accounts = queue
+        .accounts
+        .iter()
+        .filter(|account| account.status == ServiceAccountRunStatus::Active)
+        .collect::<Vec<_>>();
+    let [active] = active_accounts.as_slice() else {
+        return Err(
+            "service message reader requires exactly one active approved account".to_owned(),
+        );
+    };
+    if active.account_id != connection.account_id() {
+        return Err(
+            "service message reader requires the active approved account connection".to_owned(),
+        );
+    }
+
+    let mut messages = Vec::new();
+    for place in places {
+        validate_service_message_place(place)?;
+        let place_messages = connection.read_messages(place)?;
+        for message in &place_messages {
+            validate_service_message_snapshot(message)?;
+            if message.place_type != place.place_type || message.place_id != place.place_id {
+                return Err(
+                    "service message reader received a message outside the requested place"
+                        .to_owned(),
+                );
+            }
+        }
+        messages.extend(place_messages);
+    }
+
+    Ok(ServiceMessageReadBatch {
+        service_id: queue.service_id,
+        account_id: active.account_id.clone(),
+        place_count: places.len(),
+        message_count: messages.len(),
+        messages,
+    })
 }
 
 fn build_paced_action_run_log(account_id: &str) -> Result<ServiceAccountActionRunLog, String> {
@@ -218,6 +330,36 @@ fn max_parallel_scroll_actions(entries: &[ServiceAccountActionRunLogEntry]) -> u
         })
         .max()
         .unwrap_or(0)
+}
+
+fn validate_service_message_place(place: &ServiceMessagePlace) -> Result<(), String> {
+    validate_service_message_id("service message place id", &place.place_id)
+}
+
+fn validate_service_message_snapshot(message: &ServiceMessageSnapshot) -> Result<(), String> {
+    validate_service_message_id("service message id", &message.message_id)?;
+    validate_service_message_id("service message author id", &message.author_id)?;
+    if message.text.is_empty()
+        || message.text.len() > 16 * 1024
+        || message
+            .text
+            .chars()
+            .any(|character| character.is_control() && character != '\n')
+    {
+        return Err("service message text is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_service_message_id(label: &str, value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || value.trim() != value
+        || value.chars().any(char::is_control)
+    {
+        return Err(format!("{label} is invalid"));
+    }
+    Ok(())
 }
 
 impl ServiceRegistryState {
@@ -1282,6 +1424,154 @@ mod tests {
         assert_eq!(log.concurrent_actions, 0);
         assert_eq!(log.entries[0].end_tick, log.entries[1].start_tick);
         assert_eq!(log.entries[1].end_tick, log.entries[2].start_tick);
+        let _ = fs::remove_file(path);
+    }
+
+    struct FixtureServiceConnection {
+        service_id: ServiceKind,
+        account_id: String,
+        calls: std::sync::Mutex<Vec<ServiceMessagePlaceType>>,
+    }
+
+    impl FixtureServiceConnection {
+        fn new(service_id: ServiceKind, account_id: String) -> Self {
+            Self {
+                service_id,
+                account_id,
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn called_place_types(&self) -> Vec<ServiceMessagePlaceType> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl AccountServiceMessageConnection for FixtureServiceConnection {
+        fn service_id(&self) -> ServiceKind {
+            self.service_id
+        }
+
+        fn account_id(&self) -> &str {
+            &self.account_id
+        }
+
+        fn read_messages(
+            &self,
+            place: &ServiceMessagePlace,
+        ) -> Result<Vec<ServiceMessageSnapshot>, String> {
+            self.calls.lock().unwrap().push(place.place_type);
+            Ok(vec![ServiceMessageSnapshot {
+                place_type: place.place_type,
+                place_id: place.place_id.clone(),
+                message_id: format!("fixture-{}-message", place.place_type.as_str()),
+                author_id: "fixture-author".to_owned(),
+                text: format!("real {} message", place.place_type.as_str()),
+            }])
+        }
+    }
+
+    fn place_type_names(types: &[ServiceMessagePlaceType]) -> String {
+        types
+            .iter()
+            .map(|place_type| place_type.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    #[test]
+    fn task_1423_service_connection_fixture_yields_messages_from_all_supplied_place_types() {
+        let _serial = crate::global_keystore_test_lock();
+        let path = temporary_registry();
+        let state = ServiceRegistryState::load(path.clone());
+        let approved = state
+            .create_for_owner(OWNER_A, ServiceKind::Discord, "Approved".to_owned())
+            .unwrap();
+        let unapproved = state
+            .create_for_owner(OWNER_A, ServiceKind::Discord, "Unapproved".to_owned())
+            .unwrap();
+        let queue = state
+            .run_queue_for_owner(OWNER_A, ServiceKind::Discord, &[approved.id.clone()])
+            .unwrap();
+        let supplied_types = [
+            ServiceMessagePlaceType::Conversation,
+            ServiceMessagePlaceType::Dm,
+            ServiceMessagePlaceType::Group,
+            ServiceMessagePlaceType::Server,
+            ServiceMessagePlaceType::Channel,
+            ServiceMessagePlaceType::Thread,
+        ];
+        let places = supplied_types
+            .iter()
+            .map(|place_type| ServiceMessagePlace {
+                place_type: *place_type,
+                place_id: format!("fixture-{}", place_type.as_str()),
+            })
+            .collect::<Vec<_>>();
+        let connection = FixtureServiceConnection::new(ServiceKind::Discord, approved.id.clone());
+
+        let batch =
+            read_messages_through_approved_account_service_connection(&queue, &connection, &places)
+                .unwrap();
+        let called_types = connection.called_place_types();
+        let yielded_types = batch
+            .messages
+            .iter()
+            .map(|message| message.place_type)
+            .collect::<Vec<_>>();
+        let yielded_message_ids = batch
+            .messages
+            .iter()
+            .map(|message| message.message_id.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let refused_connection =
+            FixtureServiceConnection::new(ServiceKind::Discord, unapproved.id.clone());
+        let unapproved_result = read_messages_through_approved_account_service_connection(
+            &queue,
+            &refused_connection,
+            &places,
+        );
+
+        println!(
+            "task_1423_reader_boundary=read_messages_through_approved_account_service_connection"
+        );
+        println!("task_1423_approved_account_id={}", batch.account_id);
+        println!(
+            "task_1423_supplied_place_types={}",
+            place_type_names(&supplied_types)
+        );
+        println!(
+            "task_1423_fixture_connection_called_place_types={}",
+            place_type_names(&called_types)
+        );
+        println!(
+            "task_1423_yielded_message_place_types={}",
+            place_type_names(&yielded_types)
+        );
+        println!("task_1423_yielded_message_count={}", batch.message_count);
+        println!("task_1423_yielded_message_ids={yielded_message_ids}");
+        println!(
+            "task_1423_unapproved_fixture_read_calls={}",
+            refused_connection.called_place_types().len()
+        );
+
+        assert_eq!(batch.service_id, ServiceKind::Discord);
+        assert_eq!(batch.account_id, approved.id);
+        assert_eq!(batch.place_count, supplied_types.len());
+        assert_eq!(batch.message_count, supplied_types.len());
+        assert_eq!(called_types, supplied_types);
+        assert_eq!(yielded_types, supplied_types);
+        for (place, message) in places.iter().zip(batch.messages.iter()) {
+            assert_eq!(message.place_type, place.place_type);
+            assert_eq!(message.place_id, place.place_id);
+            assert_eq!(
+                message.text,
+                format!("real {} message", place.place_type.as_str())
+            );
+        }
+        assert!(unapproved_result.is_err());
+        assert!(refused_connection.called_place_types().is_empty());
         let _ = fs::remove_file(path);
     }
 
