@@ -13582,6 +13582,10 @@ fn pending_allow_request_id(record: &crate::allowed_places::AllowedPlaceRecord) 
     format!("allow:{}", record.stable_id)
 }
 
+fn friend_marker_for_allowed_place(record: &crate::allowed_places::AllowedPlaceRecord) -> &str {
+    record.person_name.trim()
+}
+
 pub fn cmd_osl_new_place(
     state: &AppState,
     record: crate::allowed_places::AllowedPlaceRecord,
@@ -13634,8 +13638,22 @@ pub fn cmd_osl_new_place(
             })
         }
         crate::auto_whitelist_rules::AutoWhitelistChoice::OnlyIfAFriend => {
+            let friend_marker = friend_marker_for_allowed_place(&record);
+            let is_friend = state
+                .friend_ids
+                .lock()
+                .expect("friend_ids mutex poisoned")
+                .iter()
+                .any(|id| id == friend_marker);
+            if !is_friend {
+                return Err("OSL: auto-whitelist refused: not a friend".to_string());
+            }
+            let dir =
+                app_data_dir.ok_or_else(|| "OSL: allowed-place data dir is missing".to_string())?;
+            crate::allowed_places::add_allowed_place_record(&dir, &record)
+                .map_err(|error| format!("OSL: {error}"))?;
             Ok(NewPlaceDecisionDto {
-                status: "friend_check_required".to_string(),
+                status: "allowed".to_string(),
                 rule: rule.label().to_string(),
                 prompt: false,
                 allow_request: None,
