@@ -19,6 +19,9 @@ const EMAIL_COMPOSE_CONTROLS: [WebsiteNamedControlRequest; 2] = [
 pub const GMAIL_SERVICE_ID: &str = "gmail";
 pub const AOL_SERVICE_ID: &str = "aol";
 pub const ICLOUD_SERVICE_ID: &str = "icloud";
+pub const OUTLOOK_WEB_SERVICE_ID: &str = "outlook-web";
+
+pub const SHARED_MAILBOX_MAX_PAGE_SIZE: usize = 80;
 
 pub const GMAIL_CONTROL_NAMES: [&str; 6] = [
     "compose",
@@ -194,6 +197,68 @@ pub struct OpenedSharedMailMessage {
     pub called: String,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct SharedMailboxPagingConfig {
+    pub page_size: usize,
+    pub pause_after_page_ms: u64,
+}
+
+impl SharedMailboxPagingConfig {
+    pub const fn new(page_size: usize, pause_after_page_ms: u64) -> Self {
+        Self {
+            page_size,
+            pause_after_page_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SharedMailboxReadPage {
+    pub page_number: usize,
+    pub messages: Vec<SharedMailMessageSummary>,
+    pub pause_after_page_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SharedMailboxPagedRead {
+    pub folder_id: String,
+    pub page_size: usize,
+    pub pause_after_page_ms: u64,
+    pub pages: Vec<SharedMailboxReadPage>,
+    pub messages_read: usize,
+    pub stopped: bool,
+    pub stopped_on_page: Option<usize>,
+}
+
+pub trait SharedMailboxPagingPause {
+    fn pause_after_page(&mut self, page_number: usize, pause_ms: u64);
+}
+
+pub trait SharedMailboxPagingStop {
+    fn should_stop(&mut self, folder_id: &str, page_number: usize, messages_read: usize) -> bool;
+}
+
+#[derive(Debug, Default)]
+pub struct SharedMailboxNoopPause;
+
+impl SharedMailboxPagingPause for SharedMailboxNoopPause {
+    fn pause_after_page(&mut self, _page_number: usize, _pause_ms: u64) {}
+}
+
+#[derive(Debug, Default)]
+pub struct SharedMailboxNeverStop;
+
+impl SharedMailboxPagingStop for SharedMailboxNeverStop {
+    fn should_stop(
+        &mut self,
+        _folder_id: &str,
+        _page_number: usize,
+        _messages_read: usize,
+    ) -> bool {
+        false
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum MailOwnerCheckError {
     SenderAddressUnreadable,
@@ -224,6 +289,8 @@ pub fn mail_message_is_owned_by_signed_in_address(
 pub enum SharedMailboxReaderError {
     InvalidGmailMailbox,
     InvalidIcloudMailbox,
+    InvalidOutlookWebMailbox,
+    InvalidPagingConfig,
     UnknownLabel,
     UnknownFolder,
     MessageNotFound,
@@ -236,6 +303,8 @@ impl SharedMailboxReaderError {
         match self {
             Self::InvalidGmailMailbox => "OSL: Gmail mailbox reader data is invalid",
             Self::InvalidIcloudMailbox => "OSL: iCloud mailbox reader data is invalid",
+            Self::InvalidOutlookWebMailbox => "OSL: Outlook web mailbox reader data is invalid",
+            Self::InvalidPagingConfig => "OSL: shared mailbox paging config is invalid",
             Self::UnknownLabel => "OSL: Gmail label was not found",
             Self::UnknownFolder => "OSL: iCloud folder was not found",
             Self::MessageNotFound => "OSL: Gmail message was not found",
@@ -311,6 +380,75 @@ pub fn open_gmail_shared_mailbox_message(
         sender: readable_sender(message)?,
         body: message.body.clone(),
         called: owner_call_for_sender(&mailbox.signed_in_address, message)?,
+    })
+}
+
+pub fn read_outlook_web_shared_mailbox_messages_paged(
+    mailbox: &SharedMailboxSnapshot,
+    folder_id: &str,
+    config: SharedMailboxPagingConfig,
+    pause: &mut impl SharedMailboxPagingPause,
+    stop: &mut impl SharedMailboxPagingStop,
+) -> Result<SharedMailboxPagedRead, SharedMailboxReaderError> {
+    validate_outlook_web_mailbox(mailbox)?;
+    ensure_outlook_web_folder_exists(mailbox, folder_id)?;
+    validate_shared_mailbox_paging_config(config)?;
+
+    let mut folder_messages = Vec::new();
+    for message in mailbox
+        .messages
+        .iter()
+        .filter(|message| message.label_id == folder_id)
+    {
+        folder_messages.push(shared_mail_message_summary(
+            &mailbox.signed_in_address,
+            message,
+        )?);
+    }
+
+    let mut pages = Vec::new();
+    let mut messages_read = 0usize;
+    let mut stopped = false;
+    let mut stopped_on_page = None;
+
+    'pages: for (page_index, chunk) in folder_messages.chunks(config.page_size).enumerate() {
+        let page_number = page_index + 1;
+        let mut page_messages = Vec::new();
+
+        for message in chunk {
+            if stop.should_stop(folder_id, page_number, messages_read) {
+                stopped = true;
+                stopped_on_page = Some(page_number);
+                break;
+            }
+            page_messages.push(message.clone());
+            messages_read += 1;
+        }
+
+        let reached_end = messages_read == folder_messages.len();
+        let page_paused = !stopped && !reached_end;
+        pages.push(SharedMailboxReadPage {
+            page_number,
+            messages: page_messages,
+            pause_after_page_ms: page_paused.then_some(config.pause_after_page_ms),
+        });
+
+        if stopped {
+            break 'pages;
+        }
+        if !reached_end {
+            pause.pause_after_page(page_number, config.pause_after_page_ms);
+        }
+    }
+
+    Ok(SharedMailboxPagedRead {
+        folder_id: folder_id.to_owned(),
+        page_size: config.page_size,
+        pause_after_page_ms: config.pause_after_page_ms,
+        pages,
+        messages_read,
+        stopped,
+        stopped_on_page,
     })
 }
 
@@ -402,6 +540,22 @@ fn owner_call_for_sender(
     Ok(if owned { "yours" } else { "not_yours" }.to_owned())
 }
 
+fn shared_mail_message_summary(
+    signed_in_address: &str,
+    message: &SharedMailMessageRecord,
+) -> Result<SharedMailMessageSummary, SharedMailboxReaderError> {
+    let sender = readable_sender(message)?;
+    let called = owner_call_for_sender(signed_in_address, message)?;
+    Ok(SharedMailMessageSummary {
+        label_id: message.label_id.clone(),
+        message_id: message.message_id.clone(),
+        subject: message.subject.clone(),
+        time: message.time,
+        sender,
+        called,
+    })
+}
+
 fn validate_gmail_mailbox(mailbox: &SharedMailboxSnapshot) -> Result<(), SharedMailboxReaderError> {
     validate_reader_text(&mailbox.signed_in_address, 254)?;
     let mut label_ids = BTreeSet::new();
@@ -442,6 +596,27 @@ fn validate_icloud_mailbox(
     Ok(())
 }
 
+fn validate_outlook_web_mailbox(
+    mailbox: &SharedMailboxSnapshot,
+) -> Result<(), SharedMailboxReaderError> {
+    validate_outlook_web_reader_text(&mailbox.signed_in_address, 254)?;
+    let mut folder_ids = BTreeSet::new();
+    for folder in &mailbox.labels {
+        validate_outlook_web_reader_text(&folder.label_id, 128)?;
+        validate_outlook_web_reader_text(&folder.name, 128)?;
+        if !folder_ids.insert(folder.label_id.as_str()) {
+            return Err(SharedMailboxReaderError::InvalidOutlookWebMailbox);
+        }
+    }
+    for message in &mailbox.messages {
+        validate_outlook_web_message(message)?;
+        if !folder_ids.contains(message.label_id.as_str()) {
+            return Err(SharedMailboxReaderError::UnknownFolder);
+        }
+    }
+    Ok(())
+}
+
 fn validate_gmail_message(
     message: &SharedMailMessageRecord,
 ) -> Result<(), SharedMailboxReaderError> {
@@ -470,6 +645,20 @@ fn validate_icloud_message(
     Ok(())
 }
 
+fn validate_outlook_web_message(
+    message: &SharedMailMessageRecord,
+) -> Result<(), SharedMailboxReaderError> {
+    validate_outlook_web_reader_text(&message.label_id, 128)?;
+    validate_outlook_web_reader_text(&message.message_id, 180)?;
+    validate_outlook_web_reader_text(&message.subject, 512)?;
+    validate_outlook_web_reader_body(&message.body)?;
+    if message.time <= 0 {
+        return Err(SharedMailboxReaderError::InvalidOutlookWebMailbox);
+    }
+    readable_sender(message)?;
+    Ok(())
+}
+
 fn ensure_gmail_label_exists(
     mailbox: &SharedMailboxSnapshot,
     label_id: &str,
@@ -491,6 +680,22 @@ fn ensure_icloud_folder_exists(
     folder_id: &str,
 ) -> Result<(), SharedMailboxReaderError> {
     validate_icloud_reader_text(folder_id, 128)?;
+    if mailbox
+        .labels
+        .iter()
+        .any(|folder| folder.label_id == folder_id)
+    {
+        Ok(())
+    } else {
+        Err(SharedMailboxReaderError::UnknownFolder)
+    }
+}
+
+fn ensure_outlook_web_folder_exists(
+    mailbox: &SharedMailboxSnapshot,
+    folder_id: &str,
+) -> Result<(), SharedMailboxReaderError> {
+    validate_outlook_web_reader_text(folder_id, 128)?;
     if mailbox
         .labels
         .iter()
@@ -529,6 +734,21 @@ fn validate_icloud_reader_text(
     }
 }
 
+fn validate_outlook_web_reader_text(
+    value: &str,
+    max_bytes: usize,
+) -> Result<(), SharedMailboxReaderError> {
+    if value.trim() == value
+        && !value.is_empty()
+        && value.len() <= max_bytes
+        && !value.chars().any(|character| character.is_control())
+    {
+        Ok(())
+    } else {
+        Err(SharedMailboxReaderError::InvalidOutlookWebMailbox)
+    }
+}
+
 fn validate_reader_body(value: &str) -> Result<(), SharedMailboxReaderError> {
     if value.len() <= 256 * 1024
         && value
@@ -550,6 +770,30 @@ fn validate_icloud_reader_body(value: &str) -> Result<(), SharedMailboxReaderErr
         Ok(())
     } else {
         Err(SharedMailboxReaderError::InvalidIcloudMailbox)
+    }
+}
+
+fn validate_outlook_web_reader_body(value: &str) -> Result<(), SharedMailboxReaderError> {
+    if value.len() <= 256 * 1024
+        && value
+            .chars()
+            .all(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'))
+    {
+        Ok(())
+    } else {
+        Err(SharedMailboxReaderError::InvalidOutlookWebMailbox)
+    }
+}
+
+fn validate_shared_mailbox_paging_config(
+    config: SharedMailboxPagingConfig,
+) -> Result<(), SharedMailboxReaderError> {
+    if (1..=SHARED_MAILBOX_MAX_PAGE_SIZE).contains(&config.page_size)
+        && config.pause_after_page_ms > 0
+    {
+        Ok(())
+    } else {
+        Err(SharedMailboxReaderError::InvalidPagingConfig)
     }
 }
 
