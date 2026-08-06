@@ -42,6 +42,7 @@ use osl_privacy_hub::identity_registry::{
     self, HubIdentityBurnResult, HubIdentityRegistryState, HubIdentitySlotCreation,
     HubIdentitySlotDto, HubIdentitySwitchResult,
 };
+use osl_privacy_hub::installed_build::{record_current_installed_build, InstalledBuildRecord};
 use osl_privacy_hub::main_window_reveal::{
     main_window_reveal, main_window_should_start_hidden, CaptureAffinity, MainWindowReveal,
     PageLoadPhase,
@@ -9448,6 +9449,11 @@ fn build_integrity_status(state: tauri::State<'_, BuildIntegrity>) -> BuildInteg
     *state.inner()
 }
 
+#[tauri::command]
+fn installed_build_record(state: tauri::State<'_, InstalledBuildRecord>) -> InstalledBuildRecord {
+    state.inner().clone()
+}
+
 macro_rules! hub_tauri_generate_handler {
     ($($(#[$meta:meta])* $command:ident),* $(,)?) => {
         tauri::generate_handler![$($(#[$meta])* $command,)*]
@@ -9899,6 +9905,7 @@ fn main() {
         // Evaluate the bundled signed manifest once per launch, before the UI
         // can present a local integrity verdict.
         app.manage(check_current());
+        app.manage(record_current_installed_build(&config_dir)?);
         app.manage(OverlaySessionState::default());
         startup_breadcrumb("setup_step_32_overlay_session_state_managed"); // STARTUP-TRACE
         app.manage(native_surface_capture::NativeSurfaceCaptureState::default());
@@ -10488,6 +10495,13 @@ mod tauri_command_acl_tests {
         assert_registered_and_acl_granted(&["build_integrity_status"]);
         let source = include_str!("main.rs");
         assert!(source.contains("app.manage(check_current());"));
+    }
+
+    #[test]
+    fn task_3168_installed_build_record_is_read_at_startup_and_exposed_to_the_ui() {
+        assert_registered_and_acl_granted(&["installed_build_record"]);
+        let source = include_str!("main.rs");
+        assert!(source.contains("app.manage(record_current_installed_build(&config_dir)?);"));
     }
 
     #[test]

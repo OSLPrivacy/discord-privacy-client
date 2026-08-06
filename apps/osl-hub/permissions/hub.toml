@@ -19,6 +19,11 @@ description = "Read the already-computed startup build-integrity verdict; it cop
 commands.allow = ["build_integrity_status"]
 
 [[permission]]
+identifier = "allow-installed-build-record"
+description = "Read the startup-installed build version and file fingerprint record; it copies an already-managed value and performs no I/O, no network operation and no key access."
+commands.allow = ["installed_build_record"]
+
+[[permission]]
 identifier = "allow-compose-scrub-erasure-request"
 description = "Compose a local GDPR/CCPA erasure request for the user to review and send themselves; it performs no network operation."
 commands.allow = ["compose_scrub_erasure_request"]

@@ -938,6 +938,7 @@ macro_rules! hub_tauri_commands {
             ai_carrier_status,
             set_ai_carrier_preview_enabled,
             build_integrity_status,
+            installed_build_record,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
             set_hub_screenshot_protection,
