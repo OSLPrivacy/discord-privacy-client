@@ -105,6 +105,32 @@ pub struct EmailProtectionCheckDisplay {
     pub distinct_recipient_count: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProtectedEmailReplyAction {
+    Reply,
+    ReplyAll,
+}
+
+impl ProtectedEmailReplyAction {
+    fn draft_kind(self) -> &'static str {
+        match self {
+            Self::Reply => "reply",
+            Self::ReplyAll => "replyAll",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedEmailReplyDraft {
+    pub draft_id: String,
+    pub message_locator: String,
+    pub action: ProtectedEmailReplyAction,
+    pub recipients: Vec<String>,
+    pub protected: bool,
+}
+
 /// Scan bounded caller-provided text entirely in process memory.
 ///
 /// Invalid or oversized records are rejected rather than partially scanned.
@@ -301,6 +327,30 @@ fn email_protection_check(message: &LocalMessageCandidate) -> Option<EmailProtec
             visible_recipients: message.visible_recipients.clone(),
             distinct_recipient_count: distinct_recipients.len(),
         },
+    })
+}
+
+pub fn create_protected_email_reply_draft(
+    check: &EmailProtectionCheckDisplay,
+    action: ProtectedEmailReplyAction,
+) -> Result<ProtectedEmailReplyDraft, String> {
+    let recipients = match action {
+        ProtectedEmailReplyAction::Reply => check.reply_recipients.clone(),
+        ProtectedEmailReplyAction::ReplyAll => check.reply_all_recipients.clone(),
+    };
+    if recipients.is_empty() || !valid_recipient_list(&recipients) {
+        return Err("Protected email reply draft recipients are invalid".to_owned());
+    }
+    Ok(ProtectedEmailReplyDraft {
+        draft_id: format!(
+            "protected-email-{}-{}",
+            check.message_locator,
+            action.draft_kind()
+        ),
+        message_locator: check.message_locator.clone(),
+        action,
+        recipients,
+        protected: true,
     })
 }
 
@@ -922,5 +972,57 @@ mod tests {
         );
         assert!(reply_all_excludes_bcc);
         assert!(!reply_output.contains(bcc_recipient));
+    }
+
+    #[test]
+    fn task1292_fixture_commands_create_reply_and_reply_all_drafts_with_expected_recipients() {
+        let reply_recipient = "from-task1292@oslprivacy.com";
+        let to_recipient = "to-task1292@oslprivacy.com";
+        let cc_recipient = "cc-task1292@oslprivacy.com";
+        let bcc_recipient = "bcc-task1292@oslprivacy.com";
+        let mut candidate = message("password: protected reply draft");
+        candidate.service_id = "email".to_owned();
+        candidate.message_locator = "task1292-message".to_owned();
+        candidate.reply_recipient = Some(reply_recipient.to_owned());
+        candidate.visible_recipients = vec![to_recipient.to_owned(), cc_recipient.to_owned()];
+        candidate.hidden_recipients = vec![bcc_recipient.to_owned()];
+
+        let result = scan_local_messages(vec![candidate]);
+        let check = result
+            .email_protection_checks
+            .first()
+            .expect("email protection check returns protected reply recipients");
+        let reply_draft =
+            create_protected_email_reply_draft(check, ProtectedEmailReplyAction::Reply)
+                .expect("reply draft is created from the protected recipient list");
+        let reply_all_draft =
+            create_protected_email_reply_draft(check, ProtectedEmailReplyAction::ReplyAll)
+                .expect("reply-all draft is created from the protected recipient list");
+
+        println!(
+            "TASK1292 protected_email_reply_drafts fixture_command=create_protected_email_reply_draft reply_drafts=1 reply_recipients_count={} reply_recipients={} reply_all_drafts=1 reply_all_recipients_count={} reply_all_recipients={} bcc_in_reply_all={}",
+            reply_draft.recipients.len(),
+            reply_draft.recipients.join(","),
+            reply_all_draft.recipients.len(),
+            reply_all_draft.recipients.join(","),
+            reply_all_draft
+                .recipients
+                .iter()
+                .any(|recipient| recipient == bcc_recipient),
+        );
+
+        assert!(reply_draft.protected);
+        assert_eq!(reply_draft.action, ProtectedEmailReplyAction::Reply);
+        assert_eq!(reply_draft.recipients, vec![reply_recipient.to_owned()]);
+        assert!(reply_all_draft.protected);
+        assert_eq!(reply_all_draft.action, ProtectedEmailReplyAction::ReplyAll);
+        assert_eq!(
+            reply_all_draft.recipients,
+            vec![to_recipient.to_owned(), cc_recipient.to_owned()]
+        );
+        assert!(!reply_all_draft
+            .recipients
+            .iter()
+            .any(|recipient| recipient == bcc_recipient));
     }
 }
