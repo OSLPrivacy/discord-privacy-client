@@ -1,6 +1,7 @@
 // Single source of truth for which attachment formats the trusted picker may
 // offer, derived from what the receiving viewer can decode. Needs `ipc` and
 // `peer_attachment_io`, so it lives behind `core` like they do.
+pub mod account_burn_selection;
 #[cfg(feature = "core")]
 pub mod account_identity_authority;
 #[cfg(feature = "core")]
