@@ -1307,6 +1307,24 @@ async fn osl_mail_plan_protected_forward(
 }
 
 #[tauri::command]
+async fn osl_mail_forward_protected(
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    recipients: Vec<String>,
+    confirmation: Option<String>,
+) -> Result<osl_mail::OslMailForwardResult, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may forward protected OSL Mail".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        osl_mail::forward_protected(recipients, confirmation)
+    })
+    .await
+    .map_err(|_| "OSL Mail protected forward worker failed".to_owned())?
+}
+
+#[tauri::command]
 async fn osl_mail_burn(
     app: tauri::AppHandle,
     caller: tauri::WebviewWindow,

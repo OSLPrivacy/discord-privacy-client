@@ -44,6 +44,11 @@ description = "Classify requested protected-forward recipients into OSL recipien
 commands.allow = ["osl_mail_plan_protected_forward"]
 
 [[permission]]
+identifier = "allow-osl-mail-forward-protected"
+description = "Forward protected OSL Mail only after any no-OSL recipient warning has been explicitly confirmed."
+commands.allow = ["osl_mail_forward_protected"]
+
+[[permission]]
 identifier = "allow-osl-mail-burn"
 description = "Burn the active OSL Mail mailbox only after its exact address is confirmed."
 commands.allow = ["osl_mail_burn"]

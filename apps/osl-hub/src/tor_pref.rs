@@ -716,6 +716,7 @@ mod tests {
         "osl_mail_provision",
         "osl_mail_send",
         "osl_mail_plan_protected_forward",
+        "osl_mail_forward_protected",
         "osl_mail_burn",
         "get_mass_cleanup_capabilities",
         "discover_mass_cleanup_targets",
