@@ -87,10 +87,10 @@ use osl_privacy_hub::scrub_index::{
     ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
-    self, AddFriendResult, AllowedPlaceDirectionStateDto, FriendCodeExport,
-    FriendWideWhitelistActionHelp, HubRevocationStatusDto, HubScopeBurnResult, HubSecurityState,
-    PersonDto, PrivateContactLinkExport, PrivateContactLinkStatus, RemoveFriendResult,
-    ScopeSecurityDto,
+    self, AddFriendResult, AllowedPlaceDirectionStateDto, FriendAccountReachEverywhereResult,
+    FriendCodeExport, FriendWideWhitelistActionHelp, HubRevocationStatusDto, HubScopeBurnResult,
+    HubSecurityState, PersonDto, PrivateContactLinkExport, PrivateContactLinkStatus,
+    RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -6294,6 +6294,17 @@ async fn list_hub_people(
 #[tauri::command]
 fn get_hub_friend_wide_whitelist_action_help() -> Vec<FriendWideWhitelistActionHelp> {
     security::friend_wide_whitelist_action_help()
+}
+
+#[tauri::command]
+async fn set_hub_friend_account_reach_everywhere(
+    session: State<'_, HubAccountSessionState>,
+    app: String,
+    friend_account: String,
+    owned_accounts: Vec<String>,
+) -> Result<FriendAccountReachEverywhereResult, String> {
+    let _session = session.transition.lock().await;
+    security::set_friend_account_reach_everywhere(app, friend_account, owned_accounts)
 }
 
 #[tauri::command]

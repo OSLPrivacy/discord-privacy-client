@@ -229,6 +229,25 @@ pub struct AllowedPlaceDirectionStateDto {
     pub second_to_first: bool,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendAccountReachTickDto {
+    pub account: String,
+    pub ticked: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendAccountReachEverywhereResult {
+    pub action: String,
+    pub command: String,
+    pub app: String,
+    pub friend_account: String,
+    pub account_count: usize,
+    pub ticked_count: usize,
+    pub accounts: Vec<FriendAccountReachTickDto>,
+}
+
 /// The minimum friend state needed to create a manual peer-messaging lease.
 /// Key material stays in the original core; callers receive only stable local
 /// and public identity identifiers.
@@ -4044,6 +4063,71 @@ pub fn compare_allowed_place_direction_state(
     )
 }
 
+fn friend_account_reach_ticks_from_prefs(
+    prefs: &SecurityPreferences,
+    app: &str,
+    friend_account: &str,
+    owned_accounts: &[String],
+) -> Result<Vec<FriendAccountReachTickDto>, String> {
+    validate_allowed_place_component(app, "app")?;
+    let mut seen = BTreeSet::new();
+    let mut ticks = Vec::with_capacity(owned_accounts.len());
+    for account in owned_accounts {
+        if !seen.insert(account.as_str()) {
+            return Err("OSL owned account list contains a duplicate account".to_owned());
+        }
+        validate_allowed_place_direction(app, account, friend_account, "direct_message")?;
+        let key = allowed_place_direction_key(app, account, "direct_message", friend_account);
+        ticks.push(FriendAccountReachTickDto {
+            account: account.clone(),
+            ticked: prefs.allowed_place_directions.contains(&key),
+        });
+    }
+    Ok(ticks)
+}
+
+pub fn set_friend_account_reach_everywhere(
+    app: String,
+    friend_account: String,
+    owned_accounts: Vec<String>,
+) -> Result<FriendAccountReachEverywhereResult, String> {
+    require_unlocked()?;
+    let dir = config_dir()?;
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let mut seen = BTreeSet::new();
+    for account in &owned_accounts {
+        if !seen.insert(account.as_str()) {
+            return Err("OSL owned account list contains a duplicate account".to_owned());
+        }
+        validate_allowed_place_direction(&app, account, &friend_account, "direct_message")?;
+    }
+    prefs.version = 2;
+    for account in &owned_accounts {
+        prefs
+            .allowed_place_directions
+            .insert(allowed_place_direction_key(
+                &app,
+                account,
+                "direct_message",
+                &friend_account,
+            ));
+    }
+    write_encrypted_json(&path, &prefs)?;
+    let accounts =
+        friend_account_reach_ticks_from_prefs(&prefs, &app, &friend_account, &owned_accounts)?;
+    let ticked_count = accounts.iter().filter(|account| account.ticked).count();
+    Ok(FriendAccountReachEverywhereResult {
+        action: FRIEND_WIDE_WHITELIST_EVERYWHERE_ACTION.to_owned(),
+        command: FRIEND_WIDE_WHITELIST_EVERYWHERE_COMMAND.to_owned(),
+        app,
+        friend_account,
+        account_count: accounts.len(),
+        ticked_count,
+        accounts,
+    })
+}
+
 fn manual_approved_scopes_for_person(
     prefs: &SecurityPreferences,
     person_id: &str,
@@ -7078,6 +7162,66 @@ key"
         );
         assert!(help[0].effect.contains("every owned account"));
         assert!(help[1].effect.contains("no owned account"));
+    }
+
+    #[test]
+    fn whitelist_everywhere_ticks_every_current_owned_account_for_one_friend() {
+        let harness = FileBackedSecurityHarness::new("task0256-whitelist-everywhere");
+        let friend_account = "900000000000000256";
+        let owned_accounts = vec![
+            "900000000000000257".to_owned(),
+            "900000000000000258".to_owned(),
+            "900000000000000259".to_owned(),
+        ];
+
+        let result = set_friend_account_reach_everywhere(
+            "discord".to_owned(),
+            friend_account.to_owned(),
+            owned_accounts.clone(),
+        )
+        .unwrap();
+        assert_eq!(result.command, FRIEND_WIDE_WHITELIST_EVERYWHERE_COMMAND);
+        assert_eq!(result.action, FRIEND_WIDE_WHITELIST_EVERYWHERE_ACTION);
+        assert_eq!(result.account_count, 3);
+        assert_eq!(result.ticked_count, 3);
+
+        let prefs =
+            load_encrypted_json::<SecurityPreferences>(&harness.path().join(SECURITY_PREFS_FILE))
+                .unwrap();
+        let direct_account_list = friend_account_reach_ticks_from_prefs(
+            &prefs,
+            "discord",
+            friend_account,
+            &owned_accounts,
+        )
+        .unwrap();
+        let ticked_count = direct_account_list
+            .iter()
+            .filter(|account| account.ticked)
+            .count();
+        let account_ids = direct_account_list
+            .iter()
+            .map(|account| account.account.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let ticks = direct_account_list
+            .iter()
+            .map(|account| account.ticked.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "TASK0256 command={} action={} friend_account={} direct_account_list={} account_count={} ticked_count={} ticks={}",
+            result.command,
+            result.action,
+            friend_account,
+            account_ids,
+            direct_account_list.len(),
+            ticked_count,
+            ticks
+        );
+        assert_eq!(direct_account_list.len(), 3);
+        assert_eq!(ticked_count, 3);
+        assert!(direct_account_list.iter().all(|account| account.ticked));
     }
 
     #[test]

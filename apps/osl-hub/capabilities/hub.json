@@ -155,6 +155,7 @@
     "allow-remove-hub-friend",
     "allow-list-hub-people",
     "allow-get-hub-friend-wide-whitelist-action-help",
+    "allow-set-hub-friend-account-reach-everywhere",
     "allow-compare-allowed-place-direction-state",
     "allow-set-hub-friend-nickname",
     "allow-set-active-hub-friend-permission",

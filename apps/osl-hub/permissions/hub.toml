@@ -784,6 +784,11 @@ description = "List the fixed friend-wide account whitelist action names the tru
 commands.allow = ["get_hub_friend_wide_whitelist_action_help"]
 
 [[permission]]
+identifier = "allow-set-hub-friend-account-reach-everywhere"
+description = "Allow one direct-message friend account from every current owned account in encrypted local allowed-place state."
+commands.allow = ["set_hub_friend_account_reach_everywhere"]
+
+[[permission]]
 identifier = "allow-compare-allowed-place-direction-state"
 description = "Read only whether the two saved local allowed-place directions for one direct-message pair are absent, one-way, or two-way."
 commands.allow = ["compare_allowed_place_direction_state"]
