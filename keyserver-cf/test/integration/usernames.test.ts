@@ -1,9 +1,19 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { usernameClaimMessage } from "../../src/lib/username.js";
+import { usernameClaimMessage, usernameMoveMessage } from "../../src/lib/username.js";
 import { canonicalUnregisterBytes } from "../../src/lib/canonical.js";
 import { buildRegMsg, buildRotMsg } from "../../src/lib/signed-request.js";
 import {
+  ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+  canonicalAccountOwnershipProofBytes,
+} from "../../src/lib/account-ownership-proof.js";
+import {
+  canonicalChallengeBindingBytes,
+  sha256Hex,
+  type IssuedAccountOwnershipChallenge,
+} from "../../src/lib/account-ownership-challenge.js";
+import {
+  base64Decode,
   base64Encode,
   generateEd25519Pair,
   registerTestUser,
@@ -13,10 +23,9 @@ import {
   STUB_X25519_PUB_B64,
 } from "./helpers.js";
 
-const testDb = (env as unknown as { DB: D1Database }).DB;
-
 let sequence = 0;
 const userId = () => `username-user-${Date.now()}-${sequence++}`;
+const testDb = (env as unknown as { DB: D1Database }).DB;
 
 function b64url(bytes: Uint8Array): string {
   let value = "";
@@ -43,6 +52,118 @@ async function friendCode(
   );
   const signed = JSON.stringify({ payload, signature: b64url(new Uint8Array(signature)) });
   return `OSLFR1.${b64url(new TextEncoder().encode(signed))}`;
+}
+
+function snowflake(): string {
+  return `9000000000000${String(3_120_000 + sequence++)}`;
+}
+
+async function publicNameChallenge(
+  serviceAccountId: string,
+  ownerUserId: string,
+): Promise<IssuedAccountOwnershipChallenge> {
+  const res = await SELF.fetch("http://test/v1/account-ownership/challenge", {
+    method: "POST",
+    headers: { "content-type": "application/json", "cf-connecting-ip": `198.51.100.${sequence % 240 + 1}` },
+    body: JSON.stringify({
+      service: "discord",
+      service_account_id: serviceAccountId,
+      owner_user_id: ownerUserId,
+      consent: true,
+    }),
+  });
+  if (res.status !== 201) throw new Error(`challenge failed: ${res.status} ${await res.text()}`);
+  return (await res.json()) as IssuedAccountOwnershipChallenge;
+}
+
+async function publicNameProof(
+  challenge: IssuedAccountOwnershipChallenge,
+  signingKey: CryptoKey,
+): Promise<Record<string, unknown>> {
+  const signature_b64 = await signEd25519(
+    signingKey,
+    canonicalAccountOwnershipProofBytes({
+      proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+      platform_id: challenge.service_account_id,
+      owner_user_id: challenge.owner_user_id,
+      nonce_b64: challenge.nonce,
+      issued_at_unix_seconds: challenge.issued_at_unix_seconds,
+      expires_at_unix_seconds: challenge.expires_at_unix_seconds,
+    }),
+  );
+  return {
+    platform_id: challenge.service_account_id,
+    proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+    e: {
+      owner_user_id: challenge.owner_user_id,
+      nonce_b64: challenge.nonce,
+      issued_at_unix_seconds: challenge.issued_at_unix_seconds,
+      expires_at_unix_seconds: challenge.expires_at_unix_seconds,
+      signature_b64,
+    },
+  };
+}
+
+async function publicNameProofFields(
+  uid: string,
+  signingKey: CryptoKey,
+): Promise<{
+  service: "discord";
+  service_account_id: string;
+  public_name_proof: Record<string, unknown>;
+}> {
+  const service_account_id = snowflake();
+  const challenge = await publicNameChallenge(service_account_id, uid);
+  return {
+    service: "discord",
+    service_account_id,
+    public_name_proof: await publicNameProof(challenge, signingKey),
+  };
+}
+
+async function usernameRowCount(username: string): Promise<number> {
+  const row = await testDb
+    .prepare("SELECT COUNT(*) AS n FROM username_directory WHERE username = ?")
+    .bind(username)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+async function savedNameRecord(username: string): Promise<Record<string, unknown> | null> {
+  return await testDb
+    .prepare("SELECT * FROM saved_names WHERE public_name = ?")
+    .bind(username)
+    .first<Record<string, unknown>>();
+}
+
+async function publicNameProofRowCount(username: string, uid: string): Promise<number> {
+  const row = await testDb
+    .prepare(
+      `SELECT COUNT(*) AS n FROM public_name_proofs
+        WHERE username = ? AND owner_user_id = ?`,
+    )
+    .bind(username, uid)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+async function insertChallenge(
+  challenge: IssuedAccountOwnershipChallenge,
+): Promise<void> {
+  await testDb
+    .prepare(
+      `INSERT INTO account_ownership_challenges (
+         nonce_sha256, binding_sha256, service,
+         issued_at_unix_seconds, expires_at_unix_seconds, spent_at_unix_seconds
+       ) VALUES (?, ?, 'discord', ?, ?, NULL)`,
+    )
+    .bind(
+      await sha256Hex(base64Decode(challenge.nonce)),
+      await sha256Hex(canonicalChallengeBindingBytes(challenge)),
+      challenge.issued_at_unix_seconds,
+      challenge.expires_at_unix_seconds,
+    )
+    .run();
 }
 
 /// D81. The lookup is `POST /v1/usernames/lookup` with the handle in the
@@ -76,37 +197,154 @@ async function claim(
   const signature_b64 = await signEd25519(pair.signingKey, usernameClaimMessage({
     username, user_id: uid, friend_code, request_id: requestId, timestamp_ms,
   }));
+  const proofFields = await publicNameProofFields(uid, pair.signingKey);
   return SELF.fetch("http://test/v1/usernames/claim", {
     method: "POST",
     headers: { "content-type": "application/json", "cf-connecting-ip": `198.51.100.${sequence % 240 + 1}` },
-    body: JSON.stringify({ username, user_id: uid, friend_code, request_id: requestId, timestamp_ms, signature_b64 }),
+    body: JSON.stringify({ username, user_id: uid, friend_code, request_id: requestId, timestamp_ms, signature_b64, ...proofFields }),
   });
 }
 
 describe("username directory", () => {
-  it("TASK0443 - a saved-name record has exactly four allowed fields", async () => {
+  it("TASK0312 - a public-name proof claims its one name once and an expired proof is refused", async () => {
     const uid = userId();
     const pair = await registerTestUser(SELF, uid);
-    expect((await claim("minimal_name", uid, pair)).status).toBe(200);
+    const invite = await friendCode(uid, pair);
+    const service_account_id = snowflake();
+    const challenge = await publicNameChallenge(service_account_id, uid);
+    const public_name_proof = await publicNameProof(challenge, pair.signingKey);
+    const firstTs = Date.now();
+    const firstRequest = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    const firstSig = await signEd25519(pair.signingKey, usernameClaimMessage({
+      username: "task0312_once",
+      user_id: uid,
+      friend_code: invite,
+      request_id: firstRequest,
+      timestamp_ms: firstTs,
+    }));
+    const first = await SELF.fetch("http://test/v1/usernames/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "198.51.100.31" },
+      body: JSON.stringify({
+        username: "task0312_once",
+        user_id: uid,
+        friend_code: invite,
+        request_id: firstRequest,
+        timestamp_ms: firstTs,
+        signature_b64: firstSig,
+        service: "discord",
+        service_account_id,
+        public_name_proof,
+      }),
+    });
+    expect(first.status).toBe(200);
 
-    const saved = await testDb.prepare(
-      "SELECT * FROM saved_names WHERE public_name = ?",
-    ).bind("minimal_name").first<Record<string, unknown>>();
-    expect(saved).not.toBeNull();
-    const fields = Object.keys(saved!);
-    console.log(`TASK0443 saved_name_record.field_count=${fields.length}`);
-    console.log(`TASK0443 saved_name_record.allowed_fields=${fields.join(",")}`);
+    const secondTs = Date.now();
+    const secondRequest = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    const secondSig = await signEd25519(pair.signingKey, usernameClaimMessage({
+      username: "task0312_second",
+      user_id: uid,
+      friend_code: invite,
+      request_id: secondRequest,
+      timestamp_ms: secondTs,
+    }));
+    const second = await SELF.fetch("http://test/v1/usernames/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "198.51.100.32" },
+      body: JSON.stringify({
+        username: "task0312_second",
+        user_id: uid,
+        friend_code: invite,
+        request_id: secondRequest,
+        timestamp_ms: secondTs,
+        signature_b64: secondSig,
+        service: "discord",
+        service_account_id,
+        public_name_proof,
+      }),
+    });
+    expect(second.status).toBe(409);
+    const firstNameRows = await usernameRowCount("task0312_once");
+    const secondNameRows = await usernameRowCount("task0312_second");
 
-    expect(fields).toEqual([
-      "public_name",
-      "public_identity_key",
-      "proof_record",
-      "claimed_at",
-    ]);
-    expect(saved!.public_name).toBe("minimal_name");
-    expect(saved!.public_identity_key).toBe(pair.publicKeyB64);
-    expect(typeof saved!.proof_record).toBe("string");
-    expect(typeof saved!.claimed_at).toBe("string");
+    const missingTs = Date.now();
+    const missingRequest = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    const missingSig = await signEd25519(pair.signingKey, usernameClaimMessage({
+      username: "task0312_missing",
+      user_id: uid,
+      friend_code: invite,
+      request_id: missingRequest,
+      timestamp_ms: missingTs,
+    }));
+    const missing = await SELF.fetch("http://test/v1/usernames/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "198.51.100.34" },
+      body: JSON.stringify({
+        username: "task0312_missing",
+        user_id: uid,
+        friend_code: invite,
+        request_id: missingRequest,
+        timestamp_ms: missingTs,
+        signature_b64: missingSig,
+        service: "discord",
+        service_account_id: snowflake(),
+      }),
+    });
+    expect(missing.status).toBe(400);
+    const missingNameRows = await usernameRowCount("task0312_missing");
+
+    const expiredOwner = userId();
+    const expiredPair = await registerTestUser(SELF, expiredOwner);
+    const expiredInvite = await friendCode(expiredOwner, expiredPair);
+    const expiredAccount = snowflake();
+    const nonce = base64Encode(new Uint8Array(32).fill(0x31));
+    const expiredIssuedAt = Math.floor(Date.now() / 1000) - 600;
+    const expiredChallenge: IssuedAccountOwnershipChallenge = {
+      challenge_version: 1,
+      service: "discord",
+      service_account_id: expiredAccount,
+      owner_user_id: expiredOwner,
+      nonce,
+      issued_at_unix_seconds: expiredIssuedAt,
+      expires_at_unix_seconds: expiredIssuedAt + 60,
+      spent: false,
+    };
+    await insertChallenge(expiredChallenge);
+    const expiredProof = await publicNameProof(expiredChallenge, expiredPair.signingKey);
+    const expiredTs = Date.now();
+    const expiredRequest = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    const expiredSig = await signEd25519(expiredPair.signingKey, usernameClaimMessage({
+      username: "task0312_expired",
+      user_id: expiredOwner,
+      friend_code: expiredInvite,
+      request_id: expiredRequest,
+      timestamp_ms: expiredTs,
+    }));
+    const expired = await SELF.fetch("http://test/v1/usernames/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "198.51.100.33" },
+      body: JSON.stringify({
+        username: "task0312_expired",
+        user_id: expiredOwner,
+        friend_code: expiredInvite,
+        request_id: expiredRequest,
+        timestamp_ms: expiredTs,
+        signature_b64: expiredSig,
+        service: "discord",
+        service_account_id: expiredAccount,
+        public_name_proof: expiredProof,
+      }),
+    });
+    expect(expired.status).toBe(403);
+    const expiredNameRows = await usernameRowCount("task0312_expired");
+
+    console.log(`TASK0312 public_name_proof_claim_once.statuses=${first.status},${second.status}`);
+    console.log(`TASK0312 public_name_proof_claim_once.rows=${firstNameRows}`);
+    console.log(`TASK0312 public_name_proof_second_name.rows=${secondNameRows}`);
+    console.log(`TASK0312 public_name_proof_missing.status=${missing.status}`);
+    console.log(`TASK0312 public_name_proof_missing.rows=${missingNameRows}`);
+    console.log(`TASK0312 public_name_proof_expired.status=${expired.status}`);
+    console.log(`TASK0312 public_name_proof_expired.rows=${expiredNameRows}`);
   });
 
   it("claims and resolves only an exact normalized username", async () => {
@@ -134,9 +372,10 @@ describe("username directory", () => {
     });
     expect(unsigned.status).toBe(400);
     const wrongSig = await signEd25519(attacker.signingKey, usernameClaimMessage({ username: "wrongkey", user_id: uid, friend_code: invite, request_id, timestamp_ms }));
+    const proofFields = await publicNameProofFields(uid, owner.signingKey);
     const wrong = await SELF.fetch("http://test/v1/usernames/claim", {
       method: "POST", headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.13" },
-      body: JSON.stringify({ username: "wrongkey", user_id: uid, friend_code: invite, request_id, timestamp_ms, signature_b64: wrongSig }),
+      body: JSON.stringify({ username: "wrongkey", user_id: uid, friend_code: invite, request_id, timestamp_ms, signature_b64: wrongSig, ...proofFields }),
     });
     expect(wrong.status).toBe(401);
     const attackerInvite = await friendCode(uid, attacker);
@@ -155,7 +394,7 @@ describe("username directory", () => {
     const init = {
       method: "POST",
       headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.19" },
-      body: JSON.stringify({ username: "replay_test", user_id: uid, friend_code, request_id, timestamp_ms, signature_b64 }),
+      body: JSON.stringify({ username: "replay_test", user_id: uid, friend_code, request_id, timestamp_ms, signature_b64, ...(await publicNameProofFields(uid, pair.signingKey)) }),
     };
     expect((await SELF.fetch("http://test/v1/usernames/claim", init)).status).toBe(200);
     expect((await SELF.fetch("http://test/v1/usernames/claim", init)).status).toBe(409);
@@ -258,10 +497,24 @@ describe("username directory", () => {
   });
   // ── end PARKED SPEC ──────────────────────────────────────────────────────
 
-  it("removes a stale signed invite when the registered identity key rotates", async () => {
+  it("TASK0444 - a claimed public name moves only with old-key approval plus new proof", async () => {
     const uid = userId();
     const owner = await registerTestUser(SELF, uid);
-    expect((await claim("rotate_me", uid, owner)).status).toBe(200);
+    const publicName = "task0444_move";
+    expect((await claim(publicName, uid, owner)).status).toBe(200);
+    const initialSaved = await savedNameRecord(publicName);
+    expect(initialSaved).toMatchObject({
+      public_name: publicName,
+      public_identity_key: owner.publicKeyB64,
+    });
+    const savedFields = Object.keys(initialSaved ?? {});
+    expect(savedFields).toEqual([
+      "public_name",
+      "public_identity_key",
+      "proof_record",
+      "claimed_at",
+    ]);
+
     const next = await generateEd25519Pair();
     const fields = {
       user_id: uid,
@@ -288,9 +541,68 @@ describe("username directory", () => {
       }),
     });
     expect(rotated.status).toBe(200);
-    expect(await looksUp("rotate_me", "203.0.113.22")).toBe(false);
-    const replacementId = userId();
-    const replacement = await registerTestUser(SELF, replacementId);
-    expect((await claim("rotate_me", replacementId, replacement)).status).toBe(409);
+
+    const nextInvite = await friendCode(uid, next);
+    const refused = await claim(publicName, uid, next, nextInvite);
+    const savedAfterRefusal = await savedNameRecord(publicName);
+    expect(refused.status).toBe(403);
+    expect(savedAfterRefusal?.public_identity_key).toBe(owner.publicKeyB64);
+
+    const proofRowsBeforeApprovedMove = await publicNameProofRowCount(publicName, uid);
+    const timestamp_ms = Date.now();
+    const request_id = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    const signature_b64 = await signEd25519(next.signingKey, usernameClaimMessage({
+      username: publicName,
+      user_id: uid,
+      friend_code: nextInvite,
+      request_id,
+      timestamp_ms,
+    }));
+    const movePrevSig = await signEd25519(owner.signingKey, usernameMoveMessage({
+      username: publicName,
+      user_id: uid,
+      prev_ik_ed25519_pub: owner.publicKeyB64,
+      new_ik_ed25519_pub: next.publicKeyB64,
+      request_id,
+      timestamp_ms,
+    }));
+    const approved = await SELF.fetch("http://test/v1/usernames/claim", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.23" },
+      body: JSON.stringify({
+        username: publicName,
+        user_id: uid,
+        friend_code: nextInvite,
+        request_id,
+        timestamp_ms,
+        signature_b64,
+        ...(await publicNameProofFields(uid, next.signingKey)),
+        move_approval: {
+          prev_ik_ed25519_pub: owner.publicKeyB64,
+          prev_sig: movePrevSig,
+        },
+      }),
+    });
+    const savedAfterApproval = await savedNameRecord(publicName);
+    const proofRowsAfterApprovedMove = await publicNameProofRowCount(publicName, uid);
+    const lookedUp = await lookup(publicName, "203.0.113.22");
+
+    expect(approved.status).toBe(200);
+    expect(savedAfterApproval?.public_identity_key).toBe(next.publicKeyB64);
+    expect(proofRowsAfterApprovedMove - proofRowsBeforeApprovedMove).toBe(1);
+    expect(await lookedUp.json()).toMatchObject({
+      found: true,
+      username: publicName,
+      friend_code: nextInvite,
+    });
+
+    console.log(`TASK0444 move_without_old_key_approval.status=${refused.status}`);
+    console.log("TASK0444 move_without_old_key_approval.saved_key=old");
+    console.log(`TASK0444 fully_approved_move.status=${approved.status}`);
+    console.log("TASK0444 fully_approved_move.old_key_approval=present");
+    console.log(`TASK0444 fully_approved_move.new_proof_rows_added=${proofRowsAfterApprovedMove - proofRowsBeforeApprovedMove}`);
+    console.log("TASK0444 fully_approved_move.saved_key=new");
+    console.log(`TASK0444 saved_name_record.field_count=${savedFields.length}`);
+    console.log(`TASK0444 saved_name_record.allowed_fields=${savedFields.join(",")}`);
   });
 });

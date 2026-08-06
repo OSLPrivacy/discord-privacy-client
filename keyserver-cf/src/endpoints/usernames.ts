@@ -1,13 +1,25 @@
 import type { Env } from "../env.js";
+import {
+  canonicalChallengeBindingBytes,
+  sha256Hex,
+  type IssuedAccountOwnershipChallenge,
+} from "../lib/account-ownership-challenge.js";
+import {
+  verify_ownership_proof,
+  type Account,
+  type AccountOwnershipError,
+} from "../lib/account-ownership-proof.js";
 import { getUserForVerify } from "../lib/db.js";
+import { decodeCanonicalBase64 } from "../lib/identity-authority.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
-import { badRequest, conflict, json, tooMany, unauthorized } from "../lib/http.js";
-import { isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/validation.js";
+import { badRequest, conflict, error, forbidden, json, tooMany, unauthorized } from "../lib/http.js";
+import { isDiscordSnowflake, isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/validation.js";
 import { verifySignedRequest } from "../lib/signed-request.js";
 import {
   USERNAME_FRESHNESS_MS,
   UsernameNotAnalyzable,
   usernameClaimMessage,
+  usernameMoveMessage,
   usernameSkeleton,
   validNormalizedUsername,
   validateFriendCode,
@@ -22,6 +34,32 @@ import {
 /// `[a-z0-9_]`) with no JSON escapes, so the encoded length is exactly the
 /// character count and this bound is not an estimate.
 export const USERNAME_LOOKUP_RESPONSE_BYTES = 9216;
+
+const MAX_PUBLIC_NAME_PROOF_LIFETIME_SECONDS = 5 * 60;
+
+interface ChallengeRow {
+  binding_sha256: string;
+  issued_at_unix_seconds: number;
+  expires_at_unix_seconds: number;
+  spent_at_unix_seconds: number | null;
+}
+
+interface SavedNameRow {
+  public_identity_key: string;
+}
+
+interface UsernameDirectoryOwnerRow {
+  user_id: string;
+}
+
+type PublicNameProofCheck =
+  | {
+      ok: true;
+      nonceSha256: string;
+      bindingSha256: string;
+      expiresAtUnixSeconds: number;
+    }
+  | { ok: false; response: Response };
 
 /// D81. Build the ONE response shape this route is allowed to emit.
 ///
@@ -105,6 +143,13 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   if (!isNonEmptyBase64(body.signature_b64)) return badRequest("signature_b64 invalid");
   if (typeof body.timestamp_ms !== "number" || !Number.isSafeInteger(body.timestamp_ms) || body.timestamp_ms <= 0) return badRequest("timestamp_ms invalid");
   if (Math.abs(Date.now() - body.timestamp_ms) > USERNAME_FRESHNESS_MS) return badRequest("timestamp_ms stale");
+  if (body.service !== "discord") return badRequest("unsupported public-name proof service");
+  if (
+    typeof body.service_account_id !== "string" ||
+    !isDiscordSnowflake(body.service_account_id)
+  ) {
+    return badRequest("service_account_id must be a Discord snowflake");
+  }
 
   const username = body.username;
   const userId = body.user_id;
@@ -122,8 +167,43 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   if (!await verifySignedRequest(current.ik_ed25519_pub, message, body.signature_b64)) {
     return unauthorized("username claim signature invalid");
   }
+  const proofCheck = await verifyPublicNameProof({
+    env,
+    username,
+    userId,
+    serviceAccountId: body.service_account_id,
+    ownerEd25519PubB64: current.ik_ed25519_pub,
+    proof: body.public_name_proof,
+  });
+  if (!proofCheck.ok) return proofCheck.response;
+
+  const savedName = await env.DB.prepare(
+    "SELECT public_identity_key FROM saved_names WHERE public_name = ?",
+  ).bind(username).first<SavedNameRow>();
+  const directoryOwner = await env.DB.prepare(
+    "SELECT user_id FROM username_directory WHERE username = ?",
+  ).bind(username).first<UsernameDirectoryOwnerRow>();
+  const moveApproval = await verifySavedNameMoveApproval({
+    savedName,
+    directoryOwner,
+    body,
+    username,
+    userId,
+    currentEd25519PubB64: current.ik_ed25519_pub,
+  });
+  if (!moveApproval.ok) return moveApproval.response;
+
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", message));
   const now = new Date().toISOString();
+  const nowUnixSeconds = Math.floor(Date.now() / 1000);
+  const serviceAccountSha256 = await sha256Hex(new TextEncoder().encode(body.service_account_id));
+  const proofRecord = JSON.stringify({
+    service: "discord",
+    service_account_sha256: serviceAccountSha256,
+    nonce_sha256: proofCheck.nonceSha256,
+    binding_sha256: proofCheck.bindingSha256,
+    expires_at_unix_seconds: proofCheck.expiresAtUnixSeconds,
+  });
   // D-248. Compute the skeleton BEFORE the batch and refuse the claim if it
   // cannot be computed. A claim that reached the directory without one would
   // be a row whose confusables nothing constrains.
@@ -136,21 +216,58 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   }
   let result: D1Result[];
   try {
-    const proofRecord = JSON.stringify({
-      username,
-      user_id: userId,
-      request_id: body.request_id,
-      signature_b64: body.signature_b64,
-      timestamp_ms: body.timestamp_ms,
-    });
     result = await env.DB.batch([
-      env.DB.prepare("DELETE FROM username_claim_receipts WHERE expires_at < ?").bind(Math.floor(Date.now() / 1000)),
+      env.DB.prepare("DELETE FROM username_claim_receipts WHERE expires_at < ?").bind(nowUnixSeconds),
+      env.DB.prepare("DELETE FROM public_name_proofs WHERE expires_at_unix_seconds <= ?").bind(nowUnixSeconds),
       env.DB.prepare(
         `INSERT INTO username_claim_receipts (user_id, request_digest, expires_at)
          SELECT ?1, ?2, ?3 WHERE EXISTS (
            SELECT 1 FROM users WHERE user_id = ?1 AND ik_ed25519_pub = ?4
          )`,
-      ).bind(userId, digest, Math.floor(Date.now() / 1000) + 10 * 60, current.ik_ed25519_pub),
+      ).bind(userId, digest, nowUnixSeconds + 10 * 60, current.ik_ed25519_pub),
+      env.DB.prepare(
+        `INSERT INTO public_name_proofs (
+           nonce_sha256, binding_sha256, owner_user_id, service, service_account_sha256,
+           username, claimed_at_unix_seconds, expires_at_unix_seconds
+         )
+         SELECT ?1, ?2, ?3, 'discord', ?4, ?5, ?6, ?7
+          WHERE EXISTS (SELECT 1 FROM username_claim_receipts WHERE user_id = ?3 AND request_digest = ?8)
+            AND EXISTS (
+              SELECT 1 FROM account_ownership_challenges
+               WHERE nonce_sha256 = ?1
+                 AND binding_sha256 = ?2
+                 AND service = 'discord'
+                 AND spent_at_unix_seconds IS NULL
+                 AND expires_at_unix_seconds > ?6
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM username_directory
+               WHERE username = ?5 AND user_id <> ?3
+            )`,
+      ).bind(
+        proofCheck.nonceSha256,
+        proofCheck.bindingSha256,
+        userId,
+        serviceAccountSha256,
+        username,
+        nowUnixSeconds,
+        proofCheck.expiresAtUnixSeconds,
+        digest,
+      ),
+      env.DB.prepare(
+        `UPDATE account_ownership_challenges
+            SET spent_at_unix_seconds = ?1
+          WHERE nonce_sha256 = ?2
+            AND binding_sha256 = ?3
+            AND spent_at_unix_seconds IS NULL
+            AND EXISTS (
+              SELECT 1 FROM public_name_proofs
+               WHERE nonce_sha256 = ?2
+                 AND binding_sha256 = ?3
+                 AND owner_user_id = ?4
+                 AND username = ?5
+            )`,
+      ).bind(nowUnixSeconds, proofCheck.nonceSha256, proofCheck.bindingSha256, userId, username),
       env.DB.prepare(
         `DELETE FROM username_directory
           WHERE user_id = ?1 AND username <> ?2
@@ -160,6 +277,50 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
                WHERE username = ?2 AND user_id <> ?1
             )`,
       ).bind(userId, username, digest),
+      env.DB.prepare(
+        `DELETE FROM saved_names
+          WHERE public_identity_key = ?1
+            AND public_name <> ?2`,
+      ).bind(current.ik_ed25519_pub, username),
+      env.DB.prepare(
+        `INSERT INTO saved_names
+           (public_name, public_identity_key, proof_record, claimed_at)
+         SELECT ?1, ?2, ?3, ?4
+          WHERE EXISTS (
+            SELECT 1 FROM public_name_proofs
+             WHERE nonce_sha256 = ?7
+               AND binding_sha256 = ?8
+               AND owner_user_id = ?9
+               AND username = ?1
+          )
+            AND (
+              NOT EXISTS (SELECT 1 FROM saved_names WHERE public_name = ?1)
+              OR EXISTS (
+                SELECT 1 FROM saved_names
+                 WHERE public_name = ?1 AND public_identity_key = ?2
+              )
+              OR (?5 = 1 AND EXISTS (
+                SELECT 1 FROM saved_names
+                 WHERE public_name = ?1 AND public_identity_key = ?6
+              ))
+            )
+         ON CONFLICT(public_name) DO UPDATE SET
+           public_identity_key = excluded.public_identity_key,
+           proof_record = excluded.proof_record,
+           claimed_at = excluded.claimed_at
+         WHERE saved_names.public_identity_key = excluded.public_identity_key
+            OR (?5 = 1 AND saved_names.public_identity_key = ?6)`,
+      ).bind(
+        username,
+        current.ik_ed25519_pub,
+        proofRecord,
+        now,
+        moveApproval.approved ? 1 : 0,
+        moveApproval.previousKey ?? "",
+        proofCheck.nonceSha256,
+        proofCheck.bindingSha256,
+        userId,
+      ),
       // D-248. `username_skeleton` is `?6`, the UTS #39 skeleton, NOT `?1`.
       // Writing `?1` there made the skeleton unique index decorative: a
       // skeleton equal to the raw name cannot collide with anything the raw
@@ -180,33 +341,203 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
            (username, username_skeleton, display_username, user_id, friend_code, claimed_at, updated_at)
          SELECT ?1, ?6, ?1, ?2, ?3, ?4, ?4
           WHERE EXISTS (SELECT 1 FROM username_claim_receipts WHERE user_id = ?2 AND request_digest = ?5)
+            AND EXISTS (
+              SELECT 1 FROM public_name_proofs
+               WHERE nonce_sha256 = ?7
+                 AND binding_sha256 = ?8
+                 AND owner_user_id = ?2
+                 AND username = ?1
+            )
+            AND EXISTS (
+              SELECT 1 FROM saved_names
+               WHERE public_name = ?1
+                 AND public_identity_key = ?9
+            )
          ON CONFLICT(username) DO UPDATE SET
            username = excluded.username, username_skeleton = excluded.username_skeleton,
            display_username = excluded.display_username,
            friend_code = excluded.friend_code, updated_at = excluded.updated_at
          WHERE username_directory.user_id = excluded.user_id`,
-      ).bind(username, userId, body.friend_code, now, digest, skeleton),
-      env.DB.prepare(
-        `INSERT INTO saved_names
-           (public_name, public_identity_key, proof_record, claimed_at)
-         SELECT ?1, ?2, ?3, ?4
-          WHERE EXISTS (SELECT 1 FROM username_claim_receipts WHERE user_id = ?5 AND request_digest = ?6)
-         ON CONFLICT(public_identity_key) DO UPDATE SET
-           public_name = excluded.public_name,
-           public_identity_key = excluded.public_identity_key,
-           proof_record = excluded.proof_record,
-           claimed_at = excluded.claimed_at`,
-      ).bind(username, current.ik_ed25519_pub, proofRecord, now, userId, digest),
+      ).bind(username, userId, body.friend_code, now, digest, skeleton, proofCheck.nonceSha256, proofCheck.bindingSha256, current.ik_ed25519_pub),
     ]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (/username_directory\.username|username is retired|UNIQUE|PRIMARY/i.test(message)) {
       return conflict("username is unavailable");
     }
+    if (/public_name_proofs/i.test(message)) {
+      return conflict("public-name proof already claimed a name");
+    }
     throw error;
   }
-  if ((result[1]?.meta?.changes ?? 0) !== 1) return conflict("username claim replayed or identity changed");
-  if ((result[3]?.meta?.changes ?? 0) !== 1) return conflict("username is unavailable");
-  if ((result[4]?.meta?.changes ?? 0) !== 1) return conflict("saved name unavailable");
+  if ((result[2]?.meta?.changes ?? 0) !== 1) return conflict("username claim replayed or identity changed");
+  if ((result[3]?.meta?.changes ?? 0) !== 1) return conflict("public-name proof replayed, stale, or not bound to this name");
+  if ((result[4]?.meta?.changes ?? 0) !== 1) return conflict("public-name proof already consumed");
+  if ((result[7]?.meta?.changes ?? 0) !== 1) return conflict("public name is bound to a different identity key");
+  if ((result[8]?.meta?.changes ?? 0) !== 1) return conflict("username is unavailable");
   return json({ username, user_id: userId }, { status: 200 });
+}
+
+type SavedNameMoveApproval =
+  | { ok: true; approved: boolean; previousKey: string | null }
+  | { ok: false; response: Response };
+
+async function verifySavedNameMoveApproval(args: {
+  savedName: SavedNameRow | null;
+  directoryOwner: UsernameDirectoryOwnerRow | null;
+  body: Record<string, unknown>;
+  username: string;
+  userId: string;
+  currentEd25519PubB64: string;
+}): Promise<SavedNameMoveApproval> {
+  if (args.directoryOwner && args.directoryOwner.user_id !== args.userId) {
+    return {
+      ok: false,
+      response: conflict("username is unavailable"),
+    };
+  }
+  const previousKey = args.savedName?.public_identity_key ?? null;
+  if (!previousKey || previousKey === args.currentEd25519PubB64) {
+    return { ok: true, approved: false, previousKey };
+  }
+  const approval = args.body.move_approval;
+  if (!approval || typeof approval !== "object" || Array.isArray(approval)) {
+    return {
+      ok: false,
+      response: forbidden("public name move requires old-key approval"),
+    };
+  }
+  const move = approval as Record<string, unknown>;
+  if (
+    typeof move.prev_ik_ed25519_pub !== "string" ||
+    move.prev_ik_ed25519_pub !== previousKey ||
+    !isNonEmptyBase64(move.prev_sig)
+  ) {
+    return {
+      ok: false,
+      response: forbidden("public name move requires old-key approval"),
+    };
+  }
+  const message = usernameMoveMessage({
+    username: args.username,
+    user_id: args.userId,
+    prev_ik_ed25519_pub: previousKey,
+    new_ik_ed25519_pub: args.currentEd25519PubB64,
+    request_id: args.body.request_id as string,
+    timestamp_ms: args.body.timestamp_ms as number,
+  });
+  if (!await verifySignedRequest(previousKey, message, move.prev_sig)) {
+    return {
+      ok: false,
+      response: forbidden("public name move requires old-key approval"),
+    };
+  }
+  return { ok: true, approved: true, previousKey };
+}
+
+async function verifyPublicNameProof(args: {
+  env: Env;
+  username: string;
+  userId: string;
+  serviceAccountId: string;
+  ownerEd25519PubB64: string;
+  proof: unknown;
+}): Promise<PublicNameProofCheck> {
+  const proof = args.proof;
+  if (!proof || typeof proof !== "object" || Array.isArray(proof)) {
+    return refusePublicNameProof("no_proof_presented");
+  }
+  const submitted = proof as Record<string, unknown>;
+  const evidence = submitted.e;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
+    return refusePublicNameProof("proof_malformed");
+  }
+  const e = evidence as Record<string, unknown>;
+  if (
+    typeof e.nonce_b64 !== "string" ||
+    !Number.isSafeInteger(e.issued_at_unix_seconds) ||
+    !Number.isSafeInteger(e.expires_at_unix_seconds) ||
+    (e.issued_at_unix_seconds as number) <= 0 ||
+    (e.expires_at_unix_seconds as number) <= (e.issued_at_unix_seconds as number) ||
+    (e.expires_at_unix_seconds as number) - (e.issued_at_unix_seconds as number) >
+      MAX_PUBLIC_NAME_PROOF_LIFETIME_SECONDS
+  ) {
+    return refusePublicNameProof("proof_malformed");
+  }
+
+  let nonceSha256: string;
+  let bindingSha256: string;
+  try {
+    const nonceBytes = decodeCanonicalBase64(
+      e.nonce_b64,
+      32,
+      "public-name proof nonce",
+    );
+    const challenge: IssuedAccountOwnershipChallenge = {
+      challenge_version: 1,
+      service: "discord",
+      service_account_id: args.serviceAccountId,
+      owner_user_id: args.userId,
+      nonce: e.nonce_b64,
+      issued_at_unix_seconds: e.issued_at_unix_seconds as number,
+      expires_at_unix_seconds: e.expires_at_unix_seconds as number,
+      spent: false,
+    };
+    [nonceSha256, bindingSha256] = await Promise.all([
+      sha256Hex(nonceBytes),
+      sha256Hex(canonicalChallengeBindingBytes(challenge)),
+    ]);
+  } catch {
+    return refusePublicNameProof("proof_malformed");
+  }
+
+  const row = await args.env.DB.prepare(
+    `SELECT binding_sha256, issued_at_unix_seconds, expires_at_unix_seconds,
+            spent_at_unix_seconds
+       FROM account_ownership_challenges
+      WHERE nonce_sha256 = ?`,
+  ).bind(nonceSha256).first<ChallengeRow>();
+  if (!row) {
+    return { ok: false, response: forbidden("public-name proof answers no issued challenge") };
+  }
+  if (
+    row.binding_sha256 !== bindingSha256 ||
+    row.issued_at_unix_seconds !== e.issued_at_unix_seconds ||
+    row.expires_at_unix_seconds !== e.expires_at_unix_seconds
+  ) {
+    return refusePublicNameProof("proof_for_different_account");
+  }
+
+  const account: Account = {
+    platform_id: args.serviceAccountId,
+    owner_user_id: args.userId,
+    owner_ed25519_pub_b64: args.ownerEd25519PubB64,
+    proof_challenge: {
+      platform_id: args.serviceAccountId,
+      owner_user_id: args.userId,
+      nonce_b64: e.nonce_b64,
+      issued_at_unix_seconds: row.issued_at_unix_seconds,
+      expires_at_unix_seconds: row.expires_at_unix_seconds,
+      spent: row.spent_at_unix_seconds !== null,
+    },
+    ownership_proof: submitted as unknown as Account["ownership_proof"],
+  };
+  const verified = await verify_ownership_proof(account, Math.floor(Date.now() / 1000));
+  if (!verified.ok) return refusePublicNameProof(verified.error);
+
+  return {
+    ok: true,
+    nonceSha256,
+    bindingSha256,
+    expiresAtUnixSeconds: row.expires_at_unix_seconds,
+  };
+}
+
+function refusePublicNameProof(reason: AccountOwnershipError): PublicNameProofCheck {
+  const message = `public-name proof rejected: ${reason}`;
+  if (reason === "proof_replayed") return { ok: false, response: conflict(message) };
+  if (reason === "no_proof_presented" || reason === "proof_malformed" || reason === "unsupported_service") {
+    return { ok: false, response: error(400, message) };
+  }
+  return { ok: false, response: forbidden(message) };
 }
