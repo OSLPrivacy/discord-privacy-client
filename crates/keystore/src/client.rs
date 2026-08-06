@@ -1811,12 +1811,11 @@ impl KeyServerClient {
                 ControlInboxSenderFilterCapability::Version1,
                 SenderFilterCapabilityFloor::Version1,
             ) => self.get_control_inbox_from(identity, sender_id),
-            (
-                ControlInboxSenderFilterCapability::Legacy,
-                SenderFilterCapabilityFloor::Version1,
-            ) => Err(Error::Transport(
-                "control-inbox sender-filter capability downgrade refused".into(),
-            )),
+            (ControlInboxSenderFilterCapability::Legacy, SenderFilterCapabilityFloor::Version1) => {
+                Err(Error::Transport(
+                    "control-inbox sender-filter capability downgrade refused".into(),
+                ))
+            }
         }
     }
 
