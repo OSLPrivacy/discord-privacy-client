@@ -149,6 +149,7 @@ pub enum AdapterService {
     Gmail,
     Outlook,
     Proton,
+    Tuta,
     Yahoo,
     Aol,
     Gmx,

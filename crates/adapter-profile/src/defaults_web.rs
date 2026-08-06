@@ -81,40 +81,43 @@ pub fn capabilities_from_profile(profile: &ProfileDoc) -> BTreeSet<Capability> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct YahooWebTarget {
+pub struct WebMailTarget {
     pub name: &'static str,
     pub selector: TypedSelector,
 }
 
+pub type YahooWebTarget = WebMailTarget;
+pub type TutaWebTarget = WebMailTarget;
+
 /// Data-only targets for Yahoo Mail's reviewed web surface.
 pub fn yahoo_web_mail_targets() -> Vec<YahooWebTarget> {
     vec![
-        yahoo_accessibility_target(
+        web_mail_accessibility_target(
             "compose",
             SelectorKind::ComposeButton,
             "button",
             Some("Compose"),
         ),
-        yahoo_accessibility_target(
+        web_mail_accessibility_target(
             "body",
             SelectorKind::BodyInput,
             "textbox",
             Some("Message body"),
         ),
-        yahoo_accessibility_target("Send", SelectorKind::SendButton, "button", Some("Send")),
-        yahoo_accessibility_target(
+        web_mail_accessibility_target("Send", SelectorKind::SendButton, "button", Some("Send")),
+        web_mail_accessibility_target(
             "folders",
             SelectorKind::FolderList,
             "navigation",
             Some("Folders"),
         ),
-        yahoo_accessibility_target(
+        web_mail_accessibility_target(
             "thread view",
             SelectorKind::ThreadView,
             "list",
             Some("Messages"),
         ),
-        yahoo_accessibility_target(
+        web_mail_accessibility_target(
             "reading pane",
             SelectorKind::ReadingPane,
             "region",
@@ -123,13 +126,50 @@ pub fn yahoo_web_mail_targets() -> Vec<YahooWebTarget> {
     ]
 }
 
-fn yahoo_accessibility_target(
+/// Data-only targets for Tuta's reviewed web surface.
+pub fn tuta_web_mail_targets() -> Vec<TutaWebTarget> {
+    vec![
+        web_mail_accessibility_target(
+            "compose",
+            SelectorKind::ComposeButton,
+            "button",
+            Some("New email"),
+        ),
+        web_mail_accessibility_target(
+            "body",
+            SelectorKind::BodyInput,
+            "textbox",
+            Some("Message body"),
+        ),
+        web_mail_accessibility_target("Send", SelectorKind::SendButton, "button", Some("Send")),
+        web_mail_accessibility_target(
+            "folders",
+            SelectorKind::FolderList,
+            "navigation",
+            Some("Folders"),
+        ),
+        web_mail_accessibility_target(
+            "thread view",
+            SelectorKind::ThreadView,
+            "list",
+            Some("Conversations"),
+        ),
+        web_mail_accessibility_target(
+            "reading pane",
+            SelectorKind::ReadingPane,
+            "region",
+            Some("Mail"),
+        ),
+    ]
+}
+
+fn web_mail_accessibility_target(
     name: &'static str,
     kind: SelectorKind,
     role: &'static str,
     accessible_name: Option<&'static str>,
-) -> YahooWebTarget {
-    YahooWebTarget {
+) -> WebMailTarget {
+    WebMailTarget {
         name,
         selector: TypedSelector {
             kind,
@@ -185,6 +225,31 @@ mod tests {
 
         println!(
             "TASK1248 yahoo_targets={} names={}",
+            targets.len(),
+            names.join("|")
+        );
+    }
+
+    #[test]
+    fn task_1278_tuta_mapping_contains_all_six_named_targets() {
+        let targets = tuta_web_mail_targets();
+        let names = targets.iter().map(|target| target.name).collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "compose",
+                "body",
+                "Send",
+                "folders",
+                "thread view",
+                "reading pane"
+            ]
+        );
+        assert!(targets.iter().all(|target| target.selector.required));
+
+        println!(
+            "TASK1278 tuta_targets={} names={}",
             targets.len(),
             names.join("|")
         );
