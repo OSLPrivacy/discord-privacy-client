@@ -195,8 +195,9 @@ use osl_privacy_hub::hub_command_surface::{
     require_review_ui_identity_binding_from_verifier, service_kind_id,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
     start_autoscrub_reviewed_run_inner, with_native_discord_product_send_authority,
-    BrowserFootprintConsentRequest, CheckedHost, DiscordGuidedDeletionPlanState,
-    GuidedDeletionRunAuthorityInput, NativeDiscordProductSendAuthority,
+    with_native_discord_product_send_authority_for_switch, BrowserFootprintConsentRequest,
+    CheckedHost, DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
+    NativeDiscordProductSendAuthority,
 };
 use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
@@ -3363,10 +3364,11 @@ fn send_native_discord_overlay_carrier(
     let scope_binding = native_discord_scope_binding(&app)?;
     require_same_overlay_context(&app, epoch, &host)?;
     let composer = app.state::<NativeDiscordComposerState>();
-    with_native_discord_product_send_authority(
+    with_native_discord_product_send_authority_for_switch(
         &composer,
         &scope_binding,
         layout,
+        app.state::<HubCoreState>().startup_switches().safe_sending,
         |product_send_authority| {
             let overlay_state = app.state::<OverlaySessionState>();
             let carrier_placement = overlay_state.begin_carrier_placement()?;
@@ -5703,7 +5705,9 @@ async fn set_osl_chat_capture_preference(
     local_opt_in: bool,
 ) -> Result<ChatCaptureProtectionDto, String> {
     if caller.label() != "main" {
-        return Err("Only the trusted OSL window may change OSL Chat capture protection".to_owned());
+        return Err(
+            "Only the trusted OSL window may change OSL Chat capture protection".to_owned(),
+        );
     }
     let _session = session.transition.lock().await;
     let binding = security::manual_peer_binding(&core, person_id)?;
@@ -9611,6 +9615,11 @@ fn main() {
             });
         }
     });
+    let startup_switches =
+        osl_privacy_hub::runtime_switches::read_startup_test_only_runtime_switches()
+            .unwrap_or_else(|error| {
+                panic!("OSL test-only runtime switches refused startup: {error}")
+            });
     startup_breadcrumb("setup_before"); // STARTUP-TRACE
     let builder = builder.setup(|app| {
         startup_breadcrumb("setup_enter"); // STARTUP-TRACE
@@ -9701,7 +9710,7 @@ fn main() {
         ));
         startup_breadcrumb("setup_step_16_service_scope_index_state_managed"); // STARTUP-TRACE
         startup_breadcrumb("setup_step_17_hub_core_bootstrap_before"); // STARTUP-TRACE
-        let core = HubCoreState::bootstrap_from_disk();
+        let core = HubCoreState::bootstrap_from_disk_with_startup_switches(startup_switches);
         startup_breadcrumb("setup_step_18_hub_core_bootstrap_after"); // STARTUP-TRACE
         #[cfg(feature = "discord-qa-shell")]
         startup_breadcrumb("setup_step_19_qa_disposable_identity_before"); // STARTUP-TRACE

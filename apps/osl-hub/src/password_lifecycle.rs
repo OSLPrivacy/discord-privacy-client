@@ -167,8 +167,9 @@ pub fn readiness(state: &HubCoreState) -> HubPasswordReadiness {
     let Ok(password_status) = ipc::commands::cmd_osl_password_status() else {
         return unavailable_readiness(identity_loaded);
     };
-    let qa_device_gate =
-        cfg!(feature = "discord-qa-shell") && ipc::main_password::get_file_storage_key().is_some();
+    let qa_device_gate = state.startup_switches().password_screen_access
+        == crate::runtime_switches::PasswordScreenAccess::SkipPasswordScreenForTest
+        && ipc::main_password::get_file_storage_key().is_some();
     let unlocked = qa_device_gate
         || !password_status.is_set
         || ipc::main_password::get_file_storage_key().is_some();
