@@ -15412,6 +15412,174 @@ mod account_transfer_tests {
     }
 
     #[test]
+    fn task_1371_second_machine_restore_fetches_exact_prior_chat_history() {
+        let _serial = crate::test_process_globals::serialize();
+        let _reset = FileKeyReset;
+        crate::main_password::set_file_storage_key(None);
+
+        const SOURCE_MACHINE: &str = "task1371-machine-a";
+        const SECOND_MACHINE: &str = "task1371-machine-b";
+        const ACCOUNT: &str = "task1371-restored-chat-identity";
+        const CONVERSATION: &str = "TASK1371-RESTORED-CHAT-HISTORY";
+        const OLDER_MESSAGE_ID: &str = "task1371-message-0001";
+        const NEWER_MESSAGE_ID: &str = "task1371-message-0002";
+        const OLDER_MESSAGE: &str = "TASK1371 earlier message alpha";
+        const NEWER_MESSAGE: &str = "TASK1371 earlier message beta";
+        const EXPECTED_MESSAGES_NEWEST_FIRST: [&str; 2] = [NEWER_MESSAGE, OLDER_MESSAGE];
+
+        let source_dir = TempDir::new().unwrap();
+        let second_machine_dir = TempDir::new().unwrap();
+        let entropy = [137u8; 16];
+        let phrase = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
+            .unwrap()
+            .to_string();
+
+        let source_state = state_with_entropy(entropy);
+        {
+            let mut identity = source_state.identity_slot();
+            let identity = identity.as_mut().expect("source identity installed");
+            identity.user_id = ACCOUNT.to_owned();
+            identity.discord_snowflake = Some(ACCOUNT.to_owned());
+        }
+        let source_identity = source_state
+            .identity_slot()
+            .as_ref()
+            .expect("source identity remains installed")
+            .clone();
+        let expected_identity_key = STANDARD.encode(source_identity.ed25519_public.as_bytes());
+        let source_secret = *source_identity.x25519_secret.as_bytes();
+
+        {
+            let source_store =
+                MessageStore::open(&source_dir.path().join("store"), &source_secret).unwrap();
+            source_store
+                .put(&StoredMessage {
+                    discord_message_id: OLDER_MESSAGE_ID.to_owned(),
+                    channel_id: CONVERSATION.to_owned(),
+                    sender_discord_id: ACCOUNT.to_owned(),
+                    sender_osl_user_id: ACCOUNT.to_owned(),
+                    plaintext: OLDER_MESSAGE.to_owned(),
+                    decrypted_at: 1_371_001,
+                    burned: false,
+                })
+                .unwrap();
+            source_store
+                .put(&StoredMessage {
+                    discord_message_id: NEWER_MESSAGE_ID.to_owned(),
+                    channel_id: CONVERSATION.to_owned(),
+                    sender_discord_id: ACCOUNT.to_owned(),
+                    sender_osl_user_id: ACCOUNT.to_owned(),
+                    plaintext: NEWER_MESSAGE.to_owned(),
+                    decrypted_at: 1_371_002,
+                    burned: false,
+                })
+                .unwrap();
+        }
+        let source_store = MessageStore::open(&source_dir.path().join("store"), &source_secret)
+            .expect("source machine reopens existing chat store");
+        let source_rows = source_store
+            .list_by_channel(CONVERSATION, 10)
+            .expect("source machine reads existing chat history before export");
+        let source_messages: Vec<&str> = source_rows
+            .iter()
+            .map(|row| row.plaintext.as_str())
+            .collect();
+        assert_eq!(source_messages, EXPECTED_MESSAGES_NEWEST_FIRST);
+        drop(source_store);
+
+        let package = cmd_osl_export_data_with_dir(&source_state, source_dir.path())
+            .expect("source machine exports restorable chat identity and history");
+        assert!(
+            !second_machine_dir
+                .path()
+                .join("store/messages.sqlite")
+                .exists(),
+            "second machine starts without this chat history"
+        );
+
+        let restore_state = AppState::new();
+        let mut placeholder =
+            keystore::generate_identity("task1371-second-machine-placeholder".into());
+        placeholder.discord_snowflake = Some(ACCOUNT.to_owned());
+        restore_state.install_identity(placeholder);
+        cmd_osl_recover_account_from_export_with_dir(
+            &restore_state,
+            package,
+            phrase,
+            second_machine_dir.path(),
+        )
+        .expect("second machine restores the exported chat identity");
+
+        let restored_state = AppState::new();
+        let unlock_response = cmd_load_identity(
+            &restored_state,
+            second_machine_dir
+                .path()
+                .join("identity.json")
+                .display()
+                .to_string(),
+        )
+        .expect("second machine unlocks restored identity");
+        let restored_identity = restored_state
+            .identity_slot()
+            .as_ref()
+            .expect("restored identity installed after unlock")
+            .clone();
+        let restored_identity_key = STANDARD.encode(restored_identity.ed25519_public.as_bytes());
+        assert_eq!(restored_identity_key, expected_identity_key);
+
+        let restored_store = MessageStore::open(
+            &second_machine_dir.path().join("store"),
+            restored_identity.x25519_secret.as_bytes(),
+        )
+        .expect("second machine opens restored message store with restored identity key");
+        *restored_state.message_store.lock().unwrap() = Some(restored_store);
+        let restored_rows =
+            cmd_osl_load_channel_history(&restored_state, CONVERSATION.to_owned(), Some(10))
+                .expect("second machine fetches restored chat history");
+        let restored_messages: Vec<&str> = restored_rows
+            .iter()
+            .map(|row| row.plaintext.as_str())
+            .collect();
+        let restored_ids: Vec<&str> = restored_rows
+            .iter()
+            .map(|row| row.discord_message_id.as_str())
+            .collect();
+        assert_eq!(restored_messages, EXPECTED_MESSAGES_NEWEST_FIRST);
+        assert_eq!(
+            restored_ids,
+            vec![NEWER_MESSAGE_ID, OLDER_MESSAGE_ID],
+            "history fetch must return the exact earlier rows, newest first"
+        );
+
+        println!("TASK1371_SOURCE_MACHINE={SOURCE_MACHINE}");
+        println!("TASK1371_SECOND_MACHINE={SECOND_MACHINE}");
+        println!("TASK1371_RESTORE_COMMAND=cmd_osl_recover_account_from_export_with_dir");
+        println!("TASK1371_HISTORY_FETCH_COMMAND=cmd_osl_load_channel_history");
+        println!("TASK1371_SECOND_MACHINE_CLEAN_STORE_BEFORE=false");
+        println!("TASK1371_UNLOCKED_USER_ID={}", unlock_response.user_id);
+        println!("TASK1371_EXPECTED_IDENTITY_KEY={expected_identity_key}");
+        println!("TASK1371_SECOND_MACHINE_IDENTITY_KEY={restored_identity_key}");
+        println!(
+            "TASK1371_RESTORED_IDENTITY_MATCH={}",
+            restored_identity_key == expected_identity_key
+        );
+        println!("TASK1371_SOURCE_HISTORY_COUNT={}", source_messages.len());
+        println!(
+            "TASK1371_SECOND_MACHINE_HISTORY_COUNT={}",
+            restored_messages.len()
+        );
+        println!("TASK1371_EXPECTED_MESSAGE_1={NEWER_MESSAGE}");
+        println!("TASK1371_EXPECTED_MESSAGE_2={OLDER_MESSAGE}");
+        println!("TASK1371_SECOND_MACHINE_MESSAGE_1={}", restored_messages[0]);
+        println!("TASK1371_SECOND_MACHINE_MESSAGE_2={}", restored_messages[1]);
+        println!(
+            "TASK1371_EXACT_MESSAGES_MATCH={}",
+            restored_messages == EXPECTED_MESSAGES_NEWEST_FIRST
+        );
+    }
+
+    #[test]
     fn production_store_opens_use_keystore_backed_anchor() {
         let _serial = crate::test_process_globals::serialize();
         let _reset = ProductionStoreOpenHookReset;
