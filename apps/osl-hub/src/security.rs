@@ -2111,6 +2111,9 @@ fn set_hub_friend_account_reach(
     action: &'static str,
 ) -> Result<HubFriendAccountReachDto, String> {
     let binding = manual_peer_binding(core, person_id)?;
+    if accounts.is_empty() {
+        return Err("no accounts".to_owned());
+    }
     let mut rows = Vec::with_capacity(accounts.len());
     let mut storage_keys = Vec::with_capacity(accounts.len());
     for account in accounts {
@@ -6042,6 +6045,67 @@ mod tests {
             .collect()
     }
 
+    fn task0259_account() -> HubFriendDirectAccountDto {
+        HubFriendDirectAccountDto {
+            service_id: "discord".to_owned(),
+            account_id: "native-discord-task0259".to_owned(),
+            label: "OLIVE-0259".to_owned(),
+        }
+    }
+
+    fn task0259_install_fixture(
+        label: &str,
+    ) -> (
+        FileBackedSecurityHarness,
+        HubCoreState,
+        HubSecurityState,
+        String,
+    ) {
+        let harness = FileBackedSecurityHarness::new(label);
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        let (person_id, metadata, peer) = test_friend(59);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+        (harness, core, security, person_id)
+    }
+
+    fn task0259_reach_count(
+        core: &HubCoreState,
+        person_id: &str,
+        accounts: &[HubFriendDirectAccountDto],
+    ) -> usize {
+        accounts
+            .iter()
+            .filter(|account| {
+                let scope_id =
+                    manual_peer_scope_id(&account.service_id, &account.account_id, person_id)
+                        .unwrap();
+                manual_peer_scope_approved(
+                    core,
+                    &account.service_id,
+                    &account.account_id,
+                    person_id.to_owned(),
+                    dm_scope_input(scope_id),
+                )
+                .unwrap()
+            })
+            .count()
+    }
+
+    fn task0259_total_reach_count(dir: &Path) -> usize {
+        load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))
+            .unwrap()
+            .manual_approved_scopes
+            .len()
+    }
+
     #[test]
     fn task0258_everywhere_then_nowhere_immediately_controls_protected_message_actions() {
         let harness = FileBackedSecurityHarness::new("task0258-everywhere-nowhere");
@@ -6133,6 +6197,139 @@ mod tests {
         assert_eq!(nowhere_act, 0);
         assert_eq!(nowhere_skipped, 3);
         assert_eq!(after_nowhere, vec!["skipped", "skipped", "skipped"]);
+    }
+
+    #[test]
+    fn task0259_friend_wide_actions_refuse_zero_accounts() {
+        let (good_harness, good_core, good_security, person_id) =
+            task0259_install_fixture("task0259-one-account");
+        let good_accounts = vec![task0259_account()];
+        let seeded_name = good_accounts
+            .first()
+            .map(|account| account.label.as_str())
+            .unwrap_or("");
+        let before_reach = task0259_reach_count(&good_core, &person_id, &good_accounts);
+        println!(
+            "TASK0259 seed readable={} name={} account-count={} reach-count={}",
+            seeded_name == "OLIVE-0259",
+            seeded_name,
+            good_accounts.len(),
+            before_reach
+        );
+        assert_eq!(seeded_name, "OLIVE-0259");
+        assert_eq!(before_reach, 0);
+
+        let everywhere = set_hub_friend_account_reach_everywhere(
+            &good_core,
+            &good_security,
+            person_id.clone(),
+            good_accounts.clone(),
+        )
+        .expect("one-account everywhere succeeds");
+        let everywhere_names = everywhere
+            .accounts
+            .iter()
+            .map(|account| account.label.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        println!(
+            "TASK0259 action={} names={} changed-count={} reach-count={}",
+            everywhere.action,
+            everywhere_names,
+            everywhere.changed_count,
+            task0259_reach_count(&good_core, &person_id, &good_accounts)
+        );
+        assert_eq!(everywhere.action, "everywhere");
+        assert_eq!(everywhere_names, "OLIVE-0259");
+        assert_eq!(everywhere.changed_count, 1);
+        assert_eq!(
+            task0259_reach_count(&good_core, &person_id, &good_accounts),
+            1
+        );
+
+        let nowhere = set_hub_friend_account_reach_nowhere(
+            &good_core,
+            &good_security,
+            person_id.clone(),
+            good_accounts.clone(),
+        )
+        .expect("one-account nowhere succeeds");
+        let nowhere_names = nowhere
+            .accounts
+            .iter()
+            .map(|account| account.label.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        let restored_reach = task0259_reach_count(&good_core, &person_id, &good_accounts);
+        println!(
+            "TASK0259 action={} names={} changed-count={} restored-reach-count={}",
+            nowhere.action, nowhere_names, nowhere.changed_count, restored_reach
+        );
+        assert_eq!(nowhere.action, "nowhere");
+        assert_eq!(nowhere_names, "OLIVE-0259");
+        assert_eq!(nowhere.changed_count, 1);
+        assert_eq!(restored_reach, 0);
+
+        write_encrypted_json(
+            &good_harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+        let zero_accounts: Vec<HubFriendDirectAccountDto> = Vec::new();
+        println!(
+            "TASK0259 zero-fixture only-changed-field=accounts before-count={} after-count={}",
+            good_accounts.len(),
+            zero_accounts.len()
+        );
+        let zero_before = task0259_total_reach_count(good_harness.path());
+        let zero_everywhere = set_hub_friend_account_reach_everywhere(
+            &good_core,
+            &good_security,
+            person_id.clone(),
+            zero_accounts.clone(),
+        )
+        .expect_err("zero-account everywhere must be refused");
+        let zero_after_everywhere = task0259_total_reach_count(good_harness.path());
+        println!(
+            "TASK0259 zero-account action=everywhere refused-as={} changed-count={} reach-count={}",
+            zero_everywhere,
+            zero_after_everywhere.saturating_sub(zero_before),
+            zero_after_everywhere
+        );
+        assert_eq!(zero_everywhere, "no accounts");
+        assert_eq!(zero_before, 0);
+        assert_eq!(zero_after_everywhere, 0);
+
+        let zero_nowhere = set_hub_friend_account_reach_nowhere(
+            &good_core,
+            &good_security,
+            person_id,
+            zero_accounts,
+        )
+        .expect_err("zero-account nowhere must be refused");
+        let zero_after_nowhere = task0259_total_reach_count(good_harness.path());
+        println!(
+            "TASK0259 zero-account action=nowhere refused-as={} changed-count={} reach-count={}",
+            zero_nowhere,
+            zero_after_nowhere.saturating_sub(zero_after_everywhere),
+            zero_after_nowhere
+        );
+        assert_eq!(zero_nowhere, "no accounts");
+        assert_eq!(zero_after_nowhere, 0);
+
+        let good_final_count = task0259_total_reach_count(good_harness.path());
+        let good_final_name = good_accounts
+            .first()
+            .map(|account| account.label.as_str())
+            .unwrap_or("");
+        println!(
+            "TASK0259 good-fixture final-reach-count={} name={} unchanged={}",
+            good_final_count,
+            good_final_name,
+            good_final_count == 0 && good_final_name == "OLIVE-0259"
+        );
+        assert_eq!(good_final_count, 0);
+        assert_eq!(good_final_name, "OLIVE-0259");
     }
 
     #[test]
