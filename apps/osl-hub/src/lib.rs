@@ -129,6 +129,7 @@ pub mod scrub_hosted {
     pub mod checkpoint;
     pub mod friction;
     pub mod ordering;
+    pub mod reader;
     pub mod verify_surface;
     pub mod x_web;
 }
