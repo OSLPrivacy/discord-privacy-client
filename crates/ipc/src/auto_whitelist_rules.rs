@@ -44,6 +44,46 @@ pub const AUTO_WHITELIST_APP_KINDS: [&str; 5] =
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum DiscordWhitelistKind {
+    DirectMessage,
+    GroupChat,
+    Server,
+    ServerChannel,
+    Thread,
+}
+
+impl DiscordWhitelistKind {
+    pub const ALL: [Self; 5] = [
+        Self::DirectMessage,
+        Self::GroupChat,
+        Self::Server,
+        Self::ServerChannel,
+        Self::Thread,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct_message",
+            Self::GroupChat => "group_chat",
+            Self::Server => "server",
+            Self::ServerChannel => "server_channel",
+            Self::Thread => "thread",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct message",
+            Self::GroupChat => "group chat",
+            Self::Server => "server",
+            Self::ServerChannel => "server channel",
+            Self::Thread => "thread",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum InstagramWhitelistKind {
     DirectMessage,
     GroupChat,
@@ -78,8 +118,35 @@ pub fn parse_auto_whitelist_choice(input: &str) -> Result<AutoWhitelistChoice, S
         .ok_or_else(|| format!("OSL: unknown auto-whitelist rule choice '{input}'"))
 }
 
+pub fn parse_discord_whitelist_kind(input: &str) -> Result<DiscordWhitelistKind, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
+    DiscordWhitelistKind::ALL
+        .into_iter()
+        .find(|kind| normalized == kind.id() || normalized == kind.name())
+        .ok_or_else(|| format!("OSL: unknown Discord whitelist kind '{input}'"))
+}
+
+pub fn discord_auto_whitelist_rule_key(kind: DiscordWhitelistKind) -> String {
+    format!("discord:{}", kind.id())
+}
+
+pub fn discord_allowed_place_kind_for_rule_key(rule_key: &str) -> Option<&'static str> {
+    let rest = rule_key.strip_prefix("discord:")?;
+    DiscordWhitelistKind::ALL
+        .into_iter()
+        .find(|kind| rest == kind.id())
+        .map(DiscordWhitelistKind::id)
+}
+
 pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> {
     let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
+    if let Some((app, kind)) = normalized.split_once(':') {
+        if app == "discord" {
+            return Ok(discord_auto_whitelist_rule_key(
+                parse_discord_whitelist_kind(kind)?,
+            ));
+        }
+    }
     if AUTO_WHITELIST_APP_KINDS.contains(&normalized.as_str()) {
         Ok(normalized)
     } else {

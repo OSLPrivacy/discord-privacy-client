@@ -15822,9 +15822,17 @@ pub struct AutoWhitelistRuleChoiceDto {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AutoWhitelistAllowedPlaceDto {
+    pub app: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct AutoWhitelistRuleDto {
     pub app_kind: String,
     pub choice: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_place: Option<AutoWhitelistAllowedPlaceDto>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -15840,6 +15848,12 @@ pub struct InstagramWhitelistKindDto {
     pub name: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct DiscordWhitelistKindDto {
+    pub id: String,
+    pub name: String,
+}
+
 pub fn cmd_osl_get_auto_whitelist_rule_choices() -> Result<Vec<AutoWhitelistRuleChoiceDto>, String>
 {
     record_activity_on_command_entry();
@@ -15848,6 +15862,17 @@ pub fn cmd_osl_get_auto_whitelist_rule_choices() -> Result<Vec<AutoWhitelistRule
         .map(|choice| AutoWhitelistRuleChoiceDto {
             id: choice.id().to_string(),
             label: choice.label().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_get_discord_whitelist_kinds() -> Result<Vec<DiscordWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::DiscordWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| DiscordWhitelistKindDto {
+            id: kind.id().to_string(),
+            name: kind.name().to_string(),
         })
         .collect())
 }
@@ -15899,6 +15924,7 @@ pub fn cmd_osl_save_auto_whitelist_rule(
         }
     }
     Ok(AutoWhitelistRuleDto {
+        allowed_place: auto_whitelist_allowed_place(&app_kind),
         app_kind,
         choice: choice.label().to_string(),
     })
@@ -15919,8 +15945,18 @@ pub fn cmd_osl_read_auto_whitelist_rule(
         .copied()
         .unwrap_or_default();
     Ok(AutoWhitelistRuleDto {
+        allowed_place: auto_whitelist_allowed_place(&app_kind),
         app_kind,
         choice: choice.label().to_string(),
+    })
+}
+
+fn auto_whitelist_allowed_place(app_kind: &str) -> Option<AutoWhitelistAllowedPlaceDto> {
+    crate::auto_whitelist_rules::discord_allowed_place_kind_for_rule_key(app_kind).map(|kind| {
+        AutoWhitelistAllowedPlaceDto {
+            app: "discord".to_string(),
+            kind: kind.to_string(),
+        }
     })
 }
 

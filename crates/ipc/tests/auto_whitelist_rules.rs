@@ -1,6 +1,6 @@
 use ipc::commands::{
-    cmd_osl_get_auto_whitelist_rule_choices, cmd_osl_read_auto_whitelist_rule,
-    cmd_osl_save_auto_whitelist_rule,
+    cmd_osl_get_auto_whitelist_rule_choices, cmd_osl_get_discord_whitelist_kinds,
+    cmd_osl_read_auto_whitelist_rule, cmd_osl_save_auto_whitelist_rule,
 };
 use ipc::state::AppState;
 
@@ -39,4 +39,126 @@ fn save_and_read_returns_different_choices_per_app_kind() {
     assert_eq!(discord.choice, "always");
     assert_eq!(telegram.choice, "only if a friend");
     assert_ne!(discord.choice, telegram.choice);
+}
+
+#[test]
+fn discord_kinds_command_returns_exactly_five_named_kinds() {
+    let kinds = cmd_osl_get_discord_whitelist_kinds().unwrap();
+    let ids: Vec<String> = kinds.iter().map(|kind| kind.id.clone()).collect();
+    let names: Vec<String> = kinds.iter().map(|kind| kind.name.clone()).collect();
+
+    println!("discord whitelist kinds count: {}", kinds.len());
+    println!("discord whitelist kinds: {}", names.join(", "));
+
+    assert_eq!(kinds.len(), 5);
+    assert_eq!(
+        ids,
+        vec![
+            "direct_message",
+            "group_chat",
+            "server",
+            "server_channel",
+            "thread"
+        ]
+    );
+    assert_eq!(
+        names,
+        vec![
+            "direct message",
+            "group chat",
+            "server",
+            "server channel",
+            "thread"
+        ]
+    );
+}
+
+#[test]
+fn five_discord_kind_rule_lookups_return_independently_saved_choices() {
+    let state = AppState::new();
+    let saved = [
+        ("discord:direct_message", "always"),
+        ("discord:group_chat", "ask me"),
+        ("discord:server", "only if a friend"),
+        ("discord:server_channel", "never"),
+        ("discord:thread", "always"),
+    ];
+
+    for (rule_key, choice) in saved {
+        cmd_osl_save_auto_whitelist_rule(&state, rule_key.to_string(), choice.to_string(), None)
+            .unwrap();
+    }
+
+    let lookups: Vec<_> = saved
+        .iter()
+        .map(|(rule_key, _)| {
+            cmd_osl_read_auto_whitelist_rule(&state, (*rule_key).to_string()).unwrap()
+        })
+        .collect();
+    let proof: Vec<String> = lookups
+        .iter()
+        .map(|rule| {
+            let place = rule
+                .allowed_place
+                .as_ref()
+                .expect("Discord kind rule carries allowed-place record");
+            format!(
+                "{}={} allowed_place={}:{}",
+                rule.app_kind, rule.choice, place.app, place.kind
+            )
+        })
+        .collect();
+
+    println!(
+        "discord kind direct lookup count={} {}",
+        lookups.len(),
+        proof.join(" | ")
+    );
+
+    assert_eq!(lookups.len(), 5);
+    assert_eq!(lookups[0].app_kind, "discord:direct_message");
+    assert_eq!(lookups[0].choice, "always");
+    assert_eq!(
+        lookups[0]
+            .allowed_place
+            .as_ref()
+            .map(|place| place.kind.as_str()),
+        Some("direct_message")
+    );
+    assert_eq!(lookups[1].app_kind, "discord:group_chat");
+    assert_eq!(lookups[1].choice, "ask me");
+    assert_eq!(
+        lookups[1]
+            .allowed_place
+            .as_ref()
+            .map(|place| place.kind.as_str()),
+        Some("group_chat")
+    );
+    assert_eq!(lookups[2].app_kind, "discord:server");
+    assert_eq!(lookups[2].choice, "only if a friend");
+    assert_eq!(
+        lookups[2]
+            .allowed_place
+            .as_ref()
+            .map(|place| place.kind.as_str()),
+        Some("server")
+    );
+    assert_eq!(lookups[3].app_kind, "discord:server_channel");
+    assert_eq!(lookups[3].choice, "never");
+    assert_eq!(
+        lookups[3]
+            .allowed_place
+            .as_ref()
+            .map(|place| place.kind.as_str()),
+        Some("server_channel")
+    );
+    assert_eq!(lookups[4].app_kind, "discord:thread");
+    assert_eq!(lookups[4].choice, "always");
+    assert_eq!(
+        lookups[4]
+            .allowed_place
+            .as_ref()
+            .map(|place| place.kind.as_str()),
+        Some("thread")
+    );
 }
