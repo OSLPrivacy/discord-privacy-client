@@ -103,6 +103,8 @@ pub mod native_telegram_adapter;
 pub mod native_whatsapp_adapter;
 pub mod native_window_host;
 #[cfg(feature = "core")]
+pub mod osl_chat_file_limits;
+#[cfg(feature = "core")]
 pub mod osl_chat_local_state_key;
 #[cfg(feature = "core")]
 pub mod osl_mail;

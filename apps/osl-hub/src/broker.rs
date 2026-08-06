@@ -5494,7 +5494,12 @@ fn begin_peer_attachment(
     if view_once {
         crate::view_once_eligibility::require_view_once_attachment_eligibility(&mime_type)?;
     }
-    if plaintext_size == 0 || plaintext_size > ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES {
+    let plaintext_limit = if osl_chat {
+        crate::osl_chat_file_limits::current_osl_chat_file_size_limit(core).max_bytes
+    } else {
+        ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES
+    };
+    if plaintext_size == 0 || plaintext_size > plaintext_limit {
         return Err(ERROR.to_owned());
     }
     let ttl_seconds = security::scope_security(manual.scope.clone())
