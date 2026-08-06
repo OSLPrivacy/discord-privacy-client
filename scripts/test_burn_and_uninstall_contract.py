@@ -30,11 +30,17 @@ class BurnAndUninstallContractTest(unittest.TestCase):
         self.assertEqual(burn["remote_completion"], "confirmed only after the server acknowledges deletion")
         self.assertEqual(burn["peer_completion"], "confirmed only after the peer acknowledges deletion")
         self.assertTrue(uninstall["removes_application"])
-        self.assertFalse(uninstall["deletes_osl_data"])
+        self.assertTrue(uninstall["deletes_osl_data"])
+        self.assertTrue(uninstall["offers_one_identity_backup"])
+        self.assertEqual(uninstall["backup_filename"], "OSL identity backup.json")
         self.assertFalse(uninstall["is_a_burn"])
         self.assertTrue(uninstall["requires_separate_user_action"])
         self.assertEqual(claims["remote_data_unrecoverable_only_after"], "server confirmation")
         self.assertEqual(claims["burn_status_before_server_confirmation"], "pending")
+        self.assertEqual(
+            claims["uninstall_status"],
+            "application removed; local OSL data removed; identity backup kept only if selected",
+        )
 
 
 if __name__ == "__main__":
