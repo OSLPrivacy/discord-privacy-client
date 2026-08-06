@@ -114,6 +114,12 @@ export type NativeAppDeliveryEvidence =
   | "neverProvenLive"
   | "provenLiveBothWays";
 
+export interface NativeAppStatusPageData {
+  capability: string;
+  generatedLabel: string;
+  explanation: string;
+}
+
 export interface NativeApp {
   id: NativeAppId;
   displayName: string;
@@ -129,6 +135,7 @@ export interface NativeApp {
    * with no reason behind it is the collapse this contract exists to refuse.
    */
   claimNote: string;
+  statusPage: NativeAppStatusPageData;
   protectedMode: "assistOnly" | "unavailable";
   isolatedProfileAvailable: boolean;
   supportsOverlay: boolean;
@@ -353,31 +360,42 @@ const nativeAppDeliveryEvidence: readonly NativeAppDeliveryEvidence[] = [
   "notDeliverable", "neverProvenLive", "provenLiveBothWays",
 ];
 
+export function nativeAppGeneratedLabel(status: NativeAppSupportStatus): string {
+  switch (status) {
+    case "available": return "Available";
+    case "beta": return "Beta";
+    case "experimental": return "Experimental";
+    case "comingSoon": return "Coming later";
+    case "externallyBlocked": return "Externally blocked";
+    case "noClaim": return "Not claimed";
+  }
+}
+
 // The FALLBACK catalog, shown before the backend answers. Rust owns the claim
 // decision (`apps/osl-hub/src/claim_state.rs`); this list is only ever allowed
 // to agree with it, and `services.test.ts` reads the Rust source to check that.
 //
-// Every row is `noClaim` or `comingSoon` and every row carries its reason,
-// because no connected app has earned a live carry receipt -- `carry-receipts/`
-// does not exist as a directory (PLAN.md r5-6).
+// Every row carries its reason, including Telegram's current live carry receipt:
+// a receipt is evidence for a status label, not permission to promote a surface
+// on its own.
 const nativePreviewApps: readonly NativeApp[] = [
   // D-203, and the reason this whole contract was rebuilt: `beta` overclaimed,
   // `comingSoon` said Discord was planned when it is the one carrier the app
   // enables, and `externallyBlocked` said a third party blocks us. Allowlist §E
   // gives `open-security-finding` and `unknown-recheck-required` no badge and no
   // claim, and both stand on this row.
-  { id: "discord", displayName: "Discord", availability: "installable", supportStatus: "noClaim", carrierEvidence: "builtNeverProvenLive", deliveryEvidence: "neverProvenLive", claimBlockers: ["open-security-finding", "unknown-recheck-required"], claimNote: "OSL has never carried a message through Discord and back in a recorded two-party run, and an open security finding stands on this surface. OSL makes no claim about it.", protectedMode: "assistOnly", isolatedProfileAvailable: true, supportsOverlay: false },
+  { id: "discord", displayName: "Discord", availability: "installable", supportStatus: "noClaim", carrierEvidence: "builtNeverProvenLive", deliveryEvidence: "neverProvenLive", claimBlockers: ["open-security-finding", "unknown-recheck-required"], claimNote: "OSL has never carried a message through Discord and back in a recorded two-party run, and an open security finding stands on this surface. OSL makes no claim about it.", statusPage: { capability: "carrier capability is wired but not live-proven", generatedLabel: "Not claimed", explanation: "OSL has never carried a message through Discord and back in a recorded two-party run, and an open security finding stands on this surface. OSL makes no claim about it." }, protectedMode: "assistOnly", isolatedProfileAvailable: true, supportsOverlay: false },
   // D-206. The evidence supports `experimental` -- the label that did not exist
   // -- and the support matrix still records Telegram as externally blocked.
   // Those are different assertions, so allowlist rule 5's "conflicting" clause
   // applies and the answer is no claim, with the disagreement named.
-  { id: "telegram", displayName: "Telegram", availability: "installable", supportStatus: "noClaim", carrierEvidence: "provenLiveWithReceipt", deliveryEvidence: "neverProvenLive", claimBlockers: [], claimNote: "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it -- the only surface that has. But OSL's own support matrix still records Telegram as externally blocked, which is a claim about Telegram rather than about us. Those disagree, so OSL makes no claim about it.", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
-  { id: "signal", displayName: "Signal", availability: "installable", supportStatus: "comingSoon", carrierEvidence: "builtNeverProvenLive", deliveryEvidence: "neverProvenLive", claimBlockers: ["send-input-generalisation"], claimNote: "A Signal adapter profile exists and has never been driven against the live client. Signal's adapter also refuses synthesised input by design, which is the only technique any surface has been shown to land by, so nothing is proven here.", protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
+  { id: "telegram", displayName: "Telegram", availability: "installable", supportStatus: "noClaim", carrierEvidence: "provenLiveWithReceipt", deliveryEvidence: "neverProvenLive", claimBlockers: [], claimNote: "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it -- the only surface that has. But OSL's own support matrix still records Telegram as externally blocked, which is a claim about Telegram rather than about us. Those disagree, so OSL makes no claim about it.", statusPage: { capability: "live carry capability is proven; delivery is not live-proven", generatedLabel: "Not claimed", explanation: "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it -- the only surface that has. But OSL's own support matrix still records Telegram as externally blocked, which is a claim about Telegram rather than about us. Those disagree, so OSL makes no claim about it." }, protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
+  { id: "signal", displayName: "Signal", availability: "installable", supportStatus: "comingSoon", carrierEvidence: "builtNeverProvenLive", deliveryEvidence: "neverProvenLive", claimBlockers: ["send-input-generalisation"], claimNote: "A Signal adapter profile exists and has never been driven against the live client. Signal's adapter also refuses synthesised input by design, which is the only technique any surface has been shown to land by, so nothing is proven here.", statusPage: { capability: "carrier capability is wired but not live-proven", generatedLabel: "Coming later", explanation: "A Signal adapter profile exists and has never been driven against the live client. Signal's adapter also refuses synthesised input by design, which is the only technique any surface has been shown to land by, so nothing is proven here." }, protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
   // D-234. Measured against the live client and REFUSED -- not unfinished work.
   // Same badge as Signal, different state, and the sentence is what keeps them
   // apart.
-  { id: "whatsapp", displayName: "WhatsApp", availability: "installable", supportStatus: "comingSoon", carrierEvidence: "measuredAndRefused", deliveryEvidence: "neverProvenLive", claimBlockers: ["send-input-generalisation"], claimNote: "OSL measured WhatsApp's composer against the live client and the write did not land: the value reaches the accessibility layer and the message document stays empty. This is a refused technique, not unfinished work, so nothing is proven here.", protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
-  { id: "outlook", displayName: "Outlook", availability: "unavailable", supportStatus: "comingSoon", carrierEvidence: "notBuilt", deliveryEvidence: "notDeliverable", claimBlockers: [], claimNote: "No Outlook desktop carrier is wired. There is no adapter to prove and nothing is sent through Outlook today.", protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
+  { id: "whatsapp", displayName: "WhatsApp", availability: "installable", supportStatus: "comingSoon", carrierEvidence: "measuredAndRefused", deliveryEvidence: "neverProvenLive", claimBlockers: ["send-input-generalisation"], claimNote: "OSL measured WhatsApp's composer against the live client and the write did not land: the value reaches the accessibility layer and the message document stays empty. This is a refused technique, not unfinished work, so nothing is proven here.", statusPage: { capability: "carrier write capability was measured and refused", generatedLabel: "Coming later", explanation: "OSL measured WhatsApp's composer against the live client and the write did not land: the value reaches the accessibility layer and the message document stays empty. This is a refused technique, not unfinished work, so nothing is proven here." }, protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
+  { id: "outlook", displayName: "Outlook", availability: "unavailable", supportStatus: "comingSoon", carrierEvidence: "notBuilt", deliveryEvidence: "notDeliverable", claimBlockers: [], claimNote: "No Outlook desktop carrier is wired. There is no adapter to prove and nothing is sent through Outlook today.", statusPage: { capability: "no carrier capability is wired", generatedLabel: "Coming later", explanation: "No Outlook desktop carrier is wired. There is no adapter to prove and nothing is sent through Outlook today." }, protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
 ];
 
 interface HomeAppDefinition {
@@ -885,7 +903,7 @@ export function parseNativeApps(raw: unknown): NativeApp[] {
   if (!Array.isArray(raw) || raw.length > nativeAppIds.length) throw new Error("invalid native app catalog");
   const seen = new Set<NativeAppId>();
   return raw.map((candidate) => {
-    if (!isExactRecord(candidate, ["id", "displayName", "availability", "supportStatus", "carrierEvidence", "deliveryEvidence", "claimBlockers", "claimNote", "protectedMode", "isolatedProfileAvailable", "supportsOverlay"])) throw new Error("invalid native app catalog");
+    if (!isExactRecord(candidate, ["id", "displayName", "availability", "supportStatus", "carrierEvidence", "deliveryEvidence", "claimBlockers", "claimNote", "statusPage", "protectedMode", "isolatedProfileAvailable", "supportsOverlay"])) throw new Error("invalid native app catalog");
     const id = candidate.id as NativeAppId;
     if (!nativeAppIds.includes(id) || seen.has(id) || !isDisplayString(candidate.displayName, 80)
       || !["installed", "installable", "unavailable"].includes(String(candidate.availability))
@@ -901,6 +919,14 @@ export function parseNativeApps(raw: unknown): NativeApp[] {
     // "measured against the live client and refused", and only the sentence
     // tells a user which one they are looking at.
     if (!isDisplayString(candidate.claimNote, 400)) throw new Error("invalid native app catalog");
+    if (!isExactRecord(candidate.statusPage, ["capability", "generatedLabel", "explanation"])
+      || !isDisplayString(candidate.statusPage.capability, 120)
+      || !isDisplayString(candidate.statusPage.generatedLabel, 80)
+      || !isDisplayString(candidate.statusPage.explanation, 400)
+      || candidate.statusPage.generatedLabel !== nativeAppGeneratedLabel(candidate.supportStatus as NativeAppSupportStatus)
+      || candidate.statusPage.explanation !== candidate.claimNote) {
+      throw new Error("invalid native app catalog");
+    }
     if (!Array.isArray(candidate.claimBlockers)
       || candidate.claimBlockers.length > 8
       || !candidate.claimBlockers.every((blocker) => isDisplayString(blocker, 60))) {
@@ -926,6 +952,11 @@ export function parseNativeApps(raw: unknown): NativeApp[] {
       deliveryEvidence: candidate.deliveryEvidence as NativeApp["deliveryEvidence"],
       claimBlockers: [...candidate.claimBlockers as readonly string[]],
       claimNote: candidate.claimNote as string,
+      statusPage: {
+        capability: candidate.statusPage.capability as string,
+        generatedLabel: candidate.statusPage.generatedLabel as string,
+        explanation: candidate.statusPage.explanation as string,
+      },
       protectedMode: candidate.protectedMode as NativeApp["protectedMode"],
       isolatedProfileAvailable: candidate.isolatedProfileAvailable,
       supportsOverlay: candidate.supportsOverlay,

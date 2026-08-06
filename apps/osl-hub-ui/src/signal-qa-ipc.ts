@@ -25,6 +25,11 @@ function signalOnlyCatalog(raw: unknown): NativeApp[] {
     carrierEvidence: "builtNeverProvenLive", deliveryEvidence: "neverProvenLive",
     claimBlockers: ["send-input-generalisation"],
     claimNote: "A Signal adapter profile exists and has never been driven against the live client. Nothing is proven here.",
+    statusPage: {
+      capability: "carrier capability is wired but not live-proven",
+      generatedLabel: "Coming later",
+      explanation: "A Signal adapter profile exists and has never been driven against the live client. Nothing is proven here.",
+    },
     isolatedProfileAvailable: signal.isolatedProfileAvailable, supportsOverlay: signal.supportsOverlay,
   }];
 }

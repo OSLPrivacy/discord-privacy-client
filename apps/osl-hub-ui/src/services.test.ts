@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeAppsFromServices, loadLinkedServices, loadNativeApps, notificationIntegrationEligibility, parseEmbeddedServiceHost, parseFirefoxStatus, parseLinkedAccount, parseLinkedServices, parseMullvadStatus, parseNativeAppAction, parseNativeApps, serviceAccountsForProvider } from "./services";
+import { configuredTopStripApps, embeddedAccountsForHomeApp, escapeHtml, homeAppsFromServices, loadLinkedServices, loadNativeApps, nativeAppGeneratedLabel, notificationIntegrationEligibility, parseEmbeddedServiceHost, parseFirefoxStatus, parseLinkedAccount, parseLinkedServices, parseMullvadStatus, parseNativeAppAction, parseNativeApps, serviceAccountsForProvider } from "./services";
 
 const originalAppRoster = [
   "discord", "telegram", "signal", "whatsapp",
@@ -64,8 +64,13 @@ describe("linked-service contract", () => {
       carrierEvidence: "builtNeverProvenLive", deliveryEvidence: "neverProvenLive",
       claimBlockers: [], claimNote: "Nothing has been proven on this surface yet.",
     } as const;
-    const discord = { id: "discord", displayName: "Discord", availability: "installed", supportStatus: "noClaim", ...claim, protectedMode: "assistOnly", isolatedProfileAvailable: false, supportsOverlay: false };
-    const telegram = { id: "telegram", displayName: "Telegram", availability: "installed", supportStatus: "comingSoon", ...claim, protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false };
+    const statusPage = (generatedLabel: string) => ({
+      capability: "carrier capability is wired but not live-proven",
+      generatedLabel,
+      explanation: "Nothing has been proven on this surface yet.",
+    });
+    const discord = { id: "discord", displayName: "Discord", availability: "installed", supportStatus: "noClaim", ...claim, statusPage: statusPage("Not claimed"), protectedMode: "assistOnly", isolatedProfileAvailable: false, supportsOverlay: false };
+    const telegram = { id: "telegram", displayName: "Telegram", availability: "installed", supportStatus: "comingSoon", ...claim, statusPage: statusPage("Coming later"), protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false };
     expect(parseNativeApps([discord])).toEqual([{ ...discord, claimBlockers: [] }]);
     expect(parseNativeApps([telegram])).toEqual([{ ...telegram, claimBlockers: [] }]);
     expect(parseNativeAppAction({ id: "discord", started: true }, false)).toEqual({ id: "discord", started: true });
@@ -83,6 +88,8 @@ describe("linked-service contract", () => {
     expect(() => parseNativeApps([{ ...telegram, deliveryEvidence: "" }])).toThrow();
     expect(() => parseNativeApps([{ ...telegram, claimNote: "" }])).toThrow();
     expect(() => parseNativeApps([{ ...telegram, claimBlockers: "none" }])).toThrow();
+    expect(() => parseNativeApps([{ ...telegram, statusPage: { ...telegram.statusPage, generatedLabel: "Available" } }])).toThrow();
+    expect(() => parseNativeApps([{ ...telegram, statusPage: { ...telegram.statusPage, explanation: "A second source of truth." } }])).toThrow();
     expect(() => parseNativeAppAction({ id: "instagram", started: true }, false)).toThrow();
   });
 
@@ -371,6 +378,12 @@ describe("native app catalog agrees with the Rust support decision", () => {
       // Every row ships its reason. A badge with nothing behind it is how two
       // different evidence states become one state to a reader.
       expect(app.claimNote.length, `${app.id} has no reason line`).toBeGreaterThan(20);
+      expect(app.statusPage.generatedLabel, `${app.id} direct status label disagrees with generated tile label`)
+        .toBe(nativeAppGeneratedLabel(app.supportStatus));
+      expect(app.statusPage.explanation, `${app.id} status page explanation diverged from claim note`)
+        .toBe(app.claimNote);
+      expect(app.statusPage.capability, `${app.id} status page data does not name the real capability`)
+        .toMatch(/\bcapability\b/u);
     }
 
     // The evidence is per surface and is NOT one value stamped on everything --
@@ -452,12 +465,22 @@ describe("native app catalog agrees with the Rust support decision", () => {
       id: "telegram", displayName: "Telegram", availability: "installed",
       supportStatus: "beta", carrierEvidence: "builtNeverProvenLive",
       deliveryEvidence: "neverProvenLive", claimBlockers: [],
-      claimNote: "Telegram works.", protectedMode: "unavailable",
+      claimNote: "Telegram works.",
+      statusPage: {
+        capability: "carrier capability is wired but not live-proven",
+        generatedLabel: "Beta",
+        explanation: "Telegram works.",
+      },
+      protectedMode: "unavailable",
       isolatedProfileAvailable: true, supportsOverlay: false,
     };
     expect(() => parseNativeApps([promoted])).toThrow();
     // And the same row without the promotion is accepted, so the refusal is
     // measuring the claim and not the shape.
-    expect(parseNativeApps([{ ...promoted, supportStatus: "comingSoon" }])).toHaveLength(1);
+    expect(parseNativeApps([{
+      ...promoted,
+      supportStatus: "comingSoon",
+      statusPage: { ...promoted.statusPage, generatedLabel: "Coming later" },
+    }])).toHaveLength(1);
   });
 });

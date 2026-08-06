@@ -64,6 +64,7 @@ import {
   loadLinkedServices,
   loadMullvadStatus,
   loadNativeApps,
+  nativeAppGeneratedLabel,
   nativeAppTakeoverRequiresConsent,
   openEmbeddedHomeApp,
   parseDiscordSessionMode,
@@ -244,31 +245,9 @@ function statusTag(label: string, extra = ""): string {
   return `<span class="${classes}">${label}</span>`;
 }
 
-/**
- * The user-facing word for a connected app's public claim.
- *
- * Every value here is a label `osl-public-claim-allowlist.md` permits, and none
- * of them says the app works — because no connected app has earned a live carry
- * receipt. `PLAN.md` r5-6: `carry-receipts/` does not exist as a directory.
- *
- * "Not claimed" is allowlist §E's *no badge, no claim*. It is deliberately not
- * "Coming soon": saying a surface is planned when OSL has already built and
- * driven it is as false as saying it works (D-203, D-206).
- */
-function nativeClaimLabel(status: NativeApp["supportStatus"]): string {
-  switch (status) {
-    case "available": return "Available";
-    case "beta": return "Beta";
-    case "experimental": return "Experimental";
-    case "comingSoon": return "Coming later";
-    case "externallyBlocked": return "Externally blocked";
-    case "noClaim": return "Not claimed";
-  }
-}
-
 /** The claim row for one connected app: the label, and the sentence behind it. */
 function nativeClaimMarkup(app: NativeApp): string {
-  return `<p class="native-claim-note" data-claim-status="${app.supportStatus}" data-carrier-evidence="${app.carrierEvidence}" data-delivery-evidence="${app.deliveryEvidence}">${statusTag(nativeClaimLabel(app.supportStatus))} ${escapeHtml(app.claimNote)}</p>`;
+  return `<p class="native-claim-note" data-claim-status="${app.supportStatus}" data-carrier-evidence="${app.carrierEvidence}" data-delivery-evidence="${app.deliveryEvidence}" data-status-page-capability="${escapeHtml(app.statusPage.capability)}">${statusTag(app.statusPage.generatedLabel)} ${escapeHtml(app.statusPage.explanation)}</p>`;
 }
 
 /**
@@ -4463,7 +4442,7 @@ function workspaceContent(): string {
     // has a claim for this app, that claim is what the tile says; where it does
     // not, the tile keeps the roadmap wording it always had.
     const claim = nativeApps.find((candidate) => candidate.id === app.id as NativeAppId);
-    const caption = claim ? nativeClaimLabel(claim.supportStatus) : "Coming soon";
+    const caption = claim ? nativeAppGeneratedLabel(claim.supportStatus) : "Coming soon";
     const claimTitle = claim ? ` title="${escapeHtml(claim.claimNote)}"` : "";
     return `<article class="app-tile ${available ? "" : "app-unavailable"} ${hidden ? "tile-hidden" : ""} ${pending ? "pending" : ""}" data-tile-id="${app.id}" draggable="${homeEditMode}" data-service-kind="${app.serviceId ?? "none"}" data-launch-state="${app.launchState}" data-claim-status="${claim ? claim.supportStatus : "comingSoon"}" aria-disabled="${available ? "false" : "true"}"><button id="home-app-${app.id}" type="button" ${available ? `data-home-app="${app.id}"` : ""} aria-label="${escapeHtml(`${app.displayName}, ${pending ? "Opening" : state}`)}"${claimTitle} ${disabled ? "disabled" : ""}><span class="app-logo-plate">${homeAppLogo(app)}</span><span class="app-tile-copy"><strong>${escapeHtml(app.displayName)}</strong>${pending ? "<small>Opening…</small>" : available ? "" : `<small>${escapeHtml(caption)}</small>`}</span></button>${controls}</article>`;
   };

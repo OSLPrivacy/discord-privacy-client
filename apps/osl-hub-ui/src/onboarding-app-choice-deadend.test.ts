@@ -87,20 +87,22 @@ function memoryStorage(seed: Record<string, string> = {}): Storage {
  * Every row carries the CLAIM STATE the backend now serialises
  * (`apps/osl-hub/src/claim_state.rs`): the public claim, the evidence behind it,
  * and the sentence shown to the user. Discord is `noClaim` rather than `beta` --
- * two allowlist extinguishers stand on it (D-203) and no connected app has
- * earned a live carry receipt. This fixture is a MODEL of the real response and
- * has to move with it, or this test would keep passing against a shape the app
- * no longer produces.
+ * two allowlist extinguishers stand on it (D-203). Telegram has a live carry
+ * receipt, but the support-matrix conflict still leaves it at `noClaim`. This
+ * fixture is a MODEL of the real response and has to move with it, or this test
+ * would keep passing against a shape the app no longer produces.
  */
-const claim = (carrierEvidence: string, deliveryEvidence: string, claimNote: string) => ({
-  carrierEvidence, deliveryEvidence, claimBlockers: [] as string[], claimNote,
+const label = (supportStatus: string): string => supportStatus === "noClaim" ? "Not claimed" : "Coming later";
+const claim = (supportStatus: string, carrierEvidence: string, deliveryEvidence: string, claimNote: string, capability: string, claimBlockers: string[] = []) => ({
+  carrierEvidence, deliveryEvidence, claimBlockers, claimNote,
+  statusPage: { capability, generatedLabel: label(supportStatus), explanation: claimNote },
 });
 const shippingWindowsCatalog = [
-  { id: "discord", displayName: "Discord", availability: "installed", supportStatus: "noClaim", ...claim("builtNeverProvenLive", "neverProvenLive", "OSL has never carried a message through Discord and back in a recorded two-party run."), protectedMode: "assistOnly", isolatedProfileAvailable: true, supportsOverlay: false },
-  { id: "telegram", displayName: "Telegram", availability: "installable", supportStatus: "noClaim", ...claim("builtNeverProvenLive", "neverProvenLive", "OSL has driven Telegram's composer and never earned a live carry receipt for it."), protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
-  { id: "signal", displayName: "Signal", availability: "installable", supportStatus: "comingSoon", ...claim("builtNeverProvenLive", "neverProvenLive", "A Signal adapter profile exists and has never been driven against the live client."), protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
-  { id: "whatsapp", displayName: "WhatsApp", availability: "installable", supportStatus: "comingSoon", ...claim("measuredAndRefused", "neverProvenLive", "OSL measured WhatsApp's composer against the live client and the write did not land."), protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
-  { id: "outlook", displayName: "Outlook", availability: "unavailable", supportStatus: "comingSoon", ...claim("notBuilt", "notDeliverable", "No Outlook desktop carrier is wired, and nothing is sent through Outlook today."), protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
+  { id: "discord", displayName: "Discord", availability: "installed", supportStatus: "noClaim", ...claim("noClaim", "builtNeverProvenLive", "neverProvenLive", "OSL has never carried a message through Discord and back in a recorded two-party run.", "carrier capability is wired but not live-proven", ["open-security-finding", "unknown-recheck-required"]), protectedMode: "assistOnly", isolatedProfileAvailable: true, supportsOverlay: false },
+  { id: "telegram", displayName: "Telegram", availability: "installable", supportStatus: "noClaim", ...claim("noClaim", "provenLiveWithReceipt", "neverProvenLive", "OSL has carried cover text through Telegram's composer and earned a live carry receipt for it.", "live carry capability is proven; delivery is not live-proven"), protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
+  { id: "signal", displayName: "Signal", availability: "installable", supportStatus: "comingSoon", ...claim("comingSoon", "builtNeverProvenLive", "neverProvenLive", "A Signal adapter profile exists and has never been driven against the live client.", "carrier capability is wired but not live-proven", ["send-input-generalisation"]), protectedMode: "unavailable", isolatedProfileAvailable: true, supportsOverlay: false },
+  { id: "whatsapp", displayName: "WhatsApp", availability: "installable", supportStatus: "comingSoon", ...claim("comingSoon", "measuredAndRefused", "neverProvenLive", "OSL measured WhatsApp's composer against the live client and the write did not land.", "carrier write capability was measured and refused", ["send-input-generalisation"]), protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
+  { id: "outlook", displayName: "Outlook", availability: "unavailable", supportStatus: "comingSoon", ...claim("comingSoon", "notBuilt", "notDeliverable", "No Outlook desktop carrier is wired, and nothing is sent through Outlook today.", "no carrier capability is wired"), protectedMode: "unavailable", isolatedProfileAvailable: false, supportsOverlay: false },
 ];
 
 function installDom(selectors: Record<string, FakeElement[]>): void {
