@@ -1,30 +1,10 @@
 //! The OSL-RN runtime activation gate, asserted through the **shipping
 //! default** rather than through a flag the test sets itself.
 //!
-//! Why this file exists, and why it is separate from
-//! `rn_capability_refusal.rs`:
-//!
-//! `AppState`'s `rn_wire_in_enabled` default has been flipped to `true` twice
-//! (`499c0261c` "t19-f1 flip RN wire-in fuses", `f0b4a2739` "Restore the
-//! rn_wire_in_enabled default an agent flipped to pass one test") and closed
-//! again by `0e3d8ed59` "keep RN runtime gate closed by default". D41 requires
-//! the gate stay closed until desync recovery has been proven for real
-//! traffic, so the default is a product decision, not an implementation
-//! detail.
-//!
-//! Every guard that survived those flips is a **source-text grep** —
-//! `apps/osl-hub-ui/src/{security,secure-local-store,f75-security-review-checklist,
-//! ratchet-public-claim}.test.ts` all assert the literal string
-//! `rn_wire_in_enabled: AtomicBool::new(false)`, and
-//! `apps/osl-hub/tests/ratchet_lane_signoff_b36.rs` does the same behind the
-//! `discord-qa-shell` feature, which no CI job enables. None of them executes
-//! the gate. `rn_capability_refusal.rs` does execute it, but `f0b4a2739`
-//! added an explicit `set_rn_wire_in_enabled(false)` to it, which is correct
-//! for a test about the disabled path and leaves the *default* covered by
-//! nothing that runs.
-//!
-//! These two tests close that: they build the state the shipping app builds,
-//! set nothing, and drive the real commands.
+//! Task 0428 changes the product default: an eligible one-to-one chat must
+//! start the OSL-RN sequence without a user setting. This file drives the real
+//! command path with a fresh `AppState::new()` and verifies the observable
+//! consequences: RN wire `0x10`, a persisted session, and an RN pin.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -65,7 +45,7 @@ fn signed_pubkeys_response(identity: &Identity) -> serde_json::Value {
     let signature = crypto::ed25519::sign(&identity.ed25519_secret, &message);
 
     serde_json::json!({
-        "user_id": identity.user_id,
+        "user_id": identity.user_id.clone(),
         "ik_x25519_pub": x25519,
         "ik_ed25519_pub": ed25519,
         "ik_mlkem768_pub": mlkem,
@@ -82,19 +62,39 @@ fn signed_pubkeys_response(identity: &Identity) -> serde_json::Value {
     })
 }
 
-fn start_pubkeys_server(responses: Vec<serde_json::Value>) -> u16 {
+fn prekey_bundle_response(identity: &Identity) -> serde_json::Value {
+    let spk = identity
+        .ratchet_initial_pub
+        .expect("fresh identity carries a signed RN prekey");
+    let signature = crypto::ed25519::sign(&identity.ed25519_secret, spk.as_bytes());
+    serde_json::json!({
+        "user_id": identity.user_id.clone(),
+        "ik_x25519_pub": STANDARD.encode(identity.x25519_public.as_bytes()),
+        "ik_ed25519_pub": STANDARD.encode(identity.ed25519_public.as_bytes()),
+        "ik_mlkem768_pub": STANDARD.encode(identity.mlkem_public_bytes),
+        "spk_pub": STANDARD.encode(spk.as_bytes()),
+        "spk_signature": STANDARD.encode(signature.as_bytes()),
+        "spk_rotated_at": "2026-08-04T00:00:00Z",
+        "opk": null,
+        "remaining_opk_count": 0,
+        "ik_ratchet_initial_pub": null,
+    })
+}
+
+fn start_keyserver(responses: Vec<(&'static str, serde_json::Value)>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback keyserver");
     let port = listener.local_addr().expect("loopback address").port();
     thread::spawn(move || {
-        for body in responses {
+        for (expected_path, body) in responses {
             let (mut stream, _) = listener.accept().expect("keyserver request");
             let mut request = [0_u8; 4096];
             let read = stream.read(&mut request).expect("read request");
+            let request_text = std::str::from_utf8(&request[..read]).expect("request UTF-8");
             assert!(
-                std::str::from_utf8(&request[..read])
-                    .expect("request UTF-8")
-                    .starts_with("GET /v1/pubkeys/"),
-                "the send command must verify the peer capability through pubkeys"
+                request_text.starts_with(expected_path),
+                "the send command must use the expected keyserver path: \
+                 expected={expected_path} actual={}",
+                request_text.lines().next().unwrap_or("<empty>")
             );
             let encoded = serde_json::to_vec(&body).expect("serialize pubkeys response");
             write!(
@@ -107,6 +107,21 @@ fn start_pubkeys_server(responses: Vec<serde_json::Value>) -> u16 {
         }
     });
     port
+}
+
+struct OslConfigDirGuard;
+
+impl Drop for OslConfigDirGuard {
+    fn drop(&mut self) {
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(None);
+    }
+}
+
+fn use_osl_config_dir(dir: &std::path::Path) -> OslConfigDirGuard {
+    keystore::set_active_account_dir(None);
+    keystore::set_base_dir_override(Some(dir.to_path_buf()));
+    OslConfigDirGuard
 }
 
 /// Build the state the app builds. **Nothing here touches
@@ -155,41 +170,57 @@ fn shipping_state_with_current_build_peer(
     state
 }
 
-/// D41: OSL-RN must not carry real traffic until desync recovery is proven.
-/// A build whose `AppState` default is open carries it on the first DM to any
-/// peer registered by a current build, with no further action by anyone.
-///
-/// Mutant that turns this RED: set
-/// `crates/ipc/src/state.rs` `rn_wire_in_enabled: AtomicBool::new(true)` —
-/// the exact edit made by `499c0261c` and `f0b4a2739`.
 #[test]
-fn shipping_default_refuses_the_rn_send_path_without_being_told_to() {
+fn new_eligible_direct_chat_reports_forward_secrecy_on_without_user_setting() {
+    let config_dir = tempfile::tempdir().expect("isolated OSL config dir");
+    let _config_guard = use_osl_config_dir(config_dir.path());
     let alice = generate_identity("rn-default-alice".to_owned());
     let bob = generate_identity("rn-default-bob".to_owned());
-    let port = start_pubkeys_server(vec![signed_pubkeys_response(&bob)]);
+    let port = start_keyserver(vec![
+        ("GET /v1/pubkeys/", signed_pubkeys_response(&bob)),
+        ("GET /v1/prekey-bundle/", prekey_bundle_response(&bob)),
+    ]);
     let alice_state = shipping_state_with_current_build_peer(alice, &bob, BOB_DID, port);
 
-    // The invariant under test, stated directly as well as exercised: a state
-    // built the way the app builds it has the activation gate closed.
     assert!(
-        !alice_state.rn_wire_in_enabled(),
-        "D41: a freshly constructed AppState must not have OSL-RN activated"
+        alice_state.rn_wire_in_enabled(),
+        "a freshly constructed AppState must enable eligible direct-chat OSL-RN"
     );
 
-    let verdict = cmd_osl_encrypt_message_v2_wire(
+    let wire = cmd_osl_encrypt_message_v2_wire(
         &alice_state,
-        "shipping default must not emit an OSL-RN wire".to_owned(),
+        "shipping default must emit an OSL-RN wire".to_owned(),
         ScopeInput::from(&Scope::dm(BOB_DID)),
         vec![BOB_DID.to_owned()],
         ALICE_DID.to_owned(),
     )
     .map(|wire| wire.content)
-    .expect_err("the shipping default must refuse the RN path, not take it");
+    .expect("eligible direct chat should send with forward secrecy on by default");
 
+    let wire_version = osl_ratchet_next::peek_wire_version(&wire);
+    assert_eq!(wire_version, Some(osl_ratchet_next::WIRE_VERSION_RN));
+    let store =
+        ipc::wire_rn::RnSessionStore::for_config_dir(config_dir.path()).expect("RN session store");
+    let session_persisted = store
+        .load_session(bob.x25519_public.as_bytes())
+        .expect("load persisted RN session")
+        .is_some();
+    let pin_rn = store
+        .load_pin(bob.x25519_public.as_bytes())
+        .expect("load RN pin")
+        .is_pinned_to_rn();
     assert!(
-        verdict.contains("wire-in is disabled"),
-        "the refusal must name the closed activation gate, not some other \
-         failure that happens to look like one: {verdict}"
+        session_persisted,
+        "eligible direct chat must persist an RN session"
+    );
+    assert!(pin_rn, "eligible direct chat must raise the RN pin");
+
+    println!(
+        "TASK 0428 direct_chat=one_to_one eligible=1 forward_secrecy=on \
+         user_setting=none wire_version=0x{:02x} session_persisted={} pin_rn={}",
+        wire_version.expect("already asserted RN wire"),
+        usize::from(session_persisted),
+        usize::from(pin_rn)
     );
 }
 
@@ -217,10 +248,7 @@ fn shipping_default_refuses_the_rn_send_path_without_being_told_to() {
 fn shipping_default_still_enters_the_rn_receive_arm() {
     let state = AppState::new();
     state.install_identity(generate_identity("rn-default-receiver".to_owned()));
-    assert!(
-        !state.rn_wire_in_enabled(),
-        "the receive assertion below is only meaningful while the send gate is closed"
-    );
+    assert!(state.rn_wire_in_enabled());
 
     // A truncated `0x10` wire: enough to route, never enough to open. It
     // reaches the accept and fails there, which is the observable difference
