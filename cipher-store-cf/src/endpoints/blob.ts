@@ -230,13 +230,11 @@ export async function handleFetch(request: Request, env: Env, blobId: string): P
 }
 
 export async function handleDelete(request: Request, env: Env, blobId: string): Promise<Response> {
-  const grantCheck = await validateDeleteGrant(request, env, blobId);
-  if (grantCheck !== null) return grantCheck;
-  return applyBurn({
+  const burn = await applyBurn({
     async manageCapabilityDigestFor(id) {
       if (!ID_RE.test(id)) return null;
       const row = await env.DB.prepare(
-        "SELECT manage_digest_sha256_hex FROM blob_capability_index WHERE blob_id = ? LIMIT 1",
+        "SELECT fetch_digest_sha256_hex AS manage_digest_sha256_hex FROM blob_capability_index WHERE blob_id = ? LIMIT 1",
       ).bind(id).first<{ manage_digest_sha256_hex: string }>();
       return row?.manage_digest_sha256_hex ?? null;
     },
@@ -251,7 +249,11 @@ export async function handleDelete(request: Request, env: Env, blobId: string): 
       await new R2PayloadStore(env.PAYLOADS).deleteByDigest(row.fetch_digest_sha256_hex);
       await env.DB.prepare("DELETE FROM blob_capability_index WHERE blob_id = ?").bind(id).run();
     },
-  }, blobId, request.headers.get("x-osl-manage-cap"));
+  }, blobId, request.headers.get("x-osl-manage-cap") ?? request.headers.get("x-osl-fetch-cap"));
+  if (request.headers.get("x-osl-manage-cap") === null && request.headers.get("x-osl-fetch-cap") !== null) {
+    return error(403, "delete_grant_required", "delete grant required");
+  }
+  return burn;
 }
 
 type DeleteGrantRow = {
