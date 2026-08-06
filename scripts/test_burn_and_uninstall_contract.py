@@ -18,6 +18,11 @@ EXPECTED_UNINSTALL_PLACE_NAMES = (
     "startup entry",
     "logs",
 )
+EXPECTED_TEMPORARY_UNINSTALL_SECTION_NAMES = (
+    "temporary files",
+    "logs",
+    "crash dumps",
+)
 
 
 def load_contract() -> dict:
@@ -36,11 +41,38 @@ def load_uninstall_footprint_map() -> dict:
     return json.loads(match.group(1))
 
 
+def load_temporary_uninstall_inventory() -> dict:
+    document = CONTRACT_PATH.read_text(encoding="utf-8")
+    match = re.search(r"```json temporary-uninstall-inventory\n(.*?)\n```", document, re.DOTALL)
+    if match is None:
+        raise ValueError("temporary uninstall inventory JSON block is missing")
+    return json.loads(match.group(1))
+
+
 def uninstall_places(uninstall_map: dict) -> list[dict]:
     places = uninstall_map["places"]
     if not isinstance(places, list):
         raise ValueError("uninstall footprint map places must be a list")
     return places
+
+
+def temporary_uninstall_sections(inventory: dict) -> list[dict]:
+    sections = inventory["sections"]
+    if not isinstance(sections, list):
+        raise ValueError("temporary uninstall inventory sections must be a list")
+    return sections
+
+
+def marked_uninstall_items(section: dict) -> list[dict]:
+    items = section["items"]
+    if not isinstance(items, list):
+        raise ValueError(f"{section['name']} items must be a list")
+    return [
+        item
+        for item in items
+        if item.get("marked_for_uninstall") is True
+        and item.get("uninstall_action") == "remove_on_uninstall"
+    ]
 
 
 def print_uninstall_footprint_map() -> int:
@@ -54,6 +86,24 @@ def print_uninstall_footprint_map() -> int:
     if any(place.get("count") != 1 for place in places):
         return 1
     return 0
+
+
+def print_temporary_uninstall_inventory() -> int:
+    sections = temporary_uninstall_sections(load_temporary_uninstall_inventory())
+    names = [section["name"] for section in sections]
+    print(f"TASK3700_TEMPORARY_UNINSTALL_SECTION_COUNT={len(names)}")
+    ok = names == list(EXPECTED_TEMPORARY_UNINSTALL_SECTION_NAMES)
+    for index, section in enumerate(sections, start=1):
+        marked = marked_uninstall_items(section)
+        marked_name = marked[0]["name"] if len(marked) == 1 else ""
+        print(
+            "TASK3700_TEMPORARY_UNINSTALL_SECTION"
+            f"[{index}]={section['name']} HANDLED_MARKED_ITEMS={len(marked)}"
+            f" MARKED_ITEM={marked_name}"
+        )
+        if len(marked) != 1:
+            ok = False
+    return 0 if ok else 1
 
 
 class BurnAndUninstallContractTest(unittest.TestCase):
@@ -82,8 +132,22 @@ class BurnAndUninstallContractTest(unittest.TestCase):
             self.assertTrue(place["locations"], f"{place['name']} must list concrete locations")
             self.assertTrue(place["source"], f"{place['name']} must name the source")
 
+    def test_temporary_uninstall_inventory_names_every_removal_section(self) -> None:
+        sections = temporary_uninstall_sections(load_temporary_uninstall_inventory())
+        self.assertEqual(
+            [section["name"] for section in sections],
+            list(EXPECTED_TEMPORARY_UNINSTALL_SECTION_NAMES),
+        )
+        for section in sections:
+            marked = marked_uninstall_items(section)
+            self.assertEqual(len(marked), 1, f"{section['name']} must mark exactly one uninstall item")
+            self.assertTrue(marked[0]["locations"], f"{section['name']} marked item must list locations")
+            self.assertTrue(marked[0]["source"], f"{section['name']} marked item must name source")
+
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--print-uninstall-map"]:
         raise SystemExit(print_uninstall_footprint_map())
+    if sys.argv[1:] == ["--print-temporary-uninstall-inventory"]:
+        raise SystemExit(print_temporary_uninstall_inventory())
     unittest.main()

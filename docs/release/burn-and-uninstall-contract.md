@@ -158,6 +158,73 @@ to this machine-readable list.
 }
 ```
 
+## Temporary uninstall inventory
+
+The uninstaller may remove OSL-owned temporary diagnostics and staging artifacts that are outside
+the user data roots above. This is not a Burn claim: message stores, identities, settings, provider
+profiles, and downloaded user files stay governed by the uninstall footprint map. Each section
+below has exactly one `marked_for_uninstall` item so the direct checker can prove the uninstaller's
+temporary-data removal work covers temporary files, logs, and crash dumps without silently omitting
+one class.
+
+```json temporary-uninstall-inventory
+{
+  "schema_version": 1,
+  "sections": [
+    {
+      "name": "temporary files",
+      "items": [
+        {
+          "name": "device transfer scratch directories",
+          "marked_for_uninstall": true,
+          "uninstall_action": "remove_on_uninstall",
+          "locations": [
+            "%LOCALAPPDATA%\\Temp\\osl-transfer-*"
+          ],
+          "removal_work": "remove matching OSL transfer scratch directories during uninstall cleanup",
+          "source": "apps/osl-hub/src/device_transfer.rs creates std::env::temp_dir()/osl-transfer-<suffix> scratch directories and best-effort removes them after use"
+        }
+      ]
+    },
+    {
+      "name": "logs",
+      "items": [
+        {
+          "name": "temporary diagnostic and startup logs",
+          "marked_for_uninstall": true,
+          "uninstall_action": "remove_on_uninstall",
+          "locations": [
+            "%LOCALAPPDATA%\\Temp\\osl-diagnostics.log",
+            "%LOCALAPPDATA%\\Temp\\osl-diagnostics.log.1",
+            "%LOCALAPPDATA%\\Temp\\osl-startup-trace.txt"
+          ],
+          "removal_work": "delete OSL-owned temporary diagnostic and startup trace files during uninstall cleanup",
+          "source": "apps/osl-hub/src/diagnostics.rs writes osl-diagnostics.log in std::env::temp_dir(); apps/osl-hub/src/main.rs and native_window_host.rs write osl-startup-trace.txt"
+        }
+      ]
+    },
+    {
+      "name": "crash dumps",
+      "items": [
+        {
+          "name": "Windows Error Reporting dumps for OSL executables",
+          "marked_for_uninstall": true,
+          "uninstall_action": "remove_on_uninstall",
+          "locations": [
+            "%LOCALAPPDATA%\\CrashDumps\\OSL Privacy*.dmp",
+            "%LOCALAPPDATA%\\CrashDumps\\osl-hub*.dmp",
+            "%LOCALAPPDATA%\\Microsoft\\Windows\\WER\\ReportArchive\\AppCrash_OSL*",
+            "%LOCALAPPDATA%\\Microsoft\\Windows\\WER\\ReportQueue\\AppCrash_OSL*"
+          ],
+          "removal_work": "remove OSL-named Windows crash dump and WER report artifacts during uninstall cleanup",
+          "source": "Windows may persist crash dumps for the OSL Privacy / osl-hub process outside OSL data roots; the uninstall inventory treats only OSL-named dump artifacts as removable"
+        }
+      ]
+    }
+  ]
+}
+```
+
 ## Required wording rules for T7 and T11
 
 - “Burn local data” is appropriate for the local action. “Uninstall OSL” is a separate action.
