@@ -845,6 +845,17 @@ pub fn scrubImapVerify(
     scrub_imap_verify(grant, reviewed)
 }
 
+pub fn delete_prepared_with_grant(
+    mailbox: &mut ImapMailbox,
+    grant: &mut ImapDeleteGrant,
+    context: ImapDeleteContext,
+    prepared: &PreparedImapDelete,
+) -> Result<ImapDeleteReceipt, ImapPolicyError> {
+    still_authorizes_imap_delete(context, grant, prepared)?;
+    grant.used = true;
+    delete_prepared(mailbox, prepared)
+}
+
 pub fn still_authorizes_imap_delete(
     context: ImapDeleteContext,
     grant: &ImapDeleteGrant,
@@ -856,11 +867,14 @@ pub fn still_authorizes_imap_delete(
     if context.phase != ImapDeletePhase::Executing || grant.phase != ImapDeletePhase::Executing {
         return Err(ImapPolicyError::PhaseRefused);
     }
-    if context.now_unix_ms > grant.deadline_unix_ms {
+    if context.now_unix_ms >= grant.deadline_unix_ms {
         return Err(ImapPolicyError::GrantExpired);
     }
     if grant.revoked {
         return Err(ImapPolicyError::AuthorityRefused);
+    }
+    if grant.used {
+        return Err(ImapPolicyError::SingleUseAuthorityRequired);
     }
     if grant.owner_osl_user_id != candidate.owner_osl_user_id
         || grant.account_id != candidate.account_id
@@ -1060,6 +1074,24 @@ mod tests {
         )
         .unwrap();
         (mailbox, prepared)
+    }
+
+    fn executable_grant(prepared: &PreparedImapDelete, now_unix_ms: i64) -> ImapDeleteGrant {
+        let mut fingerprints = BTreeSet::new();
+        fingerprints.insert(prepared.fingerprint);
+        ImapDeleteGrant {
+            grant_id: "task-0410-grant".to_owned(),
+            authority: ImapGrantAuthority::Attended,
+            owner_osl_user_id: prepared.owner_osl_user_id.clone(),
+            account_id: prepared.account_id.clone(),
+            batch_digest: prepared.batch_digest,
+            message_fingerprints: fingerprints,
+            phase: ImapDeletePhase::Executing,
+            entitlement: ImapEntitlement::Pro,
+            deadline_unix_ms: now_unix_ms + 1_000,
+            used: false,
+            revoked: false,
+        }
     }
 
     #[test]
@@ -1316,6 +1348,58 @@ mod tests {
         assert_eq!(
             still_authorizes_imap_delete(context, &grant, &prepared),
             Err(ImapPolicyError::FingerprintMismatch)
+        );
+    }
+
+    #[test]
+    fn task_0410_delete_grant_expiry_and_replay_block_refuses_without_deleting_record() {
+        let (mut fresh_mailbox, prepared) = fixture_and_prepared();
+        let context = ImapDeleteContext {
+            entitlement: ImapEntitlement::Pro,
+            phase: ImapDeletePhase::Executing,
+            now_unix_ms: 10_000,
+        };
+
+        let mut fresh = executable_grant(&prepared, context.now_unix_ms);
+        assert!(
+            delete_prepared_with_grant(&mut fresh_mailbox, &mut fresh, context, &prepared).is_ok()
+        );
+        assert_eq!(fresh_mailbox.deleted_count(), 1);
+        assert!(fresh.used);
+        println!(
+            "TASK0410 fresh_grant delete_result=ok deleted_count={} used={}",
+            fresh_mailbox.deleted_count(),
+            fresh.used
+        );
+
+        let (mut used_mailbox, used_prepared) = fixture_and_prepared();
+        let mut used = executable_grant(&used_prepared, context.now_unix_ms);
+        used.used = true;
+        let used_refusal =
+            delete_prepared_with_grant(&mut used_mailbox, &mut used, context, &used_prepared)
+                .unwrap_err();
+        assert_eq!(used_refusal, ImapPolicyError::SingleUseAuthorityRequired);
+        assert_eq!(used_mailbox.deleted_count(), 0);
+        println!(
+            "TASK0410 used_grant refusal={used_refusal:?} deleted_count={}",
+            used_mailbox.deleted_count()
+        );
+
+        let (mut expired_mailbox, expired_prepared) = fixture_and_prepared();
+        let mut expired = executable_grant(&expired_prepared, context.now_unix_ms);
+        expired.deadline_unix_ms = context.now_unix_ms;
+        let expired_refusal = delete_prepared_with_grant(
+            &mut expired_mailbox,
+            &mut expired,
+            context,
+            &expired_prepared,
+        )
+        .unwrap_err();
+        assert_eq!(expired_refusal, ImapPolicyError::GrantExpired);
+        assert_eq!(expired_mailbox.deleted_count(), 0);
+        println!(
+            "TASK0410 expired_grant refusal={expired_refusal:?} deleted_count={}",
+            expired_mailbox.deleted_count()
         );
     }
 
