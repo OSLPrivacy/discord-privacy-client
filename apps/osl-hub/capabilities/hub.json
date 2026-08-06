@@ -119,6 +119,7 @@
     "allow-prepare-osl-chat-text",
     "allow-create-osl-chat-direct-message-conversation",
     "allow-list-osl-chat-conversations",
+    "allow-create-osl-chat-group-conversation",
     "allow-open-osl-chat-text",
     "allow-list-osl-chat-history",
     "allow-select-osl-chat-attachment",
