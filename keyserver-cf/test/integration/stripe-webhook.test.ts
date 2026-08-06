@@ -7,6 +7,7 @@ import {
   uniqueSubId,
 } from "./helpers-stripe.js";
 import { sha256Hex } from "../../src/lib/crypto-watcher-auth.js";
+import { generateLicenseKey } from "../../src/lib/license.js";
 
 function browserClaimToken(): string {
   const bytes = new Uint8Array(32);
@@ -1098,5 +1099,106 @@ describe("POST /v1/stripe/webhook state machine", () => {
       status: "delivery_ready",
       encrypted_license: "ciphertext",
     });
+  });
+});
+
+describe("TASK 3199 refunded prepaid code enforcement", () => {
+  const licenseHmac = "osl-license-test-secret-v1";
+
+  async function buyOneTimeCode(label: string): Promise<{
+    plaintext: string;
+    paymentIntentId: string;
+    checkoutKind: string;
+  }> {
+    const { plaintext, hash } = await generateLicenseKey(licenseHmac);
+    const sessionId = `cs_task3199_${label}_${crypto.randomUUID().replace(/-/g, "")}`;
+    const paymentIntentId = `pi_task3199_${label}_${crypto.randomUUID().replace(/-/g, "")}`;
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO stripe_checkout_claims (
+         session_id, claim_hash, delivery_public_key_spki,
+         encrypted_license, license_hash, subscription_id, status,
+         created_at, expires_at, delivered_at
+       ) VALUES (?, ?, 'public-key', 'ciphertext', ?, NULL, 'pending', ?, ?, NULL)`,
+    ).bind(sessionId, `claim-${sessionId}`, hash, now, now + 3600).run();
+
+    const checkout = await postSignedWebhook(SELF, {
+      id: uniqueEventId(`evt_task3199_checkout_${label}`),
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          id: sessionId,
+          mode: "payment",
+          metadata: { osl_plan: "pro", osl_purchase: "one-time", osl_fulfillment: "instant-v1" },
+          payment_status: "paid",
+          payment_intent: paymentIntentId,
+          amount_total: 500,
+          currency: "usd",
+        },
+      },
+    });
+    expect(checkout.status).toBe(200);
+    const checkoutBody = await checkout.json() as { kind: string };
+    expect(checkoutBody.kind).toBe("applied");
+    return { plaintext, paymentIntentId, checkoutKind: checkoutBody.kind };
+  }
+
+  async function redeem(licenseKey: string): Promise<Record<string, unknown>> {
+    const response = await SELF.fetch("http://test/v1/license/redeem", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ license_key: licenseKey }),
+    });
+    expect(response.status).toBe(200);
+    return await response.json() as Record<string, unknown>;
+  }
+
+  it("refund message stops one redeemed code while another account's code still works", async () => {
+    const first = await buyOneTimeCode("refunded");
+    const second = await buyOneTimeCode("unrefunded");
+
+    const firstBeforeRefund = await redeem(first.plaintext);
+    expect(firstBeforeRefund.status).toBe("ACTIVE");
+
+    const refund = await postSignedWebhook(SELF, {
+      id: uniqueEventId("evt_task3199_refund"),
+      type: "charge.refunded",
+      data: {
+        object: {
+          id: `ch_task3199_${crypto.randomUUID().replace(/-/g, "")}`,
+          payment_intent: first.paymentIntentId,
+          amount: 500,
+          amount_refunded: 500,
+          currency: "usd",
+        },
+      },
+    });
+    expect(refund.status).toBe(200);
+    const refundBody = await refund.json() as { kind: string };
+    expect(refundBody.kind).toBe("applied");
+
+    const firstAfterRefund = await redeem(first.plaintext);
+    expect(firstAfterRefund).toMatchObject({
+      status: "REVOKED",
+      checksum_ok: true,
+      error: "this code was refunded",
+    });
+
+    const secondAfterRefund = await redeem(second.plaintext);
+    expect(secondAfterRefund.status).toBe("ACTIVE");
+
+    console.log(
+      "TASK3199 keyserver " +
+      JSON.stringify({
+        bought_codes: 2,
+        first_checkout_kind: first.checkoutKind,
+        second_checkout_kind: second.checkoutKind,
+        first_pro_before_refund: firstBeforeRefund.status,
+        refund_kind: refundBody.kind,
+        first_after_refund_status: firstAfterRefund.status,
+        first_after_refund_error: firstAfterRefund.error,
+        second_unrefunded_status: secondAfterRefund.status,
+      }),
+    );
   });
 });

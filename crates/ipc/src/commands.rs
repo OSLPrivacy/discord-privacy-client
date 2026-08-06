@@ -12361,9 +12361,15 @@ pub fn cmd_osl_validate_license_with_dir_and_url(
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0);
+                let cache_status = resp
+                    .error
+                    .as_ref()
+                    .filter(|_| resp.status == "REVOKED")
+                    .unwrap_or(&resp.status)
+                    .clone();
                 let inner = keystore::LicenseCacheInner {
                     license_plaintext: license_key.clone(),
-                    last_validated_status: resp.status.clone(),
+                    last_validated_status: cache_status,
                     redeemed_at: resp.redeemed_at,
                     expires_at: resp.expires_at,
                     current_period_end: resp.expires_at,
@@ -12394,6 +12400,7 @@ pub fn cmd_osl_validate_license_with_dir_and_url(
             }
             Ok(keystore::LicenseValidateResponse {
                 status: resp.status,
+                error: None,
                 current_period_end: resp.expires_at,
                 checksum_ok: resp.checksum_ok,
             })

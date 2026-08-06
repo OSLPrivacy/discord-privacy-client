@@ -21,6 +21,8 @@ struct LicenseRedeemRequest<'a> {
 pub struct LicenseRedeemResponse {
     pub status: String,
     #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
     pub redeemed_at: Option<i64>,
     #[serde(default)]
     pub expires_at: Option<i64>,

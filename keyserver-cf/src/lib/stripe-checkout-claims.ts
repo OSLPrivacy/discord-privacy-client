@@ -276,7 +276,7 @@ async function reconcileTerminalOneTimeObservation(
   );
 }
 
-async function revokeOneTimeLicensesForPayment(
+export async function revokeOneTimeLicensesForPayment(
   db: D1Database,
   paymentIntentId: string,
   reason: "chargeback" | "manual",
