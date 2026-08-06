@@ -15,6 +15,11 @@ export interface EnclavePostMembershipReview { audienceId: string; audienceName:
 export interface EnclavePostReady { status: "ready"; audienceId: string; audienceName: string; body: string; membershipReview: EnclavePostMembershipReview; encryptedForAudience: true; feedOrder: "chronological"; sendAuthority: "user-action-required"; }
 export interface EnclavePostRefused { status: "refused"; reason: EnclavePostRefusal; audienceId: string | null; audienceName: string | null; membershipReview: EnclavePostMembershipReview | null; encryptedForAudience: false; sendAuthority: "none"; }
 export type EnclavePostComposition = EnclavePostReady | EnclavePostRefused;
+export interface EnclaveServerMember { memberId: string; name: string; }
+export interface EnclaveServerContentDraft { contentId: string; authorMemberId: string; body: string; }
+export interface EnclaveServerContent { contentId: string; authorMemberId: string; body: string; }
+export interface EnclaveServerContentState { serverId: string; members: EnclaveServerMember[]; content: EnclaveServerContent[]; }
+export type EnclaveServerContentResult = { status: "accepted"; contentId: string; serverContentCount: number } | { status: "refused"; reason: "invalid-server" | "invalid-content" | "not-server-member" | "duplicate-content"; memberId: string | null; serverContentCount: number };
 
 const kinds = new Set(["note", "document", "spreadsheet", "drawing", "presentation", "photo", "video", "audio", "model3d"]);
 const visibility = new Set(["visible", "count-only", "hidden"]);
@@ -22,6 +27,8 @@ const record = (value: unknown): value is Record<string, unknown> => typeof valu
 const exact = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 const boundedText = (value: unknown, maxBytes: number): value is string => typeof value === "string" && value.trim().length > 0 && !/[\p{Cc}\p{Cf}]/u.test(value) && new TextEncoder().encode(value).byteLength <= maxBytes;
 const boundedPostBody = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0 && !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\p{Cf}]/u.test(value) && new TextEncoder().encode(value).byteLength <= 16 * 1024;
+const localId = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{32}$/u.test(value);
+const contentId = (value: unknown): value is string => typeof value === "string" && /^[a-z0-9][a-z0-9-]{0,79}$/u.test(value);
 export function parseSharedDocument(value: unknown): OslSharedDocument | null { if (!record(value) || !exact(value, ["kind", "title", "body", "folder", "tags", "favorite"]) || !kinds.has(String(value.kind)) || typeof value.title !== "string" || new TextEncoder().encode(value.title).byteLength > 240 || typeof value.body !== "string" || new TextEncoder().encode(value.body).byteLength > 256 * 1024 || typeof value.folder !== "string" || new TextEncoder().encode(value.folder).byteLength > 80 || !Array.isArray(value.tags) || value.tags.length > 16 || !value.tags.every((tag) => typeof tag === "string" && tag.length > 0 && new TextEncoder().encode(tag).byteLength <= 32) || typeof value.favorite !== "boolean") return null; return value as unknown as OslSharedDocument; }
 export function sharedDocument(note: OslNote): OslSharedDocument { return { kind: note.kind, title: note.title, body: note.body, folder: note.folder, tags: [...note.tags], favorite: note.favorite }; }
 function parseInvitation(value: unknown): OslLanInvitation | null { if (!record(value) || !exact(value, ["code", "address", "roomId", "encrypted", "requiresCloud", "requiresPro"]) || typeof value.code !== "string" || value.code.length > 256 || typeof value.address !== "string" || typeof value.roomId !== "string" || !/^[a-f0-9]{32}$/u.test(value.roomId) || value.encrypted !== true || value.requiresCloud !== false || value.requiresPro !== false) return null; return value as unknown as OslLanInvitation; }
@@ -64,6 +71,23 @@ export function composeEnclavePost(audienceInput: unknown, bodyInput: unknown): 
   if (!audience.canPost) return enclavePostRefusal(audience.refusal ?? "authority", audience, membershipReview);
   if (!boundedPostBody(bodyInput)) return enclavePostRefusal("draft", audience, membershipReview);
   return { status: "ready", audienceId: audience.audienceId, audienceName: audience.name, body: bodyInput.trim(), membershipReview, encryptedForAudience: true, feedOrder: "chronological", sendAuthority: "user-action-required" };
+}
+
+export function createEnclaveServerContent(state: EnclaveServerContentState, draft: EnclaveServerContentDraft): EnclaveServerContentResult {
+  if (!localId(state.serverId) || !Array.isArray(state.members) || !Array.isArray(state.content) || state.members.some((member) => !localId(member.memberId) || !boundedText(member.name, 80)) || state.content.some((item) => !contentId(item.contentId) || !localId(item.authorMemberId) || !boundedPostBody(item.body))) {
+    return { status: "refused", reason: "invalid-server", memberId: null, serverContentCount: Array.isArray(state.content) ? state.content.length : 0 };
+  }
+  if (!contentId(draft.contentId) || !localId(draft.authorMemberId) || !boundedPostBody(draft.body)) {
+    return { status: "refused", reason: "invalid-content", memberId: localId(draft.authorMemberId) ? draft.authorMemberId : null, serverContentCount: state.content.length };
+  }
+  if (!state.members.some((member) => member.memberId === draft.authorMemberId)) {
+    return { status: "refused", reason: "not-server-member", memberId: draft.authorMemberId, serverContentCount: state.content.length };
+  }
+  if (state.content.some((item) => item.contentId === draft.contentId)) {
+    return { status: "refused", reason: "duplicate-content", memberId: draft.authorMemberId, serverContentCount: state.content.length };
+  }
+  state.content.push({ contentId: draft.contentId, authorMemberId: draft.authorMemberId, body: draft.body.trim() });
+  return { status: "accepted", contentId: draft.contentId, serverContentCount: state.content.length };
 }
 
 export async function hostOslLanRoom(document: OslSharedDocument): Promise<OslLanSession | null> { if (!isTauriRuntime() || !parseSharedDocument(document)) return null; return parseLanSession(await invoke("host_osl_lan_room", { document })); }
