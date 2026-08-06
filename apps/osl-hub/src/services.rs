@@ -154,6 +154,22 @@ pub struct ServiceMessageReadBatch {
     pub messages: Vec<ServiceMessageSnapshot>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceAccountFindingRuleRunRequest {
+    pub account_id: String,
+    pub selected_rule_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceAccountFindingRuleRunReceipt {
+    pub service_id: ServiceKind,
+    pub account_id: String,
+    pub selected_rule_names: Vec<String>,
+    pub selected_rule_count: usize,
+}
+
 pub trait AccountServiceMessageConnection {
     fn service_id(&self) -> ServiceKind;
     fn account_id(&self) -> &str;
@@ -161,6 +177,15 @@ pub trait AccountServiceMessageConnection {
         &self,
         place: &ServiceMessagePlace,
     ) -> Result<Vec<ServiceMessageSnapshot>, String>;
+}
+
+pub trait AccountServiceRunnerConnection {
+    fn service_id(&self) -> ServiceKind;
+    fn account_id(&self) -> &str;
+    fn start_finding_rule_run(
+        &self,
+        request: &ServiceAccountFindingRuleRunRequest,
+    ) -> Result<(), String>;
 }
 
 #[derive(Default)]
@@ -240,6 +265,44 @@ pub fn read_messages_through_approved_account_service_connection(
         place_count: places.len(),
         message_count: messages.len(),
         messages,
+    })
+}
+
+pub fn start_runner_for_approved_account_service_connection(
+    queue: &ServiceAccountRunQueue,
+    connection: &dyn AccountServiceRunnerConnection,
+    selected_rule_names: &[String],
+) -> Result<ServiceAccountFindingRuleRunReceipt, String> {
+    if connection.service_id() != queue.service_id {
+        return Err("service runner connection is bound to the wrong service".to_owned());
+    }
+    if !valid_account_id(connection.account_id()) {
+        return Err("service runner connection account id is invalid".to_owned());
+    }
+    let active_accounts = queue
+        .accounts
+        .iter()
+        .filter(|account| account.status == ServiceAccountRunStatus::Active)
+        .collect::<Vec<_>>();
+    let [active] = active_accounts.as_slice() else {
+        return Err("service runner requires exactly one active approved account".to_owned());
+    };
+    if active.account_id != connection.account_id() {
+        return Err("service runner requires the active approved account connection".to_owned());
+    }
+
+    let selected_rule_names = validated_selected_finding_rule_names(selected_rule_names)?;
+    let request = ServiceAccountFindingRuleRunRequest {
+        account_id: active.account_id.clone(),
+        selected_rule_names: selected_rule_names.clone(),
+    };
+    connection.start_finding_rule_run(&request)?;
+
+    Ok(ServiceAccountFindingRuleRunReceipt {
+        service_id: queue.service_id,
+        account_id: request.account_id,
+        selected_rule_count: selected_rule_names.len(),
+        selected_rule_names,
     })
 }
 
@@ -349,6 +412,32 @@ fn validate_service_message_snapshot(message: &ServiceMessageSnapshot) -> Result
         return Err("service message text is invalid".to_owned());
     }
     Ok(())
+}
+
+fn validated_selected_finding_rule_names(rule_names: &[String]) -> Result<Vec<String>, String> {
+    if rule_names.is_empty() {
+        return Err("service runner requires at least one selected finding rule".to_owned());
+    }
+    let mut seen = BTreeSet::new();
+    let mut selected = Vec::with_capacity(rule_names.len());
+    for rule_name in rule_names {
+        if !valid_finding_rule_name(rule_name) {
+            return Err("selected finding rule name is invalid".to_owned());
+        }
+        if !seen.insert(rule_name.as_str()) {
+            return Err("selected finding rule name is duplicated".to_owned());
+        }
+        selected.push(rule_name.clone());
+    }
+    Ok(selected)
+}
+
+fn valid_finding_rule_name(rule_name: &str) -> bool {
+    !rule_name.is_empty()
+        && rule_name.len() <= 64
+        && rule_name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
 }
 
 fn validate_service_message_id(label: &str, value: &str) -> Result<(), String> {
@@ -1479,6 +1568,59 @@ mod tests {
             .join(",")
     }
 
+    struct FixtureRunnerServiceConnection {
+        service_id: ServiceKind,
+        account_id: String,
+        requests: std::sync::Mutex<Vec<ServiceAccountFindingRuleRunRequest>>,
+    }
+
+    impl FixtureRunnerServiceConnection {
+        fn new(service_id: ServiceKind, account_id: String) -> Self {
+            Self {
+                service_id,
+                account_id,
+                requests: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn recorded_requests(&self) -> Vec<ServiceAccountFindingRuleRunRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+
+        fn recorded_selected_rule_names(&self) -> Vec<String> {
+            self.recorded_requests()
+                .into_iter()
+                .flat_map(|request| request.selected_rule_names)
+                .collect()
+        }
+    }
+
+    impl AccountServiceRunnerConnection for FixtureRunnerServiceConnection {
+        fn service_id(&self) -> ServiceKind {
+            self.service_id
+        }
+
+        fn account_id(&self) -> &str {
+            &self.account_id
+        }
+
+        fn start_finding_rule_run(
+            &self,
+            request: &ServiceAccountFindingRuleRunRequest,
+        ) -> Result<(), String> {
+            self.requests.lock().unwrap().push(request.clone());
+            Ok(())
+        }
+    }
+
+    fn rule_names(names: &[String]) -> String {
+        names
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
     #[test]
     fn task_1423_service_connection_fixture_yields_messages_from_all_supplied_place_types() {
         let _serial = crate::global_keystore_test_lock();
@@ -1572,6 +1714,87 @@ mod tests {
         }
         assert!(unapproved_result.is_err());
         assert!(refused_connection.called_place_types().is_empty());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn task_1424_direct_run_reads_approved_fixture_account_and_records_selected_rule_names() {
+        let _serial = crate::global_keystore_test_lock();
+        let path = temporary_registry();
+        let state = ServiceRegistryState::load(path.clone());
+        let approved = state
+            .create_for_owner(OWNER_A, ServiceKind::Discord, "Approved".to_owned())
+            .unwrap();
+        let unapproved = state
+            .create_for_owner(OWNER_A, ServiceKind::Discord, "Unapproved".to_owned())
+            .unwrap();
+        let queue = state
+            .run_queue_for_owner(OWNER_A, ServiceKind::Discord, &[approved.id.clone()])
+            .unwrap();
+        let selected_rule_names = vec![
+            "credential".to_owned(),
+            "payment_card".to_owned(),
+            "precise_location".to_owned(),
+        ];
+        let approved_connection =
+            FixtureRunnerServiceConnection::new(ServiceKind::Discord, approved.id.clone());
+        let unapproved_connection =
+            FixtureRunnerServiceConnection::new(ServiceKind::Discord, unapproved.id.clone());
+
+        let receipt = start_runner_for_approved_account_service_connection(
+            &queue,
+            &approved_connection,
+            &selected_rule_names,
+        )
+        .unwrap();
+        let unapproved_result = start_runner_for_approved_account_service_connection(
+            &queue,
+            &unapproved_connection,
+            &selected_rule_names,
+        );
+        let recorded_requests = approved_connection.recorded_requests();
+        let recorded_rule_names = approved_connection.recorded_selected_rule_names();
+        let unapproved_requests = unapproved_connection.recorded_requests();
+
+        println!("task_1424_direct_run=start_runner_for_approved_account_service_connection");
+        println!(
+            "task_1424_approved_fixture_account_id={}",
+            receipt.account_id
+        );
+        println!(
+            "task_1424_selected_rule_names={}",
+            rule_names(&selected_rule_names)
+        );
+        println!(
+            "task_1424_recorded_selected_rule_names={}",
+            rule_names(&recorded_rule_names)
+        );
+        println!(
+            "task_1424_recorded_request_account_id={}",
+            recorded_requests[0].account_id
+        );
+        println!(
+            "task_1424_selected_rule_count={}",
+            receipt.selected_rule_count
+        );
+        println!(
+            "task_1424_unapproved_fixture_start_calls={}",
+            unapproved_requests.len()
+        );
+
+        assert_eq!(receipt.service_id, ServiceKind::Discord);
+        assert_eq!(receipt.account_id, approved.id);
+        assert_eq!(receipt.selected_rule_names, selected_rule_names);
+        assert_eq!(receipt.selected_rule_count, 3);
+        assert_eq!(recorded_requests.len(), 1);
+        assert_eq!(recorded_requests[0].account_id, approved.id);
+        assert_eq!(
+            recorded_requests[0].selected_rule_names,
+            selected_rule_names
+        );
+        assert_eq!(recorded_rule_names, selected_rule_names);
+        assert!(unapproved_result.is_err());
+        assert!(unapproved_requests.is_empty());
         let _ = fs::remove_file(path);
     }
 
