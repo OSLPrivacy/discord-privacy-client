@@ -45,6 +45,16 @@ impl ProtectedPlaceAction {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedPlaceDirectionStateDto {
+    pub saved_directions: u8,
+    pub whitelist_state: String,
+    pub verification_state: String,
+    pub first_to_second: bool,
+    pub second_to_first: bool,
+}
+
 // 9-TD2.3: F0-FIX3 trace logs.
 //
 // Set the `OSL_TRACE` env var (any value) to surface the snowflake
@@ -118,6 +128,38 @@ pub fn cmd_osl_trace_allowed_place_protected_message_path(
         place.stable_id
     ));
     Ok(trace)
+}
+
+pub fn compare_allowed_place_direction_state(
+    app_data_dir: PathBuf,
+    first_to_second_place: crate::allowed_places::AllowedPlaceRecord,
+    second_to_first_place: crate::allowed_places::AllowedPlaceRecord,
+) -> Result<AllowedPlaceDirectionStateDto, String> {
+    let first_to_second =
+        crate::allowed_places::is_allowed_place_record(&app_data_dir, &first_to_second_place)
+            .map_err(|e| format!("OSL: allowed-place direction check failed: {e}"))?;
+    let second_to_first =
+        crate::allowed_places::is_allowed_place_record(&app_data_dir, &second_to_first_place)
+            .map_err(|e| format!("OSL: allowed-place direction check failed: {e}"))?;
+    let saved_directions = u8::from(first_to_second) + u8::from(second_to_first);
+    let whitelist_state = match saved_directions {
+        2 => "two-way",
+        1 => "one-way",
+        _ => "none",
+    };
+    let verification_state = if saved_directions == 2 {
+        "visible"
+    } else {
+        "hidden"
+    };
+
+    Ok(AllowedPlaceDirectionStateDto {
+        saved_directions,
+        whitelist_state: whitelist_state.to_string(),
+        verification_state: verification_state.to_string(),
+        first_to_second,
+        second_to_first,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
