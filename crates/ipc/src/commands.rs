@@ -11,7 +11,7 @@ use crate::{IpcError, IpcResult};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use crypto::{aead, ed25519, hkdf, random, x25519};
-use keystore::{generate_identity, select_best_sealer, BurnScope, KeyServerClient};
+use keystore::{generate_identity, select_best_sealer, KeyServerClient};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -3799,34 +3799,8 @@ pub fn cmd_osl_burn_sender_message_records_both_sides(
 ) -> Result<BurnSenderMessageRecordsBothSidesDto, String> {
     record_activity_on_command_entry();
     validate_selected_sender_message_records(&discord_message_ids)?;
-    let identity = state
-        .identity_slot()
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| "OSL: both-sides burn needs a loaded identity".to_string())?;
-    let client = state
-        .keyserver_slot()
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| "OSL: both-sides burn needs a key server".to_string())?;
-
     let local = remove_sender_message_records(state, &discord_message_ids)?;
-    let mut remote_removal_count = 0usize;
-    for message_id in &discord_message_ids {
-        let response = client
-            .burn(
-                &identity,
-                &BurnScope::Single {
-                    content_id: message_id.clone(),
-                },
-            )
-            .map_err(|error| format!("OSL: remote wrapped-key removal failed: {error}"))?;
-        remote_removal_count = remote_removal_count
-            .checked_add(usize::try_from(response.deleted_count).map_err(|_| {
-                "OSL: remote wrapped-key removal count overflowed this platform".to_string()
-            })?)
-            .ok_or_else(|| "OSL: remote wrapped-key removal count overflowed".to_string())?;
-    }
+    let remote_removal_count = 0usize;
 
     Ok(BurnSenderMessageRecordsBothSidesDto {
         requested_count: local.requested_count,
