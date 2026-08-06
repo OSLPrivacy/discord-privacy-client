@@ -15890,6 +15890,18 @@ pub struct GuildDto {
     pub channel_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ServerChannelDto {
+    pub server_id: String,
+    pub channel_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct OslChatServerChannelSelectionDto {
+    pub selected: ServerChannelDto,
+    pub servers: Vec<GuildDto>,
+}
+
 /// 9-C2: boot.js pushes the user's friend-ids snapshot here on
 /// each gateway READY. Ephemeral — not persisted; repopulated on
 /// reconnect. Read via [`cmd_osl_get_friend_ids`].
@@ -16082,6 +16094,63 @@ pub fn cmd_osl_get_guild_list(state: &AppState) -> Result<Vec<GuildDto>, String>
     record_activity_on_command_entry();
     let g = state.guild_list.lock().expect("guild_list mutex poisoned");
     Ok(g.clone())
+}
+
+/// Adds one stable channel identity under its server identity.
+///
+/// This is the direct command boundary for server-channel discovery. The
+/// channel id is not derived from mutable display text, and replaying the same
+/// server/channel observation leaves one channel entry.
+pub fn cmd_osl_create_server_channel(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+) -> Result<ServerChannelDto, String> {
+    record_activity_on_command_entry();
+    if server_id.trim().is_empty() {
+        return Err("OSL: server_id is empty".to_string());
+    }
+    if channel_id.trim().is_empty() {
+        return Err("OSL: channel_id is empty".to_string());
+    }
+
+    {
+        let mut guilds = state.guild_list.lock().expect("guild_list mutex poisoned");
+        match guilds.iter_mut().find(|guild| guild.id == server_id) {
+            Some(guild) => {
+                if !guild.channel_ids.iter().any(|known| known == &channel_id) {
+                    guild.channel_ids.push(channel_id.clone());
+                }
+            }
+            None => guilds.push(GuildDto {
+                id: server_id.clone(),
+                name: server_id.clone(),
+                member_ids: Vec::new(),
+                channel_ids: vec![channel_id.clone()],
+            }),
+        }
+    }
+
+    Ok(ServerChannelDto {
+        server_id,
+        channel_id,
+    })
+}
+
+/// Select one OSL Chats server channel and return the refreshed server list.
+///
+/// Selection is also discovery: a direct user action against a server/channel
+/// identity records that channel under its server before Chats renders the
+/// selectable channel list.
+pub fn cmd_osl_select_chat_server_channel(
+    state: &AppState,
+    server_id: String,
+    channel_id: String,
+) -> Result<OslChatServerChannelSelectionDto, String> {
+    record_activity_on_command_entry();
+    let selected = cmd_osl_create_server_channel(state, server_id, channel_id)?;
+    let servers = cmd_osl_get_guild_list(state)?;
+    Ok(OslChatServerChannelSelectionDto { selected, servers })
 }
 
 /// 9-C2: bulk-whitelist N peers under DM scope (one DM scope per
