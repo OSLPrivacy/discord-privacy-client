@@ -25,8 +25,9 @@ use osl_privacy_hub::broker::{
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
 use osl_privacy_hub::security::{
-    add_friend_code, export_friend_code, manual_peer_binding, set_manual_peer_scope_permission,
-    set_scope_security, verify_friend_safety_number, HubSecurityState,
+    add_friend_code, export_friend_code, manual_peer_binding, set_friend_account_reach_choice,
+    set_manual_peer_scope_permission, set_scope_security, verify_friend_safety_number,
+    HubSecurityState,
 };
 use osl_privacy_hub::service_host::ServiceHostState;
 use serde_json::{json, Value};
@@ -934,6 +935,14 @@ impl Peer {
             true,
         )
         .expect("approve manual peer scope");
+        set_friend_account_reach_choice(
+            &self.security,
+            activated.person_id.clone(),
+            "discord".to_owned(),
+            self.account_id.clone(),
+            true,
+        )
+        .expect("tick native Discord account reach");
         set_scope_security(&self.security, activated.scope.clone(), 3600, true)
             .expect("enable decrypted display for this scope");
         *self.scope.lock().unwrap_or_else(|error| error.into_inner()) =
@@ -993,6 +1002,14 @@ impl Peer {
             true,
         )
         .expect("approve OSL Chat scope");
+        set_friend_account_reach_choice(
+            &self.security,
+            activated.person_id.clone(),
+            "osl-chat".to_owned(),
+            "osl-main".to_owned(),
+            true,
+        )
+        .expect("tick OSL Chat account reach");
         set_scope_security(&self.security, activated.scope.clone(), 3600, true)
             .expect("enable decrypted display for OSL Chat");
         *self.scope.lock().unwrap_or_else(|error| error.into_inner()) =

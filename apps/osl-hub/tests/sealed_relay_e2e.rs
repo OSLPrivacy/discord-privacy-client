@@ -7,8 +7,9 @@ use osl_privacy_hub::broker::{
 };
 use osl_privacy_hub::core_bridge::HubCoreState;
 use osl_privacy_hub::security::{
-    add_friend_code, export_friend_code, manual_peer_binding, set_manual_peer_scope_permission,
-    set_scope_security, verify_friend_safety_number, HubSecurityState,
+    add_friend_code, export_friend_code, manual_peer_binding, set_friend_account_reach_choice,
+    set_manual_peer_scope_permission, set_scope_security, verify_friend_safety_number,
+    HubSecurityState,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -890,6 +891,14 @@ pub fn osl_chat_message_survives_a_lost_wrapped_key_response() {
         true,
     )
     .unwrap();
+    set_friend_account_reach_choice(
+        &alice_security,
+        alice_context.person_id.clone(),
+        "osl-chat".to_owned(),
+        "osl-main".to_owned(),
+        true,
+    )
+    .unwrap();
     set_scope_security(&alice_security, alice_context.scope.clone(), 3600, true).unwrap();
 
     TestStorage::activate(&bob_dir);
@@ -916,6 +925,14 @@ pub fn osl_chat_message_survives_a_lost_wrapped_key_response() {
         "osl-main",
         bob_context.person_id.clone(),
         bob_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_friend_account_reach_choice(
+        &bob_security,
+        bob_context.person_id.clone(),
+        "osl-chat".to_owned(),
+        "osl-main".to_owned(),
         true,
     )
     .unwrap();
@@ -1091,6 +1108,14 @@ pub fn osl_chat_queues_a_relay_notice_the_key_server_never_accepted() {
         true,
     )
     .unwrap();
+    set_friend_account_reach_choice(
+        &alice_security,
+        alice_context.person_id.clone(),
+        "osl-chat".to_owned(),
+        "osl-main".to_owned(),
+        true,
+    )
+    .unwrap();
     set_scope_security(&alice_security, alice_context.scope.clone(), 3600, true).unwrap();
 
     TestStorage::activate(&bob_dir);
@@ -1117,6 +1142,14 @@ pub fn osl_chat_queues_a_relay_notice_the_key_server_never_accepted() {
         "osl-main",
         bob_context.person_id.clone(),
         bob_context.scope.clone(),
+        true,
+    )
+    .unwrap();
+    set_friend_account_reach_choice(
+        &bob_security,
+        bob_context.person_id.clone(),
+        "osl-chat".to_owned(),
+        "osl-main".to_owned(),
         true,
     )
     .unwrap();

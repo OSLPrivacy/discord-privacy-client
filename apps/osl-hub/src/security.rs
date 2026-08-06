@@ -1876,12 +1876,31 @@ fn manual_peer_scope_approved_for_binding(
     let dir = config_dir()?;
     let prefs = load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))?;
     let storage_key = scope.storage_key();
-    Ok(manual_scope_preference_approved(&prefs, &storage_key))
+    Ok(manual_scope_preference_approved(&prefs, &storage_key)
+        && friend_account_reach_choice_allows_action(
+            &prefs,
+            &binding.person_id,
+            service_id,
+            account_id,
+        ))
 }
 
 fn manual_scope_preference_approved(prefs: &SecurityPreferences, storage_key: &str) -> bool {
     prefs.manual_approved_scopes.contains(storage_key)
         && !prefs.burned_manual_scopes.contains(storage_key)
+}
+
+fn friend_account_reach_choice_allows_action(
+    prefs: &SecurityPreferences,
+    person_id: &str,
+    service_id: &str,
+    account_id: &str,
+) -> bool {
+    prefs
+        .friend_account_reach_choices
+        .get(person_id)
+        .and_then(|accounts| accounts.get(&account_reach_storage_key(service_id, account_id)))
+        .is_some_and(|choice| choice.broadened)
 }
 
 /// Withdraw every manual grant attributed to one person. Burn records are
@@ -4829,6 +4848,87 @@ mod tests {
         assert!(!records[1].broadened);
     }
 
+    #[test]
+    fn direct_action_trace_is_active_only_for_ticked_friend_account_reach() {
+        let harness = FileBackedSecurityHarness::new("friend-account-silence-direct-action");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        let (person_id, metadata, peer) = test_friend(241);
+        install_self_identity(&core);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+
+        let ticked_account = "account-0241-ticked";
+        let unticked_account = "account-0241-unticked";
+        for account_id in [ticked_account, unticked_account] {
+            let scope_id = manual_peer_scope_id("discord", account_id, &person_id).unwrap();
+            set_manual_peer_scope_permission(
+                &core,
+                &security,
+                "discord",
+                account_id,
+                person_id.clone(),
+                dm_scope_input(scope_id),
+                true,
+            )
+            .unwrap();
+        }
+        set_friend_account_reach_choice(
+            &security,
+            person_id.clone(),
+            "discord".to_owned(),
+            ticked_account.to_owned(),
+            true,
+        )
+        .unwrap();
+        set_friend_account_reach_choice(
+            &security,
+            person_id.clone(),
+            "discord".to_owned(),
+            unticked_account.to_owned(),
+            false,
+        )
+        .unwrap();
+
+        let ticked_scope =
+            dm_scope_input(manual_peer_scope_id("discord", ticked_account, &person_id).unwrap());
+        let unticked_scope =
+            dm_scope_input(manual_peer_scope_id("discord", unticked_account, &person_id).unwrap());
+        let ticked_trace = if require_manual_peer_scope_approved(
+            &core,
+            "discord",
+            ticked_account,
+            person_id.clone(),
+            ticked_scope,
+        )
+        .is_ok()
+        {
+            "active"
+        } else {
+            "skipped"
+        };
+        let unticked_trace = if require_manual_peer_scope_approved(
+            &core,
+            "discord",
+            unticked_account,
+            person_id.clone(),
+            unticked_scope,
+        )
+        .is_ok()
+        {
+            "active"
+        } else {
+            "skipped"
+        };
+
+        println!(
+            "direct_action_trace ticked_account={} unticked_account={}",
+            ticked_trace, unticked_trace
+        );
+        assert_eq!(ticked_trace, "active");
+        assert_eq!(unticked_trace, "skipped");
+    }
+
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {
         let base = std::env::temp_dir();
         for attempt in 0..100 {
@@ -5324,6 +5424,15 @@ mod tests {
             "Approve encryption for this friend before continuing",
             "IPC adoption alone must not bypass the hub's friend-attributed scoped grant"
         );
+
+        set_friend_account_reach_choice(
+            &security,
+            added.person_id.clone(),
+            "osl-chat".to_owned(),
+            "osl-main".to_owned(),
+            true,
+        )
+        .expect("direct action also requires an explicit account reach choice");
 
         let mut wrong_binding = binding.clone();
         wrong_binding.peer_x25519_public[0] ^= 1;
@@ -6225,6 +6334,14 @@ mod tests {
             true,
         )
         .unwrap();
+        set_friend_account_reach_choice(
+            &security,
+            person_id.clone(),
+            "osl-chat".to_owned(),
+            "osl-main".to_owned(),
+            true,
+        )
+        .unwrap();
         assert!(manual_peer_scope_approved(
             &core,
             "osl-chat",
@@ -6478,6 +6595,14 @@ mod tests {
         )
         .unwrap();
         apply_scoped_trust_grant(&security, &binding_b, &grant_b).unwrap();
+        set_friend_account_reach_choice(
+            &security,
+            person_b.clone(),
+            "osl-chat".to_owned(),
+            "osl-main".to_owned(),
+            true,
+        )
+        .unwrap();
 
         let terminal_burn = "dm:terminal-burn".to_owned();
         let mut prefs: SecurityPreferences =

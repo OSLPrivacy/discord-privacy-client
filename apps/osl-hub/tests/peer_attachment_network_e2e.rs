@@ -1457,6 +1457,14 @@ impl Peer {
             true,
         )
         .expect("approve manual peer scope");
+        osl_privacy_hub::security::set_friend_account_reach_choice(
+            &self.security,
+            activated.person_id.clone(),
+            "osl-chat".to_owned(),
+            "osl-main".to_owned(),
+            true,
+        )
+        .expect("tick OSL Chat account reach");
         osl_privacy_hub::security::set_scope_security(&self.security, activated.scope, 3600, true)
             .expect("enable decrypted display for this scope");
     }
