@@ -1,3 +1,5 @@
+import type { VerificationWarningSurface } from "./verification-warning";
+
 // Matches the enforced OSL Chat logical-message limit in broker.rs.
 export const OSL_CHAT_MAX_DRAFT_BYTES = 1024 * 1024;
 
@@ -147,6 +149,7 @@ export interface OslChatsViewModel {
    * that is why the composer copy never promises removal on its own.
    */
   deletionUnconfirmed?: number;
+  verificationWarningSurface?: VerificationWarningSurface;
 }
 
 /**
@@ -358,9 +361,10 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
   const messages = model.messages.length
     ? model.messages.map((message) => messageRow(message, friend)).join("")
     : '<p class="osl-chat-thread-empty">No messages yet.</p>';
-  const handshakeWarning = oslChatHandshakeWarning(friend);
+  const warningSurface = model.verificationWarningSurface ?? "conversation-open";
+  const handshakeWarning = warningSurface === "none" ? "" : oslChatHandshakeWarning(friend);
   const unconfirmed = handshakeWarning
-    ? `<p class="osl-chat-handshake-warning" role="status">${escapeHtml(handshakeWarning)}</p>`
+    ? `<p class="osl-chat-handshake-warning is-${warningSurface}" role="status" data-verification-warning-surface="${warningSurface}">${escapeHtml(handshakeWarning)}</p>`
     : "";
   return `<section class="osl-chat-thread" aria-label="OSL direct chat with ${escapeHtml(friend.nickname)}">
     ${unconfirmed}
