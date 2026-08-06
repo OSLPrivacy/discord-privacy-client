@@ -193,10 +193,10 @@ use osl_privacy_hub::hub_command_surface::{
     require_native_discord_product_send_authority,
     require_review_ui_identity_binding_from_verifier, service_kind_id,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
-    start_autoscrub_reviewed_run_inner, with_allowed_place_before_protected_message_path,
-    with_native_discord_product_send_authority, BrowserFootprintConsentRequest, CheckedHost,
-    DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
-    NativeDiscordProductSendAuthority,
+    start_autoscrub_reviewed_run_inner, with_allowed_place_before_prepare_cover_message,
+    with_allowed_place_before_protected_message_path, with_native_discord_product_send_authority,
+    BrowserFootprintConsentRequest, CheckedHost, DiscordGuidedDeletionPlanState,
+    GuidedDeletionRunAuthorityInput, NativeDiscordProductSendAuthority,
 };
 use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
@@ -2993,6 +2993,28 @@ fn native_discord_allowed_place_scope_binding(app: &tauri::AppHandle) -> Result<
             ))
             .map_err(|_| "The native Discord friend context is unavailable".to_owned())
         })
+}
+
+fn manual_peer_allowed_place_scope_binding(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    context_token: &str,
+) -> Result<String, String> {
+    let manual = broker.manual_peer_for(context_token)?;
+    security::require_manual_peer_scope_approved(
+        core,
+        &manual.service_id,
+        &manual.account_id,
+        manual.person_id.clone(),
+        manual.scope.clone(),
+    )?;
+    serde_json::to_string(&(
+        manual.service_id,
+        manual.account_id,
+        manual.person_id,
+        manual.scope,
+    ))
+    .map_err(|_| "The manual peer context is unavailable".to_owned())
 }
 
 #[tauri::command]
@@ -5800,18 +5822,25 @@ async fn prepare_peer_prose_text(
             .map(|preferences| preferences.window_capture_enabled)
             .unwrap_or(true);
         let _active = require_current_context_host(&app, &core, &broker_state, &context_token)?;
-        let prepared = with_indexed_context_write(&app, &broker_state, &context_token, || {
-            broker::prepare_peer_prose_text_with_capture_and_store_client(
-                &core,
-                &security_state,
-                &broker_state,
-                &context_token,
-                plaintext,
-                view_once,
-                require_capture_protection,
-                &store_client,
-            )
-        })?;
+        let mut command_trace = Vec::new();
+        let prepared = with_allowed_place_before_prepare_cover_message(
+            &mut command_trace,
+            || manual_peer_allowed_place_scope_binding(&core, &broker_state, &context_token),
+            |_| {
+                with_indexed_context_write(&app, &broker_state, &context_token, || {
+                    broker::prepare_peer_prose_text_with_capture_and_store_client(
+                        &core,
+                        &security_state,
+                        &broker_state,
+                        &context_token,
+                        plaintext,
+                        view_once,
+                        require_capture_protection,
+                        &store_client,
+                    )
+                })
+            },
+        )?;
         let _still_active =
             require_current_context_host(&app, &core, &broker_state, &context_token)?;
         Ok(prepared)
