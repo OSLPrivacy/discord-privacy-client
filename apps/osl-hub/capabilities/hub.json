@@ -148,6 +148,7 @@
     "allow-open-hub-attachment",
     "allow-export-hub-friend-code",
     "allow-add-hub-friend",
+    "allow-create-one-use-invite-link",
     "allow-get-hub-username-status",
     "allow-verify-hub-friend-safety-number",
     "allow-remove-hub-friend",

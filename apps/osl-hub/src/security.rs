@@ -16,6 +16,7 @@ use ipc::commands::is_discord_snowflake_shaped;
 use ipc::peer_map::{PeerEntry, WhitelistEntry};
 use ipc::scope::{Scope, ScopeInput, ScopeKind};
 use ipc::tofu::KeyBundle;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -28,6 +29,8 @@ const MAX_FRIEND_CODE_BYTES: usize = 8 * 1024;
 const MAX_SECURITY_STATE_BYTES: u64 = 8 * 1024 * 1024;
 const PEOPLE_FILE: &str = "hub_people.json";
 const SECURITY_PREFS_FILE: &str = "hub_security_preferences.json";
+const ONE_USE_INVITE_LINK_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
+const ONE_USE_INVITE_LINK_PREFIX: &str = "https://invite.osl.local/one-use/";
 const PEER_REPLAY_FILE: &str = "hub_peer_replay.json";
 const ATTACHMENT_BURN_FILE: &str = "scope_attachments.json";
 /// Receiver-side bilateral-burn replay state. Encrypted at rest, and keyed
@@ -178,6 +181,18 @@ pub struct GroupMemberPermissionRecord {
 pub struct WhatsAppWhitelistKind {
     pub id: String,
     pub name: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OneUseInviteLink {
+    pub invite_id: String,
+    pub link: String,
+    pub recipient_label: String,
+    pub intended_use: String,
+    pub use_limit: u8,
+    pub expires_at: i64,
+    pub consumed_at: Option<i64>,
 }
 
 /// The minimum friend state needed to create a manual peer-messaging lease.
@@ -553,6 +568,11 @@ struct SecurityPreferences {
     /// not inferred from a missing grant.
     #[serde(default)]
     group_member_permissions: BTreeMap<String, BTreeMap<String, bool>>,
+    /// Fresh one-use invite links for people who do not have an OSL username.
+    /// The record carries only a local label for the operator's roster context;
+    /// there is deliberately no OSL-name field to infer or later bind.
+    #[serde(default)]
+    one_use_invite_links: BTreeMap<String, OneUseInviteLink>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -1219,6 +1239,37 @@ pub fn list_whatsapp_whitelist_kinds() -> Vec<WhatsAppWhitelistKind> {
         name: name.to_owned(),
     })
     .collect()
+}
+
+pub fn create_one_use_invite_link(
+    security: &HubSecurityState,
+    recipient_label: String,
+) -> Result<OneUseInviteLink, String> {
+    require_unlocked()?;
+    let recipient_label = normalise_invite_recipient_label(&recipient_label)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL one-use invite state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    let now = unix_timestamp_seconds()?;
+    let invite = fresh_one_use_invite_link(&recipient_label, now);
+    prefs
+        .one_use_invite_links
+        .insert(invite.invite_id.clone(), invite.clone());
+    write_encrypted_json(&path, &prefs)?;
+    Ok(invite)
+}
+
+pub fn list_one_use_invite_links(
+    _security: &HubSecurityState,
+) -> Result<Vec<OneUseInviteLink>, String> {
+    require_unlocked()?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(one_use_invite_link_records(&prefs))
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -3898,6 +3949,45 @@ fn group_member_permission_records_for_group(
         .collect()
 }
 
+fn one_use_invite_link_records(prefs: &SecurityPreferences) -> Vec<OneUseInviteLink> {
+    prefs.one_use_invite_links.values().cloned().collect()
+}
+
+fn fresh_one_use_invite_link(recipient_label: &str, now: i64) -> OneUseInviteLink {
+    let mut id = [0u8; 16];
+    let mut token = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut id);
+    rand::rngs::OsRng.fill_bytes(&mut token);
+    let invite_id = URL_SAFE_NO_PAD.encode(id);
+    let link = format!(
+        "{ONE_USE_INVITE_LINK_PREFIX}{invite_id}.{}",
+        URL_SAFE_NO_PAD.encode(token)
+    );
+    token.zeroize();
+    OneUseInviteLink {
+        invite_id,
+        link,
+        recipient_label: recipient_label.to_owned(),
+        intended_use: "space_admission".to_owned(),
+        use_limit: 1,
+        expires_at: now + ONE_USE_INVITE_LINK_TTL_SECONDS,
+        consumed_at: None,
+    }
+}
+
+fn normalise_invite_recipient_label(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 80
+        || trimmed.chars().any(|character| character.is_control())
+        || is_discord_snowflake_shaped(trimmed)
+        || trimmed.starts_with("osl_")
+    {
+        return Err("OSL invite recipient label is invalid".to_owned());
+    }
+    Ok(trimmed.to_owned())
+}
+
 fn manual_approved_scopes_for_person(
     prefs: &SecurityPreferences,
     person_id: &str,
@@ -4389,6 +4479,13 @@ fn config_dir() -> Result<std::path::PathBuf, String> {
     keystore::osl_config_dir().map_err(|_| "OSL account storage is unavailable".to_owned())
 }
 
+fn unix_timestamp_seconds() -> Result<i64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .map_err(|_| "OSL system clock is unavailable".to_owned())
+}
+
 fn load_encrypted_json<T: Default + for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
     let key = require_unlocked()?;
     load_encrypted_json_with_key(path, &key)
@@ -4722,6 +4819,39 @@ mod tests {
         assert_eq!(kinds[1].name, "group chat");
         assert_eq!(kinds[2].id, "channel");
         assert_eq!(kinds[2].name, "channel");
+    }
+
+    #[test]
+    fn direct_create_one_use_invite_link_returns_different_unused_links() {
+        let _harness = FileBackedSecurityHarness::new("one-use-invite-links");
+        let security = HubSecurityState::default();
+        let first = create_one_use_invite_link(&security, "No OSL name 0217 A".to_owned()).unwrap();
+        let second =
+            create_one_use_invite_link(&security, "No OSL name 0217 B".to_owned()).unwrap();
+        let records = list_one_use_invite_links(&security).unwrap();
+        let unused = records
+            .iter()
+            .filter(|record| record.consumed_at.is_none() && record.use_limit == 1)
+            .count();
+        println!(
+            "direct_create_one_use_invite_links command_calls=2 unused_links={} different={} link1={} link2={}",
+            unused,
+            first.link != second.link,
+            first.link,
+            second.link
+        );
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(unused, 2);
+        assert_ne!(first.invite_id, second.invite_id);
+        assert_ne!(first.link, second.link);
+        for record in records {
+            assert!(record.link.starts_with(ONE_USE_INVITE_LINK_PREFIX));
+            assert_eq!(record.intended_use, "space_admission");
+            assert_eq!(record.use_limit, 1);
+            assert!(record.consumed_at.is_none());
+            assert!(record.expires_at >= unix_timestamp_seconds().unwrap());
+        }
     }
 
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {

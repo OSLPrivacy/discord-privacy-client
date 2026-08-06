@@ -88,8 +88,8 @@ use osl_privacy_hub::scrub_index::{
 };
 use osl_privacy_hub::security::{
     self, AddFriendResult, FriendCodeExport, GroupMemberPermissionRecord, HubRevocationStatusDto,
-    HubScopeBurnResult, HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
-    WhatsAppWhitelistKind,
+    HubScopeBurnResult, HubSecurityState, OneUseInviteLink, PersonDto, RemoveFriendResult,
+    ScopeSecurityDto, WhatsAppWhitelistKind,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -5714,7 +5714,9 @@ async fn set_osl_chat_capture_preference(
     local_opt_in: bool,
 ) -> Result<ChatCaptureProtectionDto, String> {
     if caller.label() != "main" {
-        return Err("Only the trusted OSL window may change OSL Chat capture protection".to_owned());
+        return Err(
+            "Only the trusted OSL window may change OSL Chat capture protection".to_owned(),
+        );
     }
     let _session = session.transition.lock().await;
     let binding = security::manual_peer_binding(&core, person_id)?;
@@ -6030,6 +6032,16 @@ async fn add_hub_friend(
 ) -> Result<AddFriendResult, String> {
     let _session = session.transition.lock().await;
     security::add_friend_code(&core, &security_state, friend_code, alias)
+}
+
+#[tauri::command]
+async fn create_one_use_invite_link(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    recipient_label: String,
+) -> Result<OneUseInviteLink, String> {
+    let _session = session.transition.lock().await;
+    security::create_one_use_invite_link(&security_state, recipient_label)
 }
 
 #[derive(Serialize)]

@@ -642,6 +642,7 @@ macro_rules! hub_tauri_commands {
             export_hub_friend_code,
             copy_hub_friend_invite,
             add_hub_friend,
+            create_one_use_invite_link,
             claim_hub_username,
             get_hub_username_status,
             add_hub_friend_by_username,
@@ -1941,6 +1942,7 @@ mod tauri_registration_surface_tests {
                 "remove_group_member_permission",
                 "list_group_member_permissions",
                 "list_whatsapp_whitelist_kinds",
+                "create_one_use_invite_link",
             ],
         );
     }

@@ -749,6 +749,11 @@ description = "Validate and add one signed OSL friend code to encrypted local Pe
 commands.allow = ["add_hub_friend"]
 
 [[permission]]
+identifier = "allow-create-one-use-invite-link"
+description = "Create one fresh one-use invite link for a locally labelled person with no OSL username; the record is saved unused in encrypted device-local state."
+commands.allow = ["create_one_use_invite_link"]
+
+[[permission]]
 identifier = "allow-get-hub-username-status"
 description = "Check bounded public username availability metadata without granting any claim or account mutation authority."
 commands.allow = ["get_hub_username_status"]
