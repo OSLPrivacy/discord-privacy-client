@@ -175,6 +175,203 @@ impl fmt::Debug for ImapMessageSummary {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedMailboxFolder {
+    pub id: String,
+    pub label: String,
+    pub service: String,
+    pub account: String,
+}
+
+#[derive(Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedMailboxMessage {
+    pub id: String,
+    pub service: String,
+    pub account: String,
+    pub folder_id: String,
+    pub subject: String,
+    pub time: i64,
+    pub sender: String,
+}
+
+impl fmt::Debug for SharedMailboxMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharedMailboxMessage")
+            .field("id", &self.id)
+            .field("service", &self.service)
+            .field("account", &"<redacted>")
+            .field("folder_id", &self.folder_id)
+            .field("subject", &"<redacted>")
+            .field("time", &self.time)
+            .field("sender", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedMailboxReader {
+    folders: Vec<SharedMailboxFolder>,
+    messages: Vec<SharedMailboxMessage>,
+}
+
+impl SharedMailboxReader {
+    pub fn new(
+        folders: Vec<SharedMailboxFolder>,
+        messages: Vec<SharedMailboxMessage>,
+    ) -> Result<Self, ScrubImapError> {
+        let mut folder_keys = BTreeSet::new();
+        for folder in &folders {
+            validate_binding_part(&folder.id)?;
+            validate_binding_part(&folder.label)?;
+            validate_binding_part(&folder.service)?;
+            validate_binding_part(&folder.account)?;
+            folder_keys.insert((
+                folder.service.clone(),
+                folder.account.clone(),
+                folder.id.clone(),
+            ));
+        }
+        for message in &messages {
+            validate_binding_part(&message.id)?;
+            validate_binding_part(&message.service)?;
+            validate_binding_part(&message.account)?;
+            validate_binding_part(&message.folder_id)?;
+            validate_binding_part(&message.subject)?;
+            validate_binding_part(&message.sender)?;
+            if !folder_keys.contains(&(
+                message.service.clone(),
+                message.account.clone(),
+                message.folder_id.clone(),
+            )) {
+                return Err(ScrubImapError::MailboxFolderNotFound);
+            }
+        }
+        Ok(Self { folders, messages })
+    }
+
+    pub fn read_folders(
+        &self,
+        service: &str,
+        account: &str,
+    ) -> Result<Vec<SharedMailboxFolder>, ScrubImapError> {
+        validate_binding_part(service)?;
+        validate_binding_part(account)?;
+        let folders = self
+            .folders
+            .iter()
+            .filter(|folder| folder.service == service && folder.account == account)
+            .cloned()
+            .collect::<Vec<_>>();
+        if folders.is_empty() {
+            return Err(ScrubImapError::MailboxAccountNotFound);
+        }
+        Ok(folders)
+    }
+
+    pub fn read_messages(
+        &self,
+        service: &str,
+        account: &str,
+        folder_id: &str,
+    ) -> Result<Vec<SharedMailboxMessage>, ScrubImapError> {
+        validate_binding_part(service)?;
+        validate_binding_part(account)?;
+        validate_binding_part(folder_id)?;
+        if !self.folders.iter().any(|folder| {
+            folder.service == service && folder.account == account && folder.id == folder_id
+        }) {
+            return Err(ScrubImapError::MailboxFolderNotFound);
+        }
+        Ok(self
+            .messages
+            .iter()
+            .filter(|message| {
+                message.service == service
+                    && message.account == account
+                    && message.folder_id == folder_id
+            })
+            .cloned()
+            .collect())
+    }
+}
+
+pub fn mail_message_is_owned_by_signed_in_address(
+    message: &SharedMailboxMessage,
+    signed_in_address: &str,
+) -> Result<bool, ScrubImapError> {
+    validate_binding_part(signed_in_address)?;
+    if message.sender.trim().is_empty() {
+        return Err(ScrubImapError::SenderAddressUnreadable);
+    }
+    Ok(message.sender.eq_ignore_ascii_case(signed_in_address))
+}
+
+pub fn seeded_mail_com_mailbox_for_scrub() -> SharedMailboxReader {
+    let service = "mail.com";
+    let account = "acct-scrub-mail-com";
+    SharedMailboxReader::new(
+        ["Inbox", "Sent", "Archive", "Trash"]
+            .into_iter()
+            .map(|name| SharedMailboxFolder {
+                id: name.to_owned(),
+                label: name.to_owned(),
+                service: service.to_owned(),
+                account: account.to_owned(),
+            })
+            .collect(),
+        vec![
+            SharedMailboxMessage {
+                id: "SCRUB-MC-MINE".to_owned(),
+                service: service.to_owned(),
+                account: account.to_owned(),
+                folder_id: "Sent".to_owned(),
+                subject: "SCRUB-MC-MINE".to_owned(),
+                time: 1_786_104_000,
+                sender: "signed-in@mail.com".to_owned(),
+            },
+            SharedMailboxMessage {
+                id: "sent-mail-com-3068-002".to_owned(),
+                service: service.to_owned(),
+                account: account.to_owned(),
+                folder_id: "Sent".to_owned(),
+                subject: "Mail.com cleanup receipt".to_owned(),
+                time: 1_786_107_600,
+                sender: "signed-in@mail.com".to_owned(),
+            },
+            SharedMailboxMessage {
+                id: "sent-mail-com-3068-003".to_owned(),
+                service: service.to_owned(),
+                account: account.to_owned(),
+                folder_id: "Sent".to_owned(),
+                subject: "Mail.com archive note".to_owned(),
+                time: 1_786_111_200,
+                sender: "signed-in@mail.com".to_owned(),
+            },
+            SharedMailboxMessage {
+                id: "inbox-mail-com-3068-001".to_owned(),
+                service: service.to_owned(),
+                account: account.to_owned(),
+                folder_id: "Inbox".to_owned(),
+                subject: "Inbound receipt".to_owned(),
+                time: 1_786_096_800,
+                sender: "sender-one@example.test".to_owned(),
+            },
+            SharedMailboxMessage {
+                id: "inbox-mail-com-3068-002".to_owned(),
+                service: service.to_owned(),
+                account: account.to_owned(),
+                folder_id: "Inbox".to_owned(),
+                subject: "Inbound followup".to_owned(),
+                time: 1_786_100_400,
+                sender: "sender-two@example.test".to_owned(),
+            },
+        ],
+    )
+    .expect("seeded Mail.com mailbox fixture must be valid")
+}
+
 #[derive(Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnerFacingDryRunPreview {
@@ -447,6 +644,9 @@ pub enum ScrubImapError {
     ConsentBindingMismatch,
     ConsentExpired,
     AclRefused,
+    MailboxAccountNotFound,
+    MailboxFolderNotFound,
+    SenderAddressUnreadable,
     NativeDeletionDisabled,
     NativeDeleteFailed,
     NativeQueryFailed,
@@ -461,6 +661,9 @@ impl fmt::Display for ScrubImapError {
             Self::ConsentBindingMismatch => "email cleanup consent binding mismatch",
             Self::ConsentExpired => "email cleanup consent grant expired",
             Self::AclRefused => "email cleanup request was refused by local authorization",
+            Self::MailboxAccountNotFound => "mailbox account not found",
+            Self::MailboxFolderNotFound => "mailbox folder not found",
+            Self::SenderAddressUnreadable => "OSL: sender address cannot be read",
             Self::NativeDeletionDisabled => "Native IMAP deletion is disabled",
             Self::NativeDeleteFailed => "email cleanup delete failed",
             Self::NativeQueryFailed => "email cleanup verification failed",
@@ -640,6 +843,88 @@ mod tests {
                 {"itemOrdinal": 4, "status": "still_present"},
                 {"itemOrdinal": 5, "status": "unknown"}
             ])
+        );
+    }
+
+    #[test]
+    fn task_3068_mail_com_shared_reader_returns_folders_messages_ownership_and_stable_second_read()
+    {
+        let reader = seeded_mail_com_mailbox_for_scrub();
+        let first_folders = reader
+            .read_folders("mail.com", "acct-scrub-mail-com")
+            .unwrap();
+        let first_sent = reader
+            .read_messages("mail.com", "acct-scrub-mail-com", "Sent")
+            .unwrap();
+        let inbox = reader
+            .read_messages("mail.com", "acct-scrub-mail-com", "Inbox")
+            .unwrap();
+        let second_folders = reader
+            .read_folders("mail.com", "acct-scrub-mail-com")
+            .unwrap();
+        let second_sent = reader
+            .read_messages("mail.com", "acct-scrub-mail-com", "Sent")
+            .unwrap();
+
+        assert_eq!(first_folders.len(), 4);
+        assert_eq!(first_sent.len(), 3);
+        assert_eq!(inbox.len(), 2);
+        assert_eq!(first_folders, second_folders);
+        assert_eq!(first_sent, second_sent);
+
+        let mine = first_sent
+            .iter()
+            .find(|message| message.id == "SCRUB-MC-MINE")
+            .expect("seeded Mail.com sent mailbox must include SCRUB-MC-MINE");
+        assert!(mail_message_is_owned_by_signed_in_address(mine, "signed-in@mail.com").unwrap());
+
+        let inbox_ownership = inbox
+            .iter()
+            .map(|message| {
+                (
+                    message.id.as_str(),
+                    mail_message_is_owned_by_signed_in_address(message, "signed-in@mail.com")
+                        .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(inbox_ownership.iter().all(|(_, owned)| !owned));
+
+        println!("TASK3068 direct_reader=shared_mailbox_reader");
+        println!("TASK3068 gate1266=Mail.com STAYS IN");
+        println!("TASK3068 folder_count={}", first_folders.len());
+        println!(
+            "TASK3068 folders={}",
+            first_folders
+                .iter()
+                .map(|folder| folder.id.as_str())
+                .collect::<Vec<_>>()
+                .join("|")
+        );
+        println!("TASK3068 sent_count={}", first_sent.len());
+        for message in &first_sent {
+            assert!(!message.subject.is_empty());
+            assert!(message.time > 0);
+            assert!(!message.sender.is_empty());
+            println!(
+                "TASK3068 sent_message id={} subject={} time={} sender={}",
+                message.id, message.subject, message.time, message.sender
+            );
+        }
+        println!("TASK3068 ownership SCRUB-MC-MINE=yours");
+        for (message_id, owned) in &inbox_ownership {
+            let label = if *owned { "yours" } else { "not yours" };
+            println!("TASK3068 inbox_ownership {message_id}={label}");
+        }
+        println!(
+            "TASK3068 inbox_not_yours_count={}",
+            inbox_ownership.iter().filter(|(_, owned)| !*owned).count()
+        );
+        println!("TASK3068 second_folder_count={}", second_folders.len());
+        println!("TASK3068 second_sent_count={}", second_sent.len());
+        println!(
+            "TASK3068 second_read_same={}",
+            first_folders == second_folders && first_sent == second_sent
         );
     }
 
