@@ -15,7 +15,7 @@ export interface ExpiryPickerModel {
 function validBounds(bounds: ExpiryBounds): boolean {
   return Number.isSafeInteger(bounds.minSeconds)
     && Number.isSafeInteger(bounds.maxSeconds)
-    && bounds.minSeconds >= 1
+    && bounds.minSeconds >= 0
     && bounds.maxSeconds >= bounds.minSeconds;
 }
 
@@ -33,7 +33,7 @@ export function parseExpirySeconds(value: string, bounds: ExpiryBounds): number 
 }
 
 export function expiryDurationWords(seconds: number): string {
-  if (!Number.isSafeInteger(seconds) || seconds < 1) return "";
+  if (!Number.isSafeInteger(seconds) || seconds < 0) return "";
   const units = [
     [86_400, "day"],
     [3_600, "hour"],
@@ -58,7 +58,7 @@ export function expiryPresets(bounds: ExpiryBounds): number[] {
 }
 
 export function expiryMomentWords(seconds: number, nowMs: number): string {
-  if (!Number.isFinite(nowMs) || !Number.isSafeInteger(seconds) || seconds < 1) return "";
+  if (!Number.isFinite(nowMs) || !Number.isSafeInteger(seconds) || seconds < 0) return "";
   const moment = new Date(nowMs + seconds * 1_000);
   return `Expires at ${new Intl.DateTimeFormat("en-US", {
     dateStyle: "full",

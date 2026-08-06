@@ -30,4 +30,15 @@ describe("expiry picker", () => {
     expect(markup).toContain(expiryMomentWords(90, Date.UTC(2026, 0, 2, 3, 4, 5)));
     expect(expiryDurationWords(90)).toBe("90 seconds");
   });
+
+  it("accepts a zero-day timer only when the caller supplies a zero lower bound", () => {
+    const timerBounds: ExpiryBounds = { minSeconds: 0, maxSeconds: EXPIRY_CONTRACT.maxSeconds };
+    const markup = expiryPickerMarkup({ bounds: timerBounds, valueSeconds: 0, nowMs: Date.UTC(2026, 0, 2, 3, 4, 5) });
+
+    expect(parseExpirySeconds("0", EXPIRY_CONTRACT)).toBeNull();
+    expect(parseExpirySeconds("0", timerBounds)).toBe(0);
+    expect(markup).toContain('min="0"');
+    expect(markup).toContain('value="0"');
+    expect(markup).toContain("0 seconds after it is opened");
+  });
 });
