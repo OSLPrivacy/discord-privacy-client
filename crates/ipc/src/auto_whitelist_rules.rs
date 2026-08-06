@@ -62,3 +62,48 @@ pub fn normalize_app_kind(raw: &str) -> Result<String, String> {
     }
     Ok(app_kind)
 }
+
+pub const X_DIRECT_MESSAGE_PLACE_KIND: &str = "direct_message";
+pub const X_PUBLIC_POST_PLACE_KIND: &str = "public_post";
+pub const X_PLACE_KINDS: [&str; 2] = [X_DIRECT_MESSAGE_PLACE_KIND, X_PUBLIC_POST_PLACE_KIND];
+
+pub fn normalize_place_kind_for_app(app_kind: &str, raw: &str) -> Result<String, String> {
+    let place_kind = normalize_place_kind(raw)?;
+    if app_kind == "x" && !X_PLACE_KINDS.contains(&place_kind.as_str()) {
+        return Err(format!(
+            "OSL: unknown X whitelist place_kind {raw:?}; valid choices: {}",
+            X_PLACE_KINDS.join(", ")
+        ));
+    }
+    Ok(place_kind)
+}
+
+pub fn scoped_rule_key(app_kind: &str, place_kind: &str) -> String {
+    format!("{app_kind}/{place_kind}")
+}
+
+pub fn lookup_rule(
+    rules: &std::collections::HashMap<String, AutoWhitelistRule>,
+    app_kind: &str,
+    place_kind: Option<&str>,
+) -> AutoWhitelistRule {
+    place_kind
+        .and_then(|kind| rules.get(&scoped_rule_key(app_kind, kind)))
+        .or_else(|| rules.get(app_kind))
+        .copied()
+        .unwrap_or_default()
+}
+
+fn normalize_place_kind(raw: &str) -> Result<String, String> {
+    let place_kind = raw.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+    if place_kind.is_empty() {
+        return Err("OSL: place_kind is empty".to_string());
+    }
+    if !place_kind
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+    {
+        return Err("OSL: place_kind contains unsupported characters".to_string());
+    }
+    Ok(place_kind)
+}
