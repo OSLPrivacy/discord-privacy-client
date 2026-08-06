@@ -3767,6 +3767,13 @@ pub struct OslTheirSideBurnResult {
     pub remote_removal_count: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslBothSidesBurnResult {
+    pub choice: String,
+    pub remote_removal_count: u32,
+}
+
 /// Burn the peer-visible server-held copy for one selected message.
 ///
 /// This is intentionally remote-only. The local sender history is left intact;
@@ -3806,6 +3813,41 @@ pub fn cmd_osl_burn_their_side_message(
     Ok(OslTheirSideBurnResult {
         choice: "Their Side".to_string(),
         target_content_id,
+        remote_removal_count: response.deleted_count,
+    })
+}
+
+/// Burn every server-held wrapped-key copy authored by the loaded identity.
+///
+/// The keyserver's `all` scope is one sender-scoped DELETE, so a restart after
+/// the request either retries against the original rows or against an already
+/// empty sender lane. It must not implement "Both Sides" as two independent
+/// `single` burns, because that creates the forbidden 1/0 or 0/1 crash states.
+pub fn cmd_osl_burn_both_sides_server_copies(
+    state: &AppState,
+) -> Result<OslBothSidesBurnResult, String> {
+    record_activity_on_command_entry();
+    let identity = state
+        .identity_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: both-sides burn needs a loaded identity".to_string())?;
+    let client = state
+        .keyserver_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: both-sides burn needs a key server".to_string())?;
+    let response = client
+        .burn(&identity, &keystore::BurnScope::All)
+        .map_err(|error| format!("OSL: both-sides burn refused: {error}"))?;
+    if response.scope != "all" {
+        return Err(format!(
+            "OSL: both-sides burn returned unexpected scope {}",
+            response.scope
+        ));
+    }
+    Ok(OslBothSidesBurnResult {
+        choice: "Both Sides".to_string(),
         remote_removal_count: response.deleted_count,
     })
 }
