@@ -660,6 +660,7 @@ macro_rules! hub_tauri_commands {
             verify_hub_friend_safety_number,
             remove_hub_friend,
             list_hub_people,
+            list_whatsapp_whitelist_kinds,
             set_hub_friend_nickname,
             set_active_hub_friend_permission,
             set_active_hub_friend_reach,
@@ -1582,6 +1583,17 @@ mod tauri_registration_surface_tests {
             permission_commands(include_str!("../permissions/hub.toml")),
             capability_permissions(include_str!("../capabilities/osl-network.json")),
         )
+    }
+
+    #[test]
+    fn whatsapp_whitelist_kind_command_is_registered_and_acl_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "list_whatsapp_whitelist_kinds",
+        );
     }
 
     /// T15-A3/A4 — the "see my recovery phrase again" surface.

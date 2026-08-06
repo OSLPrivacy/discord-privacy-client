@@ -165,6 +165,13 @@ pub struct ScopeSecurityDto {
     pub decrypt_display_enabled: bool,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhatsAppWhitelistKind {
+    pub id: String,
+    pub name: String,
+}
+
 /// The minimum friend state needed to create a manual peer-messaging lease.
 /// Key material stays in the original core; callers receive only stable local
 /// and public identity identifiers.
@@ -1106,6 +1113,36 @@ pub fn set_friend_alias(
     let updated = metadata.clone();
     write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
     person_dto(core, &person_id, &updated, &load_security_preferences()?)
+}
+
+const WHATSAPP_WHITELIST_KINDS: [(&str, &str); 6] = [
+    ("direct_message", "direct message"),
+    ("group_chat", "group chat"),
+    ("channel", "channel"),
+    ("community", "community"),
+    ("community_group", "community group"),
+    ("broadcast_list", "broadcast list"),
+];
+
+pub fn list_whatsapp_whitelist_kinds() -> Vec<WhatsAppWhitelistKind> {
+    WHATSAPP_WHITELIST_KINDS
+        .into_iter()
+        .map(|(id, name)| WhatsAppWhitelistKind {
+            id: id.to_owned(),
+            name: name.to_owned(),
+        })
+        .collect()
+}
+
+pub fn resolve_whatsapp_whitelist_kind(id: &str) -> Result<WhatsAppWhitelistKind, String> {
+    WHATSAPP_WHITELIST_KINDS
+        .into_iter()
+        .find(|(kind_id, _)| *kind_id == id)
+        .map(|(id, name)| WhatsAppWhitelistKind {
+            id: id.to_owned(),
+            name: name.to_owned(),
+        })
+        .ok_or_else(|| format!("unsupported WhatsApp place kind: {id}"))
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -4411,6 +4448,99 @@ mod tests {
     use super::*;
 
     const TEST_FILE_KEY: [u8; 32] = [0x91; 32];
+
+    #[test]
+    fn task_3742_whatsapp_kind_list_has_six_resolving_kinds_and_refuses_status() {
+        let expected = [
+            ("direct_message", "direct message"),
+            ("group_chat", "group chat"),
+            ("channel", "channel"),
+            ("community", "community"),
+            ("community_group", "community group"),
+            ("broadcast_list", "broadcast list"),
+        ];
+        let kinds = list_whatsapp_whitelist_kinds();
+        let ids = kinds
+            .iter()
+            .map(|kind| kind.id.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let names = kinds
+            .iter()
+            .map(|kind| kind.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        println!("TASK3742_KIND_COUNT={}", kinds.len());
+        println!("TASK3742_KIND_IDS={ids}");
+        println!("TASK3742_KIND_NAMES={names}");
+        assert_eq!(kinds.len(), 6);
+        assert_eq!(
+            kinds
+                .iter()
+                .map(|kind| (kind.id.as_str(), kind.name.as_str()))
+                .collect::<Vec<_>>(),
+            expected
+        );
+
+        for (id, name) in expected {
+            let resolved = resolve_whatsapp_whitelist_kind(id).expect("known kind resolves");
+            println!(
+                "TASK3742_RESOLVED id={} name={} result=allowed",
+                resolved.id, resolved.name
+            );
+            assert_eq!(resolved.id, id);
+            assert_eq!(resolved.name, name);
+        }
+
+        let invented = run_task_3742_kind_probe("invented_kind");
+        let invented_stderr = String::from_utf8_lossy(&invented.stderr);
+        println!(
+            "TASK3742_INVENTED_KIND_EXIT={}",
+            invented.status.code().unwrap_or(-1)
+        );
+        println!("TASK3742_INVENTED_KIND_REFUSAL={}", invented_stderr.trim());
+        assert_eq!(invented.status.code(), Some(1));
+        assert!(invented_stderr.contains("invented_kind"));
+
+        for (task_id, kind) in [
+            ("1089a", "community"),
+            ("1089b", "community_group"),
+            ("1089c", "broadcast_list"),
+        ] {
+            let result = resolve_whatsapp_whitelist_kind(kind)
+                .map(|_| "allowed")
+                .unwrap_or("refusal");
+            println!("TASK3742_{task_id}_KIND={kind} RESULT={result}");
+            assert_eq!(result, "allowed");
+        }
+
+        let status_refusal = resolve_whatsapp_whitelist_kind("status").unwrap_err();
+        println!("TASK3742_STATUS_REFUSAL={status_refusal}");
+        assert!(status_refusal.contains("status"));
+    }
+
+    fn run_task_3742_kind_probe(kind: &str) -> std::process::Output {
+        std::process::Command::new(std::env::current_exe().expect("current test binary"))
+            .arg("task_3742_whatsapp_kind_probe_child")
+            .arg("--ignored")
+            .arg("--nocapture")
+            .env("TASK3742_KIND_PROBE", kind)
+            .output()
+            .expect("run task 3742 child probe")
+    }
+
+    #[test]
+    #[ignore]
+    fn task_3742_whatsapp_kind_probe_child() {
+        let kind = std::env::var("TASK3742_KIND_PROBE").expect("probe kind");
+        match resolve_whatsapp_whitelist_kind(&kind) {
+            Ok(resolved) => println!("TASK3742_KIND_PROBE_ALLOWED={}", resolved.id),
+            Err(refusal) => {
+                eprintln!("{refusal}");
+                std::process::exit(1);
+            }
+        }
+    }
 
     struct FileBackedSecurityHarness {
         dir: std::path::PathBuf,

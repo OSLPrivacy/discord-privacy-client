@@ -809,6 +809,11 @@ description = "List bounded People metadata from encrypted local state."
 commands.allow = ["list_hub_people"]
 
 [[permission]]
+identifier = "allow-list-whatsapp-whitelist-kinds"
+description = "List the static WhatsApp whitelist scope kinds supported by the local OSL UI."
+commands.allow = ["list_whatsapp_whitelist_kinds"]
+
+[[permission]]
 identifier = "allow-set-hub-friend-nickname"
 description = "Set or clear a bounded nickname in encrypted device-local People state."
 commands.allow = ["set_hub_friend_nickname"]
