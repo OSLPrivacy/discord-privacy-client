@@ -41,6 +41,7 @@ export type AutoScrubDisplayTone = "neutral" | "working" | "warning" | "blocked"
 export interface AutoScrubRunSummary {
   readonly runId: string;
   readonly serviceId: ServiceId;
+  readonly accountId: string;
   readonly phase: AutoScrubRunPhase;
   readonly reviewedItemCount: number;
   readonly remainingItemCount: number;
@@ -72,12 +73,14 @@ export interface AutoScrubStatusProjection {
 }
 
 export interface AutoScrubReviewedRunRequest {
+  readonly runId: string;
   readonly serviceId: ServiceId;
   readonly accountId: string;
   readonly reviewToken: string;
   readonly planDigest: string;
   readonly reviewedItemCount: number;
   readonly consent: "reviewedBatchOnly";
+  readonly riskAgreement: true;
 }
 
 export type DeepReadonly<T> = T extends (...args: never[]) => unknown
@@ -201,11 +204,12 @@ function sha256Hex(value: unknown): value is string {
 }
 
 function parseRun(raw: unknown): AutoScrubRunSummary {
-  if (!exactRecord(raw, ["runId", "serviceId", "phase", "reviewedItemCount", "remainingItemCount", "stopRequested", "mutationAllowed", "lastOutcome"])) {
+  if (!exactRecord(raw, ["runId", "serviceId", "accountId", "phase", "reviewedItemCount", "remainingItemCount", "stopRequested", "mutationAllowed", "lastOutcome"])) {
     throw new Error("invalid AutoScrub run");
   }
   if (!boundedText(raw.runId, 80)
     || !serviceIds.includes(raw.serviceId as ServiceId)
+    || !opaqueIdentifier(raw.accountId, 64)
     || !phases.includes(raw.phase as AutoScrubRunPhase)
     || !boundedCount(raw.reviewedItemCount, 10_000)
     || !boundedCount(raw.remainingItemCount, 10_000)
@@ -217,6 +221,7 @@ function parseRun(raw: unknown): AutoScrubRunSummary {
   return deepFreeze({
     runId: raw.runId,
     serviceId: raw.serviceId,
+    accountId: raw.accountId,
     phase: raw.phase,
     reviewedItemCount: raw.reviewedItemCount,
     remainingItemCount: raw.remainingItemCount,
@@ -268,23 +273,27 @@ export function parseAutoScrubFleetStatus(raw: unknown): AutoScrubFleetStatus {
 }
 
 export function parseAutoScrubReviewedRunRequest(raw: unknown): AutoScrubReviewedRunRequest {
-  if (!exactRecord(raw, ["serviceId", "accountId", "reviewToken", "planDigest", "reviewedItemCount", "consent"])
+  if (!exactRecord(raw, ["runId", "serviceId", "accountId", "reviewToken", "planDigest", "reviewedItemCount", "consent", "riskAgreement"])
+    || !opaqueIdentifier(raw.runId, 64)
     || !serviceIds.includes(raw.serviceId as ServiceId)
     || !opaqueIdentifier(raw.accountId, 64)
     || !opaqueIdentifier(raw.reviewToken, 96)
     || !sha256Hex(raw.planDigest)
     || !boundedCount(raw.reviewedItemCount, 500)
     || raw.reviewedItemCount < 1
-    || raw.consent !== "reviewedBatchOnly") {
+    || raw.consent !== "reviewedBatchOnly"
+    || raw.riskAgreement !== true) {
     throw new Error("invalid AutoScrub reviewed run request");
   }
   return deepFreeze({
+    runId: raw.runId,
     serviceId: raw.serviceId,
     accountId: raw.accountId,
     reviewToken: raw.reviewToken,
     planDigest: raw.planDigest,
     reviewedItemCount: raw.reviewedItemCount,
     consent: "reviewedBatchOnly",
+    riskAgreement: true,
   } as AutoScrubReviewedRunRequest);
 }
 

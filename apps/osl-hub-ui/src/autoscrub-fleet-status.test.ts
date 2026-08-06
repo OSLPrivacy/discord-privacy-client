@@ -44,6 +44,7 @@ const fleetStatus = {
   runs: [{
     runId: "run-001",
     serviceId: "discord",
+    accountId: "acct-discord-1",
     phase: "running",
     reviewedItemCount: 3,
     remainingItemCount: 2,

@@ -3007,12 +3007,14 @@ mod tauri_registration_surface_tests {
         let before = autoscrub_run::fleet_status(&state.osl)
             .expect("paid test state can read AutoScrub fleet");
         let request = AutoScrubReviewedRunRequest {
+            run_id: "review-ui-run".to_owned(),
             service_id: ServiceKind::Discord,
             account_id: "acct-1".to_owned(),
             review_token: "review-token".to_owned(),
             plan_digest: "a".repeat(64),
             reviewed_item_count: 1,
             consent: autoscrub_run::AutoScrubRunConsent::ReviewedBatchOnly,
+            risk_agreement: true,
         };
         let owner_identity = state
             .osl

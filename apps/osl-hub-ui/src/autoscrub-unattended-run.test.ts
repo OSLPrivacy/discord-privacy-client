@@ -53,6 +53,7 @@ const fleetStatus = {
     {
       runId: "run-001",
       serviceId: "discord",
+      accountId: "acct-discord-1",
       phase: "running",
       reviewedItemCount: 3,
       remainingItemCount: 2,
@@ -63,6 +64,7 @@ const fleetStatus = {
     {
       runId: "run-002",
       serviceId: "telegram",
+      accountId: "acct-telegram-1",
       phase: "reviewRequired",
       reviewedItemCount: 1,
       remainingItemCount: 0,
@@ -74,12 +76,14 @@ const fleetStatus = {
 } as const;
 
 const reviewedRequest = {
+  runId: "maple-run",
   serviceId: "discord",
-  accountId: "acct-discord-1",
+  accountId: "discord-maple",
   reviewToken: "review-token-1",
   planDigest: "a".repeat(64),
   reviewedItemCount: 3,
   consent: "reviewedBatchOnly",
+  riskAgreement: true,
 } as const;
 
 describe("AutoScrub unattended run production wiring", () => {
@@ -103,6 +107,10 @@ describe("AutoScrub unattended run production wiring", () => {
 
     mocks.invoke.mockClear();
     await expect(startAutoScrubReviewedRun({ ...reviewedRequest, consent: "unattended" as "reviewedBatchOnly" }))
+      .rejects.toThrow("invalid AutoScrub reviewed run request");
+    expect(mocks.invoke).not.toHaveBeenCalled();
+
+    await expect(startAutoScrubReviewedRun({ ...reviewedRequest, riskAgreement: false as true }))
       .rejects.toThrow("invalid AutoScrub reviewed run request");
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
