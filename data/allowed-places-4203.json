@@ -1,0 +1,70 @@
+{
+  "schema": "osl-allowed-places-v1",
+  "places": [
+    {
+      "source_task": "1027",
+      "place": "Telegram supergroup",
+      "disposition": "approved"
+    },
+    {
+      "source_task": "1028",
+      "place": "Telegram saved messages",
+      "disposition": "approved"
+    },
+    {
+      "source_task": "1029a",
+      "place": "Signal story",
+      "disposition": "approved"
+    },
+    {
+      "source_task": "1055",
+      "place": "WhatsApp community",
+      "disposition": "approved"
+    },
+    {
+      "source_task": "1089a",
+      "place": "WhatsApp community group",
+      "disposition": "approved"
+    },
+    {
+      "source_task": "1089b",
+      "place": "WhatsApp broadcast list",
+      "disposition": "approved"
+    },
+    {
+      "source_task": "1089c",
+      "place": "X group direct message",
+      "disposition": "approved"
+    },
+    {
+      "source_task": "1089d",
+      "place": "X reply",
+      "disposition": "approved"
+    },
+    {
+      "source_task": "1125",
+      "place": "Instagram comment",
+      "disposition": "approved"
+    },
+    {
+      "source_task": "1127",
+      "place": "Instagram story",
+      "disposition": "approved"
+    },
+    {
+      "source_task": "1154",
+      "place": "Messenger community",
+      "disposition": "approved"
+    },
+    {
+      "source_task": "1155",
+      "place": "Telegram story",
+      "disposition": "look-only refused"
+    },
+    {
+      "source_task": "1190",
+      "place": "WhatsApp Status",
+      "disposition": "look-only refused"
+    }
+  ]
+}

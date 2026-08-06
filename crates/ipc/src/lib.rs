@@ -54,6 +54,7 @@ pub mod main_password;
 pub mod membership;
 pub mod message_expiry_dial;
 pub mod migration;
+pub mod named_places;
 pub mod offline_send_queue;
 pub mod peer_capabilities;
 pub mod peer_map;
