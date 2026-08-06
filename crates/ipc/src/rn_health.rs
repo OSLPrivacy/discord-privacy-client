@@ -76,7 +76,9 @@ pub fn user_state_for_rn_error(error: &RnError) -> &'static str {
         RnError::PinnedToRn | RnError::RecoveryRequiresRnPin => {
             "Secure session needs re-establishing."
         }
-        RnError::RnRequiredButUnsupported => "This peer cannot use the required secure session.",
+        RnError::RnRequiredButUnsupported | RnError::DirectChatAgreementUnsupported => {
+            "This peer cannot use the required secure session."
+        }
         RnError::WriterBusy => "Secure session is busy; message remains queued for retry.",
         RnError::RolledBackSession { .. } | RnError::RolledBackSessionGeneration => {
             "Secure session state was restored from an unsafe backup."
