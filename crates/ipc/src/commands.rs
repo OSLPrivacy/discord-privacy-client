@@ -15846,6 +15846,15 @@ pub struct AutoWhitelistRuleDto {
     pub choice: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NewPlaceAutoWhitelistDto {
+    pub app_kind: String,
+    pub stable_id: String,
+    pub rule_choice: String,
+    pub result: String,
+    pub prompt: bool,
+}
+
 pub fn cmd_osl_get_auto_whitelist_rule_choices() -> Result<Vec<AutoWhitelistRuleChoiceDto>, String>
 {
     record_activity_on_command_entry();
@@ -15903,6 +15912,60 @@ pub fn cmd_osl_read_auto_whitelist_rule(
         app_kind,
         choice: choice.label().to_string(),
     })
+}
+
+pub fn cmd_osl_new_place(
+    state: &AppState,
+    place: crate::allowed_places::AllowedPlaceRecord,
+) -> Result<NewPlaceAutoWhitelistDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::normalize_auto_whitelist_app_kind(&place.app)?;
+    validate_new_place_record(&place)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .auto_whitelist_rules
+        .get(&app_kind)
+        .copied()
+        .unwrap_or_default();
+    match choice {
+        crate::auto_whitelist_rules::AutoWhitelistChoice::Never => Ok(NewPlaceAutoWhitelistDto {
+            app_kind,
+            stable_id: place.stable_id,
+            rule_choice: choice.label().to_string(),
+            result: "unlisted".to_string(),
+            prompt: false,
+        }),
+        other => Err(format!(
+            "OSL: auto-whitelist rule '{}' is not implemented for new places",
+            other.label()
+        )),
+    }
+}
+
+fn validate_new_place_record(
+    place: &crate::allowed_places::AllowedPlaceRecord,
+) -> Result<(), String> {
+    fn valid_part(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= 512
+            && !value.contains('\0')
+            && !value.chars().any(char::is_whitespace)
+    }
+
+    if !valid_part(&place.app)
+        || !valid_part(&place.account)
+        || !valid_part(&place.kind)
+        || !valid_part(&place.stable_id)
+    {
+        return Err("OSL: new place is invalid".to_string());
+    }
+    let expected_prefix = format!("{}:{}:{}:", place.app, place.account, place.kind);
+    if !place.stable_id.starts_with(&expected_prefix) {
+        return Err("OSL: new place stable id is invalid".to_string());
+    }
+    Ok(())
 }
 
 // ---- G3.3: auto-updater channel ----
