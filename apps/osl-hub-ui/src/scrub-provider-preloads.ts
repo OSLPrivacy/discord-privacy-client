@@ -75,6 +75,12 @@ export const TELEGRAM_WEB_PRELOAD_SCHEMA: ProviderSchema = Object.freeze({
 });
 
 const opaqueId = /^[A-Za-z0-9][A-Za-z0-9._:@/<>-]{0,255}$/;
+export const HOSTED_PRELOAD_SCROLL_PAUSE_MS = 1_500;
+export interface SemanticProviderPreloadOptions {
+  readonly scrollPauseMs?: number;
+  readonly wait?: (milliseconds: number) => Promise<void>;
+}
+
 const frictionSelectors: ReadonlyArray<readonly [HostedSessionFriction, string]> = [
   ["captcha", "iframe[src*='captcha'], [data-captcha], [class*='captcha']"],
   ["challenge", "[data-challenge], [class*='challenge'], form[action*='challenge']"],
@@ -105,17 +111,22 @@ class SemanticProviderPreload implements HostedSessionDeleteOnlyPort {
   readonly #schema: ProviderSchema;
   readonly #accountId: string;
   readonly #sessionEpoch: string;
+  readonly #scrollPauseMs: number;
+  readonly #wait: (milliseconds: number) => Promise<void>;
   readonly #seen = new Map<string, HostedOwnItem>();
   readonly #deleteAttempts = new Set<string>();
   #stopped: HostedSessionFriction | null = null;
 
-  constructor(document: Document, location: Location, schema: ProviderSchema, accountId: string, sessionEpoch: string) {
+  constructor(document: Document, location: Location, schema: ProviderSchema, accountId: string, sessionEpoch: string, options: SemanticProviderPreloadOptions = {}) {
     if (!opaqueId.test(accountId) || !opaqueId.test(sessionEpoch)) throw new Error("invalid hosted session identity");
     this.#document = document;
     this.#location = location;
     this.#schema = schema;
     this.#accountId = accountId;
     this.#sessionEpoch = sessionEpoch;
+    this.#scrollPauseMs = options.scrollPauseMs ?? HOSTED_PRELOAD_SCROLL_PAUSE_MS;
+    this.#wait = options.wait ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    if (!Number.isSafeInteger(this.#scrollPauseMs) || this.#scrollPauseMs < 1) throw new Error("invalid hosted scroll pause");
   }
 
   #base(ok: boolean, friction?: HostedSessionFriction) {
@@ -182,6 +193,7 @@ class SemanticProviderPreload implements HostedSessionDeleteOnlyPort {
       if (nextHeight === priorHeight) return { ...this.#base(true), complete: true };
       priorHeight = nextHeight;
       root.scrollTo({ top: nextHeight, behavior: "auto" });
+      await this.#wait(this.#scrollPauseMs);
     }
     return { ...this.#base(true), complete: false };
   }
@@ -226,11 +238,11 @@ class SemanticProviderPreload implements HostedSessionDeleteOnlyPort {
 }
 
 export class GmailWebScrubPreload extends SemanticProviderPreload {
-  constructor(document: Document, location: Location, accountId: string, sessionEpoch: string) { super(document, location, GMAIL_WEB_PRELOAD_SCHEMA, accountId, sessionEpoch); }
+  constructor(document: Document, location: Location, accountId: string, sessionEpoch: string, options: SemanticProviderPreloadOptions = {}) { super(document, location, GMAIL_WEB_PRELOAD_SCHEMA, accountId, sessionEpoch, options); }
 }
 export class DiscordWebScrubPreload extends SemanticProviderPreload {
-  constructor(document: Document, location: Location, accountId: string, sessionEpoch: string) { super(document, location, DISCORD_WEB_PRELOAD_SCHEMA, accountId, sessionEpoch); }
+  constructor(document: Document, location: Location, accountId: string, sessionEpoch: string, options: SemanticProviderPreloadOptions = {}) { super(document, location, DISCORD_WEB_PRELOAD_SCHEMA, accountId, sessionEpoch, options); }
 }
 export class TelegramWebScrubPreload extends SemanticProviderPreload {
-  constructor(document: Document, location: Location, accountId: string, sessionEpoch: string) { super(document, location, TELEGRAM_WEB_PRELOAD_SCHEMA, accountId, sessionEpoch); }
+  constructor(document: Document, location: Location, accountId: string, sessionEpoch: string, options: SemanticProviderPreloadOptions = {}) { super(document, location, TELEGRAM_WEB_PRELOAD_SCHEMA, accountId, sessionEpoch, options); }
 }
