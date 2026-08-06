@@ -527,6 +527,69 @@ pub fn timed_delete_count_at_path(path: &Path, key: &[u8; 32]) -> Result<usize, 
     Ok(load_timed_delete(path, key)?.records.len())
 }
 
+/// Timed-delete records whose deadlines were reached by one pass.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TimedDeleteFireReport {
+    /// Records whose already-promised delete deadline is due.
+    pub fired: Vec<TimedDeleteRecord>,
+    /// Records still waiting for their promised deadline.
+    pub retained: usize,
+}
+
+/// Remove and return every timed-delete record due at `now`.
+///
+/// This takes no entitlement state on purpose. Creating a timed delete is gated
+/// by Pro; firing a timer OSL already accepted is a promise to the recipient and
+/// must survive a later account lapse.
+pub fn fire_due_timed_deletes_at_path(
+    path: &Path,
+    key: &[u8; 32],
+    now: i64,
+) -> Result<TimedDeleteFireReport, String> {
+    let ledger = load_timed_delete(path, key)?;
+    if ledger.records.is_empty() {
+        return Ok(TimedDeleteFireReport::default());
+    }
+
+    let mut report = TimedDeleteFireReport::default();
+    let mut retained = Vec::with_capacity(ledger.records.len());
+    for record in ledger.records {
+        if now >= record.delete_at {
+            report.fired.push(record);
+        } else {
+            retained.push(record);
+        }
+    }
+    report.retained = retained.len();
+
+    if !report.fired.is_empty() {
+        store_timed_delete(
+            path,
+            &TimedDeleteLedger {
+                version: 1,
+                records: retained,
+            },
+            key,
+        )?;
+    }
+
+    Ok(report)
+}
+
+/// Direct command seam for firing already-accepted timed deletes.
+///
+/// The state parameter binds this to the current account context, but this
+/// function deliberately does not inspect entitlement. A Pro lapse may stop new
+/// promises; it must not break promises already made.
+pub fn cmd_fire_due_timed_deletes_at_path(
+    _state: &ipc::AppState,
+    path: &Path,
+    key: &[u8; 32],
+    now: i64,
+) -> Result<TimedDeleteFireReport, String> {
+    fire_due_timed_deletes_at_path(path, key, now)
+}
+
 // ---------------------------------------------------------------------------
 // Ledger operations
 // ---------------------------------------------------------------------------
@@ -1037,6 +1100,7 @@ pub struct PassReport {
     /// were unreadable and the pass was a no-op by design.
     pub ran: bool,
     pub expired_messages: usize,
+    pub fired_timed_deletes: usize,
     pub shredded_cache_rows: usize,
     pub dropped_receipt_records: usize,
     pub removed_staging_files: usize,
@@ -1055,6 +1119,12 @@ fn receipt_dedup_path() -> Result<PathBuf, String> {
     Ok(keystore::osl_config_dir()
         .map_err(|_| "OSL account storage is unavailable".to_owned())?
         .join(RECEIPT_DEDUP_FILE))
+}
+
+fn timed_delete_path() -> Result<PathBuf, String> {
+    Ok(keystore::osl_config_dir()
+        .map_err(|_| "OSL account storage is unavailable".to_owned())?
+        .join(TIMED_DELETE_FILE))
 }
 
 /// The deadline in force for one message, using the active account's ledger.
@@ -1155,6 +1225,11 @@ pub fn run_pass(
 
     match receipt_dedup_path().and_then(|path| prune_receipt_dedup_at_path(&path, &key, now)) {
         Ok(dropped) => report.dropped_receipt_records = dropped,
+        Err(_) => report.degraded = true,
+    }
+
+    match timed_delete_path().and_then(|path| fire_due_timed_deletes_at_path(&path, &key, now)) {
+        Ok(fired) => report.fired_timed_deletes = fired.fired.len(),
         Err(_) => report.degraded = true,
     }
 
@@ -1286,6 +1361,71 @@ mod tests {
         assert_eq!(free_error, TIMED_DELETE_PRO_REQUIRED);
         assert_eq!(free_count, 0);
         assert_eq!(pro_record.locator, "discord-message-3326-pro");
+    }
+
+    #[test]
+    fn task_3327_existing_timed_delete_fires_after_pro_switches_to_free() {
+        let account = state_with_license(LicenseState::Paid, "ACTIVE");
+        let path = root("task-3327-lapse").join(TIMED_DELETE_FILE);
+
+        let existing = cmd_record_timed_delete_at_path(
+            &account,
+            &path,
+            &KEY,
+            timed_delete_request("discord-message-3327-existing"),
+        )
+        .expect("Pro creates the already-promised timed delete");
+        let before_lapse_count = timed_delete_count_at_path(&path, &KEY).unwrap();
+
+        *account.license_state.lock().expect("license state lock") = LicenseStateDto {
+            state: LicenseState::Free,
+            raw_status: "Unconfigured".to_owned(),
+            current_period_end: None,
+            last_validated_at: None,
+        };
+
+        let fire_report =
+            cmd_fire_due_timed_deletes_at_path(&account, &path, &KEY, existing.delete_at).unwrap();
+        let fired_count_after_lapse = fire_report.fired.len();
+        let after_fire_count = timed_delete_count_at_path(&path, &KEY).unwrap();
+
+        let new_timer_error = cmd_record_timed_delete_at_path(
+            &account,
+            &path,
+            &KEY,
+            timed_delete_request("discord-message-3327-new"),
+        )
+        .expect_err("Free account cannot create a new timed delete");
+        let fired_count_after_refusal = fired_count_after_lapse;
+        let after_refusal_count = timed_delete_count_at_path(&path, &KEY).unwrap();
+
+        println!("task_3327_create_command=cmd_record_timed_delete_at_path");
+        println!("task_3327_fire_command=cmd_fire_due_timed_deletes_at_path");
+        println!("task_3327_initial_account raw_status=ACTIVE access=pro");
+        println!("task_3327_switched_account raw_status=Unconfigured access=free");
+        println!("task_3327_existing_timer_locator={}", existing.locator);
+        println!("task_3327_before_lapse_timed_delete_count={before_lapse_count}");
+        println!(
+            "task_3327_existing_timer_deleted_on_time_at={} fired_locator={}",
+            existing.delete_at, fire_report.fired[0].locator
+        );
+        println!("task_3327_fired_count_after_lapse={fired_count_after_lapse}");
+        println!("task_3327_after_fire_timed_delete_count={after_fire_count}");
+        println!("task_3327_new_timer_refused_by_name={new_timer_error}");
+        println!("task_3327_fired_count_after_refusal={fired_count_after_refusal}");
+        println!("task_3327_after_refusal_timed_delete_count={after_refusal_count}");
+
+        assert_eq!(before_lapse_count, 1);
+        assert_eq!(fired_count_after_lapse, 1);
+        assert_eq!(
+            fire_report.fired[0].locator,
+            "discord-message-3327-existing"
+        );
+        assert_eq!(fire_report.retained, 0);
+        assert_eq!(after_fire_count, 0);
+        assert_eq!(new_timer_error, TIMED_DELETE_PRO_REQUIRED);
+        assert_eq!(fired_count_after_refusal, fired_count_after_lapse);
+        assert_eq!(after_refusal_count, 0);
     }
 
     // ---- two clocks ----
