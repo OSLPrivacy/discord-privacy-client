@@ -124,7 +124,18 @@ pub const BRIDGE_ID_BYTES: usize = 8;
 /// Whatever the id leaves over in the carrier becomes secret seed material.
 /// 96 bits, freshly drawn per message, and it never crosses the network —
 /// only its HKDF output does.
-const BRIDGE_SEED_BYTES: usize = stego::TOKEN_ID_BYTES - BRIDGE_ID_BYTES;
+pub const BRIDGE_SEED_BYTES: usize = stego::TOKEN_ID_BYTES - BRIDGE_ID_BYTES;
+
+/// The bridge pointer recovered from the shipping prose carrier.
+///
+/// This is exactly the field split documented above:
+/// `carrier = server_blob_id || seed`. The deployed Worker never sees the
+/// seed; callers derive its `x-osl-fetch-token` locally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgePointer {
+    pub blob_id: String,
+    pub fetch_seed: [u8; BRIDGE_SEED_BYTES],
+}
 
 /// The bridge's read capability, derived from carrier material alone so the
 /// receiver needs no key material and no roundtrip — the same property the
@@ -135,6 +146,11 @@ fn bridge_fetch_token(seed: &[u8; BRIDGE_SEED_BYTES]) -> [u8; FETCH_TOKEN_BYTES]
     hk.expand(BRIDGE_FETCH_INFO, &mut out)
         .expect("HKDF expand to 16 bytes is infallible");
     out
+}
+
+/// Derive the token the deployed bridge Worker expects from the carrier seed.
+pub fn bridge_fetch_token_from_seed(seed: &[u8; BRIDGE_SEED_BYTES]) -> [u8; FETCH_TOKEN_BYTES] {
+    bridge_fetch_token(seed)
 }
 
 /// Pack the server's id and our seed into the fixed-width carrier payload.
@@ -158,6 +174,14 @@ fn bridge_unpack(
     id.copy_from_slice(&carrier[..BRIDGE_ID_BYTES]);
     seed.copy_from_slice(&carrier[BRIDGE_ID_BYTES..]);
     (id, seed)
+}
+
+fn bridge_pointer_from_carrier(carrier: &[u8; stego::TOKEN_ID_BYTES]) -> BridgePointer {
+    let (id, fetch_seed) = bridge_unpack(carrier);
+    BridgePointer {
+        blob_id: hex_lower(&id),
+        fetch_seed,
+    }
 }
 
 /// Parse the 16-hex id the deployed Worker returns.
@@ -623,6 +647,23 @@ pub fn prose_token_recv_classified(
         wire,
         blob_id: id_hex,
     }))
+}
+
+/// Recover the deployed bridge pointer from cover text without performing the
+/// fetch.
+///
+/// Eager-arrival code uses this when it needs to schedule its own fetch path:
+/// the returned shape is the server-assigned id plus carrier seed, not the
+/// retired split-capability tuple.
+pub fn prose_token_bridge_pointer(
+    scope_input: &ScopeInput,
+    detection_key: &[u8; MAC_KEY_LEN],
+    msg: &str,
+) -> Result<Option<BridgePointer>, ProseTokenError> {
+    let cipher = derive_scope_cipher(scope_input)?;
+    let scoped_detector = scope_bound_detection_key(detection_key, scope_input)?;
+    Ok(stego::decode_token(&cipher, &scoped_detector, msg)
+        .map(|carrier| bridge_pointer_from_carrier(&carrier)))
 }
 
 /// Try to decode a Discord message as an OSL prose-token. Returns

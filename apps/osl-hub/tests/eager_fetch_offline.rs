@@ -22,12 +22,12 @@ impl CipherStoreTransport for Network {
             .cloned()
             .ok_or_else(|| "blob gone".to_owned())
     }
-    fn burn(&mut self, blob_id: &str, manage_cap: &[u8]) -> Result<(), String> {
+    fn burn(&mut self, blob_id: &str, fetch_token: &[u8]) -> Result<(), String> {
         if !self.online {
             return Err("network is down".to_owned());
         }
         self.blobs.remove(blob_id);
-        self.burned.push((blob_id.to_owned(), manage_cap.to_vec()));
+        self.burned.push((blob_id.to_owned(), fetch_token.to_vec()));
         Ok(())
     }
 }
@@ -63,8 +63,7 @@ impl LocalMessageStore for Local {
 fn pointer(id: &str) -> PointerArrival {
     PointerArrival {
         blob_id: id.to_owned(),
-        fetch_cap: vec![7; 32],
-        manage_cap: vec![9; 32],
+        fetch_seed: [7; ipc::prose_token::BRIDGE_SEED_BYTES],
     }
 }
 
@@ -73,7 +72,7 @@ fn t6_t28_pointer_fetches_before_open_and_offline_burn_survives_restart_without_
     let temp = tempfile::tempdir().unwrap();
     let queue_path = temp.path().join("offline-burns.enc");
     let queue = EncryptedBurnQueue::new(&queue_path, [3; 32]);
-    let mut network = Network {
+    let network = Network {
         online: true,
         blobs: BTreeMap::from([("a".to_owned(), b"plain".to_vec())]),
         burned: vec![],
@@ -111,8 +110,8 @@ fn t6_t28_pointer_fetches_before_open_and_offline_burn_survives_restart_without_
     let (network, _, queue) = restarted.into_parts();
     assert_eq!(
         network.burned,
-        vec![("a".to_owned(), vec![9; 32])],
-        "manage capability is sent unchanged"
+        vec![("a".to_owned(), pointer("a").fetch_token().to_vec())],
+        "the bridge fetch token is reused for deployed-service burn"
     );
     assert!(queue.pending().unwrap().is_empty());
 
