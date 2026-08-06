@@ -1757,6 +1757,35 @@ fn send_attachment(
     }
 }
 
+fn attempt_over_limit_direct_send_upload_request(
+    sender: &Peer,
+    client: &CipherStoreClient,
+    source_path: &Path,
+    filename: &str,
+) -> Result<(), String> {
+    sender.activate();
+    let plaintext_size = osl_privacy_hub::attachment_limits::MAX_ATTACHMENT_BYTES + 1;
+    let plan = match osl_privacy_hub::broker::begin_osl_chat_attachment(
+        &sender.core,
+        &sender.broker,
+        filename.to_owned(),
+        plaintext_size,
+        false,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => return Err(error),
+    };
+
+    let token = fresh_fetch_token();
+    let sealed_file = File::open(source_path).map_err(|error| error.to_string())?;
+    let ttl = u32::try_from(plan.expires_at.saturating_sub(plan.created_at))
+        .map_err(|error| error.to_string())?;
+    client
+        .upload_attachment_file(sealed_file, ttl, &token)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 /// Mirrors `open_pending_inner` up to (not including) decryption: stream the
 /// ciphertext into an OSL staging file, then check the declared size and the
 /// pre-decrypt SHA-256. `Err` is the product's refusal, carrying only the
@@ -1963,6 +1992,43 @@ fn direct_upload_round_trip_recovers_byte_identical_plaintext_and_leaves_no_plai
     assert!(staging_files(&bob.local_root, "download-").is_empty());
     assert!(staging_files(&bob.local_root, "sealed-").is_empty());
     assert!(staging_files(&alice.local_root, "sealed-").is_empty());
+}
+
+#[test]
+fn over_limit_direct_send_creates_no_upload_request() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task0046-over-limit-direct");
+    let relay_url = relay.base_url();
+    let (alice, _bob) = verified_pair(&storage, &relay);
+    let client = CipherStoreClient::new(&relay_url).expect("build cipher-store client");
+    let source = write_plaintext_source(&storage.root.join("would-upload.bin"), 1024);
+
+    let refused =
+        attempt_over_limit_direct_send_upload_request(&alice, &client, &source, "fixture-note.txt")
+            .is_err();
+
+    relay.counts(|counts| {
+        let upload_requests = counts.direct_uploads
+            + counts.sessions
+            + u32::try_from(counts.parts.len()).unwrap_or(u32::MAX)
+            + counts.completes;
+        println!(
+            "TASK0046 over_limit_direct_send result={} upload_requests={} direct_uploads={} multipart_sessions={} parts={} completes={} limit_bytes={} attempted_bytes={}",
+            if refused { "refused" } else { "accepted" },
+            upload_requests,
+            counts.direct_uploads,
+            counts.sessions,
+            counts.parts.len(),
+            counts.completes,
+            osl_privacy_hub::attachment_limits::MAX_ATTACHMENT_BYTES,
+            osl_privacy_hub::attachment_limits::MAX_ATTACHMENT_BYTES + 1
+        );
+        assert_eq!(upload_requests, 0);
+        assert!(refused, "over-limit send must be refused before upload");
+    });
 }
 
 /// The **multipart** upload route, which only engages above 26 MiB.
