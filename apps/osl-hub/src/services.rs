@@ -312,11 +312,60 @@ pub fn generated_tile_label(facts: ServiceCapabilityFacts) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct MessagingRiskFacts {
+    pub service_id: &'static str,
+    pub display_name: &'static str,
+    pub facts: [&'static str; MESSAGING_RISK_FACT_COUNT],
+}
+
+pub const MESSAGING_RISK_FACT_COUNT: usize = 5;
+
+pub const MESSAGING_RISK_FACTS: [&str; MESSAGING_RISK_FACT_COUNT] = [
+    "OSL controls the app",
+    "this may break that service's rules",
+    "the account may be suspended",
+    "OSL cannot remove that risk",
+    "you can turn it off",
+];
+
+pub fn all_messaging_risk_facts() -> [MessagingRiskFacts; 7] {
+    MESSAGING_RISK_FACT_ROWS
+}
+
+pub fn messaging_risk_facts(service_id: &str) -> Result<MessagingRiskFacts, String> {
+    MESSAGING_RISK_FACT_ROWS
+        .into_iter()
+        .find(|facts| facts.service_id == service_id)
+        .ok_or_else(|| "unknown messaging service".to_owned())
+}
+
 fn service_capability_facts_for_kind(service_id: ServiceKind) -> Option<ServiceCapabilityFacts> {
     SERVICE_CAPABILITY_FACTS
         .iter()
         .copied()
         .find(|facts| facts.service_id == service_id)
+}
+
+const MESSAGING_RISK_FACT_ROWS: [MessagingRiskFacts; 7] = [
+    messaging_risk_facts_row("discord", "Discord"),
+    messaging_risk_facts_row("telegram", "Telegram"),
+    messaging_risk_facts_row("whatsapp", "WhatsApp"),
+    messaging_risk_facts_row("x", "X"),
+    messaging_risk_facts_row("instagram", "Instagram"),
+    messaging_risk_facts_row("messenger", "Messenger"),
+    messaging_risk_facts_row("email", "email"),
+];
+
+const fn messaging_risk_facts_row(
+    service_id: &'static str,
+    display_name: &'static str,
+) -> MessagingRiskFacts {
+    MessagingRiskFacts {
+        service_id,
+        display_name,
+        facts: MESSAGING_RISK_FACTS,
+    }
 }
 
 const SERVICE_CAPABILITY_FACTS: [ServiceCapabilityFacts; 5] = [
