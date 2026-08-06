@@ -29,8 +29,8 @@ use crate::native_discord_adapter::{
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
 use crate::website_driver::{
-    WebsiteDriver, WebsiteLiveRunProgress, WebsiteNamedControl, WebsitePageRequest,
-    WebsiteTextPlacement,
+    WebsiteDriver, WebsiteLiveRunProgress, WebsiteMailboxMessage, WebsiteNamedControl,
+    WebsitePageRequest, WebsiteTextPlacement,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -75,6 +75,30 @@ pub struct ProtectedEmailOpenMessageReadRequest {
 pub struct ProtectedEmailOpenMessageRead {
     pub cover_message: String,
     pub conversation_identity: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtonMailboxForScrubReadRequest {
+    pub page_url: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtonMailboxForScrubMessage {
+    pub subject: String,
+    pub time: String,
+    pub sender: String,
+    pub owner_marker: String,
+    pub yours: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtonMailboxForScrubRead {
+    pub folders: Vec<String>,
+    pub sent: Vec<ProtonMailboxForScrubMessage>,
+    pub inbox: Vec<ProtonMailboxForScrubMessage>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -326,6 +350,60 @@ where
         cover_message: selected.body,
         conversation_identity: selected.conversation_identity,
     })
+}
+
+pub fn read_proton_mailbox_for_scrub_with_driver<D>(
+    driver: &mut D,
+    request: ProtonMailboxForScrubReadRequest,
+) -> Result<ProtonMailboxForScrubRead, String>
+where
+    D: WebsiteDriver,
+{
+    if request.page_url.trim().is_empty() {
+        return Err("Proton mailbox reader requires an open service page".to_owned());
+    }
+
+    let page = driver
+        .find_page(WebsitePageRequest {
+            url: request.page_url,
+        })
+        .map_err(|error| error.to_string())?;
+    let mailbox = driver
+        .read_mailbox(&page)
+        .map_err(|error| error.to_string())?;
+
+    let sent = mailbox
+        .messages
+        .iter()
+        .filter(|message| proton_folder_eq(&message.folder, "Sent"))
+        .map(proton_message_from_website)
+        .collect();
+    let inbox = mailbox
+        .messages
+        .iter()
+        .filter(|message| proton_folder_eq(&message.folder, "Inbox"))
+        .map(proton_message_from_website)
+        .collect();
+
+    Ok(ProtonMailboxForScrubRead {
+        folders: mailbox.folders,
+        sent,
+        inbox,
+    })
+}
+
+fn proton_folder_eq(actual: &str, expected: &str) -> bool {
+    actual.trim().eq_ignore_ascii_case(expected)
+}
+
+fn proton_message_from_website(message: &WebsiteMailboxMessage) -> ProtonMailboxForScrubMessage {
+    ProtonMailboxForScrubMessage {
+        subject: message.subject.clone(),
+        time: message.time.clone(),
+        sender: message.sender.clone(),
+        owner_marker: message.owner_marker.clone(),
+        yours: message.yours,
+    }
 }
 
 pub fn read_protected_email_live_run_progress_with_driver<D>(
@@ -877,6 +955,7 @@ macro_rules! hub_tauri_commands {
             focus_default_browser_companion,
             detach_default_browser_companion,
             read_protected_email_open_message,
+            read_proton_mailbox_for_scrub,
             read_protected_email_live_run_progress,
             host_native_app_window,
             native_app_takeover_requires_consent,
@@ -2053,6 +2132,7 @@ mod tauri_registration_surface_tests {
             &capability,
             &[
                 "read_protected_email_open_message",
+                "read_proton_mailbox_for_scrub",
                 "read_protected_email_live_run_progress",
             ],
         );

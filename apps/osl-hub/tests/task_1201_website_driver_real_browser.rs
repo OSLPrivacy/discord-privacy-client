@@ -1,8 +1,9 @@
 use osl_privacy_hub::{
     hub_command_surface::{
         read_ordinary_send_progress, read_protected_email_open_message_with_driver,
-        send_ordinary_message_with_progress, OrdinarySendProgress, OrdinarySendProgressRequest,
-        ProtectedEmailOpenMessageReadRequest,
+        read_proton_mailbox_for_scrub_with_driver, send_ordinary_message_with_progress,
+        OrdinarySendProgress, OrdinarySendProgressRequest, ProtectedEmailOpenMessageReadRequest,
+        ProtonMailboxForScrubReadRequest,
     },
     website_driver::{
         RealBrowserWebsiteDriver, WebsiteDriver, WebsiteLiveRunProgress, WebsiteNamedControl,
@@ -30,6 +31,8 @@ const TASK_1214_TITLE: &str = "OSL Task 1214 Protected Email Reader";
 const TASK_1214_COVER_MESSAGE: &str =
     "Fixture cover message for task 1214. The protected email reader got it through the driver.";
 const TASK_1214_THREAD_ID: &str = "email-thread-1214-stable";
+const TASK_3056_TITLE: &str = "OSL Task 3056 Seeded Proton Mailbox";
+const TASK_3056_FOLDERS: [&str; 4] = ["Inbox", "Sent", "Archive", "Trash"];
 const TASK_1426_TITLE: &str = "OSL Task 1426 Live Run Progress";
 const TASK_1426_ACCOUNT: &str = "fixture-account-1426@example.invalid";
 const TASK_3603_TITLE: &str = "OSL Task 3603 Ordinary Send Progress";
@@ -201,6 +204,136 @@ fn task_1214_direct_reader_command_returns_fixture_cover_message() {
         "TASK1214 stable_thread_identity={}",
         read.conversation_identity
     );
+}
+
+#[test]
+fn task_3056_seeded_proton_mailbox_returns_folders_sent_messages_and_ownership() {
+    let server = LocalTestPage::spawn_body(
+        TASK_3056_TITLE,
+        r#"
+            <main>
+              <nav aria-label="Proton folders">
+                <button type="button" data-osl-mail-folder="Inbox">Inbox</button>
+                <button type="button" data-osl-mail-folder="Sent">Sent</button>
+                <button type="button" data-osl-mail-folder="Archive">Archive</button>
+                <button type="button" data-osl-mail-folder="Trash">Trash</button>
+              </nav>
+              <section aria-label="Seeded Proton messages">
+                <article
+                  data-osl-mail-message
+                  data-osl-folder="Sent"
+                  data-osl-subject="SCRUB-PR-MINE"
+                  data-osl-time="2026-08-06 08:15"
+                  data-osl-sender="scrub.owner@proton.test"
+                  data-osl-scrub-owner-marker="SCRUB-PR-MINE">
+                  <h2 data-osl-mail-subject>SCRUB-PR-MINE</h2>
+                  <span data-osl-mail-time>2026-08-06 08:15</span>
+                  <span data-osl-mail-sender>scrub.owner@proton.test</span>
+                </article>
+                <article
+                  data-osl-mail-message
+                  data-osl-folder="Sent"
+                  data-osl-subject="Scrub export request"
+                  data-osl-time="2026-08-06 08:20"
+                  data-osl-sender="scrub.owner@proton.test">
+                  <h2 data-osl-mail-subject>Scrub export request</h2>
+                  <span data-osl-mail-time>2026-08-06 08:20</span>
+                  <span data-osl-mail-sender>scrub.owner@proton.test</span>
+                </article>
+                <article
+                  data-osl-mail-message
+                  data-osl-folder="Sent"
+                  data-osl-subject="Scrub confirmation note"
+                  data-osl-time="2026-08-06 08:25"
+                  data-osl-sender="scrub.owner@proton.test">
+                  <h2 data-osl-mail-subject>Scrub confirmation note</h2>
+                  <span data-osl-mail-time>2026-08-06 08:25</span>
+                  <span data-osl-mail-sender>scrub.owner@proton.test</span>
+                </article>
+                <article
+                  data-osl-mail-message
+                  data-osl-folder="Inbox"
+                  data-osl-subject="Provider reply one"
+                  data-osl-time="2026-08-06 09:10"
+                  data-osl-sender="privacy-team@example.test">
+                  <h2 data-osl-mail-subject>Provider reply one</h2>
+                  <span data-osl-mail-time>2026-08-06 09:10</span>
+                  <span data-osl-mail-sender>privacy-team@example.test</span>
+                </article>
+                <article
+                  data-osl-mail-message
+                  data-osl-folder="Inbox"
+                  data-osl-subject="Provider reply two"
+                  data-osl-time="2026-08-06 09:25"
+                  data-osl-sender="support@example.test">
+                  <h2 data-osl-mail-subject>Provider reply two</h2>
+                  <span data-osl-mail-time>2026-08-06 09:25</span>
+                  <span data-osl-mail-sender>support@example.test</span>
+                </article>
+                <article
+                  hidden
+                  data-osl-mail-message
+                  data-osl-folder="Sent"
+                  data-osl-subject="Hidden decoy"
+                  data-osl-time="2026-08-06 10:00"
+                  data-osl-sender="decoy@example.test">
+                  Hidden decoy
+                </article>
+              </section>
+            </main>
+        "#,
+    );
+    let mut driver = RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
+
+    let read = read_proton_mailbox_for_scrub_with_driver(
+        &mut driver,
+        ProtonMailboxForScrubReadRequest {
+            page_url: server.url(),
+        },
+    )
+    .expect("read seeded Proton mailbox through real browser");
+
+    assert_eq!(read.folders, TASK_3056_FOLDERS);
+    assert_eq!(read.sent.len(), 3);
+    assert_eq!(read.inbox.len(), 2);
+    assert!(read
+        .sent
+        .iter()
+        .any(|message| message.owner_marker == "SCRUB-PR-MINE" && message.yours));
+    assert!(read.inbox.iter().all(|message| !message.yours));
+    for message in &read.sent {
+        assert!(!message.subject.is_empty());
+        assert!(!message.time.is_empty());
+        assert!(!message.sender.is_empty());
+    }
+
+    println!("TASK3056 direct_reader_command=read_proton_mailbox_for_scrub");
+    println!("TASK3056 provider=Proton Mail");
+    println!("TASK3056 folder_count={}", read.folders.len());
+    for folder in &read.folders {
+        println!("TASK3056 folder={folder}");
+    }
+    println!("TASK3056 sent_count={}", read.sent.len());
+    for (index, message) in read.sent.iter().enumerate() {
+        println!(
+            "TASK3056 sent_message_{} subject={} time={} sender={} owner_marker={} owner_label={}",
+            index + 1,
+            message.subject,
+            message.time,
+            message.sender,
+            message.owner_marker,
+            if message.yours { "yours" } else { "not_yours" }
+        );
+    }
+    println!("TASK3056 inbox_count={}", read.inbox.len());
+    for (index, message) in read.inbox.iter().enumerate() {
+        println!(
+            "TASK3056 inbox_message_{} subject={} owner_label={}",
+            index + 1,
+            message.subject,
+            if message.yours { "yours" } else { "not_yours" }
+        );
+    }
 }
 
 #[test]

@@ -174,6 +174,11 @@ description = "Allow only the trusted main OSL window to read the currently open
 commands.allow = ["read_protected_email_open_message"]
 
 [[permission]]
+identifier = "allow-read-proton-mailbox-for-scrub"
+description = "Allow only the trusted main OSL window to read bounded Proton Mail folder and message summary fields for Scrub review; it accepts no message body, credential, profile path, or provider token from the renderer."
+commands.allow = ["read_proton_mailbox_for_scrub"]
+
+[[permission]]
 identifier = "allow-read-protected-email-live-run-progress"
 description = "Allow only the trusted main OSL window to read bounded live progress counters from the currently open protected email page; it accepts no message body, credential, profile path, or provider token from the renderer."
 commands.allow = ["read_protected_email_live_run_progress"]

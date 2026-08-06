@@ -127,6 +127,8 @@
     "allow-set-native-discord-protected-overlay-open",
     "allow-set-native-discord-covertext-enabled",
     "allow-read-protected-email-open-message",
+    "allow-read-proton-mailbox-for-scrub",
+    "allow-read-protected-email-live-run-progress",
     "allow-create-service-account",
     "allow-open-service-host",
     "allow-open-hosted-session-scan",

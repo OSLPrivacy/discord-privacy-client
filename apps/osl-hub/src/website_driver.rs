@@ -81,6 +81,23 @@ pub struct WebsiteSelectedEmail {
     pub conversation_identity: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteMailboxMessage {
+    pub folder: String,
+    pub subject: String,
+    pub time: String,
+    pub sender: String,
+    pub owner_marker: String,
+    pub yours: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteMailboxRead {
+    pub page: WebsitePage,
+    pub folders: Vec<String>,
+    pub messages: Vec<WebsiteMailboxMessage>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebsiteLiveRunProgress {
@@ -137,6 +154,10 @@ pub trait WebsiteDriver {
         &mut self,
         page: &WebsitePage,
     ) -> Result<WebsiteSelectedEmail, WebsiteDriverError>;
+    fn read_mailbox(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteMailboxRead, WebsiteDriverError>;
     fn read_live_run_progress(
         &mut self,
         page: &WebsitePage,
@@ -177,6 +198,23 @@ struct BrowserPageSnapshot {
 struct BrowserSelectedEmailSnapshot {
     body: String,
     conversation_identity: String,
+}
+
+#[derive(Deserialize)]
+struct BrowserMailboxReadSnapshot {
+    folders: Vec<String>,
+    messages: Vec<BrowserMailboxMessageSnapshot>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserMailboxMessageSnapshot {
+    folder: String,
+    subject: String,
+    time: String,
+    sender: String,
+    owner_marker: String,
+    yours: bool,
 }
 
 impl RealBrowserWebsiteDriver {
@@ -368,6 +406,41 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
         }
     }
 
+    fn read_mailbox(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteMailboxRead, WebsiteDriverError> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+
+        loop {
+            if let Ok(websocket_url) = self.page_websocket_url(page) {
+                if let Ok(snapshot) = read_mailbox_snapshot(&websocket_url) {
+                    return Ok(WebsiteMailboxRead {
+                        page: page.clone(),
+                        folders: snapshot.folders,
+                        messages: snapshot
+                            .messages
+                            .into_iter()
+                            .map(|message| WebsiteMailboxMessage {
+                                folder: message.folder,
+                                subject: message.subject,
+                                time: message.time,
+                                sender: message.sender,
+                                owner_marker: message.owner_marker,
+                                yours: message.yours,
+                            })
+                            .collect(),
+                    });
+                }
+            }
+
+            if std::time::Instant::now() >= deadline {
+                return Err(WebsiteDriverError::ReadFailed);
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError> {
         let websocket_url = self.page_websocket_url(&placement.page)?;
         let text =
@@ -440,6 +513,13 @@ fn read_live_run_progress_snapshot(
     websocket_url: &str,
 ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
     let value = evaluate_target(websocket_url, LIVE_RUN_PROGRESS_EXPRESSION)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn read_mailbox_snapshot(
+    websocket_url: &str,
+) -> Result<BrowserMailboxReadSnapshot, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, MAILBOX_READ_EXPRESSION)?;
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
 }
 
@@ -771,6 +851,60 @@ const LIVE_RUN_PROGRESS_EXPRESSION: &str = r#"
 })()
 "#;
 
+const MAILBOX_READ_EXPRESSION: &str = r#"
+(() => {
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const attrOrChild = (root, attr, selector) => {
+    const direct = compact(root.getAttribute(attr));
+    if (direct) return direct;
+    const element = root.querySelector(selector);
+    if (!element) return '';
+    return compact(element.getAttribute(attr) || element.innerText || element.textContent);
+  };
+  const folders = [];
+  const seenFolders = new Set();
+  for (const element of document.querySelectorAll('[data-osl-mail-folder], [data-proton-folder]')) {
+    if (!visible(element)) continue;
+    const folder = compact(element.getAttribute('data-osl-mail-folder') || element.getAttribute('data-proton-folder') || element.innerText || element.textContent);
+    if (!folder || seenFolders.has(folder)) continue;
+    seenFolders.add(folder);
+    folders.push(folder);
+  }
+  const messages = [];
+  for (const row of document.querySelectorAll('[data-osl-mail-message], [data-proton-message-row]')) {
+    if (!visible(row)) continue;
+    const folder = attrOrChild(row, 'data-osl-folder', '[data-osl-mail-message-folder], [data-proton-message-folder]') ||
+      compact(row.getAttribute('data-proton-folder'));
+    const subject = attrOrChild(row, 'data-osl-subject', '[data-osl-mail-subject], [data-proton-subject]') ||
+      compact(row.getAttribute('data-proton-subject'));
+    const time = attrOrChild(row, 'data-osl-time', '[data-osl-mail-time], [data-proton-time], time') ||
+      compact(row.getAttribute('data-proton-time'));
+    const sender = attrOrChild(row, 'data-osl-sender', '[data-osl-mail-sender], [data-proton-sender]') ||
+      compact(row.getAttribute('data-proton-sender'));
+    const markerElement = row.querySelector('[data-osl-scrub-owner-marker], [data-proton-owner-marker]');
+    const ownerMarker = compact(row.getAttribute('data-osl-scrub-owner-marker') || row.getAttribute('data-proton-owner-marker') ||
+      (markerElement ? markerElement.getAttribute('data-osl-scrub-owner-marker') || markerElement.getAttribute('data-proton-owner-marker') || markerElement.innerText || markerElement.textContent : ''));
+    if (!folder || !subject || !time || !sender) continue;
+    messages.push({
+      folder,
+      subject,
+      time,
+      sender,
+      ownerMarker,
+      yours: ownerMarker === 'SCRUB-PR-MINE'
+    });
+  }
+  if (!folders.length) return null;
+  return { folders, messages };
+})()
+"#;
+
 const PLACE_TEXT_EXPRESSION: &str = r#"
 (() => {
   const text = __OSL_TEXT__;
@@ -960,6 +1094,24 @@ mod tests {
                 scrolls: 0,
                 waits: 0,
                 changes: 1,
+            })
+        }
+
+        fn read_mailbox(
+            &mut self,
+            page: &WebsitePage,
+        ) -> Result<WebsiteMailboxRead, WebsiteDriverError> {
+            Ok(WebsiteMailboxRead {
+                page: page.clone(),
+                folders: vec!["Inbox".to_owned(), "Sent".to_owned()],
+                messages: vec![WebsiteMailboxMessage {
+                    folder: "Sent".to_owned(),
+                    subject: "fixture".to_owned(),
+                    time: "2026-08-06 09:00".to_owned(),
+                    sender: "fixture@example.invalid".to_owned(),
+                    owner_marker: "SCRUB-PR-MINE".to_owned(),
+                    yours: true,
+                }],
             })
         }
 
