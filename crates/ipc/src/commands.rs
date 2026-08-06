@@ -6,6 +6,9 @@
 //!
 //! Tauri-attribute wrappers live in [`crate::tauri_glue`].
 
+use crate::auto_whitelist_rules::{
+    AutoWhitelistAppKind, AutoWhitelistChoice, AutoWhitelistRule, AutoWhitelistRuleQuery,
+};
 use crate::state::AppState;
 use crate::{IpcError, IpcResult};
 use base64::engine::general_purpose::STANDARD;
@@ -151,6 +154,9 @@ mod command_activity_tests {
         });
         assert_command_marks_activity("cmd_osl_get_app_preferences", || {
             let _ = cmd_osl_get_app_preferences(&state);
+        });
+        assert_command_marks_activity("cmd_osl_query_auto_whitelist_rule", || {
+            let _ = cmd_osl_query_auto_whitelist_rule(&state, AutoWhitelistAppKind::Chat);
         });
         assert_command_marks_activity("cmd_osl_get_self_user_id", || {
             let _ = cmd_osl_get_self_user_id(&state);
@@ -15766,6 +15772,33 @@ pub fn cmd_osl_apply_server_default_to_existing_channels(
     }
     persist_whitelist_state_now(state);
     Ok(affected)
+}
+
+// ---- Saved auto-whitelist rules ----
+
+pub fn cmd_osl_save_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: AutoWhitelistAppKind,
+    choice: AutoWhitelistChoice,
+) -> Result<AutoWhitelistRule, String> {
+    record_activity_on_command_entry();
+    let mut rules = state
+        .auto_whitelist_rules
+        .lock()
+        .expect("auto_whitelist_rules mutex poisoned");
+    Ok(rules.save(app_kind, choice))
+}
+
+pub fn cmd_osl_query_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: AutoWhitelistAppKind,
+) -> Result<AutoWhitelistRuleQuery, String> {
+    record_activity_on_command_entry();
+    let rules = state
+        .auto_whitelist_rules
+        .lock()
+        .expect("auto_whitelist_rules mutex poisoned");
+    Ok(rules.query(app_kind))
 }
 
 // ---- Phase 9-B1: app preferences ----
