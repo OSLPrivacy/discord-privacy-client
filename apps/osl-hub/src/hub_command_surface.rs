@@ -596,6 +596,7 @@ macro_rules! hub_tauri_commands {
             #[cfg(feature = "discord-qa-shell")]
             poll_native_discord_headless_qa,
             prepare_osl_chat_text,
+            create_osl_chat_group_conversation,
             send_native_discord_overlay_carrier,
             open_native_discord_overlay_text,
             rehydrate_native_discord_overlay_history,
@@ -1625,6 +1626,23 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["get_osl_chat_local_state_key"],
+        );
+    }
+
+    #[test]
+    fn create_osl_chat_group_conversation_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "create_osl_chat_group_conversation",
+        );
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["create_osl_chat_group_conversation"],
         );
     }
 

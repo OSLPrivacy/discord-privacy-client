@@ -64,6 +64,11 @@ description = "Allow only the trusted main OSL window to encrypt bounded first-p
 commands.allow = ["prepare_osl_chat_text"]
 
 [[permission]]
+identifier = "allow-create-osl-chat-group-conversation"
+description = "Allow only the trusted main OSL window to create one named first-party OSL Chat group from an explicit selected member-id set."
+commands.allow = ["create_osl_chat_group_conversation"]
+
+[[permission]]
 identifier = "allow-open-osl-chat-text"
 description = "Allow only the trusted main OSL window to drain and open authenticated first-party chat messages for the active verified friend."
 commands.allow = ["open_osl_chat_text"]

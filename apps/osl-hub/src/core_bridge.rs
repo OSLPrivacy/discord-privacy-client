@@ -30,6 +30,15 @@ impl Default for HubCoreState {
 }
 
 impl HubCoreState {
+    #[cfg(test)]
+    pub(crate) fn new_for_test(osl: AppState) -> Self {
+        Self {
+            osl: Arc::new(osl),
+            bootstrap_attempted: false,
+            lifecycle_lock: Mutex::new(()),
+        }
+    }
+
     /// Load the original OSL account and security state from its sealed local
     /// configuration. Missing, locked, or corrupt state remains unavailable.
     pub fn bootstrap_from_disk() -> Self {

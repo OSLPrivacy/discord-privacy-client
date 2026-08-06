@@ -117,6 +117,7 @@
     "allow-run-native-discord-headless-qa",
     "allow-poll-native-discord-headless-qa",
     "allow-prepare-osl-chat-text",
+    "allow-create-osl-chat-group-conversation",
     "allow-open-osl-chat-text",
     "allow-list-osl-chat-history",
     "allow-select-osl-chat-attachment",

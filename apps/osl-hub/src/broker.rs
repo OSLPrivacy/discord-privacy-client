@@ -1058,6 +1058,14 @@ pub fn activate_owned_osl_chat_context(
     activate_manual_peer_from_trusted_host(broker, owner_osl_user_id, &active, binding)
 }
 
+pub fn create_osl_chat_group_conversation(
+    core: &HubCoreState,
+    name: String,
+    selected_member_ids: Vec<String>,
+) -> Result<ipc::commands::NamedGroupConversationDto, String> {
+    ipc::commands::cmd_osl_create_group_conversation(&core.osl, name, selected_member_ids)
+}
+
 fn activate_manual_peer_from_trusted_host(
     broker: &HubBrokerState,
     owner_osl_user_id: &str,
@@ -9266,6 +9274,49 @@ mod tests {
             keystore::set_active_account_dir(None);
             keystore::set_base_dir_override(None);
         }
+    }
+
+    #[test]
+    fn task_1313_direct_chats_action_creates_group_and_returns_selected_members() {
+        let core = HubCoreState::new_for_test(ipc::AppState::new());
+        let selected_member_ids = vec![
+            "member-zoe-1313".to_owned(),
+            "member-ava-1313".to_owned(),
+            "member-mia-1313".to_owned(),
+        ];
+
+        let created = create_osl_chat_group_conversation(
+            &core,
+            "Chats Command Group".to_owned(),
+            selected_member_ids.clone(),
+        )
+        .expect("direct Chats group action creates group");
+
+        assert_eq!(created.name, "Chats Command Group");
+        assert_eq!(created.scope.kind, ScopeKind::Gc);
+        assert_eq!(created.group_id, created.scope.id);
+        assert_eq!(created.member_count, selected_member_ids.len());
+        for selected_member_id in &selected_member_ids {
+            assert!(
+                created.member_ids.contains(selected_member_id),
+                "created group must return selected member {selected_member_id}"
+            );
+        }
+        let stored_members =
+            ipc::commands::cmd_osl_membership_get(&core.osl, created.group_id.clone())
+                .expect("direct Chats group action writes membership");
+        assert_eq!(stored_members, created.member_ids);
+
+        println!(
+            "TASK_1313_GROUP_CHAT command=create_osl_chat_group_conversation direct_action=broker::create_osl_chat_group_conversation name=\"{}\" kind={:?} group_id={} selected_member_count={} returned_member_count={} returned_member_ids={} stored_member_count={}",
+            created.name,
+            created.scope.kind,
+            created.group_id,
+            selected_member_ids.len(),
+            created.member_count,
+            created.member_ids.join(","),
+            stored_members.len()
+        );
     }
 
     #[test]

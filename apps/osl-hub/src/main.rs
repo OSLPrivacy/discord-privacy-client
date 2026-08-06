@@ -5003,6 +5003,29 @@ async fn prepare_osl_chat_text(
 }
 
 #[tauri::command]
+async fn create_osl_chat_group_conversation(
+    app: tauri::AppHandle,
+    caller: tauri::WebviewWindow,
+    session: State<'_, HubAccountSessionState>,
+    name: String,
+    selected_member_ids: Vec<String>,
+) -> Result<ipc::commands::NamedGroupConversationDto, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may create OSL Chat groups".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        broker::create_osl_chat_group_conversation(
+            &app.state::<HubCoreState>(),
+            name,
+            selected_member_ids,
+        )
+    })
+    .await
+    .map_err(|error| format!("OSL Chat group worker failed: {error}"))?
+}
+
+#[tauri::command]
 async fn open_osl_chat_text(
     app: tauri::AppHandle,
     caller: tauri::WebviewWindow,
@@ -5728,7 +5751,9 @@ async fn set_osl_chat_capture_preference(
     local_opt_in: bool,
 ) -> Result<ChatCaptureProtectionDto, String> {
     if caller.label() != "main" {
-        return Err("Only the trusted OSL window may change OSL Chat capture protection".to_owned());
+        return Err(
+            "Only the trusted OSL window may change OSL Chat capture protection".to_owned(),
+        );
     }
     let _session = session.transition.lock().await;
     let binding = security::manual_peer_binding(&core, person_id)?;
