@@ -10,6 +10,7 @@ import { badRequest, json, serviceUnavailable, tooMany } from "../lib/http.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 
 interface RedemptionRow {
+  subscription_id: string;
   revoked_at: number | null;
   redeemed_at: number | null;
   expires_at: number | null;
@@ -63,7 +64,7 @@ export async function handleLicenseRedeem(
   ).bind(now, now, licenseHash).run();
 
   const license = await env.DB.prepare(
-    `SELECT revoked_at, redeemed_at, expires_at
+    `SELECT subscription_id, revoked_at, redeemed_at, expires_at
        FROM licenses
       WHERE license_hash = ?`,
   ).bind(licenseHash).first<RedemptionRow>();
@@ -73,6 +74,14 @@ export async function handleLicenseRedeem(
     return json({ status: "UNKNOWN", checksum_ok: true });
   }
   if (license.expires_at <= now) return json({ status: "EXPIRED", checksum_ok: true });
+  await env.DB.prepare(
+    `UPDATE subscriptions
+        SET status = 'ACTIVE',
+            current_period_end = ?,
+            updated_at = ?
+      WHERE subscription_id = ?
+        AND status NOT IN ('REVOKED', 'EXPIRED')`,
+  ).bind(license.expires_at, now, license.subscription_id).run();
   return json({
     status: "ACTIVE",
     redeemed_at: license.redeemed_at,
