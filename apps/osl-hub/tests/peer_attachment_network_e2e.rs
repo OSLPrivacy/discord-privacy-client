@@ -93,6 +93,7 @@ const MAX_LIVE_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const ATTACHMENT_UPLOAD_BUDGET: u32 = 140;
 const ATTACHMENT_FETCH_BUDGET: u32 = 120;
 const ATTACHMENT_DELETE_BUDGET: u32 = 60;
+const TASK0047_ATTACHMENT_BYTES: u64 = 400_000_000;
 
 /// `keystore::set_base_dir_override`, `keystore::set_active_account_dir` and
 /// the main-password file key are process-wide. Every test in this binary that
@@ -1378,6 +1379,23 @@ fn core(
     core
 }
 
+fn set_account_tier(
+    core: &osl_privacy_hub::core_bridge::HubCoreState,
+    tier: keystore::LicenseState,
+    raw_status: &str,
+) {
+    *core
+        .osl
+        .license_state
+        .lock()
+        .expect("license state mutex poisoned") = keystore::LicenseStateDto {
+        state: tier,
+        raw_status: raw_status.to_owned(),
+        current_period_end: None,
+        last_validated_at: None,
+    };
+}
+
 /// One side of a protected OSL chat conversation. Keys are generated fresh in
 /// the temp root; nothing is registered anywhere.
 struct Peer {
@@ -2028,6 +2046,70 @@ fn over_limit_direct_send_creates_no_upload_request() {
         );
         assert_eq!(upload_requests, 0);
         assert!(refused, "over-limit send must be refused before upload");
+    });
+}
+
+#[test]
+fn active_free_or_pro_account_tier_controls_attachment_size_check() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task0047-account-tier-attachment-check");
+    let (alice, _bob) = verified_pair(&storage, &relay);
+
+    set_account_tier(&alice.core, keystore::LicenseState::Free, "Unconfigured");
+    alice.activate();
+    let free_result = osl_privacy_hub::broker::begin_osl_chat_attachment(
+        &alice.core,
+        &alice.broker,
+        "fixture-video.mp4".to_owned(),
+        TASK0047_ATTACHMENT_BYTES,
+        false,
+    );
+    println!(
+        "TASK0047 attachment_check tier=Free result={} file_mb=400 file_bytes={} free_limit_bytes={} pro_limit_bytes={}",
+        if free_result.is_err() {
+            "refused"
+        } else {
+            "accepted"
+        },
+        TASK0047_ATTACHMENT_BYTES,
+        osl_privacy_hub::attachment_limits::FREE_MAX_ATTACHMENT_BYTES,
+        osl_privacy_hub::attachment_limits::PRO_MAX_ATTACHMENT_BYTES
+    );
+
+    set_account_tier(&alice.core, keystore::LicenseState::Paid, "ACTIVE");
+    alice.activate();
+    let pro_result = osl_privacy_hub::broker::begin_osl_chat_attachment(
+        &alice.core,
+        &alice.broker,
+        "fixture-video.mp4".to_owned(),
+        TASK0047_ATTACHMENT_BYTES,
+        false,
+    );
+    println!(
+        "TASK0047 attachment_check tier=Pro result={} file_mb=400 file_bytes={} free_limit_bytes={} pro_limit_bytes={}",
+        if pro_result.is_ok() {
+            "accepted"
+        } else {
+            "refused"
+        },
+        TASK0047_ATTACHMENT_BYTES,
+        osl_privacy_hub::attachment_limits::FREE_MAX_ATTACHMENT_BYTES,
+        osl_privacy_hub::attachment_limits::PRO_MAX_ATTACHMENT_BYTES
+    );
+
+    assert!(free_result.is_err(), "400 MB must be refused as Free");
+    let pro_plan = pro_result.expect("400 MB must be accepted as Pro");
+    assert_eq!(pro_plan.plaintext_size, TASK0047_ATTACHMENT_BYTES);
+    relay.counts(|counts| {
+        let upload_requests = counts.direct_uploads
+            + counts.sessions
+            + u32::try_from(counts.parts.len()).unwrap_or(u32::MAX)
+            + counts.completes;
+        println!("TASK0047 attachment_check upload_requests_after_checks={upload_requests}");
+        assert_eq!(upload_requests, 0);
     });
 }
 
