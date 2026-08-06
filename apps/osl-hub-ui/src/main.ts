@@ -33,6 +33,7 @@ import { continueButton } from "./onboarding-controls";
 import { CLEAN_FILES_CHOICES, initialBeforeSendChecks, onboardingBeforeSendMarkup, type BeforeSendChecks, type CleanFilesChoice } from "./onboarding-before-send";
 import { initialDeleteChoices, onboardingDeleteMarkup, type DeleteChoices } from "./onboarding-delete";
 import { onboardingSendingMarkup } from "./onboarding-sending";
+import { continuePasswordSetup } from "./password-setup-continue";
 import { renderRecoveryStatesSettings } from "./recovery-states";
 import { continueFromProOnboarding, previousOnboardingRoute } from "./onboarding-sequence";
 import { componentPickerScreen } from "./component-picker";
@@ -3637,6 +3638,18 @@ function bindPasswordForm(): void {
     event.preventDefault();
     if (submit.disabled) return;
     const setupMode = form.dataset.passwordMode === "setup";
+    if (setupMode) {
+      const decision = continuePasswordSetup("create", password.value, confirm?.value ?? "");
+      if (!decision.accepted) {
+        error.textContent = decision.message;
+        submit.disabled = true;
+        confirm?.classList.toggle("input-mismatch", decision.reason === "mismatched-passwords");
+        password.disabled = false;
+        if (confirm) confirm.disabled = false;
+        password.focus();
+        return;
+      }
+    }
     const idleLabel = submit.textContent ?? (setupMode ? "Create account" : "Unlock");
     let secret = password.value;
     // D80: every unlock outcome leaves the busy state at the same wall-clock
