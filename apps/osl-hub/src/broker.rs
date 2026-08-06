@@ -5441,7 +5441,8 @@ fn begin_peer_attachment(
     if view_once {
         crate::view_once_eligibility::require_view_once_attachment_eligibility(&mime_type)?;
     }
-    if plaintext_size == 0 || plaintext_size > ipc::attachment_wire::MAX_STREAMED_ATTACHMENT_BYTES {
+    let tier = active_attachment_account_tier(core);
+    if crate::attachment_limits::check_attachment_limits(tier, plaintext_size, 1).is_err() {
         return Err(ERROR.to_owned());
     }
     let ttl_seconds = security::scope_security(manual.scope.clone())
@@ -5477,6 +5478,16 @@ fn begin_peer_attachment(
         conversation_binding: context.conversation_id,
         self_osl_user_id: context.self_osl_id,
     })
+}
+
+fn active_attachment_account_tier(
+    core: &HubCoreState,
+) -> crate::attachment_limits::AttachmentAccountTier {
+    if ipc::tier_gate::is_paid_equivalent(&core.osl) {
+        crate::attachment_limits::AttachmentAccountTier::Pro
+    } else {
+        crate::attachment_limits::AttachmentAccountTier::Free
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

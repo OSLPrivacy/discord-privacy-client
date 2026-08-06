@@ -11,6 +11,7 @@ pub mod adapters;
 pub mod allowed_place_commands;
 #[cfg(feature = "core")]
 pub mod attachment_formats;
+pub mod attachment_limits;
 #[cfg(feature = "core")]
 pub mod attachment_partial_guard;
 pub mod attachment_scan;
