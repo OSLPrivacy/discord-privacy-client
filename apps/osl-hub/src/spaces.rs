@@ -112,6 +112,137 @@ pub struct Space {
     channel_key_domains: BTreeMap<SpaceChannelId, ChannelKeyDomain>,
 }
 
+/// One member in a locally named group roster.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalGroupMember {
+    id: SpaceMemberId,
+    display_name: String,
+}
+
+impl LocalGroupMember {
+    pub fn new(
+        id: SpaceMemberId,
+        display_name: impl Into<String>,
+    ) -> Result<Self, LocalGroupError> {
+        if id.0.iter().all(|byte| *byte == 0) {
+            return Err(LocalGroupError::EmptyMemberIdentity);
+        }
+        let display_name = display_name.into();
+        if display_name.trim().is_empty() {
+            return Err(LocalGroupError::EmptyMemberName);
+        }
+        Ok(Self { id, display_name })
+    }
+
+    pub const fn id(&self) -> SpaceMemberId {
+        self.id
+    }
+
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+}
+
+/// A named local group with ordered membership as shown to the user.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalGroup {
+    name: String,
+    members: Vec<LocalGroupMember>,
+}
+
+impl LocalGroup {
+    fn new(name: String, members: Vec<LocalGroupMember>) -> Self {
+        Self { name, members }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn members(&self) -> &[LocalGroupMember] {
+        &self.members
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LocalGroupDirectory {
+    groups: BTreeMap<String, LocalGroup>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalGroupError {
+    EmptyGroupName,
+    EmptyMemberIdentity,
+    EmptyMemberName,
+    DuplicateGroupName,
+    DuplicateMember,
+    UnknownGroup,
+    MemberIndexOutOfRange,
+}
+
+impl LocalGroupDirectory {
+    pub fn group_count(&self) -> usize {
+        self.groups.len()
+    }
+
+    pub fn group(&self, name: &str) -> Option<&LocalGroup> {
+        self.groups.get(name)
+    }
+
+    pub fn create_group(
+        &mut self,
+        name: impl Into<String>,
+        members: Vec<LocalGroupMember>,
+    ) -> Result<(), LocalGroupError> {
+        let name = validate_local_group_name(name.into())?;
+        if self.groups.contains_key(&name) {
+            return Err(LocalGroupError::DuplicateGroupName);
+        }
+        ensure_unique_local_group_members(&members)?;
+        self.groups
+            .insert(name.clone(), LocalGroup::new(name, members));
+        Ok(())
+    }
+
+    pub fn replace_group_member(
+        &mut self,
+        group_name: &str,
+        index: usize,
+        member: LocalGroupMember,
+    ) -> Result<(), LocalGroupError> {
+        let group = self
+            .groups
+            .get_mut(group_name)
+            .ok_or(LocalGroupError::UnknownGroup)?;
+        let Some(candidate) = group.members.get(index).map(|_| {
+            let mut candidate = group.members.clone();
+            candidate[index] = member;
+            candidate
+        }) else {
+            return Err(LocalGroupError::MemberIndexOutOfRange);
+        };
+        ensure_unique_local_group_members(&candidate)?;
+        group.members = candidate;
+        Ok(())
+    }
+}
+
+fn validate_local_group_name(name: String) -> Result<String, LocalGroupError> {
+    let name = name.trim().to_owned();
+    if name.is_empty() {
+        return Err(LocalGroupError::EmptyGroupName);
+    }
+    Ok(name)
+}
+
+fn ensure_unique_local_group_members(members: &[LocalGroupMember]) -> Result<(), LocalGroupError> {
+    let mut seen = BTreeSet::new();
+    if members.iter().any(|member| !seen.insert(member.id())) {
+        return Err(LocalGroupError::DuplicateMember);
+    }
+    Ok(())
+}
+
 /// The locally held key-domain boundary for one channel.
 ///
 /// A domain is minted once per channel, never once per Space.  The key bytes
@@ -441,6 +572,61 @@ mod tests {
 
     fn member(value: u8) -> SpaceMemberId {
         SpaceMemberId::from_bytes([value; 32])
+    }
+
+    fn named_member(value: u8, display_name: &str) -> LocalGroupMember {
+        LocalGroupMember::new(member(value), display_name).unwrap()
+    }
+
+    fn local_group_member_names(group: &LocalGroup) -> String {
+        group
+            .members()
+            .iter()
+            .map(LocalGroupMember::display_name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    #[test]
+    fn task_1314_duplicate_group_members_fail() {
+        let mut groups = LocalGroupDirectory::default();
+        let before_count = groups.group_count();
+
+        groups
+            .create_group(
+                "Maple Group",
+                vec![
+                    named_member(1, "Ava"),
+                    named_member(2, "Ben"),
+                    named_member(3, "Cy"),
+                ],
+            )
+            .unwrap();
+        let after_create_count = groups.group_count();
+        let after_create_members = local_group_member_names(groups.group("Maple Group").unwrap());
+
+        let duplicate_result =
+            groups.replace_group_member("Maple Group", 2, named_member(2, "Ben"));
+        let duplicate_refused = matches!(duplicate_result, Err(LocalGroupError::DuplicateMember));
+        let after_duplicate_count = groups.group_count();
+        let after_duplicate_members =
+            local_group_member_names(groups.group("Maple Group").unwrap());
+
+        println!(
+            "TASK1314 before_count={before_count} after_create_count={after_create_count} maple_members=\"{after_create_members}\" duplicate_result={} after_duplicate_count={after_duplicate_count} maple_after_duplicate=\"{after_duplicate_members}\"",
+            if duplicate_refused {
+                "refused duplicate member"
+            } else {
+                "not refused"
+            }
+        );
+
+        assert_eq!(before_count, 0);
+        assert_eq!(after_create_count, 1);
+        assert_eq!(after_create_members, "Ava, Ben, Cy");
+        assert!(duplicate_refused, "repeated Ben must be refused");
+        assert_eq!(after_duplicate_count, 1);
+        assert_eq!(after_duplicate_members, "Ava, Ben, Cy");
     }
 
     #[test]
