@@ -28,6 +28,22 @@ impl AllowedPlaceRecord {
             kind: "direct_message".to_owned(),
         }
     }
+
+    pub fn signal(
+        account: impl Into<String>,
+        kind: crate::auto_whitelist_rules::SignalWhitelistKind,
+        place: impl Into<String>,
+    ) -> Self {
+        let account = account.into();
+        let place = place.into();
+        let kind = kind.allowed_place_kind();
+        Self {
+            app: "signal".to_owned(),
+            stable_id: format!("signal:{account}:{kind}:{place}"),
+            account,
+            kind: kind.to_owned(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
