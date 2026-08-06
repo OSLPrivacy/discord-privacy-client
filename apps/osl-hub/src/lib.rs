@@ -644,6 +644,7 @@ pub mod row_who_wrote_it;
 #[cfg(feature = "core")]
 #[cfg(not(task3982_focused))]
 pub mod runtime_switches;
+pub mod right_click_safety;
 // Timed deletion and view-once expiry. Needs `ipc` (sealed-at-rest storage) and
 // `store` (local plaintext cache), so it lives behind `core` like they do.
 pub mod expiry_clock;
