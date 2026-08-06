@@ -6722,6 +6722,151 @@ key"
     }
 
     #[test]
+    fn task_0531_whole_server_burn_clears_each_server_channel_and_leaves_outside_history() {
+        let harness = FileBackedSecurityHarness::new("task-0531-whole-server-burn");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+        write_scope_blobs(
+            &harness.path().join("scope_blobs.json"),
+            &ipc::scope_blobs_file::ScopeBlobsFile::default(),
+        )
+        .unwrap();
+
+        let history_dir = harness.path().join("history");
+        let history = store::MessageStore::open(&history_dir, &TEST_FILE_KEY)
+            .expect("open task 0531 history store");
+        let random_suffix = lower_hex(&rand::random::<[u8; 32]>());
+        let nonce = format!("{}-{random_suffix}", std::process::id());
+        let server_id = format!("task0531-server-{nonce}");
+        let server_channel_a = format!("task0531-server-channel-a-{nonce}");
+        let server_channel_b = format!("task0531-server-channel-b-{nonce}");
+        let outside_channel = format!("task0531-outside-channel-{nonce}");
+        let server_mark_a = format!("TASK0531_SERVER_A_MARK_{nonce}");
+        let server_mark_b = format!("TASK0531_SERVER_B_MARK_{nonce}");
+        let outside_mark_a = format!("TASK0531_OUTSIDE_A_MARK_{nonce}");
+        let outside_mark_b = format!("TASK0531_OUTSIDE_B_MARK_{nonce}");
+
+        for (message_id, channel_id, mark, at) in [
+            (
+                "task0531-server-a-message",
+                server_channel_a.as_str(),
+                server_mark_a.as_str(),
+                1_900_531_001,
+            ),
+            (
+                "task0531-server-b-message",
+                server_channel_b.as_str(),
+                server_mark_b.as_str(),
+                1_900_531_002,
+            ),
+            (
+                "task0531-outside-a-message",
+                outside_channel.as_str(),
+                outside_mark_a.as_str(),
+                1_900_531_003,
+            ),
+            (
+                "task0531-outside-b-message",
+                outside_channel.as_str(),
+                outside_mark_b.as_str(),
+                1_900_531_004,
+            ),
+        ] {
+            history
+                .put(&store::StoredMessage {
+                    discord_message_id: format!("{message_id}-{nonce}"),
+                    channel_id: channel_id.to_owned(),
+                    sender_discord_id: "task0531-sender".to_owned(),
+                    sender_osl_user_id: "task0531-sender".to_owned(),
+                    plaintext: mark.to_owned(),
+                    decrypted_at: at,
+                    burned: false,
+                })
+                .expect("seed task 0531 message");
+        }
+        *core.osl.message_store.lock().unwrap() = Some(history);
+
+        let read_plaintexts = |channel_id: &str| -> Vec<String> {
+            ipc::commands::cmd_osl_load_channel_history(&core.osl, channel_id.to_owned(), Some(10))
+                .expect("read task 0531 channel history")
+                .into_iter()
+                .map(|message| message.plaintext)
+                .collect()
+        };
+
+        let before_server_a = read_plaintexts(&server_channel_a);
+        let before_server_b = read_plaintexts(&server_channel_b);
+        let before_outside = read_plaintexts(&outside_channel);
+        let before_outside_count = before_outside.len();
+        assert_eq!(before_server_a, vec![server_mark_a.clone()]);
+        assert_eq!(before_server_b, vec![server_mark_b.clone()]);
+        assert!(before_outside.iter().any(|mark| mark == &outside_mark_a));
+        assert!(before_outside.iter().any(|mark| mark == &outside_mark_b));
+        assert_eq!(before_outside_count, 2);
+
+        let result = burn_scope(
+            &core,
+            &security,
+            ScopeInput::from(&Scope::server_full(server_id.clone())),
+            vec![server_channel_b.clone(), server_channel_a.clone()],
+            true,
+            Vec::new(),
+        )
+        .expect("whole server burn runs once");
+
+        let after_server_a = read_plaintexts(&server_channel_a);
+        let after_server_b = read_plaintexts(&server_channel_b);
+        let after_outside = read_plaintexts(&outside_channel);
+        let outside_a_readable_after = after_outside.iter().any(|mark| mark == &outside_mark_a);
+        let outside_b_readable_after = after_outside.iter().any(|mark| mark == &outside_mark_b);
+
+        assert_eq!(result.channels_destroyed, 2);
+        assert_eq!(result.rows_destroyed, 2);
+        assert!(after_server_a.is_empty());
+        assert!(after_server_b.is_empty());
+        assert_eq!(after_outside.len(), 2);
+        assert!(outside_a_readable_after);
+        assert!(outside_b_readable_after);
+
+        println!("TASK0531_SERVER_ID={server_id}");
+        println!("TASK0531_SERVER_CHANNEL_A={server_channel_a}");
+        println!("TASK0531_SERVER_CHANNEL_B={server_channel_b}");
+        println!("TASK0531_OUTSIDE_CHANNEL={outside_channel}");
+        println!("TASK0531_BEFORE_SERVER_A_MARK={server_mark_a}");
+        println!("TASK0531_BEFORE_SERVER_B_MARK={server_mark_b}");
+        println!("TASK0531_BEFORE_OUTSIDE_A_MARK={outside_mark_a}");
+        println!("TASK0531_BEFORE_OUTSIDE_B_MARK={outside_mark_b}");
+        println!(
+            "TASK0531_BEFORE_COUNTS server_a={} server_b={} outside={}",
+            before_server_a.len(),
+            before_server_b.len(),
+            before_outside_count
+        );
+        println!(
+            "TASK0531_BURN_ONCE storage_key={} channels_destroyed={} rows_destroyed={}",
+            result.storage_key, result.channels_destroyed, result.rows_destroyed
+        );
+        println!(
+            "TASK0531_AFTER_COUNTS server_a={} server_b={} outside={}",
+            after_server_a.len(),
+            after_server_b.len(),
+            after_outside.len()
+        );
+        println!(
+            "TASK0531_AFTER_OUTSIDE_MARKS outside_a_readable={} outside_a_mark={} outside_b_readable={} outside_b_mark={}",
+            outside_a_readable_after,
+            outside_mark_a,
+            outside_b_readable_after,
+            outside_mark_b
+        );
+    }
+
+    #[test]
     fn t1_t63_scope_burn_enters_dispatch_before_remote_effects() {
         let harness = FileBackedSecurityHarness::new("t1-63-burn-dispatch");
         let core = HubCoreState::default();
