@@ -162,3 +162,64 @@ fn five_discord_kind_rule_lookups_return_independently_saved_choices() {
         Some("thread")
     );
 }
+
+#[test]
+fn two_messenger_kind_rule_lookups_return_independently_saved_choices() {
+    let state = AppState::new();
+    let saved = [
+        ("messenger:direct_message", "always"),
+        ("messenger:group_chat", "ask me"),
+    ];
+
+    for (rule_key, choice) in saved {
+        cmd_osl_save_auto_whitelist_rule(&state, rule_key.to_string(), choice.to_string(), None)
+            .unwrap();
+    }
+
+    let lookups: Vec<_> = saved
+        .iter()
+        .map(|(rule_key, _)| {
+            cmd_osl_read_auto_whitelist_rule(&state, (*rule_key).to_string()).unwrap()
+        })
+        .collect();
+    let proof: Vec<String> = lookups
+        .iter()
+        .map(|rule| {
+            let place = rule
+                .allowed_place
+                .as_ref()
+                .expect("Messenger kind rule carries allowed-place record");
+            format!(
+                "{}={} allowed_place={}:{}",
+                rule.app_kind, rule.choice, place.app, place.kind
+            )
+        })
+        .collect();
+
+    println!(
+        "messenger kind direct lookup count={} {}",
+        lookups.len(),
+        proof.join(" | ")
+    );
+
+    assert_eq!(lookups.len(), 2);
+    assert_eq!(lookups[0].app_kind, "messenger:direct_message");
+    assert_eq!(lookups[0].choice, "always");
+    assert_eq!(
+        lookups[0]
+            .allowed_place
+            .as_ref()
+            .map(|place| (place.app.as_str(), place.kind.as_str())),
+        Some(("messenger", "direct_message"))
+    );
+    assert_eq!(lookups[1].app_kind, "messenger:group_chat");
+    assert_eq!(lookups[1].choice, "ask me");
+    assert_eq!(
+        lookups[1]
+            .allowed_place
+            .as_ref()
+            .map(|place| (place.app.as_str(), place.kind.as_str())),
+        Some(("messenger", "group_chat"))
+    );
+    assert_ne!(lookups[0].choice, lookups[1].choice);
+}

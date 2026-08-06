@@ -110,6 +110,31 @@ impl InstagramWhitelistKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessengerWhitelistKind {
+    DirectMessage,
+    GroupChat,
+}
+
+impl MessengerWhitelistKind {
+    pub const ALL: [Self; 2] = [Self::DirectMessage, Self::GroupChat];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct_message",
+            Self::GroupChat => "group_chat",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct message",
+            Self::GroupChat => "group chat",
+        }
+    }
+}
+
 pub fn parse_auto_whitelist_choice(input: &str) -> Result<AutoWhitelistChoice, String> {
     let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
     AutoWhitelistChoice::ALL
@@ -126,8 +151,20 @@ pub fn parse_discord_whitelist_kind(input: &str) -> Result<DiscordWhitelistKind,
         .ok_or_else(|| format!("OSL: unknown Discord whitelist kind '{input}'"))
 }
 
+pub fn parse_messenger_whitelist_kind(input: &str) -> Result<MessengerWhitelistKind, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
+    MessengerWhitelistKind::ALL
+        .into_iter()
+        .find(|kind| normalized == kind.id() || normalized == kind.name())
+        .ok_or_else(|| format!("OSL: unknown Messenger whitelist kind '{input}'"))
+}
+
 pub fn discord_auto_whitelist_rule_key(kind: DiscordWhitelistKind) -> String {
     format!("discord:{}", kind.id())
+}
+
+pub fn messenger_auto_whitelist_rule_key(kind: MessengerWhitelistKind) -> String {
+    format!("messenger:{}", kind.id())
 }
 
 pub fn discord_allowed_place_kind_for_rule_key(rule_key: &str) -> Option<&'static str> {
@@ -138,12 +175,25 @@ pub fn discord_allowed_place_kind_for_rule_key(rule_key: &str) -> Option<&'stati
         .map(DiscordWhitelistKind::id)
 }
 
+pub fn messenger_allowed_place_kind_for_rule_key(rule_key: &str) -> Option<&'static str> {
+    let rest = rule_key.strip_prefix("messenger:")?;
+    MessengerWhitelistKind::ALL
+        .into_iter()
+        .find(|kind| rest == kind.id())
+        .map(MessengerWhitelistKind::id)
+}
+
 pub fn normalize_auto_whitelist_app_kind(input: &str) -> Result<String, String> {
     let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
     if let Some((app, kind)) = normalized.split_once(':') {
         if app == "discord" {
             return Ok(discord_auto_whitelist_rule_key(
                 parse_discord_whitelist_kind(kind)?,
+            ));
+        }
+        if app == "messenger" {
+            return Ok(messenger_auto_whitelist_rule_key(
+                parse_messenger_whitelist_kind(kind)?,
             ));
         }
     }
