@@ -188,6 +188,7 @@ export interface LocalMessageCandidate {
   authoredBySelf: boolean;
   createdAtUnixMs: number | null;
   text: string;
+  replyRecipient?: string | null;
   visibleRecipients?: string[];
   hiddenRecipients?: string[];
   attachments?: LocalAttachmentCandidate[];
@@ -229,6 +230,8 @@ export interface LocalPrivacyScanResult {
 }
 export interface EmailProtectionCheckDisplay {
   messageLocator: string;
+  replyRecipients: string[];
+  replyAllRecipients: string[];
   visibleRecipients: string[];
   distinctRecipientCount: number;
 }
@@ -1693,8 +1696,14 @@ function parsePrivacyScan(raw: unknown, persisted: boolean): LocalPrivacyScanRes
 }
 
 function validEmailProtectionCheckDisplay(value: unknown): boolean {
-  if (!isRecord(value) || !exact(value, ["messageLocator", "visibleRecipients", "distinctRecipientCount"])) return false;
+  if (!isRecord(value) || !exact(value, ["messageLocator", "replyRecipients", "replyAllRecipients", "visibleRecipients", "distinctRecipientCount"])) return false;
   return safePlaintext(value.messageLocator, 256)
+    && Array.isArray(value.replyRecipients)
+    && value.replyRecipients.length <= 1
+    && value.replyRecipients.every((recipient) => safePlaintext(recipient, 256))
+    && Array.isArray(value.replyAllRecipients)
+    && value.replyAllRecipients.length <= 64
+    && value.replyAllRecipients.every((recipient) => safePlaintext(recipient, 256))
     && Array.isArray(value.visibleRecipients)
     && value.visibleRecipients.length <= 64
     && value.visibleRecipients.every((recipient) => safePlaintext(recipient, 256))
@@ -1720,6 +1729,7 @@ function validLocalCandidate(candidate: LocalMessageCandidate): boolean {
     && safePlaintext(candidate.messageLocator, 256)
     && typeof candidate.authoredBySelf === "boolean"
     && (candidate.createdAtUnixMs === null || Number.isSafeInteger(candidate.createdAtUnixMs))
+    && (candidate.replyRecipient === undefined || candidate.replyRecipient === null || safePlaintext(candidate.replyRecipient, 256))
     && (candidate.visibleRecipients === undefined || validRecipientList(candidate.visibleRecipients))
     && (candidate.hiddenRecipients === undefined || validRecipientList(candidate.hiddenRecipients))
     && ((safePlaintext(candidate.text, 8 * 1024)) || (candidate.text === "" && Boolean(candidate.attachments?.length)))

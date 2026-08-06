@@ -880,6 +880,7 @@ mod tests {
             authored_by_self: true,
             created_at_unix_ms: Some(1_700_000_000_000),
             text: text.into(),
+            reply_recipient: None,
             visible_recipients: Vec::new(),
             hidden_recipients: Vec::new(),
             attachments: Vec::new(),

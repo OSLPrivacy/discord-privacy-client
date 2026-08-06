@@ -36,6 +36,8 @@ pub struct LocalMessageCandidate {
     pub created_at_unix_ms: Option<i64>,
     pub text: String,
     #[serde(default)]
+    pub reply_recipient: Option<String>,
+    #[serde(default)]
     pub visible_recipients: Vec<String>,
     #[serde(default)]
     pub hidden_recipients: Vec<String>,
@@ -97,6 +99,8 @@ pub struct LocalPrivacyScanResult {
 #[serde(rename_all = "camelCase")]
 pub struct EmailProtectionCheckDisplay {
     pub message_locator: String,
+    pub reply_recipients: Vec<String>,
+    pub reply_all_recipients: Vec<String>,
     pub visible_recipients: Vec<String>,
     pub distinct_recipient_count: usize,
 }
@@ -292,10 +296,23 @@ fn email_protection_check(message: &LocalMessageCandidate) -> Option<EmailProtec
     Some(EmailProtectionCheck {
         display: EmailProtectionCheckDisplay {
             message_locator: message.message_locator.clone(),
+            reply_recipients: message.reply_recipient.iter().cloned().collect::<Vec<_>>(),
+            reply_all_recipients: unique_ordered_recipients(&message.visible_recipients),
             visible_recipients: message.visible_recipients.clone(),
             distinct_recipient_count: distinct_recipients.len(),
         },
     })
+}
+
+fn unique_ordered_recipients(recipients: &[String]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut unique = Vec::new();
+    for recipient in recipients {
+        if seen.insert(recipient.clone()) {
+            unique.push(recipient.clone());
+        }
+    }
+    unique
 }
 
 fn valid_candidate(message: &LocalMessageCandidate) -> bool {
@@ -311,6 +328,10 @@ fn valid_candidate(message: &LocalMessageCandidate) -> bool {
         && (!message.text.is_empty() || !message.attachments.is_empty())
         && message.text.len() <= MAX_TEXT_BYTES
         && !message.text.contains('\0')
+        && message
+            .reply_recipient
+            .as_ref()
+            .is_none_or(|recipient| valid_recipient_display_value(recipient))
         && valid_recipient_list(&message.visible_recipients)
         && valid_recipient_list(&message.hidden_recipients)
         && message.attachments.len() <= MAX_ATTACHMENTS_PER_MESSAGE
@@ -654,6 +675,7 @@ mod tests {
             authored_by_self: true,
             created_at_unix_ms: Some(1_700_000_000_000),
             text: text.to_owned(),
+            reply_recipient: None,
             visible_recipients: Vec::new(),
             hidden_recipients: Vec::new(),
             attachments: Vec::new(),
@@ -858,5 +880,47 @@ mod tests {
         assert_eq!(check.distinct_recipient_count, 3);
         assert!(!display_output.contains(bcc_recipient));
         assert_eq!(result.findings.len(), 1);
+    }
+
+    #[test]
+    fn task1291_direct_command_returns_reply_and_reply_all_without_bcc() {
+        let reply_recipient = "from-task1291@oslprivacy.com";
+        let to_recipient = "to-task1291@oslprivacy.com";
+        let cc_recipient = "cc-task1291@oslprivacy.com";
+        let bcc_recipient = "bcc-task1291@oslprivacy.com";
+        let mut candidate = message("password: protected reply draft");
+        candidate.service_id = "email".to_owned();
+        candidate.reply_recipient = Some(reply_recipient.to_owned());
+        candidate.visible_recipients = vec![to_recipient.to_owned(), cc_recipient.to_owned()];
+        candidate.hidden_recipients = vec![bcc_recipient.to_owned()];
+
+        let result = scan_local_messages(vec![candidate]);
+        let check = result
+            .email_protection_checks
+            .first()
+            .expect("email protection check returns protected reply recipients");
+        let reply_output = check.reply_recipients.join(",");
+        let reply_all_output = check.reply_all_recipients.join(",");
+        let reply_all_excludes_bcc = !check
+            .reply_all_recipients
+            .iter()
+            .any(|recipient| recipient == bcc_recipient);
+
+        println!(
+            "TASK1291 protected_email_replies direct_command=scan_local_messages Reply count={} recipients={} ReplyAll count={} recipients={} bcc_excluded={}",
+            check.reply_recipients.len(),
+            reply_output,
+            check.reply_all_recipients.len(),
+            reply_all_output,
+            reply_all_excludes_bcc,
+        );
+
+        assert_eq!(check.reply_recipients, vec![reply_recipient.to_owned()]);
+        assert_eq!(
+            check.reply_all_recipients,
+            vec![to_recipient.to_owned(), cc_recipient.to_owned()]
+        );
+        assert!(reply_all_excludes_bcc);
+        assert!(!reply_output.contains(bcc_recipient));
     }
 }
