@@ -16274,8 +16274,8 @@ ok i will weekend again with you",
     fn native_producer_broker_and_command_dto_matrix_is_behavioral_and_fail_closed() {
         use crate::native_discord_adapter::{
             native_row_attribution_from_provider, native_row_producer_batch_is_valid,
-            SharedRowWhoWroteIt,
         };
+        use crate::row_who_wrote_it::SharedRowWhoWroteIt;
 
         const OWN_CARRIER: &str = "the quiet harbour keeps every lantern burning tonight";
         const PEER_CARRIER: &str = "the winter garden waits beside the silver morning";

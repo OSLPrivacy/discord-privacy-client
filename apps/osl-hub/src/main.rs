@@ -5448,6 +5448,7 @@ async fn create_service_account(
     core: State<'_, HubCoreState>,
     registry: State<'_, ServiceRegistryState>,
     index: State<'_, ServiceScopeIndexState>,
+    security_state: State<'_, HubSecurityState>,
     session: State<'_, HubAccountSessionState>,
     service_id: ServiceKind,
     label: String,
@@ -5467,6 +5468,7 @@ async fn create_service_account(
         let _ = registry.remove_for_owner(&owner, service_id, &account.id);
         return Err(error);
     }
+    security::auto_whitelist_new_account_if_enabled(&core, &security_state, service, &account.id)?;
     Ok(account)
 }
 

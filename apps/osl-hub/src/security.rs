@@ -1791,12 +1791,13 @@ pub fn chat_approval_suggestion_for_manual_peer_scope(
     )?;
     let prefs = load_security_preferences()?;
     let already_approved = manual_scope_preference_approved(&prefs, &scope.storage_key());
-    let suggestion =
-        if prefs.chat_approval_suggestion == ChatApprovalSuggestionChoice::On && !already_approved {
-            "offer_approval"
-        } else {
-            "no_suggestion"
-        };
+    let suggestion = if prefs.chat_approval_suggestion == ChatApprovalSuggestionChoice::On
+        && !already_approved
+    {
+        "offer_approval"
+    } else {
+        "no_suggestion"
+    };
     Ok(ChatApprovalSuggestionAnswer {
         suggestion: suggestion.to_owned(),
     })
@@ -1914,6 +1915,104 @@ pub fn manual_peer_scope_storage_key(
     person_id: &str,
 ) -> Result<String, String> {
     Ok(Scope::dm(manual_peer_scope_id(service_id, account_id, person_id)?).storage_key())
+}
+
+/// Apply the user's new-friend auto-whitelist preference to a newly-created
+/// local service account. Validation happens before any durable write, so a
+/// malformed account id cannot create a partial approval row or rewrite an
+/// existing one.
+pub fn auto_whitelist_new_account_if_enabled(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    service_id: &str,
+    account_id: &str,
+) -> Result<usize, String> {
+    validate_manual_peer_service_account(service_id, account_id)
+        .map_err(|_| "OSL: invalid account".to_owned())?;
+
+    let (auto_whitelist, account_reach) = {
+        let prefs = core
+            .osl
+            .app_preferences
+            .lock()
+            .map_err(|_| "OSL app preferences are unavailable".to_owned())?;
+        (
+            prefs.new_friend_auto_whitelist,
+            prefs.new_friend_account_reach,
+        )
+    };
+    if auto_whitelist != ipc::auto_whitelist_rules::AutoWhitelistRule::Always
+        || account_reach != ipc::app_preferences::NewFriendAccountReach::AllSharedChats
+    {
+        return Ok(0);
+    }
+
+    require_unlocked()?;
+    let people = load_people_file(&config_dir()?)?;
+    let mut grants = Vec::new();
+    for (person_id, metadata) in &people.people {
+        if ensure_manual_peer_available(metadata, people.version, true).is_err()
+            || require_person_not_blocked(person_id).is_err()
+        {
+            continue;
+        }
+        let binding = match manual_peer_binding(core, person_id.clone()) {
+            Ok(binding) => binding,
+            Err(_) => continue,
+        };
+        let scope = ScopeInput {
+            kind: ScopeKind::Dm,
+            id: manual_peer_scope_id(service_id, account_id, person_id)
+                .map_err(|_| "OSL: invalid account".to_owned())?,
+            server_id: None,
+            channel_id: None,
+        };
+        let grant = ScopedTrustGrant::for_manual_peer(
+            &binding,
+            service_id,
+            account_id,
+            scope,
+            ScopedTrustConsent::ExplicitUserAction,
+        )
+        .map_err(|error| {
+            if error.contains("account") || error.contains("opaque identifier") {
+                "OSL: invalid account".to_owned()
+            } else {
+                error
+            }
+        })?;
+        grants.push((binding, grant));
+    }
+    if grants.is_empty() {
+        return Ok(0);
+    }
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL manual peer settings are unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let mut inserted = 0usize;
+    for (binding, grant) in &grants {
+        grant.require_binding(Some(binding))?;
+        if prefs.burned_manual_scopes.contains(grant.storage_key()) {
+            continue;
+        }
+        prefs.version = 2;
+        let was_new = prefs
+            .manual_approved_scopes
+            .insert(grant.storage_key().to_owned());
+        prefs
+            .manual_approved_scope_people
+            .insert(grant.storage_key().to_owned(), grant.person_id().to_owned());
+        if was_new {
+            inserted += 1;
+        }
+    }
+    write_encrypted_json(&path, &prefs)?;
+    Ok(inserted)
 }
 
 /// The single place a manual grant is withdrawn from the approval ledger the
@@ -4764,11 +4863,7 @@ mod tests {
         )
         .expect("approve chat");
         let approved_on = chat_approval_suggestion_for_manual_peer_scope(
-            &core,
-            "osl-chat",
-            "osl-main",
-            person_id,
-            scope,
+            &core, "osl-chat", "osl-main", person_id, scope,
         )
         .expect("answer approved chat with choice on");
         println!(
@@ -4898,6 +4993,211 @@ mod tests {
         println!("TASK0273 reachable_accounts={}", reachable_accounts.len());
         println!("TASK0273 blocked_direct_trace.total_osl_actions={blocked_total}");
         assert_eq!(blocked_total, 0);
+    }
+
+    fn task_0266_owner(core: &HubCoreState) -> String {
+        core.osl
+            .identity
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("identity installed")
+            .user_id
+            .clone()
+    }
+
+    fn task_0266_email_accounts(
+        registry: &crate::services::ServiceRegistryState,
+        owner: &str,
+    ) -> Vec<crate::models::LinkedAccountDemo> {
+        registry
+            .list_for_owner(owner)
+            .unwrap()
+            .into_iter()
+            .find(|service| service.id == crate::models::ServiceKind::Email)
+            .unwrap()
+            .accounts
+    }
+
+    fn task_0266_reach_count(dir: &Path) -> usize {
+        load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))
+            .unwrap()
+            .manual_approved_scope_people
+            .len()
+    }
+
+    fn task_0266_account_fingerprint(account: &crate::models::LinkedAccountDemo) -> String {
+        let mut hash = Sha256::new();
+        hash.update(b"TASK0266/account/v1");
+        hash.update(account.id.as_bytes());
+        hash.update(b"\0");
+        hash.update(account.label.as_bytes());
+        hash.update(b"\0");
+        hash.update(format!("{:?}", account.provider).as_bytes());
+        lower_hex(&hash.finalize().into())
+    }
+
+    fn task_0266_reach_fingerprint(
+        dir: &Path,
+        service_id: &str,
+        account_id: &str,
+        person_id: &str,
+    ) -> String {
+        let storage_key = manual_peer_scope_storage_key(service_id, account_id, person_id).unwrap();
+        let prefs =
+            load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE)).unwrap();
+        let approved = prefs.manual_approved_scopes.contains(&storage_key);
+        let attributed = prefs
+            .manual_approved_scope_people
+            .get(&storage_key)
+            .map(String::as_str)
+            .unwrap_or("");
+        let mut hash = Sha256::new();
+        hash.update(b"TASK0266/reach/v1");
+        hash.update(storage_key.as_bytes());
+        hash.update(b"\0");
+        hash.update(if approved {
+            b"approved".as_slice()
+        } else {
+            b"not-approved".as_slice()
+        });
+        hash.update(b"\0");
+        hash.update(attributed.as_bytes());
+        lower_hex(&hash.finalize().into())
+    }
+
+    #[test]
+    fn task_0266_failed_account_add_does_not_break_auto_whitelist() {
+        let harness = FileBackedSecurityHarness::new("task-0266-account-auto-whitelist");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core);
+        {
+            let mut prefs = core.osl.app_preferences.lock().unwrap();
+            prefs.new_friend_auto_whitelist = ipc::auto_whitelist_rules::AutoWhitelistRule::Always;
+            prefs.new_friend_account_reach =
+                ipc::app_preferences::NewFriendAccountReach::AllSharedChats;
+        }
+
+        let (person_id, metadata, peer) = test_friend(0x26);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+
+        let owner = task_0266_owner(&core);
+        let registry_path = harness.path().join("service-registry.json");
+        let registry = crate::services::ServiceRegistryState::load(registry_path);
+        let ash = registry
+            .create_with_provider_for_owner(
+                &owner,
+                crate::models::ServiceKind::Email,
+                "ASH-0266".to_owned(),
+                Some(crate::models::EmailProvider::Gmail),
+            )
+            .unwrap();
+        let ash_readable = task_0266_email_accounts(&registry, &owner)
+            .into_iter()
+            .find(|account| account.id == ash.id)
+            .map(|account| account.label)
+            .unwrap_or_default();
+        let account_count_before = task_0266_email_accounts(&registry, &owner).len();
+        let reach_count_before = task_0266_reach_count(harness.path());
+        println!("TASK0266 seed_account.readable={ash_readable}");
+        println!("TASK0266 switch.auto_whitelist=always");
+        println!("TASK0266 switch.account_reach=all_shared_chats");
+        println!("TASK0266 account_count.before={account_count_before}");
+        println!("TASK0266 reach_count.before={reach_count_before}");
+        assert_eq!(ash_readable, "ASH-0266");
+        assert_eq!(account_count_before, 1);
+        assert_eq!(reach_count_before, 0);
+
+        let elm = registry
+            .create_with_provider_for_owner(
+                &owner,
+                crate::models::ServiceKind::Email,
+                "ELM-0266".to_owned(),
+                Some(crate::models::EmailProvider::Gmail),
+            )
+            .unwrap();
+        let added_reaches =
+            auto_whitelist_new_account_if_enabled(&core, &security, "email", &elm.id).unwrap();
+        let elm_readable = task_0266_email_accounts(&registry, &owner)
+            .into_iter()
+            .find(|account| account.id == elm.id)
+            .expect("ELM-0266 account exists");
+        let account_count_after_good = task_0266_email_accounts(&registry, &owner).len();
+        let reach_count_after_good = task_0266_reach_count(harness.path());
+        let elm_fingerprint_before_bad = task_0266_account_fingerprint(&elm_readable);
+        let reach_fingerprint_before_bad =
+            task_0266_reach_fingerprint(harness.path(), "email", &elm.id, &person_id);
+        println!("TASK0266 good_add.name={}", elm_readable.label);
+        println!("TASK0266 good_add.auto_reach_added={added_reaches}");
+        println!("TASK0266 account_count.after_good={account_count_after_good}");
+        println!("TASK0266 reach_count.after_good={reach_count_after_good}");
+        println!("TASK0266 elm_account.fingerprint.before_bad={elm_fingerprint_before_bad}");
+        println!("TASK0266 elm_friend_reach.fingerprint.before_bad={reach_fingerprint_before_bad}");
+        assert_eq!(elm_readable.label, "ELM-0266");
+        assert_eq!(added_reaches, 1);
+        assert_eq!(account_count_after_good, 2);
+        assert_eq!(reach_count_after_good, 1);
+
+        #[derive(Clone)]
+        struct AutoWhitelistAttempt {
+            service_id: String,
+            account_id: String,
+        }
+        let good_attempt = AutoWhitelistAttempt {
+            service_id: "email".to_owned(),
+            account_id: elm.id.clone(),
+        };
+        let bad_attempt = AutoWhitelistAttempt {
+            account_id: "invalid account".to_owned(),
+            ..good_attempt.clone()
+        };
+        assert_eq!(bad_attempt.service_id, good_attempt.service_id);
+        assert_ne!(bad_attempt.account_id, good_attempt.account_id);
+
+        let bad_error = auto_whitelist_new_account_if_enabled(
+            &core,
+            &security,
+            &bad_attempt.service_id,
+            &bad_attempt.account_id,
+        )
+        .expect_err("invalid account is refused");
+        let account_count_after_bad = task_0266_email_accounts(&registry, &owner).len();
+        let reach_count_after_bad = task_0266_reach_count(harness.path());
+        let elm_after_bad = task_0266_email_accounts(&registry, &owner)
+            .into_iter()
+            .find(|account| account.id == elm.id)
+            .expect("ELM-0266 survives invalid account retry");
+        let elm_fingerprint_after_bad = task_0266_account_fingerprint(&elm_after_bad);
+        let reach_fingerprint_after_bad =
+            task_0266_reach_fingerprint(harness.path(), "email", &elm.id, &person_id);
+        println!("TASK0266 bad_add.changed_field=account");
+        println!("TASK0266 bad_add.account_value={}", bad_attempt.account_id);
+        println!("TASK0266 bad_add.error={bad_error}");
+        println!("TASK0266 account_count.after_bad={account_count_after_bad}");
+        println!("TASK0266 reach_count.after_bad={reach_count_after_bad}");
+        println!("TASK0266 elm_account.fingerprint.after_bad={elm_fingerprint_after_bad}");
+        println!("TASK0266 elm_friend_reach.fingerprint.after_bad={reach_fingerprint_after_bad}");
+        println!(
+            "TASK0266 elm_account.fingerprint_kept={}",
+            elm_fingerprint_after_bad == elm_fingerprint_before_bad
+        );
+        println!(
+            "TASK0266 elm_friend_reach.fingerprint_kept={}",
+            reach_fingerprint_after_bad == reach_fingerprint_before_bad
+        );
+        assert_eq!(bad_error, "OSL: invalid account");
+        assert_eq!(account_count_after_bad, 2);
+        assert_eq!(reach_count_after_bad, 1);
+        assert_eq!(elm_after_bad.label, "ELM-0266");
+        assert_eq!(elm_fingerprint_after_bad, elm_fingerprint_before_bad);
+        assert_eq!(reach_fingerprint_after_bad, reach_fingerprint_before_bad);
     }
 
     #[test]
