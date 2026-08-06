@@ -26,11 +26,40 @@ import {
 let sequence = 0;
 const userId = () => `username-user-${Date.now()}-${sequence++}`;
 const testDb = (env as unknown as { DB: D1Database }).DB;
+const PUBLIC_NAME_PROOF_DOMAIN = "OSL-PUBLIC-NAME-PROOF-v1\u0000";
 
 function b64url(bytes: Uint8Array): string {
   let value = "";
   for (const byte of bytes) value += String.fromCharCode(byte);
   return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function concat(parts: readonly Uint8Array[]): Uint8Array {
+  const output = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.length;
+  }
+  return output;
+}
+
+function u32be(value: number): Uint8Array {
+  const bytes = new Uint8Array(4);
+  new DataView(bytes.buffer).setUint32(0, value, false);
+  return bytes;
+}
+
+function lp(bytes: Uint8Array): Uint8Array {
+  return concat([u32be(bytes.length), bytes]);
+}
+
+function lpText(value: string): Uint8Array {
+  return lp(new TextEncoder().encode(value));
+}
+
+function publicNameProofBytes(publicName: string, accountProofBytes: Uint8Array): Uint8Array {
+  return concat([lpText(PUBLIC_NAME_PROOF_DOMAIN), lpText(publicName), lp(accountProofBytes)]);
 }
 
 async function friendCode(
@@ -79,19 +108,18 @@ async function publicNameChallenge(
 async function publicNameProof(
   challenge: IssuedAccountOwnershipChallenge,
   signingKey: CryptoKey,
+  publicName: string,
 ): Promise<Record<string, unknown>> {
-  const signature_b64 = await signEd25519(
-    signingKey,
-    canonicalAccountOwnershipProofBytes({
-      proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
-      platform_id: challenge.service_account_id,
-      owner_user_id: challenge.owner_user_id,
-      nonce_b64: challenge.nonce,
-      issued_at_unix_seconds: challenge.issued_at_unix_seconds,
-      expires_at_unix_seconds: challenge.expires_at_unix_seconds,
-    }),
-  );
-  return {
+  const accountProofBytes = canonicalAccountOwnershipProofBytes({
+    proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
+    platform_id: challenge.service_account_id,
+    owner_user_id: challenge.owner_user_id,
+    nonce_b64: challenge.nonce,
+    issued_at_unix_seconds: challenge.issued_at_unix_seconds,
+    expires_at_unix_seconds: challenge.expires_at_unix_seconds,
+  });
+  const signature_b64 = await signEd25519(signingKey, accountProofBytes);
+  const account_proof = {
     platform_id: challenge.service_account_id,
     proof_type: ACCOUNT_OWNERSHIP_PROOF_TYPE_ED25519_CHALLENGE_V1,
     e: {
@@ -102,11 +130,17 @@ async function publicNameProof(
       signature_b64,
     },
   };
+  return {
+    public_name: publicName,
+    account_proof,
+    signature_b64: await signEd25519(signingKey, publicNameProofBytes(publicName, accountProofBytes)),
+  };
 }
 
 async function publicNameProofFields(
   uid: string,
   signingKey: CryptoKey,
+  publicName: string,
 ): Promise<{
   service: "discord";
   service_account_id: string;
@@ -117,7 +151,7 @@ async function publicNameProofFields(
   return {
     service: "discord",
     service_account_id,
-    public_name_proof: await publicNameProof(challenge, signingKey),
+    public_name_proof: await publicNameProof(challenge, signingKey, publicName),
   };
 }
 
@@ -197,7 +231,7 @@ async function claim(
   const signature_b64 = await signEd25519(pair.signingKey, usernameClaimMessage({
     username, user_id: uid, friend_code, request_id: requestId, timestamp_ms,
   }));
-  const proofFields = await publicNameProofFields(uid, pair.signingKey);
+  const proofFields = await publicNameProofFields(uid, pair.signingKey, username);
   return SELF.fetch("http://test/v1/usernames/claim", {
     method: "POST",
     headers: { "content-type": "application/json", "cf-connecting-ip": `198.51.100.${sequence % 240 + 1}` },
@@ -212,7 +246,7 @@ describe("username directory", () => {
     const invite = await friendCode(uid, pair);
     const service_account_id = snowflake();
     const challenge = await publicNameChallenge(service_account_id, uid);
-    const public_name_proof = await publicNameProof(challenge, pair.signingKey);
+    const public_name_proof = await publicNameProof(challenge, pair.signingKey, "task0312_once");
     const firstTs = Date.now();
     const firstRequest = b64url(crypto.getRandomValues(new Uint8Array(32)));
     const firstSig = await signEd25519(pair.signingKey, usernameClaimMessage({
@@ -310,7 +344,7 @@ describe("username directory", () => {
       spent: false,
     };
     await insertChallenge(expiredChallenge);
-    const expiredProof = await publicNameProof(expiredChallenge, expiredPair.signingKey);
+    const expiredProof = await publicNameProof(expiredChallenge, expiredPair.signingKey, "task0312_expired");
     const expiredTs = Date.now();
     const expiredRequest = b64url(crypto.getRandomValues(new Uint8Array(32)));
     const expiredSig = await signEd25519(expiredPair.signingKey, usernameClaimMessage({
@@ -347,6 +381,68 @@ describe("username directory", () => {
     console.log(`TASK0312 public_name_proof_expired.rows=${expiredNameRows}`);
   });
 
+  it("TASK0445 - a public-name proof for one name cannot claim a second name", async () => {
+    const uid = userId();
+    const pair = await registerTestUser(SELF, uid);
+    const invite = await friendCode(uid, pair);
+    const proofName = "task0445_one";
+    const requestedSecondName = "task0445_two";
+    const service_account_id = snowflake();
+    const challenge = await publicNameChallenge(service_account_id, uid);
+    const public_name_proof = await publicNameProof(challenge, pair.signingKey, proofName);
+
+    const submit = async (username: string, ip: string): Promise<Response> => {
+      const timestamp_ms = Date.now();
+      const request_id = b64url(crypto.getRandomValues(new Uint8Array(32)));
+      const signature_b64 = await signEd25519(pair.signingKey, usernameClaimMessage({
+        username,
+        user_id: uid,
+        friend_code: invite,
+        request_id,
+        timestamp_ms,
+      }));
+      return SELF.fetch("http://test/v1/usernames/claim", {
+        method: "POST",
+        headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+        body: JSON.stringify({
+          username,
+          user_id: uid,
+          friend_code: invite,
+          request_id,
+          timestamp_ms,
+          signature_b64,
+          service: "discord",
+          service_account_id,
+          public_name_proof,
+        }),
+      });
+    };
+
+    const second = await submit(requestedSecondName, "198.51.100.45");
+    const secondBody = await second.text();
+    const secondRows = await usernameRowCount(requestedSecondName);
+    const proofRowsAfterSecond = await publicNameProofRowCount(requestedSecondName, uid);
+
+    const first = await submit(proofName, "198.51.100.46");
+    const firstRows = await usernameRowCount(proofName);
+
+    expect(second.status).toBe(403);
+    expect(secondBody).toContain("proof_for_different_public_name");
+    expect(secondRows).toBe(0);
+    expect(proofRowsAfterSecond).toBe(0);
+    expect(first.status).toBe(200);
+    expect(firstRows).toBe(1);
+
+    console.log(`TASK0445 proof_name=${proofName}`);
+    console.log(`TASK0445 requested_second_name=${requestedSecondName}`);
+    console.log(`TASK0445 second_name_claim.status=${second.status}`);
+    console.log(`TASK0445 second_name_claim.body=${secondBody}`);
+    console.log(`TASK0445 second_name.rows=${secondRows}`);
+    console.log(`TASK0445 second_name.proof_rows=${proofRowsAfterSecond}`);
+    console.log(`TASK0445 proof_name_claim.status=${first.status}`);
+    console.log(`TASK0445 proof_name.rows=${firstRows}`);
+  });
+
   it("claims and resolves only an exact normalized username", async () => {
     const uid = userId();
     const pair = await registerTestUser(SELF, uid);
@@ -372,7 +468,7 @@ describe("username directory", () => {
     });
     expect(unsigned.status).toBe(400);
     const wrongSig = await signEd25519(attacker.signingKey, usernameClaimMessage({ username: "wrongkey", user_id: uid, friend_code: invite, request_id, timestamp_ms }));
-    const proofFields = await publicNameProofFields(uid, owner.signingKey);
+    const proofFields = await publicNameProofFields(uid, owner.signingKey, "wrongkey");
     const wrong = await SELF.fetch("http://test/v1/usernames/claim", {
       method: "POST", headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.13" },
       body: JSON.stringify({ username: "wrongkey", user_id: uid, friend_code: invite, request_id, timestamp_ms, signature_b64: wrongSig, ...proofFields }),
@@ -394,7 +490,7 @@ describe("username directory", () => {
     const init = {
       method: "POST",
       headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.19" },
-      body: JSON.stringify({ username: "replay_test", user_id: uid, friend_code, request_id, timestamp_ms, signature_b64, ...(await publicNameProofFields(uid, pair.signingKey)) }),
+      body: JSON.stringify({ username: "replay_test", user_id: uid, friend_code, request_id, timestamp_ms, signature_b64, ...(await publicNameProofFields(uid, pair.signingKey, "replay_test")) }),
     };
     expect((await SELF.fetch("http://test/v1/usernames/claim", init)).status).toBe(200);
     expect((await SELF.fetch("http://test/v1/usernames/claim", init)).status).toBe(409);
@@ -576,7 +672,7 @@ describe("username directory", () => {
         request_id,
         timestamp_ms,
         signature_b64,
-        ...(await publicNameProofFields(uid, next.signingKey)),
+        ...(await publicNameProofFields(uid, next.signingKey, publicName)),
         move_approval: {
           prev_ik_ed25519_pub: owner.publicKeyB64,
           prev_sig: movePrevSig,

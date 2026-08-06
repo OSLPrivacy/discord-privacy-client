@@ -72,6 +72,7 @@ const REFUSAL_STATUS: Record<AccountOwnershipError, number> = {
   unsupported_service: 400,
   proof_for_different_account: 403,
   proof_for_different_owner: 403,
+  proof_for_different_public_name: 403,
   proof_stale: 403,
   proof_replayed: 409,
 };

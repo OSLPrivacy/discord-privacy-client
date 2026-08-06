@@ -513,19 +513,24 @@ fn username_claim_carries_public_name_proof_from_named_app_account() {
     assert_eq!(claim_json["user_id"], "osl1_owner");
     assert_eq!(claim_json["service"], "discord");
     assert_eq!(claim_json["service_account_id"], "123456789012345678");
+    assert_eq!(claim_json["public_name_proof"]["public_name"], "rust_0312");
     assert_eq!(
-        claim_json["public_name_proof"]["platform_id"],
+        claim_json["public_name_proof"]["account_proof"]["platform_id"],
         "123456789012345678"
     );
     assert_eq!(
-        claim_json["public_name_proof"]["e"]["owner_user_id"],
+        claim_json["public_name_proof"]["account_proof"]["e"]["owner_user_id"],
         "osl1_owner"
     );
     assert_eq!(
-        claim_json["public_name_proof"]["e"]["nonce_b64"],
+        claim_json["public_name_proof"]["account_proof"]["e"]["nonce_b64"],
         STANDARD.encode(nonce)
     );
-    let signature = claim_json["public_name_proof"]["e"]["signature_b64"]
+    let account_signature = claim_json["public_name_proof"]["account_proof"]["e"]["signature_b64"]
+        .as_str()
+        .unwrap();
+    assert_eq!(STANDARD.decode(account_signature).unwrap().len(), 64);
+    let signature = claim_json["public_name_proof"]["signature_b64"]
         .as_str()
         .unwrap();
     assert_eq!(STANDARD.decode(signature).unwrap().len(), 64);

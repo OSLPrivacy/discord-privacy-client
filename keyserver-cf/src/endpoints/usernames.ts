@@ -5,12 +5,15 @@ import {
   type IssuedAccountOwnershipChallenge,
 } from "../lib/account-ownership-challenge.js";
 import {
+  canonicalAccountOwnershipProofBytes,
   verify_ownership_proof,
   type Account,
   type AccountOwnershipError,
+  type AccountOwnershipProof,
 } from "../lib/account-ownership-proof.js";
+import { verifyEd25519 } from "../lib/crypto.js";
 import { getUserForVerify } from "../lib/db.js";
-import { decodeCanonicalBase64 } from "../lib/identity-authority.js";
+import { decodeCanonicalBase64, decodeCanonicalEd25519SignatureBytes } from "../lib/identity-authority.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 import { badRequest, conflict, error, forbidden, json, tooMany, unauthorized } from "../lib/http.js";
 import { isDiscordSnowflake, isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/validation.js";
@@ -36,6 +39,8 @@ import {
 export const USERNAME_LOOKUP_RESPONSE_BYTES = 9216;
 
 const MAX_PUBLIC_NAME_PROOF_LIFETIME_SECONDS = 5 * 60;
+const PUBLIC_NAME_PROOF_DOMAIN = "OSL-PUBLIC-NAME-PROOF-v1\u0000";
+const textEncoder = new TextEncoder();
 
 interface ChallengeRow {
   binding_sha256: string;
@@ -60,6 +65,74 @@ type PublicNameProofCheck =
       expiresAtUnixSeconds: number;
     }
   | { ok: false; response: Response };
+
+interface PublicNameProofEnvelope {
+  public_name: string;
+  account_proof: AccountOwnershipProof;
+  signature_b64: string;
+}
+
+function concat(parts: readonly Uint8Array[]): Uint8Array {
+  const output = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.length;
+  }
+  return output;
+}
+
+function u32be(value: number): Uint8Array {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff_ffff) {
+    throw new Error("canonical u32 is out of range");
+  }
+  const bytes = new Uint8Array(4);
+  new DataView(bytes.buffer).setUint32(0, value, false);
+  return bytes;
+}
+
+function lp(bytes: Uint8Array): Uint8Array {
+  return concat([u32be(bytes.length), bytes]);
+}
+
+function lpText(value: string): Uint8Array {
+  return lp(textEncoder.encode(value));
+}
+
+function canonicalPublicNameProofBytes(args: {
+  publicName: string;
+  accountProofBytes: Uint8Array;
+}): Uint8Array {
+  return concat([
+    lpText(PUBLIC_NAME_PROOF_DOMAIN),
+    lpText(args.publicName),
+    lp(args.accountProofBytes),
+  ]);
+}
+
+function publicNameProofEnvelope(value: unknown): PublicNameProofEnvelope | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const proof = value as Record<string, unknown>;
+  const keys = Object.keys(proof).sort();
+  if (
+    keys.length !== 3 ||
+    keys[0] !== "account_proof" ||
+    keys[1] !== "public_name" ||
+    keys[2] !== "signature_b64" ||
+    typeof proof.public_name !== "string" ||
+    typeof proof.signature_b64 !== "string" ||
+    !proof.account_proof ||
+    typeof proof.account_proof !== "object" ||
+    Array.isArray(proof.account_proof)
+  ) {
+    return null;
+  }
+  return {
+    public_name: proof.public_name,
+    account_proof: proof.account_proof as AccountOwnershipProof,
+    signature_b64: proof.signature_b64,
+  };
+}
 
 /// D81. Build the ONE response shape this route is allowed to emit.
 ///
@@ -443,11 +516,11 @@ async function verifyPublicNameProof(args: {
   ownerEd25519PubB64: string;
   proof: unknown;
 }): Promise<PublicNameProofCheck> {
-  const proof = args.proof;
-  if (!proof || typeof proof !== "object" || Array.isArray(proof)) {
+  const envelope = publicNameProofEnvelope(args.proof);
+  if (!envelope) {
     return refusePublicNameProof("no_proof_presented");
   }
-  const submitted = proof as Record<string, unknown>;
+  const submitted = envelope.account_proof as unknown as Record<string, unknown>;
   const evidence = submitted.e;
   if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
     return refusePublicNameProof("proof_malformed");
@@ -524,6 +597,41 @@ async function verifyPublicNameProof(args: {
   };
   const verified = await verify_ownership_proof(account, Math.floor(Date.now() / 1000));
   if (!verified.ok) return refusePublicNameProof(verified.error);
+
+  let publicNameSignature: Uint8Array;
+  let publicKey: Uint8Array;
+  let publicNameProofBytes: Uint8Array;
+  try {
+    const accountProofBytes = canonicalAccountOwnershipProofBytes({
+      proof_type: envelope.account_proof.proof_type,
+      platform_id: envelope.account_proof.platform_id,
+      owner_user_id: envelope.account_proof.e.owner_user_id,
+      nonce_b64: envelope.account_proof.e.nonce_b64,
+      issued_at_unix_seconds: envelope.account_proof.e.issued_at_unix_seconds,
+      expires_at_unix_seconds: envelope.account_proof.e.expires_at_unix_seconds,
+    });
+    publicNameSignature = decodeCanonicalEd25519SignatureBytes(
+      envelope.signature_b64,
+      "public-name proof signature",
+    );
+    publicKey = decodeCanonicalBase64(
+      args.ownerEd25519PubB64,
+      32,
+      "public-name proof owner key",
+    );
+    publicNameProofBytes = canonicalPublicNameProofBytes({
+      publicName: envelope.public_name,
+      accountProofBytes,
+    });
+  } catch {
+    return refusePublicNameProof("proof_malformed");
+  }
+  if (!(await verifyEd25519(publicKey, publicNameProofBytes, publicNameSignature))) {
+    return refusePublicNameProof("proof_for_different_public_name");
+  }
+  if (envelope.public_name !== args.username) {
+    return refusePublicNameProof("proof_for_different_public_name");
+  }
 
   return {
     ok: true,
