@@ -2,7 +2,8 @@ import type { Env } from "../env.js";
 import { getUserForVerify } from "../lib/db.js";
 import { callerIp, checkRateLimit } from "../lib/rate-limit.js";
 import { badRequest, conflict, json, tooMany, unauthorized } from "../lib/http.js";
-import { isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/validation.js";
+import { sha256Hex } from "../lib/account-ownership-challenge.js";
+import { isDiscordSnowflake, isHighEntropyRequestId, isNonEmptyBase64, isProtocolId } from "../lib/validation.js";
 import { verifySignedRequest } from "../lib/signed-request.js";
 import {
   USERNAME_FRESHNESS_MS,
@@ -100,6 +101,7 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   catch { return badRequest("malformed JSON body"); }
   if (!validNormalizedUsername(body.username)) return badRequest("username must already be normalized");
   if (!isProtocolId(body.user_id)) return badRequest("user_id invalid");
+  if (typeof body.service_account_id !== "string" || !isDiscordSnowflake(body.service_account_id)) return badRequest("service_account_id must be a Discord snowflake");
   if (typeof body.friend_code !== "string" || body.friend_code.length < 24 || body.friend_code.length > 8199) return badRequest("friend_code invalid");
   if (!isHighEntropyRequestId(body.request_id)) return badRequest("request_id invalid");
   if (!isNonEmptyBase64(body.signature_b64)) return badRequest("signature_b64 invalid");
@@ -121,6 +123,17 @@ export async function handleUsernameClaim(request: Request, env: Env): Promise<R
   });
   if (!await verifySignedRequest(current.ik_ed25519_pub, message, body.signature_b64)) {
     return unauthorized("username claim signature invalid");
+  }
+  const serviceAccountSha256 = await sha256Hex(new TextEncoder().encode(body.service_account_id));
+  const bound = await env.DB.prepare(
+    `SELECT 1 FROM account_ownership_proof_bindings
+      WHERE owner_user_id = ?
+        AND service = 'discord'
+        AND service_account_sha256 = ?
+      LIMIT 1`,
+  ).bind(userId, serviceAccountSha256).first();
+  if (!bound) {
+    return unauthorized("username claim requires account ownership proof");
   }
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", message));
   const now = new Date().toISOString();
