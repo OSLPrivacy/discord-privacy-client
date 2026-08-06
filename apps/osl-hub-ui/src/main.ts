@@ -10168,6 +10168,12 @@ export const __oslHubUiTest = {
     route = destination;
     return destination === "onboarding" ? onboardingShellMarkup() : workspaceShellMarkup();
   },
+  renderOnboardingSetupShell(destination: OnboardingRoute): string {
+    route = "onboarding";
+    onboardingRoute = onboardingRouteForBuild(destination);
+    renderOnboarding();
+    return root.innerHTML;
+  },
   bindOnboarding(): void {
     bindOnboarding();
   },
