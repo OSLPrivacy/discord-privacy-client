@@ -157,6 +157,7 @@ pub mod services;
 pub mod updates;
 pub mod visual_binding;
 pub mod web_surface_adapter;
+pub mod website_driver;
 pub mod whatsapp_accessibility;
 pub mod whatsapp_qa_host;
 #[cfg(feature = "core")]
