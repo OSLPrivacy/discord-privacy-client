@@ -268,6 +268,81 @@ pub fn service_kind_from_id(service_id: &str) -> Option<ServiceKind> {
     })
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceCapabilityFacts {
+    pub service_id: ServiceKind,
+    pub placing: bool,
+    pub reading: bool,
+    pub opening: bool,
+    pub real_two_person_protected_messaging: bool,
+}
+
+pub fn installed_service_count() -> usize {
+    service_descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.launch_state == ServiceLaunchState::Available)
+        .count()
+}
+
+pub fn installed_service_capability_facts() -> Vec<ServiceCapabilityFacts> {
+    service_descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.launch_state == ServiceLaunchState::Available)
+        .filter_map(|descriptor| service_capability_facts_for_kind(descriptor.id))
+        .collect()
+}
+
+pub fn service_capability_facts(service_id: &str) -> Option<ServiceCapabilityFacts> {
+    let service_id = service_kind_from_id(service_id)?;
+    service_capability_facts_for_kind(service_id)
+}
+
+fn service_capability_facts_for_kind(service_id: ServiceKind) -> Option<ServiceCapabilityFacts> {
+    SERVICE_CAPABILITY_FACTS
+        .iter()
+        .copied()
+        .find(|facts| facts.service_id == service_id)
+}
+
+const SERVICE_CAPABILITY_FACTS: [ServiceCapabilityFacts; 5] = [
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::Discord,
+        placing: true,
+        reading: true,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::Telegram,
+        placing: true,
+        reading: true,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::WhatsApp,
+        placing: false,
+        reading: true,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::Email,
+        placing: false,
+        reading: false,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+    ServiceCapabilityFacts {
+        service_id: ServiceKind::Signal,
+        placing: false,
+        reading: true,
+        opening: true,
+        real_two_person_protected_messaging: false,
+    },
+];
+
 fn new_account_id(counter: &AtomicU64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
