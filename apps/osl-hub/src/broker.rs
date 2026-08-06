@@ -10322,7 +10322,10 @@ mod tests {
         widened_server.join().expect("widened audit server exits");
 
         let (legacy_url, legacy_requests, legacy_server) =
-            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
+            spawn_control_inbox_test_server_with_floor(
+                &identity,
+                vec![serde_json::json!({ "ok": true })],
+            );
         let legacy_client =
             keystore::KeyServerClient::new(&legacy_url).expect("build legacy audit client");
         let legacy_error = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
@@ -10330,10 +10333,16 @@ mod tests {
         assert!(
             legacy_error
                 .to_string()
-                .contains("sender-filter capability unavailable"),
+                .contains("control-inbox sender-filter capability downgrade refused"),
             "legacy capability absence must be an explicit refusal"
         );
         assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
+        assert_sender_filter_floor_request(
+            &legacy_requests
+                .recv()
+                .expect("capture legacy sender-filter floor"),
+            &identity,
+        );
         assert!(
             legacy_requests.try_recv().is_err(),
             "legacy refusal must stop before any unfiltered active-peer GET"
@@ -10468,7 +10477,10 @@ mod tests {
         widened_server.join().expect("widened audit server exits");
 
         let (legacy_url, legacy_requests, legacy_server) =
-            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
+            spawn_control_inbox_test_server_with_floor(
+                &identity,
+                vec![serde_json::json!({ "ok": true })],
+            );
         let legacy_client =
             keystore::KeyServerClient::new(&legacy_url).expect("build legacy audit client");
         let legacy = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
@@ -10476,10 +10488,16 @@ mod tests {
         assert!(
             legacy
                 .to_string()
-                .contains("sender-filter capability unavailable"),
+                .contains("control-inbox sender-filter capability downgrade refused"),
             "missing sender-filter authority is a refusal, never permission"
         );
         assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
+        assert_sender_filter_floor_request(
+            &legacy_requests
+                .recv()
+                .expect("capture legacy sender-filter floor"),
+            &identity,
+        );
         assert!(
             legacy_requests.try_recv().is_err(),
             "legacy refusal must stop before an unfiltered active-peer GET"
@@ -10541,8 +10559,17 @@ mod tests {
         let address = listener.local_addr().expect("read test server address");
         let (request_tx, request_rx) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
+            let mut floor_responses_remaining = floor_identity
+                .as_ref()
+                .map(|_| {
+                    responses
+                        .iter()
+                        .filter(|response| response.get("ok").is_some())
+                        .count()
+                })
+                .unwrap_or(0);
             let mut responses = VecDeque::from(responses);
-            while !responses.is_empty() {
+            while !responses.is_empty() || floor_responses_remaining > 0 {
                 let (mut stream, _) = listener.accept().expect("accept control-inbox request");
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
@@ -10588,6 +10615,11 @@ mod tests {
                     .expect("record control-inbox request");
 
                 let body = if target.starts_with("/v1/sender-filter-capability-floor/") {
+                    assert!(
+                        floor_responses_remaining > 0,
+                        "unexpected sender-filter floor request"
+                    );
+                    floor_responses_remaining -= 1;
                     let (user_id, ed25519_public) = floor_identity
                         .as_ref()
                         .expect("test floor response has a bound identity");
@@ -11544,20 +11576,29 @@ mod tests {
         let sender_a = "peer-a";
 
         let (legacy_url, legacy_requests, legacy_server) =
-            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
+            spawn_control_inbox_test_server_with_floor(
+                &identity,
+                vec![serde_json::json!({ "ok": true })],
+            );
         let legacy_client = keystore::KeyServerClient::new(&legacy_url).expect("legacy client");
         let legacy_error = fetch_peer_control_inbox(&identity, &legacy_client, sender_a)
             .expect_err("legacy Worker must not widen to an unfiltered page");
         assert!(
             legacy_error
                 .to_string()
-                .contains("sender-filter capability unavailable"),
+                .contains("control-inbox sender-filter capability downgrade refused"),
             "legacy capability absence is an explicit refusal"
         );
         assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
+        assert_sender_filter_floor_request(
+            &legacy_requests
+                .recv()
+                .expect("capture legacy sender-filter floor"),
+            &identity,
+        );
         assert!(
             legacy_requests.try_recv().is_err(),
-            "legacy refusal must stop before any floor or inbox GET"
+            "legacy refusal must stop before any inbox GET"
         );
         legacy_server.join().expect("legacy server exits");
 
@@ -11599,7 +11640,10 @@ mod tests {
         final_server.join().expect("final server exits");
 
         let (rolled_back_url, rollback_requests, rollback_server) =
-            spawn_control_inbox_test_server(vec![serde_json::json!({ "ok": true })]);
+            spawn_control_inbox_test_server_with_floor(
+                &identity,
+                vec![serde_json::json!({ "ok": true })],
+            );
         let restarted_client =
             keystore::KeyServerClient::new(&rolled_back_url).expect("fresh client after restart");
         let error = fetch_peer_control_inbox(&identity, &restarted_client, sender_a)
@@ -11607,13 +11651,19 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("sender-filter capability unavailable"),
+                .contains("control-inbox sender-filter capability downgrade refused"),
             "rollback is refused before any unfiltered fallback GET"
         );
         assert_health_request(&rollback_requests.recv().expect("capture rollback health"));
+        assert_sender_filter_floor_request(
+            &rollback_requests
+                .recv()
+                .expect("capture rollback sender-filter floor"),
+            &identity,
+        );
         assert!(
             rollback_requests.try_recv().is_err(),
-            "rollback refusal must stop before any floor or inbox GET"
+            "rollback refusal must stop before any inbox GET"
         );
         rollback_server.join().expect("rollback server exits");
         remove_sender_filter_test_account(&account_dir);
