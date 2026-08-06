@@ -58,6 +58,64 @@ pub fn count_allowed_place_records(app_data_dir: &Path) -> Result<i64, String> {
         .map_err(|e| format!("OSL: count allowed places: {e}"))
 }
 
+pub fn count_allowed_place_records_for_kind(
+    app_data_dir: &Path,
+    app_kind: &str,
+    place_kind: &str,
+) -> Result<i64, String> {
+    let conn = open_allowed_places(app_data_dir)?;
+    conn.query_row(
+        "SELECT COUNT(*) FROM allowed_places WHERE app_kind = ?1 AND place_kind = ?2",
+        params![app_kind, place_kind],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("OSL: count allowed places for kind: {e}"))
+}
+
+pub fn get_allowed_place_record(
+    app_data_dir: &Path,
+    app_kind: &str,
+    place_kind: &str,
+    place_id: &str,
+) -> Result<Option<AllowedPlaceRecord>, String> {
+    let conn = open_allowed_places(app_data_dir)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT app_kind, place_kind, place_id, display_name, found_at_unix_secs \
+             FROM allowed_places \
+             WHERE app_kind = ?1 AND place_kind = ?2 AND place_id = ?3 \
+             ORDER BY id DESC \
+             LIMIT 1",
+        )
+        .map_err(|e| format!("OSL: prepare allowed place lookup: {e}"))?;
+    let mut rows = stmt
+        .query(params![app_kind, place_kind, place_id])
+        .map_err(|e| format!("OSL: query allowed place lookup: {e}"))?;
+    let Some(row) = rows
+        .next()
+        .map_err(|e| format!("OSL: read allowed place lookup: {e}"))?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(AllowedPlaceRecord {
+        app_kind: row
+            .get(0)
+            .map_err(|e| format!("OSL: read allowed place app_kind: {e}"))?,
+        place_kind: row
+            .get(1)
+            .map_err(|e| format!("OSL: read allowed place place_kind: {e}"))?,
+        place_id: row
+            .get(2)
+            .map_err(|e| format!("OSL: read allowed place place_id: {e}"))?,
+        display_name: row
+            .get(3)
+            .map_err(|e| format!("OSL: read allowed place display_name: {e}"))?,
+        found_at_unix_secs: row
+            .get(4)
+            .map_err(|e| format!("OSL: read allowed place found_at_unix_secs: {e}"))?,
+    }))
+}
+
 fn open_allowed_places(app_data_dir: &Path) -> Result<Connection, String> {
     std::fs::create_dir_all(app_data_dir)
         .map_err(|e| format!("OSL: create allowed places dir: {e}"))?;

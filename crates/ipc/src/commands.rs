@@ -16001,6 +16001,33 @@ pub fn cmd_osl_save_auto_whitelist_rule(
     Ok(rule.as_label().to_string())
 }
 
+pub fn cmd_osl_save_auto_whitelist_rule_for_place(
+    state: &AppState,
+    app_kind: String,
+    place_kind: String,
+    rule: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::normalize_app_kind(&app_kind)?;
+    let place_kind =
+        crate::auto_whitelist_rules::normalize_place_kind_for_app(&app_kind, &place_kind)?;
+    let rule = rule.parse::<crate::auto_whitelist_rules::AutoWhitelistRule>()?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.auto_whitelist_rules.insert(
+            crate::auto_whitelist_rules::scoped_rule_key(&app_kind, &place_kind),
+            rule,
+        );
+    }
+    persist_app_preferences_now(state, config_dir);
+    Ok(rule.as_label().to_string())
+}
+
 pub fn cmd_osl_get_auto_whitelist_rule(
     state: &AppState,
     app_kind: String,
@@ -16020,6 +16047,28 @@ pub fn cmd_osl_get_auto_whitelist_rule(
         .to_string())
 }
 
+pub fn cmd_osl_get_auto_whitelist_rule_for_place(
+    state: &AppState,
+    app_kind: String,
+    place_kind: String,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::normalize_app_kind(&app_kind)?;
+    let place_kind =
+        crate::auto_whitelist_rules::normalize_place_kind_for_app(&app_kind, &place_kind)?;
+    let prefs = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(crate::auto_whitelist_rules::lookup_rule(
+        &prefs.auto_whitelist_rules,
+        &app_kind,
+        Some(&place_kind),
+    )
+    .as_label()
+    .to_string())
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct NewPlaceDecisionDto {
     pub result: String,
@@ -16035,9 +16084,8 @@ pub fn cmd_osl_direct_new_place(
 ) -> Result<NewPlaceDecisionDto, String> {
     record_activity_on_command_entry();
     let app_kind = crate::auto_whitelist_rules::normalize_app_kind(&app_kind)?;
-    if place_kind.trim().is_empty() {
-        return Err("OSL: place_kind is empty".to_string());
-    }
+    let place_kind =
+        crate::auto_whitelist_rules::normalize_place_kind_for_app(&app_kind, &place_kind)?;
     if place_id.trim().is_empty() {
         return Err("OSL: place_id is empty".to_string());
     }
@@ -16046,11 +16094,11 @@ pub fn cmd_osl_direct_new_place(
             .app_preferences
             .lock()
             .expect("app_preferences mutex poisoned");
-        prefs
-            .auto_whitelist_rules
-            .get(&app_kind)
-            .copied()
-            .unwrap_or_default()
+        crate::auto_whitelist_rules::lookup_rule(
+            &prefs.auto_whitelist_rules,
+            &app_kind,
+            Some(&place_kind),
+        )
     };
 
     if rule == crate::auto_whitelist_rules::AutoWhitelistRule::Always {
