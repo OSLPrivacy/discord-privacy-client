@@ -12,11 +12,12 @@ use crate::auto_whitelist_rules::{
 };
 use crate::state::AppState;
 use crate::{IpcError, IpcResult};
-use base64::engine::general_purpose::STANDARD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use crypto::{aead, ed25519, hkdf, random, x25519};
 use keystore::{generate_identity, select_best_sealer, BurnScope, KeyServerClient};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10273,8 +10274,10 @@ pub fn cmd_osl_accept_friend_request(
 }
 
 const PENDING_FRIEND_REQUESTS_FILE: &str = "pending_friend_requests.json";
+const FRIEND_INVITE_LINKS_FILE: &str = "friend_invite_links.json";
+const FRIEND_INVITE_LINK_PREFIX: &str = "OSLINV1.";
 
-#[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingFriendRequestRecord {
     pub peer_discord_id: String,
@@ -10295,8 +10298,56 @@ pub struct SendFriendRequestResult {
     pub pending: PendingFriendRequestRecord,
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct FriendInviteLinkRecord {
+    token_sha256_b64: String,
+    peer_discord_id: String,
+    scope_storage_key: String,
+    created_at_unix_seconds: u64,
+    consumed_at_unix_seconds: Option<u64>,
+}
+
+#[derive(Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendInviteLinkResult {
+    pub invite_link: String,
+    pub peer_discord_id: String,
+    pub scope_storage_key: String,
+    pub consumed: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct RedeemFriendInviteLinkResult {
+    pub request: crate::friend_request::FriendRequest,
+    pub pending: PendingFriendRequestRecord,
+    pub invite_link_consumed: bool,
+}
+
 fn pending_friend_requests_path(dir: &Path) -> PathBuf {
     dir.join(PENDING_FRIEND_REQUESTS_FILE)
+}
+
+fn friend_invite_links_path(dir: &Path) -> PathBuf {
+    dir.join(FRIEND_INVITE_LINKS_FILE)
+}
+
+fn friend_invite_link_hash(invite_link: &str) -> String {
+    let digest = Sha256::digest(invite_link.as_bytes());
+    STANDARD.encode(digest)
+}
+
+fn validate_friend_invite_link(invite_link: &str) -> Result<(), String> {
+    let token = invite_link
+        .strip_prefix(FRIEND_INVITE_LINK_PREFIX)
+        .ok_or_else(|| "OSL: invite link is invalid".to_string())?;
+    let decoded = URL_SAFE_NO_PAD
+        .decode(token)
+        .map_err(|_| "OSL: invite link is invalid".to_string())?;
+    if decoded.len() != 32 {
+        return Err("OSL: invite link is invalid".to_string());
+    }
+    Ok(())
 }
 
 /// A6-F2: the pending social graph — who is trying to reach the user and who
@@ -10356,6 +10407,37 @@ fn save_pending_friend_requests(
         .map_err(|_| "OSL: pending friend request storage is unavailable".to_string())?;
     std::fs::rename(&tmp, path)
         .map_err(|_| "OSL: pending friend request storage is unavailable".to_string())
+}
+
+fn load_friend_invite_links(path: &Path) -> Result<Vec<FriendInviteLinkRecord>, String> {
+    let blob = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("OSL: invite link storage is unavailable".to_string()),
+    };
+    let plain = crate::main_password::maybe_decrypt(&blob)
+        .map_err(|_| "OSL: invite link storage is unreadable".to_string())?;
+    let records: Vec<FriendInviteLinkRecord> = serde_json::from_slice(&plain)
+        .map_err(|_| "OSL: invite link storage is unreadable".to_string())?;
+    if !crate::main_password::has_enc_magic(&blob) {
+        save_friend_invite_links(path, &records)?;
+    }
+    Ok(records)
+}
+
+fn save_friend_invite_links(path: &Path, records: &[FriendInviteLinkRecord]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|_| "OSL: invite link storage is unavailable".to_string())?;
+    }
+    let bytes = serde_json::to_vec_pretty(records)
+        .map_err(|_| "OSL: invite link storage is unavailable".to_string())?;
+    let sealed = crate::main_password::maybe_encrypt(&bytes)
+        .map_err(|_| "OSL: invite link storage is unavailable".to_string())?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &sealed)
+        .map_err(|_| "OSL: invite link storage is unavailable".to_string())?;
+    std::fs::rename(&tmp, path).map_err(|_| "OSL: invite link storage is unavailable".to_string())
 }
 
 fn local_friend_authority(
@@ -10450,6 +10532,103 @@ fn cmd_osl_send_friend_request_with_dir(
     save_pending_friend_requests(&path, &records)?;
 
     Ok(SendFriendRequestResult { request, pending })
+}
+
+pub fn cmd_osl_create_friend_invite_link(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<FriendInviteLinkResult, String> {
+    record_activity_on_command_entry();
+    let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: invite link dir: {e}"))?;
+    cmd_osl_create_friend_invite_link_with_dir(state, peer_discord_id, scope_input, &dir)
+}
+
+fn cmd_osl_create_friend_invite_link_with_dir(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+    dir: &Path,
+) -> Result<FriendInviteLinkResult, String> {
+    guard_friend_request_peer_binding(state, &peer_discord_id)?;
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    if scope.kind == crate::scope::ScopeKind::Dm && scope.id != peer_discord_id {
+        return Err("OSL: invite link scope is not bound to this peer".to_string());
+    }
+    let _peer_authority = peer_friend_authority(state, &peer_discord_id)?;
+
+    let token = URL_SAFE_NO_PAD.encode(random::random_bytes(32));
+    let invite_link = format!("{FRIEND_INVITE_LINK_PREFIX}{token}");
+    let record = FriendInviteLinkRecord {
+        token_sha256_b64: friend_invite_link_hash(&invite_link),
+        peer_discord_id: peer_discord_id.clone(),
+        scope_storage_key: scope.storage_key(),
+        created_at_unix_seconds: now_unix_secs() as u64,
+        consumed_at_unix_seconds: None,
+    };
+    let path = friend_invite_links_path(dir);
+    let mut records = load_friend_invite_links(&path)?;
+    records.push(record.clone());
+    save_friend_invite_links(&path, &records)?;
+
+    Ok(FriendInviteLinkResult {
+        invite_link,
+        peer_discord_id,
+        scope_storage_key: record.scope_storage_key,
+        consumed: false,
+    })
+}
+
+pub fn cmd_osl_redeem_friend_invite_link(
+    state: &AppState,
+    invite_link: String,
+) -> Result<RedeemFriendInviteLinkResult, String> {
+    record_activity_on_command_entry();
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: invite link redeem dir: {e}"))?;
+    cmd_osl_redeem_friend_invite_link_with_dir(state, invite_link, &dir)
+}
+
+fn cmd_osl_redeem_friend_invite_link_with_dir(
+    state: &AppState,
+    invite_link: String,
+    dir: &Path,
+) -> Result<RedeemFriendInviteLinkResult, String> {
+    validate_friend_invite_link(&invite_link)?;
+    let invite_path = friend_invite_links_path(dir);
+    let mut invites = load_friend_invite_links(&invite_path)?;
+    let invite_hash = friend_invite_link_hash(&invite_link);
+    let invite_index = invites
+        .iter()
+        .position(|record| record.token_sha256_b64 == invite_hash)
+        .ok_or_else(|| "OSL: invite link is invalid".to_string())?;
+    if invites[invite_index].consumed_at_unix_seconds.is_some() {
+        return Err("OSL: invite link is already consumed".to_string());
+    }
+
+    let peer_discord_id = invites[invite_index].peer_discord_id.clone();
+    let scope = crate::scope::Scope::parse(&invites[invite_index].scope_storage_key)
+        .ok_or_else(|| "OSL: invite link scope is invalid".to_string())?;
+    if scope.kind == crate::scope::ScopeKind::Dm && scope.id != peer_discord_id {
+        return Err("OSL: invite link scope is not bound to this peer".to_string());
+    }
+
+    let sent = cmd_osl_send_friend_request_with_dir(
+        state,
+        peer_discord_id,
+        crate::scope::ScopeInput::from(&scope),
+        dir,
+    )?;
+    invites[invite_index].consumed_at_unix_seconds = Some(now_unix_secs() as u64);
+    save_friend_invite_links(&invite_path, &invites)?;
+
+    Ok(RedeemFriendInviteLinkResult {
+        request: sent.request,
+        pending: sent.pending,
+        invite_link_consumed: true,
+    })
 }
 
 #[cfg(test)]
@@ -10586,10 +10765,11 @@ fn adopt_friend_request_scope(
 #[cfg(test)]
 mod friend_request_acceptance_tests {
     use super::{
-        cmd_osl_accept_friend_request, cmd_osl_send_friend_request,
+        cmd_osl_accept_friend_request, cmd_osl_create_friend_invite_link_with_dir,
+        cmd_osl_redeem_friend_invite_link_with_dir, cmd_osl_send_friend_request,
         cmd_osl_send_friend_request_with_dir, cmd_osl_send_typed_friend_request_with_dir,
-        load_pending_friend_requests, pending_friend_requests_path,
-        persist_typed_friend_request_with_dir,
+        friend_invite_links_path, load_friend_invite_links, load_pending_friend_requests,
+        pending_friend_requests_path, persist_typed_friend_request_with_dir,
     };
     use crate::friend_request::{
         FriendPeer, FriendRequest, FriendScopeGrant, VerifiedFriendAuthority,
@@ -10882,6 +11062,96 @@ mod friend_request_acceptance_tests {
                 Err(err) => err,
             };
         assert_eq!(duplicate, "OSL: friend request already exists");
+    }
+
+    #[test]
+    fn cmd_osl_redeem_friend_invite_link_creates_one_pending_and_consumes_link() {
+        let _guard = crate::test_process_globals::serialize();
+        let _reset = ActiveAccountDirReset;
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
+        let _key = FileStorageKeyForTest::install([0x21; 32]);
+        let state = AppState::new();
+        state.install_identity(keystore::generate_identity(
+            "requester-osl-0218".to_string(),
+        ));
+        let trusted_peer = keystore::generate_identity("trusted-peer-0218".to_string());
+        let scope = Scope::dm(REQUESTER_DID);
+        state.peer_map.lock().unwrap().insert(
+            REQUESTER_DID.to_string(),
+            crate::peer_map::PeerEntry {
+                discord_id: Some(REQUESTER_DID.to_string()),
+                tofu_key_bundle: Some(identity_bundle(&trusted_peer)),
+                ..Default::default()
+            },
+        );
+
+        let link = cmd_osl_create_friend_invite_link_with_dir(
+            &state,
+            REQUESTER_DID.to_string(),
+            (&scope).into(),
+            dir.path(),
+        )
+        .expect("valid unused invite link is issued");
+        assert_eq!(
+            load_pending_friend_requests(&pending_friend_requests_path(dir.path()))
+                .expect("pending file absent is empty")
+                .len(),
+            0
+        );
+
+        let redeemed = cmd_osl_redeem_friend_invite_link_with_dir(
+            &state,
+            link.invite_link.clone(),
+            dir.path(),
+        )
+        .expect("valid unused invite link redeems into a pending request");
+
+        assert!(redeemed.request.grants_scope(&scope));
+        assert_eq!(redeemed.pending.peer_discord_id, REQUESTER_DID);
+        assert_eq!(redeemed.pending.scope_storage_key, scope.storage_key());
+        assert!(redeemed.invite_link_consumed);
+
+        let pending = load_pending_friend_requests(&pending_friend_requests_path(dir.path()))
+            .expect("pending file loads after redeem");
+        let invites = load_friend_invite_links(&friend_invite_links_path(dir.path()))
+            .expect("invite link file loads after redeem");
+        let consumed = invites
+            .iter()
+            .filter(|record| record.consumed_at_unix_seconds.is_some())
+            .count();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0], redeemed.pending);
+        assert_eq!(consumed, 1);
+
+        let duplicate = match cmd_osl_redeem_friend_invite_link_with_dir(
+            &state,
+            link.invite_link,
+            dir.path(),
+        ) {
+            Ok(_) => panic!("a consumed invite link must not redeem twice"),
+            Err(err) => err,
+        };
+        let pending_after_duplicate =
+            load_pending_friend_requests(&pending_friend_requests_path(dir.path()))
+                .expect("pending file loads after duplicate refusal");
+        let consumed_after_duplicate =
+            load_friend_invite_links(&friend_invite_links_path(dir.path()))
+                .expect("invite link file loads after duplicate refusal")
+                .iter()
+                .filter(|record| record.consumed_at_unix_seconds.is_some())
+                .count();
+
+        assert_eq!(duplicate, "OSL: invite link is already consumed");
+        assert_eq!(pending_after_duplicate.len(), 1);
+        assert_eq!(consumed_after_duplicate, 1);
+
+        println!(
+            "task_0218_pending_requests={}",
+            pending_after_duplicate.len()
+        );
+        println!("task_0218_consumed_links={consumed_after_duplicate}");
+        println!("task_0218_duplicate_redeem_error={duplicate}");
     }
 
     #[test]
