@@ -14390,6 +14390,123 @@ mod account_transfer_tests {
     }
 
     #[test]
+    fn task_0458_second_device_package_restores_identity_key_and_marked_conversation() {
+        let _serial = crate::test_process_globals::serialize();
+        let _reset = FileKeyReset;
+        crate::main_password::set_file_storage_key(None);
+
+        const CONVERSATION_NAME: &str = "TASK0458-SECOND-DEVICE-CONVERSATION";
+        const MESSAGE_TEXT: &str = "TASK0458 disposable package restores this exact message text";
+        const MESSAGE_ID: &str = "task0458-message-0001";
+        const SENDER_OSL_USER_ID: &str = "task0458-sender-osl-user";
+        const DISPOSABLE_ACCOUNT: &str = "task0458-disposable-account";
+
+        let source_dir = TempDir::new().unwrap();
+        let restored_dir = TempDir::new().unwrap();
+        let entropy = [45; 16];
+        let phrase = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
+            .unwrap()
+            .to_string();
+
+        let source_state = state_with_entropy(entropy);
+        {
+            let mut identity = source_state.identity_slot();
+            identity.as_mut().unwrap().discord_snowflake = Some(DISPOSABLE_ACCOUNT.to_owned());
+        }
+        let original_identity = source_state.identity_slot().as_ref().unwrap().clone();
+        let original_ed25519 = STANDARD.encode(original_identity.ed25519_public.as_bytes());
+        let original_x25519_secret = *original_identity.x25519_secret.as_bytes();
+
+        let source_store =
+            MessageStore::open(&source_dir.path().join("store"), &original_x25519_secret).unwrap();
+        source_store
+            .put(&StoredMessage {
+                discord_message_id: MESSAGE_ID.to_owned(),
+                channel_id: CONVERSATION_NAME.to_owned(),
+                sender_discord_id: SENDER_OSL_USER_ID.to_owned(),
+                sender_osl_user_id: SENDER_OSL_USER_ID.to_owned(),
+                plaintext: MESSAGE_TEXT.to_owned(),
+                decrypted_at: 45,
+                burned: false,
+            })
+            .unwrap();
+        *source_state.message_store.lock().unwrap() = Some(source_store);
+
+        let package = cmd_osl_export_data_with_dir(&source_state, source_dir.path())
+            .expect("source device A creates disposable recovery package");
+
+        let restored_state = AppState::new();
+        let mut placeholder = keystore::generate_identity("task0458-placeholder".to_owned());
+        placeholder.discord_snowflake = Some(DISPOSABLE_ACCOUNT.to_owned());
+        restored_state.install_identity(placeholder);
+
+        cmd_osl_recover_account_from_export_with_dir(
+            &restored_state,
+            package.clone(),
+            phrase,
+            restored_dir.path(),
+        )
+        .expect("second device restores the disposable recovery package");
+
+        let restored_identity = restored_state.identity_slot().as_ref().unwrap().clone();
+        let restored_ed25519 = STANDARD.encode(restored_identity.ed25519_public.as_bytes());
+        assert_eq!(
+            restored_identity.ed25519_public.as_bytes(),
+            original_identity.ed25519_public.as_bytes(),
+            "restored identity key must exactly match original identity key"
+        );
+
+        let restored_store = MessageStore::open(
+            &restored_dir.path().join("store"),
+            restored_identity.x25519_secret.as_bytes(),
+        )
+        .expect("restored message store opens with restored identity key");
+        let restored_rows = restored_store
+            .list_by_channel(CONVERSATION_NAME, 10)
+            .expect("restored conversation is readable by its marked name");
+        assert_eq!(
+            restored_rows.len(),
+            1,
+            "restored marked conversation must contain exactly the exported message"
+        );
+        let restored_message = &restored_rows[0];
+        assert_eq!(
+            restored_message.channel_id, CONVERSATION_NAME,
+            "TASK0458_CONVERSATION_MISMATCH: restored conversation name mismatch"
+        );
+        assert_eq!(
+            restored_message.plaintext, MESSAGE_TEXT,
+            "TASK0458_CONVERSATION_MISMATCH: restored message text mismatch"
+        );
+
+        println!("TASK0458_SOURCE_DEVICE=test-device-A");
+        println!("TASK0458_DISPOSABLE_ACCOUNT={DISPOSABLE_ACCOUNT}");
+        println!("TASK0458_RECOVERY_PACKAGE_BYTES={}", package.len());
+        println!("TASK0458_ORIGINAL_IDENTITY_KEY={original_ed25519}");
+        println!("TASK0458_RESTORED_IDENTITY_KEY={restored_ed25519}");
+        println!(
+            "TASK0458_IDENTITY_KEY_EXACT_MATCH={}",
+            restored_identity.ed25519_public.as_bytes()
+                == original_identity.ed25519_public.as_bytes()
+        );
+        println!("TASK0458_ORIGINAL_CONVERSATION_NAME={CONVERSATION_NAME}");
+        println!(
+            "TASK0458_RESTORED_CONVERSATION_NAME={}",
+            restored_message.channel_id
+        );
+        println!("TASK0458_ORIGINAL_MESSAGE_TEXT={MESSAGE_TEXT}");
+        println!(
+            "TASK0458_RESTORED_MESSAGE_TEXT={}",
+            restored_message.plaintext
+        );
+        println!(
+            "TASK0458_CONVERSATION_EXACT_MATCH={}",
+            restored_message.channel_id == CONVERSATION_NAME
+                && restored_message.plaintext == MESSAGE_TEXT
+        );
+    }
+
+    #[test]
     fn production_store_opens_use_keystore_backed_anchor() {
         let _serial = crate::test_process_globals::serialize();
         let _reset = ProductionStoreOpenHookReset;
