@@ -89,6 +89,7 @@ use osl_privacy_hub::scrub_index::{
 use osl_privacy_hub::security::{
     self, AddFriendResult, FriendCodeExport, GroupMemberPermissionRecord, HubRevocationStatusDto,
     HubScopeBurnResult, HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
+    WhatsAppWhitelistKind,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -6280,6 +6281,11 @@ async fn list_group_member_permissions(
 ) -> Result<Vec<GroupMemberPermissionRecord>, String> {
     let _session = session.transition.lock().await;
     security::list_group_member_permissions_for_group(&security_state, group_id)
+}
+
+#[tauri::command]
+fn list_whatsapp_whitelist_kinds() -> Vec<WhatsAppWhitelistKind> {
+    security::list_whatsapp_whitelist_kinds()
 }
 
 #[tauri::command]

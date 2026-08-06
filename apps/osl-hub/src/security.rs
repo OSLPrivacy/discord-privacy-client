@@ -173,6 +173,13 @@ pub struct GroupMemberPermissionRecord {
     pub allowed: bool,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhatsAppWhitelistKind {
+    pub id: String,
+    pub name: String,
+}
+
 /// The minimum friend state needed to create a manual peer-messaging lease.
 /// Key material stays in the original core; callers receive only stable local
 /// and public identity identifiers.
@@ -1198,6 +1205,20 @@ pub fn list_group_member_permissions_for_group(
     let prefs =
         load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
     Ok(group_member_permission_records_for_group(&prefs, &group_id))
+}
+
+pub fn list_whatsapp_whitelist_kinds() -> Vec<WhatsAppWhitelistKind> {
+    [
+        ("direct_message", "direct message"),
+        ("group_chat", "group chat"),
+        ("channel", "channel"),
+    ]
+    .into_iter()
+    .map(|(id, name)| WhatsAppWhitelistKind {
+        id: id.to_owned(),
+        name: name.to_owned(),
+    })
+    .collect()
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -4679,6 +4700,28 @@ mod tests {
         assert_eq!(records[1].group_id, "group-0114");
         assert_eq!(records[1].member_id, "member-0114-b");
         assert!(records[1].allowed);
+    }
+
+    #[test]
+    fn direct_whatsapp_whitelist_kinds_command_returns_exactly_three_named_kinds() {
+        let kinds = list_whatsapp_whitelist_kinds();
+        let names = kinds
+            .iter()
+            .map(|kind| kind.name.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "direct_whatsapp_whitelist_kinds count={} names={}",
+            kinds.len(),
+            names
+        );
+        assert_eq!(kinds.len(), 3);
+        assert_eq!(kinds[0].id, "direct_message");
+        assert_eq!(kinds[0].name, "direct message");
+        assert_eq!(kinds[1].id, "group_chat");
+        assert_eq!(kinds[1].name, "group chat");
+        assert_eq!(kinds[2].id, "channel");
+        assert_eq!(kinds[2].name, "channel");
     }
 
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {

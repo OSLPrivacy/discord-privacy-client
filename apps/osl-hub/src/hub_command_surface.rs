@@ -655,6 +655,7 @@ macro_rules! hub_tauri_commands {
             add_group_member_permission,
             remove_group_member_permission,
             list_group_member_permissions,
+            list_whatsapp_whitelist_kinds,
             set_active_hub_friend_permission,
             set_active_hub_friend_reach,
             revoke_active_hub_friend_scope,
@@ -1939,6 +1940,7 @@ mod tauri_registration_surface_tests {
                 "add_group_member_permission",
                 "remove_group_member_permission",
                 "list_group_member_permissions",
+                "list_whatsapp_whitelist_kinds",
             ],
         );
     }
