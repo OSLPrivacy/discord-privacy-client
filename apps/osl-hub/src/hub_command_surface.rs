@@ -160,6 +160,18 @@ where
     Ok(scan)
 }
 
+pub fn with_allowed_place_before_scrub_conversation_open<T, RequireAllowedPlace, Open>(
+    require_allowed_place: RequireAllowedPlace,
+    open: Open,
+) -> Result<T, String>
+where
+    RequireAllowedPlace: FnOnce() -> Result<(), String>,
+    Open: FnOnce() -> Result<T, String>,
+{
+    require_allowed_place()?;
+    open()
+}
+
 #[derive(Default)]
 struct DiscordGuidedDeletionPlanProducer {
     scan: Option<guided_deletion::DeletionScan>,
@@ -905,8 +917,9 @@ mod native_visible_row_qa_command_tests {
     use super::{
         canonical_native_visible_row_qa_build_hash, finish_native_visible_row_qa_request,
         prepare_native_visible_row_qa_request, recorded_executable_hash_matches_rebuild,
-        require_native_discord_product_send_authority, with_native_discord_product_send_authority,
-        ActiveServiceHost,
+        require_native_discord_product_send_authority,
+        with_allowed_place_before_scrub_conversation_open,
+        with_native_discord_product_send_authority, ActiveServiceHost,
     };
     use crate::native_discord_adapter::{
         deidentify_prepared_visual_structure, DiscordCarrierLayout, DiscordCarrierPadding,
@@ -983,6 +996,90 @@ mod native_visible_row_qa_command_tests {
         assert!(carrier
             .split_whitespace()
             .eq(TEST_FLAGTEXT.split_whitespace()));
+    }
+
+    fn function_body(source: &'static str, signature: &str, following: &str) -> &'static str {
+        let start = source.find(signature).expect("function must exist");
+        let end = source[start..]
+            .find(following)
+            .map(|offset| start + offset)
+            .expect("function must be bounded");
+        &source[start..end]
+    }
+
+    #[test]
+    fn task_0123_allowed_place_scrub_trace_records_one_open_action() {
+        let events = RefCell::new(Vec::<&'static str>::new());
+        let open_actions = Cell::new(0usize);
+        let opened = with_allowed_place_before_scrub_conversation_open(
+            || {
+                events.borrow_mut().push("allowed-place-check");
+                events.borrow_mut().push("allowed-place-confirmed");
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push("scrub-conversation-open");
+                open_actions.set(open_actions.get() + 1);
+                Ok("opened")
+            },
+        )
+        .expect("allowed place may open one Scrub conversation");
+        assert_eq!(opened, "opened");
+        let allowed_trace = events.borrow().join(" -> ");
+        println!("task_0123_allowed_place_scrub_trace={allowed_trace}");
+        println!("task_0123_open_actions={}", open_actions.get());
+        assert_eq!(
+            allowed_trace,
+            "allowed-place-check -> allowed-place-confirmed -> scrub-conversation-open"
+        );
+        assert_eq!(open_actions.get(), 1);
+
+        let refused_events = RefCell::new(Vec::<&'static str>::new());
+        let refused_open_actions = Cell::new(0usize);
+        let refused = with_allowed_place_before_scrub_conversation_open(
+            || {
+                refused_events.borrow_mut().push("allowed-place-check");
+                Err("Approve encryption for this friend before continuing".to_owned())
+            },
+            || {
+                refused_events.borrow_mut().push("scrub-conversation-open");
+                refused_open_actions.set(refused_open_actions.get() + 1);
+                Ok::<_, String>("opened")
+            },
+        );
+        match refused {
+            Err(error) => assert_eq!(
+                error,
+                "Approve encryption for this friend before continuing"
+            ),
+            Ok(_) => panic!("unallowed Scrub conversation must refuse before open"),
+        }
+        let refused_trace = refused_events.borrow().join(" -> ");
+        println!("task_0123_unallowed_place_scrub_trace={refused_trace}");
+        println!(
+            "task_0123_unallowed_open_actions={}",
+            refused_open_actions.get()
+        );
+        assert_eq!(refused_trace, "allowed-place-check");
+        assert_eq!(refused_open_actions.get(), 0);
+
+        let source = include_str!("main.rs");
+        let run_scan = function_body(
+            source,
+            "fn run_checked_hosted_session_scan(",
+            "/// Open the hosted-session scan surface",
+        );
+        let allowed_gate = run_scan
+            .find("with_allowed_place_before_scrub_conversation_open(")
+            .expect("Scrub scan must enter the allowed-place wrapper");
+        let require_allowed = run_scan
+            .find("require_native_discord_scrub_allowed_place(&app)")
+            .expect("Scrub scan must call the native Discord allowed-place check");
+        let scan_flow = run_scan
+            .find("checked_hosted_session_scan_flow(")
+            .expect("Scrub scan must still use the checked hosted scan flow");
+        assert!(allowed_gate < require_allowed);
+        assert!(require_allowed < scan_flow);
     }
 
     #[cfg(feature = "discord-qa-shell")]

@@ -194,7 +194,8 @@ use osl_privacy_hub::hub_command_surface::{
     require_native_discord_product_send_authority,
     require_review_ui_identity_binding_from_verifier, service_kind_id,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
-    start_autoscrub_reviewed_run_inner, with_native_discord_product_send_authority,
+    start_autoscrub_reviewed_run_inner, with_allowed_place_before_scrub_conversation_open,
+    with_native_discord_product_send_authority,
     with_native_discord_product_send_authority_for_switch, BrowserFootprintConsentRequest,
     CheckedHost, DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
     NativeDiscordProductSendAuthority,
@@ -692,20 +693,47 @@ fn checked_host_for_hosted_session_scan(app: &tauri::AppHandle) -> Result<Checke
 fn run_checked_hosted_session_scan(
     app: tauri::AppHandle,
 ) -> Result<osl_privacy_hub::native_discord_adapter::guided_deletion::DeletionScan, String> {
-    checked_hosted_session_scan_flow(
-        || checked_host_for_hosted_session_scan(&app),
-        |checked| checked.attended_operator_names(),
-        |checked, operator_names| {
-            osl_privacy_hub::native_discord_adapter::scan_own_messages_for_deletion(
-                &app.state::<NativeWindowHostState>(),
-                &checked.owner_osl_user_id,
-                &checked.scope_binding,
-                checked.active.generation,
-                operator_names,
+    with_allowed_place_before_scrub_conversation_open(
+        || require_native_discord_scrub_allowed_place(&app),
+        || {
+            checked_hosted_session_scan_flow(
+                || checked_host_for_hosted_session_scan(&app),
+                |checked| checked.attended_operator_names(),
+                |checked, operator_names| {
+                    osl_privacy_hub::native_discord_adapter::scan_own_messages_for_deletion(
+                        &app.state::<NativeWindowHostState>(),
+                        &checked.owner_osl_user_id,
+                        &checked.scope_binding,
+                        checked.active.generation,
+                        operator_names,
+                    )
+                },
+                |checked| {
+                    require_same_overlay_context(&app, checked.context_epoch, &checked.active)
+                },
             )
         },
-        |checked| require_same_overlay_context(&app, checked.context_epoch, &checked.active),
     )
+}
+
+fn require_native_discord_scrub_allowed_place(app: &tauri::AppHandle) -> Result<(), String> {
+    let core = app.state::<HubCoreState>();
+    let broker = app.state::<HubBrokerState>();
+    app.state::<OverlaySessionState>()
+        .with_bootstrap_context(|context_token, host| {
+            broker.validate_active_host(context_token, host)?;
+            let target = broker
+                .manual_burn_target(context_token)?
+                .ok_or_else(|| "The native Discord friend context is unavailable".to_owned())?;
+            security::require_manual_peer_scope_approved(
+                &core,
+                &target.service_id,
+                &target.account_id,
+                target.person_id,
+                target.scope,
+            )?;
+            Ok(())
+        })
 }
 
 /// Open the hosted-session scan surface only after proving the same native
