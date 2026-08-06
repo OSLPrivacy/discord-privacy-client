@@ -151,6 +151,7 @@ export interface OslChatMessage {
    */
   dateLabel?: string;
   reactions?: readonly OslChatMessageReaction[];
+  expiresAt?: number;
 }
 
 export interface OslChatMessageReaction {

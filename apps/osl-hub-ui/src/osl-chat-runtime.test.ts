@@ -6,6 +6,7 @@ import {
   oslChatOpenRefusalMessage,
   oslChatHistoryMessages,
   oslChatUnrecognizedWireRowsNotice,
+  pruneExpiredOslChatMessages,
   receivedOslChatBatchMessage,
   type OslChatDeliveryHost,
 } from "./osl-chat-runtime";
@@ -294,5 +295,27 @@ describe("OSL Chat delivery runtime receive failures", () => {
     expect(message?.dateLabel).toBe(new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" })
       .format(new Date(1_700_000_001_000)));
     expect(message?.reactions).toEqual([{ emoji: "👍", count: 1, mine: true }]);
+  });
+
+  it("drops expired received messages from in-memory chat rows and searches", () => {
+    const live = receivedOslChatBatchMessage(
+      "received-live",
+      { ...batchWithUnrecognized().messages[0]!, plaintext: "TASK3213 live", expiresAt: 1_700_000_100 },
+      () => "11:33 AM",
+    );
+    const expired = receivedOslChatBatchMessage(
+      "received-expired",
+      { ...batchWithUnrecognized().messages[1]!, plaintext: "TASK3213 expired", expiresAt: 1_700_000_050 },
+      () => "11:34 AM",
+    );
+
+    const beforeCount = [live, expired].filter((message) => message.body.includes("TASK3213")).length;
+    const after = pruneExpiredOslChatMessages([live, expired], 1_700_000_050);
+    const afterCount = after.filter((message) => message.body.includes("TASK3213")).length;
+
+    console.log(`TASK3213 ui_memory_search before=${beforeCount} after=${afterCount}`);
+    expect(beforeCount).toBe(2);
+    expect(after.map((message) => message.messageId)).toEqual(["received-live"]);
+    expect(afterCount).toBe(1);
   });
 });

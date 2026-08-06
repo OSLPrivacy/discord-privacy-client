@@ -216,7 +216,7 @@ export {
 import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./theme-preference";
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
-import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, oslChatOpenRefusalMessage, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
+import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, oslChatOpenRefusalMessage, pruneExpiredOslChatMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
 import { discordQaWhitelistButtonMarkup } from "./discord-qa-whitelist-button";
 import { connectDiscordQaWhitelistButton, discordQaOpenPlace } from "./discord-qa-whitelist-place";
@@ -1690,6 +1690,7 @@ function compactFriendId(value: string): string {
 
 function commitRender(): void {
   try {
+    pruneExpiredOslChatLocalCopies();
     refreshActiveBrowserAccountsReady();
     if (route === "onboarding") renderOnboarding();
     else renderWorkspace();
@@ -9435,7 +9436,31 @@ function decideOslChatVerificationWarning(personId: string, moment: "open-conver
   ).surface;
 }
 
+function nowUnixSeconds(): number {
+  return Math.floor(Date.now() / 1_000);
+}
+
+function pruneExpiredOslChatLocalCopies(nowSeconds = nowUnixSeconds()): void {
+  const expiredIds = new Set<string>();
+  for (const [personId, messages] of oslChatMessages) {
+    const retained = pruneExpiredOslChatMessages(messages, nowSeconds);
+    if (retained.length === messages.length) continue;
+    for (const message of messages) {
+      if (!retained.some((candidate) => candidate.messageId === message.messageId)) {
+        expiredIds.add(message.messageId);
+      }
+    }
+    oslChatMessages.set(personId, retained);
+  }
+  if (!expiredIds.size || !appNotifications) return;
+  const retainedNotifications = appNotifications.filter((notice) => !expiredIds.has(notice.id));
+  if (retainedNotifications.length === appNotifications.length) return;
+  appNotifications = retainedNotifications;
+  if (notificationsEnabled) persistOslChatNotifications();
+}
+
 async function openOslChat(personId: string): Promise<void> {
+  pruneExpiredOslChatLocalCopies();
   const person = hubPeople.find((candidate) => candidate.personId === personId);
   if (!person || oslChatBusy) return;
   const queuedViewOnce = (oslChatUnread.get(personId) ?? 0) > 0
@@ -9550,7 +9575,7 @@ async function setNotificationScopeSuggestions(enabled: boolean): Promise<void> 
 }
 
 function commitOslChatBatch(personId: string, batch: NativeDiscordOverlayOpenedBatch, background: boolean): void {
-  const messages = [...(oslChatMessages.get(personId) ?? [])];
+  const messages = pruneExpiredOslChatMessages(oslChatMessages.get(personId) ?? [], nowUnixSeconds());
   for (const acknowledgment of batch.acknowledgments) {
     const message = messages.find((candidate) => candidate.messageId === acknowledgment.messageId);
     if (message) message.state = acknowledgment.status;
@@ -9631,7 +9656,10 @@ const oslChatDeliveryHost: OslChatDeliveryHost = {
   },
   commitNotice: commitOslChatNotice,
   commitHistory: (personId, rows, context) => {
-    const openedViewOnce = (oslChatMessages.get(personId) ?? []).filter((message) => message.state === "opened");
+    const openedViewOnce = pruneExpiredOslChatMessages(
+      oslChatMessages.get(personId) ?? [],
+      nowUnixSeconds(),
+    ).filter((message) => message.state === "opened");
     oslChatMessages.set(personId, mergeOslChatTimeline(
       oslChatHistoryMessages(rows, context, oslChatHistoryTimestamp),
       openedViewOnce,
@@ -12461,7 +12489,11 @@ export const __oslHubUiTest = {
   },
   /** The rendered timeline for one conversation. */
   oslChatConversation(personId: string): OslChatMessage[] {
+    pruneExpiredOslChatLocalCopies();
     return [...(oslChatMessages.get(personId) ?? [])];
+  },
+  expireOslChatLocalCopiesForTest(nowSeconds: number): void {
+    pruneExpiredOslChatLocalCopies(nowSeconds);
   },
   oslChatUnreadCount(personId: string): number {
     return oslChatUnread.get(personId) ?? 0;

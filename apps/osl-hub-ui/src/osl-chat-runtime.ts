@@ -188,7 +188,15 @@ export function receivedOslChatBatchMessage(
     state: incoming.viewOnceConsumed ? "opened" : "received",
     timestampLabel: formatTimestamp(incoming.createdAt),
     dateLabel: oslChatDateLabel(incoming.createdAt),
+    expiresAt: incoming.expiresAt,
   };
+}
+
+export function pruneExpiredOslChatMessages(
+  messages: readonly OslChatMessage[],
+  nowSeconds: number,
+): OslChatMessage[] {
+  return messages.filter((message) => message.expiresAt === undefined || message.expiresAt > nowSeconds);
 }
 
 export function oslChatOpenRefusalMessage(
