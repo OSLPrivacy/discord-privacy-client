@@ -36,6 +36,7 @@ pub mod pending_rotation;
 pub mod prekeys;
 pub mod proof_challenge;
 pub mod recipients;
+mod recoverable_file;
 pub mod sealer;
 mod sender_filter_rollout;
 pub mod sensitive_memory;

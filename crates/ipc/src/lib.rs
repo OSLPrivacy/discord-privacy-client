@@ -63,6 +63,7 @@ pub mod peer_map;
 pub mod prose_token;
 pub mod receipt_wire;
 pub mod recovery;
+mod recoverable_file;
 // OSL-RN ciphertexts are single-use.  This sealed cache lets transcript
 // rendering reuse an already-decrypted payload without advancing the ratchet.
 pub mod rn_plaintext_cache;

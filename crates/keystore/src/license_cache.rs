@@ -113,7 +113,7 @@ pub fn save_license_cache(
         },
     };
     let json = serde_json::to_vec_pretty(&on_disk)?;
-    std::fs::write(path, &json)?;
+    crate::recoverable_file::write_recoverable(path, &json)?;
     Ok(())
 }
 

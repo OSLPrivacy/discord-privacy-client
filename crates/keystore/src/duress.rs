@@ -748,7 +748,7 @@ impl DuressEngine {
     fn write_journal(&self, journal: &DuressJournal) -> std::result::Result<(), DuressError> {
         let json = serde_json::to_vec_pretty(journal)
             .map_err(|e| DuressError::Journal(format!("serialize: {e}")))?;
-        std::fs::write(&self.journal_path, &json)?;
+        crate::recoverable_file::write_recoverable(&self.journal_path, &json)?;
         Ok(())
     }
 

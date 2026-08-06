@@ -124,9 +124,8 @@ pub fn write_control_inbox_dead_letter(
         .map_err(|e| format!("OSL: serialize control_inbox_dead_letter: {e}"))?;
     let out = crate::main_password::maybe_encrypt(&body)
         .map_err(|e| format!("OSL: encrypt control_inbox_dead_letter: {e}"))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &out).map_err(|e| format!("OSL: write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("OSL: rename {}: {e}", path.display()))?;
+    crate::recoverable_file::write_recoverable(path, &out)
+        .map_err(|e| format!("OSL: recoverable write {}: {e}", path.display()))?;
     Ok(())
 }
 

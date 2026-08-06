@@ -154,6 +154,8 @@
     "allow-get-hub-private-contact-link-status",
     "allow-add-hub-private-contact-link",
     "allow-get-hub-username-status",
+    "allow-set-owner-profile-picture",
+    "allow-clear-owner-profile-picture",
     "allow-verify-hub-friend-safety-number",
     "allow-remove-hub-friend",
     "allow-list-hub-people",

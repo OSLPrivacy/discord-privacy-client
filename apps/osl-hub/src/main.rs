@@ -930,6 +930,104 @@ async fn save_osl_profile(
     Ok(saved)
 }
 
+const MAX_OWNER_PROFILE_PICTURE_BYTES: usize = 512 * 1024;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerProfilePictureInput {
+    mime: String,
+    bytes: Vec<u8>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerProfilePictureStatus {
+    saved: bool,
+    owner_osl_user_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnerProfilePictureRecord<'a> {
+    owner_osl_user_id: &'a str,
+    mime: &'a str,
+    bytes: &'a [u8],
+}
+
+fn owner_profile_picture_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|_| "OSL profile-picture storage is unavailable".to_owned())?;
+    Ok(config_dir
+        .join("osl-core")
+        .join("owner_profile_picture.json"))
+}
+
+#[tauri::command]
+async fn set_owner_profile_picture(
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    input: OwnerProfilePictureInput,
+) -> Result<OwnerProfilePictureStatus, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    if input.bytes.is_empty() || input.bytes.len() > MAX_OWNER_PROFILE_PICTURE_BYTES {
+        return Err("OSL profile picture is outside the local size limit".to_owned());
+    }
+    if !matches!(
+        input.mime.as_str(),
+        "image/png" | "image/jpeg" | "image/webp"
+    ) {
+        return Err("OSL profile picture type is unsupported".to_owned());
+    }
+    let path = owner_profile_picture_path(&app)?;
+    let record = OwnerProfilePictureRecord {
+        owner_osl_user_id: &owner,
+        mime: &input.mime,
+        bytes: &input.bytes,
+    };
+    let encoded = serde_json::to_vec(&record)
+        .map_err(|_| "OSL profile picture could not be encoded".to_owned())?;
+    osl_privacy_hub::hub_command_surface::write_safe_local_bytes(
+        &path,
+        &encoded,
+        "OSL owner profile picture",
+    )?;
+    Ok(OwnerProfilePictureStatus {
+        saved: true,
+        owner_osl_user_id: owner,
+    })
+}
+
+#[tauri::command]
+async fn clear_owner_profile_picture(
+    app: tauri::AppHandle,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<OwnerProfilePictureStatus, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let path = owner_profile_picture_path(&app)?;
+    let record = OwnerProfilePictureRecord {
+        owner_osl_user_id: &owner,
+        mime: "",
+        bytes: &[],
+    };
+    let encoded = serde_json::to_vec(&record)
+        .map_err(|_| "OSL profile picture could not be encoded".to_owned())?;
+    osl_privacy_hub::hub_command_surface::write_safe_local_bytes(
+        &path,
+        &encoded,
+        "OSL owner profile picture",
+    )?;
+    Ok(OwnerProfilePictureStatus {
+        saved: false,
+        owner_osl_user_id: owner,
+    })
+}
+
 fn active_unlocked_osl_user_id(core: &HubCoreState) -> Result<String, String> {
     core_bridge::readiness(core)
         .active_osl_user_id

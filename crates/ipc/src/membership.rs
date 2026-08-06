@@ -299,9 +299,7 @@ pub fn write_scope_membership(path: &Path, m: &ScopeMembership) -> std::io::Resu
     let body = serde_json::to_vec_pretty(m).map_err(std::io::Error::other)?;
     let out_bytes =
         crate::main_password::encrypt_at_rest(&body, &key).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &out_bytes)?;
-    std::fs::rename(&tmp, path)?;
+    crate::recoverable_file::write_recoverable(path, &out_bytes)?;
     Ok(())
 }
 

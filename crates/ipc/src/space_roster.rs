@@ -579,14 +579,11 @@ pub fn write_space_roster(
                 source: std::io::Error::other(source),
             }
         })?;
-    let temporary = path.with_extension("json.tmp");
-    std::fs::write(&temporary, encrypted).map_err(|source| SpaceRosterFileError::WriteFailed {
-        path: temporary.display().to_string(),
-        source,
-    })?;
-    std::fs::rename(&temporary, path).map_err(|source| SpaceRosterFileError::WriteFailed {
-        path: path.display().to_string(),
-        source,
+    crate::recoverable_file::write_recoverable(path, &encrypted).map_err(|source| {
+        SpaceRosterFileError::WriteFailed {
+            path: path.display().to_string(),
+            source,
+        }
     })
 }
 

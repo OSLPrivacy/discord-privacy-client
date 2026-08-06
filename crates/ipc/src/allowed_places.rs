@@ -87,9 +87,8 @@ fn write_allowed_places(
     app_data_dir: &Path,
     records: &[AllowedPlaceRecord],
 ) -> Result<(), AllowedPlaceStoreError> {
-    std::fs::create_dir_all(app_data_dir)?;
     let bytes = serde_json::to_vec_pretty(records)?;
-    std::fs::write(allowed_places_path(app_data_dir), bytes)?;
+    crate::recoverable_file::write_recoverable(&allowed_places_path(app_data_dir), &bytes)?;
     Ok(())
 }
 

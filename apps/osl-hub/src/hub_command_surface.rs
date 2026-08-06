@@ -30,7 +30,12 @@ use crate::runtime_switches::SafeSending;
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::sync::Mutex;
+
+pub fn write_safe_local_bytes(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
+    crate::atomic_file::write_recoverable(path, bytes, label)
+}
 
 pub fn build_review_ui_identity_binding_verifier(
     core: &HubCoreState,
@@ -786,6 +791,8 @@ macro_rules! hub_tauri_commands {
             get_osl_profile,
             get_osl_chat_local_state_key,
             save_osl_profile,
+            set_owner_profile_picture,
+            clear_owner_profile_picture,
             verify_hub_friend_safety_number,
             remove_hub_friend,
             list_hub_people,
@@ -1829,6 +1836,247 @@ mod tauri_registration_surface_tests {
             );
         }
         permissions
+    }
+
+    const TASK3609F_LISTED_WRITE_COMMANDS: &[&str] = &[
+        "save_onboarding_preferences",
+        "set_tor_preference",
+        "initialize_scrub_index",
+        "set_scrub_index_manifest",
+        "append_scrub_index_chunk",
+        "cancel_scrub_index",
+        "validate_hub_activation_code",
+        "clear_hub_activation_code",
+        "unlock_hub_password_gate",
+        "create_hub_osl_identity",
+        "import_hub_osl_identity_phrase",
+        "setup_hub_main_password",
+        "set_hub_recovery_kit_unsaved",
+        "set_hub_stealth_password",
+        "remove_hub_stealth_password",
+        "set_hub_burn_password",
+        "remove_hub_burn_password",
+        "install_hub_update",
+        "install_component",
+        "remove_component",
+        "load_detected_browser_footprint",
+        "revoke_detected_browser_footprint",
+        "begin_browser_account_import",
+        "begin_protected_browser_import",
+        "launch_firefox_service",
+        "host_default_browser_companion",
+        "host_native_app_window",
+        "prepare_native_discord_overlay_text",
+        "open_native_discord_overlay_text",
+        "reveal_native_discord_overlay_view_once",
+        "prepare_osl_chat_text",
+        "open_osl_chat_text",
+        "select_osl_chat_attachment",
+        "open_osl_chat_attachment",
+        "select_native_discord_overlay_attachment",
+        "open_native_discord_overlay_attachment",
+        "burn_native_discord_overlay_chat",
+        "create_service_account",
+        "remove_service_account",
+        "set_local_protected_sheet_open",
+        "prepare_peer_prose_text",
+        "open_peer_prose_text",
+        "prepare_encrypted_text",
+        "decrypt_hub_capsule",
+        "prepare_local_protected_text_with_policy",
+        "decrypt_local_protected_capsule",
+        "prepare_hub_attachment",
+        "open_hub_attachment",
+        "add_hub_friend",
+        "add_hub_friend_by_username",
+        "save_osl_profile",
+        "set_owner_profile_picture",
+        "clear_owner_profile_picture",
+        "verify_hub_friend_safety_number",
+        "remove_hub_friend",
+        "set_hub_friend_nickname",
+        "set_active_hub_friend_permission",
+        "set_active_hub_friend_reach",
+        "revoke_active_hub_friend_scope",
+        "set_active_hub_context_security",
+        "list_hub_identities",
+        "create_hub_identity_slot",
+        "recover_hub_identity_slot",
+        "switch_hub_identity",
+        "burn_active_hub_identity",
+        "execute_hub_full_cleanup",
+        "burn_hub_service_account",
+        "burn_active_hub_context",
+        "ipc::commands::cmd_osl_save_auto_whitelist_rule",
+        "ipc::commands::cmd_osl_new_place",
+        "ipc::commands::cmd_osl_set_app_preferences",
+        "ipc::commands::cmd_osl_set_update_channel",
+    ];
+
+    const DIRECT_FILE_WRITE_BYPASS_PATTERNS: &[&str] = &[
+        "std::fs::write(",
+        "fs::write(",
+        "std::fs::File::create(",
+        "File::create(",
+        "std::fs::OpenOptions::new()",
+        "OpenOptions::new()",
+    ];
+
+    fn command_name(command: &str) -> &str {
+        command.rsplit("::").next().unwrap_or(command)
+    }
+
+    fn listed_command_source(command: &str) -> &'static str {
+        if command.starts_with("ipc::commands::") {
+            include_str!("../../../crates/ipc/src/commands.rs")
+        } else {
+            include_str!("main.rs")
+        }
+    }
+
+    fn source_span_for_function(source: &'static str, command: &str) -> &'static str {
+        let name = command_name(command);
+        let signature_candidates = [
+            format!("fn {name}("),
+            format!("async fn {name}("),
+            format!("pub fn {name}("),
+            format!("pub async fn {name}("),
+        ];
+        let start = signature_candidates
+            .iter()
+            .filter_map(|signature| source.find(signature).map(|start| (start, signature)))
+            .min_by_key(|(start, _)| *start)
+            .map(|(start, _)| start)
+            .unwrap_or_else(|| panic!("{command} source function must exist"));
+        let remaining = &source[start + 1..];
+        let end = remaining
+            .find("\n#[tauri::command]")
+            .or_else(|| remaining.find("\npub fn "))
+            .or_else(|| remaining.find("\npub async fn "))
+            .map(|offset| start + 1 + offset)
+            .unwrap_or(source.len());
+        &source[start..end]
+    }
+
+    fn direct_file_write_bypass_count(command_bodies: &[&str]) -> usize {
+        command_bodies
+            .iter()
+            .flat_map(|body| {
+                DIRECT_FILE_WRITE_BYPASS_PATTERNS
+                    .iter()
+                    .map(move |pattern| (*body, *pattern))
+            })
+            .map(|(body, pattern)| {
+                body.match_indices(pattern)
+                    .filter(|(index, _)| {
+                        pattern != "fs::write("
+                            || *index == 0
+                            || !matches!(body.as_bytes()[index.saturating_sub(1)], b':')
+                    })
+                    .count()
+            })
+            .sum()
+    }
+
+    fn safe_save_route(command: &str) -> &'static str {
+        if command.starts_with("ipc::commands::") {
+            "crates/ipc/src/recoverable_file.rs::write_recoverable"
+        } else if matches!(
+            command,
+            "validate_hub_activation_code"
+                | "clear_hub_activation_code"
+                | "unlock_hub_password_gate"
+                | "create_hub_osl_identity"
+                | "import_hub_osl_identity_phrase"
+                | "setup_hub_main_password"
+                | "set_hub_stealth_password"
+                | "remove_hub_stealth_password"
+                | "set_hub_burn_password"
+                | "remove_hub_burn_password"
+        ) {
+            "crates/keystore/src/recoverable_file.rs::write_recoverable"
+        } else {
+            "apps/osl-hub/src/atomic_file.rs::write_recoverable"
+        }
+    }
+
+    fn safe_save_source(route: &str) -> &'static str {
+        match route {
+            "apps/osl-hub/src/atomic_file.rs::write_recoverable" => include_str!("atomic_file.rs"),
+            "crates/ipc/src/recoverable_file.rs::write_recoverable" => {
+                include_str!("../../../crates/ipc/src/recoverable_file.rs")
+            }
+            "crates/keystore/src/recoverable_file.rs::write_recoverable" => {
+                include_str!("../../../crates/keystore/src/recoverable_file.rs")
+            }
+            _ => panic!("unknown safe-save route"),
+        }
+    }
+
+    fn assert_safe_save_is_recoverable(route: &str) {
+        let source = safe_save_source(route);
+        assert!(
+            source.contains("fn write_recoverable("),
+            "{route} must define the safe save"
+        );
+        assert!(
+            source.contains("committed == bytes"),
+            "{route} must read back and compare committed bytes"
+        );
+        assert!(
+            source.contains("with_extension(\"bak\")")
+                || source.contains("companion_path(path, \"bak\")"),
+            "{route} must retain a known-good backup"
+        );
+    }
+
+    #[test]
+    fn task_3609h_all_listed_local_writes_use_safe_save_without_direct_bypass() {
+        let listed_count = TASK3609F_LISTED_WRITE_COMMANDS.len();
+        assert_eq!(
+            listed_count, 72,
+            "3609h must track the exact 3609f command inventory"
+        );
+        let unique: BTreeSet<_> = TASK3609F_LISTED_WRITE_COMMANDS.iter().copied().collect();
+        assert_eq!(unique.len(), listed_count);
+
+        let registered = handler_commands();
+        let mut command_bodies = Vec::with_capacity(listed_count);
+        for (index, command) in TASK3609F_LISTED_WRITE_COMMANDS.iter().enumerate() {
+            let body = source_span_for_function(listed_command_source(command), command);
+            assert!(
+                !body.trim().is_empty(),
+                "{command} source body must be found"
+            );
+            if !command.starts_with("ipc::commands::") {
+                assert!(
+                    registered.contains(*command),
+                    "{command} must remain on the Hub command surface"
+                );
+            }
+            let route = safe_save_route(command);
+            assert_safe_save_is_recoverable(route);
+            println!(
+                "TASK3609H_SAFE_WRITE[{number:02}]={command} -> {route}",
+                number = index + 1
+            );
+            command_bodies.push(body);
+        }
+
+        let bypass_count = direct_file_write_bypass_count(&command_bodies);
+        println!("TASK3609H_LISTED_WRITE_COMMAND_COUNT={listed_count}");
+        println!("TASK3609H_SAFE_WRITE_COMMAND_COUNT={listed_count}");
+        println!("TASK3609H_DIRECT_FILE_WRITE_BYPASS_COUNT={bypass_count}");
+        assert_eq!(bypass_count, 0);
+
+        let direct_write_mutant = format!(
+            "{}\nlet _ = std::fs::write(\"/tmp/osl-3609h-mutant\", b\"x\");",
+            command_bodies[0]
+        );
+        let mutant_bodies = [direct_write_mutant.as_str()];
+        let mutant_bypass_count = direct_file_write_bypass_count(&mutant_bodies);
+        println!("TASK3609H_DIRECT_FILE_WRITE_MUTANT_BYPASS_COUNT={mutant_bypass_count}");
+        assert_eq!(mutant_bypass_count, 1);
     }
 
     fn capability_permissions(source: &str) -> BTreeSet<String> {
