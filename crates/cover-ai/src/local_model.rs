@@ -60,7 +60,7 @@ impl LlamaCppLocalCoverModel {
         })
     }
 
-    fn prompt(input: ModelInput<'_>) -> Zeroizing<String> {
+    fn prompt(input: &ModelInput<'_>) -> Zeroizing<String> {
         let mut prompt = String::new();
         for entry in input.context() {
             if !prompt.is_empty() {
@@ -84,7 +84,7 @@ impl LocalCoverModel for LlamaCppLocalCoverModel {
     ) -> Result<Zeroizing<String>, ModelError> {
         check_control(&control)?;
 
-        let mut prompt = Self::prompt(input);
+        let mut prompt = Self::prompt(&input);
         let tokens = self
             .model
             .str_to_token(&prompt, AddBos::Always)
