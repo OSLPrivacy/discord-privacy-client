@@ -274,6 +274,12 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_get_app_preferences", || {
             let _ = cmd_osl_get_app_preferences(&state);
         });
+        assert_command_marks_activity("cmd_osl_get_follow_active_app_choice", || {
+            let _ = cmd_osl_get_follow_active_app_choice(&state);
+        });
+        assert_command_marks_activity("cmd_osl_set_follow_active_app_choice", || {
+            let _ = cmd_osl_set_follow_active_app_choice(&state, "on", None);
+        });
         assert_command_marks_activity("cmd_osl_get_self_user_id", || {
             let _ = cmd_osl_get_self_user_id(&state);
         });
@@ -15991,6 +15997,132 @@ pub fn cmd_osl_set_update_channel(
         crate::app_preferences::write_app_preferences(&path, &g)?;
     }
     Ok(())
+}
+
+// ---- Task 3148: follow whichever app is in front ----
+
+pub fn cmd_osl_get_follow_active_app_choice(state: &AppState) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let g = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(g.follow_active_app_choice.as_str().to_owned())
+}
+
+pub fn cmd_osl_set_follow_active_app_choice(
+    state: &AppState,
+    value: &str,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::FollowActiveAppChoice::parse(value)?;
+    let previous = {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        let previous = g.clone();
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.follow_active_app_choice = choice;
+        previous
+    };
+
+    if let Err(error) = persist_app_preferences_result(state, config_dir) {
+        *state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned") = previous;
+        return Err(error);
+    }
+
+    Ok(choice.as_str().to_owned())
+}
+
+fn persist_app_preferences_result(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    let dir = match config_dir {
+        Some(dir) => dir,
+        None => keystore::osl_base_dir()
+            .map_err(|_| "OSL preferences storage is unavailable".to_owned())?,
+    };
+    let g = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .clone();
+    let path = dir.join("app_preferences.json");
+    crate::app_preferences::write_app_preferences(&path, &g)
+}
+
+#[cfg(test)]
+mod task3148_follow_active_app_choice_tests {
+    use super::*;
+
+    struct FileStorageKeyGuard;
+
+    impl Drop for FileStorageKeyGuard {
+        fn drop(&mut self) {
+            crate::main_password::set_file_storage_key(None);
+        }
+    }
+
+    #[test]
+    fn task3148_direct_command_saves_reads_off_and_refuses_bad_follow_active_app_choice() {
+        let _serial = crate::test_process_globals::serialize();
+        let _key_guard = FileStorageKeyGuard;
+        crate::main_password::set_file_storage_key(Some([0x31; 32]));
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let state = AppState::new();
+
+        let saved_on = cmd_osl_set_follow_active_app_choice(
+            &state,
+            "on",
+            Some(dir.path().to_path_buf()),
+        )
+        .expect("save on");
+        let read_on = cmd_osl_get_follow_active_app_choice(&state).expect("read on");
+        let persisted_on =
+            crate::app_preferences::load_app_preferences(&dir.path().join("app_preferences.json"))
+                .follow_active_app_choice
+                .as_str()
+                .to_owned();
+        let saved_off = cmd_osl_set_follow_active_app_choice(
+            &state,
+            "off",
+            Some(dir.path().to_path_buf()),
+        )
+        .expect("save off");
+        let bad_value_error = cmd_osl_set_follow_active_app_choice(
+            &state,
+            "maybe",
+            Some(dir.path().to_path_buf()),
+        )
+        .expect_err("bad value refused");
+        let after_bad = cmd_osl_get_follow_active_app_choice(&state).expect("read after bad");
+
+        println!(
+            "TASK3148 follow_active_app_choice direct_command=set_follow_active_app_choice save_on={} read_returns={} persisted_on={} save_off_returns={} bad_value_refused={} after_bad_value={}",
+            saved_on,
+            read_on,
+            persisted_on,
+            saved_off,
+            bad_value_error,
+            after_bad
+        );
+
+        assert_eq!(saved_on, "on");
+        assert_eq!(read_on, "on");
+        assert_eq!(persisted_on, "on");
+        assert_eq!(saved_off, "off");
+        assert_eq!(
+            bad_value_error,
+            "follow_active_app_choice must be \"on\" or \"off\""
+        );
+        assert_eq!(after_bad, "off");
+    }
 }
 
 // ---- Phase 9-D: onboarding tour + VPN warning ----

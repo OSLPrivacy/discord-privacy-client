@@ -20,6 +20,10 @@
 //!
 //! 0713 added `rn_wire_policy_requested`, the saved next-generation
 //! protected-message policy choice. Missing legacy files load as false.
+//!
+//! 3148 added `follow_active_app_choice`, the explicit on/off choice for
+//! whether the OSL window follows whichever app is in front. Missing legacy
+//! files load as off.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -77,6 +81,32 @@ impl UpdateChannel {
     }
 }
 
+/// Whether the OSL window should follow whichever app currently has focus.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FollowActiveAppChoice {
+    #[default]
+    Off,
+    On,
+}
+
+impl FollowActiveAppChoice {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "on" => Ok(Self::On),
+            "off" => Ok(Self::Off),
+            _ => Err("follow_active_app_choice must be \"on\" or \"off\"".to_owned()),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -89,6 +119,8 @@ pub struct AppPreferences {
     pub update_channel: UpdateChannel,
     #[serde(default)]
     pub rn_wire_policy_requested: bool,
+    #[serde(default)]
+    pub follow_active_app_choice: FollowActiveAppChoice,
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 2;

@@ -663,6 +663,19 @@ fn set_tor_preference(
 }
 
 #[tauri::command]
+fn get_follow_active_app_choice(core: State<'_, HubCoreState>) -> Result<String, String> {
+    ipc::commands::cmd_osl_get_follow_active_app_choice(&core.osl)
+}
+
+#[tauri::command]
+fn set_follow_active_app_choice(
+    core: State<'_, HubCoreState>,
+    value: String,
+) -> Result<String, String> {
+    ipc::commands::cmd_osl_set_follow_active_app_choice(&core.osl, &value, None)
+}
+
+#[tauri::command]
 async fn scan_local_privacy(
     messages: Vec<LocalMessageCandidate>,
 ) -> Result<LocalPrivacyScanResult, String> {

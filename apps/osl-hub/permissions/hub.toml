@@ -204,6 +204,16 @@ description = "Persist the explicit OSL network route before encrypted text can 
 commands.allow = ["set_tor_preference"]
 
 [[permission]]
+identifier = "allow-get-follow-active-app-choice"
+description = "Read the local on/off choice for whether the trusted OSL window follows whichever app is in front."
+commands.allow = ["get_follow_active_app_choice"]
+
+[[permission]]
+identifier = "allow-set-follow-active-app-choice"
+description = "Persist only the explicit on/off choice for whether the trusted OSL window follows whichever app is in front."
+commands.allow = ["set_follow_active_app_choice"]
+
+[[permission]]
 identifier = "allow-set-osl-chat-capture-preference"
 description = "Allow only the trusted main OSL window to set one verified peer's local OSL Chat capture-protection opt-in; the handler resolves the person through an existing manual peer binding and reports the enforced effective state rather than the requested one."
 commands.allow = ["set_osl_chat_capture_preference"]

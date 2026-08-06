@@ -31,6 +31,8 @@
     "allow-copy-hub-friend-invite",
     "allow-save-onboarding-preferences",
     "allow-set-tor-preference",
+    "allow-get-follow-active-app-choice",
+    "allow-set-follow-active-app-choice",
     "allow-set-osl-chat-capture-preference",
     "allow-scan-local-privacy",
     "allow-initialize-scrub-index",

@@ -523,6 +523,8 @@ macro_rules! hub_tauri_commands {
             set_hub_screenshot_protection,
             save_onboarding_preferences,
             set_tor_preference,
+            get_follow_active_app_choice,
+            set_follow_active_app_choice,
             scan_local_privacy,
             open_hosted_session_scan,
             request_hosted_session_scan,
@@ -1707,6 +1709,20 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["create_hub_named_server", "list_hub_named_servers"],
+        );
+    }
+
+    #[test]
+    fn follow_active_app_choice_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "get_follow_active_app_choice",
+                "set_follow_active_app_choice",
+            ],
         );
     }
 
