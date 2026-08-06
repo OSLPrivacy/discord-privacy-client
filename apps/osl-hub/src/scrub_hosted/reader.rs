@@ -21,6 +21,7 @@ pub struct SharedReaderOptions {
 pub enum SharedReaderStopReason {
     EndOfPlace,
     PageLimitReached,
+    StopRequested,
 }
 
 impl SharedReaderStopReason {
@@ -28,6 +29,7 @@ impl SharedReaderStopReason {
         match self {
             Self::EndOfPlace => "EndOfPlace",
             Self::PageLimitReached => "PageLimitReached",
+            Self::StopRequested => "StopRequested",
         }
     }
 }
@@ -87,6 +89,12 @@ pub struct SharedReaderRun {
     pub page_log: Vec<SharedReaderPageLog>,
     pub total_run_ms: u64,
     pub max_parallel_actions: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedReaderProgress {
+    pub page: usize,
+    pub messages_read: usize,
 }
 
 /// The single pacing rule used by shared hosted reads.
@@ -151,6 +159,24 @@ pub fn read_shared_conversation_messages_one_page_at_a_time<S>(
 where
     S: SharedReaderSource,
 {
+    read_shared_conversation_messages_one_page_at_a_time_with_gate_and_pace(
+        source,
+        options,
+        pace,
+        |_| false,
+    )
+}
+
+pub fn read_shared_conversation_messages_one_page_at_a_time_with_gate_and_pace<S, Stop>(
+    source: &mut S,
+    options: SharedReaderOptions,
+    pace: &mut PolitePace,
+    mut stop_requested: Stop,
+) -> SharedReaderRun
+where
+    S: SharedReaderSource,
+    Stop: FnMut(SharedReaderProgress) -> bool,
+{
     let mut messages = Vec::new();
     let mut action_log = Vec::new();
     let mut page_log = Vec::new();
@@ -182,6 +208,14 @@ where
             new_messages_read: messages.len() - before,
             cumulative_messages_read: messages.len(),
         });
+
+        if stop_requested(SharedReaderProgress {
+            page,
+            messages_read: messages.len(),
+        }) {
+            stop_reason = SharedReaderStopReason::StopRequested;
+            break;
+        }
 
         if pages_read >= options.max_pages {
             stop_reason = SharedReaderStopReason::PageLimitReached;
