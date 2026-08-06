@@ -5995,6 +5995,174 @@ mod tests {
         );
     }
 
+    fn task_0266_email_accounts(
+        registry: &crate::services::ServiceRegistryState,
+        owner: &str,
+    ) -> Vec<crate::models::LinkedAccountDemo> {
+        registry
+            .list_for_owner(owner)
+            .unwrap()
+            .into_iter()
+            .find(|service| service.id == crate::models::ServiceKind::Email)
+            .unwrap()
+            .accounts
+    }
+
+    fn task_0266_reach_count(dir: &Path) -> usize {
+        load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE))
+            .unwrap()
+            .manual_approved_scope_people
+            .len()
+    }
+
+    fn task_0266_account_fingerprint(account: &crate::models::LinkedAccountDemo) -> String {
+        let mut hash = Sha256::new();
+        hash.update(b"TASK0266/account/v1");
+        hash.update(account.id.as_bytes());
+        hash.update(b"\0");
+        hash.update(account.label.as_bytes());
+        hash.update(b"\0");
+        hash.update(format!("{:?}", account.provider).as_bytes());
+        let digest: [u8; 32] = hash.finalize().into();
+        lower_hex(&digest)
+    }
+
+    fn task_0266_reach_fingerprint(
+        dir: &Path,
+        service_id: &str,
+        account_id: &str,
+        person_id: &str,
+    ) -> String {
+        let storage_key = manual_peer_scope_storage_key(service_id, account_id, person_id).unwrap();
+        let prefs =
+            load_encrypted_json::<SecurityPreferences>(&dir.join(SECURITY_PREFS_FILE)).unwrap();
+        let approved = prefs.manual_approved_scopes.contains(&storage_key);
+        let attributed = prefs
+            .manual_approved_scope_people
+            .get(&storage_key)
+            .map(String::as_str)
+            .unwrap_or("");
+        let mut hash = Sha256::new();
+        hash.update(b"TASK0266/reach/v1");
+        hash.update(storage_key.as_bytes());
+        hash.update(b"\0");
+        hash.update(if approved {
+            b"approved".as_slice()
+        } else {
+            b"not-approved".as_slice()
+        });
+        hash.update(b"\0");
+        hash.update(attributed.as_bytes());
+        let digest: [u8; 32] = hash.finalize().into();
+        lower_hex(&digest)
+    }
+
+    #[test]
+    fn task_0266_failed_account_add_does_not_break_auto_whitelist() {
+        let harness = FileBackedSecurityHarness::new("task-0266-account-auto-whitelist");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        let (person_id, mut metadata, peer) = test_friend(0x26);
+        metadata.auto_whitelist_future_accounts = true;
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+
+        let registry =
+            crate::services::ServiceRegistryState::load(harness.path().join("services.json"));
+        let owner = "owner-0266";
+        let ash = registry
+            .create_for_owner(
+                owner,
+                crate::models::ServiceKind::Email,
+                "ASH-0266".to_owned(),
+            )
+            .expect("task fixture adds the seed account");
+        let ash_readable = task_0266_email_accounts(&registry, owner)
+            .into_iter()
+            .find(|account| account.id == ash.id)
+            .map(|account| account.label)
+            .unwrap_or_default();
+        let account_count_before = task_0266_email_accounts(&registry, owner).len();
+        let reach_count_before = task_0266_reach_count(harness.path());
+        println!("TASK0266 seed_account.readable={ash_readable}");
+        println!("TASK0266 switch.future_account_auto_whitelist=on");
+        println!("TASK0266 account_count.before={account_count_before}");
+        println!("TASK0266 reach_count.before={reach_count_before}");
+        assert_eq!(ash_readable, "ASH-0266");
+        assert_eq!(account_count_before, 1);
+        assert_eq!(reach_count_before, 0);
+
+        let elm = registry
+            .create_for_owner(
+                owner,
+                crate::models::ServiceKind::Email,
+                "ELM-0266".to_owned(),
+            )
+            .expect("task fixture adds the good account");
+        let applied =
+            apply_future_account_auto_whitelist(&core, &security, "email", &elm.id).unwrap();
+        let elm_readable = task_0266_email_accounts(&registry, owner)
+            .into_iter()
+            .find(|account| account.id == elm.id)
+            .expect("ELM-0266 account exists");
+        let account_count_after_good = task_0266_email_accounts(&registry, owner).len();
+        let reach_count_after_good = task_0266_reach_count(harness.path());
+        let elm_fingerprint_before_bad = task_0266_account_fingerprint(&elm_readable);
+        let reach_fingerprint_before_bad =
+            task_0266_reach_fingerprint(harness.path(), "email", &elm.id, &person_id);
+        println!("TASK0266 good_add.name={}", elm_readable.label);
+        println!("TASK0266 good_add.auto_reach_added={}", applied.len());
+        println!("TASK0266 account_count.after_good={account_count_after_good}");
+        println!("TASK0266 reach_count.after_good={reach_count_after_good}");
+        println!("TASK0266 elm_account.fingerprint.before_bad={elm_fingerprint_before_bad}");
+        println!("TASK0266 elm_friend_reach.fingerprint.before_bad={reach_fingerprint_before_bad}");
+        assert_eq!(elm_readable.label, "ELM-0266");
+        assert_eq!(reach_count_after_good, 1, "ELM-0266 friend-reach missing");
+        assert_eq!(applied, vec![person_id.clone()]);
+        assert_eq!(account_count_after_good, 2);
+
+        let bad_account_id = "invalid account";
+        let bad_error =
+            apply_future_account_auto_whitelist(&core, &security, "email", bad_account_id)
+                .expect_err("invalid account is refused");
+        let account_count_after_bad = task_0266_email_accounts(&registry, owner).len();
+        let reach_count_after_bad = task_0266_reach_count(harness.path());
+        let elm_after_bad = task_0266_email_accounts(&registry, owner)
+            .into_iter()
+            .find(|account| account.id == elm.id)
+            .expect("ELM-0266 survives invalid account retry");
+        let elm_fingerprint_after_bad = task_0266_account_fingerprint(&elm_after_bad);
+        let reach_fingerprint_after_bad =
+            task_0266_reach_fingerprint(harness.path(), "email", &elm.id, &person_id);
+        println!("TASK0266 bad_add.changed_field=account");
+        println!("TASK0266 bad_add.account_value={bad_account_id}");
+        println!("TASK0266 bad_add.error={bad_error}");
+        println!("TASK0266 account_count.after_bad={account_count_after_bad}");
+        println!("TASK0266 reach_count.after_bad={reach_count_after_bad}");
+        println!("TASK0266 elm_account.fingerprint.after_bad={elm_fingerprint_after_bad}");
+        println!("TASK0266 elm_friend_reach.fingerprint.after_bad={reach_fingerprint_after_bad}");
+        println!(
+            "TASK0266 elm_account.fingerprint_kept={}",
+            elm_fingerprint_after_bad == elm_fingerprint_before_bad
+        );
+        println!(
+            "TASK0266 elm_friend_reach.fingerprint_kept={}",
+            reach_fingerprint_after_bad == reach_fingerprint_before_bad
+        );
+        assert_eq!(bad_error, "invalid opaque identifier");
+        assert_eq!(account_count_after_bad, 2);
+        assert_eq!(reach_count_after_bad, 1);
+        assert_eq!(elm_after_bad.label, "ELM-0266");
+        assert_eq!(elm_fingerprint_after_bad, elm_fingerprint_before_bad);
+        assert_eq!(reach_fingerprint_after_bad, reach_fingerprint_before_bad);
+    }
+
     fn task0258_accounts() -> Vec<HubFriendDirectAccountDto> {
         vec![
             HubFriendDirectAccountDto {
