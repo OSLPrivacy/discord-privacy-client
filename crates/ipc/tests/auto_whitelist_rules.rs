@@ -1,6 +1,7 @@
 use ipc::commands::{
     cmd_osl_get_auto_whitelist_rule_choices, cmd_osl_get_discord_whitelist_kinds,
-    cmd_osl_read_auto_whitelist_rule, cmd_osl_save_auto_whitelist_rule,
+    cmd_osl_get_telegram_whitelist_kinds, cmd_osl_read_auto_whitelist_rule,
+    cmd_osl_save_auto_whitelist_rule,
 };
 use ipc::state::AppState;
 
@@ -222,4 +223,107 @@ fn two_messenger_kind_rule_lookups_return_independently_saved_choices() {
         Some(("messenger", "group_chat"))
     );
     assert_ne!(lookups[0].choice, lookups[1].choice);
+}
+
+#[test]
+fn task3740_telegram_kind_list_has_exactly_six_and_all_resolve_allowed_place() {
+    let state = AppState::new();
+    let kinds = cmd_osl_get_telegram_whitelist_kinds().unwrap();
+    let ids: Vec<String> = kinds.iter().map(|kind| kind.id.clone()).collect();
+    let names: Vec<String> = kinds.iter().map(|kind| kind.name.clone()).collect();
+
+    println!("telegram whitelist kind count={}", kinds.len());
+    println!("telegram whitelist kinds={}", ids.join(","));
+    println!("telegram whitelist kind names={}", names.join(","));
+
+    assert_eq!(kinds.len(), 6);
+    assert_eq!(
+        ids,
+        vec![
+            "direct_message",
+            "group_chat",
+            "channel",
+            "public_post",
+            "supergroup",
+            "saved_messages"
+        ]
+    );
+
+    let lookups: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            cmd_osl_read_auto_whitelist_rule(&state, format!("telegram:{id}"))
+                .expect("telegram kind should normalize")
+        })
+        .collect();
+    let allowed: Vec<String> = lookups
+        .iter()
+        .map(|rule| {
+            let place = rule
+                .allowed_place
+                .as_ref()
+                .expect("Telegram kind rule carries allowed-place record");
+            format!("{}:{}", place.app, place.kind)
+        })
+        .collect();
+
+    println!("telegram allowed-place count={}", allowed.len());
+    println!("telegram allowed-place answers={}", allowed.join(","));
+
+    assert_eq!(allowed.len(), 6);
+    assert_eq!(
+        allowed,
+        vec![
+            "telegram:direct_message",
+            "telegram:group_chat",
+            "telegram:channel",
+            "telegram:public_post",
+            "telegram:supergroup",
+            "telegram:saved_messages"
+        ]
+    );
+}
+
+#[test]
+fn task3740_1027_and_1028_are_allowed_and_story_is_refused_by_name() {
+    let state = AppState::new();
+    let task1027 = cmd_osl_read_auto_whitelist_rule(&state, "telegram:supergroup".to_string())
+        .expect("task 1027 supergroup should be allowed");
+    let task1028 = cmd_osl_read_auto_whitelist_rule(&state, "telegram:saved_messages".to_string())
+        .expect("task 1028 saved messages should be allowed");
+    let story = cmd_osl_read_auto_whitelist_rule(&state, "telegram:story".to_string()).unwrap_err();
+
+    println!(
+        "task1027 against telegram kind list={}",
+        task1027
+            .allowed_place
+            .as_ref()
+            .map(|place| format!("allowed:{}:{}", place.app, place.kind))
+            .unwrap_or_else(|| "refusal".to_string())
+    );
+    println!(
+        "task1028 against telegram kind list={}",
+        task1028
+            .allowed_place
+            .as_ref()
+            .map(|place| format!("allowed:{}:{}", place.app, place.kind))
+            .unwrap_or_else(|| "refusal".to_string())
+    );
+    println!("story against telegram kind list=refusal error={story}");
+
+    assert_eq!(
+        task1027
+            .allowed_place
+            .as_ref()
+            .map(|place| (place.app.as_str(), place.kind.as_str())),
+        Some(("telegram", "supergroup"))
+    );
+    assert_eq!(
+        task1028
+            .allowed_place
+            .as_ref()
+            .map(|place| (place.app.as_str(), place.kind.as_str())),
+        Some(("telegram", "saved_messages"))
+    );
+    assert!(story.contains("story"), "{story}");
 }

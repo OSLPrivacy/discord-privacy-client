@@ -15854,6 +15854,12 @@ pub struct DiscordWhitelistKindDto {
     pub name: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct TelegramWhitelistKindDto {
+    pub id: String,
+    pub name: String,
+}
+
 pub fn cmd_osl_get_auto_whitelist_rule_choices() -> Result<Vec<AutoWhitelistRuleChoiceDto>, String>
 {
     record_activity_on_command_entry();
@@ -15871,6 +15877,17 @@ pub fn cmd_osl_get_discord_whitelist_kinds() -> Result<Vec<DiscordWhitelistKindD
     Ok(crate::auto_whitelist_rules::DiscordWhitelistKind::ALL
         .into_iter()
         .map(|kind| DiscordWhitelistKindDto {
+            id: kind.id().to_string(),
+            name: kind.name().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_get_telegram_whitelist_kinds() -> Result<Vec<TelegramWhitelistKindDto>, String> {
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::TelegramWhitelistKind::ALL
+        .into_iter()
+        .map(|kind| TelegramWhitelistKindDto {
             id: kind.id().to_string(),
             name: kind.name().to_string(),
         })
@@ -15960,9 +15977,17 @@ fn auto_whitelist_allowed_place(app_kind: &str) -> Option<AutoWhitelistAllowedPl
             kind: kind.to_string(),
         });
     }
-    crate::auto_whitelist_rules::messenger_allowed_place_kind_for_rule_key(app_kind).map(|kind| {
-        AutoWhitelistAllowedPlaceDto {
+    if let Some(kind) =
+        crate::auto_whitelist_rules::messenger_allowed_place_kind_for_rule_key(app_kind)
+    {
+        return Some(AutoWhitelistAllowedPlaceDto {
             app: "messenger".to_string(),
+            kind: kind.to_string(),
+        });
+    }
+    crate::auto_whitelist_rules::telegram_allowed_place_kind_for_rule_key(app_kind).map(|kind| {
+        AutoWhitelistAllowedPlaceDto {
+            app: "telegram".to_string(),
             kind: kind.to_string(),
         }
     })
