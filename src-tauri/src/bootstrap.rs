@@ -314,14 +314,17 @@ fn run_autostart_mode(state: &AppState, register_online: bool) {
     // serde's unknown-field tolerance.
     let prefs_path = base.join("app_preferences.json");
     let prefs = ipc::app_preferences::load_app_preferences(&prefs_path);
+    let next_generation_message_policy = prefs.next_generation_message_policy;
     tracing::info!(
         mode = ?prefs.stego_mode,
+        next_generation_messages = next_generation_message_policy.label(),
         "OSL bootstrap: app_preferences loaded"
     );
     *state
         .app_preferences
         .lock()
         .expect("app_preferences mutex poisoned") = prefs;
+    state.set_rn_wire_in_enabled(next_generation_message_policy.rn_wire_in_enabled());
 
     // F2.4: sync cache-only classify of the license state. Stamps
     // AppState.license_state so the very first `osl_get_license_state`

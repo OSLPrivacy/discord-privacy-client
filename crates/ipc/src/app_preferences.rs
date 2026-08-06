@@ -75,6 +75,42 @@ impl UpdateChannel {
     }
 }
 
+/// Saved user request for the next-generation protected-message wire path.
+/// Default is off so a missing or legacy preferences file cannot silently
+/// enable the newer message format.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NextGenerationMessagePolicy {
+    On,
+    #[default]
+    Off,
+}
+
+impl NextGenerationMessagePolicy {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+
+    pub fn rn_wire_in_enabled(self) -> bool {
+        matches!(self, Self::On)
+    }
+}
+
+pub fn parse_next_generation_message_policy(
+    input: &str,
+) -> Result<NextGenerationMessagePolicy, String> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "on" => Ok(NextGenerationMessagePolicy::On),
+        "off" => Ok(NextGenerationMessagePolicy::Off),
+        _ => Err(format!(
+            "OSL: unknown next-generation message policy '{input}'"
+        )),
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -87,6 +123,8 @@ pub struct AppPreferences {
     pub update_channel: UpdateChannel,
     #[serde(default)]
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
+    #[serde(default)]
+    pub next_generation_message_policy: NextGenerationMessagePolicy,
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 2;

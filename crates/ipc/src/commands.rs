@@ -15922,6 +15922,50 @@ pub fn cmd_osl_new_place(
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NextGenerationMessagePolicyDto {
+    pub choice: String,
+}
+
+pub fn cmd_osl_save_next_generation_message_policy(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<NextGenerationMessagePolicyDto, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::parse_next_generation_message_policy(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.next_generation_message_policy = choice;
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    state.set_rn_wire_in_enabled(choice.rn_wire_in_enabled());
+    Ok(NextGenerationMessagePolicyDto {
+        choice: choice.label().to_string(),
+    })
+}
+
+pub fn cmd_osl_read_next_generation_message_policy(
+    state: &AppState,
+) -> Result<NextGenerationMessagePolicyDto, String> {
+    record_activity_on_command_entry();
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .next_generation_message_policy;
+    Ok(NextGenerationMessagePolicyDto {
+        choice: choice.label().to_string(),
+    })
+}
+
 fn validate_new_place_record(
     place: &crate::allowed_places::AllowedPlaceRecord,
 ) -> Result<(), String> {
