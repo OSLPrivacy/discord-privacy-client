@@ -142,6 +142,8 @@ pub struct ServiceMessageSnapshot {
     pub message_id: String,
     pub author_id: String,
     pub text: String,
+    pub date: String,
+    pub time: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -168,6 +170,17 @@ pub struct ServiceAccountFindingRuleRunReceipt {
     pub account_id: String,
     pub selected_rule_names: Vec<String>,
     pub selected_rule_count: usize,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceMessagePossibleMatch {
+    pub message_text: String,
+    pub reason: String,
+    pub service: String,
+    pub place: String,
+    pub date: String,
+    pub time: String,
 }
 
 pub trait AccountServiceMessageConnection {
@@ -306,6 +319,29 @@ pub fn start_runner_for_approved_account_service_connection(
     })
 }
 
+pub fn find_possible_matches_in_read_messages(
+    batch: &ServiceMessageReadBatch,
+    selected_rule_names: &[String],
+) -> Result<Vec<ServiceMessagePossibleMatch>, String> {
+    let selected_rule_names = validated_selected_finding_rule_names(selected_rule_names)?;
+    let mut matches = Vec::new();
+    for message in &batch.messages {
+        validate_service_message_snapshot(message)?;
+        let Some(reason) = possible_match_reason(&message.text, &selected_rule_names) else {
+            continue;
+        };
+        matches.push(ServiceMessagePossibleMatch {
+            message_text: message.text.clone(),
+            reason: reason.to_owned(),
+            service: service_descriptor(batch.service_id).display_name.to_owned(),
+            place: format!("{}:{}", message.place_type.as_str(), message.place_id),
+            date: message.date.clone(),
+            time: message.time.clone(),
+        });
+    }
+    Ok(matches)
+}
+
 fn build_paced_action_run_log(account_id: &str) -> Result<ServiceAccountActionRunLog, String> {
     if !valid_account_id(account_id) {
         return Err("service account id is invalid".to_owned());
@@ -411,7 +447,31 @@ fn validate_service_message_snapshot(message: &ServiceMessageSnapshot) -> Result
     {
         return Err("service message text is invalid".to_owned());
     }
+    validate_service_message_date(&message.date)?;
+    validate_service_message_time(&message.time)?;
     Ok(())
+}
+
+fn possible_match_reason(text: &str, selected_rule_names: &[String]) -> Option<&'static str> {
+    selected_rule_names.iter().find_map(|rule_name| {
+        let lower = text.to_ascii_lowercase();
+        match rule_name.as_str() {
+            "credential" if contains_service_secret_assignment(&lower) => {
+                Some("This looks like a password, API key, or access credential.")
+            }
+            "payment_card"
+                if service_digit_runs(text)
+                    .iter()
+                    .any(|digits| service_luhn_valid(digits)) =>
+            {
+                Some("This contains a number shaped like a payment card.")
+            }
+            "precise_location" if contains_service_precise_location(&lower, text) => {
+                Some("This may reveal a precise home or meeting location.")
+            }
+            _ => None,
+        }
+    })
 }
 
 fn validated_selected_finding_rule_names(rule_names: &[String]) -> Result<Vec<String>, String> {
@@ -449,6 +509,110 @@ fn validate_service_message_id(label: &str, value: &str) -> Result<(), String> {
         return Err(format!("{label} is invalid"));
     }
     Ok(())
+}
+
+fn validate_service_message_date(value: &str) -> Result<(), String> {
+    let bytes = value.as_bytes();
+    if bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+    {
+        Ok(())
+    } else {
+        Err("service message date is invalid".to_owned())
+    }
+}
+
+fn validate_service_message_time(value: &str) -> Result<(), String> {
+    let bytes = value.as_bytes();
+    if bytes.len() == 5
+        && bytes[2] == b':'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 2 || byte.is_ascii_digit())
+        && value[0..2].parse::<u8>().is_ok_and(|hour| hour < 24)
+        && value[3..5].parse::<u8>().is_ok_and(|minute| minute < 60)
+    {
+        Ok(())
+    } else {
+        Err("service message time is invalid".to_owned())
+    }
+}
+
+fn contains_service_secret_assignment(lower: &str) -> bool {
+    [
+        "password", "passwd", "api key", "api_key", "secret", "token",
+    ]
+    .iter()
+    .any(|label| {
+        lower.find(label).is_some_and(|index| {
+            let tail = &lower[index + label.len()..];
+            let tail = tail.trim_start();
+            tail.starts_with(':') || tail.starts_with('=') || tail.starts_with(" is ")
+        })
+    }) || ["ghp_", "xoxb-", "sk_live_", "rk_live_", "akia"]
+        .iter()
+        .any(|prefix| lower.contains(prefix))
+}
+
+fn contains_service_precise_location(lower: &str, text: &str) -> bool {
+    [
+        "my address is",
+        "home address is",
+        "meet me at",
+        "i live at",
+    ]
+    .iter()
+    .any(|term| lower.contains(term))
+        && text.chars().any(|character| character.is_ascii_digit())
+}
+
+fn service_digit_runs(text: &str) -> Vec<Vec<u8>> {
+    let mut runs = Vec::new();
+    let mut run = Vec::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_digit() {
+            run.push(byte - b'0');
+        } else if matches!(byte, b' ' | b'-') && !run.is_empty() {
+            continue;
+        } else {
+            if (13..=19).contains(&run.len()) {
+                runs.push(std::mem::take(&mut run));
+            }
+            run.clear();
+        }
+    }
+    if (13..=19).contains(&run.len()) {
+        runs.push(run);
+    }
+    runs
+}
+
+fn service_luhn_valid(digits: &[u8]) -> bool {
+    if !(13..=19).contains(&digits.len()) || digits.iter().all(|digit| *digit == digits[0]) {
+        return false;
+    }
+    let parity = digits.len() % 2;
+    let sum: u32 = digits
+        .iter()
+        .enumerate()
+        .map(|(index, digit)| {
+            let mut value = u32::from(*digit);
+            if index % 2 == parity {
+                value *= 2;
+                if value > 9 {
+                    value -= 9;
+                }
+            }
+            value
+        })
+        .sum();
+    sum % 10 == 0
 }
 
 impl ServiceRegistryState {
@@ -1556,6 +1720,8 @@ mod tests {
                 message_id: format!("fixture-{}-message", place.place_type.as_str()),
                 author_id: "fixture-author".to_owned(),
                 text: format!("real {} message", place.place_type.as_str()),
+                date: "2026-08-06".to_owned(),
+                time: "09:00".to_owned(),
             }])
         }
     }
@@ -1619,6 +1785,56 @@ mod tests {
             .map(String::as_str)
             .collect::<Vec<_>>()
             .join(",")
+    }
+
+    struct PasswordFixtureServiceConnection {
+        service_id: ServiceKind,
+        account_id: String,
+    }
+
+    impl PasswordFixtureServiceConnection {
+        fn new(service_id: ServiceKind, account_id: String) -> Self {
+            Self {
+                service_id,
+                account_id,
+            }
+        }
+    }
+
+    impl AccountServiceMessageConnection for PasswordFixtureServiceConnection {
+        fn service_id(&self) -> ServiceKind {
+            self.service_id
+        }
+
+        fn account_id(&self) -> &str {
+            &self.account_id
+        }
+
+        fn read_messages(
+            &self,
+            place: &ServiceMessagePlace,
+        ) -> Result<Vec<ServiceMessageSnapshot>, String> {
+            Ok(vec![
+                ServiceMessageSnapshot {
+                    place_type: place.place_type,
+                    place_id: place.place_id.clone(),
+                    message_id: "task-1425-password-message".to_owned(),
+                    author_id: "fixture-author".to_owned(),
+                    text: "password: correct horse battery staple".to_owned(),
+                    date: "2026-08-06".to_owned(),
+                    time: "09:30".to_owned(),
+                },
+                ServiceMessageSnapshot {
+                    place_type: place.place_type,
+                    place_id: place.place_id.clone(),
+                    message_id: "task-1425-ordinary-message".to_owned(),
+                    author_id: "fixture-author".to_owned(),
+                    text: "Want to get coffee tomorrow?".to_owned(),
+                    date: "2026-08-06".to_owned(),
+                    time: "09:31".to_owned(),
+                },
+            ])
+        }
     }
 
     #[test]
@@ -1795,6 +2011,70 @@ mod tests {
         assert_eq!(recorded_rule_names, selected_rule_names);
         assert!(unapproved_result.is_err());
         assert!(unapproved_requests.is_empty());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn task_1425_fixture_password_message_yields_one_match_with_all_six_fields() {
+        let _serial = crate::global_keystore_test_lock();
+        let path = temporary_registry();
+        let state = ServiceRegistryState::load(path.clone());
+        let approved = state
+            .create_for_owner(OWNER_A, ServiceKind::Discord, "Approved".to_owned())
+            .unwrap();
+        let queue = state
+            .run_queue_for_owner(OWNER_A, ServiceKind::Discord, &[approved.id.clone()])
+            .unwrap();
+        let selected_rule_names = vec!["credential".to_owned()];
+        let runner_connection =
+            FixtureRunnerServiceConnection::new(ServiceKind::Discord, approved.id.clone());
+        let receipt = start_runner_for_approved_account_service_connection(
+            &queue,
+            &runner_connection,
+            &selected_rule_names,
+        )
+        .unwrap();
+        let places = vec![ServiceMessagePlace {
+            place_type: ServiceMessagePlaceType::Dm,
+            place_id: "task-1425-dm".to_owned(),
+        }];
+        let message_connection =
+            PasswordFixtureServiceConnection::new(ServiceKind::Discord, approved.id.clone());
+        let batch = read_messages_through_approved_account_service_connection(
+            &queue,
+            &message_connection,
+            &places,
+        )
+        .unwrap();
+
+        let matches =
+            find_possible_matches_in_read_messages(&batch, &receipt.selected_rule_names).unwrap();
+
+        println!("task_1425_match_finder=find_possible_matches_in_read_messages");
+        println!("task_1425_fixture_message_count={}", batch.message_count);
+        println!("task_1425_match_count={}", matches.len());
+        println!("task_1425_message_text={}", matches[0].message_text);
+        println!("task_1425_reason={}", matches[0].reason);
+        println!("task_1425_service={}", matches[0].service);
+        println!("task_1425_place={}", matches[0].place);
+        println!("task_1425_date={}", matches[0].date);
+        println!("task_1425_time={}", matches[0].time);
+
+        assert_eq!(batch.message_count, 2);
+        assert_eq!(matches.len(), 1);
+        let matched = &matches[0];
+        assert_eq!(
+            matched.message_text,
+            "password: correct horse battery staple"
+        );
+        assert_eq!(
+            matched.reason,
+            "This looks like a password, API key, or access credential."
+        );
+        assert_eq!(matched.service, "Discord");
+        assert_eq!(matched.place, "dm:task-1425-dm");
+        assert_eq!(matched.date, "2026-08-06");
+        assert_eq!(matched.time, "09:30");
         let _ = fs::remove_file(path);
     }
 
