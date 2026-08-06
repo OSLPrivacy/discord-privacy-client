@@ -5354,6 +5354,7 @@ fn with_indexed_context_write<T>(
 #[tauri::command]
 async fn create_service_account(
     core: State<'_, HubCoreState>,
+    security_state: State<'_, HubSecurityState>,
     registry: State<'_, ServiceRegistryState>,
     index: State<'_, ServiceScopeIndexState>,
     session: State<'_, HubAccountSessionState>,
@@ -5375,6 +5376,7 @@ async fn create_service_account(
         let _ = registry.remove_for_owner(&owner, service_id, &account.id);
         return Err(error);
     }
+    security::apply_future_account_auto_whitelist(&core, &security_state, service, &account.id)?;
     Ok(account)
 }
 

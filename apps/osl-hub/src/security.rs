@@ -1159,6 +1159,57 @@ pub fn set_friend_future_account_auto_whitelist(
     ))
 }
 
+pub fn apply_future_account_auto_whitelist(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    service_id: &str,
+    account_id: &str,
+) -> Result<Vec<String>, String> {
+    require_unlocked()?;
+    validate_manual_peer_service_account(service_id, account_id)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL manual peer settings are unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let people = load_people_file(&dir)?;
+    let peers = core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())?
+        .clone();
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    let mut applied = Vec::new();
+    for (person_id, metadata) in people
+        .people
+        .iter()
+        .filter(|(_, metadata)| metadata.auto_whitelist_future_accounts)
+    {
+        let peer = peers
+            .get(person_id)
+            .ok_or_else(|| "OSL friend key state is missing".to_owned())?;
+        ensure_manual_peer_available(metadata, people.version, true)?;
+        validate_manual_peer_identity(person_id, metadata, peer)?;
+        let _trusted_bundle = trusted_peer_key_bundle(person_id, metadata, peer)?;
+        let storage_key = manual_peer_scope_storage_key(service_id, account_id, person_id)?;
+        if prefs.burned_manual_scopes.contains(&storage_key) {
+            return Err("This manual conversation was burned and cannot be reapproved".to_owned());
+        }
+        prefs.manual_approved_scopes.insert(storage_key.clone());
+        prefs
+            .manual_approved_scope_people
+            .insert(storage_key, person_id.clone());
+        applied.push(person_id.clone());
+    }
+    if !applied.is_empty() {
+        write_encrypted_json(&path, &prefs)?;
+    }
+    Ok(applied)
+}
+
 /// Grant or revoke one friend's approval for exactly one scope.
 ///
 /// Deliberately reach-neutral: entries are always written non-broadened, so an
@@ -5748,6 +5799,89 @@ mod tests {
         assert!(!off.enabled);
         assert_eq!(queried_off.person_id, person_id);
         assert_eq!(queried_off.result, "off");
+    }
+
+    #[test]
+    fn task0264_added_account_auto_whitelists_only_friends_with_future_account_switch_on() {
+        let harness = FileBackedSecurityHarness::new("task0264-future-account-auto-whitelist");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        let (on_person_id, mut on_metadata, on_peer) = test_friend(64);
+        let (off_person_id, off_metadata, off_peer) = test_friend(65);
+        on_metadata.auto_whitelist_future_accounts = true;
+        let people = PeopleFile {
+            version: PEOPLE_SCHEMA_VERSION,
+            people: BTreeMap::from([
+                (on_person_id.clone(), on_metadata),
+                (off_person_id.clone(), off_metadata),
+            ]),
+        };
+        write_encrypted_json(&harness.path().join(PEOPLE_FILE), &people).unwrap();
+        let peers = ipc::peer_map::PeerMap::from([
+            (on_person_id.clone(), on_peer),
+            (off_person_id.clone(), off_peer),
+        ]);
+        write_encrypted_json(&harness.path().join("peer_map.json"), &peers).unwrap();
+        *core.osl.peer_map.lock().unwrap() = peers;
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+
+        let registry =
+            crate::services::ServiceRegistryState::load(harness.path().join("services.json"));
+        let account = registry
+            .create_for_owner(
+                "owner-0264",
+                crate::models::ServiceKind::Email,
+                "Future account".to_owned(),
+            )
+            .expect("task fixture adds one account");
+        let account_count = registry
+            .list_for_owner("owner-0264")
+            .unwrap()
+            .into_iter()
+            .find(|service| service.id == crate::models::ServiceKind::Email)
+            .unwrap()
+            .accounts
+            .len();
+        let applied =
+            apply_future_account_auto_whitelist(&core, &security, "email", &account.id).unwrap();
+        let on_scope = manual_peer_scope_id("email", &account.id, &on_person_id).unwrap();
+        let off_scope = manual_peer_scope_id("email", &account.id, &off_person_id).unwrap();
+        let on_ticked = manual_peer_scope_approved(
+            &core,
+            "email",
+            &account.id,
+            on_person_id.clone(),
+            dm_scope_input(on_scope),
+        )
+        .unwrap();
+        let off_ticked = manual_peer_scope_approved(
+            &core,
+            "email",
+            &account.id,
+            off_person_id.clone(),
+            dm_scope_input(off_scope),
+        )
+        .unwrap();
+        println!(
+            "TASK0264 added_account service=email account={} account_count={} on_fixture={} off_fixture={} applied_count={}",
+            account.id,
+            account_count,
+            if on_ticked { "ticked" } else { "unticked" },
+            if off_ticked { "ticked" } else { "unticked" },
+            applied.len()
+        );
+        assert_eq!(account_count, 1);
+        assert_eq!(applied, vec![on_person_id]);
+        assert!(on_ticked, "on fixture must be ticked for the added account");
+        assert!(
+            !off_ticked,
+            "off fixture must stay unticked for the added account"
+        );
     }
 
     #[test]
