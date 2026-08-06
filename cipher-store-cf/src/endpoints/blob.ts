@@ -75,7 +75,7 @@ export async function handleUpload(request: Request, env: Env): Promise<Response
   }
   if (length !== null && Number(length) > MAX_BLOB_BYTES) return error(413, "too_large", `blob exceeds ${MAX_BLOB_BYTES} bytes`);
   const ttl = parseUploadTtl(request.headers.get("x-osl-ttl-seconds"), request.headers.get("x-osl-expiry-mode"));
-  if (ttl === null) return error(400, "bad_ttl", "X-OSL-TTL-Seconds must be 3600 (1h), 86400 (24h), 259200 (72h), or 604800 (7d); default mode requires 604800");
+  if (ttl === null) return error(400, "bad_ttl", "X-OSL-TTL-Seconds must be 3600 (1h), 86400 (24h), 259200 (72h), 604800 (7d), or 2592000 (30d); default mode requires at least 604800");
   const headers = uploadHeaders(request);
   if (!headers) return error(400, "bad_blob_metadata", "blob id, capability digests, class, and delivery tag are required");
   const body = await readBoundedBody(request, MAX_BLOB_BYTES);

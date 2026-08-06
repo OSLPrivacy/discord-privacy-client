@@ -119,6 +119,7 @@ describe("cipher upload body bounds", () => {
     ["86400", 86400],
     ["259200", 259200],
     ["604800", 604800],
+    ["2592000", 2592000],
   ])("accepts exact allowlisted TTL %s", async (ttlHeader, ttlSeconds) => {
     const before = Math.floor(Date.now() / 1000);
     const request = new Request("https://cipher.test/v1/blob", {
@@ -135,7 +136,7 @@ describe("cipher upload body bounds", () => {
     expect(payload.expires_at).toBeLessThanOrEqual(after + ttlSeconds);
   });
 
-  it.each(["3599", "3601", "03600", "+3600", "3600.0", "3600junk"])(
+  it.each(["3599", "3601", "03600", "+3600", "3600.0", "3600junk", "2592001"])(
     "rejects non-allowlisted TTL %s before touching storage",
     async (ttlHeader) => {
       const request = new Request("https://cipher.test/v1/blob", {
@@ -153,7 +154,7 @@ describe("cipher upload body bounds", () => {
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({
         error: "bad_ttl",
-        message: "X-OSL-TTL-Seconds must be 3600 (1h), 86400 (24h), 259200 (72h), or 604800 (7d); default mode requires 604800",
+        message: "X-OSL-TTL-Seconds must be 3600 (1h), 86400 (24h), 259200 (72h), 604800 (7d), or 2592000 (30d); default mode requires at least 604800",
       });
     },
   );

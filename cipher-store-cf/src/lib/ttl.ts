@@ -1,5 +1,5 @@
 /** The only delivery windows the relay exposes, in seconds. */
-export const TTL_ALLOWLIST = [3_600, 86_400, 259_200, 604_800] as const;
+export const TTL_ALLOWLIST = [3_600, 86_400, 259_200, 604_800, 2_592_000] as const;
 export const DEFAULT_DELIVERY_TTL_FLOOR = 604_800;
 
 export type ExpiryMode = "default" | "absolute";
@@ -7,7 +7,8 @@ export type ExpiryMode = "default" | "absolute";
 /**
  * Parse the public delivery-window headers without silently coercing values.
  * Relative-clock messages are the default and must retain an undelivered copy
- * for seven days.  The explicit absolute mode is the documented opt-out.
+ * for at least seven days.  The explicit absolute mode is the documented
+ * opt-out.
  */
 export function parseUploadTtl(
   rawTtl: string | null,

@@ -31,8 +31,9 @@ describe("seven-day default delivery floor", () => {
     expect((await handleUpload(await request("3601"), workerEnv())).status).toBe(400);
   });
 
-  it("accepts the seven-day default and an explicit absolute-mode opt-out", async () => {
+  it("accepts the seven-day default, thirty-day default, and an explicit absolute-mode opt-out", async () => {
     expect((await handleUpload(await request("604800"), workerEnv())).status).toBe(201);
+    expect((await handleUpload(await request("2592000"), workerEnv())).status).toBe(201);
     expect((await handleUpload(await request("3600", "absolute"), workerEnv())).status).toBe(201);
   });
 });

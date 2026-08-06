@@ -34,10 +34,10 @@ pub const HARD_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Longest relative open clock this crate will admit, in seconds.
 ///
-/// Deliberately the same seven days as the longest absolute deadline: the
+/// Deliberately the same thirty days as the longest product deadline: the
 /// relative clock is a *tighter* promise layered under the absolute one, never
 /// a way to extend content past the hard deadline.
-pub const HARD_MAX_OPEN_TTL_SECONDS: u32 = 7 * 24 * 60 * 60;
+pub const HARD_MAX_OPEN_TTL_SECONDS: u32 = 30 * 24 * 60 * 60;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LifecycleLimits {

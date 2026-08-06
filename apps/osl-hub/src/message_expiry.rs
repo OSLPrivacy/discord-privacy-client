@@ -57,19 +57,21 @@ use crate::control_contract::TimedMessageMode;
 // Two clocks
 // ---------------------------------------------------------------------------
 
-/// The four lifetimes OSL offers, in seconds.
+/// The lifetimes OSL offers, in seconds.
 ///
 /// Taken from the cipher store's own allowlist rather than restated, because a
 /// value the relay will not accept is not a lifetime OSL can offer.
-pub const TTL_ALLOWLIST: [u32; 4] = [
+pub const TTL_ALLOWLIST: [u32; 5] = [
     ipc::cipher_store_client::TTL_1H,
     ipc::cipher_store_client::TTL_24H,
     ipc::cipher_store_client::TTL_72H,
     ipc::cipher_store_client::TTL_7D,
+    ipc::cipher_store_client::TTL_30D,
 ];
 
-/// Hard ceiling on any absolute deadline. Seven days, matching the relay.
-pub const MAX_ABSOLUTE_TTL_SECONDS: u32 = ipc::cipher_store_client::TTL_7D;
+/// Hard ceiling on any absolute deadline. Thirty days, matching the longest
+/// product timer.
+pub const MAX_ABSOLUTE_TTL_SECONDS: u32 = ipc::cipher_store_client::TTL_30D;
 
 /// How long the relay holds ciphertext for a *relative*-clock message.
 ///
@@ -79,12 +81,13 @@ pub const MAX_ABSOLUTE_TTL_SECONDS: u32 = ipc::cipher_store_client::TTL_7D;
 /// meant them to have — otherwise the "clock starts at first open" promise is
 /// quietly broken by a delivery window that expired first.
 ///
-/// Seven days is the relay's own ceiling, and the tradeoff is explicit: a
-/// relative-clock message's *ciphertext* may sit in relay storage for up to a
-/// week, where the relay necessarily observes object size and access time.
+/// Thirty days is the product ceiling, and the tradeoff is explicit: a
+/// relative-clock message's *ciphertext* may sit in relay storage for up to
+/// that window, where the relay necessarily observes object size and access
+/// time.
 /// Callers that prefer a tighter window pass one to
 /// [`relative_release_within`].
-pub const DEFAULT_DELIVERY_WINDOW_SECONDS: u32 = ipc::cipher_store_client::TTL_7D;
+pub const DEFAULT_DELIVERY_WINDOW_SECONDS: u32 = ipc::cipher_store_client::TTL_30D;
 
 fn ttl_is_offered(ttl_seconds: u32) -> bool {
     TTL_ALLOWLIST.contains(&ttl_seconds)
@@ -1502,6 +1505,27 @@ mod tests {
             .collect()
     }
 
+    fn put_in_both_copies(
+        first_store: &store::MessageStore,
+        second_store: &store::MessageStore,
+        message: &store::StoredMessage,
+    ) {
+        first_store.put(message).unwrap();
+        second_store.put(message).unwrap();
+    }
+
+    fn readable_copy_counts(
+        first_store: &store::MessageStore,
+        second_store: &store::MessageStore,
+        channel: &str,
+        text: &str,
+    ) -> [usize; 2] {
+        [
+            exact_history_texts(first_store, channel, text).len(),
+            exact_history_texts(second_store, channel, text).len(),
+        ]
+    }
+
     // ---- two clocks ----
 
     #[test]
@@ -2308,6 +2332,220 @@ mod tests {
             exact_text,
             second_after_texts.len(),
             second_after_texts.is_empty()
+        );
+    }
+
+    #[test]
+    fn task_3772_runs_thirty_day_timer_and_real_clock_last_hour() {
+        use crate::expiry_clock::{RenderLifetimeVerdict, ViewLifetime};
+
+        const DAY: i64 = 24 * 60 * 60;
+        let root = root("task-3772");
+        let first_name = "task3772-first-copy";
+        let second_name = "task3772-second-copy";
+        let first_ledger = root.join(first_name).join(TIMED_DELETE_FILE);
+        let second_ledger = root.join(second_name).join(TIMED_DELETE_FILE);
+        let first_store_dir = root.join(first_name).join("message-store");
+        let second_store_dir = root.join(second_name).join("message-store");
+        std::fs::create_dir_all(first_ledger.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(second_ledger.parent().unwrap()).unwrap();
+
+        let first_store = store::MessageStore::open(&first_store_dir, &KEY).unwrap();
+        let second_store = store::MessageStore::open(&second_store_dir, &KEY).unwrap();
+        let channel = "task3772-chat";
+        let thirty_day_message_id = "task3772-thirty-day-message";
+        let thirty_day_text = "TASK3772 THIRTY DAY TIMER MESSAGE";
+        let sent_at = 2_000_000_000i64;
+        let thirty_day_ttl = i64::from(ipc::cipher_store_client::TTL_30D);
+        let delete_at = sent_at + thirty_day_ttl;
+        let message = stored_message(thirty_day_message_id, channel, thirty_day_text, sent_at);
+        put_in_both_copies(&first_store, &second_store, &message);
+
+        let record = TimedDeleteRecord {
+            app_id: "osl-chat".to_owned(),
+            conversation_id: channel.to_owned(),
+            message_locator: thirty_day_message_id.to_owned(),
+            sent_at_unix_seconds: sent_at,
+            delete_at_unix_seconds: delete_at,
+            protection: TimedDeleteProtection::Protected,
+        };
+        let fanout = cmd_record_timed_delete_for_two_local_copies_at_paths(
+            first_name,
+            &first_ledger,
+            second_name,
+            &second_ledger,
+            &KEY,
+            record,
+        )
+        .unwrap();
+        assert_eq!(fanout.record_count, 2);
+        assert_eq!(fanout.delete_at_unix_seconds - sent_at, thirty_day_ttl);
+        println!(
+            "TASK3772_THIRTY_DAY_TIMER_SENT local_copies={},{} lifetime_seconds={}",
+            fanout.local_copy_names[0],
+            fanout.local_copy_names[1],
+            fanout.delete_at_unix_seconds - sent_at
+        );
+
+        let no_advance_report = expire_timed_delete_records_for_two_local_copies_at_paths(
+            first_name,
+            &first_ledger,
+            &first_store,
+            second_name,
+            &second_ledger,
+            &second_store,
+            &KEY,
+            sent_at,
+        )
+        .unwrap();
+        let no_advance_counts =
+            readable_copy_counts(&first_store, &second_store, channel, thirty_day_text);
+        assert_eq!(no_advance_report.expired_records, [0, 0]);
+        assert_eq!(no_advance_counts, [1, 1]);
+        println!(
+            "TASK3772_NO_ADVANCE_READABLE local_copy={} count={}",
+            first_name, no_advance_counts[0]
+        );
+        println!(
+            "TASK3772_NO_ADVANCE_READABLE local_copy={} count={}",
+            second_name, no_advance_counts[1]
+        );
+
+        let day_29_report = expire_timed_delete_records_for_two_local_copies_at_paths(
+            first_name,
+            &first_ledger,
+            &first_store,
+            second_name,
+            &second_ledger,
+            &second_store,
+            &KEY,
+            sent_at + 29 * DAY,
+        )
+        .unwrap();
+        let day_29_counts =
+            readable_copy_counts(&first_store, &second_store, channel, thirty_day_text);
+        assert_eq!(day_29_report.expired_records, [0, 0]);
+        assert_eq!(day_29_counts, [1, 1]);
+        println!(
+            "TASK3772_DAY29_READABLE local_copy={} count={}",
+            first_name, day_29_counts[0]
+        );
+        println!(
+            "TASK3772_DAY29_READABLE local_copy={} count={}",
+            second_name, day_29_counts[1]
+        );
+
+        let day_31_report = expire_timed_delete_records_for_two_local_copies_at_paths(
+            first_name,
+            &first_ledger,
+            &first_store,
+            second_name,
+            &second_ledger,
+            &second_store,
+            &KEY,
+            sent_at + 31 * DAY,
+        )
+        .unwrap();
+        let day_31_counts =
+            readable_copy_counts(&first_store, &second_store, channel, thirty_day_text);
+        assert_eq!(day_31_report.expired_records, [1, 1]);
+        assert_eq!(day_31_report.removed_records, [1, 1]);
+        assert_eq!(day_31_report.shredded_cache_rows, [1, 1]);
+        assert_eq!(day_31_counts, [0, 0]);
+        println!(
+            "TASK3772_DAY31_READABLE local_copy={} count={}",
+            first_name, day_31_counts[0]
+        );
+        println!(
+            "TASK3772_DAY31_READABLE local_copy={} count={}",
+            second_name, day_31_counts[1]
+        );
+
+        let hour_message_id = "task3772-one-hour-message";
+        let hour_text = "TASK3772 ONE HOUR REAL CLOCK MESSAGE";
+        let hour_sent_at = 2_010_000_000i64;
+        let hour_delete_at = hour_sent_at + i64::from(ipc::cipher_store_client::TTL_1H);
+        let hour_message = stored_message(hour_message_id, channel, hour_text, hour_sent_at);
+        put_in_both_copies(&first_store, &second_store, &hour_message);
+        let hour_record = TimedDeleteRecord {
+            app_id: "osl-chat".to_owned(),
+            conversation_id: channel.to_owned(),
+            message_locator: hour_message_id.to_owned(),
+            sent_at_unix_seconds: hour_sent_at,
+            delete_at_unix_seconds: hour_delete_at,
+            protection: TimedDeleteProtection::Protected,
+        };
+        cmd_record_timed_delete_for_two_local_copies_at_paths(
+            first_name,
+            &first_ledger,
+            second_name,
+            &second_ledger,
+            &KEY,
+            hour_record,
+        )
+        .unwrap();
+
+        let mut real_clock = ViewLifetime::new(Duration::from_secs(60 * 60));
+        assert_eq!(
+            real_clock.on_render(Duration::from_secs(0)),
+            RenderLifetimeVerdict::Started
+        );
+        assert_eq!(
+            real_clock.verdict_at(Duration::from_secs(60 * 60 - 1)),
+            RenderLifetimeVerdict::Active
+        );
+        let hour_before_report = expire_timed_delete_records_for_two_local_copies_at_paths(
+            first_name,
+            &first_ledger,
+            &first_store,
+            second_name,
+            &second_ledger,
+            &second_store,
+            &KEY,
+            hour_delete_at - 1,
+        )
+        .unwrap();
+        let hour_before_counts =
+            readable_copy_counts(&first_store, &second_store, channel, hour_text);
+        assert_eq!(hour_before_report.expired_records, [0, 0]);
+        assert_eq!(hour_before_counts, [1, 1]);
+        println!(
+            "TASK3772_REAL_CLOCK_1H_BEFORE local_copy={} count={}",
+            first_name, hour_before_counts[0]
+        );
+        println!(
+            "TASK3772_REAL_CLOCK_1H_BEFORE local_copy={} count={}",
+            second_name, hour_before_counts[1]
+        );
+
+        assert_eq!(
+            real_clock.verdict_at(Duration::from_secs(60 * 60)),
+            RenderLifetimeVerdict::Expired
+        );
+        let hour_after_report = expire_timed_delete_records_for_two_local_copies_at_paths(
+            first_name,
+            &first_ledger,
+            &first_store,
+            second_name,
+            &second_ledger,
+            &second_store,
+            &KEY,
+            hour_delete_at,
+        )
+        .unwrap();
+        let hour_after_counts =
+            readable_copy_counts(&first_store, &second_store, channel, hour_text);
+        assert_eq!(hour_after_report.expired_records, [1, 1]);
+        assert_eq!(hour_after_report.removed_records, [1, 1]);
+        assert_eq!(hour_after_report.shredded_cache_rows, [1, 1]);
+        assert_eq!(hour_after_counts, [0, 0]);
+        println!(
+            "TASK3772_REAL_CLOCK_1H_AFTER local_copy={} count={}",
+            first_name, hour_after_counts[0]
+        );
+        println!(
+            "TASK3772_REAL_CLOCK_1H_AFTER local_copy={} count={}",
+            second_name, hour_after_counts[1]
         );
     }
 
