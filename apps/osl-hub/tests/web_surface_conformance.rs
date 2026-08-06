@@ -6,8 +6,11 @@
 //! the gate fail before an L2/L3 grant can ship.
 
 use osl_privacy_hub::adapters::*;
-use osl_privacy_hub::web_surface_adapter::{WebSurfaceAdapter, WebSurfaceBackend};
+use osl_privacy_hub::web_surface_adapter::{
+    WebPageControlRefusal, WebPageControls, WebSurfaceAdapter, WebSurfaceBackend,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 #[derive(Clone, Copy)]
 enum DestinationMode {
@@ -176,7 +179,7 @@ impl WebSurfaceBackend for Fixture {
     }
 }
 
-fn adapter(fixture: Fixture) -> WebSurfaceAdapter<Fixture> {
+fn adapter<B>(fixture: B) -> WebSurfaceAdapter<B> {
     WebSurfaceAdapter::new(AdapterAppId::X, profile(), fixture)
 }
 fn current_target() -> SurfaceTarget {
@@ -191,6 +194,134 @@ fn placed() -> PlacementReceipt {
         status: PlacementStatus::Placed,
         placed_sha256: Some("d".repeat(64)),
         elapsed_ms: 1,
+    }
+}
+
+struct Task1206Page {
+    body_present: bool,
+    send_present: bool,
+    body_text: String,
+}
+
+struct Task1206Fixture {
+    page: Mutex<Task1206Page>,
+    placements: AtomicUsize,
+    last_control_refusal: Mutex<Option<WebPageControlRefusal>>,
+}
+
+impl Task1206Fixture {
+    fn new() -> Self {
+        Self {
+            page: Mutex::new(Task1206Page {
+                body_present: true,
+                send_present: true,
+                body_text: String::new(),
+            }),
+            placements: AtomicUsize::new(0),
+            last_control_refusal: Mutex::new(None),
+        }
+    }
+
+    fn placement_count(&self) -> usize {
+        self.placements.load(Ordering::SeqCst)
+    }
+
+    fn body_text(&self) -> String {
+        self.page.lock().unwrap().body_text.clone()
+    }
+
+    fn set_send_present(&self, present: bool) {
+        self.page.lock().unwrap().send_present = present;
+    }
+
+    fn last_control_refusal(&self) -> Option<WebPageControlRefusal> {
+        *self.last_control_refusal.lock().unwrap()
+    }
+}
+
+impl WebSurfaceBackend for Task1206Fixture {
+    fn capabilities(&self, _: &adapter_profile::ProfilePayload, _: u64) -> CapabilitySet {
+        [
+            adapter_profile::Capability::PlaceProtectedPayload,
+            adapter_profile::Capability::SendProtectedPayload,
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    fn is_current_generation(&self, generation: u64) -> bool {
+        generation == 7
+    }
+
+    fn wake_accessibility(&self) -> Result<(), AdapterRefusal> {
+        Ok(())
+    }
+
+    fn locate(
+        &self,
+        _: &adapter_profile::ProfilePayload,
+        target: &SurfaceTarget,
+    ) -> Result<SurfaceBinding, AdapterRefusal> {
+        Ok(binding(target.generation, false))
+    }
+
+    fn read_state(&self, _: &SurfaceBinding) -> Result<SurfaceState, AdapterRefusal> {
+        Ok(SurfaceState {
+            composer_text_sha256: "a".repeat(64),
+            composer_is_empty: true,
+            composer_is_password_field: false,
+            focused: true,
+            occluded: false,
+            read_was_complete: true,
+        })
+    }
+
+    fn page_controls(
+        &self,
+        _: &adapter_profile::ProfilePayload,
+        _: &SurfaceBinding,
+    ) -> WebPageControls {
+        let page = self.page.lock().unwrap();
+        let controls = WebPageControls {
+            body_present: page.body_present,
+            send_present: page.send_present,
+        };
+        *self.last_control_refusal.lock().unwrap() = controls.validate().err();
+        controls
+    }
+
+    fn destination(&self, b: &SurfaceBinding) -> Result<DestinationIdentity, AdapterRefusal> {
+        Ok(DestinationIdentity {
+            status: DestinationStatus::Attested,
+            account_digest: "a".repeat(64),
+            conversation_digest: "b".repeat(64),
+            recipients_digest: "c".repeat(64),
+            scope_binding_hash: "opaque-scope".into(),
+            evidence: b.evidence.clone(),
+            attested_at_ms: 1,
+            ttl_ms: 1,
+        })
+    }
+
+    fn place(&self, _: &SurfaceBinding, carrier: &Carrier) -> PlacementReceipt {
+        self.placements.fetch_add(1, Ordering::SeqCst);
+        self.page.lock().unwrap().body_text = carrier.0.clone();
+        PlacementReceipt {
+            status: PlacementStatus::Placed,
+            placed_sha256: Some("d".repeat(64)),
+            elapsed_ms: 1,
+        }
+    }
+
+    fn commit(&self, _: &SurfaceBinding, _: &PlacementReceipt) -> SendReceipt {
+        SendReceipt {
+            outcome: SendOutcome::Sent,
+            elapsed_ms: 1,
+        }
+    }
+
+    fn paint_targets(&self, _: &SurfaceBinding) -> Result<Vec<PaintTarget>, AdapterRefusal> {
+        Ok(vec![])
     }
 }
 
@@ -354,4 +485,56 @@ fn web_w3_c1_to_c10_conformance() {
     let marker = "provider-title::must-not-leak";
     assert!(!format!("{:?}", placed()).contains(marker));
     assert!(!format!("{:?}", AdapterRefusal::ComposerNotFound).contains(marker));
+}
+
+#[test]
+fn task_1206_missing_send_control_refuses_without_replacing_body() {
+    let adapter = adapter(Task1206Fixture::new());
+    let binding = adapter.locate(&current_target()).unwrap();
+    let carrier = Carrier("MAPLE-4172".into());
+
+    println!(
+        "TASK1206_PLACEMENT_COUNT_BEFORE_GOOD={}",
+        adapter.backend().placement_count()
+    );
+    assert_eq!(adapter.backend().placement_count(), 0);
+
+    let good = adapter.place(
+        &binding,
+        &PlacementAuthorization::for_scope("opaque-scope"),
+        &carrier,
+    );
+    assert_eq!(good.status, PlacementStatus::Placed);
+    assert_eq!(adapter.backend().placement_count(), 1);
+    assert_eq!(adapter.backend().body_text(), "MAPLE-4172");
+    println!("TASK1206_BODY_AFTER_GOOD={}", adapter.backend().body_text());
+    println!(
+        "TASK1206_PLACEMENT_COUNT_AFTER_GOOD={}",
+        adapter.backend().placement_count()
+    );
+
+    adapter.backend().set_send_present(false);
+    let refused = adapter.place(
+        &binding,
+        &PlacementAuthorization::for_scope("opaque-scope"),
+        &carrier,
+    );
+    assert_eq!(refused.status, PlacementStatus::NotPlaced);
+    let refusal = adapter
+        .backend()
+        .last_control_refusal()
+        .expect("missing Send must be the named page-control refusal");
+    assert_eq!(refusal, WebPageControlRefusal::MissingSend);
+    assert_eq!(refusal.to_string(), "missing Send");
+    assert_eq!(adapter.backend().body_text(), "MAPLE-4172");
+    assert_eq!(adapter.backend().placement_count(), 1);
+    println!("TASK1206_MISSING_SEND_REFUSAL={refusal}");
+    println!(
+        "TASK1206_BODY_AFTER_MISSING_SEND={}",
+        adapter.backend().body_text()
+    );
+    println!(
+        "TASK1206_PLACEMENT_COUNT_AFTER_MISSING_SEND={}",
+        adapter.backend().placement_count()
+    );
 }
