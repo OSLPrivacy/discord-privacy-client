@@ -70,6 +70,7 @@ export function isOslPrimaryDestination(value: unknown): value is OslPrimaryDest
 
 export type SendMode = "manual" | "clipboard" | "double" | "single";
 export type PlacementMode = "atomic" | "compatibility";
+export type CoverInsertionChoice = "insert-on-send" | "type-naturally";
 export type ProtectionMode = "native" | "protected";
 export type ComposerPhase = "idle" | "prepared" | "placed";
 export type ComposerAction = "prepare-manual" | "prepare-clipboard" | "place" | "send";
@@ -211,6 +212,7 @@ export interface SetupState {
 export interface OnboardingPreferences {
   onboardingComplete: boolean;
   setup: SetupState;
+  coverInsertion: CoverInsertionChoice | null;
   showPlaintextPreview: boolean;
   windowCaptureEnabled: boolean;
   forwardSecrecyMode: ForwardSecrecyMode;
@@ -222,6 +224,7 @@ export interface RustOnboardingPreferences {
   onboardingComplete: boolean;
   sendMode: SendMode;
   placementMode: PlacementMode;
+  coverInsertion: CoverInsertionChoice | null;
   showPlaintextPreview: boolean;
   windowCaptureEnabled: boolean;
   forwardSecrecyMode: ForwardSecrecyMode;
@@ -238,6 +241,7 @@ export const defaultSetup: SetupState = {
 export const defaultOnboardingPreferences: OnboardingPreferences = {
   onboardingComplete: false,
   setup: { ...defaultSetup },
+  coverInsertion: null,
   showPlaintextPreview: true,
   windowCaptureEnabled: true,
   forwardSecrecyMode: "keepGroupDelivery",
@@ -245,6 +249,7 @@ export const defaultOnboardingPreferences: OnboardingPreferences = {
 
 const sendModeValues: readonly SendMode[] = ["manual", "clipboard", "double", "single"];
 const placementModeValues: readonly PlacementMode[] = ["atomic", "compatibility"];
+const coverInsertionValues: readonly CoverInsertionChoice[] = ["insert-on-send", "type-naturally"];
 const forwardSecrecyModeValues: readonly ForwardSecrecyMode[] = ["protectPast", "keepGroupDelivery"];
 const firstRunOnboardingStepValues: readonly FirstRunOnboardingStep[] = firstRunOnboardingStepOrder;
 
@@ -349,6 +354,7 @@ export function parseRustOnboardingPreferences(raw: unknown): OnboardingPreferen
     "onboardingComplete",
     "sendMode",
     "placementMode",
+    "coverInsertion",
     "showPlaintextPreview",
     "windowCaptureEnabled",
     "forwardSecrecyMode",
@@ -359,9 +365,15 @@ export function parseRustOnboardingPreferences(raw: unknown): OnboardingPreferen
   }
   const sendMode = sendModeValues.includes(raw.sendMode as SendMode) ? raw.sendMode as SendMode : null;
   const placementMode = placementModeValues.includes(raw.placementMode as PlacementMode) ? raw.placementMode as PlacementMode : null;
+  const coverInsertion = raw.coverInsertion === null
+    ? null
+    : coverInsertionValues.includes(raw.coverInsertion as CoverInsertionChoice)
+      ? raw.coverInsertion as CoverInsertionChoice
+      : undefined;
   if (
     sendMode === null
     || placementMode === null
+    || coverInsertion === undefined
     || typeof raw.onboardingComplete !== "boolean"
     || typeof raw.showPlaintextPreview !== "boolean"
     || typeof raw.windowCaptureEnabled !== "boolean"
@@ -380,6 +392,7 @@ export function parseRustOnboardingPreferences(raw: unknown): OnboardingPreferen
       acceptedRisk: riskAccepted,
       acceptedRiskForMode: riskAccepted ? sendMode : null,
     },
+    coverInsertion,
     showPlaintextPreview: raw.showPlaintextPreview,
     windowCaptureEnabled: raw.windowCaptureEnabled,
     forwardSecrecyMode: raw.forwardSecrecyMode as ForwardSecrecyMode,
@@ -396,6 +409,7 @@ export function toRustOnboardingPreferences(preferences: OnboardingPreferences):
       && (!needsRiskAcceptance(parsedSetup.sendMode) || acknowledged),
     sendMode: parsedSetup.sendMode,
     placementMode: parsedSetup.placementMode,
+    coverInsertion: coverInsertionValues.includes(preferences.coverInsertion as CoverInsertionChoice) ? preferences.coverInsertion : null,
     showPlaintextPreview: preferences.showPlaintextPreview === true,
     windowCaptureEnabled: preferences.windowCaptureEnabled === true,
     forwardSecrecyMode: forwardSecrecyModeValues.includes(preferences.forwardSecrecyMode) ? preferences.forwardSecrecyMode : "keepGroupDelivery",
@@ -411,6 +425,7 @@ function cloneDefaultPreferences(): OnboardingPreferences {
   return {
     onboardingComplete: false,
     setup: { ...defaultSetup },
+    coverInsertion: null,
     showPlaintextPreview: true,
     windowCaptureEnabled: true,
     forwardSecrecyMode: "keepGroupDelivery",

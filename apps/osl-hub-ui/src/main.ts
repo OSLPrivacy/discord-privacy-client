@@ -437,9 +437,9 @@ let onboardingRoute: OnboardingRoute = "welcome";
 let onboardingTourStep = 0;
 let replayingOnboardingTour = false;
 let torOnboarding: TorOnboardingState = initialTorOnboardingState();
-// Which of the two insertion styles is highlighted. Nothing is persisted yet:
-// only "insert on send" is built, so this is the screen's own state.
-let coverInsertion: CoverInsertionChoice = initialCoverInsertionChoice();
+// Which of the two insertion styles is highlighted. It starts unset so setup
+// cannot silently accept a default the owner never chose.
+let coverInsertion: CoverInsertionChoice | null = initialCoverInsertionChoice();
 // The three before-send checks. Live on screen; not yet persisted, because
 // nothing reads them at send time yet.
 let beforeSendChecks: BeforeSendChecks = initialBeforeSendChecks();
@@ -3305,7 +3305,7 @@ function bindOnboarding(): void {
   document.querySelector<HTMLButtonElement>("[data-forward-secrecy-continue]")?.addEventListener("click", () => {
     if (forwardSecrecyOnboarding.choice === null) return;
     const selectedForwardSecrecyMode = forwardSecrecyOnboarding.choice === "protect-past" ? "protectPast" : "keepGroupDelivery";
-    void saveOnboardingPreferences({ onboardingComplete: false, setup, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
+    void saveOnboardingPreferences({ onboardingComplete: false, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode: selectedForwardSecrecyMode }).then((saved) => {
       forwardSecrecyMode = saved.forwardSecrecyMode;
       onboardingRoute = "privacy";
       render();
@@ -3342,10 +3342,16 @@ function bindOnboarding(): void {
   document.querySelectorAll<HTMLInputElement>('input[name="cover-mode"]').forEach((input) => input.addEventListener("change", () => {
     if (input.checked && (input.value === "insert-on-send" || input.value === "type-naturally")) {
       coverInsertion = chooseCoverInsertion(coverInsertion, input.value);
+      void saveOnboardingPreferences({ onboardingComplete: false, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
       render();
     }
   }));
-  document.querySelector("#continue-cover-draft")?.addEventListener("click", () => { onboardingRoute = "passwords"; render(); });
+  document.querySelector("#continue-cover-draft")?.addEventListener("click", () => {
+    if (!coverInsertion) return;
+    onboardingRoute = "mullvad";
+    render();
+    void refreshMullvadSetup();
+  });
   bindOnboardingPasswordRole();
   document.querySelectorAll<HTMLButtonElement>("button[data-password-role-next]").forEach((button) => button.addEventListener("click", () => {
     onboardingRoute = button.dataset.passwordRoleNext as OnboardingRoute;
@@ -3523,8 +3529,9 @@ async function completeSixStepOnboarding(): Promise<void> {
   const completedSetup = balancedFirstRunSetup(setup);
   if (!canCompleteSetup(completedSetup)) throw new Error("setup missing required sending consent");
   setup = completedSetup;
-  const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
+  const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
   setup = saved.setup;
+  coverInsertion = saved.coverInsertion;
   windowCaptureEnabled = saved.windowCaptureEnabled;
   onboardingComplete = true;
   clearServiceOnboardingResume();
@@ -5966,7 +5973,7 @@ async function changeSendingMode(mode: SendMode): Promise<void> {
   };
   render();
   try {
-    const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
+    const saved = await saveOnboardingPreferences({ onboardingComplete: true, setup, coverInsertion, showPlaintextPreview: true, windowCaptureEnabled, forwardSecrecyMode });
     setup = saved.setup;
     windowCaptureEnabled = saved.windowCaptureEnabled;
     showToast(`${formatSendMode(mode)} selected`);
@@ -9852,6 +9859,7 @@ async function bootstrap(): Promise<void> {
     const preferences = await preferencesRequest ?? {
       onboardingComplete: core.readiness.bootstrapStatus === "ready",
       setup: parseSetupState(null),
+      coverInsertion: null,
       showPlaintextPreview: true,
       windowCaptureEnabled: true,
       forwardSecrecyMode: "keepGroupDelivery" as const,
@@ -9859,6 +9867,7 @@ async function bootstrap(): Promise<void> {
     await recoveryKitUnsavedFlag.load();
     if (attempt !== bootstrapEpoch) return;
     setup = preferences.setup;
+    coverInsertion = preferences.coverInsertion;
     windowCaptureEnabled = preferences.windowCaptureEnabled;
     onboardingComplete = preferences.onboardingComplete;
     forwardSecrecyMode = preferences.forwardSecrecyMode;
@@ -10077,6 +10086,7 @@ type OslHubUiTestStatePatch = {
   route?: Route;
   onboardingRoute?: OnboardingRoute;
   setup?: Partial<SetupState>;
+  coverInsertion?: CoverInsertionChoice | null;
   coreReady?: boolean;
   storageMethod?: string | null;
   services?: LinkedService[];
@@ -10135,6 +10145,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   route = patch.route ?? "home";
   onboardingRoute = patch.onboardingRoute ?? "welcome";
   setup = { ...defaultSetup, ...patch.setup };
+  coverInsertion = patch.coverInsertion ?? initialCoverInsertionChoice();
   settingsSection = "account";
   activeService = null;
   activeHomeAppId = null;
@@ -10392,6 +10403,7 @@ export const __oslHubUiTest = {
     mullvadSetupNotice: string;
     ownedConfirmationKind: OwnedConfirmation["kind"] | null;
     ownedConfirmationPersonId: string | null;
+    coverInsertion: CoverInsertionChoice | null;
   } {
     return {
       route,
@@ -10409,6 +10421,7 @@ export const __oslHubUiTest = {
       ownedConfirmationPersonId: ownedConfirmation?.kind === "verifyFriend" || ownedConfirmation?.kind === "removeFriend"
         ? ownedConfirmation.personId
         : null,
+      coverInsertion,
     };
   },
 };

@@ -128,7 +128,7 @@ export function onboardingSendingMarkup(state: SendingScreenState): string {
     : "Off. Everything on screen can be captured.";
 
   return `<section class="snd-onboarding" aria-labelledby="route-heading">
-    <h1 id="route-heading" tabindex="-1" class="snd-title">Sending behavior</h1>
+    <h1 id="route-heading" tabindex="-1" class="snd-title">Privacy and sending</h1>
     <div class="snd-grid" role="radiogroup" aria-label="Sending behavior">${SEND_OPTIONS.map(card).join("")}</div>
     ${risk}
     <p class="snd-quiet">If OSL cannot prove where it is sending, it sends nothing</p>

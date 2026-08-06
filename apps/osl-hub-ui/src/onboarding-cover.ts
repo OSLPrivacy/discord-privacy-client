@@ -1,13 +1,14 @@
 import "./onboarding-cover.css";
 import { choiceRadio, continueButton } from "./onboarding-controls";
+import type { CoverInsertionChoice } from "./state";
 
 /** How the cover text lands in the other app's message box. */
-export type CoverInsertionChoice = "insert-on-send" | "type-naturally";
+export type { CoverInsertionChoice };
 
-export const initialCoverInsertionChoice = (): CoverInsertionChoice => "insert-on-send";
+export const initialCoverInsertionChoice = (): CoverInsertionChoice | null => null;
 
 export function chooseCoverInsertion(
-  _current: CoverInsertionChoice,
+  _current: CoverInsertionChoice | null,
   choice: CoverInsertionChoice,
 ): CoverInsertionChoice {
   return choice;
@@ -20,7 +21,7 @@ export function chooseCoverInsertion(
  * nobody can picture from words. One box fills in a single blink; the other
  * types. Showing it takes three seconds and needs no reading.
  */
-export function onboardingCoverMarkup(choice: CoverInsertionChoice): string {
+export function onboardingCoverMarkup(choice: CoverInsertionChoice | null): string {
   const card = (
     value: CoverInsertionChoice,
     label: string,

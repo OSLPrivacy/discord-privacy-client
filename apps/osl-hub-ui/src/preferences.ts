@@ -10,6 +10,7 @@ import {
 } from "./state";
 
 const browserSetupKey = "osl-preview-setup";
+const browserCoverInsertionKey = "osl-preview-cover-insertion";
 const browserCompleteKey = "osl-preview-onboarded";
 
 type FirstRunProtectionPreset = "basic" | "balanced" | "maximum";
@@ -43,6 +44,10 @@ export async function loadOnboardingPreferences(): Promise<OnboardingPreferences
   return {
     onboardingComplete: localStorage.getItem(browserCompleteKey) === "true",
     setup: parseSetupState(localStorage.getItem(browserSetupKey)),
+    coverInsertion: parseRustOnboardingPreferences({
+      ...toRustOnboardingPreferences(defaultOnboardingPreferences),
+      coverInsertion: localStorage.getItem(browserCoverInsertionKey),
+    }).coverInsertion,
     showPlaintextPreview: true,
     windowCaptureEnabled: true,
     forwardSecrecyMode: "keepGroupDelivery",
@@ -58,6 +63,8 @@ export async function saveOnboardingPreferences(preferences: OnboardingPreferenc
 
   if (typeof localStorage !== "undefined") {
     localStorage.setItem(browserSetupKey, JSON.stringify(preferences.setup));
+    if (wirePreferences.coverInsertion === null) localStorage.removeItem(browserCoverInsertionKey);
+    else localStorage.setItem(browserCoverInsertionKey, wirePreferences.coverInsertion);
     localStorage.setItem(browserCompleteKey, String(preferences.onboardingComplete));
   }
   return parseRustOnboardingPreferences(wirePreferences);
@@ -99,6 +106,7 @@ export async function saveFirstRunOnboardingPreferences(selection: {
       acceptedRisk: acknowledged,
       acceptedRiskForMode: acknowledged ? sendMode : null,
     },
+    coverInsertion: "insert-on-send",
     showPlaintextPreview: true,
     windowCaptureEnabled: selection.windowCaptureEnabled !== false,
     forwardSecrecyMode: "keepGroupDelivery",

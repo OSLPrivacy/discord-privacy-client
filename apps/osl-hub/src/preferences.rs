@@ -97,7 +97,7 @@ fn write_preferences(path: &Path, preferences: &OnboardingPreferences) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ForwardSecrecyMode, PlacementMode, SendMode};
+    use crate::models::{CoverInsertion, ForwardSecrecyMode, PlacementMode, SendMode};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -119,6 +119,7 @@ mod tests {
             onboarding_complete: true,
             send_mode: SendMode::SingleEnter,
             placement_mode: PlacementMode::Compatibility,
+            cover_insertion: Some(CoverInsertion::TypeNaturally),
             show_plaintext_preview: false,
             window_capture_enabled: true,
             acknowledge_experimental_send_risk: true,
@@ -168,6 +169,7 @@ mod tests {
             onboarding_complete: true,
             send_mode: SendMode::DoubleEnter,
             placement_mode: PlacementMode::Compatibility,
+            cover_insertion: None,
             show_plaintext_preview: true,
             window_capture_enabled: true,
             acknowledge_experimental_send_risk: false,
@@ -194,6 +196,7 @@ mod tests {
             onboarding_complete: true,
             send_mode: SendMode::Manual,
             placement_mode: PlacementMode::Atomic,
+            cover_insertion: Some(CoverInsertion::InsertOnSend),
             show_plaintext_preview: false,
             window_capture_enabled: true,
             acknowledge_experimental_send_risk: false,
