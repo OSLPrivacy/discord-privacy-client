@@ -4625,6 +4625,17 @@ pub fn cmd_osl_encrypt_message_v2_wire(
     let self_mlkem_pub = identity.mlkem_encapsulation_key();
     drop(id_guard);
 
+    if scope.kind == crate::scope::ScopeKind::ServerChannel
+        && !channel_members.is_empty()
+        && !channel_members
+            .iter()
+            .any(|member| member == &self_discord_id)
+    {
+        return Err(format!(
+            "OSL: send refused for removed server member {self_discord_id}: not present in current server channel member refresh"
+        ));
+    }
+
     // Probe-3 follow-up: proactively seed scope_membership from the
     // caller-supplied channel_members on every GC send. Without this,
     // a cold post-relaunch scope_membership cache + a GC where the
@@ -15764,11 +15775,12 @@ pub fn cmd_osl_membership_get(state: &AppState, channel_id: String) -> Result<Ve
     Ok(g.get(&channel_id).cloned().unwrap_or_default())
 }
 
-/// W2: durable membership accrual. boot.js gateway taps call this
-/// with the scope they observed members in. ServerChannel rolls up
-/// into the server key (server-header enumeration); Gc records the
-/// GC. Dm / ServerFull are no-ops (DM membership is trivial; server-
-/// wide accrues from its channels). Persists `membership.json`.
+/// W2: durable membership refresh. boot.js gateway taps call this with the
+/// current members they observed in a scope. ServerChannel replaces the exact
+/// channel member set and rebuilds the server roll-up so a removed person loses
+/// reach on the next refresh; Gc records observed members. Dm / ServerFull are
+/// no-ops (DM membership is trivial; server-wide refreshes arrive through
+/// channels). Persists `membership.json`.
 pub fn cmd_osl_note_scope_membership(
     state: &AppState,
     scope_input: crate::scope::ScopeInput,
@@ -15786,7 +15798,7 @@ pub fn cmd_osl_note_scope_membership(
         match scope.kind {
             crate::scope::ScopeKind::ServerChannel => match (&scope.server_id, &scope.channel_id) {
                 (Some(srv), Some(chan)) => {
-                    m.note_server_channel_members(srv, chan, &member_ids);
+                    m.set_server_channel_members(srv, chan, &member_ids);
                     true
                 }
                 _ => false,
