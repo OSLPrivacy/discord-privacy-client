@@ -116,12 +116,21 @@ pub enum ExternalCopiesEffect {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct RecipientRecordsBurnActionResult {
+    /// Hide recipient-authored records from this device's local burn review screen.
+    pub local_hide: bool,
+    /// Never claim provider-side or recipient-device deletion for those records.
+    pub remote_removal: bool,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct LocalBurnPlan {
     pub scope: BurnScopeCommitment,
     pub destroy_local_decrypt_capability: bool,
     pub destroy_local_key_mappings: bool,
     pub clear_local_caches: bool,
     pub forget_incoming_and_member_messages: bool,
+    pub recipient_records: RecipientRecordsBurnActionResult,
     pub native_carrier_history: NativeCarrierHistoryEffect,
     pub screenshots_exports_and_external_copies: ExternalCopiesEffect,
     /// Uninstall is separate, post-burn, and available only after account burn.
@@ -176,6 +185,10 @@ pub fn plan_local_burn(
         destroy_local_key_mappings: true,
         clear_local_caches: true,
         forget_incoming_and_member_messages: options.forget_incoming_and_member_messages,
+        recipient_records: RecipientRecordsBurnActionResult {
+            local_hide: options.forget_incoming_and_member_messages,
+            remote_removal: false,
+        },
         native_carrier_history: NativeCarrierHistoryEffect::Unchanged,
         screenshots_exports_and_external_copies: ExternalCopiesEffect::NotControllable,
         may_offer_separate_uninstall_after_completion: scope.level == BurnScopeLevel::Account,
@@ -564,15 +577,14 @@ mod tests {
         .unwrap()
     }
 
-    fn confirmation(scope: BurnScopeCommitment, issuer: [u8; 32]) -> BurnConfirmation {
+    fn confirmation_with_options(
+        scope: BurnScopeCommitment,
+        issuer: [u8; 32],
+        options: LocalBurnOptions,
+    ) -> BurnConfirmation {
         let mut value = BurnConfirmation {
             scope,
-            effects_digest: local_effects_digest(
-                scope,
-                LocalBurnOptions {
-                    forget_incoming_and_member_messages: false,
-                },
-            ),
+            effects_digest: local_effects_digest(scope, options),
             confirmed_at_ms: 100,
             nonce: [5; 24],
             confirming_identity_commitment: issuer,
@@ -580,6 +592,16 @@ mod tests {
         };
         value.signature = TestVerifier::signature(&issuer, &canonical_confirmation(&value));
         value
+    }
+
+    fn confirmation(scope: BurnScopeCommitment, issuer: [u8; 32]) -> BurnConfirmation {
+        confirmation_with_options(
+            scope,
+            issuer,
+            LocalBurnOptions {
+                forget_incoming_and_member_messages: false,
+            },
+        )
     }
 
     #[test]
@@ -652,6 +674,49 @@ mod tests {
             ),
             Err(BurnContractError::ConfirmationDoesNotMatch)
         );
+    }
+
+    #[test]
+    fn task_0517_hide_other_people_tick_choice_is_local_screen_only_for_recipient_records() {
+        let scope = scope(BurnScopeLevel::CurrentChat);
+        let options = LocalBurnOptions {
+            forget_incoming_and_member_messages: true,
+        };
+        let result = plan_local_burn(
+            scope,
+            options,
+            &confirmation_with_options(scope, [1; 32], options),
+            &TestVerifier,
+        )
+        .expect("hide-other-people tick choice should authorize a local burn action");
+
+        println!(
+            "TASK 0517 recipient records: local-hide {} remote-removal {}",
+            result.recipient_records.local_hide, result.recipient_records.remote_removal
+        );
+
+        assert!(result.recipient_records.local_hide);
+        assert!(!result.recipient_records.remote_removal);
+        assert!(result.forget_incoming_and_member_messages);
+
+        let unticked_options = LocalBurnOptions {
+            forget_incoming_and_member_messages: false,
+        };
+        let unticked = plan_local_burn(
+            scope,
+            unticked_options,
+            &confirmation_with_options(scope, [1; 32], unticked_options),
+            &TestVerifier,
+        )
+        .expect("ordinary local burn action should still authorize");
+
+        println!(
+            "TASK 0517 unticked recipient records: local-hide {} remote-removal {}",
+            unticked.recipient_records.local_hide, unticked.recipient_records.remote_removal
+        );
+
+        assert!(!unticked.recipient_records.local_hide);
+        assert!(!unticked.recipient_records.remote_removal);
     }
 
     fn remote_request() -> RemoteFriendBurnRequest {
