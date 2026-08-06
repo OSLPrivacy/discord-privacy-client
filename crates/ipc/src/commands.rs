@@ -3759,6 +3759,57 @@ pub fn cmd_osl_burn_message(state: &AppState, discord_message_id: String) -> Res
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslTheirSideBurnResult {
+    pub choice: String,
+    pub target_content_id: String,
+    pub remote_removal_count: u32,
+}
+
+/// Burn the peer-visible server-held copy for one selected message.
+///
+/// This is intentionally remote-only. The local sender history is left intact;
+/// callers that want a local wipe use the separate local burn command.
+pub fn cmd_osl_burn_their_side_message(
+    state: &AppState,
+    target_content_id: String,
+) -> Result<OslTheirSideBurnResult, String> {
+    record_activity_on_command_entry();
+    if target_content_id.trim().is_empty() {
+        return Err("OSL: their-side burn needs a content id".to_string());
+    }
+    let identity = state
+        .identity_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: their-side burn needs a loaded identity".to_string())?;
+    let client = state
+        .keyserver_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: their-side burn needs a key server".to_string())?;
+    let response = client
+        .burn(
+            &identity,
+            &keystore::BurnScope::Single {
+                content_id: target_content_id.clone(),
+            },
+        )
+        .map_err(|error| format!("OSL: their-side burn refused: {error}"))?;
+    if response.scope != "single" {
+        return Err(format!(
+            "OSL: their-side burn returned unexpected scope {}",
+            response.scope
+        ));
+    }
+    Ok(OslTheirSideBurnResult {
+        choice: "Their Side".to_string(),
+        target_content_id,
+        remote_removal_count: response.deleted_count,
+    })
+}
+
 /// Pull diagnostic facts out of a Phase 4 cover string for the
 /// NoMatchingSlot error path. Returns a single-line summary like
 /// `version=0x01 N=2 hints=[0xab,0xcd]`, OR a fallback string
