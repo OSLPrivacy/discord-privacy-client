@@ -217,13 +217,39 @@ export const D2_PROBE_FORMAT =
  * reason. See `MIGRATION_SEQUENCE_SKIPS` for the git evidence behind it and for
  * why renumbering 0017 was refused — what a live store applied cannot be
  * determined from this repository, only from that database's `d1_migrations`.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * MOVED AGAIN 2026-08-06 (TASK 0045), from
+ * fc5659bd985dce5884338509e08925a82d06ac7e6ca1c3315df4d686a5b60204, for the
+ * attachment-tier limit check. The release set moved from 50 to 51 files
+ * because `scripts/attachment-tier-limits.ts` is a new direct-call proof script
+ * under the pinned scripts root.
+ *
+ * Per-file account:
+ *
+ *   src/lib/attachment-limits.ts   Replaced raw 26 MiB/513 MiB constants with
+ *                                  one shared Free/Pro limit record and the
+ *                                  `checkAttachmentTierLimit` predicate.
+ *                                  Existing exported Worker constants now
+ *                                  derive from that record.
+ *   migrations/0004_attachment_capability_digests_and_quota.sql
+ *                                  Raised the stored attachment row bound to
+ *                                  1 GiB and the part-number bound to 128
+ *                                  8 MiB parts, matching the Pro record.
+ *   scripts/attachment-tier-limits.ts
+ *                                  Added the direct-call CLI that printed the
+ *                                  TASK 0045 accept/reject finish-line strings.
+ *
+ * Test files are still outside this digest by policy; the new
+ * `test-node/attachment-tier-limits.test.ts` is guarded by the structural
+ * test closure and was run directly.
  */
 export const D2_RELEASE_COMMIT =
   "5a2bad492dec2d90094d2c4a797124366d7dea32";
 export const D2_RELEASE_TREE =
   "18149f3dbb14bae687cea33a56f624171958c8cd";
 export const D2_RELEASE_SOURCE_SHA256 =
-  "fc5659bd985dce5884338509e08925a82d06ac7e6ca1c3315df4d686a5b60204";
+  "3128aacea11715a880d02fd169943289a43b99094d5b8ee5fc13c124841265f6";
 export const D2_MIGRATION_0010_SHA256 =
   "a545f989172c32c8f5f5c78754b4eda2f045778643cbb86c9eb81f22be2f6636";
 export const D2_DATABASE_ID = "be3d31f1-f6b4-4d6e-8ede-74514950b9e2";
