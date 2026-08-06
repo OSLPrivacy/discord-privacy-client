@@ -6,6 +6,9 @@
 //!
 //! Tauri-attribute wrappers live in [`crate::tauri_glue`].
 
+use crate::both_sides_burn_progress::{
+    BothSidesBurnProgressDto, BothSidesBurnProgressStore, BothSidesBurnRemovalStep,
+};
 use crate::state::AppState;
 use crate::{IpcError, IpcResult};
 use base64::engine::general_purpose::STANDARD;
@@ -3843,6 +3846,34 @@ pub fn cmd_osl_burn_sender_message_records_choice(
         "both-sides" => cmd_osl_burn_sender_message_records_both_sides(state, discord_message_ids),
         other => Err(format!("OSL: unknown scope: {other}")),
     }
+}
+
+pub fn cmd_osl_begin_both_sides_burn_progress(
+    progress_path: PathBuf,
+    burn_id: String,
+    discord_message_ids: Vec<String>,
+) -> Result<BothSidesBurnProgressDto, String> {
+    record_activity_on_command_entry();
+    validate_selected_sender_message_records(&discord_message_ids)?;
+    BothSidesBurnProgressStore::new(progress_path).begin_or_resume(&burn_id, discord_message_ids)
+}
+
+pub fn cmd_osl_save_both_sides_burn_removal_progress(
+    progress_path: PathBuf,
+    burn_id: String,
+    removal_step: String,
+) -> Result<BothSidesBurnProgressDto, String> {
+    record_activity_on_command_entry();
+    let step = BothSidesBurnRemovalStep::parse(&removal_step)?;
+    BothSidesBurnProgressStore::new(progress_path).mark_finished(&burn_id, step)
+}
+
+pub fn cmd_osl_get_both_sides_burn_progress(
+    progress_path: PathBuf,
+    burn_id: String,
+) -> Result<BothSidesBurnProgressDto, String> {
+    record_activity_on_command_entry();
+    BothSidesBurnProgressStore::new(progress_path).report(&burn_id)
 }
 
 fn validate_selected_sender_message_records(discord_message_ids: &[String]) -> Result<(), String> {
