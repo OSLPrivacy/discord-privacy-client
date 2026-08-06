@@ -15,6 +15,7 @@ const EMAIL_COMPOSE_CONTROLS: [WebsiteNamedControlRequest; 2] = [
 ];
 
 pub const GMAIL_SERVICE_ID: &str = "gmail";
+pub const AOL_SERVICE_ID: &str = "aol";
 
 pub const GMAIL_CONTROL_NAMES: [&str; 6] = [
     "compose",
@@ -23,6 +24,15 @@ pub const GMAIL_CONTROL_NAMES: [&str; 6] = [
     "thread view",
     "labels",
     "reading pane or full page",
+];
+
+pub const AOL_CONTROL_NAMES: [&str; 6] = [
+    "compose",
+    "body",
+    "Send",
+    "folders",
+    "thread view",
+    "reading pane",
 ];
 
 const GMAIL_CONTROL_REQUESTS: [WebsiteNamedControlRequest; 6] = [
@@ -52,8 +62,64 @@ const GMAIL_CONTROL_REQUESTS: [WebsiteNamedControlRequest; 6] = [
     },
 ];
 
+const AOL_CONTROL_REQUESTS: [WebsiteNamedControlRequest; 6] = [
+    WebsiteNamedControlRequest {
+        name: "compose",
+        kind: WebsiteControlKind::Button,
+    },
+    WebsiteNamedControlRequest {
+        name: "body",
+        kind: WebsiteControlKind::EditableBox,
+    },
+    WebsiteNamedControlRequest {
+        name: "Send",
+        kind: WebsiteControlKind::Button,
+    },
+    WebsiteNamedControlRequest {
+        name: "folders",
+        kind: WebsiteControlKind::VisibleMessageArea,
+    },
+    WebsiteNamedControlRequest {
+        name: "thread view",
+        kind: WebsiteControlKind::VisibleMessageArea,
+    },
+    WebsiteNamedControlRequest {
+        name: "reading pane",
+        kind: WebsiteControlKind::VisibleMessageArea,
+    },
+];
+
 pub const fn gmail_control_mapping() -> &'static [WebsiteNamedControlRequest] {
     &GMAIL_CONTROL_REQUESTS
+}
+
+pub const fn aol_control_mapping() -> &'static [WebsiteNamedControlRequest] {
+    &AOL_CONTROL_REQUESTS
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ServiceControlMappingError {
+    MissingNamedTarget(&'static str),
+}
+
+pub fn validate_aol_control_mapping(
+    mapping: &[WebsiteNamedControlRequest],
+) -> Result<(), ServiceControlMappingError> {
+    validate_required_control_names(mapping, &AOL_CONTROL_NAMES)
+}
+
+fn validate_required_control_names(
+    mapping: &[WebsiteNamedControlRequest],
+    required_names: &'static [&'static str],
+) -> Result<(), ServiceControlMappingError> {
+    for required_name in required_names {
+        if !mapping.iter().any(|request| request.name == *required_name) {
+            return Err(ServiceControlMappingError::MissingNamedTarget(
+                *required_name,
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -274,5 +340,58 @@ mod tests {
         assert_eq!(mapping[3].kind, WebsiteControlKind::VisibleMessageArea);
         assert_eq!(mapping[4].kind, WebsiteControlKind::VisibleMessageArea);
         assert_eq!(mapping[5].kind, WebsiteControlKind::VisibleMessageArea);
+    }
+
+    #[test]
+    fn task_1255_aol_mapping_contains_all_six_named_targets_and_refuses_each_omission() {
+        let mapping = aol_control_mapping();
+        let names: Vec<&str> = mapping.iter().map(|request| request.name).collect();
+        let expected_names = [
+            "compose",
+            "body",
+            "Send",
+            "folders",
+            "thread view",
+            "reading pane",
+        ];
+
+        println!("TASK1255 service_connection={AOL_SERVICE_ID}");
+        println!("TASK1255 named_target_count={}", names.len());
+        for name in &names {
+            println!("TASK1255 named_target={name}");
+        }
+
+        assert_eq!(names, expected_names);
+        assert_eq!(AOL_CONTROL_NAMES, expected_names);
+        assert_eq!(mapping[0].kind, WebsiteControlKind::Button);
+        assert_eq!(mapping[1].kind, WebsiteControlKind::EditableBox);
+        assert_eq!(mapping[2].kind, WebsiteControlKind::Button);
+        assert_eq!(mapping[3].kind, WebsiteControlKind::VisibleMessageArea);
+        assert_eq!(mapping[4].kind, WebsiteControlKind::VisibleMessageArea);
+        assert_eq!(mapping[5].kind, WebsiteControlKind::VisibleMessageArea);
+        validate_aol_control_mapping(mapping).expect("complete AOL mapping is accepted");
+
+        let mut refused_missing_names = Vec::new();
+        for omitted_name in expected_names {
+            let candidate: Vec<WebsiteNamedControlRequest> = mapping
+                .iter()
+                .copied()
+                .filter(|request| request.name != omitted_name)
+                .collect();
+            let error = validate_aol_control_mapping(&candidate)
+                .expect_err("AOL mapping missing a named target is refused");
+            let ServiceControlMappingError::MissingNamedTarget(missing_name) = error;
+            println!(
+                "TASK1255 omitted_named_target={omitted_name} refused_missing_named_target={missing_name}"
+            );
+            assert_eq!(missing_name, omitted_name);
+            refused_missing_names.push(missing_name);
+        }
+        println!(
+            "TASK1255 refused_missing_target_count={}",
+            refused_missing_names.len()
+        );
+
+        assert_eq!(refused_missing_names, expected_names);
     }
 }
