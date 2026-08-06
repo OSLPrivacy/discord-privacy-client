@@ -62,6 +62,7 @@ fn reload_repopulates_app_preferences_from_disk() {
         update_channel: ipc::app_preferences::UpdateChannel::Stable,
         auto_whitelist_rules: HashMap::new(),
         next_generation_message_policy: Default::default(),
+        ..Default::default()
     };
     write_app_preferences(&dir.path().join("app_preferences.json"), &prefs).unwrap();
 
@@ -338,6 +339,7 @@ fn reload_overwrites_bootstrap_defaults() {
         update_channel: ipc::app_preferences::UpdateChannel::Stable,
         auto_whitelist_rules: HashMap::new(),
         next_generation_message_policy: Default::default(),
+        ..Default::default()
     };
     write_app_preferences(&dir.path().join("app_preferences.json"), &prefs_on_disk).unwrap();
 

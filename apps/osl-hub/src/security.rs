@@ -533,6 +533,10 @@ struct PersonMetadata {
     alias: Option<String>,
     #[serde(default)]
     safety_number_verified: bool,
+    #[serde(default)]
+    auto_whitelist: ipc::auto_whitelist_rules::AutoWhitelistChoice,
+    #[serde(default)]
+    auto_whitelist_future_accounts: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_ed25519_public: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -941,6 +945,8 @@ pub fn add_friend_code(
             ed25519_public: parsed.payload.ed25519_public.clone(),
             alias,
             safety_number_verified: false,
+            auto_whitelist: ipc::auto_whitelist_rules::AutoWhitelistChoice::Never,
+            auto_whitelist_future_accounts: false,
             pending_ed25519_public: None,
             pending_key_bundle: None,
         },
@@ -2440,7 +2446,39 @@ pub fn apply_scoped_trust_grant(
     prefs
         .manual_approved_scope_people
         .insert(grant.storage_key().to_owned(), grant.person_id().to_owned());
+    let defaults = ipc::app_preferences::load_app_preferences(&dir.join("app_preferences.json"));
+    if defaults.new_friend_account_reach
+        == ipc::app_preferences::NewFriendAccountReach::AllSharedChats
+    {
+        prefs
+            .friend_account_reach_choices
+            .entry(grant.person_id().to_owned())
+            .or_default()
+            .insert(
+                format!("{}:{}", grant.service_id(), grant.account_id()),
+                true,
+            );
+    }
     write_encrypted_json(&path, &prefs)
+        .and_then(|_| apply_new_friend_defaults_to_people(&dir, grant.person_id(), defaults))
+}
+
+fn apply_new_friend_defaults_to_people(
+    dir: &Path,
+    person_id: &str,
+    defaults: ipc::app_preferences::AppPreferences,
+) -> Result<(), String> {
+    let path = dir.join(PEOPLE_FILE);
+    let mut people = load_people_file(dir)?;
+    let Some(metadata) = people.people.get_mut(person_id) else {
+        return Err("OSL friend is unknown".to_owned());
+    };
+    metadata.auto_whitelist = defaults.new_friend_auto_whitelist;
+    metadata.auto_whitelist_future_accounts = matches!(
+        defaults.new_friend_auto_whitelist,
+        ipc::auto_whitelist_rules::AutoWhitelistChoice::Always
+    );
+    write_encrypted_json(&path, &people)
 }
 
 /// Persist one uploaded prose-token blob in the encrypted burn ledger. The
@@ -5870,6 +5908,16 @@ mod tests {
         let core = HubCoreState::default();
         let security = HubSecurityState::default();
         install_self_identity(&core);
+        ipc::commands::cmd_osl_save_new_friend_defaults(
+            &core.osl,
+            ipc::commands::NewFriendDefaultsDto {
+                account_reach: "all_shared_chats".to_owned(),
+                auto_whitelist: "always".to_owned(),
+                verification_warnings: "disabled".to_owned(),
+            },
+            Some(harness.path().to_path_buf()),
+        )
+        .expect("saved new-friend defaults");
 
         let friend = keystore::generate_native_identity();
         let added = add_friend_code(&core, &security, friend_code_for_identity(&friend), None)
@@ -5963,6 +6011,24 @@ mod tests {
         )
         .expect("typed friend request adopts its scoped grant in the original core");
         {
+            let stored_people = load_people_file(harness.path()).unwrap();
+            let pending_friend = stored_people.people.get(&added.person_id).unwrap();
+            assert_eq!(
+                pending_friend.auto_whitelist,
+                ipc::auto_whitelist_rules::AutoWhitelistChoice::Never,
+                "pending or IPC-only requests must not apply new-friend defaults"
+            );
+            assert!(!pending_friend.auto_whitelist_future_accounts);
+            let stored: SecurityPreferences =
+                load_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE)).unwrap();
+            assert!(
+                !stored
+                    .friend_account_reach_choices
+                    .contains_key(&added.person_id),
+                "pending or IPC-only requests must not tick account reach"
+            );
+        }
+        {
             let peer_map = core.osl.peer_map.lock().unwrap();
             let requester = peer_map
                 .get(&requester_discord_id)
@@ -6048,6 +6114,38 @@ mod tests {
                 .map(String::as_str),
             Some(added.person_id.as_str()),
             "manual approval must remain attributed to the accepted friend"
+        );
+        let account_key = format!("{}:{}", grant.service_id(), grant.account_id());
+        let account_allowed = stored
+            .friend_account_reach_choices
+            .get(added.person_id.as_str())
+            .and_then(|choices| choices.get(&account_key))
+            .copied()
+            .unwrap_or(false);
+        assert!(
+            account_allowed,
+            "accepted friend must inherit the saved current-account reach default"
+        );
+
+        let stored_people = load_people_file(harness.path()).unwrap();
+        let accepted_friend = stored_people.people.get(&added.person_id).unwrap();
+        assert_eq!(
+            accepted_friend.auto_whitelist,
+            ipc::auto_whitelist_rules::AutoWhitelistChoice::Always
+        );
+        assert!(accepted_friend.auto_whitelist_future_accounts);
+        let future_account_auto_whitelist = if accepted_friend.auto_whitelist_future_accounts {
+            "on"
+        } else {
+            "off"
+        };
+        println!(
+            "TASK0249 newly_accepted_friend person={} account={} account_allowed={} auto_whitelist={} future_account_auto_whitelist={}",
+            added.person_id,
+            account_key,
+            account_allowed,
+            accepted_friend.auto_whitelist.label(),
+            future_account_auto_whitelist
         );
 
         let people = list_people(&core).unwrap();

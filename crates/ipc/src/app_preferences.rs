@@ -21,6 +21,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::str::FromStr;
 
 /// Active stego envelope. Mode 0 is the production `DPC0::<b64>`
 /// path; Mode 1 is the multi-message `DPC1::<sentences>` cover
@@ -111,6 +112,80 @@ pub fn parse_next_generation_message_policy(
     }
 }
 
+/// Default account reach for a friend who is newly accepted.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NewFriendAccountReach {
+    #[default]
+    ApprovedChatsOnly,
+    AllSharedChats,
+}
+
+impl NewFriendAccountReach {
+    pub fn as_value(self) -> &'static str {
+        match self {
+            Self::ApprovedChatsOnly => "approved_chats_only",
+            Self::AllSharedChats => "all_shared_chats",
+        }
+    }
+}
+
+impl FromStr for NewFriendAccountReach {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', ' '], "_")
+            .as_str()
+        {
+            "approved_chats_only" => Ok(Self::ApprovedChatsOnly),
+            "all_shared_chats" => Ok(Self::AllSharedChats),
+            _ => Err(format!(
+                "OSL: unknown new-friend account reach {raw:?}; valid choices: approved_chats_only, all_shared_chats"
+            )),
+        }
+    }
+}
+
+/// Whether new-friend verification warnings are shown by default.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NewFriendVerificationWarnings {
+    #[default]
+    Enabled,
+    Disabled,
+}
+
+impl NewFriendVerificationWarnings {
+    pub fn as_value(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+impl FromStr for NewFriendVerificationWarnings {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', ' '], "_")
+            .as_str()
+        {
+            "enabled" => Ok(Self::Enabled),
+            "disabled" => Ok(Self::Disabled),
+            _ => Err(format!(
+                "OSL: unknown new-friend verification warnings {raw:?}; valid choices: enabled, disabled"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -125,9 +200,15 @@ pub struct AppPreferences {
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
     #[serde(default)]
     pub next_generation_message_policy: NextGenerationMessagePolicy,
+    #[serde(default)]
+    pub new_friend_account_reach: NewFriendAccountReach,
+    #[serde(default)]
+    pub new_friend_auto_whitelist: crate::auto_whitelist_rules::AutoWhitelistChoice,
+    #[serde(default)]
+    pub new_friend_verification_warnings: NewFriendVerificationWarnings,
 }
 
-pub const APP_PREFERENCES_VERSION: u32 = 2;
+pub const APP_PREFERENCES_VERSION: u32 = 3;
 
 pub fn load_app_preferences(path: &Path) -> AppPreferences {
     let Ok(blob) = std::fs::read(path) else {
