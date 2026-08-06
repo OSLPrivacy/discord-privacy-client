@@ -3953,6 +3953,13 @@ pub(crate) fn now_unix_secs() -> i64 {
 pub struct EncryptOutput {
     pub messages: Vec<String>,
     pub session_id: Option<u32>,
+    /// Human-readable send key sequence selected by the command. Existing
+    /// callers can ignore it; task gates use it to prove the routed path.
+    #[serde(default = "default_send_key_sequence")]
+    pub key_sequence: String,
+    /// True only when the command emitted the stateless legacy/basic v=3 path.
+    #[serde(default)]
+    pub basic_path_used: bool,
     /// Phase 9-A3 SKDM-delivery fix: v=5 group sends produce one
     /// SKDM (Sender Key Distribution Message) v=4 wire per non-self
     /// peer that boot.js must post as its OWN Discord message(s) —
@@ -3993,17 +4000,37 @@ pub struct EncryptWire {
     pub content: String,
     pub control_messages: Vec<String>,
     pub skdm_peer_status: Vec<SkdmPeerStatus>,
+    pub key_sequence: String,
+    pub basic_path_used: bool,
 }
 
 impl EncryptWire {
     /// v=3 / v=4-DM helper: a content wire with no SKDM fan-out.
     fn content_only(content: String) -> Self {
+        Self::content_with_sequence(content, "basic-v3", true)
+    }
+
+    fn rn_content(content: String) -> Self {
+        Self::content_with_sequence(content, "stronger-osl-rn", false)
+    }
+
+    fn content_with_sequence(
+        content: String,
+        key_sequence: impl Into<String>,
+        basic_path_used: bool,
+    ) -> Self {
         EncryptWire {
             content,
             control_messages: Vec::new(),
             skdm_peer_status: Vec::new(),
+            key_sequence: key_sequence.into(),
+            basic_path_used,
         }
     }
+}
+
+fn default_send_key_sequence() -> String {
+    "basic-v3".to_string()
 }
 
 fn rn_session_store_from_config_dir() -> Result<crate::wire_rn::RnSessionStore, String> {
@@ -4404,6 +4431,8 @@ pub fn cmd_osl_encrypt_message_v2(
         content: wire,
         control_messages,
         skdm_peer_status,
+        key_sequence,
+        basic_path_used,
     } = cmd_osl_encrypt_message_v2_wire(
         state,
         plaintext,
@@ -4434,6 +4463,8 @@ pub fn cmd_osl_encrypt_message_v2(
     Ok(EncryptOutput {
         messages: vec![wire],
         session_id: None,
+        key_sequence,
+        basic_path_used,
         control_messages,
         skdm_peer_status,
     })
@@ -4609,6 +4640,15 @@ pub fn cmd_osl_encrypt_message_v2_wire(
         .skip(1) // recipients[0] is (self_discord_id, self) per recipients_for_scope_v3
         .collect();
 
+    if let Some(wire) = try_encrypt_rn_existing_direct_chat_from_state(
+        state,
+        &scope,
+        &non_self_peers,
+        plaintext.as_bytes(),
+    )? {
+        return Ok(wire);
+    }
+
     if let Some(wire) = try_encrypt_rn_first_contact_from_state(
         state,
         state.rn_wire_in_enabled(),
@@ -4616,7 +4656,7 @@ pub fn cmd_osl_encrypt_message_v2_wire(
         &non_self_peers,
         plaintext.as_bytes(),
     )? {
-        return Ok(EncryptWire::content_only(wire));
+        return Ok(EncryptWire::rn_content(wire));
     }
 
     if !non_self_peers.is_empty() {
@@ -4798,6 +4838,125 @@ fn try_encrypt_rn_first_contact_from_state(
         persist_direct_chat_security_state(state, peer_did, &verified.pubkeys, &prekey_bundle)?;
     }
     Ok(wire)
+}
+
+fn try_encrypt_rn_existing_direct_chat_from_state(
+    state: &AppState,
+    scope: &crate::scope::Scope,
+    non_self_peers: &[&(String, crate::wire_v2::RecipientV3)],
+    plaintext: &[u8],
+) -> Result<Option<EncryptWire>, String> {
+    if scope_is_group_or_server(scope) || non_self_peers.len() != 1 {
+        return Ok(None);
+    }
+
+    let (peer_did, recipient) = non_self_peers
+        .first()
+        .ok_or_else(|| "OSL: OSL-RN direct send: missing peer".to_string())?;
+    let peer_entry = {
+        let pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm.get(peer_did.as_str()).cloned()
+    };
+    let Some(peer_entry) = peer_entry else {
+        return Ok(None);
+    };
+    if peer_entry.direct_chat_security.is_none() {
+        return Ok(None);
+    }
+
+    verify_persisted_direct_chat_security_for_rn(&peer_entry)?;
+    if !state.rn_wire_in_enabled() {
+        return Err(
+            "OSL: direct chat is agreed to OSL-RN but wire-in is disabled; \
+             refusing the basic path"
+                .to_string(),
+        );
+    }
+
+    let rn_store = rn_session_store_from_config_dir()?;
+    let sealer = select_best_sealer();
+    let wire = crate::wire_rn::send_rn_for_state(
+        state,
+        &rn_store,
+        sealer.as_ref(),
+        recipient.x25519_pub.as_bytes(),
+        crate::wire_v2::MSG_TYPE_CONTENT,
+        plaintext,
+    )
+    .map_err(|e| {
+        format!(
+            "OSL: RN direct send refused for peer {peer}: {} ({e})",
+            crate::rn_health::user_state_for_rn_error(&e),
+            peer = crate::log_id::log_id(peer_did),
+        )
+    })?;
+    Ok(Some(EncryptWire::rn_content(wire)))
+}
+
+fn verify_persisted_direct_chat_security_for_rn(
+    peer_entry: &crate::peer_map::PeerEntry,
+) -> Result<(), String> {
+    let security = peer_entry
+        .direct_chat_security
+        .as_ref()
+        .ok_or_else(|| "OSL: direct chat has no persisted security state".to_string())?;
+    if security.version != 1
+        || security.agreed_wire_version != osl_ratchet_next::WIRE_VERSION_RN
+        || security.state != crate::peer_map::DirectChatSecurityLevel::OslRn
+    {
+        return Err("OSL: direct chat security state is not OSL-RN".to_string());
+    }
+
+    let proof = &security.peer_proof;
+    if peer_entry.osl_user_id.as_deref() != Some(proof.peer_osl_user_id.as_str())
+        || peer_entry.pubkey.as_deref() != Some(proof.ik_x25519_pub.as_str())
+        || peer_entry.ik_mlkem768_pub.as_deref() != Some(proof.ik_mlkem768_pub.as_str())
+        || peer_entry
+            .tofu_key_bundle
+            .as_ref()
+            .map(|trusted| trusted.ed25519_pub.as_str())
+            .or(peer_entry.tofu_ed25519_pub.as_deref())
+            != Some(proof.ik_ed25519_pub.as_str())
+    {
+        return Err("OSL: direct chat security proof no longer matches peer entry".to_string());
+    }
+
+    let pubkeys = keystore::client::PubkeysResponse {
+        user_id: proof.peer_osl_user_id.clone(),
+        ik_x25519_pub: proof.ik_x25519_pub.clone(),
+        ik_ed25519_pub: proof.ik_ed25519_pub.clone(),
+        ik_mlkem768_pub: proof.ik_mlkem768_pub.clone(),
+        registered_at: String::new(),
+        last_rotated_at: None,
+        ik_ratchet_initial_pub: proof.ik_ratchet_initial_pub.clone(),
+        rn_capabilities: Some(proof.rn_capabilities),
+        registration_sig: Some(proof.registration_sig.clone()),
+        identity_scheme: None,
+        identity_bundle_version: None,
+        identity_revision: None,
+        ik_root_ed25519_pub: None,
+        identity_bundle_proof_sig: None,
+    };
+    if !keystore::client::verify_peer_capabilities(&pubkeys).supports_rn_live() {
+        return Err(
+            "OSL: direct chat security proof does not verify OSL-RN live support".to_string(),
+        );
+    }
+
+    let prekey = keystore::client::PrekeyBundleResponse {
+        user_id: proof.peer_osl_user_id.clone(),
+        ik_x25519_pub: proof.ik_x25519_pub.clone(),
+        ik_ed25519_pub: proof.ik_ed25519_pub.clone(),
+        ik_mlkem768_pub: proof.ik_mlkem768_pub.clone(),
+        spk_pub: proof.spk_pub.clone(),
+        spk_signature: proof.spk_signature.clone(),
+        spk_rotated_at: proof.spk_rotated_at.clone(),
+        opk: None,
+        remaining_opk_count: 0,
+        ik_ratchet_initial_pub: proof.ik_ratchet_initial_pub.clone(),
+    };
+    verify_rn_prekey_bundle_signature(&prekey)?;
+    Ok(())
 }
 
 fn verified_rn_capabilities_for_live_peer(
