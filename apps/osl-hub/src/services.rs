@@ -268,6 +268,65 @@ pub fn service_kind_from_id(service_id: &str) -> Option<ServiceKind> {
     })
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishedServiceAccountRunNotice {
+    pub id: String,
+    pub service: String,
+    pub finished_account: String,
+    pub next_account: Option<String>,
+    pub match_count: u32,
+    pub title: String,
+    pub detail: String,
+}
+
+pub fn finish_active_service_account_run_notice(
+    service_id: ServiceKind,
+    run_id: &str,
+    finished_account: &str,
+    match_count: u32,
+    next_account: Option<&str>,
+) -> Result<FinishedServiceAccountRunNotice, String> {
+    let run_id = require_notice_text("run id", run_id, 96)?;
+    let finished_account = require_notice_text("finished account", finished_account, 40)?;
+    let next_account = next_account
+        .map(|account| require_notice_text("next account", account, 40))
+        .transpose()?;
+    let service = service_descriptor(service_id).display_name.to_owned();
+    let title = format!("{service} scan finished");
+    let result = if match_count == 0 {
+        format!("No matches found in {service} account {finished_account}.")
+    } else if match_count == 1 {
+        format!("1 match found in {service} account {finished_account}.")
+    } else {
+        format!("{match_count} matches found in {service} account {finished_account}.")
+    };
+    let detail = match &next_account {
+        Some(next) => format!("{result} Next account: {next}."),
+        None => format!("{result} No more accounts are queued."),
+    };
+    Ok(FinishedServiceAccountRunNotice {
+        id: format!("scrub-finished-{run_id}"),
+        service,
+        finished_account,
+        next_account,
+        match_count,
+        title,
+        detail,
+    })
+}
+
+fn require_notice_text(label: &str, value: &str, max_len: usize) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > max_len
+        || value.chars().any(|character| character.is_control())
+    {
+        return Err(format!("{label} is not a valid notice label"));
+    }
+    Ok(value.to_owned())
+}
+
 fn new_account_id(counter: &AtomicU64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -670,6 +729,55 @@ mod tests {
         assert_eq!(service_kind_from_id("Discord"), None);
         assert_eq!(service_kind_from_id("discord.com"), None);
         assert_eq!(service_kind_from_id("../discord"), None);
+    }
+
+    #[test]
+    fn task_1439_finishing_two_differently_named_accounts_keeps_notice_account_names_distinct() {
+        let first = finish_active_service_account_run_notice(
+            ServiceKind::Discord,
+            "task1439-run-alpha",
+            "Alpha",
+            0,
+            Some("Beta"),
+        )
+        .unwrap();
+        let second = finish_active_service_account_run_notice(
+            ServiceKind::Discord,
+            "task1439-run-beta",
+            "Beta",
+            2,
+            Some("Gamma"),
+        )
+        .unwrap();
+
+        assert_eq!(first.finished_account, "Alpha");
+        assert_eq!(first.next_account.as_deref(), Some("Beta"));
+        assert_eq!(
+            first.detail,
+            "No matches found in Discord account Alpha. Next account: Beta."
+        );
+        assert!(!first.detail.contains("account Beta."));
+        assert_eq!(second.finished_account, "Beta");
+        assert_eq!(second.next_account.as_deref(), Some("Gamma"));
+        assert_eq!(
+            second.detail,
+            "2 matches found in Discord account Beta. Next account: Gamma."
+        );
+        assert!(!second.detail.contains("account Alpha."));
+
+        println!("TASK1439 finish_action=finish_active_service_account_run_notice");
+        for notice in [&first, &second] {
+            println!("TASK1439 notice_id={}", notice.id);
+            println!("TASK1439 notice_service={}", notice.service);
+            println!(
+                "TASK1439 finished_account={} next_account={} match_count={}",
+                notice.finished_account,
+                notice.next_account.as_deref().unwrap_or("NONE"),
+                notice.match_count
+            );
+            println!("TASK1439 notice_title={}", notice.title);
+            println!("TASK1439 notice_detail={}", notice.detail);
+        }
     }
 
     #[test]
