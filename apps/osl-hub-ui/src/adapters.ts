@@ -72,7 +72,10 @@ export interface ManualPeerContext {
   personId: string;
   peerOslUserId: string;
   scopeApproved: boolean;
+  suggestion?: "offer_approval";
 }
+export type ChatApprovalSuggestionChoice = "on" | "off";
+export type ChatApprovalSuggestionAnswer = "offer_approval" | "no_suggestion";
 export interface PreparedPeerProseText {
   coverText: string;
   expiresAt: number;
@@ -478,6 +481,27 @@ export async function activateOslChatContext(personId: string): Promise<ManualPe
       && parsed.peerOslUserId === person.oslUserId ? parsed : null,
       "the activated context did not match the requested one");
   } catch (error) { recordBackendFailure("activate_osl_chat_context", error); return null; }
+}
+
+export async function setHubChatApprovalSuggestionChoice(enabled: boolean): Promise<ChatApprovalSuggestionChoice | null> {
+  if (!isTauriRuntime()) return null;
+  const choice = enabled ? "on" : "off";
+  try {
+    return parseChatApprovalSuggestionChoice(await invoke<unknown>("set_hub_chat_approval_suggestion_choice", { choice }));
+  } catch (error) {
+    recordBackendFailure("set_hub_chat_approval_suggestion_choice", error);
+    return null;
+  }
+}
+
+export async function answerHubChatApprovalSuggestion(contextToken: string, personId: string): Promise<ChatApprovalSuggestionAnswer | null> {
+  if (!isTauriRuntime() || !safeContextToken(contextToken) || !safe(personId, 180)) return null;
+  try {
+    return parseChatApprovalSuggestionAnswer(await invoke<unknown>("answer_hub_chat_approval_suggestion", { contextToken, personId }));
+  } catch (error) {
+    recordBackendFailure("answer_hub_chat_approval_suggestion", error);
+    return null;
+  }
 }
 
 async function verifiedStableOslChatPerson(personId: string): Promise<HubPerson | null> {
@@ -1784,14 +1808,25 @@ export function parseLocalLoopbackContext(raw: unknown): LocalLoopbackContext | 
 }
 
 export function parseManualPeerContext(raw: unknown): ManualPeerContext | null {
-  if (!isRecord(raw) || !exact(raw, ["contextToken", "serviceId", "accountId", "personId", "peerOslUserId", "scopeApproved"])) return null;
+  if (!isRecord(raw) || !(exact(raw, ["contextToken", "serviceId", "accountId", "personId", "peerOslUserId", "scopeApproved"]) || exact(raw, ["contextToken", "serviceId", "accountId", "personId", "peerOslUserId", "scopeApproved", "suggestion"]))) return null;
   if (!safeContextToken(raw.contextToken)
     || !safeId(raw.serviceId, 32)
     || !isContextId(raw.accountId)
     || !safe(raw.personId, 180)
     || !isContextId(raw.peerOslUserId)
-    || typeof raw.scopeApproved !== "boolean") return null;
+    || typeof raw.scopeApproved !== "boolean"
+    || (raw.suggestion !== undefined && raw.suggestion !== "offer_approval")) return null;
   return raw as unknown as ManualPeerContext;
+}
+
+export function parseChatApprovalSuggestionChoice(raw: unknown): ChatApprovalSuggestionChoice | null {
+  if (!isRecord(raw) || !exact(raw, ["choice"])) return null;
+  return raw.choice === "on" || raw.choice === "off" ? raw.choice : null;
+}
+
+export function parseChatApprovalSuggestionAnswer(raw: unknown): ChatApprovalSuggestionAnswer | null {
+  if (!isRecord(raw) || !exact(raw, ["suggestion"])) return null;
+  return raw.suggestion === "offer_approval" || raw.suggestion === "no_suggestion" ? raw.suggestion : null;
 }
 
 export function parsePreparedPeerProseText(raw: unknown): PreparedPeerProseText | null {
