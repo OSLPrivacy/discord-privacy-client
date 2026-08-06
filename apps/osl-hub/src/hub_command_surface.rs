@@ -28,9 +28,7 @@ use crate::native_discord_adapter::{
 };
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
-use serde::Deserialize;
-#[cfg(feature = "discord-qa-shell")]
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
 pub fn build_review_ui_identity_binding_verifier(
@@ -163,6 +161,7 @@ where
 struct DiscordGuidedDeletionPlanProducer {
     scan: Option<guided_deletion::DeletionScan>,
     preview: Option<guided_deletion::DeletionPreview>,
+    saved_state: Option<GuidedDeletionSavedStateKind>,
 }
 
 /// Native-held step-4 state for one Discord guided-deletion route.
@@ -187,6 +186,28 @@ pub struct GuidedDeletionRunAuthorityInput {
     pub mode: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuidedDeletionSavedStateKind {
+    PauseAfterCurrentScreen,
+    StopAfterCurrentSafeStep,
+}
+
+impl GuidedDeletionSavedStateKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::PauseAfterCurrentScreen => "pause_after_current_screen",
+            Self::StopAfterCurrentSafeStep => "stop_after_current_safe_step",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuidedDeletionSavedStateDto {
+    pub saved_state: &'static str,
+    pub match_count: usize,
+}
+
 impl DiscordGuidedDeletionPlanState {
     pub fn record_scan(
         &self,
@@ -198,7 +219,40 @@ impl DiscordGuidedDeletionPlanState {
             .map_err(|_| "Discord guided-deletion plan state is unavailable".to_owned())?;
         producer.scan = Some(scan.clone());
         producer.preview = None;
+        producer.saved_state = None;
         Ok(scan)
+    }
+
+    pub fn pause_after_current_screen(&self) -> Result<GuidedDeletionSavedStateDto, String> {
+        self.save_state(GuidedDeletionSavedStateKind::PauseAfterCurrentScreen)
+    }
+
+    pub fn stop_after_current_safe_step(&self) -> Result<GuidedDeletionSavedStateDto, String> {
+        self.save_state(GuidedDeletionSavedStateKind::StopAfterCurrentSafeStep)
+    }
+
+    fn save_state(
+        &self,
+        saved_state: GuidedDeletionSavedStateKind,
+    ) -> Result<GuidedDeletionSavedStateDto, String> {
+        let mut producer = self
+            .inner
+            .lock()
+            .map_err(|_| "Discord guided-deletion plan state is unavailable".to_owned())?;
+        let match_count = producer
+            .scan
+            .as_ref()
+            .ok_or_else(|| "Run and review a Discord scan before saving run state".to_owned())?
+            .candidates
+            .len();
+        producer.saved_state = Some(saved_state);
+        let saved_state = producer
+            .saved_state
+            .ok_or_else(|| "Discord guided-deletion saved state was not retained".to_owned())?;
+        Ok(GuidedDeletionSavedStateDto {
+            saved_state: saved_state.label(),
+            match_count,
+        })
     }
 
     pub fn build_preview(
