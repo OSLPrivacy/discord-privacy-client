@@ -798,6 +798,55 @@ mod tests {
     }
 
     #[test]
+    fn removing_one_attachment_by_tray_record_id_leaves_the_other_id() {
+        let mut registry = NativeAttachmentJobRegistry::default();
+        let stored = registry
+            .store_tray_records(
+                CONTEXT,
+                [
+                    AttachmentTrayFileInput {
+                        name: "first.txt".to_owned(),
+                        r#type: "text/plain".to_owned(),
+                        size: 11,
+                    },
+                    AttachmentTrayFileInput {
+                        name: "second.txt".to_owned(),
+                        r#type: "text/plain".to_owned(),
+                        size: 22,
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(stored.len(), 2);
+        assert_ne!(stored[0].removable_id, stored[1].removable_id);
+
+        let removed = registry
+            .remove_tray_record(CONTEXT, &stored[0].removable_id)
+            .unwrap();
+        let remaining = registry.query_tray_records(CONTEXT);
+        let other = &stored[1];
+        println!(
+            "TASK0622 remove_one_attachment removed_id={} other_id={} tray_count={} remaining_id={} remaining_name={}",
+            removed.removable_id,
+            other.removable_id,
+            remaining.len(),
+            remaining
+                .first()
+                .map(|record| record.removable_id.as_str())
+                .unwrap_or("<none>"),
+            remaining
+                .first()
+                .map(|record| record.name.as_str())
+                .unwrap_or("<none>")
+        );
+
+        assert_eq!(removed, stored[0]);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].removable_id, other.removable_id);
+        assert_eq!(remaining[0].name, "second.txt");
+    }
+
+    #[test]
     fn stages_only_safe_dto_metadata_with_an_opaque_identifier() {
         let mut registry = NativeAttachmentJobRegistry::default();
         let dto = staged(&mut registry);
