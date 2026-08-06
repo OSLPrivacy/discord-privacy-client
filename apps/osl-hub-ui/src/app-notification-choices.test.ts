@@ -61,13 +61,13 @@ describe("app notification choices", () => {
       createdAt: "Now",
     });
 
-    expect(__oslHubUiTest.localNoticeCount("discord")).toBe(1);
-    expect(__oslHubUiTest.localNoticeCount("telegram")).toBe(1);
+    expect(__oslHubUiTest.localNoticeCount("discord"), "discord starts with one visible notice").toBe(1);
+    expect(__oslHubUiTest.localNoticeCount("telegram"), "telegram starts with one visible notice").toBe(1);
 
     __oslHubUiTest.changeAppNotificationTick("discord", false);
 
     expect(localStore.get("osl-hub-notification-apps")).toBe('{"discord":false}');
-    expect(__oslHubUiTest.localNoticeCount("discord")).toBe(0);
-    expect(__oslHubUiTest.localNoticeCount("telegram")).toBe(1);
+    expect(__oslHubUiTest.localNoticeCount("discord"), "disabled app discord must not emit a notice").toBe(0);
+    expect(__oslHubUiTest.localNoticeCount("telegram"), "enabled app telegram still emits one notice").toBe(1);
   }, 30_000);
 });
