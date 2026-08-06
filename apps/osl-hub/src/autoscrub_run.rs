@@ -27,6 +27,7 @@ pub const MANIFEST_LIFETIME: Duration = Duration::from_secs(1_800);
 pub const RUN_CONSENT_LIFETIME: Duration = Duration::from_secs(300);
 pub const MAX_RUN_DURATION: Duration = Duration::from_secs(900);
 pub const PENDING_STEP_LIFETIME: Duration = Duration::from_secs(60);
+pub const MIN_REVIEWED_RUN_PACE_MILLISECONDS: u32 = 500;
 
 const DOCUMENTED_PROVIDER_DELETE_API: &str = "documented_provider_delete_api";
 const IMAP_PROVIDER_ID: &str = "imap";
@@ -1298,6 +1299,7 @@ pub struct AutoScrubRunSummary {
     pub phase: AutoScrubRunPhase,
     pub reviewed_item_count: u32,
     pub remaining_item_count: u32,
+    pub pace_milliseconds: u32,
     pub stop_requested: bool,
     pub mutation_allowed: bool,
     pub last_outcome: AutoScrubRunOutcome,
@@ -1336,6 +1338,7 @@ pub struct AutoScrubReviewedRunRequest {
     pub review_token: String,
     pub plan_digest: String,
     pub reviewed_item_count: u32,
+    pub pace_milliseconds: u32,
     pub consent: AutoScrubRunConsent,
 }
 
@@ -1408,6 +1411,7 @@ impl AutoScrubRunStore {
             phase: AutoScrubRunPhase::Running,
             reviewed_item_count: request.reviewed_item_count,
             remaining_item_count: request.reviewed_item_count,
+            pace_milliseconds: request.pace_milliseconds,
             stop_requested: false,
             mutation_allowed: false,
             last_outcome: AutoScrubRunOutcome::Held,
@@ -1496,6 +1500,9 @@ fn validate_reviewed_run_request(request: &AutoScrubReviewedRunRequest) -> Resul
         || request.consent != AutoScrubRunConsent::ReviewedBatchOnly
     {
         return Err("AutoScrub reviewed run request is invalid".to_owned());
+    }
+    if request.pace_milliseconds < MIN_REVIEWED_RUN_PACE_MILLISECONDS {
+        return Err("below minimum pace".to_owned());
     }
     Ok(())
 }
@@ -2312,6 +2319,7 @@ mod production_fleet_tests {
             review_token: format!("review-token-{reviewed_item_count}"),
             plan_digest: "a".repeat(64),
             reviewed_item_count,
+            pace_milliseconds: MIN_REVIEWED_RUN_PACE_MILLISECONDS,
             consent: AutoScrubRunConsent::ReviewedBatchOnly,
         }
     }
@@ -2328,6 +2336,10 @@ mod production_fleet_tests {
         assert!(!first.global_stop_requested);
         assert!(!first.unattended_execution_allowed);
         assert_eq!(first.runs[0].phase, AutoScrubRunPhase::Running);
+        assert_eq!(
+            first.runs[0].pace_milliseconds,
+            MIN_REVIEWED_RUN_PACE_MILLISECONDS
+        );
         assert!(!first.runs[0].mutation_allowed);
 
         let second = start_reviewed_run(&state, reviewed_request(ServiceKind::Telegram, 5))
@@ -2364,6 +2376,49 @@ mod production_fleet_tests {
     }
 
     #[test]
+    fn maple_run_refuses_pace_below_polite_limit_without_mutating_started_run() {
+        let _guard = crate::global_keystore_test_lock();
+        reset_run_store_for_test();
+        let state = state_with_license(LicenseState::Paid, "ACTIVE");
+        let request = reviewed_request(ServiceKind::Discord, 1);
+
+        let before = fleet_status(&state).expect("paid test state can read fleet before start");
+        println!("started-run count before: {}", before.open_run_count);
+        assert_eq!(before.open_run_count, 0);
+
+        let accepted =
+            start_reviewed_run(&state, request.clone()).expect("pace 500 milliseconds starts");
+        println!(
+            "maple-run records pace {} milliseconds",
+            accepted.runs[0].pace_milliseconds
+        );
+        println!(
+            "started-run count after pace 500: {}",
+            accepted.open_run_count
+        );
+        assert_eq!(accepted.open_run_count, 1);
+        assert_eq!(accepted.runs[0].pace_milliseconds, 500);
+
+        let mut too_fast = request;
+        too_fast.pace_milliseconds = 499;
+        let refused = start_reviewed_run(&state, too_fast).expect_err("pace 499 must be refused");
+        println!("pace 499 is refused as {refused}");
+        assert_eq!(refused, "below minimum pace");
+
+        let after = fleet_status(&state).expect("paid test state can read fleet after refusal");
+        println!(
+            "maple-run still records pace {} milliseconds",
+            after.runs[0].pace_milliseconds
+        );
+        println!(
+            "started-run count after refused pace change: {}",
+            after.open_run_count
+        );
+        assert_eq!(after.open_run_count, 1);
+        assert_eq!(after.runs[0].pace_milliseconds, 500);
+    }
+
+    #[test]
     fn autoscrub_fleet_debug_excludes_review_request_secrets() {
         let _guard = crate::global_keystore_test_lock();
         reset_run_store_for_test();
@@ -2375,6 +2430,7 @@ mod production_fleet_tests {
             plan_digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 .to_owned(),
             reviewed_item_count: 3,
+            pace_milliseconds: MIN_REVIEWED_RUN_PACE_MILLISECONDS,
             consent: AutoScrubRunConsent::ReviewedBatchOnly,
         };
 

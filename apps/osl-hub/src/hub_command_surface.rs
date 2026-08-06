@@ -2471,6 +2471,7 @@ mod tauri_registration_surface_tests {
             review_token: "review-token".to_owned(),
             plan_digest: "a".repeat(64),
             reviewed_item_count: 1,
+            pace_milliseconds: autoscrub_run::MIN_REVIEWED_RUN_PACE_MILLISECONDS,
             consent: autoscrub_run::AutoScrubRunConsent::ReviewedBatchOnly,
         };
         let owner_identity = state

@@ -56,6 +56,7 @@ const fleetStatus = {
       phase: "running",
       reviewedItemCount: 3,
       remainingItemCount: 2,
+      paceMilliseconds: 500,
       stopRequested: false,
       mutationAllowed: false,
       lastOutcome: "prepared",
@@ -66,6 +67,7 @@ const fleetStatus = {
       phase: "reviewRequired",
       reviewedItemCount: 1,
       remainingItemCount: 0,
+      paceMilliseconds: 500,
       stopRequested: false,
       mutationAllowed: false,
       lastOutcome: "held",
@@ -79,6 +81,7 @@ const reviewedRequest = {
   reviewToken: "review-token-1",
   planDigest: "a".repeat(64),
   reviewedItemCount: 3,
+  paceMilliseconds: 500,
   consent: "reviewedBatchOnly",
 } as const;
 
