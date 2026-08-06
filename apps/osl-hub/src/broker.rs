@@ -16126,6 +16126,171 @@ mod tests {
     }
 
     #[test]
+    fn task_3559_empty_burn_scopes_do_not_mutate_state_or_request_deletion() {
+        let _serial = crate::global_keystore_test_lock();
+        ipc::main_password::set_file_storage_key(None);
+        keystore::set_base_dir_override(None);
+        keystore::set_active_account_dir(None);
+
+        let unique = format!(
+            "osl-hub-task-3559-empty-burn-{}-{}",
+            std::process::id(),
+            random_local_message_id()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let ledger_dir = root.join("ledger");
+        std::fs::create_dir_all(&ledger_dir).unwrap();
+
+        keystore::set_base_dir_override(Some(ledger_dir.clone()));
+        keystore::set_active_account_dir(Some(ledger_dir.clone()));
+        ipc::main_password::set_main_password(&ledger_dir, "aB3!z9").unwrap();
+        let file_key =
+            ipc::main_password::get_file_storage_key().expect("main password installs file key");
+        let ledger_path = ledger_dir.join(LOCAL_PROTECTED_FILE);
+
+        let owner = "self-liam";
+        let chat_context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "task-3559-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-task-3559-chat-empty".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let app_context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "task-3559-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-task-3559-app-empty".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let chat_binding = local_context_binding(&chat_context);
+        let app_binding = local_context_binding(&app_context);
+
+        let local_snapshot = |binding: &str| {
+            let ledger = load_local_ledger(&ledger_path, &file_key).unwrap();
+            let total_records = ledger.records.len();
+            let matching_records = ledger
+                .records
+                .values()
+                .filter(|record| record.context_binding == binding)
+                .count();
+            (ledger_path.exists(), total_records, matching_records)
+        };
+        let changed_local_fields = |before: (bool, usize, usize), after: (bool, usize, usize)| {
+            usize::from(before.0 != after.0)
+                + usize::from(before.1 != after.1)
+                + usize::from(before.2 != after.2)
+        };
+        let format_local_state = |state: (bool, usize, usize)| {
+            format!(
+                "ledger_exists:{};total_records:{};matching_records:{}",
+                state.0, state.1, state.2
+            )
+        };
+
+        let chat_before = local_snapshot(&chat_binding);
+        assert_eq!(chat_before.1, 0);
+        assert_eq!(chat_before.2, 0);
+        let chat_deleted =
+            prune_local_ledger_context(&ledger_path, &file_key, &chat_binding).unwrap();
+        let chat_after = local_snapshot(&chat_binding);
+        let chat_changed = changed_local_fields(chat_before, chat_after);
+        let chat_result = if chat_deleted == 0 {
+            "no_op:already_empty"
+        } else {
+            "unexpected_delete"
+        };
+        println!(
+            "TASK-3559 scope=chat sent=0 stored=0 result={chat_result} deletion_requests=0 before={} after={} changed_fields={chat_changed}",
+            format_local_state(chat_before),
+            format_local_state(chat_after)
+        );
+        assert_eq!(chat_result, "no_op:already_empty");
+        assert_eq!(chat_deleted, 0);
+        assert_eq!(chat_changed, 0);
+
+        let app_core = HubCoreState::default();
+        *app_core.osl.identity.lock().unwrap() =
+            Some(keystore::generate_identity(owner.to_owned()));
+        let app_before = local_snapshot(&app_binding);
+        assert_eq!(app_before.1, 0);
+        assert_eq!(app_before.2, 0);
+        let app_deleted = burn_indexed_local_protected_binding(&app_core, &app_binding).unwrap();
+        let app_after = local_snapshot(&app_binding);
+        let app_changed = changed_local_fields(app_before, app_after);
+        let app_result = if app_deleted == 0 {
+            "no_op:already_empty"
+        } else {
+            "unexpected_delete"
+        };
+        println!(
+            "TASK-3559 scope=app sent=0 stored=0 result={app_result} deletion_requests=0 before={} after={} changed_fields={app_changed}",
+            format_local_state(app_before),
+            format_local_state(app_after)
+        );
+        assert_eq!(app_result, "no_op:already_empty");
+        assert_eq!(app_deleted, 0);
+        assert_eq!(app_changed, 0);
+
+        ipc::main_password::set_file_storage_key(None);
+        keystore::set_base_dir_override(None);
+        keystore::set_active_account_dir(None);
+        let account_config_dir = root.join("account-config");
+        let account_local_data_dir = root.join("account-local-data");
+        let account_snapshot = || {
+            (
+                account_config_dir.exists(),
+                account_config_dir.join("osl-core").exists(),
+                account_local_data_dir.exists(),
+                ipc::main_password::get_file_storage_key().is_some(),
+            )
+        };
+        let changed_account_fields =
+            |before: (bool, bool, bool, bool), after: (bool, bool, bool, bool)| {
+                usize::from(before.0 != after.0)
+                    + usize::from(before.1 != after.1)
+                    + usize::from(before.2 != after.2)
+                    + usize::from(before.3 != after.3)
+            };
+        let format_account_state = |state: (bool, bool, bool, bool)| {
+            format!(
+                "config_exists:{};hub_core_exists:{};local_data_exists:{};file_key_unlocked:{}",
+                state.0, state.1, state.2, state.3
+            )
+        };
+        let account_before = account_snapshot();
+        let account_result = crate::cleanup::execute_full_hub_cleanup(
+            &HubCoreState::default(),
+            &account_config_dir,
+            &account_local_data_dir,
+            true,
+        );
+        let account_after = account_snapshot();
+        let account_changed = changed_account_fields(account_before, account_after);
+        let account_result = match account_result {
+            Ok(result) if result.removed_targets.is_empty() => "no_op:already_empty".to_owned(),
+            Ok(_) => "unexpected_delete".to_owned(),
+            Err(error) => format!("refused:{error}"),
+        };
+        println!(
+            "TASK-3559 scope=account sent=0 stored=0 result=\"{account_result}\" deletion_requests=0 before={} after={} changed_fields={account_changed}",
+            format_account_state(account_before),
+            format_account_state(account_after)
+        );
+        assert_eq!(account_result, "refused:OSL main password must be unlocked");
+        assert_eq!(account_changed, 0);
+
+        keystore::set_base_dir_override(None);
+        keystore::set_active_account_dir(None);
+        ipc::main_password::set_file_storage_key(None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn view_once_open_consumes_only_the_authorised_record() {
         let mut ledger = LocalProtectedLedger::default();
         ledger.records.insert(
