@@ -4019,6 +4019,9 @@ fn list_group_verification_build_entries_from_prefs(
             &record.member_id,
             "direct_message",
         )?;
+        if two_way.state != "two-way" {
+            continue;
+        }
         entries.push(GroupVerificationBuildListEntryDto {
             member_id: record.member_id.clone(),
             two_way_state: two_way.state,
@@ -7155,6 +7158,94 @@ key"
         assert_eq!(entries[1].member_id, modified_member);
         assert_eq!(entries[1].two_way_state, "two-way");
         assert_eq!(entries[1].build_state, "modified");
+    }
+
+    #[test]
+    fn task_0178_group_build_list_returns_only_two_way_people() {
+        let harness = FileBackedSecurityHarness::new("task0178-group-build-list");
+        let local_account = "900000000000017800";
+        let two_way_unmodified_member = "900000000000017801";
+        let one_way_member = "900000000000017802";
+        let two_way_modified_member = "900000000000017803";
+        let group_id = "900000000000017804";
+        let mut prefs = SecurityPreferences {
+            version: 2,
+            ..SecurityPreferences::default()
+        };
+        for member_id in [
+            two_way_unmodified_member,
+            one_way_member,
+            two_way_modified_member,
+        ] {
+            prefs
+                .allowed_place_directions
+                .insert(allowed_place_direction_key(
+                    "discord",
+                    local_account,
+                    "direct_message",
+                    member_id,
+                ));
+        }
+        for member_id in [two_way_unmodified_member, two_way_modified_member] {
+            prefs
+                .allowed_place_directions
+                .insert(allowed_place_direction_key(
+                    "discord",
+                    member_id,
+                    "direct_message",
+                    local_account,
+                ));
+        }
+        prefs.group_verification_build_list.extend([
+            GroupVerificationBuildListRecord {
+                group_id: group_id.to_owned(),
+                member_id: two_way_unmodified_member.to_owned(),
+                build_state: "unmodified".to_owned(),
+            },
+            GroupVerificationBuildListRecord {
+                group_id: group_id.to_owned(),
+                member_id: one_way_member.to_owned(),
+                build_state: "unmodified".to_owned(),
+            },
+            GroupVerificationBuildListRecord {
+                group_id: group_id.to_owned(),
+                member_id: two_way_modified_member.to_owned(),
+                build_state: "modified".to_owned(),
+            },
+        ]);
+        write_encrypted_json(&harness.path().join(SECURITY_PREFS_FILE), &prefs).unwrap();
+
+        let entries = list_group_verification_build_entries(
+            "discord".to_owned(),
+            local_account.to_owned(),
+            group_id.to_owned(),
+        )
+        .unwrap();
+        let returned_members = entries
+            .iter()
+            .map(|entry| entry.member_id.as_str())
+            .collect::<Vec<_>>();
+        println!(
+            "TASK0178 fixture.people=3 returned.people={} two_way.people={}",
+            entries.len(),
+            entries
+                .iter()
+                .filter(|entry| entry.two_way_state == "two-way")
+                .count()
+        );
+        println!(
+            "TASK0178 returned.member_ids={}",
+            returned_members.join(",")
+        );
+        println!("TASK0178 excluded.one_way_member={one_way_member}");
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            returned_members,
+            vec![two_way_unmodified_member, two_way_modified_member]
+        );
+        assert!(entries.iter().all(|entry| entry.two_way_state == "two-way"));
+        assert!(!returned_members.contains(&one_way_member));
     }
 
     #[test]
