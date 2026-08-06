@@ -286,6 +286,19 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_save_start_with_windows_choice", || {
             let _ = cmd_osl_save_start_with_windows_choice(&state, "on".to_owned(), None);
         });
+        assert_command_marks_activity("cmd_osl_read_idle_lock_time_choice", || {
+            let _ = cmd_osl_read_idle_lock_time_choice(&state);
+        });
+        assert_command_marks_activity("cmd_osl_save_idle_lock_time_choice", || {
+            let _ = cmd_osl_save_idle_lock_time_choice(&state, "never".to_owned(), None);
+        });
+        assert_command_marks_activity("cmd_osl_get_ask_before_irreversible_actions_choice", || {
+            let _ = cmd_osl_get_ask_before_irreversible_actions_choice(&state);
+        });
+        assert_command_marks_activity("cmd_osl_set_ask_before_irreversible_actions_choice", || {
+            let _ =
+                cmd_osl_set_ask_before_irreversible_actions_choice(&state, "off".to_owned(), None);
+        });
         assert_command_marks_activity("cmd_osl_get_self_user_id", || {
             let _ = cmd_osl_get_self_user_id(&state);
         });
@@ -16084,6 +16097,46 @@ pub fn cmd_osl_save_start_with_windows_choice(
     }
     persist_app_preferences_now(state, config_dir);
     Ok(choice.as_value().to_string())
+}
+
+// ---- Task 3154: ask before irreversible actions ----
+
+pub fn cmd_osl_get_ask_before_irreversible_actions_choice(
+    state: &AppState,
+) -> Result<crate::app_preferences::AskBeforeIrreversibleActionsChoice, String> {
+    record_activity_on_command_entry();
+    let g = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned");
+    Ok(g.ask_before_irreversible_actions)
+}
+
+pub fn cmd_osl_set_ask_before_irreversible_actions_choice(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<crate::app_preferences::AskBeforeIrreversibleActionsChoice, String> {
+    record_activity_on_command_entry();
+    let choice =
+        crate::app_preferences::AskBeforeIrreversibleActionsChoice::parse(choice.as_str())?;
+    {
+        let mut g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        g.ask_before_irreversible_actions = choice;
+    }
+    if let Some(dir) = config_dir {
+        let g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        let path = dir.join("app_preferences.json");
+        crate::app_preferences::write_app_preferences(&path, &g)?;
+    }
+    Ok(choice)
 }
 
 // ---- Task 3148: follow whichever app is in front ----

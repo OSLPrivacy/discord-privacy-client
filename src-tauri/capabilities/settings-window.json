@@ -67,6 +67,8 @@
     "allow-osl-set-update-channel",
     "allow-osl-get-start-with-windows-choice",
     "allow-osl-save-start-with-windows-choice",
+    "allow-osl-get-ask-before-irreversible-actions-choice",
+    "allow-osl-set-ask-before-irreversible-actions-choice",
     "core:event:allow-emit",
     "core:event:allow-listen",
     "core:window:allow-close",

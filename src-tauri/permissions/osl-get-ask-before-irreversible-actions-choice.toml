@@ -1,0 +1,3 @@
+identifier = "allow-osl-get-ask-before-irreversible-actions-choice"
+description = "Permits the trusted local settings window to invoke `osl_get_ask_before_irreversible_actions_choice` (read whether OSL asks again before irreversible actions)."
+commands.allow = ["osl_get_ask_before_irreversible_actions_choice"]
