@@ -92,8 +92,14 @@ mod tests {
             ScheduledFetch::Decoy(_) => panic!("known pointer must use its ordinary fetch"),
         }
 
-        // An idle/unknown reply still has one fetch-shaped follow-up, so the
-        // observer cannot infer a pointer match from the cadence.
+        // The service's all-zero idle reply spends no pretend fetch. A non-idle
+        // unknown reply still has one fetch-shaped follow-up, so the observer
+        // cannot infer a pointer match from the cadence.
+        client
+            .receive_frame(&wakeup([0; ID_BYTES], [0; ID_BYTES]))
+            .unwrap();
+        assert!(client.take_fetch_work().is_none());
+
         client
             .receive_frame(&wakeup([8; ID_BYTES], [6; ID_BYTES]))
             .unwrap();

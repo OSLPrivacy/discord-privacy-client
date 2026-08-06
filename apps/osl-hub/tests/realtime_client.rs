@@ -1,8 +1,15 @@
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use osl_privacy_hub::realtime_client::{
     BlobId, CarrierPointer, FrameError, RealtimeClient, RealtimeRoute, ScheduledFetch, FRAME_BYTES,
     TICK_INTERVAL,
+};
+use osl_privacy_hub::realtime_pipe::{
+    run_realtime_pipe_ticks, RealtimeEndpoint, RealtimePipeClock, RealtimePipeEntropy,
 };
 use osl_privacy_hub::realtime_resume::{AcknowledgementCursor, ReconnectSchedule, SessionId};
 use osl_privacy_hub::realtime_subscription::DeliveryTag;
@@ -109,6 +116,18 @@ fn t1_t52_unknown_wakeup_causes_no_fetch() {
 }
 
 #[test]
+fn t1_t52_empty_idle_response_spends_no_pretend_fetch() {
+    let mut client = RealtimeClient::new(Duration::ZERO);
+    client
+        .receive_frame(&response(0x00, 0x00))
+        .expect("valid idle response");
+    assert!(
+        client.take_fetch_work().is_none(),
+        "the all-zero idle response must not spend a pretend fetch"
+    );
+}
+
+#[test]
 fn t1_t52_matching_wakeup_uses_the_preexisting_carrier_pointer() {
     let mut client = RealtimeClient::new(Duration::ZERO);
     client.remember_carrier_pointer(id(0xbb), CarrierPointer::from_carrier("carrier-only-P"));
@@ -171,4 +190,243 @@ fn t1_t53_reconnect_restores_tags_but_not_the_old_session_cursor() {
     assert_eq!(tick.delivery_tags, tags);
     assert_eq!(restored.cursor, AcknowledgementCursor::default());
     assert_eq!(restored.session_id.as_bytes(), [10; 16]);
+}
+
+#[test]
+fn task_4405_realtime_pipe_opens_ticks_reconnects_and_idle_hour_spends_no_pretend_fetches() {
+    const IDLE_HOUR_TICKS: usize = 60 * 60 / 4;
+
+    let fixture = RealtimeServiceFixture::start(IDLE_HOUR_TICKS);
+    let endpoint =
+        RealtimeEndpoint::parse(&format!("ws://{}/v1/realtime", fixture.address())).unwrap();
+    let mut client = RealtimeClient::new(Duration::ZERO);
+    let mut clock = RecordingClock::default();
+    let mut entropy = FixedEntropy::new([u64::MAX, u64::MAX]);
+
+    let report = run_realtime_pipe_ticks(
+        &endpoint,
+        &mut client,
+        IDLE_HOUR_TICKS,
+        &mut clock,
+        &mut entropy,
+    )
+    .expect("pipe drives realtime ticks through the fixture");
+
+    let stats = fixture.join();
+    let unique_intervals: std::collections::BTreeSet<_> = report
+        .frame_offsets
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .collect();
+    let unique_frame_sizes: std::collections::BTreeSet<_> =
+        report.frame_sizes.iter().copied().collect();
+    let reconnect_wait_ms: Vec<_> = report
+        .reconnect_waits
+        .iter()
+        .map(|delay| delay.as_millis())
+        .collect();
+
+    assert_eq!(report.opened_connections, 3);
+    assert_eq!(stats.handshakes, 3);
+    assert_eq!(stats.frames_seen, IDLE_HOUR_TICKS);
+    assert!(stats.all_frames_were_spaces);
+    assert_eq!(unique_intervals, [TICK_INTERVAL].into_iter().collect());
+    assert_eq!(unique_frame_sizes, [FRAME_BYTES].into_iter().collect());
+    assert_eq!(report.reconnect_waits.len(), 2);
+    assert!(report.reconnect_waits[1] > report.reconnect_waits[0]);
+    assert_eq!(report.pretend_fetches, 0);
+    assert_eq!(report.authorized_fetches, 0);
+
+    println!("TASK4405_CONNECTIONS_OPENED={}", report.opened_connections);
+    println!("TASK4405_SERVICE_HANDSHAKES={}", stats.handshakes);
+    println!("TASK4405_FRAMES_SENT={}", report.frame_sizes.len());
+    println!(
+        "TASK4405_FRAME_INTERVAL_SECONDS={}",
+        TICK_INTERVAL.as_secs()
+    );
+    println!("TASK4405_UNIQUE_FRAME_SIZE_BYTES={unique_frame_sizes:?}");
+    println!("TASK4405_RECONNECT_WAITS_MS={reconnect_wait_ms:?}");
+    println!(
+        "TASK4405_IDLE_HOUR_PRETEND_FETCHES={}",
+        report.pretend_fetches
+    );
+}
+
+#[derive(Default)]
+struct RecordingClock {
+    waited_until: Vec<Duration>,
+    reconnect_waits: Vec<Duration>,
+}
+
+impl RealtimePipeClock for RecordingClock {
+    fn wait_until(&mut self, scheduled_at: Duration) {
+        self.waited_until.push(scheduled_at);
+    }
+
+    fn wait_for_reconnect(&mut self, delay: Duration) {
+        self.reconnect_waits.push(delay);
+    }
+}
+
+struct FixedEntropy {
+    values: Vec<u64>,
+    index: usize,
+}
+
+impl FixedEntropy {
+    fn new(values: impl IntoIterator<Item = u64>) -> Self {
+        Self {
+            values: values.into_iter().collect(),
+            index: 0,
+        }
+    }
+}
+
+impl RealtimePipeEntropy for FixedEntropy {
+    fn next_u64(&mut self) -> u64 {
+        let value = self
+            .values
+            .get(self.index)
+            .copied()
+            .unwrap_or_else(|| *self.values.last().unwrap_or(&0));
+        self.index += 1;
+        value
+    }
+}
+
+#[derive(Debug, Default)]
+struct FixtureStats {
+    handshakes: usize,
+    frames_seen: usize,
+    all_frames_were_spaces: bool,
+}
+
+struct RealtimeServiceFixture {
+    address: SocketAddr,
+    stats: Arc<Mutex<FixtureStats>>,
+    handle: thread::JoinHandle<()>,
+}
+
+impl RealtimeServiceFixture {
+    fn start(expected_frames: usize) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind realtime fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let stats = Arc::new(Mutex::new(FixtureStats {
+            all_frames_were_spaces: true,
+            ..FixtureStats::default()
+        }));
+        let thread_stats = Arc::clone(&stats);
+        let handle = thread::spawn(move || {
+            let mut total_frames = 0;
+            for connection_index in 0..3 {
+                let (mut stream, _) = listener.accept().expect("accept realtime websocket");
+                accept_websocket(&mut stream, &thread_stats);
+                match connection_index {
+                    0 => {
+                        read_idle_tick(&mut stream, &thread_stats, &mut total_frames)
+                            .expect("first idle tick");
+                        write_server_text(&mut stream, &response(0, 0)).expect("first idle reply");
+                        read_idle_tick(&mut stream, &thread_stats, &mut total_frames)
+                            .expect("second idle tick before cut");
+                    }
+                    1 => {
+                        read_idle_tick(&mut stream, &thread_stats, &mut total_frames)
+                            .expect("third idle tick before cut");
+                    }
+                    _ => {
+                        while total_frames < expected_frames {
+                            read_idle_tick(&mut stream, &thread_stats, &mut total_frames)
+                                .expect("idle tick after reconnect");
+                            write_server_text(&mut stream, &response(0, 0))
+                                .expect("idle reply after reconnect");
+                        }
+                    }
+                }
+            }
+        });
+        Self {
+            address,
+            stats,
+            handle,
+        }
+    }
+
+    fn address(&self) -> SocketAddr {
+        self.address
+    }
+
+    fn join(self) -> FixtureStats {
+        self.handle.join().expect("fixture thread completes");
+        Arc::try_unwrap(self.stats)
+            .expect("fixture stats owner")
+            .into_inner()
+            .expect("fixture stats mutex")
+    }
+}
+
+fn accept_websocket(stream: &mut TcpStream, stats: &Arc<Mutex<FixtureStats>>) {
+    let mut request = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !request.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).expect("read upgrade request");
+        request.push(byte[0]);
+    }
+    let request = String::from_utf8(request).expect("ascii websocket request");
+    assert!(request.starts_with("GET /v1/realtime HTTP/1.1\r\n"));
+    assert!(request
+        .lines()
+        .any(|line| line.eq_ignore_ascii_case("Upgrade: websocket")));
+    stats.lock().unwrap().handshakes += 1;
+    stream
+        .write_all(
+            b"HTTP/1.1 101 Switching Protocols\r\n\
+              Upgrade: websocket\r\n\
+              Connection: Upgrade\r\n\
+              Sec-WebSocket-Accept: task-4405-fixture\r\n\
+              \r\n",
+        )
+        .expect("write upgrade response");
+}
+
+fn read_idle_tick(
+    stream: &mut TcpStream,
+    stats: &Arc<Mutex<FixtureStats>>,
+    total_frames: &mut usize,
+) -> Option<()> {
+    let frame = read_client_text(stream)?;
+    let mut stats = stats.lock().unwrap();
+    stats.frames_seen += 1;
+    stats.all_frames_were_spaces &= frame.len() == FRAME_BYTES;
+    stats.all_frames_were_spaces &= frame.bytes().all(|byte| byte == b' ');
+    *total_frames += 1;
+    Some(())
+}
+
+fn read_client_text(stream: &mut TcpStream) -> Option<String> {
+    let mut header = [0_u8; 2];
+    stream.read_exact(&mut header).ok()?;
+    assert_eq!(header[0] & 0x0f, 0x1);
+    assert_ne!(header[1] & 0x80, 0, "client frames must be masked");
+    let mut len = usize::from(header[1] & 0x7f);
+    if len == 126 {
+        let mut extended = [0_u8; 2];
+        stream.read_exact(&mut extended).ok()?;
+        len = usize::from(u16::from_be_bytes(extended));
+    }
+    let mut mask = [0_u8; 4];
+    stream.read_exact(&mut mask).ok()?;
+    let mut payload = vec![0_u8; len];
+    stream.read_exact(&mut payload).ok()?;
+    for (index, byte) in payload.iter_mut().enumerate() {
+        *byte ^= mask[index % mask.len()];
+    }
+    String::from_utf8(payload).ok()
+}
+
+fn write_server_text(stream: &mut TcpStream, text: &str) -> std::io::Result<()> {
+    assert_eq!(text.len(), FRAME_BYTES);
+    let len = u16::try_from(text.len()).expect("fixture frame length fits u16");
+    stream.write_all(&[0x81, 126])?;
+    stream.write_all(&len.to_be_bytes())?;
+    stream.write_all(text.as_bytes())
 }

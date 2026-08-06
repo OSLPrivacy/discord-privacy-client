@@ -251,13 +251,11 @@ impl RealtimeClient {
     /// This method performs no fetch itself.
     pub fn receive_frame(&mut self, frame: &str) -> Result<(), FrameError> {
         let wakeup = parse_wakeup(frame)?;
-        // T1-51's empty response is a zero/zero decoy. It is not a wakeup,
-        // even if a caller accidentally retained a pointer with an all-zero id.
-        // It still schedules a capability-negative fetch so a fetch after a
-        // reply cannot reveal whether that reply matched a local pointer.
+        // T1-51's empty response is a zero/zero idle marker. It is not a
+        // wakeup, even if a caller accidentally retained a pointer with an
+        // all-zero id, and it must not spend the pretend-fetch allowance while
+        // the service is hibernating.
         if wakeup.0 == [0; ID_BYTES] && wakeup.1.is_zero() {
-            self.scheduled_fetches
-                .push_back(ScheduledFetch::Decoy(DecoyFetch::random()));
             return Ok(());
         }
         let key = WakeupKey {

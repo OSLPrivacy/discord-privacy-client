@@ -210,6 +210,7 @@ pub mod osl_chat_delivery;
 pub mod osl_chat_queue;
 pub mod realtime_client;
 pub mod realtime_decoy;
+pub mod realtime_pipe;
 pub mod realtime_resume;
 pub mod realtime_subscription;
 #[cfg(feature = "core")]
