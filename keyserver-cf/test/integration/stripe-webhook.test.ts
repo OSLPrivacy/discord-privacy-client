@@ -13,6 +13,7 @@ import {
   ONE_TIME_PRO_CURRENCY,
   ONE_TIME_PRO_CURRENCY_REFUSAL,
 } from "../../src/lib/subscription-state.js";
+import { repairPaidOneTimeCheckoutClaimsWithoutCodes } from "../../src/lib/stripe-checkout-claims.js";
 
 function browserClaimToken(): string {
   const bytes = new Uint8Array(32);
@@ -350,6 +351,89 @@ describe("POST /v1/stripe/webhook state machine", () => {
         WHERE event_type = 'checkout.session.completed' AND stripe_object_id = ?`,
     ).bind(sessionId).first<{ amount_cents: number }>();
     expect(metric?.amount_cents).toBe(500);
+  });
+
+  it("TASK3198 repairs paid one-time checkout claims without codes exactly once", async () => {
+    const prefix = `task3198_${crypto.randomUUID().replace(/-/g, "")}`;
+    const now = Math.floor(Date.now() / 1000);
+    const sessionIds: string[] = [];
+    const licenseHashes: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const sessionId = `cs_live_${prefix}_${i}`;
+      const licenseHash = `${prefix}_license_${i}`;
+      sessionIds.push(sessionId);
+      licenseHashes.push(licenseHash);
+      await env.DB.prepare(
+        `INSERT INTO stripe_checkout_claims (
+           session_id, claim_hash, delivery_public_key_spki,
+           encrypted_license, license_hash, subscription_id, status,
+           created_at, expires_at, delivered_at
+         ) VALUES (?, ?, 'public-key', 'ciphertext', ?, ?, 'delivery_ready', ?, ?, NULL)`,
+      ).bind(
+        sessionId,
+        `claim-${prefix}-${i}`,
+        licenseHash,
+        `pi_${prefix}_${i}`,
+        now,
+        now + 3600,
+      ).run();
+    }
+
+    const codeCount = async () => {
+      const row = await env.DB.prepare(
+        `SELECT COUNT(*) AS count
+           FROM licenses
+          WHERE license_hash IN (?, ?, ?)`,
+      ).bind(...licenseHashes).first<{ count: number }>();
+      return row?.count ?? 0;
+    };
+    const joinedRows = async () => await env.DB.prepare(
+      `SELECT
+         stripe_checkout_claims.session_id,
+         stripe_checkout_claims.subscription_id AS payment_intent_id,
+         licenses.license_hash,
+         licenses.subscription_id AS entitlement_id
+       FROM licenses
+       JOIN stripe_checkout_claims
+         ON stripe_checkout_claims.license_hash = licenses.license_hash
+      WHERE stripe_checkout_claims.session_id IN (?, ?, ?)
+      ORDER BY stripe_checkout_claims.session_id`,
+    ).bind(...sessionIds).all<{
+      session_id: string;
+      payment_intent_id: string;
+      license_hash: string;
+      entitlement_id: string;
+    }>();
+
+    const before = await codeCount();
+    const firstRepair = await repairPaidOneTimeCheckoutClaimsWithoutCodes(env.DB);
+    const afterFirst = await codeCount();
+    const secondRepair = await repairPaidOneTimeCheckoutClaimsWithoutCodes(env.DB);
+    const afterSecond = await codeCount();
+    const joined = (await joinedRows()).results ?? [];
+    const distinctPaidRecords = new Set(joined.map((row) => row.session_id)).size;
+
+    expect(before).toBe(0);
+    expect(firstRepair).toBe(3);
+    expect(afterFirst).toBe(3);
+    expect(secondRepair).toBe(0);
+    expect(afterSecond).toBe(3);
+    expect(joined).toHaveLength(3);
+    expect(distinctPaidRecords).toBe(3);
+    expect(new Set(joined.map((row) => row.license_hash)).size).toBe(3);
+    for (const row of joined) {
+      expect(row.payment_intent_id).toMatch(/^pi_/);
+      expect(row.entitlement_id).toBe(`lic_${row.license_hash}`);
+      expect(row.entitlement_id).not.toBe(row.payment_intent_id);
+    }
+
+    console.log(`TASK3198 code_count_before=${before}`);
+    console.log(`TASK3198 repair_first=${firstRepair}`);
+    console.log(`TASK3198 code_count_after_first=${afterFirst}`);
+    console.log(`TASK3198 repair_second=${secondRepair}`);
+    console.log(`TASK3198 code_count_after_second=${afterSecond}`);
+    console.log(`TASK3198 distinct_paid_records_joined=${distinctPaidRecords}`);
+    console.log("TASK3198 every_code_joined_to_different_paid_record=true");
   });
 
   it.each([

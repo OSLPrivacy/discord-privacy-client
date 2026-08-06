@@ -248,6 +248,50 @@ export async function completeOneTimeStripeCheckoutClaim(
   return "completed";
 }
 
+/**
+ * Repair one-time payments whose checkout claim was marked paid/deliverable
+ * before the prepaid license row landed. The license hash is already part of
+ * the browser-bound claim, so the repair can converge without Stripe customer
+ * data or plaintext license material.
+ */
+export async function repairPaidOneTimeCheckoutClaimsWithoutCodes(
+  db: D1Database,
+): Promise<number> {
+  const now = Math.floor(Date.now() / 1000);
+  const statements = await db.batch([
+    db.prepare(
+      `INSERT OR IGNORE INTO subscriptions (
+         subscription_id, customer_id, customer_email, status,
+         current_period_end, cancel_at_period_end, created_at, updated_at,
+         is_comp
+       )
+       SELECT 'lic_' || license_hash, '', '', 'PENDING', NULL, 0, ?, ?, 0
+         FROM stripe_checkout_claims
+        WHERE status = 'delivery_ready'
+          AND substr(subscription_id, 1, 3) = 'pi_'
+          AND NOT EXISTS (
+            SELECT 1 FROM licenses
+             WHERE licenses.license_hash = stripe_checkout_claims.license_hash
+          )`,
+    ).bind(now, now),
+    db.prepare(
+      `INSERT OR IGNORE INTO licenses (
+         license_hash, subscription_id, issued_at, grant_seconds,
+         revoked_at, revoked_reason
+       )
+       SELECT license_hash, 'lic_' || license_hash, ?, ?, NULL, NULL
+         FROM stripe_checkout_claims
+        WHERE status = 'delivery_ready'
+          AND substr(subscription_id, 1, 3) = 'pi_'
+          AND NOT EXISTS (
+            SELECT 1 FROM licenses
+             WHERE licenses.license_hash = stripe_checkout_claims.license_hash
+          )`,
+    ).bind(now, PREPAID_PRO_GRANT_SECONDS),
+  ]);
+  return statements[1]?.meta?.changes ?? 0;
+}
+
 function oneTimeEntitlementId(licenseHash: string): string {
   return `lic_${licenseHash}`;
 }
