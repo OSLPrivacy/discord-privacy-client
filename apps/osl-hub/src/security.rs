@@ -555,6 +555,49 @@ struct SecurityPreferences {
     /// the same account-scoped security preferences as the rest of saved OSL.
     #[serde(default)]
     allowed_places: BTreeMap<String, AllowedPlaceRecord>,
+    #[serde(default)]
+    chat_approval_suggestion: ChatApprovalSuggestionChoice,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ChatApprovalSuggestionChoice {
+    Off,
+    #[default]
+    On,
+}
+
+impl ChatApprovalSuggestionChoice {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::On => "on",
+        }
+    }
+}
+
+impl std::str::FromStr for ChatApprovalSuggestionChoice {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" | "disabled" | "false" => Ok(Self::Off),
+            "on" | "enabled" | "true" => Ok(Self::On),
+            _ => Err("OSL chat approval suggestion choice must be off or on".to_owned()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatApprovalSuggestionChoiceDto {
+    pub choice: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatApprovalSuggestionAnswer {
+    pub suggestion: String,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -1100,6 +1143,33 @@ pub fn list_people(core: &HubCoreState) -> Result<Vec<PersonDto>, String> {
         .iter()
         .map(|(person_id, metadata)| person_dto(core, person_id, metadata, &prefs))
         .collect()
+}
+
+pub fn chat_approval_suggestion_choice() -> Result<ChatApprovalSuggestionChoiceDto, String> {
+    let prefs = load_security_preferences()?;
+    Ok(ChatApprovalSuggestionChoiceDto {
+        choice: prefs.chat_approval_suggestion.as_str().to_owned(),
+    })
+}
+
+pub fn save_chat_approval_suggestion_choice(
+    security: &HubSecurityState,
+    choice: String,
+) -> Result<ChatApprovalSuggestionChoiceDto, String> {
+    require_unlocked()?;
+    let choice = choice.parse::<ChatApprovalSuggestionChoice>()?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL People state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs.chat_approval_suggestion = choice;
+    write_encrypted_json(&path, &prefs)?;
+    Ok(ChatApprovalSuggestionChoiceDto {
+        choice: choice.as_str().to_owned(),
+    })
 }
 
 /// Set or clear a user-owned nickname for one friend. The nickname is written
@@ -1845,6 +1915,39 @@ pub fn manual_peer_scope_approved(
 ) -> Result<bool, String> {
     let binding = manual_peer_binding(core, person_id)?;
     manual_peer_scope_approved_for_binding(service_id, account_id, &binding, scope_input)
+}
+
+pub fn chat_approval_suggestion_for_manual_peer_scope(
+    core: &HubCoreState,
+    service_id: &str,
+    account_id: &str,
+    person_id: String,
+    scope_input: ScopeInput,
+) -> Result<ChatApprovalSuggestionAnswer, String> {
+    let binding = manual_peer_binding(core, person_id)?;
+    require_person_not_blocked(&binding.person_id)?;
+    require_exact_manual_peer_scope_input(&scope_input, "OSL manual peer scope is invalid")?;
+    let scope: Scope = scope_input
+        .try_into()
+        .map_err(|_| "OSL manual peer scope is invalid".to_owned())?;
+    require_exact_manual_peer_scope(
+        service_id,
+        account_id,
+        &binding.person_id,
+        &scope,
+        "OSL manual peer scope is invalid",
+    )?;
+    let prefs = load_security_preferences()?;
+    let already_approved = manual_scope_preference_approved(&prefs, &scope.storage_key());
+    let suggestion =
+        if prefs.chat_approval_suggestion == ChatApprovalSuggestionChoice::On && !already_approved {
+            "offer_approval"
+        } else {
+            "no_suggestion"
+        };
+    Ok(ChatApprovalSuggestionAnswer {
+        suggestion: suggestion.to_owned(),
+    })
 }
 
 fn manual_peer_scope_approved_for_binding(
@@ -4922,6 +5025,81 @@ mod tests {
             server_id: None,
             channel_id: None,
         }
+    }
+
+    #[test]
+    fn task0704_chat_approval_suggestion_respects_choice_and_approval() {
+        let harness = FileBackedSecurityHarness::new("task0704");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        install_self_identity(&core);
+        let (person_id, metadata, peer) = test_friend(0x70);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        let scope = dm_scope_input(
+            manual_peer_scope_id("osl-chat", "osl-main", &person_id).expect("manual scope id"),
+        );
+
+        let saved_on =
+            save_chat_approval_suggestion_choice(&security, "on".to_owned()).expect("save on");
+        println!("TASK0704 saved_choice_on={}", saved_on.choice);
+        let unchecked_on = chat_approval_suggestion_for_manual_peer_scope(
+            &core,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            scope.clone(),
+        )
+        .expect("answer unchecked chat with choice on");
+        println!(
+            "TASK0704 unchecked_chat_choice_on={}",
+            unchecked_on.suggestion
+        );
+        assert_eq!(saved_on.choice, "on");
+        assert_eq!(unchecked_on.suggestion, "offer_approval");
+
+        let saved_off =
+            save_chat_approval_suggestion_choice(&security, "off".to_owned()).expect("save off");
+        println!("TASK0704 saved_choice_off={}", saved_off.choice);
+        let unchecked_off = chat_approval_suggestion_for_manual_peer_scope(
+            &core,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            scope.clone(),
+        )
+        .expect("answer unchecked chat with choice off");
+        println!(
+            "TASK0704 unchecked_chat_choice_off={}",
+            unchecked_off.suggestion
+        );
+        assert_eq!(saved_off.choice, "off");
+        assert_eq!(unchecked_off.suggestion, "no_suggestion");
+
+        save_chat_approval_suggestion_choice(&security, "on".to_owned()).expect("restore on");
+        set_manual_peer_scope_permission(
+            &core,
+            &security,
+            "osl-chat",
+            "osl-main",
+            person_id.clone(),
+            scope.clone(),
+            true,
+        )
+        .expect("approve chat");
+        let approved_on = chat_approval_suggestion_for_manual_peer_scope(
+            &core,
+            "osl-chat",
+            "osl-main",
+            person_id,
+            scope,
+        )
+        .expect("answer approved chat with choice on");
+        println!(
+            "TASK0704 approved_chat_choice_on={}",
+            approved_on.suggestion
+        );
+        assert_eq!(approved_on.suggestion, "no_suggestion");
     }
 
     #[test]

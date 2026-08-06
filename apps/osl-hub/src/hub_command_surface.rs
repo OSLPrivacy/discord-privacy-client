@@ -492,6 +492,9 @@ macro_rules! hub_tauri_commands {
             build_integrity_status,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
+            get_hub_chat_approval_suggestion_choice,
+            set_hub_chat_approval_suggestion_choice,
+            answer_hub_chat_approval_suggestion,
             set_hub_screenshot_protection,
             save_onboarding_preferences,
             set_tor_preference,
@@ -1630,6 +1633,25 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["get_osl_chat_local_state_key"],
+        );
+    }
+
+    #[test]
+    fn chat_approval_suggestion_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        let commands = [
+            "get_hub_chat_approval_suggestion_choice",
+            "set_hub_chat_approval_suggestion_choice",
+            "answer_hub_chat_approval_suggestion",
+        ];
+        for command in commands {
+            assert_registered_and_granted(&handlers, &permissions, &capability, command);
+        }
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &commands,
         );
     }
 
