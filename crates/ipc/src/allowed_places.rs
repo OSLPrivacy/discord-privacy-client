@@ -57,6 +57,20 @@ pub fn add_allowed_place_record(
     Ok(())
 }
 
+pub fn remove_allowed_place_record(
+    app_data_dir: impl AsRef<Path>,
+    stable_id: impl AsRef<str>,
+) -> Result<bool> {
+    std::fs::create_dir_all(app_data_dir.as_ref())?;
+    let conn = Connection::open(allowed_places_db_path(app_data_dir))?;
+    ensure_schema(&conn)?;
+    let removed = conn.execute(
+        "DELETE FROM allowed_places WHERE stable_id = ?1",
+        params![stable_id.as_ref()],
+    )?;
+    Ok(removed == 1)
+}
+
 fn ensure_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS allowed_places (
