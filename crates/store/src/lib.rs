@@ -101,6 +101,14 @@ pub struct StoredMessage {
     pub burned: bool,
 }
 
+/// Result of physically removing selected local message records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeleteMessageRecordsOutcome {
+    pub requested_count: usize,
+    pub removed_count: usize,
+    pub remaining_local_count: usize,
+}
+
 /// At-rest-encrypted message store backed by SQLite.
 ///
 /// Each message body is sealed under a unique random content key. An
@@ -1286,6 +1294,65 @@ impl MessageStore {
         checkpoint_after_shred(&conn)?;
         self.sync_anchor_after_checkpoint(&mut conn)?;
         Ok(rows)
+    }
+
+    /// Physically remove the named local message rows and their cached
+    /// attachments.
+    ///
+    /// This differs from [`Self::mark_burned`]: it is for a sender-authorized
+    /// record removal where the local row itself should leave this OSL copy,
+    /// not remain as a terminal burned stub.
+    pub fn delete_message_records(
+        &self,
+        discord_message_ids: &[String],
+    ) -> Result<DeleteMessageRecordsOutcome, StoreError> {
+        if discord_message_ids.is_empty() {
+            return Ok(DeleteMessageRecordsOutcome {
+                requested_count: 0,
+                removed_count: 0,
+                remaining_local_count: 0,
+            });
+        }
+
+        let target_mids: Vec<Vec<u8>> = discord_message_ids
+            .iter()
+            .map(|id| self.bi(cipher::BI_MESSAGE_ID, id))
+            .collect::<Result<_, _>>()?;
+        let mut conn = self.conn.lock().expect("store mutex poisoned");
+        let tx = conn.transaction()?;
+        let mut removed = 0usize;
+        for mid_bi in &target_mids {
+            tx.execute("DELETE FROM attachments WHERE mid_bi = ?1", params![mid_bi])?;
+            tx.execute(
+                "DELETE FROM attachment_manifests WHERE mid_bi = ?1",
+                params![mid_bi],
+            )?;
+            removed += tx.execute("DELETE FROM messages WHERE mid_bi = ?1", params![mid_bi])?;
+        }
+        let mut remaining = 0usize;
+        for mid_bi in &target_mids {
+            let count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM messages WHERE mid_bi = ?1",
+                params![mid_bi],
+                |row| row.get(0),
+            )?;
+            remaining += usize::try_from(count).map_err(|_| {
+                StoreError::Corrupted("selected message record count overflow".to_string())
+            })?;
+        }
+        if removed != 0 {
+            schema::mark_shred_checkpoint_pending(&tx)?;
+        }
+        self.commit(tx)?;
+        if removed != 0 {
+            checkpoint_after_shred(&conn)?;
+            self.sync_anchor_after_checkpoint(&mut conn)?;
+        }
+        Ok(DeleteMessageRecordsOutcome {
+            requested_count: discord_message_ids.len(),
+            removed_count: removed,
+            remaining_local_count: remaining,
+        })
     }
 
     /// Persist a decrypted attachment under a fresh per-write content key.

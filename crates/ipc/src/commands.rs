@@ -15,7 +15,7 @@ use crate::{IpcError, IpcResult};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use crypto::{aead, ed25519, hkdf, random, x25519};
-use keystore::{generate_identity, select_best_sealer, KeyServerClient};
+use keystore::{generate_identity, select_best_sealer, BurnScope, KeyServerClient};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -3761,6 +3761,122 @@ pub fn cmd_osl_burn_message(state: &AppState, discord_message_id: String) -> Res
         Err(StoreError::NotFound(_)) => Ok(()),
         Err(e) => Err(format!("OSL: mark_burned: {e}")),
     }
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct RemoveSenderMessageRecordsDto {
+    pub requested_count: usize,
+    pub removed_count: usize,
+    pub remaining_local_count: usize,
+}
+
+/// Physically remove selected sender-owned message records from this local OSL
+/// copy.
+///
+/// This is intentionally narrower than `cmd_osl_burn_scope_data`: the caller
+/// names the exact records covered by sender delete authority, and unrelated
+/// local rows remain present.
+pub fn cmd_osl_remove_sender_message_records(
+    state: &AppState,
+    discord_message_ids: Vec<String>,
+) -> Result<RemoveSenderMessageRecordsDto, String> {
+    record_activity_on_command_entry();
+    remove_sender_message_records(state, &discord_message_ids)
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct BurnSenderMessageRecordsBothSidesDto {
+    pub requested_count: usize,
+    pub local_removal_count: usize,
+    pub remote_removal_count: usize,
+    pub remaining_local_count: usize,
+    pub equal_removal_counts: bool,
+}
+
+/// Burn selected sender records on both owned surfaces:
+///
+/// - physically remove the selected local message rows; and
+/// - send one signed keyserver wrapped-key burn for each same message id.
+pub fn cmd_osl_burn_sender_message_records_both_sides(
+    state: &AppState,
+    discord_message_ids: Vec<String>,
+) -> Result<BurnSenderMessageRecordsBothSidesDto, String> {
+    record_activity_on_command_entry();
+    validate_selected_sender_message_records(&discord_message_ids)?;
+    let identity = state
+        .identity_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: both-sides burn needs a loaded identity".to_string())?;
+    let client = state
+        .keyserver_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: both-sides burn needs a key server".to_string())?;
+
+    let local = remove_sender_message_records(state, &discord_message_ids)?;
+    let mut remote_removal_count = 0usize;
+    for message_id in &discord_message_ids {
+        let response = client
+            .burn(
+                &identity,
+                &BurnScope::Single {
+                    content_id: message_id.clone(),
+                },
+            )
+            .map_err(|error| format!("OSL: remote wrapped-key removal failed: {error}"))?;
+        remote_removal_count = remote_removal_count
+            .checked_add(usize::try_from(response.deleted_count).map_err(|_| {
+                "OSL: remote wrapped-key removal count overflowed this platform".to_string()
+            })?)
+            .ok_or_else(|| "OSL: remote wrapped-key removal count overflowed".to_string())?;
+    }
+
+    Ok(BurnSenderMessageRecordsBothSidesDto {
+        requested_count: local.requested_count,
+        local_removal_count: local.removed_count,
+        remote_removal_count,
+        remaining_local_count: local.remaining_local_count,
+        equal_removal_counts: local.removed_count == remote_removal_count,
+    })
+}
+
+fn validate_selected_sender_message_records(discord_message_ids: &[String]) -> Result<(), String> {
+    if discord_message_ids.is_empty() {
+        return Err("OSL: select at least one sender message record to burn".to_string());
+    }
+    let mut unique = std::collections::HashSet::new();
+    for message_id in discord_message_ids {
+        if !unique.insert(message_id) {
+            return Err("OSL: selected sender message records must be unique".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn remove_sender_message_records(
+    state: &AppState,
+    discord_message_ids: &[String],
+) -> Result<RemoveSenderMessageRecordsDto, String> {
+    let guard = state
+        .message_store
+        .lock()
+        .expect("message_store mutex poisoned");
+    let Some(store) = guard.as_ref() else {
+        return Ok(RemoveSenderMessageRecordsDto {
+            requested_count: discord_message_ids.len(),
+            removed_count: 0,
+            remaining_local_count: 0,
+        });
+    };
+    let outcome = store
+        .delete_message_records(discord_message_ids)
+        .map_err(|e| format!("OSL: delete_message_records: {e}"))?;
+    Ok(RemoveSenderMessageRecordsDto {
+        requested_count: outcome.requested_count,
+        removed_count: outcome.removed_count,
+        remaining_local_count: outcome.remaining_local_count,
+    })
 }
 
 /// Pull diagnostic facts out of a Phase 4 cover string for the
