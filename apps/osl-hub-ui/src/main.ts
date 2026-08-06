@@ -1858,6 +1858,14 @@ function onboardingShellMarkup(setupNavigation = ""): string {
   return `<div class="app-frame with-titlebar">${desktopTitlebar()}<div class="onboarding-shell"><main class="onboarding-panel onboarding-${onboardingRoute}">${onboardingContent()}${setupNavigation}</main></div>${scrubReviewDialogMarkup()}</div>`;
 }
 
+function setupOnboardingNavigationMarkup(): string {
+  return `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`;
+}
+
+function isSetupOnboardingRoute(candidate: OnboardingRoute): boolean {
+  return ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(candidate);
+}
+
 /**
  * Back used to render as a bare link pinned to the viewport's bottom-left
  * corner while the step's own Continue sat centred in the middle of the panel;
@@ -1894,10 +1902,7 @@ function dockOnboardingBackControl(): void {
 function renderOnboarding(): void {
   onboardingRoute = onboardingRouteForBuild(onboardingRoute);
   persistCurrentOnboardingRoute();
-  const setupScreen = ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
-  const setupNavigation = setupScreen
-    ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
-    : "";
+  const setupNavigation = isSetupOnboardingRoute(onboardingRoute) ? setupOnboardingNavigationMarkup() : "";
   const markup = onboardingShellMarkup(setupNavigation);
   lastWorkspaceMarkup = null;
   lastWorkspaceViewKey = "";
@@ -2047,7 +2052,7 @@ function welcomeOnboardingContent(): string {
 
 function proSetupContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  if (pro) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><div class="setup-footer onboarding-actions"><button class="button primary" data-onboarding="sending" type="button">Continue</button></div></section>`;
+  if (pro) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">Pro is ready</h1><div class="setup-footer onboarding-actions"><button class="button primary" data-onboarding="forward-secrecy" type="button">Continue</button></div></section>`;
   // The submit and the Skip escape hatch sit in the step's own action row, so
   // the docking pass folds Back in beside them instead of leaving a third,
   // separate footer below a loose text link.
@@ -10247,6 +10252,12 @@ export const __oslHubUiTest = {
     route = "onboarding";
     onboardingRoute = onboardingRouteForBuild(destination);
     return onboardingContent();
+  },
+  renderOnboardingShellForTest(destination: OnboardingRoute): string {
+    route = "onboarding";
+    onboardingRoute = onboardingRouteForBuild(destination);
+    const setupNavigation = isSetupOnboardingRoute(onboardingRoute) ? setupOnboardingNavigationMarkup() : "";
+    return onboardingShellMarkup(setupNavigation);
   },
   /**
    * Supply the account-recovery back end. The shipping build has none (no Tauri

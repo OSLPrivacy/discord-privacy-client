@@ -68,7 +68,7 @@ purchase, or loss of the person's messages.
 ## Existing entitlement states
 
 If onboarding re-enters this route with active Pro or offline grace already
-saved, do not ask for a code again. Show **OSL Pro is ready** and a single
+saved, do not ask for a code again. Show **Pro is ready** and a single
 **Continue** control to Privacy. If the app knows an entitlement is lapsed,
 unavailable, or cannot be checked, use the T16-F1 view and T16-F2 copy. In
 particular, a lapse must say that Free OSL keeps working; activation never
