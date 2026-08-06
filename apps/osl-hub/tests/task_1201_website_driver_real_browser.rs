@@ -13,6 +13,7 @@ use std::{
 };
 
 const TASK_1201_TITLE: &str = "OSL Task 1201 Real Browser Title";
+const TASK_1204_TITLE: &str = "OSL Task 1204 Read Page Controls";
 
 #[test]
 fn task_1201_direct_driver_command_opens_local_test_page_and_reads_title() {
@@ -39,6 +40,57 @@ fn task_1201_direct_driver_command_opens_local_test_page_and_reads_title() {
     println!("TASK1201 read_title={}", read.title);
 }
 
+#[test]
+fn task_1204_fixture_page_returns_compose_send_and_reading_pane_names() {
+    let server = LocalTestPage::spawn_body(
+        TASK_1204_TITLE,
+        r#"
+            <main>
+              <section role="log" aria-label="Reading pane">
+                <article>Existing visible message</article>
+              </section>
+              <label id="compose-label" for="compose">Compose</label>
+              <textarea id="compose" aria-labelledby="compose-label"></textarea>
+              <button type="button">Send</button>
+              <button type="button" hidden>Hidden send</button>
+            </main>
+        "#,
+    );
+    let mut driver = RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
+
+    let page = driver
+        .find_page(WebsitePageRequest { url: server.url() })
+        .expect("open local test page through real browser");
+    let read = driver
+        .read_page(&page)
+        .expect("read local test page controls through real browser");
+
+    assert_eq!(read.title, TASK_1204_TITLE);
+    assert_eq!(read.controls.editable_boxes, vec!["Compose"]);
+    assert_eq!(read.controls.buttons, vec!["Send"]);
+    assert_eq!(read.controls.visible_message_areas, vec!["Reading pane"]);
+
+    println!("TASK1204 direct_driver_command=read_page");
+    println!(
+        "TASK1204 editable_box_count={}",
+        read.controls.editable_boxes.len()
+    );
+    for name in &read.controls.editable_boxes {
+        println!("TASK1204 editable_box_name={name}");
+    }
+    println!("TASK1204 button_count={}", read.controls.buttons.len());
+    for name in &read.controls.buttons {
+        println!("TASK1204 button_name={name}");
+    }
+    println!(
+        "TASK1204 visible_message_area_count={}",
+        read.controls.visible_message_areas.len()
+    );
+    for name in &read.controls.visible_message_areas {
+        println!("TASK1204 visible_message_area_name={name}");
+    }
+}
+
 struct LocalTestPage {
     listener_addr: String,
     running: Arc<AtomicBool>,
@@ -47,6 +99,10 @@ struct LocalTestPage {
 
 impl LocalTestPage {
     fn spawn(title: &'static str) -> Self {
+        Self::spawn_body(title, "")
+    }
+
+    fn spawn_body(title: &'static str, body: &'static str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test page");
         listener
             .set_nonblocking(true)
@@ -60,7 +116,7 @@ impl LocalTestPage {
         let worker = thread::spawn(move || {
             while worker_running.load(Ordering::SeqCst) {
                 match listener.accept() {
-                    Ok((stream, _)) => serve_page(stream, title),
+                    Ok((stream, _)) => serve_page(stream, title, body),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(10));
                     }
@@ -91,10 +147,10 @@ impl Drop for LocalTestPage {
     }
 }
 
-fn serve_page(mut stream: TcpStream, title: &str) {
+fn serve_page(mut stream: TcpStream, title: &str, body: &str) {
     let mut request = [0_u8; 1024];
     let _ = stream.read(&mut request);
-    let body = format!("<!doctype html><title>{title}</title><h1>{title}</h1>");
+    let body = format!("<!doctype html><title>{title}</title><h1>{title}</h1>{body}");
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
         body.len(),
