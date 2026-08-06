@@ -58,6 +58,13 @@ fn record_activity_on_command_entry() {
     crate::session_lock::note_activity();
 }
 
+fn record_activity_on_command_entry_for_state(state: &AppState) {
+    #[cfg(test)]
+    COMMAND_ACTIVITY_MARK_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    crate::main_password::mark_inactivity_timer_activity();
+    crate::session_lock::note_activity_for_state(state);
+}
+
 /// A7 lock enforcement for a secret-bearing command.
 ///
 /// `record_activity_on_command_entry` alone was never a lock: its only
@@ -74,7 +81,7 @@ fn guard_session_on_command_entry(state: &AppState) -> Result<(), String> {
     if crate::session_lock::run_idle_session_lock(state) {
         return Err(crate::session_lock::SESSION_LOCKED_ERROR.to_string());
     }
-    record_activity_on_command_entry();
+    record_activity_on_command_entry_for_state(state);
     Ok(())
 }
 
@@ -16274,6 +16281,58 @@ pub fn cmd_osl_read_alert_mode_choice(state: &AppState) -> Result<AlertModeChoic
         .expect("app_preferences mutex poisoned")
         .alert_mode_choice;
     Ok(mode.into())
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct IdleLockTimeChoiceDto {
+    pub choice: String,
+    pub seconds: Option<u64>,
+    pub label: String,
+}
+
+impl From<crate::app_preferences::IdleLockTimeChoice> for IdleLockTimeChoiceDto {
+    fn from(choice: crate::app_preferences::IdleLockTimeChoice) -> Self {
+        Self {
+            choice: choice.choice().to_string(),
+            seconds: choice.seconds(),
+            label: choice.label(),
+        }
+    }
+}
+
+pub fn cmd_osl_save_idle_lock_time_choice(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<IdleLockTimeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::parse_idle_lock_time_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.idle_lock_time_choice = choice;
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    crate::main_password::configure_file_key_inactivity_auto_lock_for_choice(choice);
+    Ok(choice.into())
+}
+
+pub fn cmd_osl_read_idle_lock_time_choice(
+    state: &AppState,
+) -> Result<IdleLockTimeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .idle_lock_time_choice;
+    Ok(choice.into())
 }
 
 // ---- Phase 9-D: onboarding tour + VPN warning ----
