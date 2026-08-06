@@ -3763,6 +3763,17 @@ pub struct RemoveSenderMessageRecordsDto {
     pub remaining_local_count: usize,
 }
 
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct YourSideBurnCommandDto {
+    pub choice: String,
+    pub local_burn_command: &'static str,
+    pub passed_sender_record_ids: Vec<String>,
+    pub passed_recipient_record_ids: Vec<String>,
+    pub requested_count: usize,
+    pub removed_count: usize,
+    pub remaining_local_count: usize,
+}
+
 /// Physically remove selected sender-owned message records from this local OSL
 /// copy.
 ///
@@ -3792,6 +3803,37 @@ pub fn cmd_osl_remove_sender_message_records(
         requested_count: outcome.requested_count,
         removed_count: outcome.removed_count,
         remaining_local_count: outcome.remaining_local_count,
+    })
+}
+
+/// Connect the user's "your side" burn choice to the local sender-record
+/// removal command.
+///
+/// The caller may carry both sender and recipient review rows, but this path is
+/// sender-local only: recipient records are deliberately not forwarded to
+/// `cmd_osl_remove_sender_message_records`.
+pub fn cmd_osl_burn_your_side_selected_records(
+    state: &AppState,
+    choice: String,
+    selected_sender_record_ids: Vec<String>,
+    selected_recipient_record_ids: Vec<String>,
+) -> Result<YourSideBurnCommandDto, String> {
+    record_activity_on_command_entry();
+    if !matches!(choice.as_str(), "your-side" | "your_side" | "yourSide") {
+        return Err("OSL: unsupported local burn choice".to_string());
+    }
+
+    let passed_sender_record_ids = selected_sender_record_ids.clone();
+    let result = cmd_osl_remove_sender_message_records(state, selected_sender_record_ids)?;
+    let _ = selected_recipient_record_ids;
+    Ok(YourSideBurnCommandDto {
+        choice,
+        local_burn_command: "osl_remove_sender_message_records",
+        passed_sender_record_ids,
+        passed_recipient_record_ids: Vec::new(),
+        requested_count: result.requested_count,
+        removed_count: result.removed_count,
+        remaining_local_count: result.remaining_local_count,
     })
 }
 
