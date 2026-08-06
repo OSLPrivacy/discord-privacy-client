@@ -181,6 +181,103 @@ pub fn proton_web_control_targets() -> &'static [EmailWebControlTarget] {
     PROTON_WEB_CONTROL_TARGETS
 }
 
+const ICLOUD_REQUIRED_WEB_CONTROL_TARGET_NAMES: &[&str] = &[
+    "compose",
+    "body",
+    "Send",
+    "folders",
+    "thread view",
+    "reading pane",
+];
+
+const ICLOUD_WEB_CONTROL_TARGETS: &[EmailWebControlTarget] = &[
+    EmailWebControlTarget {
+        name: "compose",
+        strategy: EmailWebControlStrategy::Accessibility {
+            role: "button",
+            name: Some("Compose"),
+        },
+        required: true,
+    },
+    EmailWebControlTarget {
+        name: "body",
+        strategy: EmailWebControlStrategy::Accessibility {
+            role: "textbox",
+            name: None,
+        },
+        required: true,
+    },
+    EmailWebControlTarget {
+        name: "Send",
+        strategy: EmailWebControlStrategy::Accessibility {
+            role: "button",
+            name: Some("Send"),
+        },
+        required: true,
+    },
+    EmailWebControlTarget {
+        name: "folders",
+        strategy: EmailWebControlStrategy::Accessibility {
+            role: "navigation",
+            name: Some("Mailboxes"),
+        },
+        required: true,
+    },
+    EmailWebControlTarget {
+        name: "thread view",
+        strategy: EmailWebControlStrategy::Accessibility {
+            role: "list",
+            name: Some("Message list"),
+        },
+        required: true,
+    },
+    EmailWebControlTarget {
+        name: "reading pane",
+        strategy: EmailWebControlStrategy::Accessibility {
+            role: "region",
+            name: Some("Message"),
+        },
+        required: true,
+    },
+];
+
+/// Reviewed target mapping for iCloud Mail's fixed official web origin.
+pub fn icloud_web_control_targets() -> &'static [EmailWebControlTarget] {
+    ICLOUD_WEB_CONTROL_TARGETS
+}
+
+/// Validate that the iCloud mapping has every required semantic target.
+pub fn validate_icloud_web_control_targets(
+    targets: &[EmailWebControlTarget],
+) -> Result<(), String> {
+    validate_required_email_web_control_targets(
+        "iCloud",
+        ICLOUD_REQUIRED_WEB_CONTROL_TARGET_NAMES,
+        targets,
+    )
+}
+
+fn validate_required_email_web_control_targets(
+    provider: &str,
+    required_names: &[&str],
+    targets: &[EmailWebControlTarget],
+) -> Result<(), String> {
+    let mut required_targets = BTreeSet::new();
+    for target in targets.iter().filter(|target| target.required) {
+        required_targets.insert(target.name);
+    }
+
+    for required_name in required_names {
+        if !required_targets.contains(required_name) {
+            return Err(format!(
+                "missing required {provider} web control target: {required_name}"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,5 +323,50 @@ mod tests {
                 "reading pane",
             ]
         );
+    }
+
+    #[test]
+    fn task_1273_icloud_mapping_contains_all_six_named_targets() {
+        let names = icloud_web_control_targets()
+            .iter()
+            .filter(|target| target.required)
+            .map(|target| target.name)
+            .collect::<Vec<_>>();
+
+        println!("icloud target count={}", names.len());
+        println!("icloud targets={}", names.join(","));
+
+        assert_eq!(
+            names,
+            vec![
+                "compose",
+                "body",
+                "Send",
+                "folders",
+                "thread view",
+                "reading pane",
+            ]
+        );
+        validate_icloud_web_control_targets(icloud_web_control_targets())
+            .expect("complete iCloud mapping must validate");
+    }
+
+    #[test]
+    fn task_1273_icloud_mapping_missing_any_required_target_is_refused_by_name() {
+        for missing_name in ICLOUD_REQUIRED_WEB_CONTROL_TARGET_NAMES {
+            let missing = icloud_web_control_targets()
+                .iter()
+                .copied()
+                .filter(|target| target.name != *missing_name)
+                .collect::<Vec<_>>();
+
+            let error = validate_icloud_web_control_targets(&missing)
+                .expect_err("missing required iCloud mapping target must be refused");
+            println!("icloud missing target refused={error}");
+            assert_eq!(
+                error,
+                format!("missing required iCloud web control target: {missing_name}")
+            );
+        }
     }
 }
