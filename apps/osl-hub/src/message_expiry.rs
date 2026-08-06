@@ -1240,11 +1240,31 @@ pub fn run_pass(
 mod tests {
     use super::*;
     use keystore::{LicenseState, LicenseStateDto};
+    use std::sync::{Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const KEY: [u8; 32] = [9u8; 32];
     const SCOPE: &str = "dm:aaaabbbbccccdddd";
     const MESSAGE: &str = "peer-0123456789abcdef0123456789abcdef";
+    const MARKED_CACHE_ID: &str = "marked-message-1343";
+
+    fn global_fixture_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct GlobalFixtureReset {
+        root: PathBuf,
+    }
+
+    impl Drop for GlobalFixtureReset {
+        fn drop(&mut self) {
+            ipc::main_password::set_file_storage_key(None);
+            keystore::set_active_account_dir(None);
+            keystore::set_base_dir_override(None);
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
 
     /// Same isolation discipline as the other native tests in this crate: a
     /// per-process, per-nanosecond directory, so concurrent runs never share a
@@ -1292,6 +1312,18 @@ mod tests {
             cache_id.map(str::to_owned),
             now,
         )
+    }
+
+    fn stored_message(id: &str, plaintext: &str, decrypted_at: i64) -> store::StoredMessage {
+        store::StoredMessage {
+            discord_message_id: id.to_owned(),
+            channel_id: "offline-timer-channel".to_owned(),
+            sender_discord_id: "offline-timer-sender".to_owned(),
+            sender_osl_user_id: "offline-timer-peer".to_owned(),
+            plaintext: plaintext.to_owned(),
+            decrypted_at,
+            burned: false,
+        }
     }
 
     fn state_with_license(state: LicenseState, raw_status: &str) -> ipc::AppState {
@@ -1900,6 +1932,64 @@ mod tests {
             "a file inside the age window must survive a tick"
         );
         assert_eq!(sweep_abandoned_staging(&local_data, Duration::ZERO), 1);
+    }
+
+    #[test]
+    fn offline_timer_pass_shreds_expired_reopened_copy() {
+        let _guard = global_fixture_lock().lock().expect("global fixture lock");
+        ipc::main_password::set_file_storage_key(None);
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(None);
+
+        let account_dir = root("offline-copy-expiry");
+        let local_data = account_dir.join("local-data");
+        let store_dir = account_dir.join("message-store");
+        let _reset = GlobalFixtureReset {
+            root: account_dir.clone(),
+        };
+        std::fs::create_dir_all(&local_data).unwrap();
+        std::fs::create_dir_all(&store_dir).unwrap();
+        keystore::set_base_dir_override(Some(account_dir.clone()));
+        keystore::set_active_account_dir(Some(account_dir.clone()));
+        ipc::main_password::set_file_storage_key(Some(KEY));
+
+        let sent_at = 1_000_000i64;
+        let marked = stored_message(MARKED_CACHE_ID, "marked offline timer copy", sent_at);
+        {
+            let store = store::MessageStore::open(&store_dir, &KEY).expect("open message store");
+            store.put(&marked).expect("seed marked message");
+        }
+        let reopened =
+            store::MessageStore::open(&store_dir, &KEY).expect("reopen marked message store");
+        assert!(
+            reopened
+                .get(MARKED_CACHE_ID)
+                .expect("read marked message before expiry")
+                .is_some(),
+            "test fixture did not seed the marked offline copy"
+        );
+
+        note(
+            &open_clock_path().expect("open-clock path"),
+            absolute_release(sent_at, ipc::cipher_store_client::TTL_1H).unwrap(),
+            Some(MARKED_CACHE_ID),
+            sent_at,
+        )
+        .expect("record marked message timer");
+
+        let report = run_pass(&local_data, Some(&reopened), sent_at + 3_600);
+        assert!(report.ran, "offline timer pass did not read sealed ledgers");
+        assert_eq!(report.expired_messages, 1);
+        assert!(
+            reopened
+                .get(MARKED_CACHE_ID)
+                .expect("read marked message after expiry")
+                .is_none(),
+            "reopened copy still holding {MARKED_CACHE_ID}"
+        );
+        assert_eq!(report.shredded_cache_rows, 1);
+
+        drop(reopened);
     }
 
     #[test]
