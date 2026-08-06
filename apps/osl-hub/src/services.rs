@@ -183,6 +183,19 @@ pub struct ServiceMessagePossibleMatch {
     pub time: String,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceAccountFinishedNotice {
+    pub service: String,
+    pub finished_account_id: String,
+    pub finished_account_label: String,
+    pub match_count: usize,
+    pub next_account_id: Option<String>,
+    pub next_account_label: Option<String>,
+    pub title: String,
+    pub detail: String,
+}
+
 pub trait AccountServiceMessageConnection {
     fn service_id(&self) -> ServiceKind;
     fn account_id(&self) -> &str;
@@ -340,6 +353,54 @@ pub fn find_possible_matches_in_read_messages(
         });
     }
     Ok(matches)
+}
+
+pub fn finish_active_service_account_run_notice(
+    queue: &ServiceAccountRunQueue,
+    match_count: usize,
+) -> Result<ServiceAccountFinishedNotice, String> {
+    let active_accounts = queue
+        .accounts
+        .iter()
+        .filter(|account| account.status == ServiceAccountRunStatus::Active)
+        .collect::<Vec<_>>();
+    let [active] = active_accounts.as_slice() else {
+        return Err("service account finish requires exactly one active account".to_owned());
+    };
+    let next = queue
+        .accounts
+        .iter()
+        .find(|account| account.status == ServiceAccountRunStatus::Waiting);
+    let service = service_descriptor(queue.service_id).display_name.to_owned();
+    let next_account_label = next.map(|account| account.label.clone());
+    let detail = service_account_finished_notice_detail(&service, match_count, next);
+
+    Ok(ServiceAccountFinishedNotice {
+        service: service.clone(),
+        finished_account_id: active.account_id.clone(),
+        finished_account_label: active.label.clone(),
+        match_count,
+        next_account_id: next.map(|account| account.account_id.clone()),
+        next_account_label,
+        title: format!("{service} scan finished"),
+        detail,
+    })
+}
+
+fn service_account_finished_notice_detail(
+    service: &str,
+    match_count: usize,
+    next: Option<&ServiceAccountRunQueueEntry>,
+) -> String {
+    let match_clause = match match_count {
+        0 => format!("No matches found in {service}."),
+        1 => format!("1 match found in {service}."),
+        count => format!("{count} matches found in {service}."),
+    };
+    let next_clause = next
+        .map(|account| format!("Next account: {}.", account.label))
+        .unwrap_or_else(|| "No next account.".to_owned());
+    format!("{match_clause} {next_clause}")
 }
 
 fn build_paced_action_run_log(account_id: &str) -> Result<ServiceAccountActionRunLog, String> {
@@ -2075,6 +2136,79 @@ mod tests {
         assert_eq!(matched.place, "dm:task-1425-dm");
         assert_eq!(matched.date, "2026-08-06");
         assert_eq!(matched.time, "09:30");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn task_1437_finishing_fixture_discord_account_produces_no_match_and_match_wording() {
+        let _serial = crate::global_keystore_test_lock();
+        let path = temporary_registry();
+        let state = ServiceRegistryState::load(path.clone());
+        let first = state
+            .create_for_owner(OWNER_A, ServiceKind::Discord, "First".to_owned())
+            .unwrap();
+        let second = state
+            .create_for_owner(OWNER_A, ServiceKind::Discord, "Second".to_owned())
+            .unwrap();
+        let queue = state
+            .run_queue_for_owner(
+                OWNER_A,
+                ServiceKind::Discord,
+                &[first.id.clone(), second.id.clone()],
+            )
+            .unwrap();
+
+        let no_match_notice = finish_active_service_account_run_notice(&queue, 0).unwrap();
+        let match_notice = finish_active_service_account_run_notice(&queue, 2).unwrap();
+
+        println!("task_1437_finish_action=finish_active_service_account_run_notice");
+        println!("task_1437_notice_service={}", no_match_notice.service);
+        println!(
+            "task_1437_finished_fixture_account={}",
+            no_match_notice.finished_account_label
+        );
+        println!("task_1437_no_match_count={}", no_match_notice.match_count);
+        println!("task_1437_no_match_title={}", no_match_notice.title);
+        println!("task_1437_no_match_detail={}", no_match_notice.detail);
+        println!("task_1437_match_count={}", match_notice.match_count);
+        println!("task_1437_match_title={}", match_notice.title);
+        println!("task_1437_match_detail={}", match_notice.detail);
+        println!(
+            "task_1437_next_account={}",
+            no_match_notice.next_account_label.as_deref().unwrap_or("")
+        );
+
+        assert_eq!(no_match_notice.service, "Discord");
+        assert_eq!(no_match_notice.finished_account_id, first.id);
+        assert_eq!(no_match_notice.finished_account_label, "First");
+        assert_eq!(no_match_notice.match_count, 0);
+        assert_eq!(
+            no_match_notice.next_account_id.as_deref(),
+            Some(second.id.as_str())
+        );
+        assert_eq!(
+            no_match_notice.next_account_label.as_deref(),
+            Some("Second")
+        );
+        assert_eq!(no_match_notice.title, "Discord scan finished");
+        assert_eq!(
+            no_match_notice.detail,
+            "No matches found in Discord. Next account: Second."
+        );
+        assert_eq!(match_notice.service, "Discord");
+        assert_eq!(match_notice.finished_account_id, first.id);
+        assert_eq!(match_notice.finished_account_label, "First");
+        assert_eq!(match_notice.match_count, 2);
+        assert_eq!(
+            match_notice.next_account_id.as_deref(),
+            Some(second.id.as_str())
+        );
+        assert_eq!(match_notice.next_account_label.as_deref(), Some("Second"));
+        assert_eq!(match_notice.title, "Discord scan finished");
+        assert_eq!(
+            match_notice.detail,
+            "2 matches found in Discord. Next account: Second."
+        );
         let _ = fs::remove_file(path);
     }
 
