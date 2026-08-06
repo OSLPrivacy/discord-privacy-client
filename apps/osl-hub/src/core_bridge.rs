@@ -11,9 +11,14 @@ use std::fmt;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+use crate::runtime_switches::{
+    ResolvedTestOnlyRunTimeSwitches, PASSWORD_SCREEN_ACCESS_SKIP_FOR_TEST,
+};
+
 pub struct HubCoreState {
     pub osl: Arc<AppState>,
     bootstrap_attempted: bool,
+    runtime_switches: ResolvedTestOnlyRunTimeSwitches,
     /// Serialises trusted identity/password transitions so Create, Import,
     /// Setup, and Unlock cannot race each other into replacing disk state.
     pub(crate) lifecycle_lock: Mutex<()>,
@@ -24,6 +29,7 @@ impl Default for HubCoreState {
         Self {
             osl: production_osl_state(),
             bootstrap_attempted: false,
+            runtime_switches: ResolvedTestOnlyRunTimeSwitches::default(),
             lifecycle_lock: Mutex::new(()),
         }
     }
@@ -33,9 +39,16 @@ impl HubCoreState {
     /// Load the original OSL account and security state from its sealed local
     /// configuration. Missing, locked, or corrupt state remains unavailable.
     pub fn bootstrap_from_disk() -> Self {
+        Self::bootstrap_from_disk_with_runtime_switches(ResolvedTestOnlyRunTimeSwitches::default())
+    }
+
+    pub fn bootstrap_from_disk_with_runtime_switches(
+        runtime_switches: ResolvedTestOnlyRunTimeSwitches,
+    ) -> Self {
         let state = Self {
             osl: production_osl_state(),
             bootstrap_attempted: true,
+            runtime_switches,
             lifecycle_lock: Mutex::new(()),
         };
         // The entitlement cache is device-level, not account-level. Stamp it
@@ -46,6 +59,19 @@ impl HubCoreState {
         }
         crate::original_bootstrap::run_autostart_local(&state.osl);
         state
+    }
+
+    pub fn with_runtime_switches_for_test(
+        runtime_switches: ResolvedTestOnlyRunTimeSwitches,
+    ) -> Self {
+        Self {
+            runtime_switches,
+            ..Self::default()
+        }
+    }
+
+    pub fn runtime_switches(&self) -> ResolvedTestOnlyRunTimeSwitches {
+        self.runtime_switches.clone()
     }
 
     pub fn register_after_local_bootstrap(&self) {
@@ -220,7 +246,9 @@ fn hub_license_state(value: keystore::LicenseStateDto) -> HubLicenseState {
 
 pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     let status = ipc::commands::cmd_status(&state.osl);
-    let password_gate_required = if cfg!(feature = "discord-qa-shell") {
+    let password_screen_skipped =
+        state.runtime_switches().password_screen_access == PASSWORD_SCREEN_ACCESS_SKIP_FOR_TEST;
+    let password_gate_required = if password_screen_skipped {
         false
     } else {
         ipc::commands::cmd_osl_password_status()
@@ -250,11 +278,11 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     } else {
         None
     };
-    // The disposable QA shell must paint and claim Discord while its freshly
+    // A test-only startup switch may let disposable QA paint while its freshly
     // generated public identity registers in the background. Protected-send
     // commands still enforce registration themselves; only the setup UI gate
-    // is bypassed in this compile-time-only build.
-    let bootstrap_status = if cfg!(feature = "discord-qa-shell")
+    // is bypassed by this process-start switch set.
+    let bootstrap_status = if password_screen_skipped
         && state.bootstrap_attempted
         && status.identity_loaded
         && unlocked
@@ -266,13 +294,13 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
             state.bootstrap_attempted,
             status.identity_loaded,
             identity_blob_present(),
-            // The disposable QA shell forces `password_gate_required` to
+            // The startup switch can force `password_gate_required` to
             // false above regardless of on-disk state, so it no longer means
             // "a password is set" there — it means "we don't use one". Treat
             // that as satisfying the local password prerequisite rather than
             // letting the classifier read it as "not set yet" and route back
             // to setupRequired.
-            password_gate_required || cfg!(feature = "discord-qa-shell"),
+            password_gate_required || password_screen_skipped,
             unlocked,
             status.keyserver_initialised,
             state.osl.cloud_registration_state() == ipc::state::CloudRegistrationState::Registered,

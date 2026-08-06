@@ -26,6 +26,7 @@ use crate::native_apps::BrowserImportId;
 use crate::native_discord_adapter::{
     guided_deletion, DiscordCarrierLayout, NativeDiscordComposerState,
 };
+use crate::runtime_switches::{ResolvedTestOnlyRunTimeSwitches, SAFE_SENDING_DRY_RUN_FOR_TEST};
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
 use serde::Deserialize;
@@ -296,6 +297,24 @@ where
     let product_send_authority =
         require_native_discord_product_send_authority(composer, scope_binding, layout)?;
     place(product_send_authority)
+}
+
+pub fn with_native_discord_product_send_authority_for_switches<T, Place, DryRun>(
+    switches: &ResolvedTestOnlyRunTimeSwitches,
+    composer: &NativeDiscordComposerState,
+    scope_binding: &str,
+    layout: Option<DiscordCarrierLayout>,
+    place: Place,
+    dry_run: DryRun,
+) -> Result<T, String>
+where
+    Place: FnOnce(NativeDiscordProductSendAuthority) -> Result<T, String>,
+    DryRun: FnOnce() -> Result<T, String>,
+{
+    if switches.safe_sending == SAFE_SENDING_DRY_RUN_FOR_TEST {
+        return dry_run();
+    }
+    with_native_discord_product_send_authority(composer, scope_binding, layout, place)
 }
 
 #[cfg(any(test, feature = "discord-qa-shell"))]

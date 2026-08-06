@@ -18,6 +18,20 @@ pub struct ResolvedTestOnlyRunTimeSwitches {
     pub safe_sending: &'static str,
 }
 
+impl Default for ResolvedTestOnlyRunTimeSwitches {
+    fn default() -> Self {
+        resolve_test_only_runtime_switches(&[])
+            .expect("built-in test-only runtime switch defaults must resolve")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TestOnlyRunTimeSwitchChoiceReport {
+    pub password_screen_access: &'static str,
+    pub safe_sending: &'static str,
+    pub source: &'static str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunTimeSwitchError {
     UnknownSwitchList {
@@ -68,6 +82,8 @@ impl std::fmt::Display for RunTimeSwitchError {
 impl std::error::Error for RunTimeSwitchError {}
 
 pub const TEST_ONLY_RUNTIME_SWITCH_LIST_NAME: &str = "osl-test-only-runtime-switches";
+pub const TEST_ONLY_RUNTIME_SWITCH_ENV: &str = "OSL_TEST_ONLY_RUNTIME_SWITCHES";
+pub const RUNTIME_SWITCH_CHOICE_SOURCE: &str = "run-time switches";
 
 pub const PASSWORD_SCREEN_ACCESS_SWITCH: &str = "password_screen_access";
 pub const PASSWORD_SCREEN_ACCESS_REQUIRED: &str = "require-password-screen";
@@ -147,6 +163,41 @@ pub fn read_test_only_runtime_switches<'a>(
     }
 
     resolve_test_only_runtime_switches(&overrides)
+}
+
+pub fn read_startup_test_only_runtime_switches(
+) -> Result<ResolvedTestOnlyRunTimeSwitches, RunTimeSwitchError> {
+    match std::env::var(TEST_ONLY_RUNTIME_SWITCH_ENV) {
+        Ok(raw) => read_startup_test_only_runtime_switches_from_assignments(
+            raw.split(',')
+                .map(str::trim)
+                .filter(|assignment| !assignment.is_empty()),
+        ),
+        Err(std::env::VarError::NotPresent) => {
+            read_startup_test_only_runtime_switches_from_assignments([])
+        }
+        Err(std::env::VarError::NotUnicode(raw)) => {
+            Err(RunTimeSwitchError::InvalidSwitchAssignment {
+                assignment: raw.to_string_lossy().into_owned(),
+            })
+        }
+    }
+}
+
+pub fn read_startup_test_only_runtime_switches_from_assignments<'a>(
+    assignments: impl IntoIterator<Item = &'a str>,
+) -> Result<ResolvedTestOnlyRunTimeSwitches, RunTimeSwitchError> {
+    read_test_only_runtime_switches(assignments)
+}
+
+pub fn test_only_runtime_switch_choice_report(
+    switches: &ResolvedTestOnlyRunTimeSwitches,
+) -> TestOnlyRunTimeSwitchChoiceReport {
+    TestOnlyRunTimeSwitchChoiceReport {
+        password_screen_access: switches.password_screen_access,
+        safe_sending: switches.safe_sending,
+        source: RUNTIME_SWITCH_CHOICE_SOURCE,
+    }
 }
 
 pub fn validate_test_only_runtime_switch_value(

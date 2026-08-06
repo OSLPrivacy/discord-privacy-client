@@ -48,14 +48,14 @@ fn current_build_variants() -> Vec<BuildVariant> {
             compile_time_differences: &[
                 "discord-qa-shell remaps config and local-data roots to discord-qa-shell-v1",
                 "discord-qa-shell installs a device-bound file-storage key and disposable Discord identity",
-                "discord-qa-shell compiles Discord QA commands and disables the password gate in readiness",
+                "discord-qa-shell compiles Discord QA commands; the password gate choice moved to password_screen_access at startup",
             ],
             prevents_test_work: &[
-                "prevents main-password screen, unlock, and returning-user passwordRequired regression work",
+                "previously prevented main-password screen, unlock, and returning-user passwordRequired regression work when the runtime switch selected skip-password-screen-for-test",
                 "prevents production screenshot-protection and header-proof enforcement from being accepted from this build",
                 "prevents real first-run onboarding evidence because the QA identity path owns startup",
             ],
-            password_screen: "unavailable",
+            password_screen: "runtime switch: skip-password-screen-for-test",
         },
         BuildVariant {
             name: "WhatsApp lab identity build",
@@ -157,8 +157,8 @@ fn prints_one_named_list_of_the_three_current_build_variants() {
         .find(|variant| variant.name == "old testing build")
         .expect("old testing build is named");
     assert_eq!(
-        old_testing.password_screen, "unavailable",
-        "the old testing build must identify the password screen as unavailable"
+        old_testing.password_screen, "runtime switch: skip-password-screen-for-test",
+        "the old testing build must identify the password screen's old unavailable behavior by its runtime switch value"
     );
 
     print_variant_inventory();
@@ -189,8 +189,14 @@ fn inventory_matches_current_feature_declarations_and_cfg_branches() {
 
     let core_bridge = read_repo_file("src/core_bridge.rs");
     assert!(
-        core_bridge.contains("let password_gate_required = if cfg!(feature = \"discord-qa-shell\") {\n        false"),
-        "discord-qa-shell must be the compile-time branch that makes the password screen unavailable"
+        core_bridge.contains("state.runtime_switches().password_screen_access")
+            && core_bridge.contains("PASSWORD_SCREEN_ACCESS_SKIP_FOR_TEST"),
+        "the old password-screen build choice must now read the startup runtime switch"
+    );
+    assert!(
+        !core_bridge
+            .contains("let password_gate_required = if cfg!(feature = \"discord-qa-shell\")"),
+        "the password screen must not be selected by the old testing build feature"
     );
 
     let main_rs = read_repo_file("src/main.rs");
