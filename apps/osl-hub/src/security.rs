@@ -146,6 +146,32 @@ pub struct FriendFutureAccountAutoWhitelistDto {
     pub result: &'static str,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubFriendDirectAccountDto {
+    pub service_id: String,
+    pub account_id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubFriendAccountReachRowDto {
+    pub service_id: String,
+    pub account_id: String,
+    pub label: String,
+    pub allowed: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubFriendAccountReachDto {
+    pub action: &'static str,
+    pub person_id: String,
+    pub accounts: Vec<HubFriendAccountReachRowDto>,
+    pub changed_count: usize,
+}
+
 /// A local-only description of one approved encryption scope. It deliberately
 /// contains no service or account handle: current friend codes do not prove
 /// either relationship, so OSL must not infer one from a conversation id.
@@ -2056,6 +2082,88 @@ pub fn set_manual_peer_scope_permission(
     let storage_key = manual_peer_scope_storage_key(service_id, account_id, &binding.person_id)?;
     withdraw_manual_scope_grant(&mut prefs, &storage_key);
     write_encrypted_json(&path, &prefs)
+}
+
+pub fn set_hub_friend_account_reach_everywhere(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<HubFriendDirectAccountDto>,
+) -> Result<HubFriendAccountReachDto, String> {
+    set_hub_friend_account_reach(core, security, person_id, accounts, true, "everywhere")
+}
+
+pub fn set_hub_friend_account_reach_nowhere(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<HubFriendDirectAccountDto>,
+) -> Result<HubFriendAccountReachDto, String> {
+    set_hub_friend_account_reach(core, security, person_id, accounts, false, "nowhere")
+}
+
+fn set_hub_friend_account_reach(
+    core: &HubCoreState,
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<HubFriendDirectAccountDto>,
+    allowed: bool,
+    action: &'static str,
+) -> Result<HubFriendAccountReachDto, String> {
+    let binding = manual_peer_binding(core, person_id)?;
+    let mut rows = Vec::with_capacity(accounts.len());
+    let mut storage_keys = Vec::with_capacity(accounts.len());
+    for account in accounts {
+        crate::services::service_kind_from_id(&account.service_id)
+            .ok_or_else(|| "OSL service is unknown".to_owned())?;
+        let storage_key = manual_peer_scope_storage_key(
+            &account.service_id,
+            &account.account_id,
+            &binding.person_id,
+        )?;
+        rows.push(HubFriendAccountReachRowDto {
+            service_id: account.service_id,
+            account_id: account.account_id,
+            label: account.label,
+            allowed,
+        });
+        storage_keys.push(storage_key);
+    }
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL manual peer settings are unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let path = dir.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    let mut changed_count = 0usize;
+    for storage_key in storage_keys {
+        if allowed {
+            if prefs.burned_manual_scopes.contains(&storage_key) {
+                return Err(
+                    "This manual conversation was burned and cannot be reapproved".to_owned(),
+                );
+            }
+            let inserted_scope = prefs.manual_approved_scopes.insert(storage_key.clone());
+            let previous_person = prefs
+                .manual_approved_scope_people
+                .insert(storage_key, binding.person_id.clone());
+            if inserted_scope || previous_person.as_deref() != Some(binding.person_id.as_str()) {
+                changed_count += 1;
+            }
+        } else if withdraw_manual_scope_grant(&mut prefs, &storage_key) {
+            changed_count += 1;
+        }
+    }
+    write_encrypted_json(&path, &prefs)?;
+    Ok(HubFriendAccountReachDto {
+        action,
+        person_id: binding.person_id,
+        accounts: rows,
+        changed_count,
+    })
 }
 
 /// Apply one already-minted scoped trust grant to the hub's manual approval
@@ -5882,6 +5990,149 @@ mod tests {
             !off_ticked,
             "off fixture must stay unticked for the added account"
         );
+    }
+
+    fn task0258_accounts() -> Vec<HubFriendDirectAccountDto> {
+        vec![
+            HubFriendDirectAccountDto {
+                service_id: "discord".to_owned(),
+                account_id: "native-discord-task0258-a".to_owned(),
+                label: "OLIVE-0258 Discord".to_owned(),
+            },
+            HubFriendDirectAccountDto {
+                service_id: "telegram".to_owned(),
+                account_id: "acct-task0258-telegram".to_owned(),
+                label: "OLIVE-0258 Telegram".to_owned(),
+            },
+            HubFriendDirectAccountDto {
+                service_id: "email".to_owned(),
+                account_id: "acct-task0258-mail".to_owned(),
+                label: "OLIVE-0258 Mail".to_owned(),
+            },
+        ]
+    }
+
+    fn task0258_protected_message_actions(
+        core: &HubCoreState,
+        person_id: &str,
+        accounts: &[HubFriendDirectAccountDto],
+    ) -> Vec<&'static str> {
+        accounts
+            .iter()
+            .map(|account| {
+                let scope_id =
+                    manual_peer_scope_id(&account.service_id, &account.account_id, person_id)
+                        .unwrap();
+                match require_manual_peer_scope_approved(
+                    core,
+                    &account.service_id,
+                    &account.account_id,
+                    person_id.to_owned(),
+                    dm_scope_input(scope_id),
+                ) {
+                    Ok(_) => "act",
+                    Err(error)
+                        if error == "Approve encryption for this friend before continuing" =>
+                    {
+                        "skipped"
+                    }
+                    Err(error) => panic!("unexpected protected-message action error: {error}"),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn task0258_everywhere_then_nowhere_immediately_controls_protected_message_actions() {
+        let harness = FileBackedSecurityHarness::new("task0258-everywhere-nowhere");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let security = HubSecurityState::default();
+        let (person_id, metadata, peer) = test_friend(58);
+        write_people(harness.path(), &person_id, metadata);
+        install_peer_map(&core, harness.path(), &person_id, peer);
+        write_encrypted_json(
+            &harness.path().join(SECURITY_PREFS_FILE),
+            &SecurityPreferences::default(),
+        )
+        .unwrap();
+
+        let accounts = task0258_accounts();
+        let everywhere = set_hub_friend_account_reach_everywhere(
+            &core,
+            &security,
+            person_id.clone(),
+            accounts.clone(),
+        )
+        .expect("everywhere action succeeds");
+        let after_everywhere = task0258_protected_message_actions(&core, &person_id, &accounts);
+        let everywhere_act = after_everywhere
+            .iter()
+            .filter(|action| **action == "act")
+            .count();
+        let everywhere_skipped = after_everywhere
+            .iter()
+            .filter(|action| **action == "skipped")
+            .count();
+        let everywhere_states = accounts
+            .iter()
+            .zip(after_everywhere.iter())
+            .map(|(account, action)| format!("{}={action}", account.label))
+            .collect::<Vec<_>>()
+            .join("|");
+        println!(
+            "TASK0258 phase=after-everywhere action={} accounts={} act={} skipped={} states={}",
+            everywhere.action,
+            everywhere.accounts.len(),
+            everywhere_act,
+            everywhere_skipped,
+            everywhere_states
+        );
+        assert_eq!(everywhere.action, "everywhere");
+        assert_eq!(everywhere.accounts.len(), 3);
+        assert_eq!(everywhere.changed_count, 3);
+        assert!(everywhere.accounts.iter().all(|account| account.allowed));
+        assert_eq!(everywhere_act, 3);
+        assert_eq!(everywhere_skipped, 0);
+        assert_eq!(after_everywhere, vec!["act", "act", "act"]);
+
+        let nowhere = set_hub_friend_account_reach_nowhere(
+            &core,
+            &security,
+            person_id.clone(),
+            accounts.clone(),
+        )
+        .expect("nowhere action succeeds");
+        let after_nowhere = task0258_protected_message_actions(&core, &person_id, &accounts);
+        let nowhere_act = after_nowhere
+            .iter()
+            .filter(|action| **action == "act")
+            .count();
+        let nowhere_skipped = after_nowhere
+            .iter()
+            .filter(|action| **action == "skipped")
+            .count();
+        let nowhere_states = accounts
+            .iter()
+            .zip(after_nowhere.iter())
+            .map(|(account, action)| format!("{}={action}", account.label))
+            .collect::<Vec<_>>()
+            .join("|");
+        println!(
+            "TASK0258 phase=after-nowhere action={} accounts={} act={} skipped={} states={}",
+            nowhere.action,
+            nowhere.accounts.len(),
+            nowhere_act,
+            nowhere_skipped,
+            nowhere_states
+        );
+        assert_eq!(nowhere.action, "nowhere");
+        assert_eq!(nowhere.accounts.len(), 3);
+        assert_eq!(nowhere.changed_count, 3);
+        assert!(nowhere.accounts.iter().all(|account| !account.allowed));
+        assert_eq!(nowhere_act, 0);
+        assert_eq!(nowhere_skipped, 3);
+        assert_eq!(after_nowhere, vec!["skipped", "skipped", "skipped"]);
     }
 
     #[test]
