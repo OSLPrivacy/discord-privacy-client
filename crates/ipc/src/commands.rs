@@ -286,11 +286,17 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_save_start_with_windows_choice", || {
             let _ = cmd_osl_save_start_with_windows_choice(&state, "on".to_owned(), None);
         });
+        assert_command_marks_activity("cmd_osl_reset_start_with_windows_choice", || {
+            let _ = cmd_osl_reset_start_with_windows_choice(&state, None);
+        });
         assert_command_marks_activity("cmd_osl_read_idle_lock_time_choice", || {
             let _ = cmd_osl_read_idle_lock_time_choice(&state);
         });
         assert_command_marks_activity("cmd_osl_save_idle_lock_time_choice", || {
             let _ = cmd_osl_save_idle_lock_time_choice(&state, "never".to_owned(), None);
+        });
+        assert_command_marks_activity("cmd_osl_reset_idle_lock_time_choice", || {
+            let _ = cmd_osl_reset_idle_lock_time_choice(&state, None);
         });
         assert_command_marks_activity("cmd_osl_get_ask_before_irreversible_actions_choice", || {
             let _ = cmd_osl_get_ask_before_irreversible_actions_choice(&state);
@@ -299,11 +305,20 @@ mod command_activity_tests {
             let _ =
                 cmd_osl_set_ask_before_irreversible_actions_choice(&state, "off".to_owned(), None);
         });
+        assert_command_marks_activity(
+            "cmd_osl_reset_ask_before_irreversible_actions_choice",
+            || {
+                let _ = cmd_osl_reset_ask_before_irreversible_actions_choice(&state, None);
+            },
+        );
         assert_command_marks_activity("cmd_osl_read_alert_mode_choice", || {
             let _ = cmd_osl_read_alert_mode_choice(&state);
         });
         assert_command_marks_activity("cmd_osl_save_alert_mode_choice", || {
             let _ = cmd_osl_save_alert_mode_choice(&state, "quiet".to_owned(), None);
+        });
+        assert_command_marks_activity("cmd_osl_reset_alert_mode_choice", || {
+            let _ = cmd_osl_reset_alert_mode_choice(&state, None);
         });
         assert_command_marks_activity("cmd_osl_get_language_choice", || {
             let _ = cmd_osl_get_language_choice(&state);
@@ -311,8 +326,14 @@ mod command_activity_tests {
         assert_command_marks_activity("cmd_osl_save_language_choice", || {
             let _ = cmd_osl_save_language_choice(&state, "en".to_owned(), None);
         });
+        assert_command_marks_activity("cmd_osl_reset_language_choice", || {
+            let _ = cmd_osl_reset_language_choice(&state, None);
+        });
         assert_command_marks_activity("cmd_osl_read_screen_words", || {
             let _ = cmd_osl_read_screen_words(&state, "welcome".to_owned());
+        });
+        assert_command_marks_activity("cmd_osl_reset_follow_active_app_choice", || {
+            let _ = cmd_osl_reset_follow_active_app_choice(&state, None);
         });
         assert_command_marks_activity("cmd_osl_get_self_user_id", || {
             let _ = cmd_osl_get_self_user_id(&state);
@@ -16034,6 +16055,19 @@ pub fn cmd_osl_read_idle_lock_time_choice(
     Ok(choice.into())
 }
 
+pub fn cmd_osl_reset_idle_lock_time_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<IdleLockTimeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = mutate_app_preferences_result(state, config_dir, |prefs| {
+        let choice = crate::app_preferences::IdleLockTimeChoice::default();
+        prefs.idle_lock_time_choice = choice;
+        choice
+    })?;
+    Ok(choice.into())
+}
+
 // ---- G3.3: auto-updater channel ----
 //
 // Channel persists in the SAME app_preferences.json as every other
@@ -16114,6 +16148,19 @@ pub fn cmd_osl_save_start_with_windows_choice(
     Ok(choice.as_value().to_string())
 }
 
+pub fn cmd_osl_reset_start_with_windows_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let choice = mutate_app_preferences_result(state, config_dir, |prefs| {
+        let choice = crate::app_preferences::StartWithWindowsChoice::default();
+        prefs.start_with_windows = choice;
+        choice
+    })?;
+    Ok(choice.as_value().to_string())
+}
+
 // ---- Task 3154: ask before irreversible actions ----
 
 pub fn cmd_osl_get_ask_before_irreversible_actions_choice(
@@ -16152,6 +16199,18 @@ pub fn cmd_osl_set_ask_before_irreversible_actions_choice(
         crate::app_preferences::write_app_preferences(&path, &g)?;
     }
     Ok(choice)
+}
+
+pub fn cmd_osl_reset_ask_before_irreversible_actions_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<crate::app_preferences::AskBeforeIrreversibleActionsChoice, String> {
+    record_activity_on_command_entry();
+    mutate_app_preferences_result(state, config_dir, |prefs| {
+        let choice = crate::app_preferences::AskBeforeIrreversibleActionsChoice::default();
+        prefs.ask_before_irreversible_actions = choice;
+        choice
+    })
 }
 
 // ---- Task 3148: follow whichever app is in front ----
@@ -16194,6 +16253,46 @@ pub fn cmd_osl_set_follow_active_app_choice(
     Ok(choice.as_str().to_owned())
 }
 
+pub fn cmd_osl_reset_follow_active_app_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    let choice = mutate_app_preferences_result(state, config_dir, |prefs| {
+        let choice = crate::app_preferences::FollowActiveAppChoice::default();
+        prefs.follow_active_app_choice = choice;
+        choice
+    })?;
+    Ok(choice.as_str().to_owned())
+}
+
+fn mutate_app_preferences_result<T>(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+    update: impl FnOnce(&mut crate::app_preferences::AppPreferences) -> T,
+) -> Result<T, String> {
+    let (previous, value) = {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        let previous = prefs.clone();
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        let value = update(&mut prefs);
+        (previous, value)
+    };
+
+    if let Err(error) = persist_app_preferences_result(state, config_dir) {
+        *state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned") = previous;
+        return Err(error);
+    }
+
+    Ok(value)
+}
+
 fn persist_app_preferences_result(
     state: &AppState,
     config_dir: Option<std::path::PathBuf>,
@@ -16232,30 +16331,21 @@ mod task3148_follow_active_app_choice_tests {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let state = AppState::new();
 
-        let saved_on = cmd_osl_set_follow_active_app_choice(
-            &state,
-            "on",
-            Some(dir.path().to_path_buf()),
-        )
-        .expect("save on");
+        let saved_on =
+            cmd_osl_set_follow_active_app_choice(&state, "on", Some(dir.path().to_path_buf()))
+                .expect("save on");
         let read_on = cmd_osl_get_follow_active_app_choice(&state).expect("read on");
         let persisted_on =
             crate::app_preferences::load_app_preferences(&dir.path().join("app_preferences.json"))
                 .follow_active_app_choice
                 .as_str()
                 .to_owned();
-        let saved_off = cmd_osl_set_follow_active_app_choice(
-            &state,
-            "off",
-            Some(dir.path().to_path_buf()),
-        )
-        .expect("save off");
-        let bad_value_error = cmd_osl_set_follow_active_app_choice(
-            &state,
-            "maybe",
-            Some(dir.path().to_path_buf()),
-        )
-        .expect_err("bad value refused");
+        let saved_off =
+            cmd_osl_set_follow_active_app_choice(&state, "off", Some(dir.path().to_path_buf()))
+                .expect("save off");
+        let bad_value_error =
+            cmd_osl_set_follow_active_app_choice(&state, "maybe", Some(dir.path().to_path_buf()))
+                .expect_err("bad value refused");
         let after_bad = cmd_osl_get_follow_active_app_choice(&state).expect("read after bad");
 
         println!(
@@ -16325,6 +16415,19 @@ pub fn cmd_osl_read_alert_mode_choice(state: &AppState) -> Result<AlertModeChoic
     Ok(mode.into())
 }
 
+pub fn cmd_osl_reset_alert_mode_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<AlertModeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let mode = mutate_app_preferences_result(state, config_dir, |prefs| {
+        let mode = crate::app_preferences::AlertModeChoice::default();
+        prefs.alert_mode_choice = mode;
+        mode
+    })?;
+    Ok(mode.into())
+}
+
 // ---- Language choice and screen words ----
 
 pub fn cmd_osl_get_language_choice(state: &AppState) -> Result<String, String> {
@@ -16353,6 +16456,18 @@ pub fn cmd_osl_save_language_choice(
     }
     persist_app_preferences_now(state, config_dir);
     Ok(language)
+}
+
+pub fn cmd_osl_reset_language_choice(
+    state: &AppState,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    record_activity_on_command_entry();
+    mutate_app_preferences_result(state, config_dir, |prefs| {
+        let language = crate::app_preferences::default_language_choice();
+        prefs.language = language.clone();
+        language
+    })
 }
 
 pub fn cmd_osl_read_screen_words(
