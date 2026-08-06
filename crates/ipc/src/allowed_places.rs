@@ -115,6 +115,30 @@ pub fn remove_allowed_place_record(
     Ok(removed == 1)
 }
 
+pub fn remove_allowed_place_records_for_person(
+    app_data_dir: impl AsRef<Path>,
+    person_id: impl AsRef<str>,
+) -> Result<usize> {
+    let person_id = person_id.as_ref();
+    validate_field(person_id, "person_id")?;
+    let records = list_allowed_place_records(&app_data_dir)?;
+    let matching = records
+        .iter()
+        .filter(|record| allowed_place_record_belongs_to_person(record, person_id))
+        .map(|record| record.stable_id.clone())
+        .collect::<Vec<_>>();
+    let conn = Connection::open(allowed_places_db_path(app_data_dir))?;
+    ensure_schema(&conn)?;
+    let mut removed = 0usize;
+    for stable_id in matching {
+        removed += conn.execute(
+            "DELETE FROM allowed_places WHERE stable_id = ?1",
+            params![stable_id],
+        )?;
+    }
+    Ok(removed)
+}
+
 pub fn list_allowed_place_records(
     app_data_dir: impl AsRef<Path>,
 ) -> Result<Vec<AllowedPlaceRecord>> {
@@ -139,6 +163,18 @@ pub fn list_allowed_place_records(
     Ok(records)
 }
 
+pub fn count_allowed_place_records_for_person(
+    app_data_dir: impl AsRef<Path>,
+    person_id: impl AsRef<str>,
+) -> Result<usize> {
+    let person_id = person_id.as_ref();
+    validate_field(person_id, "person_id")?;
+    Ok(list_allowed_place_records(app_data_dir)?
+        .iter()
+        .filter(|record| allowed_place_record_belongs_to_person(record, person_id))
+        .count())
+}
+
 pub fn allowed_place_is_allowed(
     app_data_dir: impl AsRef<Path>,
     query: &AllowedPlaceQuery,
@@ -159,6 +195,10 @@ pub fn allowed_place_is_allowed(
         .optional()?
         .is_some();
     Ok(found)
+}
+
+fn allowed_place_record_belongs_to_person(record: &AllowedPlaceRecord, person_id: &str) -> bool {
+    record.stable_id == person_id || record.stable_id.rsplit(':').next() == Some(person_id)
 }
 
 fn ensure_schema(conn: &Connection) -> Result<()> {
