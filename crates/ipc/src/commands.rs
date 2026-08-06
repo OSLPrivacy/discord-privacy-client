@@ -10082,7 +10082,7 @@ pub fn cmd_osl_accept_friend_request(
 
 const PENDING_FRIEND_REQUESTS_FILE: &str = "pending_friend_requests.json";
 
-#[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingFriendRequestRecord {
     pub peer_discord_id: String,
@@ -10209,6 +10209,14 @@ pub fn cmd_osl_send_friend_request(
     cmd_osl_send_friend_request_with_dir(state, peer_discord_id, scope_input, &dir)
 }
 
+pub fn cmd_osl_create_friend_request(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<SendFriendRequestResult, String> {
+    cmd_osl_send_friend_request(state, peer_discord_id, scope_input)
+}
+
 fn cmd_osl_send_friend_request_with_dir(
     state: &AppState,
     peer_discord_id: String,
@@ -10258,6 +10266,21 @@ fn cmd_osl_send_friend_request_with_dir(
     save_pending_friend_requests(&path, &records)?;
 
     Ok(SendFriendRequestResult { request, pending })
+}
+
+pub fn cmd_osl_list_friend_requests(
+    _state: &AppState,
+) -> Result<Vec<PendingFriendRequestRecord>, String> {
+    record_activity_on_command_entry();
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: pending friend request dir: {e}"))?;
+    cmd_osl_list_friend_requests_with_dir(&dir)
+}
+
+fn cmd_osl_list_friend_requests_with_dir(
+    dir: &Path,
+) -> Result<Vec<PendingFriendRequestRecord>, String> {
+    load_pending_friend_requests(&pending_friend_requests_path(dir))
 }
 
 #[cfg(test)]
@@ -15522,6 +15545,64 @@ pub fn cmd_osl_decline_or_revoke_friend_request(
     Ok(FriendRequestDecisionResult {
         decision: FriendRequestDecision::RevokedAcceptedGrant,
         revoked_grant: true,
+    })
+}
+
+pub fn cmd_osl_decline_friend_request(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<FriendRequestDecisionResult, String> {
+    cmd_osl_decline_or_revoke_friend_request(state, peer_discord_id, scope_input, false)
+}
+
+pub fn cmd_osl_block_friend_request(
+    state: &AppState,
+    peer_discord_id: String,
+    scope_input: crate::scope::ScopeInput,
+) -> Result<FriendRequestDecisionResult, String> {
+    record_activity_on_command_entry();
+    if peer_discord_id.trim().is_empty() {
+        return Err("OSL: friend request peer is missing".to_string());
+    }
+    let scope: crate::scope::Scope = scope_input
+        .try_into()
+        .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
+    let scope_binds_peer = scope.kind != crate::scope::ScopeKind::Dm || scope.id == peer_discord_id;
+    if !scope_binds_peer {
+        return Ok(FriendRequestDecisionResult {
+            decision: FriendRequestDecision::DeclinedPending,
+            revoked_grant: false,
+        });
+    }
+
+    let accepted_grant_exists = {
+        let pm_guard = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm_guard
+            .get(&peer_discord_id)
+            .map(|pe| {
+                pe.outgoing_whitelists
+                    .iter()
+                    .any(|w| whitelist_entry_matches(w, &scope))
+            })
+            .unwrap_or(false)
+    };
+
+    local_unwhitelist_apply(
+        state,
+        peer_discord_id,
+        crate::scope::ScopeInput::from(&scope),
+        true,
+        /* wipe_local_decrypt */ false,
+    )?;
+
+    Ok(FriendRequestDecisionResult {
+        decision: if accepted_grant_exists {
+            FriendRequestDecision::RevokedAcceptedGrant
+        } else {
+            FriendRequestDecision::DeclinedPending
+        },
+        revoked_grant: accepted_grant_exists,
     })
 }
 
