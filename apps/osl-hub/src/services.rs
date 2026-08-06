@@ -701,6 +701,23 @@ pub fn page_outlook_desktop_scrub_mailbox_folder(
     )
 }
 
+pub fn page_maildotcom_scrub_mailbox_folder(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    folder_id: &str,
+    service_filled_mailbox: &MailboxReaderSnapshot,
+    request: SharedMailboxPagingRequest,
+) -> Result<SharedMailboxPagedRead, String> {
+    read_shared_mailbox_messages_paged(
+        owner_osl_user_id,
+        "maildotcom",
+        account_id,
+        folder_id,
+        service_filled_mailbox,
+        request,
+    )
+}
+
 fn outlook_web_scrub_summaries(
     signed_in_address: &str,
     messages: Vec<SharedMailboxMessageSummary>,
@@ -1762,6 +1779,111 @@ mod tests {
             stopped.inter_page_gaps_ms
         );
 
+        assert_eq!(full.folder_id, folder);
+        assert_eq!(full.messages.len(), 120);
+        assert_eq!(full.page_count, 4);
+        assert!(full.page_count >= 3);
+        assert_eq!(full.pause_between_pages_ms, 25);
+        assert_eq!(full.inter_page_gaps_ms, vec![25, 25, 25]);
+        assert_eq!(full.stop_reason, SharedMailboxPagingStopReason::EndOfFolder);
+        assert_eq!(stopped.stop_requested_during_page, Some(2));
+        assert_eq!(
+            stopped.stop_reason,
+            SharedMailboxPagingStopReason::StopRequested
+        );
+        assert_eq!(stopped.stopped_on_page_number, Some(2));
+        assert_eq!(stopped.page_count, 2);
+        assert_eq!(stopped.messages.len(), 60);
+        assert!((40..=80).contains(&stopped.messages.len()));
+        assert_eq!(stopped.inter_page_gaps_ms, vec![25]);
+    }
+
+    #[test]
+    fn task_3069_maildotcom_pages_folder_with_pause_and_stops_during_page_two() {
+        let owner = "osl_task_3069_owner";
+        let account = "acct-task-3069-maildotcom";
+        let folder = "Sent";
+        let folders = [
+            MailboxFolderCandidate::new("Inbox", "Inbox"),
+            MailboxFolderCandidate::new(folder, "Sent"),
+            MailboxFolderCandidate::new("Archive", "Archive"),
+            MailboxFolderCandidate::new("Trash", "Trash"),
+        ];
+        let messages = (1..=120).map(|number| {
+            MailboxMessageCandidate::new(
+                folder,
+                format!("maildotcom-page-3069-{number:03}"),
+                format!("TASK3069 Mail.com message {number:03}"),
+                1_786_208_400_000 + i64::from(number) * 1_000,
+                "signed-in@mail.com",
+                format!("Seeded Mail.com paging body {number:03}."),
+            )
+        });
+        let mailbox = MailboxReaderSnapshot::new(folders, messages);
+        let request = SharedMailboxPagingRequest {
+            page_size: 30,
+            pause_between_pages_ms: 25,
+            stop_requested_during_page: None,
+        };
+
+        let full = page_maildotcom_scrub_mailbox_folder(owner, account, folder, &mailbox, request)
+            .expect("Mail.com folder pages through the shared mailbox helper");
+        println!("TASK3069_DIRECT_READER=maildotcom-shared-mailbox-paging");
+        println!("TASK3069_SHARED_HELPER=read_shared_mailbox_messages_paged");
+        println!("TASK3069_SERVICE=Mail.com");
+        println!("TASK3069_FOLDER_ID=\"{}\"", full.folder_id);
+        println!("TASK3069_FOLDER_MESSAGE_COUNT=120");
+        println!("TASK3069_SET_PAUSE_MS={}", full.pause_between_pages_ms);
+        println!("TASK3069_FULL_READ_MESSAGE_COUNT={}", full.messages.len());
+        println!("TASK3069_FULL_PAGE_COUNT={}", full.page_count);
+        println!("TASK3069_FULL_PAGE_SIZE={}", full.page_size);
+        println!("TASK3069_FULL_STOP_REASON={:?}", full.stop_reason);
+        println!(
+            "TASK3069_FULL_INTER_PAGE_GAPS_MS={:?}",
+            full.inter_page_gaps_ms
+        );
+        println!(
+            "TASK3069_FULL_EVERY_INTER_PAGE_GAP_AT_LEAST_SET_PAUSE={}",
+            full.inter_page_gaps_ms
+                .iter()
+                .all(|gap| *gap >= full.pause_between_pages_ms)
+        );
+
+        let stopped = page_maildotcom_scrub_mailbox_folder(
+            owner,
+            account,
+            folder,
+            &mailbox,
+            SharedMailboxPagingRequest {
+                stop_requested_during_page: Some(2),
+                ..request
+            },
+        )
+        .expect("Mail.com stop request ends the shared paging run");
+        println!(
+            "TASK3069_STOP_REQUESTED_DURING_PAGE={}",
+            stopped.stop_requested_during_page.unwrap_or_default()
+        );
+        println!("TASK3069_STOP_REASON={:?}", stopped.stop_reason);
+        println!(
+            "TASK3069_STOPPED_ON_PAGE_NUMBER={}",
+            stopped.stopped_on_page_number.unwrap_or_default()
+        );
+        println!(
+            "TASK3069_STOP_READ_MESSAGE_COUNT={}",
+            stopped.messages.len()
+        );
+        println!("TASK3069_STOP_PAGE_COUNT={}", stopped.page_count);
+        println!(
+            "TASK3069_STOP_MESSAGE_COUNT_BETWEEN_40_AND_80={}",
+            (40..=80).contains(&stopped.messages.len())
+        );
+        println!(
+            "TASK3069_STOP_INTER_PAGE_GAPS_MS={:?}",
+            stopped.inter_page_gaps_ms
+        );
+
+        assert_eq!(full.service_id, "maildotcom");
         assert_eq!(full.folder_id, folder);
         assert_eq!(full.messages.len(), 120);
         assert_eq!(full.page_count, 4);
