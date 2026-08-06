@@ -854,6 +854,11 @@ description = "Read only the unlocked owner's encrypted profile-picture record a
 commands.allow = ["read_owner_profile_picture"]
 
 [[permission]]
+identifier = "allow-read-owner-profile-picture-for-friend"
+description = "Read the unlocked owner's encrypted profile-picture record only for a backend-accepted friend; non-friends receive image-absent."
+commands.allow = ["read_owner_profile_picture_for_friend"]
+
+[[permission]]
 identifier = "allow-clear-owner-profile-picture"
 description = "Clear only the unlocked owner's encrypted profile-picture record."
 commands.allow = ["clear_owner_profile_picture"]

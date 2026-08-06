@@ -5702,7 +5702,9 @@ async fn set_osl_chat_capture_preference(
     local_opt_in: bool,
 ) -> Result<ChatCaptureProtectionDto, String> {
     if caller.label() != "main" {
-        return Err("Only the trusted OSL window may change OSL Chat capture protection".to_owned());
+        return Err(
+            "Only the trusted OSL window may change OSL Chat capture protection".to_owned(),
+        );
     }
     let _session = session.transition.lock().await;
     let binding = security::manual_peer_binding(&core, person_id)?;
@@ -6189,6 +6191,23 @@ async fn read_owner_profile_picture(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     osl_profile::read_active_profile_picture(&owner)
+}
+
+#[tauri::command]
+async fn read_owner_profile_picture_for_friend(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    reader_id: String,
+) -> Result<OwnerProfilePictureDto, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    let accepted_friend_ids = core
+        .osl
+        .friend_ids
+        .lock()
+        .map_err(|_| "OSL accepted friend state is unavailable".to_owned())?
+        .clone();
+    osl_profile::read_active_profile_picture_for_reader(&owner, &reader_id, &accepted_friend_ids)
 }
 
 #[tauri::command]

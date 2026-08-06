@@ -169,6 +169,7 @@
     "allow-get-hub-revocation-status",
     "allow-set-owner-profile-picture",
     "allow-read-owner-profile-picture",
+    "allow-read-owner-profile-picture-for-friend",
     "allow-clear-owner-profile-picture",
     "allow-get-osl-chat-local-state-key",
     "allow-get-recovery-kit-unsaved",
