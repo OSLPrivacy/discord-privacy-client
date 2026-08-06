@@ -464,11 +464,8 @@ fn v7_burn_timestamp_migration_scrubs_column_and_preserves_reopen_and_burn() {
     let timestamp_disk_bytes = timestamp.to_be_bytes();
     {
         let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
-        conn.execute_batch(
-            "ALTER TABLE messages ADD COLUMN burned_at INTEGER;
-             ALTER TABLE attachments ADD COLUMN burned_at INTEGER;",
-        )
-        .unwrap();
+        conn.execute_batch("ALTER TABLE attachments ADD COLUMN burned_at INTEGER;")
+            .unwrap();
         conn.execute("UPDATE messages SET burned_at=?1", params![timestamp])
             .unwrap();
         conn.execute("UPDATE attachments SET burned_at=?1", params![timestamp])
@@ -515,9 +512,15 @@ fn v7_burn_timestamp_migration_scrubs_column_and_preserves_reopen_and_burn() {
     }
 
     let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
-    assert!(!table_columns(&conn, "messages")
-        .iter()
-        .any(|c| c == "burned_at"));
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE burned_at IS NOT NULL",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
     assert!(!table_columns(&conn, "attachments")
         .iter()
         .any(|c| c == "burned_at"));
@@ -567,8 +570,7 @@ fn v7_to_v8_mid_migration_failure_rolls_back_both_tables_and_retries() {
     {
         let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
         conn.execute_batch(
-            "ALTER TABLE messages ADD COLUMN burned_at INTEGER;
-             ALTER TABLE attachments ADD COLUMN burned_at INTEGER;
+            "ALTER TABLE attachments ADD COLUMN burned_at INTEGER;
              CREATE VIEW block_v8_attachment_drop AS
                  SELECT burned_at FROM attachments;",
         )
@@ -625,9 +627,15 @@ fn v7_to_v8_mid_migration_failure_rolls_back_both_tables_and_retries() {
         b"atomic migration attachment"
     );
     let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
-    assert!(!table_columns(&conn, "messages")
-        .iter()
-        .any(|column| column == "burned_at"));
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE burned_at IS NOT NULL",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
     assert!(!table_columns(&conn, "attachments")
         .iter()
         .any(|column| column == "burned_at"));
@@ -651,8 +659,6 @@ fn schema_v8_stamp_cannot_hide_a_plaintext_burn_timestamp_column() {
     }
     {
         let conn = Connection::open(tmp.path().join("messages.sqlite")).unwrap();
-        conn.execute_batch("ALTER TABLE messages ADD COLUMN burned_at INTEGER;")
-            .unwrap();
         conn.execute(
             "UPDATE messages SET burned_at=?1",
             params![0x1122_3344_5566_7788i64],

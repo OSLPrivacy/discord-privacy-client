@@ -33,6 +33,7 @@
 //! purpose. If someone changes an AAD, `old_v3_attachment_still_decrypts_after_migration`
 //! fails — which is the entire reason it exists.
 
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use store::{MessageStore, StoredMessage};
@@ -161,6 +162,62 @@ fn raw_file_bytes(db_path: &Path) -> Vec<u8> {
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(DIGITS[(byte >> 4) as usize] as char);
+        out.push(DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn stored_message_fingerprints(db_path: &Path) -> BTreeMap<i64, String> {
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT mid_bi, chan_bi, sender_bi, meta_nonce, meta_ct, ciphertext, nonce, \
+                    seq, burned, content_version, wrapped_key_nonce, wrapped_key, \
+                    delivered_at, opened_at, destroyed_at, destruct_reason, \
+                    discord_message_id, channel_id, sender_discord_id, sender_osl_user_id, \
+                    decrypted_at, scope_type, scope_id, meta_tag, burned_at \
+               FROM messages \
+              ORDER BY seq ASC",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |row| {
+            let seq: i64 = row.get(7)?;
+            let mut bytes = Vec::new();
+            for column in 0..25 {
+                let value = row.get_ref(column)?;
+                match value {
+                    rusqlite::types::ValueRef::Null => bytes.extend_from_slice(b"N:"),
+                    rusqlite::types::ValueRef::Integer(value) => {
+                        bytes.extend_from_slice(b"I:");
+                        bytes.extend_from_slice(&value.to_le_bytes());
+                    }
+                    rusqlite::types::ValueRef::Real(value) => {
+                        bytes.extend_from_slice(b"R:");
+                        bytes.extend_from_slice(&value.to_le_bytes());
+                    }
+                    rusqlite::types::ValueRef::Text(value)
+                    | rusqlite::types::ValueRef::Blob(value) => {
+                        bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+                        bytes.extend_from_slice(b":");
+                        bytes.extend_from_slice(value);
+                    }
+                }
+            }
+            let digest =
+                crypto::hkdf::derive_32(&[], &bytes, b"task3612-stored-message-fingerprint")
+                    .unwrap();
+            Ok((seq, hex(&digest)))
+        })
+        .unwrap();
+    rows.collect::<Result<_, _>>().unwrap()
 }
 
 /// Encodings that preserve a plaintext exactly enough for an offline reader to
@@ -1700,6 +1757,96 @@ fn exact_adff4e45_reader_reaches_explicit_version_refusal() {
             ("downgrade OSL id", b"downgrade-osl-665544"),
         ],
     );
+}
+
+/// Task 3612: a current/new-format profile with two marked messages must not
+/// be damaged by opening it with the exact final pre-v4 reader.
+///
+/// The older reader is allowed to refuse, but only before changing the message
+/// set. This asserts the current build can read both marked messages exactly
+/// before and after, and fingerprints the stored encrypted rows around the
+/// downgrade attempt.
+#[test]
+fn task3612_exact_old_reader_refuses_current_profile_without_message_mutation() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("messages.sqlite");
+    let marked = vec![
+        sample(
+            "task3612-marked-message-1",
+            "task3612-channel",
+            "task3612-sender-a",
+            "task3612-osl-alice",
+            "TASK3612 marked body one",
+            1_800_003_612,
+        ),
+        sample(
+            "task3612-marked-message-2",
+            "task3612-channel",
+            "task3612-sender-b",
+            "task3612-osl-bob",
+            "TASK3612 marked body two",
+            1_800_003_613,
+        ),
+    ];
+
+    {
+        let store = open_a(tmp.path());
+        for row in &marked {
+            store.put(row).unwrap();
+        }
+        for row in &marked {
+            assert_eq!(
+                store.get(&row.discord_message_id).unwrap().as_ref(),
+                Some(row),
+                "current build must read the marked message exactly before downgrade"
+            );
+        }
+        let listed = store.list_by_channel("task3612-channel", 10).unwrap();
+        assert_eq!(listed.len(), 2);
+    }
+
+    let before_count = {
+        let store = open_a(tmp.path());
+        store.list_by_channel("task3612-channel", 10).unwrap().len()
+    };
+    let before_fingerprints = stored_message_fingerprints(&db_path);
+    assert_eq!(before_count, 2);
+    assert_eq!(before_fingerprints.len(), 2);
+    println!("TASK3612 before_count={before_count}");
+    println!("TASK3612 before_fingerprints={before_fingerprints:?}");
+
+    let refusal = adff4e45_schema_reader::open_schema(tmp.path())
+        .expect_err("the exact pre-v4 reader opened the current schema");
+    let refusal = match refusal {
+        store::StoreError::Schema(message) => message,
+        other => panic!("exact pre-v4 reader did not reach its version refusal: {other}"),
+    };
+    assert_eq!(
+        refusal,
+        "on-disk schema version 9 is newer than this binary supports (3); refusing to open"
+    );
+    println!("TASK3612 older_reader_refusal={refusal:?}");
+
+    let after_count = {
+        let store = open_a(tmp.path());
+        for row in &marked {
+            assert_eq!(
+                store.get(&row.discord_message_id).unwrap().as_ref(),
+                Some(row),
+                "current build must read the marked message exactly after downgrade refusal"
+            );
+        }
+        store.list_by_channel("task3612-channel", 10).unwrap().len()
+    };
+    let after_fingerprints = stored_message_fingerprints(&db_path);
+    assert_eq!(after_count, 2);
+    assert_eq!(after_fingerprints.len(), 2);
+    assert_eq!(
+        after_fingerprints, before_fingerprints,
+        "older-reader refusal changed stored message rows"
+    );
+    println!("TASK3612 after_count={after_count}");
+    println!("TASK3612 after_fingerprints={after_fingerprints:?}");
 }
 
 // ---- Blind index properties ----

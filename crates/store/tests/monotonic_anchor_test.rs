@@ -405,11 +405,8 @@ fn anchored_v7_migration_enrolls_post_migration_state_then_refuses_replay() {
     }
     {
         let conn = rusqlite::Connection::open(tmp.path().join("messages.sqlite")).unwrap();
-        conn.execute_batch(
-            "ALTER TABLE messages ADD COLUMN burned_at INTEGER;
-             ALTER TABLE attachments ADD COLUMN burned_at INTEGER;",
-        )
-        .unwrap();
+        conn.execute_batch("ALTER TABLE attachments ADD COLUMN burned_at INTEGER;")
+            .unwrap();
         conn.execute(
             "UPDATE _meta SET value = ?1 WHERE key = 'schema_version'",
             rusqlite::params![7u32.to_le_bytes().to_vec()],

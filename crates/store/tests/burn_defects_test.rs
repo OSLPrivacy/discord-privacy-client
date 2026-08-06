@@ -432,8 +432,18 @@ fn repeat_mark_burned_is_safe_and_keeps_the_terminal_row_exact() {
                 |row| row.get::<_, i64>(0)
             )
             .unwrap(),
+            1,
+            "schema v9 keeps burned_at only as a null old-reader downgrade guard"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM messages WHERE burned_at IS NOT NULL",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
             0,
-            "schema v8 must not retain an exact burn timestamp column"
+            "burn operations must not write exact burn timestamps into the guard column"
         );
         conn.query_row(
             "SELECT ciphertext, nonce, wrapped_key_nonce, wrapped_key, burned \
