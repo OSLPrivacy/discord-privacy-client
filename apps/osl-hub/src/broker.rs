@@ -32,6 +32,17 @@ pub mod view_once_fanout;
 
 const MAX_CONTEXT_ID_BYTES: usize = 160;
 
+fn require_view_once_message_creation_allowed(
+    core: &HubCoreState,
+    view_once: bool,
+) -> Result<(), String> {
+    if !view_once {
+        return Ok(());
+    }
+    ipc::tier_gate::check_view_once_message_creation_allowed(&core.osl)
+        .map_err(|_| ipc::tier_gate::VIEW_ONCE_MESSAGE_PRO_REFUSAL.to_owned())
+}
+
 fn scope_storage_key(scope_input: &ScopeInput) -> Result<String, String> {
     let scope: ipc::scope::Scope = scope_input
         .clone()
@@ -2257,6 +2268,7 @@ fn prepare_direct_manual_v3(
     message_id: String,
     chunk: Option<&NativeTextChunkMeta>,
 ) -> Result<String, String> {
+    require_view_once_message_creation_allowed(core, policy.view_once)?;
     let maximum = if chunk.is_some() {
         MAX_NATIVE_OVERLAY_CHUNK_BYTES
     } else {
@@ -3990,6 +4002,7 @@ fn prepare_peer_inbox_text_with_route_clients(
     store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
     keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
+    require_view_once_message_creation_allowed(core, view_once)?;
     #[cfg(feature = "discord-qa-shell")]
     let is_fixed_discord_qa_probe = plaintext == "OSL Discord QA probe" && !view_once;
     #[cfg(feature = "discord-qa-shell")]
@@ -5421,6 +5434,7 @@ fn begin_peer_attachment(
     osl_chat: bool,
 ) -> Result<NativeOverlayAttachmentSealPlan, String> {
     const ERROR: &str = "OSL could not prepare this private attachment";
+    require_view_once_message_creation_allowed(core, view_once)?;
     let context_token = if osl_chat {
         broker.active_osl_chat_context_token()?
     } else {
@@ -10798,6 +10812,20 @@ mod tests {
         }
     }
 
+    fn set_test_license(
+        core: &HubCoreState,
+        state: keystore::LicenseState,
+        raw_status: &str,
+    ) {
+        *core.osl.license_state.lock().expect("license state lock") =
+            keystore::LicenseStateDto {
+                state,
+                raw_status: raw_status.to_owned(),
+                current_period_end: None,
+                last_validated_at: None,
+            };
+    }
+
     fn native_peer_payload(
         manual: &ManualPeerContext,
         context: &HubConversationContext,
@@ -10824,6 +10852,107 @@ mod tests {
             chunk_count: None,
             whole_sha256: None,
         }
+    }
+
+    #[test]
+    fn task_0590_view_once_creation_is_pro_only_and_free_count_stays_zero() {
+        let pro = native_manual_pair("task0590-pro");
+        set_test_license(&pro.core, keystore::LicenseState::Paid, "ACTIVE");
+        let mut pro_created_count = 0usize;
+        let pro_wire = prepare_direct_manual_v3(
+            &pro.core,
+            &pro.alice_binding,
+            &pro.alice_manual,
+            &pro.alice_context,
+            "TASK0590 pro view-once direct command".to_owned(),
+            PeerProtectionPolicy {
+                view_once: true,
+                require_capture_protection: true,
+                created_at: 1_700_000_590,
+                expires_at: 1_700_004_190,
+                send_order: None,
+            },
+            "peer-task0590pro000000000000000000".to_owned(),
+            None,
+        )
+        .map(|wire| {
+            pro_created_count += 1;
+            wire
+        })
+        .expect("Pro account creates a view-once message");
+        let pro_payload = decrypt_direct_manual_v3(
+            &pro.core,
+            &pro.alice_binding,
+            ManualWireSender::SelfIdentity,
+            &pro_wire,
+        )
+        .expect("Pro-created wire decrypts to the protected payload");
+        assert!(pro_payload.view_once);
+        assert_eq!(pro_created_count, 1);
+
+        let free = native_manual_pair("task0590-free");
+        set_test_license(&free.core, keystore::LicenseState::Free, "Unconfigured");
+        let mut free_created_count = 0usize;
+        let free_result = prepare_direct_manual_v3(
+            &free.core,
+            &free.alice_binding,
+            &free.alice_manual,
+            &free.alice_context,
+            "TASK0590 free view-once direct command".to_owned(),
+            PeerProtectionPolicy {
+                view_once: true,
+                require_capture_protection: true,
+                created_at: 1_700_000_590,
+                expires_at: 1_700_004_190,
+                send_order: None,
+            },
+            "peer-task0590free00000000000000000".to_owned(),
+            None,
+        )
+        .map(|wire| {
+            free_created_count += 1;
+            wire
+        });
+        let free_refusal = free_result.expect_err("Free account must be refused by name");
+        assert_eq!(
+            free_refusal,
+            ipc::tier_gate::VIEW_ONCE_MESSAGE_PRO_REFUSAL
+        );
+        assert_eq!(free_created_count, 0);
+
+        let free_ordinary_wire = prepare_direct_manual_v3(
+            &free.core,
+            &free.alice_binding,
+            &free.alice_manual,
+            &free.alice_context,
+            "TASK0590 free ordinary direct command".to_owned(),
+            PeerProtectionPolicy {
+                view_once: false,
+                require_capture_protection: true,
+                created_at: 1_700_000_590,
+                expires_at: 1_700_004_190,
+                send_order: None,
+            },
+            "peer-task0590freeordinary0000000".to_owned(),
+            None,
+        )
+        .expect("Free account still creates ordinary protected messages");
+        let free_ordinary_payload = decrypt_direct_manual_v3(
+            &free.core,
+            &free.alice_binding,
+            ManualWireSender::SelfIdentity,
+            &free_ordinary_wire,
+        )
+        .expect("Free ordinary wire decrypts to the protected payload");
+        assert!(!free_ordinary_payload.view_once);
+        assert_eq!(free_created_count, 0);
+
+        println!(
+            "TASK0590 pro_account.created_view_once={} view_once={} view_once_created_count={}",
+            true, pro_payload.view_once, pro_created_count
+        );
+        println!("TASK0590 free_account.refusal_name={free_refusal}");
+        println!("TASK0590 free_account.view_once_created_count={free_created_count}");
     }
 
     #[test]

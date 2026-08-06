@@ -49,6 +49,8 @@ use crate::AppState;
 use keystore::LicenseState;
 use serde::Serialize;
 
+pub const VIEW_ONCE_MESSAGE_PRO_REFUSAL: &str = "view_once_messages_require_pro";
+
 /// Typed error surface for paid-feature gates. Carries the
 /// context the JS-side modal renders (which feature, current
 /// license state). `serde::Serialize` so the IPC layer can ship
@@ -123,6 +125,17 @@ pub fn is_paid_equivalent(state: &AppState) -> bool {
 /// only SENDING is gated. Decryption is a privacy feature, not a
 /// paid feature.
 pub fn check_attachment_allowed(state: &AppState) -> Result<(), TierGateError> {
+    check_paid_feature_allowed(state, "encrypted attachments")
+}
+
+/// View-once message creation is paid-only. Opening or receiving view-once
+/// content is intentionally checked elsewhere and remains available to free
+/// recipients.
+pub fn check_view_once_message_creation_allowed(state: &AppState) -> Result<(), TierGateError> {
+    check_paid_feature_allowed(state, "view-once messages")
+}
+
+fn check_paid_feature_allowed(state: &AppState, feature: &str) -> Result<(), TierGateError> {
     if is_paid_equivalent(state) {
         return Ok(());
     }
@@ -133,7 +146,7 @@ pub fn check_attachment_allowed(state: &AppState) -> Result<(), TierGateError> {
         .raw_status
         .clone();
     Err(TierGateError::PaidFeatureRequired {
-        feature: "encrypted attachments".to_string(),
+        feature: feature.to_string(),
         raw_license_state,
     })
 }
@@ -262,6 +275,31 @@ mod tests {
                 assert_eq!(raw_license_state, "EXPIRED");
             }
         }
+    }
+
+    #[test]
+    fn view_once_message_creation_is_paid_only_by_name() {
+        let paid = AppState::new();
+        install(&paid, paid_state());
+        assert!(check_view_once_message_creation_allowed(&paid).is_ok());
+
+        let free = AppState::new();
+        install(&free, free_state());
+        let err = check_view_once_message_creation_allowed(&free)
+            .expect_err("free user should be blocked from creating view-once messages");
+        match err {
+            TierGateError::PaidFeatureRequired {
+                feature,
+                raw_license_state,
+            } => {
+                assert_eq!(feature, "view-once messages");
+                assert_eq!(raw_license_state, "Unconfigured");
+            }
+        }
+        assert_eq!(
+            VIEW_ONCE_MESSAGE_PRO_REFUSAL,
+            "view_once_messages_require_pro"
+        );
     }
 
     // ---- TierGateError serde shape ----
