@@ -15787,6 +15787,101 @@ pub fn cmd_osl_membership_get(state: &AppState, channel_id: String) -> Result<Ve
     Ok(g.get(&channel_id).cloned().unwrap_or_default())
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct NamedGroupConversationDto {
+    pub name: String,
+    pub group_id: String,
+    pub scope: crate::scope::ScopeInput,
+    pub member_ids: Vec<String>,
+    pub member_count: usize,
+}
+
+/// Create a first-party named group conversation and seed its membership oracle.
+///
+/// The command requires at least three distinct member ids. It writes both the
+/// durable GC membership view and the in-memory channel snapshot that group
+/// sends already consult, so later send paths resolve the same member set.
+pub fn cmd_osl_create_group_conversation(
+    state: &AppState,
+    name: String,
+    member_ids: Vec<String>,
+) -> Result<NamedGroupConversationDto, String> {
+    record_activity_on_command_entry();
+    let name = normalize_group_name(name)?;
+    let member_ids = normalize_group_member_ids(member_ids)?;
+    let group_id = named_group_id(&name, &member_ids);
+    {
+        let mut membership = state
+            .scope_membership
+            .lock()
+            .expect("scope_membership mutex poisoned");
+        membership.note_gc_members(&group_id, member_ids.iter());
+    }
+    {
+        let mut channel_members = state
+            .channel_members
+            .lock()
+            .expect("channel_members mutex poisoned");
+        channel_members.insert(group_id.clone(), member_ids.clone());
+    }
+    persist_scope_membership_now(state);
+    let scope = crate::scope::Scope::gc(group_id.clone());
+    Ok(NamedGroupConversationDto {
+        name,
+        group_id,
+        scope: (&scope).into(),
+        member_count: member_ids.len(),
+        member_ids,
+    })
+}
+
+fn normalize_group_name(name: String) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > 80 || name.chars().any(char::is_control) {
+        return Err("OSL: group conversation name is invalid".to_owned());
+    }
+    Ok(name.to_owned())
+}
+
+fn normalize_group_member_ids(member_ids: Vec<String>) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::with_capacity(member_ids.len());
+    for member_id in member_ids {
+        let member_id = member_id.trim();
+        if member_id.is_empty()
+            || member_id.len() > 160
+            || member_id.chars().any(|character| {
+                !(character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':'))
+            })
+        {
+            return Err("OSL: group member id is invalid".to_owned());
+        }
+        normalized.push(member_id.to_owned());
+    }
+    let supplied_count = normalized.len();
+    normalized.sort();
+    normalized.dedup();
+    if normalized.len() != supplied_count {
+        return Err("OSL: group conversations require distinct members".to_owned());
+    }
+    if normalized.len() < 3 {
+        return Err("OSL: group conversations require at least three members".to_owned());
+    }
+    Ok(normalized)
+}
+
+fn named_group_id(name: &str, member_ids: &[String]) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"OSL/named-group-conversation/v1");
+    hash.update((name.len() as u64).to_le_bytes());
+    hash.update(name.as_bytes());
+    for member_id in member_ids {
+        hash.update((member_id.len() as u64).to_le_bytes());
+        hash.update(member_id.as_bytes());
+    }
+    let hex = hex_lower(&hash.finalize());
+    format!("named-gc-{}", &hex[..32])
+}
+
 /// W2: durable membership accrual. boot.js gateway taps call this
 /// with the scope they observed members in. ServerChannel rolls up
 /// into the server key (server-header enumeration); Gc records the
