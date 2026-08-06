@@ -112,6 +112,67 @@ pub fn parse_next_generation_message_policy(
     }
 }
 
+/// How long OSL waits after the last owner activity before it locks itself.
+/// Missing legacy preferences keep the historical 15-minute behavior; `Never`
+/// is an explicit opt-out, not the default.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "choice", content = "seconds", rename_all = "snake_case")]
+pub enum IdleLockTimeChoice {
+    Never,
+    AfterSeconds(u64),
+}
+
+impl Default for IdleLockTimeChoice {
+    fn default() -> Self {
+        Self::AfterSeconds(keystore::DEFAULT_INACTIVITY_SECONDS)
+    }
+}
+
+impl IdleLockTimeChoice {
+    pub fn seconds(self) -> Option<u64> {
+        match self {
+            Self::Never => None,
+            Self::AfterSeconds(seconds) => Some(seconds),
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Self::Never => "never".to_string(),
+            Self::AfterSeconds(60) => "one minute".to_string(),
+            Self::AfterSeconds(1) => "1 second".to_string(),
+            Self::AfterSeconds(seconds) => format!("{seconds} seconds"),
+        }
+    }
+
+    pub fn choice(self) -> &'static str {
+        match self {
+            Self::Never => "never",
+            Self::AfterSeconds(60) => "one_minute",
+            Self::AfterSeconds(_) => "seconds",
+        }
+    }
+}
+
+pub fn parse_idle_lock_time_choice(input: &str) -> Result<IdleLockTimeChoice, String> {
+    let normalized = input.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "never" => return Ok(IdleLockTimeChoice::Never),
+        "one minute" | "1 minute" | "1m" | "60s" => {
+            return Ok(IdleLockTimeChoice::AfterSeconds(60));
+        }
+        _ => {}
+    }
+
+    let seconds = normalized.parse::<i64>().map_err(|_| {
+        format!("OSL: unknown idle lock time '{input}'; use positive seconds or never")
+    })?;
+    if seconds <= 0 {
+        return Err("OSL: idle lock time must be positive seconds or never".to_string());
+    }
+    Ok(IdleLockTimeChoice::AfterSeconds(seconds as u64))
+}
+
 /// Default account reach for a friend who is newly accepted.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -200,6 +261,8 @@ pub struct AppPreferences {
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
     #[serde(default)]
     pub next_generation_message_policy: NextGenerationMessagePolicy,
+    #[serde(default)]
+    pub idle_lock_time_choice: IdleLockTimeChoice,
     #[serde(default)]
     pub new_friend_account_reach: NewFriendAccountReach,
     #[serde(default)]
