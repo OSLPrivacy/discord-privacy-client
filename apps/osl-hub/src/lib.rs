@@ -204,6 +204,7 @@ pub mod inbound_receipts;
 pub mod isolated_worker;
 #[cfg(feature = "core")]
 pub mod mass_cleanup;
+pub mod osl_chat_conversations;
 pub mod osl_chat_delivery;
 pub mod osl_chat_queue;
 pub mod realtime_client;

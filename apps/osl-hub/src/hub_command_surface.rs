@@ -743,6 +743,7 @@ macro_rules! hub_tauri_commands {
             #[cfg(feature = "discord-qa-shell")]
             poll_native_discord_headless_qa,
             prepare_osl_chat_text,
+            create_osl_chat_direct_message_conversation,
             send_native_discord_overlay_carrier,
             open_native_discord_overlay_text,
             rehydrate_native_discord_overlay_history,

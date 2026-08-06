@@ -72,6 +72,9 @@ use osl_privacy_hub::native_window_host::{
     DiscordSessionMode, DiscordTakeover, NativeWindowHostReason, NativeWindowHostResult,
     NativeWindowHostState,
 };
+use osl_privacy_hub::osl_chat_conversations::{
+    DirectMessageConversationInput, OslChatConversationRecord, OslChatConversationState,
+};
 use osl_privacy_hub::osl_mail::{self, OslMailState, OslMailStatus};
 use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput};
 use osl_privacy_hub::password_lifecycle::{
@@ -5061,6 +5064,18 @@ async fn prepare_osl_chat_text(
 }
 
 #[tauri::command]
+async fn create_osl_chat_direct_message_conversation(
+    caller: tauri::WebviewWindow,
+    conversations: State<'_, OslChatConversationState>,
+    member_ids: Vec<String>,
+) -> Result<OslChatConversationRecord, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may create OSL Chat conversations".to_owned());
+    }
+    conversations.create_direct_message_conversation(DirectMessageConversationInput { member_ids })
+}
+
+#[tauri::command]
 async fn open_osl_chat_text(
     app: tauri::AppHandle,
     caller: tauri::WebviewWindow,
@@ -5761,7 +5776,9 @@ async fn set_osl_chat_capture_preference(
     local_opt_in: bool,
 ) -> Result<ChatCaptureProtectionDto, String> {
     if caller.label() != "main" {
-        return Err("Only the trusted OSL window may change OSL Chat capture protection".to_owned());
+        return Err(
+            "Only the trusted OSL window may change OSL Chat capture protection".to_owned(),
+        );
     }
     let _session = session.transition.lock().await;
     let binding = security::manual_peer_binding(&core, person_id)?;
@@ -9784,6 +9801,7 @@ fn main() {
         startup_breadcrumb("setup_step_24_core_state_managed"); // STARTUP-TRACE
         app.manage(HubBrokerState::default());
         startup_breadcrumb("setup_step_25_broker_state_managed"); // STARTUP-TRACE
+        app.manage(OslChatConversationState::default());
         app.manage(security_state);
         revocation_drain_timer::spawn(app.handle().clone());
         startup_breadcrumb("setup_step_26_security_state_managed"); // STARTUP-TRACE
