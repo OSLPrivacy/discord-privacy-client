@@ -165,6 +165,14 @@ pub struct ScopeSecurityDto {
     pub decrypt_display_enabled: bool,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMemberPermissionRecord {
+    pub group_id: String,
+    pub member_id: String,
+    pub allowed: bool,
+}
+
 /// The minimum friend state needed to create a manual peer-messaging lease.
 /// Key material stays in the original core; callers receive only stable local
 /// and public identity identifiers.
@@ -533,6 +541,11 @@ struct SecurityPreferences {
     /// so it can never outlive one.
     #[serde(default)]
     manual_approved_scope_people: BTreeMap<String, String>,
+    /// Local group-membership permission decisions, keyed by stable group id
+    /// and member id. The boolean is explicit so a denial is a stored state,
+    /// not inferred from a missing grant.
+    #[serde(default)]
+    group_member_permissions: BTreeMap<String, BTreeMap<String, bool>>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -1106,6 +1119,44 @@ pub fn set_friend_alias(
     let updated = metadata.clone();
     write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
     person_dto(core, &person_id, &updated, &load_security_preferences()?)
+}
+
+pub fn set_group_member_permission(
+    security: &HubSecurityState,
+    group_id: String,
+    member_id: String,
+    allowed: bool,
+) -> Result<GroupMemberPermissionRecord, String> {
+    require_unlocked()?;
+    validate_group_member_permission_id(&group_id, "OSL group identifier is invalid")?;
+    validate_group_member_permission_id(&member_id, "OSL member identifier is invalid")?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL group-member permission state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    prefs
+        .group_member_permissions
+        .entry(group_id.clone())
+        .or_default()
+        .insert(member_id.clone(), allowed);
+    write_encrypted_json(&path, &prefs)?;
+    Ok(GroupMemberPermissionRecord {
+        group_id,
+        member_id,
+        allowed,
+    })
+}
+
+pub fn list_group_member_permissions(
+    _security: &HubSecurityState,
+) -> Result<Vec<GroupMemberPermissionRecord>, String> {
+    require_unlocked()?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(group_member_permission_records(&prefs))
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -3747,6 +3798,24 @@ fn load_security_preferences() -> Result<SecurityPreferences, String> {
     load_encrypted_json::<SecurityPreferences>(&path)
 }
 
+fn group_member_permission_records(
+    prefs: &SecurityPreferences,
+) -> Vec<GroupMemberPermissionRecord> {
+    prefs
+        .group_member_permissions
+        .iter()
+        .flat_map(|(group_id, members)| {
+            members
+                .iter()
+                .map(move |(member_id, allowed)| GroupMemberPermissionRecord {
+                    group_id: group_id.clone(),
+                    member_id: member_id.clone(),
+                    allowed: *allowed,
+                })
+        })
+        .collect()
+}
+
 fn manual_approved_scopes_for_person(
     prefs: &SecurityPreferences,
     person_id: &str,
@@ -3891,6 +3960,18 @@ fn validate_person_id(value: &str) -> Result<(), String> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
         return Err("OSL person id is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_group_member_permission_id(value: &str, message: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+    {
+        return Err(message.to_owned());
     }
     Ok(())
 }
@@ -4446,6 +4527,37 @@ mod tests {
             ipc::main_password::set_file_storage_key(self.previous_file_key);
             let _ = std::fs::remove_dir_all(&self.dir);
         }
+    }
+
+    #[test]
+    fn direct_group_member_permission_record_check_prints_one_group_and_member() {
+        let _harness = FileBackedSecurityHarness::new("group-member-permission");
+        let security = HubSecurityState::default();
+        let record = set_group_member_permission(
+            &security,
+            "group-0113".to_owned(),
+            "member-0113".to_owned(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            record,
+            GroupMemberPermissionRecord {
+                group_id: "group-0113".to_owned(),
+                member_id: "member-0113".to_owned(),
+                allowed: true,
+            }
+        );
+
+        let records = list_group_member_permissions(&security).unwrap();
+        println!(
+            "direct_group_member_permission_record group_id={} member_id={} allowed={}",
+            records[0].group_id, records[0].member_id, records[0].allowed
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].group_id, "group-0113");
+        assert_eq!(records[0].member_id, "member-0113");
+        assert!(records[0].allowed);
     }
 
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {
