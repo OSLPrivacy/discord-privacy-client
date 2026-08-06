@@ -55,7 +55,56 @@ pub(crate) fn read_recoverable_bounded(
     read_recoverable(path, label)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RecoverableWriteFault {
+    TemporaryCreate,
+    TemporaryWrite,
+    TemporarySync,
+    CommitRename,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl RecoverableWriteFault {
+    pub(crate) const fn write_points() -> [Self; 4] {
+        [
+            Self::TemporaryCreate,
+            Self::TemporaryWrite,
+            Self::TemporarySync,
+            Self::CommitRename,
+        ]
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::TemporaryCreate => "temporary_create",
+            Self::TemporaryWrite => "temporary_write",
+            Self::TemporarySync => "temporary_sync",
+            Self::CommitRename => "commit_rename",
+        }
+    }
+}
+
 pub(crate) fn write_recoverable(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
+    write_recoverable_inner(path, bytes, label, None)
+}
+
+#[cfg(test)]
+pub(crate) fn write_recoverable_failing_at(
+    path: &Path,
+    bytes: &[u8],
+    label: &str,
+    fault: RecoverableWriteFault,
+) -> Result<(), String> {
+    write_recoverable_inner(path, bytes, label, Some(fault))
+}
+
+fn write_recoverable_inner(
+    path: &Path,
+    bytes: &[u8],
+    label: &str,
+    fault: Option<RecoverableWriteFault>,
+) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("{label} path is invalid"))?;
@@ -66,10 +115,13 @@ pub(crate) fn write_recoverable(path: &Path, bytes: &[u8], label: &str) -> Resul
     let backup = backup_path(path);
     remove_if_present(&temporary, label)?;
     {
+        fail_if_requested(fault, RecoverableWriteFault::TemporaryCreate, label)?;
         let mut file = std::fs::File::create(&temporary)
             .map_err(|_| format!("{label} temporary file could not be created"))?;
+        fail_if_requested(fault, RecoverableWriteFault::TemporaryWrite, label)?;
         file.write_all(bytes)
             .map_err(|_| format!("{label} temporary file could not be written"))?;
+        fail_if_requested(fault, RecoverableWriteFault::TemporarySync, label)?;
         file.sync_all()
             .map_err(|_| format!("{label} temporary file could not be synchronized"))?;
     }
@@ -81,6 +133,16 @@ pub(crate) fn write_recoverable(path: &Path, bytes: &[u8], label: &str) -> Resul
             .map_err(|_| format!("{label} prior file could not be preserved"))?;
     }
 
+    if fault == Some(RecoverableWriteFault::CommitRename) {
+        if had_previous {
+            let _ = std::fs::rename(&backup, path);
+        }
+        let _ = std::fs::remove_file(&temporary);
+        return Err(format!(
+            "{label} could not be committed (simulated full disk at {})",
+            RecoverableWriteFault::CommitRename.label()
+        ));
+    }
     if std::fs::rename(&temporary, path).is_err() {
         if had_previous {
             let _ = std::fs::rename(&backup, path);
@@ -90,6 +152,17 @@ pub(crate) fn write_recoverable(path: &Path, bytes: &[u8], label: &str) -> Resul
     }
     if had_previous {
         remove_if_present(&backup, label)?;
+    }
+    Ok(())
+}
+
+fn fail_if_requested(
+    fault: Option<RecoverableWriteFault>,
+    point: RecoverableWriteFault,
+    label: &str,
+) -> Result<(), String> {
+    if fault == Some(point) {
+        return Err(format!("{label} simulated full disk at {}", point.label()));
     }
     Ok(())
 }

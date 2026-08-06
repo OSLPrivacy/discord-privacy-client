@@ -76,6 +76,27 @@ impl SecureDiskBackend {
         name.push_str(".rec");
         self.dir.join(name)
     }
+
+    #[cfg(test)]
+    fn write_blob_failing_at(
+        &self,
+        storage_key: &str,
+        blob: &[u8],
+        fault: crate::atomic_file::RecoverableWriteFault,
+    ) -> Result<(), SecureLocalStoreError> {
+        if blob.len() as u64 > MAX_RECORD_BYTES {
+            return Err(SecureLocalStoreError::Backend(
+                "record exceeds the bounded on-disk size".to_owned(),
+            ));
+        }
+        crate::atomic_file::write_recoverable_failing_at(
+            &self.record_path(storage_key),
+            blob,
+            "OSL secure local record",
+            fault,
+        )
+        .map_err(SecureLocalStoreError::Backend)
+    }
 }
 
 impl RawBackend for SecureDiskBackend {
@@ -135,6 +156,56 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("temp dir");
         dir
+    }
+
+    fn hex_sha256(bytes: &[u8]) -> String {
+        let digest = Sha256::digest(bytes);
+        let mut output = String::with_capacity(64);
+        for byte in digest {
+            output.push_str(&format!("{byte:02x}"));
+        }
+        output
+    }
+
+    fn readable_local_items(dir: &Path, keys: &[&str]) -> Vec<(String, Vec<u8>)> {
+        let backend = SecureDiskBackend::new(dir);
+        keys.iter()
+            .filter_map(|key| {
+                let bytes = backend.read_blob(key).expect("read local item")?;
+                bytes
+                    .starts_with(b"OSL_MARKED_LOCAL_ITEM_V1\n")
+                    .then(|| ((*key).to_owned(), bytes))
+            })
+            .collect()
+    }
+
+    fn assert_task_3582_snapshot(
+        stage: &str,
+        dir: &Path,
+        keys: &[&str],
+        original_key: &str,
+        original_bytes: &[u8],
+        original_fingerprint: &str,
+        successful_write_count: usize,
+    ) {
+        let readable = readable_local_items(dir, keys);
+        let readable_item_count = readable.len();
+        let original = readable
+            .iter()
+            .find(|(key, _)| key == original_key)
+            .map(|(_, bytes)| bytes.as_slice())
+            .expect("original marked local item remains readable");
+        let observed_fingerprint = hex_sha256(original);
+        assert_eq!(readable_item_count, 1, "{stage}: readable item count");
+        assert_eq!(original, original_bytes, "{stage}: original bytes changed");
+        assert_eq!(
+            observed_fingerprint, original_fingerprint,
+            "{stage}: original fingerprint changed"
+        );
+        assert_eq!(successful_write_count, 1, "{stage}: successful write count");
+        println!(
+            "TASK3582 stage={stage} readable_item_count={readable_item_count} original_fingerprint={observed_fingerprint} successful_write_count={successful_write_count}"
+        );
     }
 
     #[test]
@@ -207,6 +278,81 @@ mod tests {
             .read_blob("offline-send-queue\u{0}outbound-v1")
             .expect("read")
             .is_none());
+    }
+
+    #[test]
+    fn full_disk_during_second_marked_local_item_write_keeps_one_exact_item_after_restart() {
+        let dir = temp_dir("task-3582-full-disk-local-write");
+        let original_key = "marked-local-item\u{0}task-3582-original";
+        let second_key = "marked-local-item\u{0}task-3582-second";
+        let keys = [original_key, second_key];
+        let original_bytes =
+            b"OSL_MARKED_LOCAL_ITEM_V1\nitem=task-3582-original\nbody=readable-before-full-disk\n";
+        let second_bytes =
+            b"OSL_MARKED_LOCAL_ITEM_V1\nitem=task-3582-second\nbody=must-not-become-readable\n";
+        let original_fingerprint = hex_sha256(original_bytes);
+        let mut successful_write_count = 0usize;
+
+        SecureDiskBackend::new(&dir)
+            .write_blob(original_key, original_bytes)
+            .expect("save one marked local item");
+        successful_write_count += 1;
+        assert_task_3582_snapshot(
+            "before_full_disk",
+            &dir,
+            &keys,
+            original_key,
+            original_bytes,
+            &original_fingerprint,
+            successful_write_count,
+        );
+
+        for fault in crate::atomic_file::RecoverableWriteFault::write_points() {
+            let backend = SecureDiskBackend::new(&dir);
+            let error = backend
+                .write_blob_failing_at(second_key, second_bytes, fault)
+                .expect_err("second marked local item write must fail when disk is full");
+            assert!(
+                error.to_string().contains("simulated full disk"),
+                "fault {} returned an unrelated error: {error}",
+                fault.label()
+            );
+            assert_task_3582_snapshot(
+                &format!("after_{}_before_restart", fault.label()),
+                &dir,
+                &keys,
+                original_key,
+                original_bytes,
+                &original_fingerprint,
+                successful_write_count,
+            );
+
+            let restarted = SecureDiskBackend::new(&dir);
+            assert_eq!(
+                restarted
+                    .read_blob(second_key)
+                    .expect("restart can inspect second item"),
+                None,
+                "fault {} left the second item readable after restart",
+                fault.label()
+            );
+            assert_task_3582_snapshot(
+                &format!("after_{}_after_restart", fault.label()),
+                &dir,
+                &keys,
+                original_key,
+                original_bytes,
+                &original_fingerprint,
+                successful_write_count,
+            );
+        }
+
+        println!(
+            "TASK3582 write_points_checked={} finish_line_readable_item_count=1 finish_line_successful_write_count=1 finish_line_original_fingerprint={}",
+            crate::atomic_file::RecoverableWriteFault::write_points().len(),
+            original_fingerprint
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
