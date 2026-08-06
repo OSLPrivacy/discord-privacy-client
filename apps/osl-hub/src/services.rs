@@ -205,6 +205,10 @@ pub trait AccountServiceMessageConnection {
     ) -> Result<Vec<ServiceMessageSnapshot>, String>;
 }
 
+pub trait SignedInAccountServiceMessageConnection: AccountServiceMessageConnection {
+    fn is_signed_in(&self) -> bool;
+}
+
 pub trait AccountServiceRunnerConnection {
     fn service_id(&self) -> ServiceKind;
     fn account_id(&self) -> &str;
@@ -292,6 +296,17 @@ pub fn read_messages_through_approved_account_service_connection(
         message_count: messages.len(),
         messages,
     })
+}
+
+pub fn read_messages_through_signed_in_account_service_connection(
+    queue: &ServiceAccountRunQueue,
+    connection: &dyn SignedInAccountServiceMessageConnection,
+    places: &[ServiceMessagePlace],
+) -> Result<ServiceMessageReadBatch, String> {
+    if !connection.is_signed_in() {
+        return Err("sign in yourself".to_owned());
+    }
+    read_messages_through_approved_account_service_connection(queue, connection, places)
 }
 
 pub fn start_runner_for_approved_account_service_connection(
@@ -1898,6 +1913,125 @@ mod tests {
         }
     }
 
+    struct CredentialAutomationBreakFixture {
+        account_id: String,
+        signed_in: std::sync::Mutex<bool>,
+        saved_password: String,
+        one_time_code: String,
+        messages_read: std::sync::Mutex<usize>,
+        credential_reads: std::sync::Mutex<usize>,
+        credential_submits: std::sync::Mutex<usize>,
+        message: ServiceMessageSnapshot,
+    }
+
+    impl CredentialAutomationBreakFixture {
+        fn new(
+            account_id: &str,
+            signed_in: bool,
+            saved_password: &str,
+            one_time_code: &str,
+        ) -> Self {
+            Self {
+                account_id: account_id.to_owned(),
+                signed_in: std::sync::Mutex::new(signed_in),
+                saved_password: saved_password.to_owned(),
+                one_time_code: one_time_code.to_owned(),
+                messages_read: std::sync::Mutex::new(0),
+                credential_reads: std::sync::Mutex::new(0),
+                credential_submits: std::sync::Mutex::new(0),
+                message: ServiceMessageSnapshot {
+                    place_type: ServiceMessagePlaceType::Dm,
+                    place_id: "maple-dm".to_owned(),
+                    message_id: "maple-mail".to_owned(),
+                    author_id: "maple-author".to_owned(),
+                    text: "MAPLE-4172".to_owned(),
+                    date: "2026-08-06".to_owned(),
+                    time: "10:43".to_owned(),
+                },
+            }
+        }
+
+        fn set_signed_in(&self, signed_in: bool) {
+            *self.signed_in.lock().unwrap() = signed_in;
+        }
+
+        fn messages_read_count(&self) -> usize {
+            *self.messages_read.lock().unwrap()
+        }
+
+        fn credential_read_count(&self) -> usize {
+            *self.credential_reads.lock().unwrap()
+        }
+
+        fn credential_submit_count(&self) -> usize {
+            *self.credential_submits.lock().unwrap()
+        }
+
+        fn saved_password_fixture_value(&self) -> &str {
+            &self.saved_password
+        }
+
+        fn one_time_code_fixture_value(&self) -> &str {
+            &self.one_time_code
+        }
+
+        fn read_saved_password_forbidden_to_runner(&self) -> String {
+            *self.credential_reads.lock().unwrap() += 1;
+            self.saved_password.clone()
+        }
+
+        fn submit_one_time_code_forbidden_to_runner(&self, code: &str) -> Result<(), String> {
+            *self.credential_submits.lock().unwrap() += 1;
+            if code == self.one_time_code {
+                Ok(())
+            } else {
+                Err("fixture code mismatch".to_owned())
+            }
+        }
+    }
+
+    impl AccountServiceMessageConnection for CredentialAutomationBreakFixture {
+        fn service_id(&self) -> ServiceKind {
+            ServiceKind::Discord
+        }
+
+        fn account_id(&self) -> &str {
+            &self.account_id
+        }
+
+        fn read_messages(
+            &self,
+            place: &ServiceMessagePlace,
+        ) -> Result<Vec<ServiceMessageSnapshot>, String> {
+            *self.messages_read.lock().unwrap() += 1;
+            if place.place_type != self.message.place_type
+                || place.place_id != self.message.place_id
+            {
+                return Ok(Vec::new());
+            }
+            Ok(vec![self.message.clone()])
+        }
+    }
+
+    impl SignedInAccountServiceMessageConnection for CredentialAutomationBreakFixture {
+        fn is_signed_in(&self) -> bool {
+            *self.signed_in.lock().unwrap()
+        }
+    }
+
+    fn single_discord_maple_queue() -> ServiceAccountRunQueue {
+        ServiceAccountRunQueue {
+            service_id: ServiceKind::Discord,
+            accounts: vec![ServiceAccountRunQueueEntry {
+                account_id: "discord-maple".to_owned(),
+                label: "Maple".to_owned(),
+                status: ServiceAccountRunStatus::Active,
+            }],
+            active_count: 1,
+            waiting_count: 0,
+        }
+    }
+
     #[test]
     fn task_1423_service_connection_fixture_yields_messages_from_all_supplied_place_types() {
         let _serial = crate::global_keystore_test_lock();
@@ -2137,6 +2271,73 @@ mod tests {
         assert_eq!(matched.date, "2026-08-06");
         assert_eq!(matched.time, "09:30");
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn task_1443_logged_out_discord_maple_refuses_credential_automation() {
+        let queue = single_discord_maple_queue();
+        let fixture =
+            CredentialAutomationBreakFixture::new("discord-maple", true, "MAPLE-4172", "417200");
+        let places = vec![ServiceMessagePlace {
+            place_type: ServiceMessagePlaceType::Dm,
+            place_id: "maple-dm".to_owned(),
+        }];
+
+        assert_eq!(fixture.saved_password_fixture_value(), "MAPLE-4172");
+        assert_eq!(fixture.one_time_code_fixture_value(), "417200");
+        let scanned_before = fixture.messages_read_count();
+        let credential_reads_before = fixture.credential_read_count();
+        let credential_submits_before = fixture.credential_submit_count();
+
+        let batch =
+            read_messages_through_signed_in_account_service_connection(&queue, &fixture, &places)
+                .unwrap();
+        let message = batch.messages.first().unwrap();
+        fixture.set_signed_in(false);
+        let refused =
+            read_messages_through_signed_in_account_service_connection(&queue, &fixture, &places)
+                .unwrap_err();
+        let scanned_after_logout_refusal = fixture.messages_read_count();
+        let credential_reads_after = fixture.credential_read_count();
+        let credential_submits_after = fixture.credential_submit_count();
+
+        println!("task_1443_account_id={}", batch.account_id);
+        println!("task_1443_saved_password_fixture=MAPLE-4172");
+        println!("task_1443_saved_code_fixture=417200");
+        println!("task_1443_scanned_message_count_before={scanned_before}");
+        println!(
+            "task_1443_scanned_message_count_after={}",
+            batch.message_count
+        );
+        println!("task_1443_message_id={}", message.message_id);
+        println!("task_1443_message_text={}", message.text);
+        println!("task_1443_credential_reads={credential_reads_after}");
+        println!("task_1443_credential_submits={credential_submits_after}");
+        println!("task_1443_logged_out_refusal={refused}");
+        println!("task_1443_after_logout_scanned_message_count={scanned_after_logout_refusal}");
+        println!(
+            "task_1443_after_logout_message_text={}",
+            fixture.message.text
+        );
+
+        assert_eq!(batch.account_id, "discord-maple");
+        assert_eq!(scanned_before, 0);
+        assert_eq!(batch.message_count, 1);
+        assert_eq!(message.message_id, "maple-mail");
+        assert_eq!(message.text, "MAPLE-4172");
+        assert_eq!(credential_reads_before, 0);
+        assert_eq!(credential_submits_before, 0);
+        assert_eq!(credential_reads_after, 0);
+        assert_eq!(credential_submits_after, 0);
+        assert_eq!(refused, "sign in yourself");
+        assert_eq!(scanned_after_logout_refusal, 1);
+        assert_eq!(fixture.message.text, "MAPLE-4172");
+        assert_eq!(fixture.credential_read_count(), 0);
+        assert_eq!(fixture.credential_submit_count(), 0);
+        let _: fn(&CredentialAutomationBreakFixture) -> String =
+            CredentialAutomationBreakFixture::read_saved_password_forbidden_to_runner;
+        let _: fn(&CredentialAutomationBreakFixture, &str) -> Result<(), String> =
+            CredentialAutomationBreakFixture::submit_one_time_code_forbidden_to_runner;
     }
 
     #[test]
