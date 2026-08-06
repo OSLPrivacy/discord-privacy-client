@@ -155,6 +155,28 @@ describe("confirming a saved recovery kit is believed immediately", () => {
     expect(pressed.state.kitUnsaved).toBe(true);
   });
 
+  it("TASK0334 advances only for the explicit no-secret state and records that choice", () => {
+    const withoutNoSecretState = initialRecoveryKitState(null, true);
+    const without = recoveryKitReducer(withoutNoSecretState, { kind: "continue" });
+    console.log(
+      `TASK0334 without.state=${recoveryKitView(withoutNoSecretState).mode} outcome=${without.outcome} recorded=${without.state.noRecoverySecretAcknowledged}`,
+    );
+
+    expect(recoveryKitView(withoutNoSecretState).mode).toBe("reveal-required");
+    expect(without.outcome).toBe("rejected");
+    expect(without.state.noRecoverySecretAcknowledged).toBe(false);
+
+    const explicitNoSecretState = initialRecoveryKitState(null, false);
+    const withNoSecret = recoveryKitReducer(explicitNoSecretState, { kind: "continue" });
+    console.log(
+      `TASK0334 with.state=${recoveryKitView(explicitNoSecretState).mode} outcome=${withNoSecret.outcome} recorded=${withNoSecret.state.noRecoverySecretAcknowledged}`,
+    );
+
+    expect(recoveryKitView(explicitNoSecretState).mode).toBe("unavailable");
+    expect(withNoSecret.outcome).toBe("leave-recovery");
+    expect(withNoSecret.state.noRecoverySecretAcknowledged).toBe(true);
+  });
+
   it("lets the owner through this session even when the native write fails", async () => {
     const storage = memoryStorage({ [RECOVERY_KIT_UNSAVED_STORAGE_KEY]: "1" });
     const flag = createRecoveryKitUnsavedFlag({

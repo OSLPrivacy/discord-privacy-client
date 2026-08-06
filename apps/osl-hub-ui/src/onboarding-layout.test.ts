@@ -707,8 +707,12 @@ describe("fresh-account continuation", () => {
 
   it("uses the shared centred layout for the empty recovery screen", () => {
     const recovery = functionSource("recoveryContent", "identityPasswordForm");
+    const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(recovery).toMatch(/No recovery secret is available[\s\S]*?\/section>/);
     expect(recovery).toContain('class="onboarding-centered-step recovery-empty"');
+    expect(recovery).toContain('id="recovery-no-secret-continue"');
+    expect(recovery).not.toContain('data-onboarding="pro"');
+    expect(binding).toMatch(/#recovery-no-secret-continue[\s\S]*?applyRecoveryKitAction\(\{ kind: "continue" \}\)[\s\S]*?onboardingRoute = onboardingRouteForBuild\("pro"\)/);
     expect(styles).toMatch(/\.onboarding-centered-step\s*\{[^}]*width:\s*min\(440px,\s*100%\);[^}]*margin:\s*auto;[^}]*text-align:\s*center;/s);
   });
 

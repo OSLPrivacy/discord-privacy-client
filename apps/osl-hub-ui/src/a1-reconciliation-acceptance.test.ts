@@ -39,6 +39,7 @@ function recoveryState(secrets: RecoveryKitSecrets, captureProven: boolean) {
     captureEnforcement: "enforced" as const,
     shownWithoutProtection: false,
     savedAcknowledged: false,
+    noRecoverySecretAcknowledged: false,
     kitUnsaved: true,
   };
 }

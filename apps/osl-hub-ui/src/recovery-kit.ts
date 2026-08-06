@@ -46,6 +46,8 @@ export interface RecoveryKitState {
   shownWithoutProtection: boolean;
   /** The owner ticked "I saved my recovery kit". */
   savedAcknowledged: boolean;
+  /** The owner explicitly continued after OSL had no recovery secret to show. */
+  noRecoverySecretAcknowledged: boolean;
   /** A kit exists for this account that the owner has never confirmed saving. */
   kitUnsaved: boolean;
 }
@@ -137,6 +139,7 @@ export function initialRecoveryKitState(
     captureEnforcement: "unenforced",
     shownWithoutProtection: false,
     savedAcknowledged: false,
+    noRecoverySecretAcknowledged: false,
     kitUnsaved,
   };
 }
@@ -256,17 +259,32 @@ export function recoveryKitReducer(
       // A wrong or empty acknowledgement must leave the state — and therefore
       // the phrases — exactly as it found them.
       if (!acknowledgementAccepted(action.acknowledgement)) return { state, outcome: "rejected" };
-      return { state: { ...state, shownWithoutProtection: true }, outcome: "none" };
+      return {
+        state: { ...state, shownWithoutProtection: true, noRecoverySecretAcknowledged: false },
+        outcome: "none",
+      };
     case "remind-me-later":
       // Deferring drops the secrets from memory but records that the kit is
       // still unsaved, which is what forces the step to be re-offered.
       return {
-        state: { ...state, secrets: null, shownWithoutProtection: false, kitUnsaved: true },
+        state: {
+          ...state,
+          secrets: null,
+          shownWithoutProtection: false,
+          noRecoverySecretAcknowledged: false,
+          kitUnsaved: true,
+        },
         outcome: "leave-recovery",
       };
     case "set-saved-acknowledged":
       return { state: { ...state, savedAcknowledged: action.acknowledged }, outcome: "none" };
     case "continue":
+      if (recoveryKitView(state).mode === "unavailable") {
+        return {
+          state: { ...state, noRecoverySecretAcknowledged: true },
+          outcome: "leave-recovery",
+        };
+      }
       if (!state.savedAcknowledged || !recoveryKitView(state).secretsVisible) {
         return { state, outcome: "rejected" };
       }
@@ -276,11 +294,15 @@ export function recoveryKitReducer(
           secrets: null,
           shownWithoutProtection: false,
           savedAcknowledged: false,
+          noRecoverySecretAcknowledged: false,
           kitUnsaved: false,
         },
         outcome: "leave-recovery",
       };
     case "revealed":
-      return { state: { ...state, secrets: action.secrets }, outcome: "none" };
+      return {
+        state: { ...state, secrets: action.secrets, noRecoverySecretAcknowledged: false },
+        outcome: "none",
+      };
   }
 }

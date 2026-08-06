@@ -540,6 +540,7 @@ let toastTimer: number | undefined;
 let updateStatus: UpdateStatus = { state: "unavailable" };
 let recoveryBundle: { userId: string; identityPhrase: string | null; passwordPhrase: string } | null = null;
 let recoverySavedAcknowledged = false;
+let recoveryNoSecretAcknowledged = false;
 // T15-A7: the owner typed the acknowledgement and asked to see the kit even
 // though capture resistance is not proven. In-memory only, and reset the
 // moment the recovery step is left.
@@ -2770,6 +2771,7 @@ function recoveryKitStateNow(): RecoveryKitState {
     captureEnforcement: captureProtectionEnforced() ? "enforced" : "unenforced",
     shownWithoutProtection: recoveryShownWithoutProtection,
     savedAcknowledged: recoverySavedAcknowledged,
+    noRecoverySecretAcknowledged: recoveryNoSecretAcknowledged,
     kitUnsaved: recoveryKitUnsavedFlag.unsaved(),
   };
 }
@@ -2780,6 +2782,7 @@ function applyRecoveryKitAction(action: RecoveryKitAction): "none" | "rejected" 
   recoveryBundle = state.secrets;
   recoveryShownWithoutProtection = state.shownWithoutProtection;
   recoverySavedAcknowledged = state.savedAcknowledged;
+  recoveryNoSecretAcknowledged = state.noRecoverySecretAcknowledged;
   void persistRecoveryKitUnsaved(state.kitUnsaved);
   return outcome;
 }
@@ -2864,7 +2867,7 @@ function recoveryContent(): string {
   if (view.mode === "reveal-required") return recoveryRevealContent(view);
   if (view.mode === "refusal") return recoveryProtectionRefusalContent(view);
   const secrets = visibleRecoverySecrets(state);
-  if (!secrets) return `<section class="onboarding-centered-step recovery-empty" aria-labelledby="route-heading"><p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="pro">Continue</button></section>`;
+  if (!secrets) return `<section class="onboarding-centered-step recovery-empty" aria-labelledby="route-heading"><p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" id="recovery-no-secret-continue" type="button">Continue</button></section>`;
   // 2026-08-06 restyle. Gone from this screen: the Mullvad and Android "next
   // steps" cards (neither is a step, and one is not built), the Account details
   // disclosure, and the numbered badges.
@@ -3092,6 +3095,13 @@ function bindOnboarding(): void {
     // The kit is saved, so the flag is cleared and this resolves to whatever
     // step the owner was actually on before the restart.
     onboardingRoute = pendingOnboardingRoute() ?? onboardingRouteForBuild("pro");
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#recovery-no-secret-continue")?.addEventListener("click", () => {
+    if (applyRecoveryKitAction({ kind: "continue" }) !== "leave-recovery") return;
+    resetOnboardingBranch();
+    resetOnboardingConnections();
+    onboardingRoute = onboardingRouteForBuild("pro");
     render();
   });
   // T15-A7: the two exits that make the refusal escapable.
@@ -3665,6 +3675,7 @@ function bindPasswordForm(): void {
           passwordPhrase: passwordResult.passwordRecoveryPhrase,
         };
         recoverySavedAcknowledged = false;
+        recoveryNoSecretAcknowledged = false;
         recoveryShownWithoutProtection = false;
         // T15-A8: from this instant a kit exists that nobody has confirmed
         // saving. Until they do, every launch comes back here.
@@ -3922,6 +3933,7 @@ function bindImportForm(): void {
       services = await loadLinkedServices().catch(() => services);
       recoveryBundle = { userId: identity.userId, identityPhrase: null, passwordPhrase: passwordResult.passwordRecoveryPhrase };
       recoverySavedAcknowledged = false;
+      recoveryNoSecretAcknowledged = false;
       recoveryShownWithoutProtection = false;
       // Same rule as account creation above: the imported identity and its new
       // password are already on disk, so a failed reminder write is a warning,
@@ -9029,6 +9041,7 @@ async function executeBurn(event: SubmitEvent): Promise<void> {
   newIdentityRecoveryPhrase = null;
   recoveryBundle = null;
   recoverySavedAcknowledged = false;
+  recoveryNoSecretAcknowledged = false;
   activeService = null;
   activeHomeAppId = null;
   await refreshIdentityScopedState();
