@@ -317,6 +317,12 @@ pub struct ImageCopyCommandResult {
     pub image_copies: Vec<ImageCopyForCommand>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageHiddenProviderPostResult {
+    pub image_copy_ids: Vec<String>,
+    pub provider_post_count: usize,
+}
+
 pub fn direct_photo_post_command_image_copies(
     images: Vec<PhotoPostImageInput>,
     pointer: [u8; stego::IMAGE_HIDDEN_POINTER_BYTES],
@@ -338,6 +344,69 @@ pub fn ordinary_text_send_command_image_copies() -> ImageCopyCommandResult {
         image_copy_ids: Vec::new(),
         image_copies: Vec::new(),
     }
+}
+
+pub fn direct_photo_post_after_image_quality_check<CheckQuality, ProviderPost>(
+    images: Vec<PhotoPostImageInput>,
+    pointer: [u8; stego::IMAGE_HIDDEN_POINTER_BYTES],
+    check_mark: [u8; stego::IMAGE_HIDDEN_CHECK_MARK_BYTES],
+    check_quality: CheckQuality,
+    provider_post: ProviderPost,
+) -> Result<ImageHiddenProviderPostResult, String>
+where
+    CheckQuality: FnOnce(&ImageCopyCommandResult) -> Result<(), String>,
+    ProviderPost: FnOnce(&ImageCopyCommandResult) -> Result<usize, String>,
+{
+    post_image_hidden_command_after_quality_check(
+        "direct-post",
+        images,
+        pointer,
+        check_mark,
+        check_quality,
+        provider_post,
+    )
+}
+
+pub fn story_photo_post_after_image_quality_check<CheckQuality, ProviderPost>(
+    images: Vec<PhotoPostImageInput>,
+    pointer: [u8; stego::IMAGE_HIDDEN_POINTER_BYTES],
+    check_mark: [u8; stego::IMAGE_HIDDEN_CHECK_MARK_BYTES],
+    check_quality: CheckQuality,
+    provider_post: ProviderPost,
+) -> Result<ImageHiddenProviderPostResult, String>
+where
+    CheckQuality: FnOnce(&ImageCopyCommandResult) -> Result<(), String>,
+    ProviderPost: FnOnce(&ImageCopyCommandResult) -> Result<usize, String>,
+{
+    post_image_hidden_command_after_quality_check(
+        "story",
+        images,
+        pointer,
+        check_mark,
+        check_quality,
+        provider_post,
+    )
+}
+
+fn post_image_hidden_command_after_quality_check<CheckQuality, ProviderPost>(
+    command: &'static str,
+    images: Vec<PhotoPostImageInput>,
+    pointer: [u8; stego::IMAGE_HIDDEN_POINTER_BYTES],
+    check_mark: [u8; stego::IMAGE_HIDDEN_CHECK_MARK_BYTES],
+    check_quality: CheckQuality,
+    provider_post: ProviderPost,
+) -> Result<ImageHiddenProviderPostResult, String>
+where
+    CheckQuality: FnOnce(&ImageCopyCommandResult) -> Result<(), String>,
+    ProviderPost: FnOnce(&ImageCopyCommandResult) -> Result<usize, String>,
+{
+    let copies = image_hidden_photo_command_copies(command, images, pointer, check_mark)?;
+    check_quality(&copies)?;
+    let provider_post_count = provider_post(&copies)?;
+    Ok(ImageHiddenProviderPostResult {
+        image_copy_ids: copies.image_copy_ids,
+        provider_post_count,
+    })
 }
 
 fn image_hidden_photo_command_copies(
@@ -953,10 +1022,11 @@ pub fn checked_browser_footprint_binding(
 #[cfg(test)]
 mod native_visible_row_qa_command_tests {
     use super::{
-        canonical_native_visible_row_qa_build_hash, direct_photo_post_command_image_copies,
-        finish_native_visible_row_qa_request, ordinary_text_send_command_image_copies,
-        prepare_native_visible_row_qa_request, recorded_executable_hash_matches_rebuild,
-        require_native_discord_product_send_authority, story_photo_command_image_copies,
+        canonical_native_visible_row_qa_build_hash, direct_photo_post_after_image_quality_check,
+        direct_photo_post_command_image_copies, finish_native_visible_row_qa_request,
+        ordinary_text_send_command_image_copies, prepare_native_visible_row_qa_request,
+        recorded_executable_hash_matches_rebuild, require_native_discord_product_send_authority,
+        story_photo_command_image_copies, story_photo_post_after_image_quality_check,
         with_native_discord_product_send_authority, ActiveServiceHost, PhotoPostImageInput,
     };
     use crate::native_discord_adapter::{
@@ -1122,6 +1192,99 @@ mod native_visible_row_qa_command_tests {
         assert_eq!(story_decoded.check_mark, check_mark);
         assert!(text.image_copy_ids.is_empty());
         assert!(text.image_copies.is_empty());
+    }
+
+    #[test]
+    fn task_0665_failed_image_quality_check_produces_provider_post_count_0() {
+        let pointer = [
+            0x06, 0x65, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xa0, 0xb0, 0xc0,
+            0xd0, 0xe0, 0xf0, 0x0f, 0x1e, 0x2d,
+        ];
+        let check_mark = [0xca, 0xfe, 0x66, 0x50];
+        let refusal = "TASK0665_IMAGE_QUALITY_FAILED";
+        let direct_provider_posts = Cell::new(0usize);
+        let direct = direct_photo_post_after_image_quality_check(
+            vec![PhotoPostImageInput {
+                image_id: "direct-quality-failure".to_owned(),
+                png_bytes: fixture_png(),
+            }],
+            pointer,
+            check_mark,
+            |copies| {
+                assert_eq!(copies.image_copy_ids.len(), 1);
+                Err(refusal.to_owned())
+            },
+            |_| {
+                direct_provider_posts.set(direct_provider_posts.get() + 1);
+                Ok(direct_provider_posts.get())
+            },
+        );
+        let direct_error = direct.expect_err("failed direct-post quality check refuses posting");
+
+        let story_provider_posts = Cell::new(0usize);
+        let story = story_photo_post_after_image_quality_check(
+            vec![PhotoPostImageInput {
+                image_id: "story-quality-failure".to_owned(),
+                png_bytes: fixture_png(),
+            }],
+            pointer,
+            check_mark,
+            |copies| {
+                assert_eq!(copies.image_copy_ids.len(), 1);
+                Err(refusal.to_owned())
+            },
+            |_| {
+                story_provider_posts.set(story_provider_posts.get() + 1);
+                Ok(story_provider_posts.get())
+            },
+        );
+        let story_error = story.expect_err("failed story quality check refuses posting");
+
+        let successful_provider_posts = Cell::new(0usize);
+        let successful = direct_photo_post_after_image_quality_check(
+            vec![PhotoPostImageInput {
+                image_id: "direct-quality-success".to_owned(),
+                png_bytes: fixture_png(),
+            }],
+            pointer,
+            check_mark,
+            |copies| {
+                let decoded =
+                    stego::decode_png_hidden_pointer_bytes(&copies.image_copies[0].png_bytes)
+                        .unwrap()
+                        .expect("quality check reads hidden pointer from the prepared image copy");
+                assert_eq!(decoded.pointer, pointer);
+                assert_eq!(decoded.check_mark, check_mark);
+                Ok(())
+            },
+            |copies| {
+                assert_eq!(copies.image_copy_ids.len(), 1);
+                successful_provider_posts.set(successful_provider_posts.get() + 1);
+                Ok(successful_provider_posts.get())
+            },
+        )
+        .expect("successful quality check reaches provider post");
+
+        println!("TASK0665_FAILED_QUALITY_CHECK_REFUSAL={direct_error}");
+        println!(
+            "TASK0665_DIRECT_PROVIDER_POST_COUNT={}",
+            direct_provider_posts.get()
+        );
+        println!("TASK0665_STORY_QUALITY_CHECK_REFUSAL={story_error}");
+        println!(
+            "TASK0665_STORY_PROVIDER_POST_COUNT={}",
+            story_provider_posts.get()
+        );
+        println!(
+            "TASK0665_SUCCESS_PROVIDER_POST_COUNT={}",
+            successful.provider_post_count
+        );
+
+        assert_eq!(direct_error, refusal);
+        assert_eq!(story_error, refusal);
+        assert_eq!(direct_provider_posts.get(), 0);
+        assert_eq!(story_provider_posts.get(), 0);
+        assert_eq!(successful.provider_post_count, 1);
     }
 
     fn fixture_png() -> Vec<u8> {
