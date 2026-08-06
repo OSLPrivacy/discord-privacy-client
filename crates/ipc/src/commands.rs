@@ -15086,6 +15086,20 @@ mod account_transfer_tests {
         serde_json::from_slice(&plaintext).unwrap()
     }
 
+    fn task_0460_identity_fingerprint(identity: &keystore::Identity) -> String {
+        let mut hash = Sha256::new();
+        hash.update(b"osl-task-0460-identity-fingerprint-v1");
+        hash.update(identity.ed25519_public.as_bytes());
+        hash.update(identity.x25519_public.as_bytes());
+        let digest = hash.finalize();
+        let mut out = String::from("sha256:");
+        for byte in digest {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+
     #[test]
     fn task_0459_restore_test_package_on_clean_profile_b() {
         let _serial = crate::test_process_globals::serialize();
@@ -15204,6 +15218,196 @@ mod account_transfer_tests {
         println!(
             "TASK0459_RESTORED_MESSAGE_TEXT={}",
             restored_rows[0].plaintext
+        );
+    }
+
+    #[test]
+    fn task_0460_compare_restored_identity_on_two_profiles() {
+        let _serial = crate::test_process_globals::serialize();
+        let _reset = FileKeyReset;
+        crate::main_password::set_file_storage_key(None);
+
+        const PROFILE_A: &str = "test-profile-A";
+        const PROFILE_B: &str = "test-profile-B";
+        const ACCOUNT: &str = "task0460-restored-identity-account";
+        const OLD_CONVERSATION: &str = "TASK0460-OLD-CONVERSATION";
+        const OLD_MESSAGE_ID: &str = "task0460-old-message-0001";
+        const OLD_MESSAGE_TEXT: &str = "TASK0460 old conversation survives on both profiles";
+
+        let profile_a_dir = TempDir::new().unwrap();
+        let profile_b_dir = TempDir::new().unwrap();
+        let entropy = [60; 16];
+        let phrase = bip39::Mnemonic::from_entropy_in(bip39::Language::English, &entropy)
+            .unwrap()
+            .to_string();
+
+        let profile_a_state = state_with_entropy(entropy);
+        {
+            let mut identity = profile_a_state.identity_slot();
+            let identity = identity.as_mut().expect("profile A identity installed");
+            identity.user_id = ACCOUNT.to_owned();
+            identity.discord_snowflake = Some(ACCOUNT.to_owned());
+        }
+        cmd_save_identity(
+            &profile_a_state,
+            profile_a_dir
+                .path()
+                .join("identity.json")
+                .display()
+                .to_string(),
+        )
+        .expect("profile A saves identity.json for later unlock");
+        let profile_a_secret = *profile_a_state
+            .identity_slot()
+            .as_ref()
+            .expect("profile A identity remains installed")
+            .x25519_secret
+            .as_bytes();
+
+        {
+            let profile_a_store =
+                MessageStore::open(&profile_a_dir.path().join("store"), &profile_a_secret).unwrap();
+            profile_a_store
+                .put(&StoredMessage {
+                    discord_message_id: OLD_MESSAGE_ID.to_owned(),
+                    channel_id: OLD_CONVERSATION.to_owned(),
+                    sender_discord_id: ACCOUNT.to_owned(),
+                    sender_osl_user_id: ACCOUNT.to_owned(),
+                    plaintext: OLD_MESSAGE_TEXT.to_owned(),
+                    decrypted_at: 460,
+                    burned: false,
+                })
+                .unwrap();
+        }
+
+        let package = cmd_osl_export_data_with_dir(&profile_a_state, profile_a_dir.path())
+            .expect("profile A exports a restorable account package");
+
+        let profile_b_restore_state = AppState::new();
+        let mut placeholder = keystore::generate_identity("task0460-profile-b-placeholder".into());
+        placeholder.discord_snowflake = Some(ACCOUNT.to_owned());
+        profile_b_restore_state.install_identity(placeholder);
+        cmd_osl_recover_account_from_export_with_dir(
+            &profile_b_restore_state,
+            package,
+            phrase,
+            profile_b_dir.path(),
+        )
+        .expect("profile B restores profile A account package");
+
+        let profile_a_unlocked = AppState::new();
+        let profile_a_unlock = cmd_load_identity(
+            &profile_a_unlocked,
+            profile_a_dir
+                .path()
+                .join("identity.json")
+                .display()
+                .to_string(),
+        )
+        .expect("profile A still unlocks");
+        let profile_a_identity = profile_a_unlocked
+            .identity_slot()
+            .as_ref()
+            .expect("profile A unlocked identity installed")
+            .clone();
+
+        let profile_b_unlocked = AppState::new();
+        let profile_b_unlock = cmd_load_identity(
+            &profile_b_unlocked,
+            profile_b_dir
+                .path()
+                .join("identity.json")
+                .display()
+                .to_string(),
+        )
+        .expect("profile B still unlocks");
+        let profile_b_identity = profile_b_unlocked
+            .identity_slot()
+            .as_ref()
+            .expect("profile B unlocked identity installed")
+            .clone();
+
+        let profile_a_fingerprint = task_0460_identity_fingerprint(&profile_a_identity);
+        let profile_b_fingerprint = task_0460_identity_fingerprint(&profile_b_identity);
+        assert_eq!(profile_a_fingerprint, profile_b_fingerprint);
+
+        let profile_a_store = MessageStore::open(
+            &profile_a_dir.path().join("store"),
+            profile_a_identity.x25519_secret.as_bytes(),
+        )
+        .expect("profile A opens old conversation store after unlock");
+        let profile_b_store = MessageStore::open(
+            &profile_b_dir.path().join("store"),
+            profile_b_identity.x25519_secret.as_bytes(),
+        )
+        .expect("profile B opens restored old conversation store after unlock");
+        let profile_a_rows = profile_a_store
+            .list_by_channel(OLD_CONVERSATION, 10)
+            .expect("profile A reads old conversation");
+        let profile_b_rows = profile_b_store
+            .list_by_channel(OLD_CONVERSATION, 10)
+            .expect("profile B reads old conversation");
+        assert_eq!(profile_a_rows.len(), 1);
+        assert_eq!(profile_b_rows.len(), 1);
+        assert_eq!(profile_a_rows[0].discord_message_id, OLD_MESSAGE_ID);
+        assert_eq!(profile_b_rows[0].discord_message_id, OLD_MESSAGE_ID);
+        assert_eq!(profile_a_rows[0].plaintext, OLD_MESSAGE_TEXT);
+        assert_eq!(profile_b_rows[0].plaintext, OLD_MESSAGE_TEXT);
+
+        println!("TASK0460_PROFILE_A={PROFILE_A}");
+        println!("TASK0460_PROFILE_B={PROFILE_B}");
+        println!("TASK0460_PROFILE_A_UNLOCKED=true");
+        println!("TASK0460_PROFILE_B_UNLOCKED=true");
+        println!(
+            "TASK0460_PROFILE_A_UNLOCKED_USER_ID={}",
+            profile_a_unlock.user_id
+        );
+        println!(
+            "TASK0460_PROFILE_B_UNLOCKED_USER_ID={}",
+            profile_b_unlock.user_id
+        );
+        println!("TASK0460_PROFILE_A_IDENTITY_FINGERPRINT={profile_a_fingerprint}");
+        println!("TASK0460_PROFILE_B_IDENTITY_FINGERPRINT={profile_b_fingerprint}");
+        println!(
+            "TASK0460_FINGERPRINTS_MATCH={}",
+            profile_a_fingerprint == profile_b_fingerprint
+        );
+        println!("TASK0460_OLD_CONVERSATION_ID={OLD_CONVERSATION}");
+        println!(
+            "TASK0460_PROFILE_A_OLD_CONVERSATION_COUNT={}",
+            profile_a_rows.len()
+        );
+        println!(
+            "TASK0460_PROFILE_B_OLD_CONVERSATION_COUNT={}",
+            profile_b_rows.len()
+        );
+        println!(
+            "TASK0460_PROFILE_A_OLD_CONVERSATION_PRESENT={}",
+            !profile_a_rows.is_empty()
+        );
+        println!(
+            "TASK0460_PROFILE_B_OLD_CONVERSATION_PRESENT={}",
+            !profile_b_rows.is_empty()
+        );
+        println!(
+            "TASK0460_OLD_CONVERSATION_PRESENT_ON_BOTH={}",
+            !profile_a_rows.is_empty() && !profile_b_rows.is_empty()
+        );
+        println!(
+            "TASK0460_PROFILE_A_OLD_MESSAGE_ID={}",
+            profile_a_rows[0].discord_message_id
+        );
+        println!(
+            "TASK0460_PROFILE_B_OLD_MESSAGE_ID={}",
+            profile_b_rows[0].discord_message_id
+        );
+        println!(
+            "TASK0460_PROFILE_A_OLD_MESSAGE_TEXT={}",
+            profile_a_rows[0].plaintext
+        );
+        println!(
+            "TASK0460_PROFILE_B_OLD_MESSAGE_TEXT={}",
+            profile_b_rows[0].plaintext
         );
     }
 
