@@ -44,6 +44,10 @@ beforeEach(() => {
   localStore.clear();
 });
 
+function pageText(markup: string): string {
+  return markup.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ").trim();
+}
+
 describe("Privacy primary action", () => {
   it("routes Privacy primary action to protection review state", () => {
     const { __oslHubUiTest, privacyPrimaryAction } = ui;
@@ -73,5 +77,27 @@ describe("Privacy primary action", () => {
     expect(markup).toContain('data-review-target="protection-review"');
     expect(markup).toContain('id="privacy-protection-review"');
     expect(markup).toContain("Global policy");
+  });
+});
+
+describe("Privacy page disclosures", () => {
+  it("finds all four required disclosures in rendered Privacy page text", () => {
+    const requiredDisclosures = [
+      "Scrub reads only the files, exports, and account views you choose for review; it does not read other apps or accounts.",
+      "Result text is kept only in the local encrypted Scrub index and is removed when you clear results or cancel the import.",
+      "OSL never stores your payment details or payment method.",
+      "The payment company may receive checkout, billing, fraud, tax, and support data needed to process payment.",
+    ];
+
+    const renderedText = pageText(ui.privacyDestinationContent());
+    const found = requiredDisclosures.filter((disclosure) => renderedText.includes(disclosure));
+
+    console.info(`Privacy disclosure count: ${found.length}`);
+    for (const disclosure of found) {
+      console.info(`Privacy disclosure found: ${disclosure}`);
+    }
+
+    expect(found).toEqual(requiredDisclosures);
+    expect(found).toHaveLength(4);
   });
 });
