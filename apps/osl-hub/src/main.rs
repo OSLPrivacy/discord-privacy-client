@@ -73,7 +73,7 @@ use osl_privacy_hub::native_window_host::{
     NativeWindowHostState,
 };
 use osl_privacy_hub::osl_mail::{self, OslMailState, OslMailStatus};
-use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput};
+use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput, OwnerProfilePictureDto};
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult, HubMainPasswordSetupResult,
 };
@@ -6266,6 +6266,37 @@ async fn get_osl_profile(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     osl_profile::get_active_profile(&owner)
+}
+
+#[tauri::command]
+async fn set_owner_profile_picture(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    image: String,
+) -> Result<OwnerProfilePictureDto, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    osl_profile::set_active_profile_picture(&owner, image)
+}
+
+#[tauri::command]
+async fn read_owner_profile_picture(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<OwnerProfilePictureDto, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    osl_profile::read_active_profile_picture(&owner)
+}
+
+#[tauri::command]
+async fn clear_owner_profile_picture(
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+) -> Result<OwnerProfilePictureDto, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    osl_profile::clear_active_profile_picture(&owner)
 }
 
 /// Hand the renderer the HKDF subkey for OSL Chat's local (webview) state.
