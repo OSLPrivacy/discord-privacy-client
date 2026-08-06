@@ -5501,6 +5501,53 @@ struct ManualPeerContextLease {
     person_id: String,
     peer_osl_user_id: String,
     scope_approved: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggestion: Option<String>,
+}
+
+fn suggestion_field(answer: security::ChatApprovalSuggestionAnswer) -> Option<String> {
+    (answer.suggestion == "offer_approval").then_some(answer.suggestion)
+}
+
+fn manual_peer_context_lease(
+    activated: broker::ActivatedManualPeerContext,
+    scope_approved: bool,
+    suggestion: Option<String>,
+) -> ManualPeerContextLease {
+    ManualPeerContextLease {
+        context_token: activated.lease.context_token,
+        service_id: activated.lease.service_id,
+        account_id: activated.lease.account_id,
+        person_id: activated.person_id,
+        peer_osl_user_id: activated.peer_osl_user_id,
+        scope_approved,
+        suggestion,
+    }
+}
+
+fn osl_chat_context_lease(
+    core: &HubCoreState,
+    activated: broker::ActivatedManualPeerContext,
+) -> Result<ManualPeerContextLease, String> {
+    let scope_approved = security::manual_peer_scope_approved(
+        core,
+        &activated.lease.service_id,
+        &activated.lease.account_id,
+        activated.person_id.clone(),
+        activated.scope.clone(),
+    )?;
+    let suggestion = suggestion_field(security::chat_approval_suggestion_for_manual_peer_scope(
+        core,
+        &activated.lease.service_id,
+        &activated.lease.account_id,
+        activated.person_id.clone(),
+        activated.scope.clone(),
+    )?);
+    Ok(manual_peer_context_lease(
+        activated,
+        scope_approved,
+        suggestion,
+    ))
 }
 
 #[derive(Serialize)]
@@ -5595,16 +5642,9 @@ async fn activate_manual_peer_context(
         &activated.lease.service_id,
         &activated.lease.account_id,
         activated.person_id.clone(),
-        activated.scope,
+        activated.scope.clone(),
     )?;
-    Ok(ManualPeerContextLease {
-        context_token: activated.lease.context_token,
-        service_id: activated.lease.service_id,
-        account_id: activated.lease.account_id,
-        person_id: activated.person_id,
-        peer_osl_user_id: activated.peer_osl_user_id,
-        scope_approved,
-    })
+    Ok(manual_peer_context_lease(activated, scope_approved, None))
 }
 
 /// Activate a synthetic OSL protection scope over the currently attached,
@@ -5636,16 +5676,9 @@ async fn activate_native_manual_peer_context(
             &activated.lease.service_id,
             &activated.lease.account_id,
             activated.person_id.clone(),
-            activated.scope,
+            activated.scope.clone(),
         )?;
-        Ok(ManualPeerContextLease {
-            context_token: activated.lease.context_token,
-            service_id: activated.lease.service_id,
-            account_id: activated.lease.account_id,
-            person_id: activated.person_id,
-            peer_osl_user_id: activated.peer_osl_user_id,
-            scope_approved,
-        })
+        Ok(manual_peer_context_lease(activated, scope_approved, None))
     })();
     #[cfg(feature = "discord-qa-shell")]
     if let Err(error) = &activated {
@@ -5676,21 +5709,7 @@ async fn activate_osl_chat_context(
     // conversation. Both independently authored preferences start off.
     capture_protection.ensure_conversation(&binding.person_id);
     let activated = broker::activate_owned_osl_chat_context(&broker, &owner, binding)?;
-    let scope_approved = security::manual_peer_scope_approved(
-        &core,
-        &activated.lease.service_id,
-        &activated.lease.account_id,
-        activated.person_id.clone(),
-        activated.scope,
-    )?;
-    Ok(ManualPeerContextLease {
-        context_token: activated.lease.context_token,
-        service_id: activated.lease.service_id,
-        account_id: activated.lease.account_id,
-        person_id: activated.person_id,
-        peer_osl_user_id: activated.peer_osl_user_id,
-        scope_approved,
-    })
+    osl_chat_context_lease(&core, activated)
 }
 
 #[tauri::command]
@@ -10307,9 +10326,12 @@ mod native_discord_carrier_command_tests {
 #[cfg(test)]
 mod tauri_command_acl_tests {
     use super::{
-        checked_hosted_session_scan_flow, review_ui_identity_binding_verifier_accepts_selection,
-        valid_osl_username, ActiveServiceHost, CheckedHost,
+        checked_hosted_session_scan_flow, osl_chat_context_lease,
+        review_ui_identity_binding_verifier_accepts_selection, valid_osl_username,
+        ActiveServiceHost, CheckedHost,
     };
+    use ipc::scope::{ScopeInput, ScopeKind};
+    use osl_privacy_hub::broker;
     use osl_privacy_hub::identity_binding_verifier::{
         AccountRef, BindingEvidence, BindingScope, IdentityBindingError, IdentityBindingVerifier,
         PinnedOwner,
@@ -10318,9 +10340,41 @@ mod tauri_command_acl_tests {
         DeletionScan, WalkCompleteness,
     };
     use osl_privacy_hub::scrub_index::ScrubAccountSelection;
+    use osl_privacy_hub::security::{self, HubSecurityState};
     use osl_privacy_hub::service_host::ServiceHostState;
     use std::cell::RefCell;
     use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    const TEST_FILE_KEY: [u8; 32] = [0x70; 32];
+
+    struct AccountFixture {
+        _dir: tempfile::TempDir,
+        previous_active_account_dir: Option<PathBuf>,
+        previous_file_key: Option<[u8; 32]>,
+    }
+
+    impl AccountFixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("test account dir");
+            let previous_active_account_dir = keystore::active_account_dir();
+            let previous_file_key = ipc::main_password::get_file_storage_key();
+            keystore::set_active_account_dir(Some(dir.path().to_path_buf()));
+            ipc::main_password::set_file_storage_key(Some(TEST_FILE_KEY));
+            Self {
+                _dir: dir,
+                previous_active_account_dir,
+                previous_file_key,
+            }
+        }
+    }
+
+    impl Drop for AccountFixture {
+        fn drop(&mut self) {
+            keystore::set_active_account_dir(self.previous_active_account_dir.clone());
+            ipc::main_password::set_file_storage_key(self.previous_file_key);
+        }
+    }
 
     /// Mint an `ActiveServiceHost` the way production does.
     ///
@@ -10454,6 +10508,119 @@ mod tauri_command_acl_tests {
             .map(|offset| start + 1 + offset)
             .expect("next command boundary");
         assert!(source[start..end].contains("capture_protection.ensure_conversation"));
+    }
+
+    #[test]
+    fn task0705_osl_chat_direct_result_uses_saved_approval_suggestion() {
+        let source = include_str!("main.rs");
+        let command_start = source
+            .find("async fn activate_osl_chat_context(")
+            .expect("OSL Chat activation command exists");
+        let command_end = source[command_start + 1..]
+            .find("#[tauri::command]")
+            .map(|offset| command_start + 1 + offset)
+            .expect("OSL Chat activation command has a boundary");
+        assert!(
+            source[command_start..command_end].contains("osl_chat_context_lease(&core, activated)"),
+            "activate_osl_chat_context must return the saved-rule OSL Chat lease result"
+        );
+
+        let _account = AccountFixture::new();
+        let core = osl_privacy_hub::core_bridge::HubCoreState::default();
+        let friend_core = osl_privacy_hub::core_bridge::HubCoreState::default();
+        let security_state = HubSecurityState::default();
+        *core.osl.identity.lock().expect("core identity lock") = Some(
+            keystore::identity_from_entropy([0x70; 16], "owner-0705".to_owned()),
+        );
+        *friend_core
+            .osl
+            .identity
+            .lock()
+            .expect("friend identity lock") = Some(keystore::identity_from_entropy(
+            [0x71; 16],
+            "friend-0705".to_owned(),
+        ));
+
+        let friend_code = security::export_friend_code(&friend_core)
+            .expect("friend code")
+            .friend_code;
+        let added = security::add_friend_code(&core, &security_state, friend_code, None)
+            .expect("import friend");
+        let verified = security::verify_friend_safety_number(
+            &core,
+            &security_state,
+            added.person_id.clone(),
+            added.safety_number,
+        )
+        .expect("verify friend");
+        assert!(verified.safety_number_verified);
+
+        let scope = ScopeInput {
+            kind: ScopeKind::Dm,
+            id: security::manual_peer_scope_id("osl-chat", "osl-main", &added.person_id)
+                .expect("manual chat scope id"),
+            server_id: None,
+            channel_id: None,
+        };
+        assert!(!security::manual_peer_scope_approved(
+            &core,
+            "osl-chat",
+            "osl-main",
+            added.person_id.clone(),
+            scope.clone(),
+        )
+        .expect("unchecked chat approval status"));
+
+        security::save_chat_approval_suggestion_choice(&security_state, "on".to_owned())
+            .expect("save enabled suggestion choice");
+        let enabled_result = osl_chat_context_lease(
+            &core,
+            broker::ActivatedManualPeerContext {
+                lease: broker::ContextLease {
+                    generation: 1,
+                    host_generation: 1,
+                    context_token: "ctx-task0705-enabled".to_owned(),
+                    service_id: "osl-chat".to_owned(),
+                    account_id: "osl-main".to_owned(),
+                },
+                person_id: added.person_id.clone(),
+                peer_osl_user_id: verified.osl_user_id.clone(),
+                scope: scope.clone(),
+            },
+        )
+        .expect("enabled OSL Chat direct-command result");
+        let enabled_json = serde_json::to_value(&enabled_result).expect("serialize enabled result");
+        let enabled_suggestion = enabled_json
+            .get("suggestion")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("absent");
+        println!("TASK0705 unchecked_enabled.has_suggestion=true");
+        println!("TASK0705 unchecked_enabled.suggestion={enabled_suggestion}");
+        assert_eq!(enabled_suggestion, "offer_approval");
+
+        security::save_chat_approval_suggestion_choice(&security_state, "off".to_owned())
+            .expect("save disabled suggestion choice");
+        let disabled_result = osl_chat_context_lease(
+            &core,
+            broker::ActivatedManualPeerContext {
+                lease: broker::ContextLease {
+                    generation: 2,
+                    host_generation: 1,
+                    context_token: "ctx-task0705-disabled".to_owned(),
+                    service_id: "osl-chat".to_owned(),
+                    account_id: "osl-main".to_owned(),
+                },
+                person_id: added.person_id,
+                peer_osl_user_id: verified.osl_user_id,
+                scope,
+            },
+        )
+        .expect("disabled OSL Chat direct-command result");
+        let disabled_json =
+            serde_json::to_value(&disabled_result).expect("serialize disabled result");
+        let disabled_has_suggestion = disabled_json.get("suggestion").is_some();
+        println!("TASK0705 unchecked_disabled.has_suggestion={disabled_has_suggestion}");
+        assert!(!disabled_has_suggestion);
     }
 
     fn test_checked_host() -> CheckedHost {
