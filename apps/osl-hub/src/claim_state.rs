@@ -652,6 +652,16 @@ impl DeliveryEvidence {
     }
 }
 
+impl MatrixPosition {
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::NoCapabilityClaim => "noCapabilityClaim",
+            Self::ExternallyBlocked => "externallyBlocked",
+            Self::NoRow => "noRow",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // THE VIOLATION CHECKER
 //

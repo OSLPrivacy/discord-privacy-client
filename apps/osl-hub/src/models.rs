@@ -43,6 +43,28 @@ pub struct HomeTileArrangementInput {
 pub struct HomeTileArrangementRead {
     pub visible_tiles: Vec<String>,
     pub hidden_tiles: Vec<String>,
+    pub visible_tile_data: Vec<HomeTileData>,
+    pub hidden_tile_data: Vec<HomeTileData>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HomeTileData {
+    pub id: String,
+    pub capability: Option<HomeTileCapabilityFacts>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HomeTileCapabilityFacts {
+    pub surface: &'static str,
+    pub public_claim: &'static str,
+    pub carrier_evidence: &'static str,
+    pub delivery_evidence: &'static str,
+    pub claim_blockers: Vec<&'static str>,
+    pub matrix_position: &'static str,
+    pub first_party: bool,
+    pub capability_claim: bool,
 }
 
 /// How an encrypted capsule would be handed to a service composer.
