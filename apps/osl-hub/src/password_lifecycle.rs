@@ -157,6 +157,39 @@ pub struct HubMainPasswordSetupResult {
     pub readiness: HubPasswordReadiness,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryWordRetypeAnswer {
+    /// User-facing recovery word position, starting at 1.
+    pub position: usize,
+    pub word: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryWordRetypeRequest {
+    pub recovery_phrase: String,
+    /// User-facing recovery word positions, starting at 1.
+    pub selected_positions: Vec<usize>,
+    pub answers: Vec<RecoveryWordRetypeAnswer>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryWordRetypePrompt {
+    /// User-facing recovery word position, starting at 1.
+    pub position: usize,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryWordRetypeResult {
+    pub prompts: Vec<RecoveryWordRetypePrompt>,
+    pub checked_count: usize,
+    pub passed: bool,
+    pub failed_positions: Vec<usize>,
+}
+
 pub fn readiness(state: &HubCoreState) -> HubPasswordReadiness {
     let identity_loaded = state
         .osl
@@ -581,6 +614,75 @@ pub(crate) fn parse_identity_phrase(phrase: &str) -> Result<[u8; 16], String> {
     Ok(bytes)
 }
 
+pub fn check_recovery_word_retype(
+    request: RecoveryWordRetypeRequest,
+) -> Result<RecoveryWordRetypeResult, String> {
+    if request.selected_positions.is_empty() {
+        return Err("Select at least one recovery word to check".to_owned());
+    }
+    if request.answers.len() != request.selected_positions.len() {
+        return Err("Every selected recovery word must have one answer".to_owned());
+    }
+    if request.recovery_phrase.len() > MAX_RECOVERY_PHRASE_BYTES {
+        return Err("OSL recovery phrase is invalid".to_owned());
+    }
+
+    let mnemonic = Mnemonic::parse_in_normalized(Language::English, request.recovery_phrase.trim())
+        .map_err(|_| "OSL recovery phrase is invalid".to_owned())?;
+    let words: Vec<String> = mnemonic
+        .to_string()
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect();
+    if words.is_empty() {
+        return Err("OSL recovery phrase is invalid".to_owned());
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    for position in &request.selected_positions {
+        if *position == 0 || *position > words.len() || !seen.insert(*position) {
+            return Err("Recovery word positions must be unique and in range".to_owned());
+        }
+    }
+
+    let mut answers = std::collections::BTreeMap::new();
+    for answer in request.answers {
+        if answer.position == 0
+            || answer.position > words.len()
+            || !seen.contains(&answer.position)
+            || answers
+                .insert(answer.position, answer.word.trim().to_owned())
+                .is_some()
+        {
+            return Err("Every selected recovery word must have one answer".to_owned());
+        }
+    }
+
+    let failed_positions: Vec<usize> = request
+        .selected_positions
+        .iter()
+        .copied()
+        .filter(|position| {
+            answers
+                .get(position)
+                .map(|word| word != &words[*position - 1])
+                .unwrap_or(true)
+        })
+        .collect();
+    let prompts = request
+        .selected_positions
+        .into_iter()
+        .map(|position| RecoveryWordRetypePrompt { position })
+        .collect();
+
+    Ok(RecoveryWordRetypeResult {
+        prompts,
+        checked_count: answers.len(),
+        passed: failed_positions.is_empty(),
+        failed_positions,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,6 +767,74 @@ mod tests {
         );
         assert_eq!(native_user_id(&identity), native_user_id(&recovered));
         assert_eq!(phrase.split_whitespace().count(), 12);
+    }
+
+    #[test]
+    fn recovery_word_retype_selected_exact_words_pass_and_wrong_position_fails() {
+        let phrase =
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let selected_positions = vec![1, 11, 12];
+        let exact = check_recovery_word_retype(RecoveryWordRetypeRequest {
+            recovery_phrase: phrase.to_owned(),
+            selected_positions: selected_positions.clone(),
+            answers: vec![
+                RecoveryWordRetypeAnswer {
+                    position: 1,
+                    word: "abandon".to_owned(),
+                },
+                RecoveryWordRetypeAnswer {
+                    position: 11,
+                    word: "abandon".to_owned(),
+                },
+                RecoveryWordRetypeAnswer {
+                    position: 12,
+                    word: "about".to_owned(),
+                },
+            ],
+        })
+        .unwrap();
+        println!(
+            "0304 exact selected words positions=[1,11,12] words=[abandon,abandon,about] passed={} checked_count={}",
+            exact.passed, exact.checked_count
+        );
+        assert_eq!(
+            exact.prompts,
+            vec![
+                RecoveryWordRetypePrompt { position: 1 },
+                RecoveryWordRetypePrompt { position: 11 },
+                RecoveryWordRetypePrompt { position: 12 },
+            ]
+        );
+        assert_eq!(exact.checked_count, 3);
+        assert!(exact.passed);
+        assert!(exact.failed_positions.is_empty());
+
+        let wrong_position = check_recovery_word_retype(RecoveryWordRetypeRequest {
+            recovery_phrase: phrase.to_owned(),
+            selected_positions,
+            answers: vec![
+                RecoveryWordRetypeAnswer {
+                    position: 1,
+                    word: "about".to_owned(),
+                },
+                RecoveryWordRetypeAnswer {
+                    position: 11,
+                    word: "abandon".to_owned(),
+                },
+                RecoveryWordRetypeAnswer {
+                    position: 12,
+                    word: "about".to_owned(),
+                },
+            ],
+        })
+        .unwrap();
+        println!(
+            "0304 wrong-position correct word supplied_position=1 supplied_word=about correct_position=12 passed={} failed_positions={:?}",
+            wrong_position.passed, wrong_position.failed_positions
+        );
+        assert!(!wrong_position.passed);
+        assert_eq!(wrong_position.checked_count, 3);
+        assert_eq!(wrong_position.failed_positions, vec![1]);
     }
 
     #[test]
