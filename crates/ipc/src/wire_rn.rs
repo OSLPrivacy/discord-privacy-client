@@ -180,6 +180,11 @@ pub enum RnError {
     #[error("policy requires OSL-RN for this peer but the peer does not support it")]
     RnRequiredButUnsupported,
 
+    /// A direct-chat OSL-RN session was attempted before both peers proved
+    /// live RN support.
+    #[error("direct-chat OSL-RN agreement requires both peers to prove live support")]
+    DirectChatAgreementUnsupported,
+
     /// Another thread or process is currently advancing this peer's
     /// session. Retrying from the state already loaded by this caller
     /// would reuse a deterministic body nonce, so the caller must fail
@@ -315,7 +320,9 @@ impl RnError {
             Self::WireInDisabled => RnUserVisibleState::WireInDisabled,
             Self::PinnedToRn => RnUserVisibleState::LegacyDowngradeRefused,
             Self::RecoveryRequiresRnPin => RnUserVisibleState::RecoveryRequiresPinnedSession,
-            Self::RnRequiredButUnsupported => RnUserVisibleState::RequiredButUnsupported,
+            Self::RnRequiredButUnsupported | Self::DirectChatAgreementUnsupported => {
+                RnUserVisibleState::RequiredButUnsupported
+            }
             Self::WriterBusy => RnUserVisibleState::SessionBusy,
             Self::RolledBackSession { .. } | Self::RolledBackSessionGeneration => {
                 RnUserVisibleState::SessionRollbackRefused
@@ -528,6 +535,27 @@ pub enum RatchetPolicyDecision {
 /// Backwards-compatible name for callers that only care about the RN
 /// wire-version decision.
 pub type SelectedVersion = RatchetPolicyDecision;
+
+/// A direct-chat OSL-RN session may start only after both endpoints have
+/// authenticated live-RN support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectChatRnAgreement {
+    pub local: keystore::client::PeerCapabilities,
+    pub peer: keystore::client::PeerCapabilities,
+}
+
+impl DirectChatRnAgreement {
+    pub fn prove(
+        local: keystore::client::PeerCapabilities,
+        peer: keystore::client::PeerCapabilities,
+    ) -> Result<Self, RnError> {
+        if local.supports_rn_live() && peer.supports_rn_live() {
+            Ok(Self { local, peer })
+        } else {
+            Err(RnError::DirectChatAgreementUnsupported)
+        }
+    }
+}
 
 /// Per-peer policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1346,6 +1374,15 @@ pub fn initiate_and_persist_with_sealer(
     context: &[u8],
     params: SessionParams,
 ) -> Result<Session, RnError> {
+    if context == RN_CONTEXT_DISCORD_MANUAL {
+        DirectChatRnAgreement::prove(
+            keystore::client::PeerCapabilities::Verified(
+                keystore::client::CLIENT_RN_CAPABILITY_FLOOR,
+            ),
+            caps,
+        )?;
+    }
+
     let peer_for_handshake;
     let peer = if context == RN_CONTEXT_DISCORD_MANUAL {
         // The current command responder reconstructs receive-side prekeys from
@@ -4629,7 +4666,7 @@ mod tests {
             &alice_ik,
             alice_ik_pub.as_bytes(),
             &bob_bundle,
-            PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+            PeerCapabilities::Verified(RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE),
             &bob_ek,
             RN_CONTEXT_DISCORD_MANUAL,
             SessionParams::default(),

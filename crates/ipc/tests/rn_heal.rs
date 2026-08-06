@@ -3,7 +3,7 @@ use ipc::wire_rn::{
     recover_session, send_rn_with_sealer, RnError, RnPolicy, RnSessionStore,
     RN_CONTEXT_DISCORD_MANUAL,
 };
-use keystore::client::{PeerCapabilities, RN_CAP_WIRE_RN};
+use keystore::client::{PeerCapabilities, RN_CAP_WIRE_RN, RN_CAP_WIRE_RN_LIVE};
 use keystore::MemorySealer;
 use osl_ratchet_next::{
     peek_wire_version,
@@ -40,7 +40,7 @@ fn desynchronised_pair_heals_by_rehandshaking_without_lowering_its_pins() {
         &alice_identity,
         alice_public.as_bytes(),
         &bob_bundle,
-        PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+        PeerCapabilities::Verified(RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE),
         &bob_ek,
         RN_CONTEXT_DISCORD_MANUAL,
         SessionParams::default(),
@@ -96,7 +96,7 @@ fn desynchronised_pair_heals_by_rehandshaking_without_lowering_its_pins() {
         &alice_identity,
         alice_public.as_bytes(),
         &bob_bundle,
-        PeerCapabilities::Verified(RN_CAP_WIRE_RN),
+        PeerCapabilities::Verified(RN_CAP_WIRE_RN | RN_CAP_WIRE_RN_LIVE),
         &bob_ek,
         RN_CONTEXT_DISCORD_MANUAL,
         SessionParams::default(),

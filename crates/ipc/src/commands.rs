@@ -7313,7 +7313,9 @@ mod rn_inbound_unknown_tests {
             &alice_identity,
             alice_identity_public.as_bytes(),
             &bob_bundle,
-            keystore::client::PeerCapabilities::Verified(keystore::client::RN_CAP_WIRE_RN),
+            keystore::client::PeerCapabilities::Verified(
+                keystore::client::RN_CAP_WIRE_RN | keystore::client::RN_CAP_WIRE_RN_LIVE,
+            ),
             &bob_ek,
             crate::wire_rn::RN_CONTEXT_DISCORD_MANUAL,
             osl_ratchet_next::SessionParams::default(),
@@ -7426,7 +7428,9 @@ mod rn_inbound_unknown_tests {
             &alice_identity,
             alice_identity_public.as_bytes(),
             &bob_bundle,
-            keystore::client::PeerCapabilities::Verified(keystore::client::RN_CAP_WIRE_RN),
+            keystore::client::PeerCapabilities::Verified(
+                keystore::client::RN_CAP_WIRE_RN | keystore::client::RN_CAP_WIRE_RN_LIVE,
+            ),
             &bob_mlkem768_ek,
             crate::wire_rn::RN_CONTEXT_DISCORD_MANUAL,
             osl_ratchet_next::SessionParams::default(),
@@ -7504,7 +7508,9 @@ mod rn_inbound_unknown_tests {
             &alice_identity,
             alice_identity_public.as_bytes(),
             &bob_bundle,
-            keystore::client::PeerCapabilities::Verified(keystore::client::RN_CAP_WIRE_RN),
+            keystore::client::PeerCapabilities::Verified(
+                keystore::client::RN_CAP_WIRE_RN | keystore::client::RN_CAP_WIRE_RN_LIVE,
+            ),
             &bob_mlkem768_ek,
             crate::wire_rn::RN_CONTEXT_DISCORD_MANUAL,
             osl_ratchet_next::SessionParams::default(),
@@ -7596,7 +7602,9 @@ mod rn_inbound_unknown_tests {
             &alice_identity,
             alice_identity_public.as_bytes(),
             &bob_bundle,
-            keystore::client::PeerCapabilities::Verified(keystore::client::RN_CAP_WIRE_RN),
+            keystore::client::PeerCapabilities::Verified(
+                keystore::client::RN_CAP_WIRE_RN | keystore::client::RN_CAP_WIRE_RN_LIVE,
+            ),
             &bob_mlkem768_ek,
             crate::wire_rn::RN_CONTEXT_DISCORD_MANUAL,
             osl_ratchet_next::SessionParams::default(),
