@@ -65,6 +65,7 @@ const DM_REACH_STORAGE_KEY: &str = "dm";
 const MAX_REACH_NARROWED_SCOPES_PER_PERSON: usize = 512;
 const MAX_STORAGE_KEY_BYTES: usize = 512;
 const MAX_ALLOWED_PLACE_FIELD_BYTES: usize = 512;
+const MAX_PROFILE_PICTURE_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 const X25519_PUBLIC_BYTES: usize = 32;
 const ED25519_PUBLIC_BYTES: usize = 32;
 const ED25519_SIGNATURE_BYTES: usize = 64;
@@ -177,6 +178,27 @@ pub struct GroupMemberPermissionRecord {
     pub group_id: String,
     pub member_id: String,
     pub allowed: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedFriendProfilePictureImage {
+    pub media_type: String,
+    pub bytes_b64: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedFriendProfilePictureRecord {
+    pub owner_osl_user_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ProtectedFriendProfilePictureImage>,
+}
+
+impl ProtectedFriendProfilePictureRecord {
+    pub fn image_present(&self) -> bool {
+        self.image.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -585,6 +607,11 @@ struct SecurityPreferences {
     /// not inferred from a missing grant.
     #[serde(default)]
     group_member_permissions: BTreeMap<String, BTreeMap<String, bool>>,
+    /// Identity-owned profile pictures for protected friend surfaces. Image
+    /// bytes are optional because an identity can reserve its record before the
+    /// operator chooses an image.
+    #[serde(default)]
+    protected_friend_profile_pictures: BTreeMap<String, ProtectedFriendProfilePictureRecord>,
     /// Local allow decisions for places where protected OSL behavior is
     /// permitted. Keyed by the canonical stable id so the decision reopens with
     /// the same account-scoped security preferences as the rest of saved OSL.
@@ -1247,6 +1274,41 @@ pub fn list_group_member_permissions_for_group(
     let prefs =
         load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
     Ok(group_member_permission_records_for_group(&prefs, &group_id))
+}
+
+pub fn set_protected_friend_profile_picture(
+    security: &HubSecurityState,
+    owner_osl_user_id: String,
+    image_bytes: Option<Vec<u8>>,
+) -> Result<ProtectedFriendProfilePictureRecord, String> {
+    require_unlocked()?;
+    validate_profile_picture_owner(&owner_osl_user_id)?;
+    let image = protected_friend_profile_picture_image(image_bytes)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL profile-picture state is unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    let record = ProtectedFriendProfilePictureRecord {
+        owner_osl_user_id: owner_osl_user_id.clone(),
+        image,
+    };
+    prefs
+        .protected_friend_profile_pictures
+        .insert(owner_osl_user_id, record.clone());
+    write_encrypted_json(&path, &prefs)?;
+    Ok(record)
+}
+
+pub fn list_protected_friend_profile_pictures(
+    _security: &HubSecurityState,
+) -> Result<Vec<ProtectedFriendProfilePictureRecord>, String> {
+    require_unlocked()?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(protected_friend_profile_picture_records(&prefs))
 }
 
 pub fn list_whatsapp_whitelist_kinds() -> Vec<WhatsAppWhitelistKind> {
@@ -4077,6 +4139,16 @@ fn group_member_permission_records_for_group(
         .collect()
 }
 
+fn protected_friend_profile_picture_records(
+    prefs: &SecurityPreferences,
+) -> Vec<ProtectedFriendProfilePictureRecord> {
+    prefs
+        .protected_friend_profile_pictures
+        .values()
+        .cloned()
+        .collect()
+}
+
 fn one_use_invite_link_records(prefs: &SecurityPreferences) -> Vec<OneUseInviteLink> {
     prefs.one_use_invite_links.values().cloned().collect()
 }
@@ -4301,6 +4373,34 @@ fn validate_group_member_permission_id(value: &str, message: &str) -> Result<(),
         return Err(message.to_owned());
     }
     Ok(())
+}
+
+fn validate_profile_picture_owner(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+    {
+        return Err("OSL profile-picture owner identity is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn protected_friend_profile_picture_image(
+    image_bytes: Option<Vec<u8>>,
+) -> Result<Option<ProtectedFriendProfilePictureImage>, String> {
+    image_bytes
+        .map(|bytes| {
+            if bytes.is_empty() || bytes.len() > MAX_PROFILE_PICTURE_IMAGE_BYTES {
+                return Err("OSL profile-picture image is invalid".to_owned());
+            }
+            Ok(ProtectedFriendProfilePictureImage {
+                media_type: "image/png".to_owned(),
+                bytes_b64: STANDARD.encode(bytes),
+            })
+        })
+        .transpose()
 }
 
 fn validate_manual_peer_scope_component(value: &str) -> Result<(), String> {
@@ -4892,6 +4992,32 @@ mod tests {
         assert_eq!(records[0].group_id, "group-0113");
         assert_eq!(records[0].member_id, "member-0113");
         assert!(records[0].allowed);
+    }
+
+    #[test]
+    fn direct_protected_friend_profile_picture_record_check_returns_one_owner_and_image_present_state(
+    ) {
+        let _harness = FileBackedSecurityHarness::new("protected-friend-profile-picture");
+        let security = HubSecurityState::default();
+        let record = set_protected_friend_profile_picture(
+            &security,
+            "identity-0230".to_owned(),
+            Some(vec![0x89, b'P', b'N', b'G', b'\r', b'\n']),
+        )
+        .unwrap();
+        assert_eq!(record.owner_osl_user_id, "identity-0230");
+        assert!(record.image_present());
+
+        let records = list_protected_friend_profile_pictures(&security).unwrap();
+        println!(
+            "direct_protected_friend_profile_picture_record owner_count={} owner_osl_user_id={} image_present={}",
+            records.len(),
+            records[0].owner_osl_user_id,
+            records[0].image_present()
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].owner_osl_user_id, "identity-0230");
+        assert!(records[0].image_present());
     }
 
     #[test]
