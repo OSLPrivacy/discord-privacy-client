@@ -15574,6 +15574,145 @@ mod tests {
     }
 
     #[test]
+    fn service_burn_preserves_other_service_local_messages() {
+        let _serial = crate::global_keystore_test_lock();
+        let unique = format!(
+            "osl-hub-service-burn-{}-{}",
+            std::process::id(),
+            random_local_message_id()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).unwrap();
+        keystore::set_base_dir_override(Some(dir.clone()));
+        keystore::set_active_account_dir(Some(dir.clone()));
+        ipc::main_password::set_main_password(&dir, "aB3!z9").unwrap();
+        let file_key =
+            ipc::main_password::get_file_storage_key().expect("main password installs file key");
+        let ledger_path = dir.join(LOCAL_PROTECTED_FILE);
+        let count_for_binding = |binding: &str| {
+            load_local_ledger(&ledger_path, &file_key)
+                .unwrap()
+                .records
+                .values()
+                .filter(|record| record.context_binding == binding)
+                .count()
+        };
+
+        let owner = "self-liam";
+        let chosen_context = HubConversationContext {
+            service_id: "email".to_owned(),
+            account_id: "burn-boundary-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-burn-boundary".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let other_context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "burn-boundary-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-burn-boundary".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let chosen_binding = local_context_binding(&chosen_context);
+        let other_binding = local_context_binding(&other_context);
+        assert_ne!(
+            chosen_binding, other_binding,
+            "service id must be part of the local burn boundary"
+        );
+
+        let core = HubCoreState::default();
+        *core.osl.identity.lock().unwrap() = Some(keystore::generate_identity(owner.to_owned()));
+        let broker = HubBrokerState::default();
+        let chosen_lease = broker.activate(chosen_context.clone(), 11).unwrap();
+        let chosen_mark = format!("EMBER-0535-chosen:{}", hex(&crypto::random::random_bytes(8)));
+        let chosen_message = prepare_local_protected_text(
+            &core,
+            &broker,
+            &chosen_lease.context_token,
+            chosen_mark.clone(),
+        )
+        .unwrap();
+        let chosen_read = decrypt_local_protected_capsule(
+            &core,
+            &broker,
+            &chosen_lease.context_token,
+            chosen_message.capsule.clone(),
+        )
+        .unwrap();
+        assert_eq!(chosen_read.plaintext, chosen_mark);
+
+        let other_lease = broker.activate(other_context.clone(), 12).unwrap();
+        let mut other_messages = Vec::new();
+        for index in 0..3 {
+            let mark = format!(
+                "EMBER-0535-other-{index}:{}",
+                hex(&crypto::random::random_bytes(8))
+            );
+            let prepared = prepare_local_protected_text(
+                &core,
+                &broker,
+                &other_lease.context_token,
+                mark.clone(),
+            )
+            .unwrap();
+            let read = decrypt_local_protected_capsule(
+                &core,
+                &broker,
+                &other_lease.context_token,
+                prepared.capsule.clone(),
+            )
+            .unwrap();
+            assert_eq!(read.plaintext, mark);
+            other_messages.push((mark, prepared.capsule));
+        }
+
+        let before_chosen = count_for_binding(&chosen_binding);
+        let before_other = count_for_binding(&other_binding);
+        eprintln!("TASK-0535 before chosen_service_count={before_chosen}");
+        eprintln!("TASK-0535 before other_service_count={before_other}");
+        eprintln!("TASK-0535 readable chosen mark={chosen_mark}");
+        for (mark, _) in &other_messages {
+            eprintln!("TASK-0535 readable other mark={mark}");
+        }
+        assert_eq!(before_chosen, 1);
+        assert_eq!(before_other, 3);
+
+        let chosen_burn_lease = broker.activate(chosen_context, 13).unwrap();
+        let burned = burn_local_protected_context(&core, &broker, &chosen_burn_lease.context_token)
+            .unwrap();
+        eprintln!("TASK-0535 burn removed={burned}");
+        assert_eq!(burned, 1);
+
+        let after_chosen = count_for_binding(&chosen_binding);
+        let after_other = count_for_binding(&other_binding);
+        eprintln!("TASK-0535 after chosen_service_count={after_chosen}");
+        eprintln!("TASK-0535 after other_service_count={after_other}");
+        assert_eq!(after_chosen, 0);
+        assert_eq!(after_other, 3);
+
+        let other_read_lease = broker.activate(other_context, 14).unwrap();
+        for (mark, capsule) in other_messages {
+            let read = decrypt_local_protected_capsule(
+                &core,
+                &broker,
+                &other_read_lease.context_token,
+                capsule,
+            )
+            .unwrap();
+            eprintln!("TASK-0535 after readable other mark={}", read.plaintext);
+            assert_eq!(read.plaintext, mark);
+        }
+
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn view_once_open_consumes_only_the_authorised_record() {
         let mut ledger = LocalProtectedLedger::default();
         ledger.records.insert(
