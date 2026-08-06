@@ -29,6 +29,7 @@ import { chooseForwardSecrecyMode, initialForwardSecrecyOnboardingState, onboard
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
 import { chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type TorOnboardingState } from "./onboarding-tor";
 import { chooseCoverInsertion, initialCoverInsertionChoice, onboardingCoverMarkup, type CoverInsertionChoice } from "./onboarding-cover";
+import { chooseSilentVisibleMode, onboardingSilentVisibleMarkup, type SilentVisibleMode } from "./onboarding-silent-visible";
 import { continueButton } from "./onboarding-controls";
 import { CLEAN_FILES_CHOICES, initialBeforeSendChecks, onboardingBeforeSendMarkup, type BeforeSendChecks, type CleanFilesChoice } from "./onboarding-before-send";
 import { initialDeleteChoices, onboardingDeleteMarkup, type DeleteChoices } from "./onboarding-delete";
@@ -326,7 +327,7 @@ const NATIVE_DISCORD_COMPOSER_UNREACHABLE_EVENT = "osl://native-discord-composer
 // warning.
 const NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS = ["zorder-band", "keyboard-focus", "session-ended"] as const;
 type NativeDiscordComposerUnreachableReason = (typeof NATIVE_DISCORD_COMPOSER_UNREACHABLE_REASONS)[number];
-type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
+type OnboardingRoute = "pro" | "welcome" | "create" | "import" | "unlock" | "keylost" | "account-recovery" | "recovery" | "mullvad" | "sending" | "defaults" | "tor" | "forward-secrecy" | "cover" | "silent-visible" | "passwords" | "burnpass" | "privacy" | "tutorial" | "detected" | "install" | "apps" | "browser" | "decoy";
 type SettingsSection = "account" | "apps" | "scrub" | "cleanup" | "notifications" | "appearance" | "about";
 type SavedAccountMode = "ask" | "use" | "clean";
 type BurnScope = "chat" | "app" | "account";
@@ -437,6 +438,7 @@ let torOnboarding: TorOnboardingState = initialTorOnboardingState();
 // Which of the two insertion styles is highlighted. Nothing is persisted yet:
 // only "insert on send" is built, so this is the screen's own state.
 let coverInsertion: CoverInsertionChoice = initialCoverInsertionChoice();
+let silentVisibleMode: SilentVisibleMode | null = null;
 // The three before-send checks. Live on screen; not yet persisted, because
 // nothing reads them at send time yet.
 let beforeSendChecks: BeforeSendChecks = initialBeforeSendChecks();
@@ -1289,6 +1291,7 @@ function persistCurrentOnboardingRoute(): void {
     || onboardingRoute === "tor"
     || onboardingRoute === "sending"
     || onboardingRoute === "cover"
+    || onboardingRoute === "silent-visible"
     || onboardingRoute === "passwords"
     || onboardingRoute === "burnpass"
     || onboardingRoute === "mullvad"
@@ -1894,7 +1897,7 @@ function dockOnboardingBackControl(): void {
 function renderOnboarding(): void {
   onboardingRoute = onboardingRouteForBuild(onboardingRoute);
   persistCurrentOnboardingRoute();
-  const setupScreen = ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
+  const setupScreen = ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
   const setupNavigation = setupScreen
     ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
     : "";
@@ -1953,6 +1956,7 @@ function onboardingContent(): string {
   if (onboardingRoute === "tor") return onboardingTorMarkup(torOnboarding);
   if (onboardingRoute === "forward-secrecy") return onboardingForwardSecrecyMarkup(forwardSecrecyOnboarding);
   if (onboardingRoute === "cover") return coverDraftSetupContent();
+  if (onboardingRoute === "silent-visible") return silentVisibleSetupContent();
   if (onboardingRoute === "passwords") return onboardingPasswordRoleContent("stealth");
   if (onboardingRoute === "burnpass") return onboardingPasswordRoleContent("burn");
   if (onboardingRoute === "privacy") return onboardingPrivacyContent();
@@ -2972,6 +2976,10 @@ function coverDraftSetupContent(): string {
   return onboardingCoverMarkup(coverInsertion);
 }
 
+function silentVisibleSetupContent(): string {
+  return onboardingSilentVisibleMarkup(silentVisibleMode);
+}
+
 function onboardingPasswordRoleContent(role: "stealth" | "burn"): string {
   return passwordRoleContent({
     role,
@@ -3326,7 +3334,18 @@ function bindOnboarding(): void {
       render();
     }
   }));
-  document.querySelector("#continue-cover-draft")?.addEventListener("click", () => { onboardingRoute = "passwords"; render(); });
+  document.querySelector("#continue-cover-draft")?.addEventListener("click", () => { onboardingRoute = "silent-visible"; render(); });
+  document.querySelectorAll<HTMLButtonElement>("[data-silent-visible-mode]").forEach((button) => button.addEventListener("click", () => {
+    const next = chooseSilentVisibleMode(silentVisibleMode, button.dataset.silentVisibleMode);
+    if (next === silentVisibleMode) return;
+    silentVisibleMode = next;
+    render();
+  }));
+  document.querySelector<HTMLButtonElement>("#continue-silent-visible")?.addEventListener("click", () => {
+    if (silentVisibleMode === null) return;
+    onboardingRoute = "passwords";
+    render();
+  });
   bindOnboardingPasswordRole();
   document.querySelectorAll<HTMLButtonElement>("button[data-password-role-next]").forEach((button) => button.addEventListener("click", () => {
     onboardingRoute = button.dataset.passwordRoleNext as OnboardingRoute;
@@ -10043,6 +10062,7 @@ type OslHubUiTestStatePatch = {
   route?: Route;
   onboardingRoute?: OnboardingRoute;
   setup?: Partial<SetupState>;
+  silentVisibleMode?: SilentVisibleMode | null;
   coreReady?: boolean;
   storageMethod?: string | null;
   services?: LinkedService[];
@@ -10101,6 +10121,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   route = patch.route ?? "home";
   onboardingRoute = patch.onboardingRoute ?? "welcome";
   setup = { ...defaultSetup, ...patch.setup };
+  silentVisibleMode = patch.silentVisibleMode ?? null;
   settingsSection = "account";
   activeService = null;
   activeHomeAppId = null;
@@ -10292,6 +10313,11 @@ export const __oslHubUiTest = {
     setup = { ...defaultSetup, sendMode };
     return sendingSetupContent();
   },
+  renderSilentVisible(): string {
+    route = "onboarding";
+    onboardingRoute = "silent-visible";
+    return silentVisibleSetupContent();
+  },
   persistOslChatNotifications(): void {
     persistOslChatNotifications();
   },
@@ -10356,6 +10382,7 @@ export const __oslHubUiTest = {
     mullvadSetupNotice: string;
     ownedConfirmationKind: OwnedConfirmation["kind"] | null;
     ownedConfirmationPersonId: string | null;
+    silentVisibleMode: SilentVisibleMode | null;
   } {
     return {
       route,
@@ -10373,6 +10400,7 @@ export const __oslHubUiTest = {
       ownedConfirmationPersonId: ownedConfirmation?.kind === "verifyFriend" || ownedConfirmation?.kind === "removeFriend"
         ? ownedConfirmation.personId
         : null,
+      silentVisibleMode,
     };
   },
 };

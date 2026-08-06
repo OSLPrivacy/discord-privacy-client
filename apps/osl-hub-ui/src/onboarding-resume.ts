@@ -27,6 +27,7 @@ export const RESUMABLE_ONBOARDING_ROUTES = [
   "tor",
   "sending",
   "cover",
+  "silent-visible",
   "passwords",
   "burnpass",
   "mullvad",

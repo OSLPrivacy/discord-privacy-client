@@ -387,7 +387,7 @@ describe("fresh-account continuation", () => {
     // join it as a first-class resumable step. Assert the policy itself, not
     // the inlined comparisons it replaced.
     expect(pending).toContain("resumeOnboardingRoute(localStorage, onboardingResumeStorageKey)");
-    for (const route of ["pro", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "mullvad", "browser", "tutorial"] as const) {
+    for (const route of ["pro", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "passwords", "burnpass", "mullvad", "browser", "tutorial"] as const) {
       expect(RESUMABLE_ONBOARDING_ROUTES).toContain(route);
       expect(resumeOnboardingRoute(fakeResumeStorage({ [RESUME_STORAGE_KEY]: route }), RESUME_STORAGE_KEY)).toBe(route);
     }
@@ -766,7 +766,7 @@ describe("fresh-account continuation", () => {
     expect(onboardingRender).toContain('id="onboarding-back"');
     expect(onboardingRender).not.toContain('id="skip-onboarding"');
     expect(onboardingRender).not.toContain("Skip · manual setup");
-    expect(onboardingRender).toContain('["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"]');
+    expect(onboardingRender).toContain('["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"]');
     expect(onboardingRender).not.toContain('"tutorial"');
     expect(onboardingRender).not.toContain('"scrub"].includes(onboardingRoute)');
     expect(binding).not.toContain('document.querySelector("#skip-onboarding")');
@@ -800,7 +800,8 @@ describe("fresh-account continuation", () => {
     expect(indexOf("tor")).toBeLessThan(indexOf("sending"));
     expect(indexOf("defaults")).toBeLessThan(indexOf("sending"));
     expect(indexOf("sending")).toBeLessThan(indexOf("cover"));
-    expect(indexOf("cover")).toBeLessThan(indexOf("passwords"));
+    expect(indexOf("cover")).toBeLessThan(indexOf("silent-visible"));
+    expect(indexOf("silent-visible")).toBeLessThan(indexOf("passwords"));
     expect(indexOf("passwords")).toBeLessThan(indexOf("burnpass"));
     expect(indexOf("browser")).toBeLessThan(indexOf("detected"));
     // 2026-08-06: the tour left the first-run spine on the owner's instruction.
