@@ -1,11 +1,16 @@
 use osl_privacy_hub::runtime_switches::{
-    old_test_only_build_choice_reports, read_startup_test_only_runtime_switches_from_assignments,
-    TEST_ONLY_RUNTIME_SWITCH_LIST,
+    old_test_only_build_choice_reports, read_startup_test_only_runtime_switches,
+    read_startup_test_only_runtime_switches_from_assignments, TEST_ONLY_RUNTIME_SWITCH_LIST,
 };
 
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let switches = match read_startup_test_only_runtime_switches_from_assignments(args.iter()) {
+    let switches = if args.is_empty() {
+        read_startup_test_only_runtime_switches()
+    } else {
+        read_startup_test_only_runtime_switches_from_assignments(args.iter())
+    };
+    let switches = match switches {
         Ok(switches) => switches,
         Err(error) => {
             eprintln!("{error}");
