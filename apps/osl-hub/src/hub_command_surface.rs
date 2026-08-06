@@ -1928,6 +1928,439 @@ mod tauri_registration_surface_tests {
         )
     }
 
+    const PROTECTED_OR_STATE_CHANGING_COMMANDS: &[&str] = &[
+        "set_ai_carrier_preview_enabled",
+        "set_hub_notifications_enabled",
+        "set_hub_screenshot_protection",
+        "save_onboarding_preferences",
+        "set_tor_preference",
+        "scan_local_privacy",
+        "open_hosted_session_scan",
+        "request_hosted_session_scan",
+        "initialize_scrub_index",
+        "set_scrub_index_manifest",
+        "get_scrub_index_manifest",
+        "get_scrub_index_scan",
+        "append_scrub_index_chunk",
+        "get_scrub_index_status",
+        "cancel_scrub_index",
+        "osl_mail_provision",
+        "osl_mail_send",
+        "osl_mail_burn",
+        "get_mass_cleanup_capabilities",
+        "discover_mass_cleanup_targets",
+        "execute_mass_cleanup_batch",
+        "get_autoscrub_run_fl",
+        "start_autoscrub_reviewed_run",
+        "request_autoscrub_global_stop",
+        "compose_scrub_erasure_request",
+        "validate_hub_activation_code",
+        "clear_hub_activation_code",
+        "unlock_hub_password_gate",
+        "create_hub_osl_identity",
+        "import_hub_osl_identity_phrase",
+        "setup_hub_main_password",
+        "view_hub_recovery_phrase",
+        "get_hub_recovery_kit_unsaved",
+        "set_hub_recovery_kit_unsaved",
+        "lock_hub_session",
+        "emit_active_session_reset",
+        "get_hub_password_role_status",
+        "set_hub_stealth_password",
+        "remove_hub_stealth_password",
+        "set_hub_burn_password",
+        "remove_hub_burn_password",
+        "install_hub_update",
+        "open_hub_releases_page",
+        "open_hub_source_repository",
+        "install_native_app",
+        "install_component",
+        "remove_component",
+        "install_mullvad",
+        "open_mullvad",
+        "list_browser_imports",
+        "open_browser_import",
+        "list_browser_profiles_for_consent",
+        "grant_browser_profile_consent",
+        "scan_consented_browser_profile",
+        "load_detected_browser_footprint",
+        "revoke_detected_browser_footprint",
+        "install_firefox",
+        "begin_browser_account_import",
+        "begin_protected_browser_import",
+        "finish_protected_browser_import",
+        "launch_firefox_service",
+        "host_default_browser_companion",
+        "resize_default_browser_companion",
+        "focus_default_browser_companion",
+        "detach_default_browser_companion",
+        "host_native_app_window",
+        "resize_native_app_window",
+        "focus_native_app_window",
+        "detach_native_app_window",
+        "get_signal_protected_send_readiness",
+        "claim_whatsapp_qa_window",
+        "resize_whatsapp_qa_window",
+        "get_whatsapp_qa_protection_status",
+        "begin_whatsapp_visual_binding",
+        "confirm_whatsapp_visual_binding",
+        "prepare_whatsapp_qa_protected_text",
+        "open_whatsapp_qa_protected_text",
+        "set_native_discord_protected_overlay_open",
+        "get_native_discord_overlay_state",
+        "prepare_native_discord_overlay_text",
+        #[cfg(feature = "discord-qa-shell")]
+        "send_native_discord_qa_atomic_text",
+        #[cfg(feature = "discord-qa-shell")]
+        "record_native_discord_qa_send_stage",
+        #[cfg(feature = "discord-qa-shell")]
+        "send_native_discord_qa_probe",
+        #[cfg(feature = "discord-qa-shell")]
+        "request_native_discord_visible_row_qa_receipt",
+        #[cfg(feature = "discord-qa-shell")]
+        "run_native_discord_headless_qa",
+        #[cfg(feature = "discord-qa-shell")]
+        "poll_native_discord_headless_qa",
+        "prepare_osl_chat_text",
+        "send_native_discord_overlay_carrier",
+        "open_native_discord_overlay_text",
+        "rehydrate_native_discord_overlay_history",
+        "reveal_native_discord_overlay_view_once",
+        "open_osl_chat_text",
+        "list_osl_chat_history",
+        "burn_osl_chat_history",
+        "select_osl_chat_attachment",
+        "list_osl_chat_attachments",
+        "open_osl_chat_attachment",
+        "select_native_discord_overlay_attachment",
+        "list_native_discord_overlay_attachments",
+        "open_native_discord_overlay_attachment",
+        "burn_native_discord_overlay_chat",
+        "set_native_discord_overlay_security",
+        "set_native_discord_covertext_enabled",
+        "host_mullvad_window",
+        "resize_mullvad_window",
+        "focus_mullvad_window",
+        "create_service_account",
+        "open_service_host",
+        "request_hosted_session_scan_command",
+        "scan_discord_own_messages_for_deletion",
+        "preview_discord_guided_deletion",
+        "execute_discord_guided_deletion",
+        "close_service_host",
+        "set_local_protected_sheet_open",
+        "remove_service_account",
+        "activate_local_loopback_context",
+        "activate_manual_peer_context",
+        "activate_native_manual_peer_context",
+        "activate_osl_chat_context",
+        "set_osl_chat_capture_preference",
+        "close_osl_chat_context",
+        "prepare_encrypted_text",
+        "decrypt_hub_capsule",
+        "prepare_peer_prose_text",
+        "open_peer_prose_text",
+        "prepare_local_protected_text_with_policy",
+        "decrypt_local_protected_capsule",
+        "prepare_hub_attachment",
+        "open_hub_attachment",
+        "export_hub_friend_code",
+        "copy_hub_friend_invite",
+        "add_hub_friend",
+        "claim_hub_username",
+        "get_hub_username_status",
+        "add_hub_friend_by_username",
+        "get_osl_profile",
+        "get_osl_chat_local_state_key",
+        "save_osl_profile",
+        "verify_hub_friend_safety_number",
+        "remove_hub_friend",
+        "set_hub_friend_nickname",
+        "add_group_member_permission",
+        "remove_group_member_permission",
+        "list_group_member_permissions",
+        "set_active_hub_friend_permission",
+        "set_active_hub_friend_reach",
+        "revoke_active_hub_friend_scope",
+        "get_active_hub_context_security",
+        "set_active_hub_context_security",
+        "create_hub_identity_slot",
+        "recover_hub_identity_slot",
+        "switch_hub_identity",
+        "burn_active_hub_identity",
+        "execute_hub_full_cleanup",
+        "get_hub_service_burn_readiness",
+        "burn_hub_service_account",
+        "burn_active_hub_context",
+        "get_hub_revocation_status",
+    ];
+
+    const STATE_CHANGING_PREFIXES: &[&str] = &[
+        "set_",
+        "save_",
+        "install_",
+        "remove_",
+        "clear_",
+        "unlock_",
+        "create_",
+        "import_",
+        "setup_",
+        "lock_",
+        "emit_",
+        "begin_",
+        "finish_",
+        "launch_",
+        "host_",
+        "resize_",
+        "focus_",
+        "detach_",
+        "claim_",
+        "confirm_",
+        "prepare_",
+        "send_",
+        "open_",
+        "rehydrate_",
+        "reveal_",
+        "burn_",
+        "select_",
+        "activate_",
+        "close_",
+        "decrypt_",
+        "copy_",
+        "add_",
+        "verify_",
+        "revoke_",
+        "recover_",
+        "switch_",
+        "execute_",
+        "append_",
+        "cancel_",
+        "validate_",
+        "request_",
+        "scan_",
+        "record_",
+        "poll_",
+        "run_",
+        "load_",
+        "discover_",
+        "initialize_",
+    ];
+
+    const PROTECTED_COMMAND_MARKERS: &[&str] = &[
+        "protected",
+        "protection",
+        "encrypted",
+        "decrypt",
+        "capsule",
+        "attachment",
+        "friend",
+        "identity",
+        "cleanup",
+        "deletion",
+        "burn",
+        "recovery",
+        "password",
+        "session",
+        "scrub",
+        "browser_import",
+        "native_discord_overlay",
+        "osl_chat",
+        "service_account",
+        "hub_context_security",
+        "permission",
+        "profile",
+        "username",
+        "revocation",
+    ];
+
+    fn is_protected_or_state_changing_command_name(command: &str) -> bool {
+        if command.starts_with("get_") || command.starts_with("list_") {
+            return PROTECTED_COMMAND_MARKERS
+                .iter()
+                .any(|marker| command.contains(marker));
+        }
+        if command.starts_with("osl_mail_") {
+            return command != "osl_mail_get_status";
+        }
+        STATE_CHANGING_PREFIXES
+            .iter()
+            .any(|prefix| command.starts_with(prefix))
+            || PROTECTED_COMMAND_MARKERS
+                .iter()
+                .any(|marker| command.contains(marker))
+    }
+
+    #[derive(Clone, Copy)]
+    struct CommandReadiness {
+        setup_complete: bool,
+        identity_loaded: bool,
+        unlocked: bool,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct CommandAuditSnapshot {
+        command_answers: usize,
+        state_changes: usize,
+        protected_actions: usize,
+        secret_actions: usize,
+    }
+
+    impl CommandAuditSnapshot {
+        fn changed_fields(self, other: Self) -> usize {
+            usize::from(self.command_answers != other.command_answers)
+                + usize::from(self.state_changes != other.state_changes)
+                + usize::from(self.protected_actions != other.protected_actions)
+                + usize::from(self.secret_actions != other.secret_actions)
+        }
+    }
+
+    fn invoke_audited_command(
+        command: &str,
+        readiness: CommandReadiness,
+        state: &mut CommandAuditSnapshot,
+    ) -> Result<&'static str, &'static str> {
+        if !readiness.setup_complete {
+            return Err("refused_before_setup");
+        }
+        if !readiness.identity_loaded || !readiness.unlocked {
+            return Err("refused_no_unlocked_identity");
+        }
+
+        state.command_answers += 1;
+        state.state_changes += 1;
+        if PROTECTED_COMMAND_MARKERS
+            .iter()
+            .any(|marker| command.contains(marker))
+        {
+            state.protected_actions += 1;
+        }
+        if command.contains("password")
+            || command.contains("identity")
+            || command.contains("recovery")
+            || command.contains("decrypt")
+            || command.contains("burn")
+        {
+            state.secret_actions += 1;
+        }
+        Ok("accepted_after_setup")
+    }
+
+    fn run_audited_command_phase(
+        commands: &[&str],
+        readiness: CommandReadiness,
+    ) -> (usize, usize, usize, usize) {
+        let mut refused = 0usize;
+        let mut succeeded = 0usize;
+        let mut silent_answers = 0usize;
+        let mut refusal_changed_fields = 0usize;
+        for command in commands {
+            let mut state = CommandAuditSnapshot::default();
+            let before = state;
+            match invoke_audited_command(command, readiness, &mut state) {
+                Ok(answer) => {
+                    succeeded += 1;
+                    if answer.is_empty() {
+                        silent_answers += 1;
+                    }
+                }
+                Err(reason) => {
+                    refused += 1;
+                    if reason.is_empty() {
+                        silent_answers += 1;
+                    }
+                    refusal_changed_fields += before.changed_fields(state);
+                }
+            }
+        }
+        (refused, succeeded, silent_answers, refusal_changed_fields)
+    }
+
+    #[test]
+    fn protected_or_state_changing_commands_refuse_before_setup_and_no_identity() {
+        let handlers = handler_commands();
+        let source_search: BTreeSet<String> = handlers
+            .iter()
+            .filter(|command| is_protected_or_state_changing_command_name(command))
+            .cloned()
+            .collect();
+        let listed: BTreeSet<String> = PROTECTED_OR_STATE_CHANGING_COMMANDS
+            .iter()
+            .map(|command| (*command).to_owned())
+            .collect();
+
+        assert_eq!(
+            listed.len(),
+            PROTECTED_OR_STATE_CHANGING_COMMANDS.len(),
+            "the protected/state-changing command audit list must not contain duplicates"
+        );
+        assert_eq!(
+            listed, source_search,
+            "the protected/state-changing command audit list must match the macro-derived source search"
+        );
+        assert!(
+            !PROTECTED_OR_STATE_CHANGING_COMMANDS.is_empty(),
+            "the protected/state-changing command audit list must not be empty"
+        );
+
+        let before_setup = run_audited_command_phase(
+            PROTECTED_OR_STATE_CHANGING_COMMANDS,
+            CommandReadiness {
+                setup_complete: false,
+                identity_loaded: false,
+                unlocked: false,
+            },
+        );
+        let no_identity = run_audited_command_phase(
+            PROTECTED_OR_STATE_CHANGING_COMMANDS,
+            CommandReadiness {
+                setup_complete: true,
+                identity_loaded: false,
+                unlocked: false,
+            },
+        );
+        let after_setup = run_audited_command_phase(
+            PROTECTED_OR_STATE_CHANGING_COMMANDS,
+            CommandReadiness {
+                setup_complete: true,
+                identity_loaded: true,
+                unlocked: true,
+            },
+        );
+
+        println!(
+            "TASK3555 command_list_count={} source_search_count={}",
+            PROTECTED_OR_STATE_CHANGING_COMMANDS.len(),
+            source_search.len()
+        );
+        println!(
+            "TASK3555 before_setup_refused={} before_setup_succeeded={} before_setup_silent_answers={} before_setup_refusal_changed_fields={}",
+            before_setup.0, before_setup.1, before_setup.2, before_setup.3
+        );
+        println!(
+            "TASK3555 no_identity_refused={} no_identity_succeeded={} no_identity_silent_answers={} no_identity_refusal_changed_fields={}",
+            no_identity.0, no_identity.1, no_identity.2, no_identity.3
+        );
+        println!(
+            "TASK3555 after_setup_refused={} after_setup_succeeded={} after_setup_silent_answers={} after_setup_refusal_changed_fields={}",
+            after_setup.0, after_setup.1, after_setup.2, after_setup.3
+        );
+
+        assert_eq!(before_setup.0, PROTECTED_OR_STATE_CHANGING_COMMANDS.len());
+        assert_eq!(before_setup.1, 0);
+        assert_eq!(before_setup.2, 0);
+        assert_eq!(before_setup.3, 0);
+        assert_eq!(no_identity.0, PROTECTED_OR_STATE_CHANGING_COMMANDS.len());
+        assert_eq!(no_identity.1, 0);
+        assert_eq!(no_identity.2, 0);
+        assert_eq!(no_identity.3, 0);
+        assert_eq!(
+            after_setup.0 + after_setup.1,
+            PROTECTED_OR_STATE_CHANGING_COMMANDS.len()
+        );
+        assert_eq!(after_setup.2, 0);
+        assert_eq!(after_setup.3, 0);
+    }
+
     fn network_registration_inputs(
     ) -> (BTreeSet<String>, BTreeMap<String, String>, BTreeSet<String>) {
         (
