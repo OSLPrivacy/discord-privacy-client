@@ -78,7 +78,7 @@ use osl_privacy_hub::password_lifecycle::{
     self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult, HubMainPasswordSetupResult,
 };
 use osl_privacy_hub::peer_attachment_io;
-use osl_privacy_hub::preferences::PreviewState;
+use osl_privacy_hub::preferences::{apply_saved_message_runtime_preferences, PreviewState};
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
 use osl_privacy_hub::revocation_drain_timer;
@@ -9932,6 +9932,12 @@ fn main() {
             &security_state,
         )?;
         app.manage(core);
+        {
+            let core = app.state::<HubCoreState>();
+            let preferences = app.state::<PreviewState>();
+            let _ = apply_saved_message_runtime_preferences(&core, &preferences);
+        }
+        startup_breadcrumb("setup_step_24a_message_runtime_preferences_applied"); // STARTUP-TRACE
         entitlement_refresh::spawn(app.handle().clone());
         #[cfg(feature = "whatsapp-qa-shell")]
         {
