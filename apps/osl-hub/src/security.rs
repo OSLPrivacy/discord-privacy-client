@@ -9436,6 +9436,165 @@ key"
     }
 
     #[test]
+    fn task_0539_account_burn_boundary_keeps_other_account_history() {
+        let harness = FileBackedSecurityHarness::new("task-0539-account-burn-boundary");
+        let core = HubCoreState::default();
+        let security = HubSecurityState::default();
+        let identity = keystore::generate_native_identity();
+        *core.osl.identity.lock().unwrap() = Some(identity.clone());
+        let history_dir = harness.path().join("history");
+        let history = store::MessageStore::open(&history_dir, identity.x25519_secret.as_bytes())
+            .expect("open history store");
+
+        let owner = "identity-task-0539";
+        let service = "discord";
+        let current_account = "current-account";
+        let other_account = "other-account";
+        let current_channels = [
+            "task0539-current-channel-1",
+            "task0539-current-channel-2",
+            "task0539-current-channel-3",
+        ];
+        let other_channels = [
+            "task0539-other-channel-1",
+            "task0539-other-channel-2",
+            "task0539-other-channel-3",
+        ];
+
+        for (channel_index, channel) in current_channels.iter().enumerate() {
+            for row_index in 0..2 {
+                history
+                    .put(&store::StoredMessage {
+                        discord_message_id: format!("task0539-current-{channel_index}-{row_index}"),
+                        channel_id: (*channel).to_owned(),
+                        sender_discord_id: "task0539-self".to_owned(),
+                        sender_osl_user_id: owner.to_owned(),
+                        plaintext: format!("current account row {channel_index}-{row_index}"),
+                        decrypted_at: 1_700_539_000 + (channel_index * 10 + row_index) as i64,
+                        burned: false,
+                    })
+                    .expect("persist current-account row");
+            }
+        }
+        for (channel_index, channel) in other_channels.iter().enumerate() {
+            history
+                .put(&store::StoredMessage {
+                    discord_message_id: format!("task0539-other-{channel_index}"),
+                    channel_id: (*channel).to_owned(),
+                    sender_discord_id: "task0539-self".to_owned(),
+                    sender_osl_user_id: owner.to_owned(),
+                    plaintext: format!("other account row {channel_index}"),
+                    decrypted_at: 1_700_539_100 + channel_index as i64,
+                    burned: false,
+                })
+                .expect("persist other-account row");
+        }
+        *core.osl.message_store.lock().unwrap() = Some(history);
+
+        let current_before = count_history_rows(&core, &current_channels);
+        let other_before = count_history_rows(&core, &other_channels);
+        println!("TASK0539_CURRENT_ACCOUNT_BEFORE={current_before}");
+        println!("TASK0539_OTHER_ACCOUNT_BEFORE={other_before}");
+        assert_eq!(current_before, 6);
+        assert_eq!(other_before, 3);
+
+        let index = crate::service_scope_index::ServiceScopeIndexState::load(
+            harness.path().join("task0539-service-scope-index.json"),
+        );
+        index
+            .initialize_clean_account(owner, service, current_account)
+            .expect("initialize current account");
+        index
+            .initialize_clean_account(owner, service, other_account)
+            .expect("initialize other account");
+        for channel in current_channels {
+            index
+                .with_registered_write(
+                    account_scope_registration(owner, service, current_account, channel),
+                    || Ok(()),
+                )
+                .expect("register current account scope");
+        }
+        for channel in other_channels {
+            index
+                .with_registered_write(
+                    account_scope_registration(owner, service, other_account, channel),
+                    || Ok(()),
+                )
+                .expect("register other account scope");
+        }
+
+        let manifest = index
+            .freeze_complete_manifest(owner, service, current_account)
+            .expect("freeze current account burn manifest");
+        let mut rows_destroyed = 0usize;
+        for indexed in index.pending_scopes(&manifest).expect("pending scopes") {
+            let result = burn_scope(
+                &core,
+                &security,
+                indexed.scope.clone(),
+                indexed.canonical_channel_ids.clone(),
+                true,
+                Vec::new(),
+            )
+            .expect("burn indexed current-account scope");
+            rows_destroyed = rows_destroyed.saturating_add(result.rows_destroyed);
+            index
+                .mark_scope_burned(&manifest, &indexed.storage_key)
+                .expect("mark scope burned");
+        }
+        index.finish_burn(&manifest).expect("finish account burn");
+
+        let current_after = count_history_rows(&core, &current_channels);
+        let other_after = count_history_rows(&core, &other_channels);
+        let current_disappeared = current_before.saturating_sub(current_after);
+        println!("TASK0539_ROWS_DESTROYED={rows_destroyed}");
+        println!("TASK0539_CURRENT_ACCOUNT_AFTER={current_after}");
+        println!("TASK0539_CURRENT_ACCOUNT_DISAPPEARED={current_disappeared}");
+        println!("TASK0539_OTHER_ACCOUNT_AFTER={other_after}");
+        assert_eq!(rows_destroyed, 6);
+        assert_eq!(current_after, 0);
+        assert_eq!(current_disappeared, 6);
+        assert_eq!(other_after, 3);
+    }
+
+    fn account_scope_registration(
+        owner: &str,
+        service: &str,
+        account: &str,
+        channel: &str,
+    ) -> crate::service_scope_index::ServiceScopeRegistration {
+        crate::service_scope_index::ServiceScopeRegistration {
+            owner_osl_user_id: owner.to_owned(),
+            service_id: service.to_owned(),
+            account_id: account.to_owned(),
+            scope: ScopeInput {
+                kind: ScopeKind::Dm,
+                id: channel.to_owned(),
+                server_id: None,
+                channel_id: Some(channel.to_owned()),
+            },
+            canonical_channel_ids: vec![channel.to_owned()],
+            local_context_binding_sha256: "5".repeat(64),
+            manual_peer_person_id: None,
+        }
+    }
+
+    fn count_history_rows(core: &HubCoreState, channels: &[&str]) -> usize {
+        let history = core.osl.message_store.lock().unwrap();
+        let history = history.as_ref().expect("history store remains open");
+        channels
+            .iter()
+            .map(|channel| {
+                history
+                    .list_by_channel(channel, 20)
+                    .expect("read test channel")
+                    .len()
+            })
+            .sum()
+    }
+
+    #[test]
     fn burn_identifiers_render_as_canonical_lower_hex() {
         let rendered = lower_hex(&[0x0fu8; 32]);
         assert_eq!(rendered.len(), 64);
