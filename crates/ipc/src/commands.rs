@@ -15888,6 +15888,143 @@ pub fn cmd_osl_set_update_channel(
     Ok(())
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AutoWhitelistRuleChoiceDto {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AutoWhitelistRuleDto {
+    pub app_kind: String,
+    pub choice: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct TelegramAutoWhitelistRuleDto {
+    pub rule_lookup: String,
+    pub choice: String,
+    pub allowed_place: crate::allowed_places::AllowedPlaceRecord,
+}
+
+pub fn cmd_osl_get_auto_whitelist_rule_choices() -> Result<Vec<AutoWhitelistRuleChoiceDto>, String>
+{
+    record_activity_on_command_entry();
+    Ok(crate::auto_whitelist_rules::AutoWhitelistChoice::ALL
+        .into_iter()
+        .map(|choice| AutoWhitelistRuleChoiceDto {
+            id: choice.id().to_string(),
+            label: choice.label().to_string(),
+        })
+        .collect())
+}
+
+pub fn cmd_osl_save_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: String,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<AutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::app_kind_rule_lookup(&app_kind)?;
+    let choice = crate::auto_whitelist_rules::parse_auto_whitelist_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.auto_whitelist_rules.insert(app_kind.clone(), choice);
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(AutoWhitelistRuleDto {
+        app_kind,
+        choice: choice.label().to_string(),
+    })
+}
+
+pub fn cmd_osl_read_auto_whitelist_rule(
+    state: &AppState,
+    app_kind: String,
+) -> Result<AutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let app_kind = crate::auto_whitelist_rules::app_kind_rule_lookup(&app_kind)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .auto_whitelist_rules
+        .get(&app_kind)
+        .copied()
+        .unwrap_or_default();
+    Ok(AutoWhitelistRuleDto {
+        app_kind,
+        choice: choice.label().to_string(),
+    })
+}
+
+pub fn cmd_osl_save_telegram_auto_whitelist_rule(
+    state: &AppState,
+    account: String,
+    kind: String,
+    place_id: String,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<TelegramAutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let allowed_place =
+        crate::allowed_places::AllowedPlaceRecord::telegram(account, &kind, place_id)?;
+    let rule_lookup = crate::auto_whitelist_rules::telegram_kind_rule_lookup(&allowed_place.kind)?;
+    let choice = crate::auto_whitelist_rules::parse_auto_whitelist_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs
+            .auto_whitelist_rules
+            .insert(rule_lookup.clone(), choice);
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(TelegramAutoWhitelistRuleDto {
+        rule_lookup,
+        choice: choice.label().to_string(),
+        allowed_place,
+    })
+}
+
+pub fn cmd_osl_read_telegram_auto_whitelist_rule(
+    state: &AppState,
+    account: String,
+    kind: String,
+    place_id: String,
+) -> Result<TelegramAutoWhitelistRuleDto, String> {
+    record_activity_on_command_entry();
+    let allowed_place =
+        crate::allowed_places::AllowedPlaceRecord::telegram(account, &kind, place_id)?;
+    let rule_lookup = crate::auto_whitelist_rules::telegram_kind_rule_lookup(&allowed_place.kind)?;
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .auto_whitelist_rules
+        .get(&rule_lookup)
+        .copied()
+        .unwrap_or_default();
+    Ok(TelegramAutoWhitelistRuleDto {
+        rule_lookup,
+        choice: choice.label().to_string(),
+        allowed_place,
+    })
+}
+
 // ---- Phase 9-D: onboarding tour + VPN warning ----
 
 /// DTO mirroring [`crate::app_preferences::TourState`]. One

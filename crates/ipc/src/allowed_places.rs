@@ -40,6 +40,22 @@ impl AllowedPlaceRecord {
             stable_id: format!("{APP_DISCORD}:{account}:{KIND_DIRECT_MESSAGE}:{direct_message_id}"),
         }
     }
+
+    pub fn telegram(
+        account: impl Into<String>,
+        kind: impl AsRef<str>,
+        place_id: impl Into<String>,
+    ) -> Result<Self, String> {
+        let account = account.into();
+        let kind = normalize_telegram_whitelist_kind(kind.as_ref())?;
+        let place_id = place_id.into();
+        Ok(Self {
+            app: APP_TELEGRAM.to_string(),
+            account: account.clone(),
+            kind: kind.clone(),
+            stable_id: format!("{APP_TELEGRAM}:{account}:{kind}:{place_id}"),
+        })
+    }
 }
 
 pub fn telegram_whitelist_kinds() -> Vec<AllowedPlaceKind> {
@@ -55,4 +71,20 @@ pub fn telegram_whitelist_kinds() -> Vec<AllowedPlaceKind> {
         name: name.to_string(),
     })
     .collect()
+}
+
+pub fn normalize_telegram_whitelist_kind(input: &str) -> Result<String, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace('-', "_");
+    if [
+        KIND_DIRECT_MESSAGE,
+        KIND_GROUP_CHAT,
+        KIND_CHANNEL,
+        KIND_PUBLIC_POST,
+    ]
+    .contains(&normalized.as_str())
+    {
+        Ok(normalized)
+    } else {
+        Err(format!("OSL: unknown Telegram whitelist kind '{input}'"))
+    }
 }
