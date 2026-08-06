@@ -17,8 +17,8 @@ describe("Tor onboarding choice", () => {
 
     expect(state.choice).toBe("tor");
     expect(canContinuePastTorChoice(state)).toBe(true);
-    expect(markup).toContain('value="tor" checked');
-    expect(markup).not.toContain('value="direct" checked');
+    expect(markup).toMatch(/value="tor"[^>]*checked/u);
+    expect(markup).not.toMatch(/value="direct"[^>]*checked/u);
     expect(markup).not.toContain("disabled");
   });
 
@@ -27,6 +27,9 @@ describe("Tor onboarding choice", () => {
 
     expect(markup).toContain('value="tor"');
     expect(markup).toContain('value="direct"');
+    expect(markup).toContain(">Connection choice</h1>");
+    expect(markup).toContain('aria-label="Tor"');
+    expect(markup).toContain('aria-label="direct"');
     expect(markup).not.toMatch(/recommended|more private|safer/iu);
     // The two animations carry the comparison, so each card states only its
     // own travel time and neither is described as the better option.
@@ -69,7 +72,6 @@ describe("Tor onboarding choice", () => {
   it("drops the copy the diagrams replaced", () => {
     const markup = onboardingTorMarkup(initialTorOnboardingState());
 
-    expect(markup).not.toContain("Connection choice");
     expect(markup).not.toContain("may take longer");
     expect(markup).not.toContain("network provider can see");
     expect(markup).not.toContain("saved before OSL sends");
@@ -81,8 +83,8 @@ describe("Tor onboarding choice", () => {
     const direct = chooseTorRoute(initialTorOnboardingState(), "direct");
 
     expect(canContinuePastTorChoice(tor)).toBe(true);
-    expect(onboardingTorMarkup(tor)).toContain('value="tor" checked');
+    expect(onboardingTorMarkup(tor)).toMatch(/value="tor"[^>]*checked/u);
     expect(canContinuePastTorChoice(direct)).toBe(true);
-    expect(onboardingTorMarkup(direct)).toContain('value="direct" checked');
+    expect(onboardingTorMarkup(direct)).toMatch(/value="direct"[^>]*checked/u);
   });
 });

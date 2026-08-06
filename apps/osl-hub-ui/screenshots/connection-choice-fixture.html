@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OSL Connection choice fixture</title>
+    <script type="module">
+      import "../src/styles.css";
+      import { initialTorOnboardingState, onboardingTorMarkup } from "../src/onboarding-tor.ts";
+
+      const app = document.querySelector("#app");
+      const screen = onboardingTorMarkup(initialTorOnboardingState());
+      app.innerHTML = `<div class="app-frame with-titlebar"><div class="desktop-titlebar"><div class="desktop-drag-region"></div></div><div class="onboarding-shell"><main class="onboarding-panel onboarding-tor">${screen}<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div></main></div></div>`;
+
+      const nav = app.querySelector(".onboarding-panel > .onboarding-nav");
+      const back = nav?.querySelector("#onboarding-back");
+      const primaryRow = app.querySelector(".tor-onboarding .setup-footer.onboarding-actions");
+      if (nav && back && primaryRow) {
+        primaryRow.prepend(back);
+        nav.remove();
+      }
+      document.documentElement.dataset.fixtureReady = "connection-choice";
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>
