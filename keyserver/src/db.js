@@ -342,3 +342,14 @@ export function fetchWrappedKey(db, contentId) {
   });
   return txn(contentId);
 }
+
+export function purgeExpiredWrappedKeys(db, now = new Date()) {
+  const nowIso = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
+  const info = db
+    .prepare(
+      `DELETE FROM wrapped_keys
+        WHERE julianday(expires_at) <= julianday(?)`,
+    )
+    .run(nowIso);
+  return { deleted_count: info.changes };
+}

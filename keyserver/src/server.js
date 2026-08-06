@@ -40,6 +40,7 @@ import {
   getUser,
   insertWrappedKey,
   fetchWrappedKey,
+  purgeExpiredWrappedKeys,
   upsertPrekeyBundle,
   popPrekeyBundle,
   burnWrappedKeys,
@@ -157,9 +158,18 @@ export async function buildServer({
   // healthcheck happy while stragglers get pointed at the
   // Workers deployment. Railway shuts down +30 days after cutover.
   redirectTarget = null,
+  // Server-owned cleanup cadence for expired wrapped-key records.
+  // `false` disables scheduling, while tests can still run the
+  // job once through `runExpiredProtectedRecordsJob`.
+  expiryJobIntervalMs = 60_000,
 } = {}) {
   const fastify = Fastify({ logger });
   const db = openDatabase(dbFile);
+  let expiryJobTimer = null;
+
+  fastify.decorate('runExpiredProtectedRecordsJob', async (now = new Date()) =>
+    purgeExpiredWrappedKeys(db, now),
+  );
 
   // Normalise inputs once so per-route logic doesn't re-check
   // emptiness/types each time.
@@ -205,8 +215,33 @@ are open. OK for localhost dev; DO NOT do this on a public host.'
   if (rateLimit) mutationRouteOpts.config = { rateLimit };
 
   fastify.addHook('onClose', async () => {
+    if (expiryJobTimer) {
+      clearInterval(expiryJobTimer);
+      expiryJobTimer = null;
+    }
     db.close();
   });
+
+  if (
+    expiryJobIntervalMs !== false &&
+    Number.isFinite(expiryJobIntervalMs) &&
+    expiryJobIntervalMs > 0
+  ) {
+    expiryJobTimer = setInterval(() => {
+      try {
+        const result = purgeExpiredWrappedKeys(db);
+        if (result.deleted_count > 0) {
+          fastify.log.info(
+            { deleted_count: result.deleted_count },
+            'expired protected records removed',
+          );
+        }
+      } catch (err) {
+        fastify.log.error({ err }, 'expired protected records job failed');
+      }
+    }, expiryJobIntervalMs);
+    expiryJobTimer.unref?.();
+  }
 
   // F1.4 cutover: redirect everything except healthz to the new
   // Workers deployment. Installed as an onRequest hook so it fires

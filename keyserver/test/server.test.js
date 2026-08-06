@@ -395,6 +395,47 @@ test('wrapped-keys GET: 410 on past-expiry tombstone', async () => {
   await s.close();
 });
 
+test('wrapped-keys expiry job: record expired one second ago is absent after one run', async () => {
+  const s = await newServer();
+  const expired = validWrappedKey({
+    content_id: 'msg-expired',
+    expires_at: ts(-1000),
+  });
+  const live = validWrappedKey({
+    content_id: 'msg-live',
+    expires_at: ts(60 * 60 * 1000),
+  });
+
+  const expiredUpload = await inject(s, {
+    method: 'POST',
+    url: '/v1/wrapped-keys',
+    payload: expired,
+  });
+  assert.equal(expiredUpload.statusCode, 201);
+  const liveUpload = await inject(s, {
+    method: 'POST',
+    url: '/v1/wrapped-keys',
+    payload: live,
+  });
+  assert.equal(liveUpload.statusCode, 201);
+
+  const jobResult = await s.runExpiredProtectedRecordsJob();
+  assert.equal(jobResult.deleted_count, 1);
+
+  const expiredFetch = await inject(s, {
+    method: 'GET',
+    url: '/v1/wrapped-keys/msg-expired',
+  });
+  assert.equal(expiredFetch.statusCode, 404);
+  const liveFetch = await inject(s, {
+    method: 'GET',
+    url: '/v1/wrapped-keys/msg-live',
+  });
+  assert.equal(liveFetch.statusCode, 200);
+  assert.equal(liveFetch.body.content_id, 'msg-live');
+  await s.close();
+});
+
 // ---- end-to-end through the full set ----
 
 test('end-to-end: register, fetch pubkeys, upload, fetch wrapped key', async () => {

@@ -1,7 +1,16 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import worker from "../../src/index.js";
 import { sweepExpired } from "../../src/lib/subscriptions.js";
 import { sweepExpiredPrivacyRows } from "../../src/lib/db.js";
+
+function hourlyCron(): ScheduledController {
+  return {
+    cron: "17 * * * *",
+    scheduledTime: Date.now(),
+    noRetry() {},
+  } as ScheduledController;
+}
 
 describe("sweepExpired (hourly cron)", () => {
   it("promotes CANCELLED rows past current_period_end to EXPIRED", async () => {
@@ -128,6 +137,71 @@ describe("sweepExpired (hourly cron)", () => {
 });
 
 describe("sweepExpiredPrivacyRows (hourly cron)", () => {
+  it("removes a protected record expired one second ago after one scheduled job run", async () => {
+    const owner = `retention-one-second-owner-${crypto.randomUUID()}`;
+    const expiredContent = `expired-one-second-${crypto.randomUUID()}`;
+    const freshContent = `fresh-one-second-${crypto.randomUUID()}`;
+    const nowMs = Date.now();
+    const createdIso = new Date(nowMs).toISOString();
+
+    await env.DB.batch([
+      env.DB
+        .prepare(
+          `INSERT INTO wrapped_keys
+             (content_id, content_type, sender_id, recipient_id, session_version,
+              share_index, wrapped_share_blob, blob_version, single_use,
+              expires_at, created_at)
+           VALUES (?, 'text', ?, 'recipient', 1, 0, 'blob', 1, 0, ?, ?)`,
+        )
+        .bind(
+          expiredContent,
+          owner,
+          new Date(nowMs - 1_000).toISOString(),
+          createdIso,
+        ),
+      env.DB
+        .prepare(
+          `INSERT INTO wrapped_keys
+             (content_id, content_type, sender_id, recipient_id, session_version,
+              share_index, wrapped_share_blob, blob_version, single_use,
+              expires_at, created_at)
+           VALUES (?, 'text', ?, 'recipient', 1, 0, 'blob', 1, 0, ?, ?)`,
+        )
+        .bind(
+          freshContent,
+          owner,
+          new Date(nowMs + 60_000).toISOString(),
+          createdIso,
+        ),
+    ]);
+
+    await worker.scheduled(hourlyCron(), env, {} as ExecutionContext);
+
+    const expired = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM wrapped_keys WHERE content_id = ?",
+    )
+      .bind(expiredContent)
+      .first<number>("count");
+    const fresh = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM wrapped_keys WHERE content_id = ?",
+    )
+      .bind(freshContent)
+      .first<number>("count");
+
+    console.log(
+      JSON.stringify({
+        task: "0545",
+        expired_offset_ms: -1_000,
+        scheduled_job_runs: 1,
+        expired_count_after_job: expired,
+        fresh_count_after_job: fresh,
+      }),
+    );
+
+    expect(expired).toBe(0);
+    expect(fresh).toBe(1);
+  });
+
   it("physically deletes expired wrapped keys and receipts only", async () => {
     const owner = `retention-owner-${crypto.randomUUID()}`;
     const nowMs = Date.now();
