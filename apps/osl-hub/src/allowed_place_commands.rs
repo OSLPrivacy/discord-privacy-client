@@ -264,6 +264,7 @@ mod tests {
     use tempfile::TempDir;
 
     const INSTAGRAM_KINDS: [&str; 3] = ["direct_message", "group_chat", "channel"];
+    const X_KINDS: [&str; 2] = ["direct_message", "post"];
 
     fn args(items: &[&str]) -> Vec<OsString> {
         items.iter().map(OsString::from).collect()
@@ -459,6 +460,85 @@ mod tests {
         println!(
             "TASK0161 instagram_allowed_place_kinds created={} resolved={} kinds={} rejected_kind=server rejected_exit_code={}",
             INSTAGRAM_KINDS.len(),
+            resolved.len(),
+            resolved.join(","),
+            rejected.exit_code
+        );
+    }
+
+    #[test]
+    fn x_allowed_place_fixtures_accept_two_kinds_and_reject_group_chat() {
+        let _serial = crate::global_keystore_test_lock();
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().to_string_lossy();
+        let mut resolved = Vec::new();
+
+        for kind in X_KINDS {
+            let stable_id = format!("x:account-0158:{kind}:place-0158-{kind}");
+            let add = run_allowed_place_cli(args(&[
+                "osl-privacy-hub",
+                "--allowed-place",
+                "add",
+                "--store",
+                &store,
+                "--app",
+                "x",
+                "--account",
+                "account-0158",
+                "--kind",
+                kind,
+                "--stable-id",
+                &stable_id,
+            ]))
+            .expect("allowed-place command recognized");
+            assert_eq!(add.exit_code, 0);
+
+            let allowed = run_allowed_place_cli(args(&[
+                "osl-privacy-hub",
+                "--allowed-place",
+                "allowed",
+                "--store",
+                &store,
+                "--app",
+                "x",
+                "--account",
+                "account-0158",
+                "--kind",
+                kind,
+                "--stable-id",
+                &stable_id,
+            ]))
+            .expect("allowed-place command recognized");
+            assert_eq!(allowed.exit_code, 0);
+            let allowed_json = json(&allowed.stdout);
+            assert_eq!(allowed_json["allowed"], true);
+            resolved.push(kind);
+        }
+
+        let rejected = run_allowed_place_cli(args(&[
+            "osl-privacy-hub",
+            "--allowed-place",
+            "add",
+            "--store",
+            &store,
+            "--app",
+            "x",
+            "--account",
+            "account-0158",
+            "--kind",
+            "group_chat",
+            "--stable-id",
+            "x:account-0158:group_chat:place-0158-group-chat",
+        ]))
+        .expect("allowed-place command recognized");
+        assert_eq!(rejected.exit_code, 1);
+        let rejected_json = json(&rejected.stdout);
+        assert_eq!(rejected_json["ok"], false);
+        assert_eq!(rejected_json["error"], "OSL X allowed-place kind is invalid");
+
+        println!(
+            "TASK0158 x_allowed_place_kinds created={} resolved={} kinds={} rejected_kind=group_chat rejected_exit_code={}",
+            X_KINDS.len(),
             resolved.len(),
             resolved.join(","),
             rejected.exit_code

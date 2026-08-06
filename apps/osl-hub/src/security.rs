@@ -4640,6 +4640,9 @@ fn validate_allowed_place_record(record: &AllowedPlaceRecord) -> Result<(), Stri
     {
         return Err("OSL Instagram allowed-place kind is invalid".to_owned());
     }
+    if record.app == "x" && !matches!(record.kind.as_str(), "direct_message" | "post") {
+        return Err("OSL X allowed-place kind is invalid".to_owned());
+    }
     validate_allowed_place_id(&record.stable_id, "OSL allowed-place identifier is invalid")?;
     let expected_prefix = format!("{}:{}:{}:", record.app, record.account, record.kind);
     if !record.stable_id.starts_with(&expected_prefix) {
