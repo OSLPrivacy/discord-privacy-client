@@ -269,6 +269,11 @@ description = "Read the static demo service and account registry."
 commands.allow = ["list_linked_services"]
 
 [[permission]]
+identifier = "allow-create-hub-named-server"
+description = "Create one owner-bound named launch server record with explicit member identifiers."
+commands.allow = ["create_hub_named_server"]
+
+[[permission]]
 identifier = "allow-create-service-account"
 description = "Create local metadata for one fresh isolated service profile; stores no credentials or cookies."
 commands.allow = ["create_service_account"]

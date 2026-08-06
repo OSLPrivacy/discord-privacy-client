@@ -93,6 +93,7 @@ use osl_privacy_hub::security::{
     ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
+use osl_privacy_hub::server_records::{NamedServerRecord, NamedServerRegistryState};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
 use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, ServiceScopeIndexState};
 use osl_privacy_hub::services::ServiceRegistryState;
@@ -1178,6 +1179,19 @@ async fn list_linked_services(
     let _session = session.transition.lock().await;
     let owner = active_unlocked_osl_user_id(&core)?;
     state.list_for_owner(&owner)
+}
+
+#[tauri::command]
+async fn create_hub_named_server(
+    state: State<'_, NamedServerRegistryState>,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    name: String,
+    member_osl_user_ids: Vec<String>,
+) -> Result<NamedServerRecord, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    state.create_launch_server_for_owner(&owner, name, member_osl_user_ids)
 }
 
 #[tauri::command]
@@ -9693,6 +9707,9 @@ fn main() {
             config_dir.join("service-registry.json"),
         ));
         startup_breadcrumb("setup_step_15_service_registry_state_managed"); // STARTUP-TRACE
+        app.manage(NamedServerRegistryState::load(
+            config_dir.join("server-records.json"),
+        ));
         app.manage(ServiceScopeIndexState::load(
             config_dir.join("service-scope-index.json"),
         ));

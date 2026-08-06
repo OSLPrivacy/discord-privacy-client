@@ -507,6 +507,7 @@ macro_rules! hub_tauri_commands {
             get_scrub_index_status,
             cancel_scrub_index,
             list_linked_services,
+            create_hub_named_server,
             get_core_readiness,
             list_core_features,
             get_hub_license_state,
@@ -1666,6 +1667,17 @@ mod tauri_registration_surface_tests {
                 "get_hub_friend_future_account_auto_whitelist",
                 "set_hub_friend_future_account_auto_whitelist",
             ],
+        );
+    }
+
+    #[test]
+    fn named_server_command_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "create_hub_named_server",
         );
     }
 
