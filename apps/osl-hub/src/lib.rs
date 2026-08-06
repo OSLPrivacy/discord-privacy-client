@@ -242,6 +242,7 @@ pub mod password_lifecycle;
 pub mod view_once_eligibility;
 pub mod view_once_open;
 pub mod view_once_watch;
+pub mod visible_osl_mark;
 // The pure half of the headless QA self-test driver in `main.rs`. It lives here
 // only so it can actually be tested: the `osl-privacy-hub` binary cannot be
 // built on a Linux host, so every `#[cfg(test)]` inside `main.rs` is compiled
