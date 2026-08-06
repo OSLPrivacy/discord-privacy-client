@@ -1002,6 +1002,16 @@ impl Peer {
             true,
         )
         .expect("approve OSL Chat scope");
+        set_hub_friend_account_reach_everywhere(
+            &self.security,
+            activated.person_id.clone(),
+            vec![FriendAccountReachAccount {
+                service_id: "osl-chat".to_owned(),
+                account_id: "osl-main".to_owned(),
+                account_label: "OSL Chat".to_owned(),
+            }],
+        )
+        .expect("allow OSL Chat account reach for this friend");
         set_scope_security(&self.security, activated.scope.clone(), 3600, true)
             .expect("enable decrypted display for OSL Chat");
         *self.scope.lock().unwrap_or_else(|error| error.into_inner()) =
@@ -1128,6 +1138,96 @@ fn p1_sends_encrypted_message_into_live_conversation() {
     drop(alice);
     drop(bob);
     drop(storage);
+}
+
+#[test]
+fn task_1370_closed_osl_copy_receives_waiting_message_once_on_reopen() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task-1370-offline-message-delivery");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice-task-1370", &relay_url, "a1a11370");
+    let bob = Peer::new(&storage, "bob-task-1370", &relay_url, "b2b21370");
+    alice.open_osl_chat_context_to(&bob.friend_code);
+    let bob_person_id = bob.open_osl_chat_context_to(&alice.friend_code);
+    let _bob_history_dir = bob.open_history_store("task-1370");
+    let store_client = ipc::cipher_store_client::CipherStoreClient::new(relay_url.clone())
+        .expect("loopback cipher-store client");
+
+    // Bob is closed here: Alice sends while no Bob-side receive drain runs.
+    const WAITING_MESSAGE: &str = "TASK_1370_WAITING_MESSAGE_closed-copy-reopen-once";
+    alice.activate();
+    let prepared = prepare_osl_chat_text_with_route_clients(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        WAITING_MESSAGE.to_owned(),
+        false,
+        &store_client,
+        alice.core.osl.keyserver.lock().unwrap().as_ref(),
+    )
+    .expect("sender queues the task-1370 OSL Chat row while receiver is closed");
+    assert_eq!(
+        relay.pending_for(&bob.identity_id),
+        1,
+        "one encrypted OSL Chat row waits while the receiver is closed"
+    );
+
+    bob.reopen_osl_chat_context(&bob_person_id);
+    bob.activate();
+    let opened = drain_osl_chat_text(&bob.core, &bob.security, &bob.broker, true)
+        .expect("reopen drain receives the task-1370 waiting row");
+    let received_count = opened
+        .messages
+        .iter()
+        .filter(|message| message.plaintext == WAITING_MESSAGE)
+        .count();
+    assert_eq!(
+        opened.messages.len(),
+        1,
+        "the reopened copy receives exactly one message"
+    );
+    assert_eq!(
+        received_count, 1,
+        "the reopened copy receives the exact waiting message once"
+    );
+    assert!(
+        opened.messages[0].message_id == prepared.message_id,
+        "the received message id matches the sender's authenticated id"
+    );
+    assert_eq!(
+        relay.pending_for(&bob.identity_id),
+        0,
+        "the waiting row is retired after the reopen drain"
+    );
+
+    let second_open = drain_osl_chat_text(&bob.core, &bob.security, &bob.broker, true)
+        .expect("second reopen drain succeeds without duplicate delivery");
+    assert!(
+        second_open.messages.is_empty(),
+        "a second drain does not receive the waiting message again"
+    );
+    let history = load_osl_chat_history(&bob.core, &bob.broker).expect("load task-1370 history");
+    assert_eq!(
+        history.len(),
+        1,
+        "durable history contains the received message once"
+    );
+    assert!(
+        history[0].discord_message_id == prepared.message_id
+            && history[0].plaintext == WAITING_MESSAGE,
+        "durable history contains the exact waiting message once"
+    );
+
+    println!(
+        "TASK_1370 waiting_message=\"{WAITING_MESSAGE}\" waiting_rows_before_reopen=1 reopened_received_count={received_count} second_reopen_received_count={} durable_history_count={}",
+        second_open.messages.len(),
+        history.len()
+    );
 }
 
 #[test]
