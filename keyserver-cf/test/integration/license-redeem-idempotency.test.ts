@@ -23,58 +23,57 @@ async function seedRedeemableLicense(): Promise<{ plaintext: string; hash: strin
   return { plaintext, hash };
 }
 
-async function redeem(licenseKey: string): Promise<{
-  status: string;
-  redeemed_at?: number;
-  expires_at?: number;
-  checksum_ok: boolean;
+async function redeemAttempt(licenseKey: string): Promise<{
+  httpStatus: number;
+  exitCode: number;
+  body: Record<string, unknown>;
 }> {
   const response = await SELF.fetch("http://test/v1/license/redeem", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ license_key: licenseKey }),
   });
-  expect(response.status).toBe(200);
-  return await response.json() as {
-    status: string;
-    redeemed_at?: number;
-    expires_at?: number;
-    checksum_ok: boolean;
+  return {
+    httpStatus: response.status,
+    exitCode: response.ok ? 0 : 1,
+    body: await response.json() as Record<string, unknown>,
   };
 }
 
-describe("POST /v1/license/redeem idempotency", () => {
-  it("gives twenty concurrent retries one immutable redemption period", async () => {
+describe("POST /v1/license/redeem single-use gate", () => {
+  it("gives twenty concurrent repeat attempts one successful redemption period", async () => {
     const { plaintext, hash } = await seedRedeemableLicense();
 
-    const responses = await Promise.all(
-      Array.from({ length: 20 }, () => redeem(plaintext)),
+    const attempts = await Promise.all(
+      Array.from({ length: 20 }, () => redeemAttempt(plaintext)),
     );
-    const first = responses[0];
-    // `noUncheckedIndexedAccess` is on, so `responses[0]` is possibly
-    // undefined. Throwing is the honest narrowing: it fails the test loudly if
-    // the twenty concurrent redemptions ever produce no first response, where
-    // an assertion-free `!` would have let the five checks below run against
-    // undefined.
-    if (first === undefined) throw new Error("twenty concurrent redemptions returned no response");
+    const winners = attempts.filter((attempt) => attempt.httpStatus === 200);
+    const repeats = attempts.filter((attempt) => attempt.httpStatus === 409);
+    expect(winners).toHaveLength(1);
+    expect(repeats).toHaveLength(19);
+    expect(repeats).toEqual(
+      Array.from({ length: 19 }, () => ({
+        httpStatus: 409,
+        exitCode: 1,
+        body: { error: "license code already redeemed" },
+      })),
+    );
 
-    expect(first).toMatchObject({ status: "ACTIVE", checksum_ok: true });
-    const redeemedAt = first.redeemed_at;
+    const first = winners[0];
+    if (first === undefined) throw new Error("twenty concurrent redemptions produced no winner");
+    expect(first).toMatchObject({ httpStatus: 200, exitCode: 0 });
+    expect(first.body).toMatchObject({ status: "ACTIVE", checksum_ok: true });
+    const redeemedAt = first.body.redeemed_at;
     expect(redeemedAt).toBeTypeOf("number");
-    // Replaces `(first.redeemed_at as number)`. The cast asserted the very
-    // thing the line above is testing; this narrows on the real value, so the
-    // arithmetic below can never silently become `undefined + GRANT_SECONDS`
-    // (NaN), which `toBe` would have reported as an ordinary value mismatch.
     if (typeof redeemedAt !== "number") throw new Error("redeemed_at was not a number");
-    expect(first.expires_at).toBe(redeemedAt + GRANT_SECONDS);
-    expect(responses).toEqual(Array.from({ length: 20 }, () => first));
+    expect(first.body.expires_at).toBe(redeemedAt + GRANT_SECONDS);
 
     const stored = await env.DB.prepare(
       "SELECT redeemed_at, expires_at FROM licenses WHERE license_hash = ?",
     ).bind(hash).first<{ redeemed_at: number; expires_at: number }>();
     expect(stored).toEqual({
-      redeemed_at: first.redeemed_at,
-      expires_at: first.expires_at,
+      redeemed_at: first.body.redeemed_at,
+      expires_at: first.body.expires_at,
     });
   });
 });
