@@ -7,8 +7,11 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::scrub_index::ScrubAccountSelection;
+
 const STORE_DIR: &str = "run-choices-v1";
 const MAX_RUN_ID_BYTES: usize = 64;
+const MAX_ACCOUNT_SCANS: usize = 32;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -32,6 +35,10 @@ pub struct OslRunChoices {
     pub run_id: String,
     pub chosen_view: OslRunViewChoice,
     pub downloaded_file_path: Option<PathBuf>,
+    #[serde(default)]
+    pub selected_account_scans: Vec<ScrubAccountSelection>,
+    #[serde(default)]
+    pub selected_file_paths: Vec<PathBuf>,
 }
 
 impl OslRunChoices {
@@ -57,15 +64,44 @@ impl OslRunChoices {
             run_id: run_id.into(),
             chosen_view,
             downloaded_file_path,
+            selected_account_scans: Vec::new(),
+            selected_file_paths: Vec::new(),
         };
         choices.validate()?;
         Ok(choices)
+    }
+
+    pub fn with_selected_account_scans<I>(mut self, scans: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = ScrubAccountSelection>,
+    {
+        self.selected_account_scans = canonical_account_scans(scans.into_iter().collect())?;
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn with_selected_file_paths<I, P>(mut self, paths: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.selected_file_paths = paths.into_iter().map(Into::into).collect();
+        self.validate()?;
+        Ok(self)
     }
 
     pub fn validate(&self) -> Result<(), String> {
         validate_run_id(&self.run_id)?;
         if let Some(path) = &self.downloaded_file_path {
             validate_downloaded_file_path(path)?;
+        }
+        if canonical_account_scans(self.selected_account_scans.clone())?
+            != self.selected_account_scans
+        {
+            return Err("OSL run account scans must be canonical".to_owned());
+        }
+        for path in &self.selected_file_paths {
+            validate_selected_file_path(path)?;
         }
         Ok(())
     }
@@ -77,6 +113,8 @@ pub struct OslRunChoiceSaveReceipt {
     pub run_id: String,
     pub chosen_view: OslRunViewChoice,
     pub downloaded_file_selected: bool,
+    pub selected_account_scan_count: usize,
+    pub selected_file_count: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -85,6 +123,8 @@ pub struct OslRunPlan {
     pub run_id: String,
     pub chosen_view: OslRunViewChoice,
     pub downloaded_file_path: Option<PathBuf>,
+    pub selected_account_scans: Vec<ScrubAccountSelection>,
+    pub selected_file_paths: Vec<PathBuf>,
 }
 
 impl OslRunPlan {
@@ -94,6 +134,14 @@ impl OslRunPlan {
         } else {
             "none"
         }
+    }
+
+    pub fn selected_account_scan_count(&self) -> usize {
+        self.selected_account_scans.len()
+    }
+
+    pub fn selected_file_count(&self) -> usize {
+        self.selected_file_paths.len()
     }
 }
 
@@ -123,6 +171,8 @@ pub fn save_osl_run_choices(
         run_id: choices.run_id.clone(),
         chosen_view: read_back.chosen_view,
         downloaded_file_selected: read_back.downloaded_file_path.is_some(),
+        selected_account_scan_count: read_back.selected_account_scans.len(),
+        selected_file_count: read_back.selected_file_paths.len(),
     })
 }
 
@@ -146,6 +196,8 @@ pub fn build_osl_run_plan(root: &Path, run_id: &str) -> Result<OslRunPlan, Strin
         run_id: choices.run_id,
         chosen_view: choices.chosen_view,
         downloaded_file_path: choices.downloaded_file_path,
+        selected_account_scans: choices.selected_account_scans,
+        selected_file_paths: choices.selected_file_paths,
     })
 }
 
@@ -171,6 +223,58 @@ fn validate_downloaded_file_path(path: &Path) -> Result<(), String> {
         return Err("OSL downloaded-file path is invalid".to_owned());
     }
     Ok(())
+}
+
+fn validate_selected_file_path(path: &Path) -> Result<(), String> {
+    if path.as_os_str().is_empty() || !path.is_file() {
+        return Err("OSL selected file path must name a real file".to_owned());
+    }
+    Ok(())
+}
+
+fn canonical_account_scans(
+    mut scans: Vec<ScrubAccountSelection>,
+) -> Result<Vec<ScrubAccountSelection>, String> {
+    if scans.len() > MAX_ACCOUNT_SCANS {
+        return Err("Select no more than 32 real account scans for an OSL run".to_owned());
+    }
+    for scan in &scans {
+        validate_account_scan(scan)?;
+    }
+    scans.sort_unstable_by(|left, right| {
+        left.service_id
+            .cmp(&right.service_id)
+            .then_with(|| left.account_id.cmp(&right.account_id))
+    });
+    scans.dedup();
+    Ok(scans)
+}
+
+fn validate_account_scan(scan: &ScrubAccountSelection) -> Result<(), String> {
+    if valid_service_id(&scan.service_id) && valid_account_id(&scan.account_id) {
+        Ok(())
+    } else {
+        Err("OSL run account scan is invalid".to_owned())
+    }
+}
+
+fn valid_service_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 32
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+}
+
+fn valid_account_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 64
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && (bytes[bytes.len() - 1].is_ascii_lowercase() || bytes[bytes.len() - 1].is_ascii_digit())
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || *byte == b'-' || byte.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -210,5 +314,34 @@ mod tests {
             OslRunViewChoice::RunInBackground
         );
         assert_eq!(background_plan.downloaded_file_path, Some(downloaded));
+    }
+
+    #[test]
+    fn task_1417_selected_files_are_extra_inputs_not_account_scans() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        ipc::main_password::set_file_storage_key(Some([0x17; 32]));
+
+        let selected_real_account_scan = ScrubAccountSelection {
+            service_id: "discord".to_owned(),
+            account_id: "account-1417".to_owned(),
+        };
+        let choices = OslRunChoices::watch_live("task-1417-no-files")
+            .expect("watch choices")
+            .with_selected_account_scans([selected_real_account_scan.clone()])
+            .expect("selected account scan");
+        let receipt = save_osl_run_choices(temp.path(), &choices).expect("save choices");
+        let plan = build_osl_run_plan(temp.path(), "task-1417-no-files").expect("run plan");
+
+        println!(
+            "TASK1417_TEST selected_file_count={} selected_account_scan_count={} selected_real_account_scan={}/{} receipt_file_count={} receipt_account_scan_count={}",
+            plan.selected_file_count(),
+            plan.selected_account_scan_count(),
+            plan.selected_account_scans[0].service_id,
+            plan.selected_account_scans[0].account_id,
+            receipt.selected_file_count,
+            receipt.selected_account_scan_count
+        );
+        assert_eq!(plan.selected_file_count(), 0);
+        assert_eq!(plan.selected_account_scans, [selected_real_account_scan]);
     }
 }
