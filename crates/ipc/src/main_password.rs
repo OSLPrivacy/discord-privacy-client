@@ -2460,6 +2460,16 @@ mod password_policy_tests {
         write_lockout(dir, &lock).unwrap();
     }
 
+    fn gate_attempt_result_label(result: GatePasswordAttemptResult) -> &'static str {
+        match result {
+            GatePasswordAttemptResult::Main(_) => "main",
+            GatePasswordAttemptResult::Stealth => "stealth",
+            GatePasswordAttemptResult::Burn => "burn",
+            GatePasswordAttemptResult::Wrong { .. } => "wrong",
+            GatePasswordAttemptResult::Duress { .. } => "duress",
+        }
+    }
+
     #[test]
     fn six_character_passwords_can_be_created_and_unlocked() {
         assert!(validate_password("aB3!z9").is_ok());
@@ -3015,6 +3025,76 @@ mod password_policy_tests {
             marker_path(dir.path()).exists(),
             "the reset counter must keep the marker intact after one new wrong attempt"
         );
+        set_file_storage_key(None);
+    }
+
+    #[test]
+    fn task0306_stealth_password_store_returns_three_unlock_results() {
+        let _serial = crate::test_process_globals::serialize();
+        set_file_storage_key(None);
+        let dir = tempfile::tempdir().unwrap();
+        write_marker(dir.path(), &build_fast_test_marker(TEST_MAIN_PASSWORD)).unwrap();
+
+        let stealth_password = "stealth-secret";
+        set_stealth_password(dir.path(), TEST_MAIN_PASSWORD, stealth_password)
+            .expect("stealth password can be stored after checking main password");
+
+        let marker = read_marker(dir.path()).expect("stored marker can be read");
+        let stealth_hash = marker
+            .stealth_password_hash_b64
+            .as_ref()
+            .expect("stealth hash must be separately stored");
+        assert_ne!(
+            marker.password_hash_b64, *stealth_hash,
+            "stealth password must not overwrite or alias the main password hash"
+        );
+
+        let normal_result = gate_attempt_result_label(
+            verify_gate_password_attempt(dir.path(), TEST_MAIN_PASSWORD).unwrap(),
+        );
+        assert_eq!(normal_result, "main");
+        assert!(
+            get_file_storage_key().is_some(),
+            "normal/main unlock must install the real workspace file key"
+        );
+
+        set_file_storage_key(None);
+        let stealth_result = gate_attempt_result_label(
+            verify_gate_password_attempt(dir.path(), stealth_password).unwrap(),
+        );
+        assert_eq!(stealth_result, "stealth");
+        assert_eq!(
+            get_file_storage_key(),
+            None,
+            "stealth unlock must not install the real workspace file key"
+        );
+
+        let wrong_result = gate_attempt_result_label(
+            verify_gate_password_attempt(dir.path(), "wrong-password").unwrap(),
+        );
+        assert_eq!(wrong_result, "wrong");
+        assert_eq!(
+            get_file_storage_key(),
+            None,
+            "wrong unlock must not install the real workspace file key"
+        );
+
+        let unique_results =
+            std::collections::BTreeSet::from([normal_result, stealth_result, wrong_result]);
+        assert_eq!(
+            unique_results.len(),
+            3,
+            "normal, stealth, and wrong passwords must produce three different unlock results"
+        );
+        println!(
+            "TASK0306 unlock_results normal={} stealth={} wrong={} distinct_count={} stealth_hash_stored={}",
+            normal_result,
+            stealth_result,
+            wrong_result,
+            unique_results.len(),
+            marker.stealth_password_hash_b64.is_some()
+        );
+
         set_file_storage_key(None);
     }
 
