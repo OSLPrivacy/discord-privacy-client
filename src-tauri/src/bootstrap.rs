@@ -316,8 +316,10 @@ fn run_autostart_mode(state: &AppState, register_online: bool) {
     let prefs = ipc::app_preferences::load_app_preferences(&prefs_path);
     tracing::info!(
         mode = ?prefs.stego_mode,
+        rn_wire_policy_requested = prefs.rn_wire_policy_requested,
         "OSL bootstrap: app_preferences loaded"
     );
+    state.set_rn_wire_in_enabled(prefs.rn_wire_policy_requested);
     *state
         .app_preferences
         .lock()

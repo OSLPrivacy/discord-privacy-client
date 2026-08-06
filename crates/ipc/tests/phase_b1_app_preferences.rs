@@ -140,6 +140,7 @@ fn tauri_get_then_set_writes_through_to_disk() {
     // Set Mode 1; verify state mutated AND file is on disk.
     let dto = AppPreferencesDto {
         stego_mode: StegoMode::Mode1,
+        rn_wire_policy_requested: None,
     };
     cmd_osl_set_app_preferences(&state, dto, Some(dir.path().to_path_buf())).unwrap();
 

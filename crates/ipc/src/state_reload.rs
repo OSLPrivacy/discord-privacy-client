@@ -340,6 +340,7 @@ pub fn reload_encrypted_state_after_unlock(
     if prefs_path.exists() {
         let prefs = crate::app_preferences::load_app_preferences(&prefs_path);
         report.app_prefs_loaded = true;
+        state.set_rn_wire_in_enabled(prefs.rn_wire_policy_requested);
         *state
             .app_preferences
             .lock()

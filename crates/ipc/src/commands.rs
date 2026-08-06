@@ -15896,6 +15896,8 @@ pub fn cmd_osl_apply_server_default_to_existing_channels(
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppPreferencesDto {
     pub stego_mode: crate::app_preferences::StegoMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rn_wire_policy_requested: Option<bool>,
 }
 
 pub fn cmd_osl_get_app_preferences(state: &AppState) -> Result<AppPreferencesDto, String> {
@@ -15906,6 +15908,7 @@ pub fn cmd_osl_get_app_preferences(state: &AppState) -> Result<AppPreferencesDto
         .expect("app_preferences mutex poisoned");
     Ok(AppPreferencesDto {
         stego_mode: g.stego_mode,
+        rn_wire_policy_requested: Some(g.rn_wire_policy_requested),
     })
 }
 
@@ -15922,6 +15925,12 @@ pub fn cmd_osl_set_app_preferences(
             .expect("app_preferences mutex poisoned");
         g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
         g.stego_mode = dto.stego_mode;
+        if let Some(requested) = dto.rn_wire_policy_requested {
+            g.rn_wire_policy_requested = requested;
+        }
+    }
+    if let Some(requested) = dto.rn_wire_policy_requested {
+        state.set_rn_wire_in_enabled(requested);
     }
     if let Some(dir) = config_dir {
         let g = state

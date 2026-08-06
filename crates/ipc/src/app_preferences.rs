@@ -17,6 +17,9 @@
 //! 9-D added `tour` (onboarding tour resume/complete state). The
 //! W4 removal dropped the old `vpn_warning_dismissed_forever` field;
 //! legacy files carrying it still load (unknown keys are ignored).
+//!
+//! 0713 added `rn_wire_policy_requested`, the saved next-generation
+//! protected-message policy choice. Missing legacy files load as false.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -84,6 +87,8 @@ pub struct AppPreferences {
     pub tour: TourState,
     #[serde(default)]
     pub update_channel: UpdateChannel,
+    #[serde(default)]
+    pub rn_wire_policy_requested: bool,
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 2;
