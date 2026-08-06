@@ -16025,6 +16025,79 @@ pub fn cmd_osl_read_telegram_auto_whitelist_rule(
     })
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct PrivacyLevelRuleSetDto {
+    pub level: String,
+    pub label: String,
+    pub before_send_warnings: bool,
+    pub attachment_cleaning: bool,
+    pub cleanup_review_days: u16,
+    pub public_post_checks: bool,
+    pub vpn_required_actions: bool,
+    pub protected_contacts_required: bool,
+}
+
+impl PrivacyLevelRuleSetDto {
+    fn from_parts(
+        level: crate::app_preferences::PrivacyLevel,
+        rules: crate::app_preferences::PrivacyLevelRuleSet,
+    ) -> Self {
+        Self {
+            level: level.id().to_string(),
+            label: level.label().to_string(),
+            before_send_warnings: rules.before_send_warnings,
+            attachment_cleaning: rules.attachment_cleaning,
+            cleanup_review_days: rules.cleanup_review_days,
+            public_post_checks: rules.public_post_checks,
+            vpn_required_actions: rules.vpn_required_actions,
+            protected_contacts_required: rules.protected_contacts_required,
+        }
+    }
+}
+
+pub fn cmd_osl_save_privacy_level_rule_set(
+    state: &AppState,
+    level: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<PrivacyLevelRuleSetDto, String> {
+    record_activity_on_command_entry();
+    let level = crate::app_preferences::parse_privacy_level(&level)?;
+    let rules = crate::app_preferences::PrivacyLevelRuleSet::for_level(level);
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.privacy_level = level;
+        prefs
+            .privacy_level_rule_sets
+            .insert(level.id().to_string(), rules);
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(PrivacyLevelRuleSetDto::from_parts(level, rules))
+}
+
+pub fn cmd_osl_read_privacy_level_rule_set(
+    state: &AppState,
+    level: String,
+) -> Result<PrivacyLevelRuleSetDto, String> {
+    record_activity_on_command_entry();
+    let level = crate::app_preferences::parse_privacy_level(&level)?;
+    let rules = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .privacy_level_rule_sets
+        .get(level.id())
+        .copied()
+        .unwrap_or_else(|| crate::app_preferences::PrivacyLevelRuleSet::for_level(level));
+    Ok(PrivacyLevelRuleSetDto::from_parts(level, rules))
+}
+
 // ---- Phase 9-D: onboarding tour + VPN warning ----
 
 /// DTO mirroring [`crate::app_preferences::TourState`]. One
