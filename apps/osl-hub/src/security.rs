@@ -166,6 +166,56 @@ pub struct ScopeSecurityDto {
     pub decrypt_display_enabled: bool,
 }
 
+pub const TIMER_PICKER_MAX_DAYS: u32 = 30;
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimerPickerStateDto {
+    pub days: String,
+    pub hours: String,
+    pub minutes: String,
+    pub seconds: String,
+}
+
+fn two_digit_timer_value(value: u32) -> String {
+    format!("{value:02}")
+}
+
+pub fn default_timer_picker_state() -> TimerPickerStateDto {
+    TimerPickerStateDto {
+        days: two_digit_timer_value(0),
+        hours: two_digit_timer_value(0),
+        minutes: two_digit_timer_value(0),
+        seconds: two_digit_timer_value(0),
+    }
+}
+
+pub fn timer_picker_state(
+    days: u32,
+    hours: u32,
+    minutes: u32,
+    seconds: u32,
+) -> Result<TimerPickerStateDto, String> {
+    if days > TIMER_PICKER_MAX_DAYS {
+        return Err("OSL timer picker days must be between 00 and 30".to_owned());
+    }
+    if hours > 23 {
+        return Err("OSL timer picker hours must be between 00 and 23".to_owned());
+    }
+    if minutes > 59 {
+        return Err("OSL timer picker minutes must be between 00 and 59".to_owned());
+    }
+    if seconds > 59 {
+        return Err("OSL timer picker seconds must be between 00 and 59".to_owned());
+    }
+    Ok(TimerPickerStateDto {
+        days: two_digit_timer_value(days),
+        hours: two_digit_timer_value(hours),
+        minutes: two_digit_timer_value(minutes),
+        seconds: two_digit_timer_value(seconds),
+    })
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum DecryptDisplayChoice {
     Silent,
@@ -5997,6 +6047,27 @@ mod tests {
             Some(&true)
         );
         assert!(!invalid_stored);
+    }
+
+    #[test]
+    fn task_0549_timer_picker_state_defaults_to_zero_days_and_rejects_day_31() {
+        let state = default_timer_picker_state();
+        println!("TASK0549 timer_picker.default.days={}", state.days);
+        println!("TASK0549 timer_picker.default.hours={}", state.hours);
+        println!("TASK0549 timer_picker.default.minutes={}", state.minutes);
+        println!("TASK0549 timer_picker.default.seconds={}", state.seconds);
+        assert_eq!(state.days, "00");
+        assert_eq!(state.hours, "00");
+        assert_eq!(state.minutes, "00");
+        assert_eq!(state.seconds, "00");
+
+        let cap = timer_picker_state(30, 23, 59, 59).unwrap();
+        println!("TASK0549 timer_picker.max.days={}", cap.days);
+        assert_eq!(cap.days, "30");
+
+        let rejected = timer_picker_state(31, 0, 0, 0).unwrap_err();
+        println!("TASK0549 timer_picker.rejected_days=31 error={rejected}");
+        assert_eq!(rejected, "OSL timer picker days must be between 00 and 30");
     }
 
     /// Read the burn identifiers the outbox actually persisted, so the ack half
