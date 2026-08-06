@@ -209,6 +209,41 @@ pub struct FriendAccountReachBulkResult {
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FriendPageShareConversation {
+    pub storage_key: String,
+    pub conversation_label: String,
+    pub checked: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageShareAccountChoice {
+    pub service_id: String,
+    pub account_id: String,
+    pub account_label: String,
+    pub checked: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageShareAction {
+    pub action: String,
+    pub label: String,
+    pub removes_saved_choice: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendPageShareData {
+    pub person_id: String,
+    pub accounts: Vec<FriendPageShareAccountChoice>,
+    pub conversations: Vec<FriendPageShareConversation>,
+    pub new_account_rule: String,
+    pub actions: Vec<FriendPageShareAction>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProtectedFriendProfilePictureImage {
     pub media_type: String,
     pub bytes_b64: String,
@@ -643,6 +678,15 @@ struct SecurityPreferences {
     /// "nowhere" removes rows and the absence fails closed.
     #[serde(default)]
     friend_account_reach_choices: BTreeMap<String, BTreeMap<String, bool>>,
+    /// Per accepted friend, conversation rows checked on the friend detail
+    /// sharing page. Missing means unticked; the actual conversation catalog
+    /// comes from the caller's current account/context inventory.
+    #[serde(default)]
+    friend_conversation_share_choices: BTreeMap<String, BTreeMap<String, bool>>,
+    /// Per accepted friend, whether future local accounts should be shared
+    /// automatically from the friend detail page.
+    #[serde(default)]
+    friend_new_account_share_rules: BTreeMap<String, bool>,
     /// Identity-owned profile pictures for protected friend surfaces. Image
     /// bytes are optional because an identity can reserve its record before the
     /// operator chooses an image.
@@ -1363,6 +1407,117 @@ pub fn set_hub_friend_account_reach_nowhere(
             .collect(),
         changed_count,
     })
+}
+
+pub fn read_friend_page_share_data(
+    _security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+    conversations: Vec<FriendPageShareConversation>,
+) -> Result<FriendPageShareData, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let account_keys = validate_friend_account_reach_accounts(&accounts)?;
+    validate_friend_page_share_conversations(&conversations)?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(friend_page_share_data_from_preferences(
+        &person_id,
+        accounts,
+        account_keys,
+        conversations,
+        &prefs,
+    ))
+}
+
+pub fn save_friend_page_share_data(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendPageShareAccountChoice>,
+    conversations: Vec<FriendPageShareConversation>,
+    new_account_rule: String,
+) -> Result<FriendPageShareData, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let new_account_rule = parse_friend_page_new_account_rule(&new_account_rule)?;
+    let account_catalog = friend_page_share_account_catalog(&accounts)?;
+    let conversation_catalog = friend_page_share_conversation_catalog(&conversations)?;
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend share choices are unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    prefs.version = 2;
+    set_checked_choices(
+        &mut prefs.friend_account_reach_choices,
+        &person_id,
+        accounts
+            .iter()
+            .map(|account| (friend_page_account_choice_key(account), account.checked)),
+    );
+    set_checked_choices(
+        &mut prefs.friend_conversation_share_choices,
+        &person_id,
+        conversations
+            .iter()
+            .map(|conversation| (conversation.storage_key.clone(), conversation.checked)),
+    );
+    if new_account_rule {
+        prefs
+            .friend_new_account_share_rules
+            .insert(person_id.clone(), true);
+    } else {
+        prefs.friend_new_account_share_rules.remove(&person_id);
+    }
+    write_encrypted_json(&path, &prefs)?;
+    read_friend_page_share_data(security, person_id, account_catalog, conversation_catalog)
+}
+
+pub fn remove_friend_page_share_data(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+    conversations: Vec<FriendPageShareConversation>,
+) -> Result<FriendPageShareData, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let _account_keys = validate_friend_account_reach_accounts(&accounts)?;
+    validate_friend_page_share_conversations(&conversations)?;
+
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL friend share choices are unavailable".to_owned())?;
+    let path = config_dir()?.join(SECURITY_PREFS_FILE);
+    let mut prefs = load_encrypted_json::<SecurityPreferences>(&path)?;
+    let removed = prefs
+        .friend_account_reach_choices
+        .remove(&person_id)
+        .is_some()
+        | prefs
+            .friend_conversation_share_choices
+            .remove(&person_id)
+            .is_some()
+        | prefs
+            .friend_new_account_share_rules
+            .remove(&person_id)
+            .is_some();
+    if removed {
+        prefs.version = 2;
+        write_encrypted_json(&path, &prefs)?;
+    }
+    read_friend_page_share_data(security, person_id, accounts, conversations)
+}
+
+pub fn cancel_friend_page_share_data(
+    security: &HubSecurityState,
+    person_id: String,
+    accounts: Vec<FriendAccountReachAccount>,
+    conversations: Vec<FriendPageShareConversation>,
+) -> Result<FriendPageShareData, String> {
+    read_friend_page_share_data(security, person_id, accounts, conversations)
 }
 
 pub fn set_protected_friend_profile_picture(
@@ -4285,6 +4440,10 @@ fn friend_account_reach_key(account: &FriendAccountReachAccount) -> String {
     format!("{}:{}", account.service_id, account.account_id)
 }
 
+fn friend_page_account_choice_key(account: &FriendPageShareAccountChoice) -> String {
+    format!("{}:{}", account.service_id, account.account_id)
+}
+
 fn validate_friend_account_reach_accounts(
     accounts: &[FriendAccountReachAccount],
 ) -> Result<Vec<String>, String> {
@@ -4308,6 +4467,151 @@ fn validate_friend_account_reach_accounts(
         ordered_keys.push(key);
     }
     Ok(ordered_keys)
+}
+
+fn friend_page_share_account_catalog(
+    accounts: &[FriendPageShareAccountChoice],
+) -> Result<Vec<FriendAccountReachAccount>, String> {
+    let catalog = accounts
+        .iter()
+        .map(|account| FriendAccountReachAccount {
+            service_id: account.service_id.clone(),
+            account_id: account.account_id.clone(),
+            account_label: account.account_label.clone(),
+        })
+        .collect::<Vec<_>>();
+    validate_friend_account_reach_accounts(&catalog)?;
+    Ok(catalog)
+}
+
+fn validate_friend_page_share_conversations(
+    conversations: &[FriendPageShareConversation],
+) -> Result<(), String> {
+    let mut keys = BTreeSet::new();
+    for conversation in conversations {
+        validate_storage_key(&conversation.storage_key)?;
+        validate_friend_page_share_label(&conversation.conversation_label)?;
+        if !keys.insert(conversation.storage_key.as_str()) {
+            return Err("OSL friend share conversation is duplicated".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn friend_page_share_conversation_catalog(
+    conversations: &[FriendPageShareConversation],
+) -> Result<Vec<FriendPageShareConversation>, String> {
+    validate_friend_page_share_conversations(conversations)?;
+    Ok(conversations
+        .iter()
+        .map(|conversation| FriendPageShareConversation {
+            storage_key: conversation.storage_key.clone(),
+            conversation_label: conversation.conversation_label.clone(),
+            checked: false,
+        })
+        .collect())
+}
+
+fn validate_friend_page_share_label(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
+        return Err("OSL friend share label is invalid".to_owned());
+    }
+    Ok(())
+}
+
+fn parse_friend_page_new_account_rule(value: &str) -> Result<bool, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => Err("OSL friend share new-account rule must be on or off".to_owned()),
+    }
+}
+
+fn set_checked_choices(
+    choices_by_person: &mut BTreeMap<String, BTreeMap<String, bool>>,
+    person_id: &str,
+    choices: impl IntoIterator<Item = (String, bool)>,
+) {
+    let person_choices = choices_by_person.entry(person_id.to_owned()).or_default();
+    for (key, checked) in choices {
+        if checked {
+            person_choices.insert(key, true);
+        } else {
+            person_choices.remove(&key);
+        }
+    }
+    if person_choices.is_empty() {
+        choices_by_person.remove(person_id);
+    }
+}
+
+fn friend_page_share_actions() -> Vec<FriendPageShareAction> {
+    vec![
+        FriendPageShareAction {
+            action: "save".to_owned(),
+            label: "Save".to_owned(),
+            removes_saved_choice: false,
+        },
+        FriendPageShareAction {
+            action: "remove".to_owned(),
+            label: "Remove".to_owned(),
+            removes_saved_choice: true,
+        },
+        FriendPageShareAction {
+            action: "cancel".to_owned(),
+            label: "Cancel".to_owned(),
+            removes_saved_choice: false,
+        },
+    ]
+}
+
+fn friend_page_share_data_from_preferences(
+    person_id: &str,
+    accounts: Vec<FriendAccountReachAccount>,
+    account_keys: Vec<String>,
+    conversations: Vec<FriendPageShareConversation>,
+    prefs: &SecurityPreferences,
+) -> FriendPageShareData {
+    let account_choices = prefs.friend_account_reach_choices.get(person_id);
+    let conversation_choices = prefs.friend_conversation_share_choices.get(person_id);
+    FriendPageShareData {
+        person_id: person_id.to_owned(),
+        accounts: accounts
+            .into_iter()
+            .zip(account_keys)
+            .map(|(account, key)| FriendPageShareAccountChoice {
+                service_id: account.service_id,
+                account_id: account.account_id,
+                account_label: account.account_label,
+                checked: account_choices
+                    .and_then(|choices| choices.get(&key))
+                    .copied()
+                    .unwrap_or(false),
+            })
+            .collect(),
+        conversations: conversations
+            .into_iter()
+            .map(|conversation| FriendPageShareConversation {
+                checked: conversation_choices
+                    .and_then(|choices| choices.get(&conversation.storage_key))
+                    .copied()
+                    .unwrap_or(false),
+                ..conversation
+            })
+            .collect(),
+        new_account_rule: if prefs
+            .friend_new_account_share_rules
+            .get(person_id)
+            .copied()
+            .unwrap_or(false)
+        {
+            "on"
+        } else {
+            "off"
+        }
+        .to_owned(),
+        actions: friend_page_share_actions(),
+    }
 }
 
 fn protected_friend_profile_picture_records(
@@ -5266,6 +5570,239 @@ mod tests {
             !stored.friend_account_reach_choices.contains_key(&person_id),
             "nowhere removes explicit account reach grants so the friend is unticked everywhere"
         );
+    }
+
+    #[test]
+    fn direct_friend_page_share_reads_return_separate_share_choices_for_two_friends() {
+        let _harness = FileBackedSecurityHarness::new("friend-page-share-data");
+        let security = HubSecurityState::default();
+        let friend_a = "hub-person-task-0836-a".to_owned();
+        let friend_b = "hub-person-task-0836-b".to_owned();
+        let account_catalog = vec![
+            FriendAccountReachAccount {
+                service_id: "discord".to_owned(),
+                account_id: "account-0836-discord".to_owned(),
+                account_label: "TASK0836 Discord".to_owned(),
+            },
+            FriendAccountReachAccount {
+                service_id: "telegram".to_owned(),
+                account_id: "account-0836-telegram".to_owned(),
+                account_label: "TASK0836 Telegram".to_owned(),
+            },
+        ];
+        let conversation_catalog = vec![
+            FriendPageShareConversation {
+                storage_key: "dm:conversation-0836-one".to_owned(),
+                conversation_label: "TASK0836 One".to_owned(),
+                checked: false,
+            },
+            FriendPageShareConversation {
+                storage_key: "gc:conversation-0836-two".to_owned(),
+                conversation_label: "TASK0836 Two".to_owned(),
+                checked: false,
+            },
+        ];
+
+        save_friend_page_share_data(
+            &security,
+            friend_a.clone(),
+            vec![
+                FriendPageShareAccountChoice {
+                    checked: true,
+                    service_id: account_catalog[0].service_id.clone(),
+                    account_id: account_catalog[0].account_id.clone(),
+                    account_label: account_catalog[0].account_label.clone(),
+                },
+                FriendPageShareAccountChoice {
+                    checked: false,
+                    service_id: account_catalog[1].service_id.clone(),
+                    account_id: account_catalog[1].account_id.clone(),
+                    account_label: account_catalog[1].account_label.clone(),
+                },
+            ],
+            vec![
+                FriendPageShareConversation {
+                    checked: true,
+                    ..conversation_catalog[0].clone()
+                },
+                FriendPageShareConversation {
+                    checked: false,
+                    ..conversation_catalog[1].clone()
+                },
+            ],
+            "on".to_owned(),
+        )
+        .unwrap();
+        save_friend_page_share_data(
+            &security,
+            friend_b.clone(),
+            vec![
+                FriendPageShareAccountChoice {
+                    checked: false,
+                    service_id: account_catalog[0].service_id.clone(),
+                    account_id: account_catalog[0].account_id.clone(),
+                    account_label: account_catalog[0].account_label.clone(),
+                },
+                FriendPageShareAccountChoice {
+                    checked: true,
+                    service_id: account_catalog[1].service_id.clone(),
+                    account_id: account_catalog[1].account_id.clone(),
+                    account_label: account_catalog[1].account_label.clone(),
+                },
+            ],
+            vec![
+                FriendPageShareConversation {
+                    checked: false,
+                    ..conversation_catalog[0].clone()
+                },
+                FriendPageShareConversation {
+                    checked: true,
+                    ..conversation_catalog[1].clone()
+                },
+            ],
+            "off".to_owned(),
+        )
+        .unwrap();
+        remove_friend_page_share_data(
+            &security,
+            friend_a.clone(),
+            account_catalog.clone(),
+            conversation_catalog.clone(),
+        )
+        .unwrap();
+        save_friend_page_share_data(
+            &security,
+            friend_a.clone(),
+            vec![
+                FriendPageShareAccountChoice {
+                    checked: true,
+                    service_id: account_catalog[0].service_id.clone(),
+                    account_id: account_catalog[0].account_id.clone(),
+                    account_label: account_catalog[0].account_label.clone(),
+                },
+                FriendPageShareAccountChoice {
+                    checked: false,
+                    service_id: account_catalog[1].service_id.clone(),
+                    account_id: account_catalog[1].account_id.clone(),
+                    account_label: account_catalog[1].account_label.clone(),
+                },
+            ],
+            vec![
+                FriendPageShareConversation {
+                    checked: true,
+                    ..conversation_catalog[0].clone()
+                },
+                FriendPageShareConversation {
+                    checked: false,
+                    ..conversation_catalog[1].clone()
+                },
+            ],
+            "on".to_owned(),
+        )
+        .unwrap();
+
+        let cancelled_a = cancel_friend_page_share_data(
+            &security,
+            friend_a.clone(),
+            account_catalog.clone(),
+            conversation_catalog.clone(),
+        )
+        .unwrap();
+        let read_a = read_friend_page_share_data(
+            &security,
+            friend_a.clone(),
+            account_catalog.clone(),
+            conversation_catalog.clone(),
+        )
+        .unwrap();
+        let read_b = read_friend_page_share_data(
+            &security,
+            friend_b.clone(),
+            account_catalog.clone(),
+            conversation_catalog.clone(),
+        )
+        .unwrap();
+
+        assert_eq!(cancelled_a, read_a, "cancel must read without overwriting");
+        assert_eq!(
+            read_a
+                .accounts
+                .iter()
+                .map(|row| row.checked)
+                .collect::<Vec<_>>(),
+            vec![true, false]
+        );
+        assert_eq!(
+            read_b
+                .accounts
+                .iter()
+                .map(|row| row.checked)
+                .collect::<Vec<_>>(),
+            vec![false, true]
+        );
+        assert_eq!(
+            read_a
+                .conversations
+                .iter()
+                .map(|row| row.checked)
+                .collect::<Vec<_>>(),
+            vec![true, false]
+        );
+        assert_eq!(
+            read_b
+                .conversations
+                .iter()
+                .map(|row| row.checked)
+                .collect::<Vec<_>>(),
+            vec![false, true]
+        );
+        assert_eq!(read_a.new_account_rule, "on");
+        assert_eq!(read_b.new_account_rule, "off");
+        let actions = read_a
+            .actions
+            .iter()
+            .map(|action| action.action.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
+        assert_eq!(actions, "save|remove|cancel");
+        assert_eq!(read_b.actions, read_a.actions);
+
+        println!(
+            "TASK0836 direct_friend_share_reads friends=2 friend_a={} friend_a_accounts={} friend_a_conversations={} friend_a_new_account_rule={} friend_b={} friend_b_accounts={} friend_b_conversations={} friend_b_new_account_rule={} actions={} separate={}",
+            read_a.person_id,
+            friend_share_account_states(&read_a.accounts),
+            friend_share_conversation_states(&read_a.conversations),
+            read_a.new_account_rule,
+            read_b.person_id,
+            friend_share_account_states(&read_b.accounts),
+            friend_share_conversation_states(&read_b.conversations),
+            read_b.new_account_rule,
+            actions,
+            read_a.accounts != read_b.accounts
+                && read_a.conversations != read_b.conversations
+                && read_a.new_account_rule != read_b.new_account_rule
+        );
+    }
+
+    fn friend_share_account_states(accounts: &[FriendPageShareAccountChoice]) -> String {
+        accounts
+            .iter()
+            .map(|account| {
+                format!(
+                    "{}:{}={}",
+                    account.service_id, account.account_id, account.checked
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    fn friend_share_conversation_states(conversations: &[FriendPageShareConversation]) -> String {
+        conversations
+            .iter()
+            .map(|conversation| format!("{}={}", conversation.storage_key, conversation.checked))
+            .collect::<Vec<_>>()
+            .join(",")
     }
 
     #[test]
