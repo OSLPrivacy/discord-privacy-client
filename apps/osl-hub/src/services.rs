@@ -70,6 +70,119 @@ pub struct MessagingRiskAgreement {
     pub wording: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationPlaceKind {
+    DirectMessage,
+    Group,
+    Channel,
+    Thread,
+}
+
+impl ConversationPlaceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectMessage => "direct_message",
+            Self::Group => "group",
+            Self::Channel => "channel",
+            Self::Thread => "thread",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationPlaceParent {
+    pub id: String,
+    pub label: String,
+}
+
+impl ConversationPlaceParent {
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationPlaceCandidate {
+    pub place_id: String,
+    pub label: String,
+    pub place_kind: ConversationPlaceKind,
+    #[serde(default)]
+    pub server: Option<ConversationPlaceParent>,
+    #[serde(default)]
+    pub channel: Option<ConversationPlaceParent>,
+}
+
+impl ConversationPlaceCandidate {
+    pub fn direct_message(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::DirectMessage,
+            server: None,
+            channel: None,
+        }
+    }
+
+    pub fn group(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::Group,
+            server: None,
+            channel: None,
+        }
+    }
+
+    pub fn channel(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        server: ConversationPlaceParent,
+    ) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::Channel,
+            server: Some(server),
+            channel: None,
+        }
+    }
+
+    pub fn thread(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        server: Option<ConversationPlaceParent>,
+        channel: ConversationPlaceParent,
+    ) -> Self {
+        Self {
+            place_id: id.into(),
+            label: label.into(),
+            place_kind: ConversationPlaceKind::Thread,
+            server,
+            channel: Some(channel),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedConversationPlace {
+    pub service_id: String,
+    pub account_id: String,
+    pub place_id: String,
+    pub label: String,
+    pub place_kind: ConversationPlaceKind,
+    #[serde(default)]
+    pub server: Option<ConversationPlaceParent>,
+    #[serde(default)]
+    pub channel: Option<ConversationPlaceParent>,
+}
+
 /// Local metadata for isolated service profiles. It intentionally stores no
 /// credentials, cookies, tokens, claimed handles, or authentication state.
 pub struct ServiceRegistryState {
@@ -462,6 +575,36 @@ pub fn read_messaging_risk_agreement(
         }))
 }
 
+pub fn read_shared_conversation_places(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+    service_filled_places: impl IntoIterator<Item = ConversationPlaceCandidate>,
+) -> Result<Vec<SharedConversationPlace>, String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    validate_messaging_risk_account_id(account_id)?;
+    messaging_risk_facts(service_id)?;
+    if read_messaging_risk_agreement(owner_osl_user_id, service_id, account_id)?.is_none() {
+        return Ok(Vec::new());
+    }
+
+    service_filled_places
+        .into_iter()
+        .map(|place| {
+            validate_conversation_place(&place)?;
+            Ok(SharedConversationPlace {
+                service_id: service_id.to_owned(),
+                account_id: account_id.to_owned(),
+                place_id: place.place_id,
+                label: place.label,
+                place_kind: place.place_kind,
+                server: place.server,
+                channel: place.channel,
+            })
+        })
+        .collect()
+}
+
 fn service_capability_facts_for_kind(service_id: ServiceKind) -> Option<ServiceCapabilityFacts> {
     SERVICE_CAPABILITY_FACTS
         .iter()
@@ -604,6 +747,54 @@ fn validate_messaging_risk_account_id(account_id: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err("messaging risk agreement account is invalid".to_owned())
+    }
+}
+
+fn validate_conversation_place(place: &ConversationPlaceCandidate) -> Result<(), String> {
+    validate_conversation_place_text(&place.place_id, "conversation place id")?;
+    validate_conversation_place_text(&place.label, "conversation place label")?;
+    if let Some(server) = &place.server {
+        validate_conversation_place_parent(server, "conversation place server")?;
+    }
+    if let Some(channel) = &place.channel {
+        validate_conversation_place_parent(channel, "conversation place channel")?;
+    }
+    match place.place_kind {
+        ConversationPlaceKind::DirectMessage | ConversationPlaceKind::Group => Ok(()),
+        ConversationPlaceKind::Channel => {
+            if place.server.is_some() {
+                Ok(())
+            } else {
+                Err("conversation channel place is missing its server".to_owned())
+            }
+        }
+        ConversationPlaceKind::Thread => {
+            if place.channel.is_some() {
+                Ok(())
+            } else {
+                Err("conversation thread place is missing its channel".to_owned())
+            }
+        }
+    }
+}
+
+fn validate_conversation_place_parent(
+    parent: &ConversationPlaceParent,
+    label: &str,
+) -> Result<(), String> {
+    validate_conversation_place_text(&parent.id, label)?;
+    validate_conversation_place_text(&parent.label, label)
+}
+
+fn validate_conversation_place_text(value: &str, label: &str) -> Result<(), String> {
+    if value.trim() == value
+        && !value.is_empty()
+        && value.len() <= 128
+        && !value.chars().any(|character| character.is_control())
+    {
+        Ok(())
+    } else {
+        Err(format!("{label} is invalid"))
     }
 }
 
