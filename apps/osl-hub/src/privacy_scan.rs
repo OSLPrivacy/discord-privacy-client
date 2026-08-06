@@ -25,6 +25,9 @@ const MAX_ATTACHMENT_DISPLAY_NAME_BYTES: usize = 256;
 const MAX_ATTACHMENT_ENCODED_BYTES: usize = MAX_ATTACHMENT_BYTES.div_ceil(3) * 4;
 pub(crate) const MAX_ATTACHMENT_BATCH_ENCODED_BYTES: usize = 12 * 1024 * 1024;
 pub(crate) const MAX_FINDINGS: usize = 1_000;
+pub const GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB: u64 = 25;
+pub const GMAIL_ORDINARY_ATTACHMENT_LIMIT_BYTES: u64 =
+    GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -150,6 +153,23 @@ pub struct ProtectedEmailReplyDraft {
     pub action: ProtectedEmailReplyAction,
     pub recipients: Vec<String>,
     pub protected: bool,
+    pub ordinary_attachment_bytes: u64,
+    pub osl_stored_file_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EmailDraftAttachmentStorage {
+    Ordinary,
+    OslStored,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EmailDraftAttachment {
+    pub display_name: String,
+    pub size_bytes: u64,
+    pub storage: EmailDraftAttachmentStorage,
 }
 
 /// Scan bounded caller-provided text entirely in process memory.
@@ -415,6 +435,14 @@ pub fn create_protected_email_reply_draft(
     check: &EmailProtectionCheckDisplay,
     action: ProtectedEmailReplyAction,
 ) -> Result<ProtectedEmailReplyDraft, String> {
+    create_protected_email_reply_draft_with_attachments(check, action, &[])
+}
+
+pub fn create_protected_email_reply_draft_with_attachments(
+    check: &EmailProtectionCheckDisplay,
+    action: ProtectedEmailReplyAction,
+    attachments: &[EmailDraftAttachment],
+) -> Result<ProtectedEmailReplyDraft, String> {
     let recipients = match action {
         ProtectedEmailReplyAction::Reply => check.reply_recipients.clone(),
         ProtectedEmailReplyAction::ReplyAll => check.reply_all_recipients.clone(),
@@ -422,6 +450,7 @@ pub fn create_protected_email_reply_draft(
     if recipients.is_empty() || !valid_recipient_list(&recipients) {
         return Err("Protected email reply draft recipients are invalid".to_owned());
     }
+    let attachment_bytes = gmail_draft_attachment_bytes(attachments)?;
     Ok(ProtectedEmailReplyDraft {
         draft_id: format!(
             "protected-email-{}-{}",
@@ -432,7 +461,69 @@ pub fn create_protected_email_reply_draft(
         action,
         recipients,
         protected: true,
+        ordinary_attachment_bytes: attachment_bytes.ordinary,
+        osl_stored_file_bytes: attachment_bytes.osl_stored,
     })
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct GmailDraftAttachmentBytes {
+    ordinary: u64,
+    osl_stored: u64,
+}
+
+fn gmail_draft_attachment_bytes(
+    attachments: &[EmailDraftAttachment],
+) -> Result<GmailDraftAttachmentBytes, String> {
+    let mut bytes = GmailDraftAttachmentBytes::default();
+    for attachment in attachments {
+        if attachment.display_name.is_empty()
+            || attachment.display_name.len() > MAX_ATTACHMENT_DISPLAY_NAME_BYTES
+            || attachment
+                .display_name
+                .chars()
+                .any(unsafe_attachment_metadata_char)
+        {
+            return Err("Email draft attachment name is invalid".to_owned());
+        }
+
+        match attachment.storage {
+            EmailDraftAttachmentStorage::Ordinary => {
+                bytes.ordinary = bytes
+                    .ordinary
+                    .checked_add(attachment.size_bytes)
+                    .ok_or_else(gmail_attachment_over_limit_message)?;
+                if bytes.ordinary > GMAIL_ORDINARY_ATTACHMENT_LIMIT_BYTES {
+                    return Err(format!(
+                        "Gmail refuses ordinary attachments over {} MB: {} makes the ordinary attachment set {} MB",
+                        GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB,
+                        attachment.display_name,
+                        bytes_to_whole_mb(bytes.ordinary),
+                    ));
+                }
+            }
+            EmailDraftAttachmentStorage::OslStored => {
+                bytes.osl_stored = bytes
+                    .osl_stored
+                    .checked_add(attachment.size_bytes)
+                    .ok_or_else(|| {
+                        "OSL-stored email draft attachment total is invalid".to_owned()
+                    })?;
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+fn gmail_attachment_over_limit_message() -> String {
+    format!(
+        "Gmail refuses ordinary attachments over {} MB",
+        GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB
+    )
+}
+
+fn bytes_to_whole_mb(bytes: u64) -> u64 {
+    bytes / (1024 * 1024)
 }
 
 fn unique_ordered_recipients(recipients: &[String]) -> Vec<String> {
@@ -1121,6 +1212,109 @@ mod tests {
             .recipients
             .iter()
             .any(|recipient| recipient == bcc_recipient));
+    }
+
+    #[test]
+    fn task3760_gmail_counts_only_ordinary_attachments_against_twenty_five_mb() {
+        const MB: u64 = 1024 * 1024;
+
+        fn draft_attachment(
+            display_name: &str,
+            size_mb: u64,
+            storage: EmailDraftAttachmentStorage,
+        ) -> EmailDraftAttachment {
+            EmailDraftAttachment {
+                display_name: display_name.to_owned(),
+                size_bytes: size_mb * MB,
+                storage,
+            }
+        }
+
+        let mut candidate = message("password: protected Gmail attachment draft");
+        candidate.service_id = "email".to_owned();
+        candidate.message_locator = "task3760-gmail-draft".to_owned();
+        candidate.reply_recipient = Some("from-task3760@oslprivacy.com".to_owned());
+        candidate.visible_recipients = vec!["to-task3760@oslprivacy.com".to_owned()];
+
+        let result = scan_local_messages(vec![candidate]);
+        let check = result
+            .email_protection_checks
+            .first()
+            .expect("email protection check returns Gmail draft recipients");
+
+        let ordinary_24 = [
+            draft_attachment(
+                "task3760-ordinary-12a.bin",
+                12,
+                EmailDraftAttachmentStorage::Ordinary,
+            ),
+            draft_attachment(
+                "task3760-ordinary-12b.bin",
+                12,
+                EmailDraftAttachmentStorage::Ordinary,
+            ),
+        ];
+        let accepted_ordinary_24 = create_protected_email_reply_draft_with_attachments(
+            check,
+            ProtectedEmailReplyAction::Reply,
+            &ordinary_24,
+        )
+        .expect("24 MB of ordinary Gmail attachments is accepted");
+
+        let ordinary_26 = [
+            draft_attachment(
+                "task3760-ordinary-13a.bin",
+                13,
+                EmailDraftAttachmentStorage::Ordinary,
+            ),
+            draft_attachment(
+                "task3760-ordinary-13b.bin",
+                13,
+                EmailDraftAttachmentStorage::Ordinary,
+            ),
+        ];
+        let refused_ordinary_26 = create_protected_email_reply_draft_with_attachments(
+            check,
+            ProtectedEmailReplyAction::Reply,
+            &ordinary_26,
+        )
+        .expect_err("26 MB of ordinary Gmail attachments is refused by name");
+
+        let osl_stored_26 = [
+            draft_attachment(
+                "task3760-osl-stored-13a.bin",
+                13,
+                EmailDraftAttachmentStorage::OslStored,
+            ),
+            draft_attachment(
+                "task3760-osl-stored-13b.bin",
+                13,
+                EmailDraftAttachmentStorage::OslStored,
+            ),
+        ];
+        let accepted_osl_stored_26 = create_protected_email_reply_draft_with_attachments(
+            check,
+            ProtectedEmailReplyAction::Reply,
+            &osl_stored_26,
+        )
+        .expect("26 MB of OSL-stored Gmail files does not count as ordinary attachments");
+
+        println!(
+            "TASK3760 gmail_attachment_limit ordinary_24_status=accepted ordinary_24_mb={} ordinary_26_status=refused ordinary_26_mb=26 refusal=\"{}\" gmail_limit_mb={} osl_stored_26_status=accepted osl_stored_26_mb={} osl_stored_ordinary_counted_mb={}",
+            bytes_to_whole_mb(accepted_ordinary_24.ordinary_attachment_bytes),
+            refused_ordinary_26,
+            GMAIL_ORDINARY_ATTACHMENT_LIMIT_MB,
+            bytes_to_whole_mb(accepted_osl_stored_26.osl_stored_file_bytes),
+            bytes_to_whole_mb(accepted_osl_stored_26.ordinary_attachment_bytes),
+        );
+
+        assert_eq!(accepted_ordinary_24.ordinary_attachment_bytes, 24 * MB);
+        assert_eq!(accepted_ordinary_24.osl_stored_file_bytes, 0);
+        assert!(refused_ordinary_26.contains("task3760-ordinary-13b.bin"));
+        assert!(refused_ordinary_26.contains("25 MB"));
+        assert!(refused_ordinary_26.contains("26 MB"));
+        assert_eq!(accepted_osl_stored_26.osl_stored_file_bytes, 26 * MB);
+        assert_eq!(accepted_osl_stored_26.ordinary_attachment_bytes, 0);
     }
 
     #[test]
