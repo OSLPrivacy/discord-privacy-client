@@ -16183,6 +16183,53 @@ pub fn cmd_osl_read_privacy_protection_choices(
     Ok(PrivacyProtectionChoicesDto::from_parts(level, rules))
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct VerificationWarningChoiceDto {
+    pub choice: String,
+}
+
+impl From<crate::app_preferences::VerificationWarningChoice> for VerificationWarningChoiceDto {
+    fn from(choice: crate::app_preferences::VerificationWarningChoice) -> Self {
+        Self {
+            choice: choice.words().to_string(),
+        }
+    }
+}
+
+pub fn cmd_osl_save_verification_warning_choice(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<VerificationWarningChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::parse_verification_warning_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.verification_warning_choice = choice;
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(choice.into())
+}
+
+pub fn cmd_osl_read_verification_warning_choice(
+    state: &AppState,
+) -> Result<VerificationWarningChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .verification_warning_choice;
+    Ok(choice.into())
+}
+
 // ---- Phase 9-D: onboarding tour + VPN warning ----
 
 /// DTO mirroring [`crate::app_preferences::TourState`]. One

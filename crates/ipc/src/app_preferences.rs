@@ -112,6 +112,42 @@ pub fn parse_privacy_level(input: &str) -> Result<PrivacyLevel, String> {
         .ok_or_else(|| format!("OSL: unknown privacy level '{input}'"))
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationWarningChoice {
+    EveryTime,
+    Once,
+    BeforeSending,
+    #[default]
+    Never,
+}
+
+impl VerificationWarningChoice {
+    pub const ALL: [Self; 4] = [
+        Self::EveryTime,
+        Self::Once,
+        Self::BeforeSending,
+        Self::Never,
+    ];
+
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::EveryTime => "every time",
+            Self::Once => "once",
+            Self::BeforeSending => "before sending",
+            Self::Never => "never",
+        }
+    }
+}
+
+pub fn parse_verification_warning_choice(input: &str) -> Result<VerificationWarningChoice, String> {
+    let normalized = input.trim().to_ascii_lowercase().replace(['-', '_'], " ");
+    VerificationWarningChoice::ALL
+        .into_iter()
+        .find(|choice| normalized == choice.words())
+        .ok_or_else(|| format!("OSL: unknown verification warning choice '{input}'"))
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PrivacyLevelRuleSet {
     pub before_send_warnings: bool,
@@ -175,6 +211,8 @@ pub struct AppPreferences {
     pub privacy_level: PrivacyLevel,
     #[serde(default)]
     pub privacy_level_rule_sets: HashMap<String, PrivacyLevelRuleSet>,
+    #[serde(default)]
+    pub verification_warning_choice: VerificationWarningChoice,
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 2;
