@@ -18,6 +18,7 @@ const EMAIL_COMPOSE_CONTROLS: [WebsiteNamedControlRequest; 2] = [
 
 pub const GMAIL_SERVICE_ID: &str = "gmail";
 pub const AOL_SERVICE_ID: &str = "aol";
+pub const ICLOUD_SERVICE_ID: &str = "icloud";
 
 pub const GMAIL_CONTROL_NAMES: [&str; 6] = [
     "compose",
@@ -222,7 +223,9 @@ pub fn mail_message_is_owned_by_signed_in_address(
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum SharedMailboxReaderError {
     InvalidGmailMailbox,
+    InvalidIcloudMailbox,
     UnknownLabel,
+    UnknownFolder,
     MessageNotFound,
     DuplicateMessage,
     Owner(MailOwnerCheckError),
@@ -232,7 +235,9 @@ impl SharedMailboxReaderError {
     pub const fn reason(&self) -> &'static str {
         match self {
             Self::InvalidGmailMailbox => "OSL: Gmail mailbox reader data is invalid",
+            Self::InvalidIcloudMailbox => "OSL: iCloud mailbox reader data is invalid",
             Self::UnknownLabel => "OSL: Gmail label was not found",
+            Self::UnknownFolder => "OSL: iCloud folder was not found",
             Self::MessageNotFound => "OSL: Gmail message was not found",
             Self::DuplicateMessage => "OSL: Gmail message id is duplicated",
             Self::Owner(error) => error.reason(),
@@ -309,6 +314,69 @@ pub fn open_gmail_shared_mailbox_message(
     })
 }
 
+pub fn read_icloud_shared_mailbox_folders(
+    mailbox: &SharedMailboxSnapshot,
+) -> Result<Vec<SharedMailLabel>, SharedMailboxReaderError> {
+    validate_icloud_mailbox(mailbox)?;
+    Ok(mailbox.labels.clone())
+}
+
+pub fn read_icloud_shared_mailbox_messages(
+    mailbox: &SharedMailboxSnapshot,
+    folder_id: &str,
+) -> Result<Vec<SharedMailMessageSummary>, SharedMailboxReaderError> {
+    validate_icloud_mailbox(mailbox)?;
+    ensure_icloud_folder_exists(mailbox, folder_id)?;
+    mailbox
+        .messages
+        .iter()
+        .filter(|message| message.label_id == folder_id)
+        .map(|message| {
+            let sender = readable_sender(message)?;
+            let called = owner_call_for_sender(&mailbox.signed_in_address, message)?;
+            Ok(SharedMailMessageSummary {
+                label_id: message.label_id.clone(),
+                message_id: message.message_id.clone(),
+                subject: message.subject.clone(),
+                time: message.time,
+                sender,
+                called,
+            })
+        })
+        .collect()
+}
+
+pub fn open_icloud_shared_mailbox_message(
+    mailbox: &SharedMailboxSnapshot,
+    folder_id: &str,
+    message_id: &str,
+) -> Result<OpenedSharedMailMessage, SharedMailboxReaderError> {
+    validate_icloud_mailbox(mailbox)?;
+    ensure_icloud_folder_exists(mailbox, folder_id)?;
+    validate_icloud_reader_text(message_id, 180)?;
+
+    let mut matches = mailbox
+        .messages
+        .iter()
+        .filter(|message| message.label_id == folder_id && message.message_id == message_id);
+    let Some(message) = matches.next() else {
+        return Err(SharedMailboxReaderError::MessageNotFound);
+    };
+    if matches.next().is_some() {
+        return Err(SharedMailboxReaderError::DuplicateMessage);
+    }
+    validate_icloud_message(message)?;
+    Ok(OpenedSharedMailMessage {
+        label_id: message.label_id.clone(),
+        message_id: message.message_id.clone(),
+        subject: message.subject.clone(),
+        time: message.time,
+        sender: readable_sender(message)?,
+        body: message.body.clone(),
+        called: owner_call_for_sender(&mailbox.signed_in_address, message)?,
+    })
+}
+
 fn readable_sender(message: &SharedMailMessageRecord) -> Result<String, SharedMailboxReaderError> {
     message
         .sender_address
@@ -353,6 +421,27 @@ fn validate_gmail_mailbox(mailbox: &SharedMailboxSnapshot) -> Result<(), SharedM
     Ok(())
 }
 
+fn validate_icloud_mailbox(
+    mailbox: &SharedMailboxSnapshot,
+) -> Result<(), SharedMailboxReaderError> {
+    validate_icloud_reader_text(&mailbox.signed_in_address, 254)?;
+    let mut folder_ids = BTreeSet::new();
+    for folder in &mailbox.labels {
+        validate_icloud_reader_text(&folder.label_id, 128)?;
+        validate_icloud_reader_text(&folder.name, 128)?;
+        if !folder_ids.insert(folder.label_id.as_str()) {
+            return Err(SharedMailboxReaderError::InvalidIcloudMailbox);
+        }
+    }
+    for message in &mailbox.messages {
+        validate_icloud_message(message)?;
+        if !folder_ids.contains(message.label_id.as_str()) {
+            return Err(SharedMailboxReaderError::UnknownFolder);
+        }
+    }
+    Ok(())
+}
+
 fn validate_gmail_message(
     message: &SharedMailMessageRecord,
 ) -> Result<(), SharedMailboxReaderError> {
@@ -362,6 +451,20 @@ fn validate_gmail_message(
     validate_reader_body(&message.body)?;
     if message.time <= 0 {
         return Err(SharedMailboxReaderError::InvalidGmailMailbox);
+    }
+    readable_sender(message)?;
+    Ok(())
+}
+
+fn validate_icloud_message(
+    message: &SharedMailMessageRecord,
+) -> Result<(), SharedMailboxReaderError> {
+    validate_icloud_reader_text(&message.label_id, 128)?;
+    validate_icloud_reader_text(&message.message_id, 180)?;
+    validate_icloud_reader_text(&message.subject, 512)?;
+    validate_icloud_reader_body(&message.body)?;
+    if message.time <= 0 {
+        return Err(SharedMailboxReaderError::InvalidIcloudMailbox);
     }
     readable_sender(message)?;
     Ok(())
@@ -383,6 +486,22 @@ fn ensure_gmail_label_exists(
     }
 }
 
+fn ensure_icloud_folder_exists(
+    mailbox: &SharedMailboxSnapshot,
+    folder_id: &str,
+) -> Result<(), SharedMailboxReaderError> {
+    validate_icloud_reader_text(folder_id, 128)?;
+    if mailbox
+        .labels
+        .iter()
+        .any(|folder| folder.label_id == folder_id)
+    {
+        Ok(())
+    } else {
+        Err(SharedMailboxReaderError::UnknownFolder)
+    }
+}
+
 fn validate_reader_text(value: &str, max_bytes: usize) -> Result<(), SharedMailboxReaderError> {
     if value.trim() == value
         && !value.is_empty()
@@ -395,6 +514,21 @@ fn validate_reader_text(value: &str, max_bytes: usize) -> Result<(), SharedMailb
     }
 }
 
+fn validate_icloud_reader_text(
+    value: &str,
+    max_bytes: usize,
+) -> Result<(), SharedMailboxReaderError> {
+    if value.trim() == value
+        && !value.is_empty()
+        && value.len() <= max_bytes
+        && !value.chars().any(|character| character.is_control())
+    {
+        Ok(())
+    } else {
+        Err(SharedMailboxReaderError::InvalidIcloudMailbox)
+    }
+}
+
 fn validate_reader_body(value: &str) -> Result<(), SharedMailboxReaderError> {
     if value.len() <= 256 * 1024
         && value
@@ -404,6 +538,18 @@ fn validate_reader_body(value: &str) -> Result<(), SharedMailboxReaderError> {
         Ok(())
     } else {
         Err(SharedMailboxReaderError::InvalidGmailMailbox)
+    }
+}
+
+fn validate_icloud_reader_body(value: &str) -> Result<(), SharedMailboxReaderError> {
+    if value.len() <= 256 * 1024
+        && value
+            .chars()
+            .all(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'))
+    {
+        Ok(())
+    } else {
+        Err(SharedMailboxReaderError::InvalidIcloudMailbox)
     }
 }
 
