@@ -165,6 +165,11 @@ struct LocalCopy {
     state: AppState,
 }
 
+struct BurnObservation {
+    copy_name: &'static str,
+    result: ipc::commands::BurnSenderMessageRecordsBothSidesDto,
+}
+
 fn make_copy(
     name: &'static str,
     message_id: &'static str,
@@ -289,6 +294,7 @@ fn both_sides_burn_removes_one_marked_message_from_both_named_copies() {
         assert!(present);
     }
 
+    let mut burns = Vec::new();
     for copy in [&copy_a, &copy_b] {
         let result = cmd_osl_burn_sender_message_records_choice(
             &copy.state,
@@ -304,10 +310,10 @@ fn both_sides_burn_removes_one_marked_message_from_both_named_copies() {
             result.remote_removal_count,
             result.equal_removal_counts
         );
-        assert_eq!(result.requested_count, 1);
-        assert_eq!(result.local_removal_count, 1);
-        assert_eq!(result.remote_removal_count, 1);
-        assert!(result.equal_removal_counts);
+        burns.push(BurnObservation {
+            copy_name: copy.name,
+            result,
+        });
     }
     let (remote_requests, remote_remaining) = server.join();
     assert_eq!(
@@ -319,15 +325,38 @@ fn both_sides_burn_removes_one_marked_message_from_both_named_copies() {
     for copy in [&copy_a, &copy_b] {
         let (count, present, exact_text) = exact_mark_count(copy, &mark);
         println!(
-            "TASK0514 after copy=\"{}\" exact_text_present={} count={} present={}",
+            "TASK0514 after copy=\"{}\" exact_text=\"{}\" exact_text_present={} count={} present={}",
             copy.name,
+            exact_text.as_deref().unwrap_or("<absent>"),
             exact_text.is_some(),
             count,
             present
         );
-        assert_eq!(count, 0);
-        assert!(!present);
-        assert!(exact_text.is_none());
+        assert_eq!(
+            count,
+            0,
+            "marked message still present in {}: marked=\"{}\" exact_text=\"{}\"",
+            copy.name,
+            mark,
+            exact_text.as_deref().unwrap_or("<absent>")
+        );
+        assert!(
+            !present,
+            "marked message still present in {}: marked=\"{}\"",
+            copy.name, mark
+        );
+        assert!(
+            exact_text.is_none(),
+            "marked message still present in {}: exact_text=\"{}\"",
+            copy.name,
+            exact_text.as_deref().unwrap_or("<absent>")
+        );
+    }
+    for burn in burns {
+        assert_eq!(burn.result.requested_count, 1, "{}", burn.copy_name);
+        assert_eq!(burn.result.local_removal_count, 1, "{}", burn.copy_name);
+        assert_eq!(burn.result.remote_removal_count, 1, "{}", burn.copy_name);
+        assert!(burn.result.equal_removal_counts, "{}", burn.copy_name);
     }
     println!(
         "TASK0514 remote_requests={} remote_remaining={} marked=\"{}\"",
