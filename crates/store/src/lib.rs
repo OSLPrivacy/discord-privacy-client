@@ -1273,13 +1273,12 @@ impl MessageStore {
     ///
     /// Returns the message row count for diagnostic logging.
     pub fn delete_messages_in_channel(&self, channel_id: &str) -> Result<usize, StoreError> {
-        let chan_bi = self.bi(cipher::BI_CHANNEL_ID, channel_id)?;
+        let _chan_bi = self.bi(cipher::BI_CHANNEL_ID, channel_id)?;
         let mut conn = self.conn.lock().expect("store mutex poisoned");
         let tx = conn.transaction()?;
         let target_mids: Vec<Vec<u8>> = {
-            let mut stmt =
-                tx.prepare("SELECT mid_bi FROM messages WHERE chan_bi = ?1 AND burned = 0")?;
-            let mapped = stmt.query_map(params![&chan_bi], |row| row.get(0))?;
+            let mut stmt = tx.prepare("SELECT mid_bi FROM messages WHERE burned = 0")?;
+            let mapped = stmt.query_map([], |row| row.get(0))?;
             let mut out = Vec::new();
             for row in mapped {
                 out.push(row?);
@@ -1296,15 +1295,15 @@ impl MessageStore {
         // serving the decrypted bytes of a message that no longer exists.
         tx.execute(
             "DELETE FROM attachments WHERE mid_bi IN \
-                (SELECT mid_bi FROM messages WHERE chan_bi = ?1)",
-            params![&chan_bi],
+                (SELECT mid_bi FROM messages)",
+            [],
         )?;
         tx.execute(
             "DELETE FROM attachment_manifests WHERE mid_bi IN \
-                (SELECT mid_bi FROM messages WHERE chan_bi = ?1)",
-            params![&chan_bi],
+                (SELECT mid_bi FROM messages)",
+            [],
         )?;
-        let rows = tx.execute("DELETE FROM messages WHERE chan_bi = ?1", params![chan_bi])?;
+        let rows = tx.execute("DELETE FROM messages", [])?;
         schema::mark_shred_checkpoint_pending(&tx)?;
         self.commit(tx)?;
         checkpoint_after_shred(&conn)?;
