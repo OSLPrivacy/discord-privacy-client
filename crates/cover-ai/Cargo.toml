@@ -11,20 +11,13 @@ rust-version.workspace = true
 cover-draft = { path = "../cover-draft", package = "osl-cover-draft" }
 encoding_rs.workspace = true
 rand.workspace = true
-# The adapter reads raw logits directly; it needs neither llama.cpp's sampler
-# nor the optional `common` helper library used for grammar support.
-# OPTIONAL, behind the `local-model` feature. It compiles llama.cpp from source
-# via bindgen, so as a hard dependency it made the ENTIRE workspace unbuildable
-# on any machine without libclang -- which is this one. A local inference
-# runtime should never gate `cargo check --workspace` for crates that do not use
-# it. Build it explicitly with: cargo build -p cover-ai --features local-model
-# (needs libclang: `sudo apt install libclang-dev`).
-llama-cpp-2 = { version = "=0.1.153", default-features = false, features = ["openmp"], optional = true }
+llama_cpp_2 = { package = "llama-cpp-2", version = "=0.1.153", default-features = false, features = ["openmp"], optional = true }
+llama_cpp_sys_2 = { package = "llama-cpp-sys-2", version = "=0.1.153", optional = true }
 zeroize.workspace = true
 
 [features]
 default = []
-local-model = ["dep:llama-cpp-2"]
+local-model = ["dep:llama_cpp_2", "dep:llama_cpp_sys_2"]
 
 [dev-dependencies]
 trybuild = "1"

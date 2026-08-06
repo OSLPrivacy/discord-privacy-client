@@ -27,7 +27,7 @@ fn current_build_variants() -> Vec<BuildVariant> {
         BuildVariant {
             name: "production desktop build",
             command: "cargo build --manifest-path apps/osl-hub/Cargo.toml --features desktop --bin osl-privacy-hub",
-            required_features: &["desktop", "core", "whatsapp-qa-shell"],
+            required_features: &["desktop", "core", "whatsapp-qa-shell", "native-cover-writer"],
             forbidden_features: &["discord-qa-shell", "whatsapp-qa-identity"],
             compile_time_differences: &[
                 "desktop compiles the Tauri binary and keeps the default core plus shipped WhatsApp protected surface",
@@ -43,7 +43,7 @@ fn current_build_variants() -> Vec<BuildVariant> {
         BuildVariant {
             name: "old testing build",
             command: "cargo build --manifest-path apps/osl-hub/Cargo.toml --features desktop,discord-qa-shell --bin osl-privacy-hub",
-            required_features: &["desktop", "core", "whatsapp-qa-shell", "discord-qa-shell"],
+            required_features: &["desktop", "core", "whatsapp-qa-shell", "native-cover-writer", "discord-qa-shell"],
             forbidden_features: &["whatsapp-qa-identity"],
             compile_time_differences: &[
                 "discord-qa-shell remaps config and local-data roots to discord-qa-shell-v1",
@@ -60,7 +60,7 @@ fn current_build_variants() -> Vec<BuildVariant> {
         BuildVariant {
             name: "WhatsApp lab identity build",
             command: "cargo build --manifest-path apps/osl-hub/Cargo.toml --features desktop,whatsapp-qa-identity --bin osl-privacy-hub",
-            required_features: &["desktop", "core", "whatsapp-qa-shell", "whatsapp-qa-identity"],
+            required_features: &["desktop", "core", "whatsapp-qa-shell", "native-cover-writer", "whatsapp-qa-identity"],
             forbidden_features: &["discord-qa-shell"],
             compile_time_differences: &[
                 "whatsapp-qa-identity implies whatsapp-qa-shell and enables the disposable WhatsApp lab identity startup hook",
@@ -170,10 +170,15 @@ fn inventory_matches_current_feature_declarations_and_cfg_branches() {
     let defaults = default_features(&manifest);
     assert!(defaults.contains(&"core".to_owned()));
     assert!(defaults.contains(&"whatsapp-qa-shell".to_owned()));
+    assert!(defaults.contains(&"native-cover-writer".to_owned()));
     assert!(!defaults.contains(&"discord-qa-shell".to_owned()));
     assert!(!defaults.contains(&"whatsapp-qa-identity".to_owned()));
 
     assert_eq!(manifest_feature_line(&manifest, "desktop"), "desktop = [\"dep:runtime\", \"dep:tauri\", \"dep:tauri-plugin-dialog\", \"dep:tauri-plugin-single-instance\", \"dep:tauri-plugin-updater\", \"dep:tokio\", \"core\"]");
+    assert_eq!(
+        manifest_feature_line(&manifest, "native-cover-writer"),
+        "native-cover-writer = [\"cover-ai/local-model\"]"
+    );
     assert_eq!(
         manifest_feature_line(&manifest, "discord-qa-shell"),
         "discord-qa-shell = []"
