@@ -15899,6 +15899,233 @@ mod tests {
     }
 
     #[test]
+    fn task_3566_double_burn_clicks_delete_marked_targets_once_per_scope() {
+        let _serial = crate::global_keystore_test_lock();
+        let unique = format!(
+            "osl-hub-task-3566-double-burn-{}-{}",
+            std::process::id(),
+            random_local_message_id()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let ledger_dir = root.join("ledger");
+        let config_dir = root.join("config");
+        let local_data_dir = root.join("local-data");
+        std::fs::create_dir_all(&ledger_dir).unwrap();
+        std::fs::create_dir_all(config_dir.join("osl-core").join("messages")).unwrap();
+        std::fs::create_dir_all(&local_data_dir).unwrap();
+        let native_history = root.join("native-discord-history.txt");
+        std::fs::write(&native_history, b"native unmarked message").unwrap();
+
+        keystore::set_base_dir_override(Some(ledger_dir.clone()));
+        keystore::set_active_account_dir(Some(ledger_dir.clone()));
+        ipc::main_password::set_main_password(&ledger_dir, "aB3!z9").unwrap();
+        let file_key =
+            ipc::main_password::get_file_storage_key().expect("main password installs file key");
+        let ledger_path = ledger_dir.join(LOCAL_PROTECTED_FILE);
+
+        let owner = "self-liam";
+        let chat_context = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "task-3566-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-task-3566-chat".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let app_context_a = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "task-3566-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-task-3566-app-a".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let app_context_b = HubConversationContext {
+            service_id: "discord".to_owned(),
+            account_id: "task-3566-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-task-3566-app-b".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let untouched_context = HubConversationContext {
+            service_id: "telegram".to_owned(),
+            account_id: "task-3566-other-account".to_owned(),
+            conversation_kind: HubConversationKind::Dm,
+            conversation_id: "dm-task-3566-unmarked".to_owned(),
+            space_id: None,
+            participant_osl_ids: vec![owner.to_owned()],
+            self_osl_id: owner.to_owned(),
+        };
+        let chat_binding = local_context_binding(&chat_context);
+        let app_binding_a = local_context_binding(&app_context_a);
+        let app_binding_b = local_context_binding(&app_context_b);
+        let untouched_binding = local_context_binding(&untouched_context);
+
+        let mut records = BTreeMap::new();
+        let mut insert_record = |id: &str, binding: &str, created_at: i64| {
+            records.insert(
+                id.to_owned(),
+                LocalProtectedRecord {
+                    context_binding: binding.to_owned(),
+                    capsule_sha256: format!("capsule-{id}"),
+                    created_at,
+                    last_opened_at: None,
+                    view_once: false,
+                },
+            );
+        };
+        insert_record("chat-marked-1", &chat_binding, 1);
+        insert_record("chat-marked-2", &chat_binding, 2);
+        insert_record("app-marked-a-1", &app_binding_a, 3);
+        insert_record("app-marked-a-2", &app_binding_a, 4);
+        insert_record("app-marked-b-1", &app_binding_b, 5);
+        insert_record("unmarked-ledger-1", &untouched_binding, 6);
+        insert_record("unmarked-ledger-2", &untouched_binding, 7);
+        write_local_ledger(
+            &ledger_path,
+            &LocalProtectedLedger {
+                version: LOCAL_PROTECTED_VERSION,
+                records,
+            },
+            &file_key,
+        )
+        .unwrap();
+
+        let count_binding = |binding: &str| {
+            load_local_ledger(&ledger_path, &file_key)
+                .unwrap()
+                .records
+                .values()
+                .filter(|record| record.context_binding == binding)
+                .count()
+        };
+        let count_unmarked_ledger = || count_binding(&untouched_binding);
+        let classify_second = |deleted| {
+            if deleted == 0 {
+                "already_absent"
+            } else {
+                "unexpected_delete"
+            }
+        };
+
+        let chat_before = count_binding(&chat_binding);
+        let chat_unmarked_before = count_unmarked_ledger();
+        let chat_first_deleted =
+            prune_local_ledger_context(&ledger_path, &file_key, &chat_binding).unwrap();
+        let chat_second_deleted =
+            prune_local_ledger_context(&ledger_path, &file_key, &chat_binding).unwrap();
+        let chat_unmarked_after = count_unmarked_ledger();
+        let chat_unmarked_deleted = chat_unmarked_before.saturating_sub(chat_unmarked_after);
+        println!(
+            "TASK-3566 scope=chat before={chat_before} first_deleted={chat_first_deleted} second_action={} second_deleted={chat_second_deleted} unmarked_deleted={chat_unmarked_deleted}",
+            classify_second(chat_second_deleted)
+        );
+
+        assert!(chat_before > 0);
+        assert_eq!(chat_first_deleted, chat_before);
+        assert_eq!(chat_second_deleted, 0);
+        assert_eq!(chat_unmarked_deleted, 0);
+
+        let app_bindings = [&app_binding_a, &app_binding_b];
+        let app_before = app_bindings
+            .iter()
+            .map(|binding| count_binding(binding))
+            .sum::<usize>();
+        let app_unmarked_before = count_unmarked_ledger();
+        let app_core = HubCoreState::default();
+        *app_core.osl.identity.lock().unwrap() =
+            Some(keystore::generate_identity(owner.to_owned()));
+        let app_first_deleted = app_bindings
+            .iter()
+            .map(|binding| burn_indexed_local_protected_binding(&app_core, binding))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .into_iter()
+            .sum::<usize>();
+        let app_second_deleted = app_bindings
+            .iter()
+            .map(|binding| burn_indexed_local_protected_binding(&app_core, binding))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .into_iter()
+            .sum::<usize>();
+        let app_unmarked_after = count_unmarked_ledger();
+        let app_unmarked_deleted = app_unmarked_before.saturating_sub(app_unmarked_after);
+        println!(
+            "TASK-3566 scope=app before={app_before} first_deleted={app_first_deleted} second_action={} second_deleted={app_second_deleted} unmarked_deleted={app_unmarked_deleted}",
+            classify_second(app_second_deleted)
+        );
+
+        assert!(app_before > 0);
+        assert_eq!(app_first_deleted, app_before);
+        assert_eq!(app_second_deleted, 0);
+        assert_eq!(app_unmarked_deleted, 0);
+
+        keystore::set_base_dir_override(Some(config_dir.join("osl-core")));
+        keystore::set_active_account_dir(Some(config_dir.join("osl-core")));
+        ipc::main_password::set_main_password(&config_dir.join("osl-core"), "aB3!z9").unwrap();
+        let account_marks = [
+            config_dir
+                .join("osl-core")
+                .join("messages")
+                .join("account-marked-1"),
+            config_dir
+                .join("osl-core")
+                .join("messages")
+                .join("account-marked-2"),
+            config_dir
+                .join("osl-core")
+                .join("messages")
+                .join("account-marked-3"),
+        ];
+        for (index, mark) in account_marks.iter().enumerate() {
+            std::fs::write(mark, format!("marked account message {index}")).unwrap();
+        }
+        let account_before = account_marks.iter().filter(|path| path.exists()).count();
+        let account_unmarked_before = usize::from(native_history.exists());
+        let core = HubCoreState::default();
+        let account_first =
+            crate::cleanup::execute_full_hub_cleanup(&core, &config_dir, &local_data_dir, true)
+                .unwrap();
+        let account_after_first = account_marks.iter().filter(|path| path.exists()).count();
+        let account_first_deleted = account_before.saturating_sub(account_after_first);
+        let account_second =
+            crate::cleanup::execute_full_hub_cleanup(&core, &config_dir, &local_data_dir, true);
+        let account_second_action = match &account_second {
+            Ok(result) if result.removed_targets.is_empty() => "already_absent",
+            Ok(_) => "unexpected_delete",
+            Err(error) if error == "OSL main password must be unlocked" => {
+                "refused:main_password_locked"
+            }
+            Err(_) => "refused:other",
+        };
+        let account_after_second = account_marks.iter().filter(|path| path.exists()).count();
+        let account_second_deleted = account_after_first.saturating_sub(account_after_second);
+        let account_unmarked_after = usize::from(native_history.exists());
+        let account_unmarked_deleted =
+            account_unmarked_before.saturating_sub(account_unmarked_after);
+        println!(
+            "TASK-3566 scope=account before={account_before} first_deleted={account_first_deleted} removed_targets={} second_action={account_second_action} second_deleted={account_second_deleted} unmarked_deleted={account_unmarked_deleted}",
+            account_first.removed_targets.join(",")
+        );
+
+        assert!(account_before > 0);
+        assert_eq!(account_first_deleted, account_before);
+        assert_eq!(account_second_action, "refused:main_password_locked");
+        assert_eq!(account_second_deleted, 0);
+        assert_eq!(account_unmarked_deleted, 0);
+
+        keystore::set_base_dir_override(None);
+        keystore::set_active_account_dir(None);
+        ipc::main_password::set_file_storage_key(None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn view_once_open_consumes_only_the_authorised_record() {
         let mut ledger = LocalProtectedLedger::default();
         ledger.records.insert(
