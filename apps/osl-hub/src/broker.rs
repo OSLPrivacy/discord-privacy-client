@@ -3868,6 +3868,45 @@ pub fn prepare_native_discord_overlay_text_with_route_clients(
     )
 }
 
+/// Read back the exact prepared carrier copy before a native surface can post
+/// it.
+///
+/// The check is local: it proves the text still decodes to an OSL prose-token
+/// pointer under the active manual-peer scope and detector, but does not fetch
+/// or post anything. A failure means the row the native adapter is about to
+/// type would strand an unreadable public carrier, so the caller must refuse
+/// before issuing any platform post command.
+pub fn read_back_prepared_native_overlay_post_copy(
+    core: &HubCoreState,
+    broker: &HubBrokerState,
+    prepared_post_copy: &str,
+) -> Result<(), String> {
+    let context_token = broker.active_native_manual_context_token()?;
+    let manual = broker.manual_peer_for(&context_token)?;
+    let verified = security::require_manual_peer_scope_approved(
+        core,
+        &manual.service_id,
+        &manual.account_id,
+        manual.person_id.clone(),
+        manual.scope.clone(),
+    )?;
+    if verified.peer_osl_user_id != manual.peer_osl_user_id {
+        return Err("The prepared Discord carrier pointer could not be recovered".to_owned());
+    }
+    let detection_key = prose_detection_key(core, &verified)
+        .map_err(|_| "The prepared Discord carrier pointer could not be recovered".to_owned())?;
+    match ipc::prose_token::prose_token_recover_pointer(
+        &manual.scope,
+        &detection_key,
+        prepared_post_copy,
+    ) {
+        Ok(Some(_pointer)) => Ok(()),
+        Ok(None) | Err(_) => {
+            Err("The prepared Discord carrier pointer could not be recovered".to_owned())
+        }
+    }
+}
+
 pub fn prepare_osl_chat_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
