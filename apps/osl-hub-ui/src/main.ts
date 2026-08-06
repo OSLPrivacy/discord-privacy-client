@@ -7,6 +7,8 @@ import "@fontsource-variable/source-sans-3/wght.css";
 import "./styles.css";
 import "./local-protected-sheet.css";
 import "./friend-invite.css";
+import "./recovery-screen.css";
+import "./onboarding-mullvad.css";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -26,6 +28,11 @@ import { isTauriRuntime, loadOnboardingPreferences, saveOnboardingPreferences } 
 import { chooseForwardSecrecyMode, initialForwardSecrecyOnboardingState, onboardingForwardSecrecyMarkup, type ForwardSecrecyOnboardingState } from "./onboarding-forward-secrecy";
 import { onboardingPasswordRoleContent as passwordRoleContent } from "./password-roles";
 import { chooseTorRoute, initialTorOnboardingState, onboardingTorMarkup, type TorOnboardingState } from "./onboarding-tor";
+import { chooseCoverInsertion, initialCoverInsertionChoice, onboardingCoverMarkup, type CoverInsertionChoice } from "./onboarding-cover";
+import { continueButton } from "./onboarding-controls";
+import { CLEAN_FILES_CHOICES, initialBeforeSendChecks, onboardingBeforeSendMarkup, type BeforeSendChecks, type CleanFilesChoice } from "./onboarding-before-send";
+import { initialDeleteChoices, onboardingDeleteMarkup, type DeleteChoices } from "./onboarding-delete";
+import { onboardingSendingMarkup } from "./onboarding-sending";
 import { renderRecoveryStatesSettings } from "./recovery-states";
 import { continueFromProOnboarding, previousOnboardingRoute } from "./onboarding-sequence";
 import { componentPickerScreen } from "./component-picker";
@@ -380,11 +387,6 @@ function onboardingRouteForBuild(candidate: OnboardingRoute): OnboardingRoute {
   return discordQaShell && candidate === "pro" ? "sending" : candidate;
 }
 
-function manualSendingAnimationMarkup(mode: SendMode = "clipboard"): string {
-  const finalStep = mode === "double" ? "Enter again" : mode === "single" ? "Recheck & send" : "You send";
-  const step = (number: number, label: string) => `<span><b>${number}</b><em>${label}</em></span>`;
-  return `<div class="manual-send-demo" data-send-demo="${mode}" role="img" aria-label="OSL encrypts on this device, verifies the destination, and fails closed if anything changes.">${step(1, "Write")}<i aria-hidden="true"></i>${step(2, "Encrypt")}<i aria-hidden="true"></i>${step(3, mode === "clipboard" || mode === "manual" ? "Copy" : "Verify")}<i aria-hidden="true"></i>${step(4, finalStep)}</div>`;
-}
 
 function passwordEyeIcon(visible = false): string {
   return `<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M1.8 10s2.9-4.7 8.2-4.7 8.2 4.7 8.2 4.7-2.9 4.7-8.2 4.7S1.8 10 1.8 10Z"/><circle cx="10" cy="10" r="2.25"/>${visible ? "" : '<path d="M3 3l14 14"/>'}</svg>`;
@@ -432,6 +434,15 @@ let onboardingRoute: OnboardingRoute = "welcome";
 let onboardingTourStep = 0;
 let replayingOnboardingTour = false;
 let torOnboarding: TorOnboardingState = initialTorOnboardingState();
+// Which of the two insertion styles is highlighted. Nothing is persisted yet:
+// only "insert on send" is built, so this is the screen's own state.
+let coverInsertion: CoverInsertionChoice = initialCoverInsertionChoice();
+// The three before-send checks. Live on screen; not yet persisted, because
+// nothing reads them at send time yet.
+let beforeSendChecks: BeforeSendChecks = initialBeforeSendChecks();
+// What OSL is allowed to delete on this device. Both start off; nothing is
+// deleted unless it is turned on here.
+let deleteChoices: DeleteChoices = initialDeleteChoices();
 let forwardSecrecyOnboarding: ForwardSecrecyOnboardingState = initialForwardSecrecyOnboardingState();
 let forwardSecrecyMode: "protectPast" | "keepGroupDelivery" = "keepGroupDelivery";
 // A cache only. The authority is encrypted account state in the native hub;
@@ -1883,7 +1894,7 @@ function dockOnboardingBackControl(): void {
 function renderOnboarding(): void {
   onboardingRoute = onboardingRouteForBuild(onboardingRoute);
   persistCurrentOnboardingRoute();
-  const setupScreen = ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
+  const setupScreen = ["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"].includes(onboardingRoute);
   const setupNavigation = setupScreen
     ? `<div class="setup-footer onboarding-actions onboarding-nav"><button class="button ghost onboarding-back" id="onboarding-back" type="button">Back</button></div>`
     : "";
@@ -1964,13 +1975,18 @@ function onboardingContent(): string {
  * action and it is the only one offered.
  */
 function identityKeyLostContent(): string {
-  return `<section class="signin-card" aria-labelledby="route-heading">
-    <img class="osl-logo signin-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/>
-    <h1 id="route-heading" tabindex="-1">This device can no longer open your account</h1>
-    <p class="compact-lead onboarding-centered-copy">Your account is still on this device, but the key that unlocks it is gone from this device's secure storage. Your password cannot open it, and OSL will not pretend otherwise.</p>
-    <p class="compact-lead onboarding-centered-copy">Restore it with your 12-word recovery phrase. That restores the same account and the same contacts &mdash; on this device or any other.</p>
-    <button class="button primary signin-primary" data-onboarding="import">Restore with recovery phrase</button>
-    <p class="send-mode-truth">Nothing has been deleted. Until you restore, your saved messages and contacts stay encrypted and unreadable.</p>
+  // 2026-08-06 restyle. Two paragraphs became one. The first used to spend a
+  // sentence on what OSL will not pretend, which is a promise about OSL rather
+  // than an answer to the question the person is actually asking, which is
+  // "have I lost everything".
+  //
+  // The footnote answers that, so it stays: nothing has been deleted.
+  return `<section class="keylost-screen" aria-labelledby="route-heading">
+    <img class="keylost-logo" src="${oslGhostMarkUrl}" alt="" width="104" height="104"/>
+    <h1 id="route-heading" tabindex="-1" class="keylost-title">This device can no longer open your account</h1>
+    <p class="keylost-copy">The key that unlocks it is gone from this device. Your 12-word recovery phrase restores the same account and contacts, here or on any other device.</p>
+    <button class="signin-unlock keylost-action" data-onboarding="import" type="button"><span class="signin-unlock-label">Restore with recovery phrase</span>${signinArrowIcon()}</button>
+    <p class="keylost-quiet">Nothing has been deleted. Until you restore, everything stays encrypted and unreadable</p>
   </section>`;
 }
 
@@ -2035,7 +2051,10 @@ function proSetupContent(): string {
   // The submit and the Skip escape hatch sit in the step's own action row, so
   // the docking pass folds Back in beside them instead of leaving a third,
   // separate footer below a loose text link.
-  return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading"><p class="eyebrow">Optional</p><h1 id="route-heading" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><div class="setup-footer onboarding-actions"><button class="button primary" type="submit">Continue</button><button class="text-button" id="skip-pro-setup" type="button">Skip</button></div></form></section>`;
+  // The eyebrow, the divider and the solid cyan button are gone by the 2026-08-06
+  // redesign. Same button and same tokens as the other entry screens -- one
+  // component, so a change to it lands everywhere at once.
+  return `<section class="pro-setup pro-code-screen" aria-labelledby="route-heading"><h1 id="route-heading" class="pro-code-title" tabindex="-1">Enter Pro code</h1><form id="activation-form" class="pro-setup-form pro-code-form" novalidate><label class="sr-only" for="activation-code">Pro activation code</label><input id="activation-code" inputmode="text" maxlength="23" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="OSL-XXXX-XXXX-XXXX-XXXX" required/><button class="signin-unlock pro-code-continue" type="submit"><span class="signin-unlock-label">Continue</span>${signinArrowIcon()}</button><button class="signin-recovery" id="skip-pro-setup" type="button">Skip</button></form></section>`;
 }
 
 function tutorialContent(): string {
@@ -2043,7 +2062,7 @@ function tutorialContent(): string {
     ["Lock", "Lock turns on protected input and protected send routing. Turn it off to use the host app’s ordinary composer."],
     ["Eye", "Eye controls decrypted display only. With Eye off, OSL leaves the native carrier rows untouched."],
     ["Cyan ring", "The small cyan ring around the native composer means protected input is active. No ring means you are typing into the host’s plaintext composer."],
-    ["Send mode", "Choose Manual, Clipboard, or Double Enter. No mode silently sends: OSL stops if it cannot prove the exact destination."],
+    ["Send mode", "Choose Manual, Clipboard, Double Enter or Single Enter. No mode silently sends: OSL stops if it cannot prove the exact destination."],
     ["App limits", "Protection is limited to the app, account, chat, and composer OSL can verify. If that proof changes, OSL refuses protected routing rather than guessing."],
   ] as const;
   const current = steps[onboardingTourStep];
@@ -2105,7 +2124,9 @@ async function continueWithoutNativeApps(): Promise<void> {
 async function enterCombinedAppChoice(): Promise<void> {
   const catalog = await withNativeDeadline(loadNativeApps(), "Check Windows apps", nativeCatalogDecisionDeadlineMs).catch(() => null);
   if (catalog && isCompleteNativeCatalog(catalog)) nativeApps = catalog;
-  onboardingRoute = "tutorial";
+  // Was "tutorial". The tour is no longer part of first run, so this goes
+  // straight to the step that used to follow it.
+  onboardingRoute = "detected";
   render();
 }
 
@@ -2700,7 +2721,26 @@ async function refreshBrowserImportReadiness(): Promise<void> {
 }
 
 function importIdentityForm(): string {
-  return `<h1 id="route-heading" tabindex="-1">Restore your account</h1><form class="setup-surface password-form" id="identity-import-form" novalidate><label for="identity-recovery-phrase">Recovery phrase</label><textarea id="identity-recovery-phrase" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" required aria-describedby="import-error"></textarea><small>Stays on this device.</small><label for="import-password">New password</label><div class="password-input-row"><input id="import-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="import-password" aria-controls="import-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small>6 minimum. 12+ suggested.</small><label for="import-password-confirm">Confirm password</label><div class="password-input-row"><input id="import-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="import-password-confirm" aria-controls="import-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="import-error" role="alert"></p><button class="button primary" id="identity-import-submit" type="submit" disabled>Restore</button></form><button class="text-back" data-onboarding="welcome">← Back</button>`;
+  // 2026-08-06 restyle. Built from the same parts as the stealth and burn
+  // screens: same card, same inputs, same eye toggles, same button and link.
+  // The two helper sentences became hints beside their labels -- a standalone
+  // "6 minimum. 12+ suggested." under a box reads as a rule you already broke.
+  const eye = (id: string, label: string) =>
+    `<button class="password-eye" type="button" data-password-toggle="${id}" aria-controls="${id}" aria-label="${label}">${passwordEyeIcon()}</button>`;
+  return `<section class="stealth-screen restore-screen" aria-labelledby="route-heading">
+    <h1 id="route-heading" tabindex="-1" class="stealth-title restore-title">Restore your account</h1>
+    <form class="password-form stealth-form" id="identity-import-form" novalidate>
+      <span class="restore-label-row"><label for="identity-recovery-phrase">Recovery phrase</label><em>stays on this device</em></span>
+      <textarea class="restore-phrase" id="identity-recovery-phrase" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" required aria-describedby="import-error"></textarea>
+      <span class="restore-label-row"><label for="import-password">New password</label><em>6 minimum · 12+ suggested</em></span>
+      <div class="password-input-row"><input id="import-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/>${eye("import-password", "Show password")}</div>
+      <span class="restore-label-row"><label for="import-password-confirm">Confirm password</label></span>
+      <div class="password-input-row"><input id="import-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/>${eye("import-password-confirm", "Show password")}</div>
+      <p class="unlock-error" id="import-error" role="alert"></p>
+      <button class="stealth-submit restore-submit" id="identity-import-submit" type="submit" disabled><span>Restore</span>${signinArrowIcon()}</button>
+    </form>
+    <div class="setup-footer onboarding-actions stealth-links restore-links"><button class="text-button" type="button" data-onboarding="welcome">← Back</button></div>
+  </section>`;
 }
 
 async function proveRecoveryCaptureProtection(): Promise<boolean> {
@@ -2778,6 +2818,46 @@ function recoveryRevealContent(view: RecoveryKitView): string {
   return `<h1 id="route-heading" tabindex="-1">Finish saving your recovery kit</h1><section class="setup-surface recovery-surface">${recoveryProtectionNoticeMarkup(view)}${recoveryExitsMarkup(view)}</section>`;
 }
 
+/** Two overlaid glyphs: the copy one, and the tick that replaces it for 2s. */
+/**
+ * The button says "Copied" and shows a tick for two seconds. The toast alone was
+ * easy to miss on a screen where the thing you just copied is still on display,
+ * and "did that work?" on a recovery phrase is the wrong doubt to leave.
+ */
+let recoveryCopiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flashRecoveryCopied(): void {
+  const button = document.querySelector<HTMLButtonElement>("#copy-recovery-kit");
+  const label = button?.querySelector<HTMLElement>(".signin-unlock-label");
+  if (!button || !label) return;
+  button.classList.add("copied");
+  label.textContent = label.dataset.copiedLabel ?? "Copied";
+  if (recoveryCopiedTimer) clearTimeout(recoveryCopiedTimer);
+  recoveryCopiedTimer = setTimeout(() => {
+    // The screen may have been repainted in the meantime, so re-find it rather
+    // than holding the element captured above.
+    const current = document.querySelector<HTMLButtonElement>("#copy-recovery-kit");
+    const currentLabel = current?.querySelector<HTMLElement>(".signin-unlock-label");
+    current?.classList.remove("copied");
+    if (currentLabel) currentLabel.textContent = currentLabel.dataset.copyLabel ?? "Copy recovery kit";
+    recoveryCopiedTimer = null;
+  }, 2000);
+}
+
+function recoveryCopyIcon(): string {
+  return `<svg class="signin-icon recovery-copy-glyph" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15 V5 a2 2 0 0 1 2 -2 h10"/></svg>`;
+}
+
+function recoveryCopiedIcon(): string {
+  return `<svg class="signin-icon recovery-copied-glyph" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12 l5 5 L20 7"/></svg>`;
+}
+
+/** Drawn, not a styled native box: the native control cannot be recoloured
+ *  reliably and rendered soft against this background. */
+function recoveryCheckbox(): string {
+  return `<svg class="recovery-check" viewBox="0 0 18 18" width="18" height="18" fill="none" aria-hidden="true"><rect class="recovery-check-box" x="1.5" y="1.5" width="15" height="15" rx="2" stroke-width="1.5"/><path class="recovery-check-mark" d="M5 9.5 L8 12.5 L13 6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
 function recoveryContent(): string {
   const state = recoveryKitStateNow();
   const view = recoveryKitView(state);
@@ -2785,7 +2865,21 @@ function recoveryContent(): string {
   if (view.mode === "refusal") return recoveryProtectionRefusalContent(view);
   const secrets = visibleRecoverySecrets(state);
   if (!secrets) return `<section class="onboarding-centered-step recovery-empty" aria-labelledby="route-heading"><p class="eyebrow">Recovery</p><h1 id="route-heading" tabindex="-1">No recovery secret is available</h1><button class="button primary" data-onboarding="pro">Continue</button></section>`;
-  return `<h1 id="route-heading" tabindex="-1" class="recovery-heading">Save your recovery kit</h1><section class="setup-surface recovery-surface">${recoveryProtectionNoticeMarkup(view)}${recoveryKitSecretCardsMarkup(secrets, escapeHtml)}${secureRecoveryOnboardingContent()}<details class="recovery-account-details"><summary>Account details</summary><code>${escapeHtml(secrets.userId)}</code></details><button class="button" id="copy-recovery-kit" type="button">Copy recovery kit</button><label class="check"><input id="recovery-saved" type="checkbox" ${recoverySavedAcknowledged ? "checked" : ""}/><span>I saved my recovery kit.</span></label><button class="button primary" id="recovery-continue" ${recoverySavedAcknowledged ? "" : "disabled"}>Continue</button></section>`;
+  // 2026-08-06 restyle. Gone from this screen: the Mullvad and Android "next
+  // steps" cards (neither is a step, and one is not built), the Account details
+  // disclosure, and the numbered badges.
+  //
+  // The capture notice is deliberately NOT here. Liam removed it from this
+  // screen on 2026-08-06 after it was raised with him. It still shows on the
+  // refusal and reveal screens, which are the two states where OSL is holding
+  // the secret back and has to say why.
+  return `<section class="recovery-screen" aria-labelledby="route-heading">
+    <h1 id="route-heading" tabindex="-1" class="recovery-screen-title">Save your recovery kit</h1>
+    <div class="recovery-phrase-list">${recoveryKitSecretCardsMarkup(secrets, escapeHtml)}</div>
+    <button class="signin-unlock osl-continue recovery-copy" id="copy-recovery-kit" type="button"><span class="signin-unlock-label" data-copy-label="Copy recovery kit" data-copied-label="Copied">Copy recovery kit</span>${recoveryCopyIcon()}${recoveryCopiedIcon()}</button>
+    <label class="recovery-saved-row"><input class="sr-only" id="recovery-saved" type="checkbox" ${recoverySavedAcknowledged ? "checked" : ""}/>${recoveryCheckbox()}<span>I saved my recovery kit</span></label>
+    ${continueButton(`id="recovery-continue" ${recoverySavedAcknowledged ? "" : "disabled aria-disabled=\"true\""}`, "recovery-continue-button")}
+  </section>`;
 }
 
 /**
@@ -2827,9 +2921,6 @@ async function revealRecoveryKit(event: SubmitEvent): Promise<void> {
   renderNow();
 }
 
-function secureRecoveryOnboardingContent(): string {
-  return `<section class="secure-recovery-next-steps" aria-label="Optional next steps"><article><strong>Mullvad</strong><small>Optional. Use your existing session later for network privacy.</small></article><article><strong>Android device</strong><small>Coming later. Phone setup stays optional and separate.</small></article></section>`;
-}
 
 function identityPasswordForm(title: string, action: string, mode: "setup" | "unlock"): string {
   const setup = mode === "setup";
@@ -2843,32 +2934,42 @@ function identityPasswordForm(title: string, action: string, mode: "setup" | "un
   // `aria-label`, `title`, `autocomplete` token or `data-` attribute, because
   // the accessibility tree is a published surface this project already drives
   // the app through. See `unlock-screen-single-credential.test.ts`.
-  if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><h1 id="route-heading" tabindex="-1">Enter your password</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" required aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="signin-link" type="button" data-onboarding="account-recovery">Forgot password?</button><button class="text-back" data-onboarding="welcome">← Back</button></section>`;
+  if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><h1 id="route-heading" tabindex="-1">Sign in</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" required aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="signin-link" type="button" data-onboarding="account-recovery">Forgot password?</button><button class="text-back" data-onboarding="welcome">← Back</button></section>`;
   return `<h1 id="route-heading" class="password-screen-title" tabindex="-1">${title}</h1><form class="setup-surface password-form password-screen" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="signin-unlock" id="identity-password-submit" type="submit" disabled><span class="signin-unlock-label">${action}</span>${signinArrowIcon()}</button></form><button class="text-back password-screen-back" data-onboarding="welcome">← Back</button>`;
 }
 
 export function sendingSetupContent(): string {
-  const selectedMode: SendMode = setup.sendMode === "single" ? "manual" : setup.sendMode;
-  const option = (mode: SendMode, title: string, detail: string, badge = "") => `<button class="send-mode-option ${selectedMode === mode ? "selected" : ""}" type="button" data-send-mode="${mode}" aria-pressed="${selectedMode === mode}"><span><strong>${title}</strong>${badge ? `<small class="send-mode-badge">${badge}</small>` : ""}</span><small>${detail}</small></button>`;
-  const risk = needsRiskAcceptance(selectedMode)
-    ? `<label class="send-risk"><input id="accept-send-risk" type="checkbox" ${setup.acceptedRisk && setup.acceptedRiskForMode === selectedMode ? "checked" : ""}/><span><strong>I understand</strong><small>Experimental sending can target the wrong chat if an app changes. OSL stops unless it can verify the exact app, account, chat, and composer. Each account asks again.</small></span></label>`
-    : "";
-  return `<h1 id="route-heading" tabindex="-1">Privacy and sending</h1>${captureSetupMarkup()}<h2 class="setup-section-heading">Choose how to send</h2>${manualSendingAnimationMarkup(selectedMode)}<div class="send-mode-list">${option("manual", "Manual", "OSL prepares the protected message; you place it and send it.", "Recommended")}${option("clipboard", "Clipboard", "OSL encrypts and copies; you paste it and send it.")}${option("double", "Double Enter", "First Enter prepares and places. A second distinct Enter sends after another exact check.")}</div>${risk}<p class="send-mode-truth">No mode silently sends. If OSL cannot prove the destination, it copies the encrypted text and sends nothing.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="finish-onboarding" ${canCompleteSetup({ ...setup, sendMode: selectedMode }) ? "" : "disabled"}>Continue</button></div>`;
+  return onboardingSendingMarkup({
+    // No downgrade. This line used to rewrite a saved Single Enter back to
+    // Manual before rendering, so the owner was shown a mode they had not
+    // chosen. P-13 in main-prohibitions.test.ts now bans that rewrite by name,
+    // which is why the old expression is not quoted here.
+    mode: setup.sendMode,
+    riskAccepted: setup.acceptedRisk && setup.acceptedRiskForMode === setup.sendMode,
+    captureEnabled: windowCaptureEnabled,
+    captureApplied: windowCaptureEnabled && screenshotProtectionEnabled,
+  });
 }
 
-function captureSetupMarkup(): string {
-  const applied = windowCaptureEnabled && screenshotProtectionEnabled;
-  return `<section class="setup-list capture-setup-inline" aria-labelledby="capture-setup-heading"><h2 id="capture-setup-heading" class="setup-section-heading">Screen capture</h2><label class="setup-status-row capture-preference"><span><strong>Resist Windows capture</strong><small>Excludes OSL from ordinary screenshots and recording when Windows supports it. Cameras, malware, and modified devices can still capture content.</small></span><input id="window-capture-enabled" type="checkbox" ${windowCaptureEnabled ? "checked" : ""}/></label><div class="setup-status-row"><span><strong>Current device</strong><small>Protected messages appear only after OSL enables this protection.</small></span>${statusTag(windowCaptureEnabled ? (applied ? "Active" : "Unavailable") : "Off", applied ? "active" : "")}</div></section>`;
-}
 
+/**
+ * 2026-08-06 re-split. This screen and the preset screen before it used to show
+ * the SAME six rows -- pick a preset, then review the preset. Two screens, one
+ * list, and the preset itself is read by nothing in the app.
+ *
+ * They are now one topic each, and each row is a real choice rather than a
+ * read-only summary of a setting that does nothing:
+ *   the preset screen  -> what happens AT THE MOMENT YOU SEND
+ *   this screen        -> what OSL KEEPS ON THIS DEVICE afterwards
+ * Same six settings, split by when they actually apply, which is the thing a
+ * person can reason about.
+ */
 export function reviewDefaultsOnboardingContent(): string {
-  const row = (title: string, detail: string, state: string, active = false) => `<div class="setup-status-row"><span><strong>${title}</strong><small>${detail}</small></span>${statusTag(state, active ? "active" : "")}</div>`;
-  return `<h1 id="route-heading" tabindex="-1">Review defaults</h1><p class="compact-lead onboarding-centered-copy">Balanced starts with local warnings, visible attachment cleaning, and review-only cleanup. You can change these later in Privacy.</p><section class="setup-list defaults-review-list" aria-label="Default protection review">${row("Warn before unprotected sends", "Checks ordinary drafts on this device for selected risks before you send.", "On", true)}${row("Warn before protected sends", "Extra warning before already-protected handoff.", "Off")}${row("Clean attachments", "Offers a visible cleaning step for files and media; nothing changes without your consent.", "Ask first")}${row("Keep protected drafts", "Keeps encrypted local drafts and private activity on this device for recovery.", "On", true)}${row("Delete or clean up history", "Timed deletion, bulk cleanup, and account cleanup do not run during onboarding.", "Off")}${row("Send behavior", "Manual handoff is the default: OSL prepares, then you place and send.", formatSendMode(defaultSetup.sendMode), true)}</section><p class="send-mode-truth">No destructive action starts from setup. Cleanup requires a separate review and confirmation.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-defaults-review" type="button">Continue</button></div>`;
+  return onboardingDeleteMarkup(deleteChoices);
 }
 
 function coverDraftSetupContent(): string {
-  const typedCover = [..."LOOKS GOOD"].map((character) => `<i>${character === " " ? "&nbsp;" : character}</i>`).join("");
-  return `<h1 id="route-heading" tabindex="-1">Choose cover insertion</h1><div class="cover-mode-compare" aria-label="Free and Pro cover insertion"><article class="cover-mode-choice selected"><span>Free</span><strong>Insert on send</strong><small>Press Enter. The whole cover appears together.</small><span class="cover-composer cover-atomic-composer" aria-label="LOOKS GOOD appears at once"><em class="cover-atomic-preview">LOOKS GOOD</em><b aria-hidden="true">↵</b></span></article><article class="cover-mode-choice cover-mode-pro" aria-label="Pro pending: AI cover types with you"><span>Pro · pending</span><strong>Type naturally</strong><small>AI writes the cover one character at a time.</small><span class="cover-composer cover-typing-preview" aria-label="LOOKS GOOD types one character at a time"><em aria-hidden="true">${typedCover}</em><b class="cover-caret" aria-hidden="true"></b></span></article></div><p class="send-mode-truth">OSL stops if it cannot verify the exact destination.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-cover-draft" type="button">Continue</button></div>`;
+  return onboardingCoverMarkup(coverInsertion);
 }
 
 function onboardingPasswordRoleContent(role: "stealth" | "burn"): string {
@@ -2887,43 +2988,46 @@ function onboardingPrivacyContent(): string {
 }
 
 function protectionPresetOnboardingContent(): string {
-  const presets = [
-    {
-      id: "basic",
-      title: "Basic",
-      detail: "Account health, email tracker blocking, attachment metadata warnings, and exposure alerts.",
-    },
-    {
-      id: "balanced",
-      title: "Balanced",
-      detail: "Basic plus local before-send warnings, one-click attachment cleaning, monthly cleanup review, and OSL protection suggestions for verified contacts.",
-      badge: "Recommended",
-    },
-    {
-      id: "maximum",
-      title: "Maximum",
-      detail: "Balanced plus stricter public-post checks, optional VPN-required actions, and OSL protection required for chosen contacts.",
-    },
-  ] as const;
-  const presetChoices = presets.map((preset) => {
-    const selected = preset.id === protectionPreset;
-    const badge = "badge" in preset ? `<small class="send-mode-badge">${preset.badge}</small>` : "";
-    return `<label class="send-mode-option ${selected ? "selected" : ""}" data-protection-preset="${preset.id}"><span><input class="sr-only" type="radio" name="protection-preset" value="${preset.id}" ${selected ? "checked" : ""}/><strong>${preset.title}</strong>${badge}</span><small>${preset.detail}</small></label>`;
-  }).join("");
-  return `<h1 id="route-heading" tabindex="-1">Choose protection</h1><p class="compact-lead onboarding-centered-copy">Balanced starts on and is safe without more setup.</p><div class="send-mode-list protection-preset-list" role="group" aria-label="Protection preset">${presetChoices}</div><section class="setup-list" aria-labelledby="balanced-defaults-heading"><h2 id="balanced-defaults-heading" class="setup-section-heading">Balanced defaults</h2><div class="setup-status-row"><span><strong>Warn before unprotected sends</strong><small>OSL checks ordinary drafts locally before handoff.</small></span>${statusTag("On", "active")}</div><div class="setup-status-row"><span><strong>Warn before protected sends</strong><small>Extra warning before already-protected handoff.</small></span>${statusTag("Off")}</div><div class="setup-status-row"><span><strong>Clean attachments by choice</strong><small>OSL can prepare a cleaned copy when you ask.</small></span>${statusTag("On", "active")}</div><div class="setup-status-row"><span><strong>Review cleanup monthly</strong><small>Deletion automation starts off. You review first.</small></span>${statusTag("Manual")}</div><div class="setup-status-row"><span><strong>Require clear authority</strong><small>No consent, account binding, or send/delete authority means Unavailable.</small></span>${statusTag("Fail closed", "active")}</div></section><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-onboarding-privacy" type="button">Continue</button></div>`;
+  return onboardingBeforeSendMarkup(beforeSendChecks);
 }
 
 function mullvadSetupContent(): string {
+  // 2026-08-06 restyle. The three states used to look like three different
+  // screens -- two of them a button, the third a bordered warning box. They are
+  // now one status card whose DOT carries the state, so the page does not
+  // rearrange itself depending on what is installed.
+  //
+  // Adapted from the handoff, which only drew the not-found case: the other two
+  // states still need their action, so the card keeps one beside the status
+  // line rather than becoming a read-only strip.
   const availability = mullvadStatus.availability;
-  const action = availability === "installed"
-    ? `<button class="button" id="open-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Opening…" : "Use my Mullvad session"}</button>`
+  const found = availability === "installed";
+  const state = found ? "found" : availability === "installable" ? "installable" : "missing";
+  const line = found
+    ? "Mullvad is installed on this device"
     : availability === "installable"
-      ? `<button class="button" id="install-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Starting…" : "Install Mullvad"}</button>`
-      : `<p class="mullvad-unavailable">Mullvad or Windows App Installer was not found.</p>`;
+      ? "Mullvad is not installed. Windows can install it for you"
+      : "Mullvad or Windows App Installer was not found";
+  const action = found
+    ? `<button class="mv-action" id="open-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Opening…" : "Use my session"}</button>`
+    : availability === "installable"
+      ? `<button class="mv-action" id="install-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Starting…" : "Install"}</button>`
+      : "";
   const notice = mullvadSetupNotice
     ? `<p class="mullvad-setup-notice" role="status">${escapeHtml(mullvadSetupNotice)}</p>`
     : "";
-  return `<section class="mullvad-setup" aria-labelledby="route-heading"><h1 id="route-heading" tabindex="-1">Mullvad</h1><p>Optional network privacy.</p><div class="mullvad-actions">${action}</div>${notice}<div class="setup-footer onboarding-actions"><button class="button primary" id="continue-mullvad" type="button">Continue</button><button class="text-button" id="skip-mullvad" type="button">Not now</button></div></section>`;
+  return `<section class="mv-screen" aria-labelledby="route-heading">
+    <h1 id="route-heading" tabindex="-1" class="mv-title">Mullvad</h1>
+    <p class="mv-quiet">Optional network privacy</p>
+    <div class="mv-status" data-mullvad-state="${state}">
+      <span class="mv-dot" aria-hidden="true"></span>
+      <span class="mv-status-line">${line}</span>
+      ${action}
+    </div>
+    ${notice}
+    ${continueButton('id="continue-mullvad"', "mv-continue")}
+    <div class="setup-footer onboarding-actions mv-links"><button class="text-button" id="skip-mullvad" type="button">Skip</button></div>
+  </section>`;
 }
 
 function scrubCategoryChooserMarkup(compact = false): string {
@@ -2969,6 +3073,7 @@ function bindOnboarding(): void {
     try {
       await navigator.clipboard.writeText(kit);
       showToast("Recovery kit copied — save it, then confirm below");
+      flashRecoveryCopied();
     } catch {
       showToast("Couldn’t copy the recovery kit");
     }
@@ -3131,9 +3236,11 @@ function bindOnboarding(): void {
     if (onboardingRoute === "browser") void refreshBrowserImportReadiness();
     if (onboardingRoute === "mullvad") void refreshMullvadSetup();
   });
-  document.querySelectorAll<HTMLButtonElement>("[data-send-mode]").forEach((button) => button.addEventListener("click", () => {
+  document.querySelectorAll<HTMLInputElement>("[data-send-mode]").forEach((button) => button.addEventListener("change", () => {
     const mode = button.dataset.sendMode as SendMode;
-    if (!["manual", "clipboard", "double"].includes(mode)) return;
+    // Single Enter restored 2026-08-06 on the owner's instruction. It reaches
+    // the same risk acknowledgement Double Enter does.
+    if (!["manual", "clipboard", "double", "single"].includes(mode)) return;
     setup.sendMode = mode;
     setup.placementMode = "atomic";
     setup.acceptedRisk = false;
@@ -3189,6 +3296,33 @@ function bindOnboarding(): void {
     if (input.checked && protectionPresetValues.includes(input.value as ProtectionPreset)) {
       protectionPreset = input.value as ProtectionPreset;
       persistProtectionPreset();
+      render();
+    }
+  }));
+  document.querySelector<HTMLInputElement>("#delete-drafts")?.addEventListener("change", (event) => {
+    deleteChoices = { ...deleteChoices, deleteDrafts: (event.currentTarget as HTMLInputElement).checked };
+    render();
+  });
+  document.querySelector<HTMLInputElement>("#delete-old-messages")?.addEventListener("change", (event) => {
+    deleteChoices = { ...deleteChoices, deleteOldMessages: (event.currentTarget as HTMLInputElement).checked };
+    render();
+  });
+  document.querySelector<HTMLInputElement>("#warn-unprotected")?.addEventListener("change", (event) => {
+    beforeSendChecks = { ...beforeSendChecks, warnUnprotected: (event.currentTarget as HTMLInputElement).checked };
+    render();
+  });
+  document.querySelector<HTMLInputElement>("#warn-protected")?.addEventListener("change", (event) => {
+    beforeSendChecks = { ...beforeSendChecks, warnProtected: (event.currentTarget as HTMLInputElement).checked };
+    render();
+  });
+  document.querySelectorAll<HTMLInputElement>('input[name="clean-files"]').forEach((input) => input.addEventListener("change", () => {
+    if (!input.checked || !CLEAN_FILES_CHOICES.includes(input.value as CleanFilesChoice)) return;
+    beforeSendChecks = { ...beforeSendChecks, cleanFiles: input.value as CleanFilesChoice };
+    render();
+  }));
+  document.querySelectorAll<HTMLInputElement>('input[name="cover-mode"]').forEach((input) => input.addEventListener("change", () => {
+    if (input.checked && (input.value === "insert-on-send" || input.value === "type-naturally")) {
+      coverInsertion = chooseCoverInsertion(coverInsertion, input.value);
       render();
     }
   }));

@@ -1,0 +1,75 @@
+/* ---------------------------------------------------------------------------
+   Shared onboarding controls. 2026-08-06.
+
+   The radio and the Continue button, in one place, for every redesigned setup
+   screen. Screen-specific layout stays in that screen's own stylesheet; only
+   what must look identical everywhere lives here.
+   --------------------------------------------------------------------------- */
+:root {
+  --osl-setup-bg: #080c0d;
+  --osl-setup-card: #0d1114;
+  --osl-setup-line: #2a343a;
+  --osl-setup-field-line: #2a2f33;
+  --osl-setup-text: #f4f7f8;
+  --osl-setup-second: #b8c2c7;
+  --osl-setup-muted: #97a3a9;
+  --osl-setup-quiet: #66727a;
+  --osl-setup-accent: #2ac0f0;
+}
+
+.osl-radio { flex: 0 0 auto; }
+.osl-radio-ring { stroke: var(--osl-setup-line); transition: stroke .2s; }
+.osl-radio-dot { fill: transparent; transition: fill .2s; }
+.selected .osl-radio-ring { stroke: var(--osl-setup-accent); }
+.selected .osl-radio-dot { fill: var(--osl-setup-accent); }
+
+/* Overrides .signin-unlock's fixed 321px: every setup screen runs it the full
+   width of the 700px column. */
+.osl-continue {
+  width: 100%;
+  padding: 14px 0;
+  border: 1.5px solid var(--osl-setup-line);
+  border-radius: 2px;
+}
+
+.osl-continue .signin-unlock-label {
+  font-size: 16px;
+  translate: 0 -1px;
+}
+
+.osl-continue .signin-icon { right: 14px; }
+
+.osl-toggle { display: inline-flex; align-items: center; cursor: pointer; }
+.osl-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+
+.osl-toggle-track {
+  position: relative;
+  display: block;
+  width: 38px;
+  height: 21px;
+  border-radius: 11px;
+  background: var(--osl-setup-line);
+  transition: background-color .2s;
+}
+
+.osl-toggle-knob {
+  position: absolute;
+  top: 2.5px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--osl-setup-text);
+  transition: left .2s;
+}
+
+.osl-toggle input:checked + .osl-toggle-track { background: var(--osl-setup-accent); }
+.osl-toggle input:checked + .osl-toggle-track .osl-toggle-knob { left: 19px; }
+.osl-toggle input:focus-visible + .osl-toggle-track { outline: 2px solid var(--osl-setup-accent); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .osl-radio-ring,
+  .osl-radio-dot,
+  .osl-toggle-track,
+  .osl-toggle-knob { transition: none; }
+}

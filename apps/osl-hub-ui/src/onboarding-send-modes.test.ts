@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { RISK_ACKNOWLEDGEMENT, SEND_OPTIONS, onboardingSendingMarkup, sendModeIsDangerous } from "./onboarding-sending";
+import type { SendMode } from "./state";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
 vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
@@ -48,32 +50,68 @@ function sendModeButtons(markup: string): string[] {
   return [...markup.matchAll(/data-send-mode="([^"]+)"/gu)].map((match) => match[1]);
 }
 
+function screen(mode: SendMode, riskAccepted = false): string {
+  return onboardingSendingMarkup({ mode, riskAccepted, captureEnabled: false, captureApplied: false });
+}
+
 describe("onboarding send modes", () => {
-  it("implements ordinary send choices without Single Enter in onboarding state", () => {
+  // Protects: onboarding renders the mode the owner actually saved. Single Enter
+  // was always in the send model and offered by the overlay, but this screen
+  // rewrote a stored "single" back to "manual" before rendering -- showing a mode
+  // the owner had never chosen. Single Enter is offered here now (2026-08-06
+  // owner decision), so that downgrade must stay deleted.
+  it("offers all four send modes and never downgrades a saved Single Enter", () => {
     const { __oslHubUiTest } = ui;
     __oslHubUiTest.reset();
 
     const html = __oslHubUiTest.renderOnboardingSendModes("single");
 
-    expect(html).toContain('data-send-mode="manual"');
-    expect(html).toContain('data-send-mode="clipboard"');
-    expect(html).toContain('data-send-mode="double"');
-    expect(html).not.toContain('data-send-mode="single"');
-    expect(html).not.toContain("Single Enter");
-    expect(html).toContain("No mode silently sends.");
-    expect(html).toContain("If OSL cannot prove the destination, it copies the encrypted text and sends nothing.");
+    expect(sendModeButtons(html)).toEqual(["manual", "clipboard", "double", "single"]);
+    expect(html).toContain("Single Enter");
+    expect(html).toContain('data-send-mode="single" checked');
+    expect(html).not.toContain('data-send-mode="manual" checked');
+    // The honest limit is stated on the same screen as the choice.
+    expect(html).toMatch(/cannot prove where it is sending[^<]*sends nothing/iu);
   });
 
-  it("exposes the direct send mode content without Single Enter", () => {
+  // Protects the rule the old "no Single Enter in onboarding" assertions stood in
+  // for, in the stronger form that survives Single Enter being offered: an
+  // experimental send mode is never reachable without the acknowledgement.
+  // Both key-pressing modes raise #accept-send-risk and hold Continue disabled
+  // until it is ticked; neither ordinary mode raises it or is held back.
+  it("keeps every experimental mode behind the risk acknowledgement", () => {
+    for (const mode of ["double", "single"] as const) {
+      const pending = screen(mode);
+      expect(pending).toContain('id="accept-send-risk"');
+      expect(pending).toContain(RISK_ACKNOWLEDGEMENT);
+      expect(pending).toMatch(/id="finish-onboarding"\s+disabled/u);
+
+      const acknowledged = screen(mode, true);
+      expect(acknowledged).toContain('id="accept-send-risk"');
+      expect(acknowledged).toContain('id="accept-send-risk" type="checkbox" checked');
+      expect(acknowledged).not.toMatch(/id="finish-onboarding"[^>]*disabled/u);
+    }
+    for (const mode of ["manual", "clipboard"] as const) {
+      const ordinary = screen(mode);
+      expect(ordinary).not.toContain('id="accept-send-risk"');
+      expect(ordinary).not.toContain(RISK_ACKNOWLEDGEMENT);
+      expect(ordinary).not.toMatch(/id="finish-onboarding"[^>]*disabled/u);
+    }
+  });
+
+  // Protects: the two modes that press keys for you -- and only those two -- are
+  // marked as risky where the owner picks them, so the tag cannot drift off the
+  // experimental modes or onto the safe ones while the acknowledgement stays put.
+  it("marks exactly the two key-pressing modes as risky in the chooser", () => {
     const { sendingSetupContent } = ui;
     const markup = sendingSetupContent();
 
-    expect(sendModeButtons(markup)).toEqual(["manual", "clipboard", "double"]);
-    expect(markup).toContain("Manual");
-    expect(markup).toContain("Clipboard");
-    expect(markup).toContain("Double Enter");
-    expect(markup).not.toContain('data-send-mode="single"');
-    expect(markup).not.toMatch(/Single Enter/iu);
-    expect(markup).toMatch(/No mode silently sends/iu);
+    expect(sendModeButtons(markup)).toEqual(["manual", "clipboard", "double", "single"]);
+    expect(SEND_OPTIONS.filter((option) => option.tag !== "").map((option) => option.mode)).toEqual(["double", "single"]);
+    expect(SEND_OPTIONS.filter((option) => sendModeIsDangerous(option.mode)).every((option) => /danger|warn/u.test(option.tagKind))).toBe(true);
+    for (const option of SEND_OPTIONS) {
+      expect(markup).toContain(`<strong>${option.name}</strong>`);
+      expect(sendModeIsDangerous(option.mode)).toBe(option.tag !== "");
+    }
   });
 });

@@ -1,0 +1,245 @@
+/* ---------------------------------------------------------------------------
+   What should OSL check before you send? 2026-08-06 restyle.
+
+   Three rows, one animation grammar: an object travels left to right, stops at
+   a checkpoint in the middle, and something happens there. Same 4.2s loop on
+   all three so they read as one behaviour rather than three unrelated pictures.
+   Those replaced a paragraph of explanation under each row.
+   --------------------------------------------------------------------------- */
+.onboarding-shell:has(.bs-onboarding),
+.onboarding-panel:has(.bs-onboarding) {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--osl-setup-bg);
+  display: grid;
+  place-items: center;
+  align-content: center;
+}
+
+.bs-onboarding {
+  --bs-quiet-line: #4a555b;
+  --bs-warn: #e59f3b;
+  --bs-good: #3dd68c;
+  --bs-card-line: #1e2326;
+
+  /* 720 so the heading fits on one line; everything under it is pulled back to
+     the 640 the handoff asks for. Setting 720 on the heading alone did not work
+     -- its own max-width:100% clamped it right back to the parent's 640. */
+  width: 720px;
+  max-width: 100%;
+  margin: 0;
+  transform: translateY(-30px);
+  text-align: center;
+  font-family: "Onest Variable", Onest, var(--font-ui);
+}
+
+/* Written at panel specificity: `.onboarding-panel h1` (styles.css) pins
+   margin-bottom, font-size and letter-spacing, and out-specifies a lone class. */
+.onboarding-panel .bs-title,
+.bs-title {
+  margin: 0 0 30px;
+  font-family: inherit;
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -.02em;
+  color: var(--osl-setup-text);
+}
+
+.bs-list {
+  width: 640px;
+  max-width: 100%;
+  margin-inline: auto;
+  display: grid;
+  gap: 14px;
+}
+
+.bs-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 16px 20px;
+  border: 1px solid var(--bs-card-line);
+  border-radius: 2px;
+  background: var(--osl-setup-card);
+  text-align: left;
+}
+
+.bs-row-title {
+  flex: 1;
+  min-width: 0;
+  /* One line each. Three short parallel answers keep the rows the same height,
+     which is what lets the three scenes read as one repeated picture. */
+  white-space: nowrap;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--osl-setup-text);
+}
+
+.bs-scene { flex: 0 0 auto; }
+
+/* Fixed, so the three scenes line up in a column instead of drifting with the
+   width of whichever control happens to sit beside them. */
+.bs-control {
+  flex: 0 0 170px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* --- the shared scene ----------------------------------------------------- */
+.bs-track { stroke: var(--bs-card-line); stroke-width: 1.5; stroke-linecap: round; }
+.bs-gate { stroke: var(--osl-setup-line); stroke-width: 1.5; stroke-dasharray: 3 4; }
+.bs-ink { fill: var(--osl-setup-card); stroke: var(--osl-setup-muted); stroke-width: 1.5; }
+.bs-rule { stroke: var(--osl-setup-line); stroke-width: 1.5; stroke-linecap: round; }
+.bs-dot { fill: var(--bs-warn); }
+.bs-badge-disc { stroke: none; }
+.bs-warn { fill: var(--bs-warn); }
+.bs-good { fill: var(--bs-good); }
+.bs-badge-glyph { stroke: var(--osl-setup-card); stroke-width: 1.7; stroke-linecap: round; }
+.bs-badge-check { stroke: var(--osl-setup-card); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+.bs-travel { animation: bs-travel 4.2s linear infinite; }
+
+@keyframes bs-travel {
+  0%   { transform: translateX(0);     opacity: 0; animation-timing-function: ease-out; }
+  8%   { transform: translateX(0);     opacity: 1; animation-timing-function: ease-in-out; }
+  30%  { transform: translateX(51px);  opacity: 1; }
+  62%  { transform: translateX(51px);  opacity: 1; animation-timing-function: ease-in; }
+  84%  { transform: translateX(96px);  opacity: 1; }
+  90%  { transform: translateX(102px); opacity: 0; }
+  100% { transform: translateX(102px); opacity: 0; }
+}
+
+/* fill-box, so the pop scales about the badge itself rather than about the
+   origin of the whole 140x48 canvas. */
+.bs-badge {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: bs-badge-pop 4.2s linear infinite;
+}
+
+@keyframes bs-badge-pop {
+  0%, 30% { opacity: 0; transform: scale(.4); }
+  36%     { opacity: 1; transform: scale(1.12); }
+  41%     { opacity: 1; transform: scale(1); }
+  58%     { opacity: 1; transform: scale(1); }
+  64%, 100% { opacity: 0; transform: scale(1); }
+}
+
+/* Staggered so they fall as three separate details, not one lump. */
+.bs-dot {
+  transform-box: fill-box;
+  animation: bs-dot-drop 4.2s linear infinite;
+}
+
+.bs-travel .bs-dot:nth-of-type(2) { animation-delay: .12s; }
+.bs-travel .bs-dot:nth-of-type(3) { animation-delay: .24s; }
+
+@keyframes bs-dot-drop {
+  0%, 32%  { transform: translateY(0);    opacity: 1; }
+  54%, 99% { transform: translateY(15px); opacity: 0; }
+  100%     { transform: translateY(0);    opacity: 1; }
+}
+
+/* --- controls ------------------------------------------------------------- */
+.bs-segmented {
+  display: flex;
+  border: 1.5px solid var(--osl-setup-line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.bs-segment {
+  padding: 6px 12px;
+  border-left: 1px solid var(--bs-card-line);
+  background: transparent;
+  cursor: pointer;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--osl-setup-quiet);
+  transition: color .2s, background-color .2s;
+}
+
+.bs-segment:first-child { border-left: 0; }
+
+/* Each state carries its own colour: green is "OSL handles it", amber is "OSL
+   asks you", grey is "OSL leaves it alone". Colour is never the only signal --
+   the word is right there. */
+.bs-segment-always.selected { color: var(--bs-good); background: rgba(61, 214, 140, .12); }
+.bs-segment-ask.selected { color: var(--bs-warn); background: rgba(229, 159, 59, .12); }
+.bs-segment-never.selected { color: var(--osl-setup-muted); background: rgba(151, 163, 169, .12); }
+.bs-segment:has(input:focus-visible) { outline: 2px solid var(--osl-setup-accent); outline-offset: -2px; }
+
+.bs-quiet {
+  width: 640px;
+  max-width: 100%;
+  margin: 22px auto 0;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--bs-quiet-line);
+  text-align: center;
+}
+
+/* Continue and Back stack; the global Back is prepended into this row by
+   dockOnboardingBackControl, so `order` puts it back underneath. */
+.bs-onboarding .setup-footer.onboarding-actions {
+  width: 640px;
+  max-width: 100%;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 18px;
+  margin-block: 24px 0;
+  padding: 0;
+  border: 0;
+}
+
+.bs-onboarding .bs-continue { order: 1; }
+
+.onboarding-panel .bs-onboarding #onboarding-back,
+.bs-onboarding #onboarding-back {
+  order: 2;
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--osl-setup-second);
+  text-align: center;
+  cursor: pointer;
+  transition: color .2s;
+}
+
+.bs-onboarding #onboarding-back::before { content: "\2190\00a0"; }
+.bs-onboarding #onboarding-back:hover { color: var(--osl-setup-text); background: transparent; }
+
+/* Objects park mid-track and the badges stay hidden. Each row still shows what
+   it is about -- an open lock, a closed lock, a file with its details on it. */
+@media (prefers-reduced-motion: reduce) {
+  .bs-travel,
+  .bs-badge,
+  .bs-dot { animation: none; }
+  .bs-travel { transform: translateX(51px); opacity: 1; }
+  .bs-badge { opacity: 0; }
+  .bs-segment { transition: none; }
+}
+
+@media (max-width: 44rem) {
+  .bs-onboarding { width: 100%; padding: 0 16px; }
+  .bs-list, .bs-quiet, .bs-onboarding .setup-footer.onboarding-actions { width: 100%; }
+  .bs-row { flex-wrap: wrap; }
+  .bs-row-title { white-space: normal; }
+  .bs-control { flex: 1 0 auto; }
+}

@@ -17,7 +17,9 @@ export const ONBOARDING_SEQUENCE = [
   "burnpass",
   "mullvad",
   "browser",
-  "tutorial",
+  // 2026-08-06: the tour left the onboarding spine on the owner's instruction.
+  // The route and its five steps still exist -- Settings -> About replays them --
+  // but nobody is walked through it on first run any more.
   "detected",
   "install",
   "apps",

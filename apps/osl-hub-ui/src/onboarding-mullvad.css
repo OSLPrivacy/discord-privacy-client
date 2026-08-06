@@ -1,0 +1,171 @@
+/* ---------------------------------------------------------------------------
+   Mullvad. 2026-08-06 restyle.
+
+   The three states used to look like three different screens: two of them a
+   button, the third a bordered warning box with a divider above it. They are
+   now one status card whose DOT carries the state, so the page keeps its shape
+   whatever is installed.
+   --------------------------------------------------------------------------- */
+.onboarding-shell:has(.mv-screen),
+.onboarding-panel:has(.mv-screen) {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--osl-setup-bg);
+  display: grid;
+  place-items: center;
+  align-content: center;
+}
+
+.mv-screen {
+  --mv-card-line: #1e2326;
+  --mv-quiet-line: #4a555b;
+  --mv-found: #3dd68c;
+  --mv-missing: #e59f3b;
+
+  width: 440px;
+  max-width: 100%;
+  margin: 0;
+  transform: translateY(-40px);
+  text-align: center;
+  font-family: "Onest Variable", Onest, var(--font-ui);
+}
+
+/* Written at panel specificity: `.onboarding-panel h1` pins margin-bottom,
+   font-size and letter-spacing and out-specifies a lone class selector. */
+.onboarding-panel .mv-title,
+.mv-title {
+  margin: 0 0 8px;
+  font-family: inherit;
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -.02em;
+  color: var(--osl-setup-text);
+}
+
+.mv-quiet {
+  margin: 0;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--mv-quiet-line);
+  text-align: center;
+}
+
+.mv-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 28px 0 0;
+  padding: 15px 20px;
+  border: 1px solid var(--mv-card-line);
+  border-radius: 2px;
+  background: var(--osl-setup-card);
+  text-align: left;
+}
+
+/* The dot is the state. It is never the ONLY signal -- the sentence beside it
+   says the same thing in words -- so a person who cannot tell amber from green
+   loses nothing. */
+.mv-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50% !important;
+  background: var(--mv-missing);
+}
+
+.mv-status[data-mullvad-state="found"] .mv-dot { background: var(--mv-found); }
+
+.mv-status-line {
+  flex: 1;
+  min-width: 0;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 14.5px;
+  line-height: 1.4;
+  color: var(--osl-setup-second);
+}
+
+/* Kept from the old screen, quieter. The handoff only drew the not-found case;
+   the other two states still need something to press. */
+.mv-action {
+  flex: 0 0 auto;
+  min-height: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--osl-setup-line);
+  border-radius: 2px;
+  background: transparent;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--osl-setup-second);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color .2s, color .2s;
+}
+
+.mv-action:hover:not(:disabled) { border-color: var(--osl-setup-accent); color: var(--osl-setup-accent); }
+.mv-action:disabled { opacity: .5; cursor: default; }
+
+.mv-screen .mullvad-setup-notice {
+  margin: 12px 0 0;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 13px;
+  color: var(--osl-setup-muted);
+  text-align: center;
+}
+
+.mv-screen .mv-continue { margin: 22px 0 0; }
+
+/* Four class selectors: the shared
+   `.onboarding-panel .setup-footer.onboarding-actions` rule is three classes,
+   so anything lighter loses and the two links stack. */
+.onboarding-panel .setup-footer.onboarding-actions.mv-links,
+.mv-links {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: center;
+  gap: 96px;
+  margin: 18px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+/* `.onboarding-actions .text-button` gives Skip `flex-basis: 100%`, which would
+   take the whole row and push Back onto a line of its own. */
+.onboarding-panel .setup-footer.onboarding-actions.mv-links button,
+.mv-links button {
+  flex: 0 0 auto;
+  flex-basis: auto;
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  color: #8a969c;
+  cursor: pointer;
+  transition: color .2s;
+}
+
+.mv-links button:hover { color: var(--osl-setup-text); background: transparent; }
+.mv-links #onboarding-back::before { content: "\2190\00a0"; }
+.mv-links #onboarding-back { order: 1; }
+.mv-links #skip-mullvad { order: 2; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mv-action,
+  .mv-links button { transition: none; }
+}
+
+@media (max-width: 32rem) {
+  .mv-screen { width: 100%; padding: 0 16px; }
+  .mv-links { gap: 40px; }
+}

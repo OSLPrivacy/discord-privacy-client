@@ -35,13 +35,19 @@ describe("Discord QA license gate", () => {
     vi.unstubAllEnvs();
   });
 
+  // Protects: the QA shell has no Pro code screen -- asking for that route lands
+  // on the sending screen instead, and the code entry is not rendered anyway.
   it("gates the Pro onboarding destination to sending in the QA shell", async () => {
     const { __oslHubUiTest } = await loadUi(true);
 
     const markup = __oslHubUiTest.renderOnboardingRoute("pro");
 
     expect(__oslHubUiTest.snapshot().onboardingRoute).toBe("sending");
-    expect(markup).toContain("Choose how to send");
+    // Identify the screen by what only it renders -- the send-mode chooser and
+    // its Continue -- so a copy edit to the heading cannot silently pass this.
+    expect(markup).toContain('data-send-mode="manual"');
+    expect(markup).toContain('data-send-mode="single"');
+    expect(markup).toContain('id="finish-onboarding"');
     expect(markup).not.toContain("Enter Pro code");
   }, MODULE_RELOAD_BUDGET_MS);
 

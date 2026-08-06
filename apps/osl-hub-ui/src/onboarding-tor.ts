@@ -1,4 +1,5 @@
 import "./onboarding-tor.css";
+import { choiceRadio, continueButton } from "./onboarding-controls";
 
 /** The network route must be chosen explicitly during onboarding. */
 export type TorChoice = "tor" | "direct" | null;
@@ -7,42 +8,84 @@ export interface TorOnboardingState {
   choice: TorChoice;
 }
 
-export const initialTorOnboardingState = (): TorOnboardingState => ({ choice: null });
+// 2026-08-06: Liam's redesign selects Tor by default rather than starting with
+// nothing chosen. The route is still SAVED on Continue, so the preference the
+// backend receives is still the one on screen.
+export const initialTorOnboardingState = (): TorOnboardingState => ({ choice: "tor" });
 
-// The previous state is intentionally unused: choosing a route REPLACES it,
-// and there is deliberately no default (the owner's decision: Tor is an
-// explicit choice, both options stating their downsides).
+// The previous state is intentionally unused: choosing a route REPLACES it.
 export function chooseTorRoute(_state: TorOnboardingState, choice: Exclude<TorChoice, null>): TorOnboardingState {
   return { choice };
 }
 
-/** There is intentionally no default: the next step stays unavailable until a choice is made. */
+/** Guards the Continue handler. A null choice can still arrive from a restored session. */
 export function canContinuePastTorChoice(state: TorOnboardingState): boolean {
   return state.choice !== null;
 }
 
 /**
- * Render equally weighted choices. Each names its own cost, so neither is
- * presented as the product's recommended or inherently safer route.
+ * The two diagrams ARE the explanation. The old screen carried a sentence on
+ * each card -- "may take longer", "your network provider can see" -- which
+ * describes the cost in words a first-time user has no way to weigh. A dot that
+ * takes six seconds to pick its way through three relays, next to one that
+ * crosses in under two, says the same thing without asking them to imagine it.
+ */
+const PC_AND_SERVER = `
+  <rect class="tor-ico" x="24" y="52" width="20" height="14" rx="2"/>
+  <path class="tor-ico" d="M30 70 h8"/>
+  <rect class="tor-ico" x="276" y="50" width="20" height="7" rx="1.5"/>
+  <rect class="tor-ico" x="276" y="61" width="20" height="7" rx="1.5"/>`;
+
+// Both icons are centred on the SAME line, y=59: the monitor's middle, and the
+// gap between the server's two slabs. That is what lets the direct route be
+// dead level instead of drifting 2px downhill across the card, which is how it
+// read before the server was nudged down.
+const TOR_ROUTE = "M50 59 L103 32 L160 88 L217 32 L270 59";
+const DIRECT_ROUTE = "M50 59 L270 59";
+
+function torDiagram(): string {
+  return `<svg class="tor-diagram" viewBox="0 0 320 120" fill="none" aria-hidden="true">
+    <path class="tor-route" d="${TOR_ROUTE}"/>
+    ${PC_AND_SERVER}
+    <circle class="tor-relay" cx="103" cy="32" r="4.5"/>
+    <circle class="tor-relay" cx="160" cy="88" r="4.5"/>
+    <circle class="tor-relay" cx="217" cy="32" r="4.5"/>
+    <!-- r matches the relay ring's INNER radius (4.5 - 1.5/2 = 3.75), plus a
+         hair so antialiasing leaves no ring of background showing when the dot
+         parks inside a node. -->
+    <circle class="tor-packet tor-packet-slow" r="3.9"/>
+  </svg>`;
+}
+
+function directDiagram(): string {
+  return `<svg class="tor-diagram" viewBox="0 0 320 120" fill="none" aria-hidden="true">
+    <path class="tor-route" d="${DIRECT_ROUTE}"/>
+    ${PC_AND_SERVER}
+    <circle class="tor-packet tor-packet-fast" r="3.9"/>
+  </svg>`;
+}
+
+/**
+ * Render equally weighted choices. Neither is labelled recommended; the speed
+ * contrast between the two animations is the only claim the screen makes.
  */
 export function onboardingTorMarkup(state: TorOnboardingState): string {
-  const card = (choice: Exclude<TorChoice, null>, title: string, downside: string): string => {
+  const card = (choice: Exclude<TorChoice, null>, title: string, diagram: string, caption: string): string => {
     const selected = state.choice === choice;
     return `<label class="tor-choice-card${selected ? " selected" : ""}">
-      <input type="radio" name="tor-route" value="${choice}"${selected ? " checked" : ""}/>
-      <span class="tor-choice-copy"><strong>${title}</strong><small>${downside}</small></span>
+      <input class="sr-only" type="radio" name="tor-route" value="${choice}"${selected ? " checked" : ""}/>
+      <span class="tor-card-head">${choiceRadio()}<strong>${title}</strong></span>
+      ${diagram}
+      <span class="tor-card-caption">${caption}</span>
     </label>`;
   };
 
   return `<section class="tor-onboarding" aria-labelledby="tor-onboarding-heading">
-    <p class="eyebrow">Connection choice</p>
-    <h1 id="tor-onboarding-heading" tabindex="-1">Choose how OSL connects</h1>
-    <p class="compact-lead onboarding-centered-copy">Pick one before continuing. You can review this choice later in Settings.</p>
+    <h1 id="tor-onboarding-heading" tabindex="-1" class="tor-title">Choose how OSL connects</h1>
     <fieldset class="tor-choice-grid"><legend class="sr-only">Connection route</legend>
-      ${card("tor", "Use Tor", "Connections may take longer and may not work on every network.")}
-      ${card("direct", "Connect directly", "Your network provider can see that this device connects to OSL’s server.")}
+      ${card("tor", "Use Tor", torDiagram(), "travel time · 2–6 s")}
+      ${card("direct", "Connect directly", directDiagram(), "travel time · under 1 s")}
     </fieldset>
-    <p class="tor-choice-note" role="status">${state.choice === null ? "Choose a connection route to continue." : "Your choice will be saved before OSL sends or fetches anything."}</p>
-    <div class="setup-footer onboarding-actions"><button class="button primary" data-tor-choice-continue type="button" ${canContinuePastTorChoice(state) ? "" : "disabled"}>Continue</button></div>
+    <div class="setup-footer onboarding-actions">${continueButton("data-tor-choice-continue", "tor-continue")}</div>
   </section>`;
 }

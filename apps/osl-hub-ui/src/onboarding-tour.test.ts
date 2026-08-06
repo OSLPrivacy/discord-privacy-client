@@ -12,6 +12,9 @@ function functionSource(name: string, nextName: string): string {
 }
 
 describe("first-launch protected messaging tour", () => {
+  // Protects the tour's CONTENT -- the five things it explains and the two
+  // controls that step through them. This did not change on 2026-08-06; only
+  // where the tour sits did. (Where it is reachable from is asserted below.)
   it("ships a click-through explanation of Lock, Eye, ring, send mode, and limits", () => {
     const tour = functionSource("tutorialContent", "chooseAppsOnboardingContent");
     for (const required of ["Lock", "Eye", "cyan ring", "Send mode", "App limits"]) {
@@ -19,8 +22,24 @@ describe("first-launch protected messaging tour", () => {
     }
     expect(tour).toContain('id="onboarding-tour-next"');
     expect(tour).toContain('id="onboarding-tour-back"');
+  });
+
+  // Protects the 2026-08-06 removal, which is the half a deletion normally
+  // leaves unguarded: browser import used to hand off to the tour, and now
+  // goes straight to the step that followed it. Nothing in first run may walk
+  // a new person into the tour again.
+  it("is no longer entered from first-run setup", () => {
     const entry = functionSource("enterCombinedAppChoice", "persistCombinedHomeChoices");
-    expect(entry).toContain('onboardingRoute = "tutorial"');
+    expect(entry).toContain('onboardingRoute = "detected"');
+    expect(entry).not.toContain('onboardingRoute = "tutorial"');
+    // The one remaining SHIPPING writer of this route is the Settings replay,
+    // asserted in the last test here. Nowhere else may re-enter it. Counted
+    // against the shipping half of the file only: `__oslHubUiTest` also sets
+    // the route, but that harness is never on a user's path.
+    const shipping = source.slice(0, source.indexOf("export const __oslHubUiTest"));
+    expect(shipping).not.toBe("");
+    expect(shipping.match(/onboardingRoute = "tutorial"/gu) ?? []).toHaveLength(1);
+    expect(functionSource("bindOnboarding", "completeOnboarding")).not.toContain('onboardingRoute = "tutorial"');
   });
 
   it("renders one Back per tour step and lets it leave the route at step one", () => {

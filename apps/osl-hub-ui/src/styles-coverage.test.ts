@@ -23,15 +23,40 @@ import { BurnGuaranteeCopy, burnFeatureClaimsMarkup } from "./feature-claims";
  * being painted by nothing at all.
  */
 
-const SHEETS = ["./styles.css", "./local-protected-sheet.css"] as const;
+// Every sheet main.ts imports, not just the big one. The redesigned setup
+// screens each carry their own file; leaving them out of this list made their
+// classes look unpainted when they are in fact styled and shipped.
+const SHEETS = [
+  "./styles.css",
+  "./local-protected-sheet.css",
+  "./onboarding-controls.css",
+  "./onboarding-tor.css",
+  "./onboarding-cover.css",
+  "./onboarding-forward-secrecy.css",
+  "./recovery-screen.css",
+  "./onboarding-before-send.css",
+  "./onboarding-delete.css",
+  "./onboarding-sending.css",
+  // 2026-08-06 rebuilds. onboarding-mullvad.css is imported by main.ts directly;
+  // onboarding-stealth.css by password-roles.ts, which main.ts imports. Both are
+  // bundled and shipped, so what they paint is genuinely painted.
+  "./onboarding-mullvad.css",
+  "./onboarding-stealth.css",
+] as const;
 
 /**
  * Markup that ships inside the hub window. main.ts renders the chrome and every
- * destination; these two render whole routes it embeds. Modules that no shipping
+ * destination; these render whole routes it embeds. Modules that no shipping
  * entrypoint imports (osl-notes.ts, osl-office.ts) are deliberately absent --
  * they carry their own unstyled classes and are not on screen.
+ *
+ * password-roles.ts is here because of the 2026-08-06 rebuild: the stealth and
+ * burn screens moved out of main.ts into it, taking ~19 class names with them,
+ * and adding onboarding-stealth.css to SHEETS without also scanning the markup
+ * it paints would have made that sheet inert -- listed, read, and vouching for
+ * nothing. Scanning both is what keeps the pair load-bearing.
  */
-const MARKUP = ["./main.ts", "./osl-mail-view.ts", "./osl-chats-view.ts"] as const;
+const MARKUP = ["./main.ts", "./osl-mail-view.ts", "./osl-chats-view.ts", "./password-roles.ts"] as const;
 
 interface ClassAttribute {
   readonly tokens: readonly string[];

@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+// The cover-insertion comparison was restyled out of main.ts / styles.css into
+// its own module, so its motion rules are read from there.
+const coverSource = readFileSync(new URL("./onboarding-cover.ts", import.meta.url), "utf8");
+const coverStyles = readFileSync(new URL("./onboarding-cover.css", import.meta.url), "utf8");
 
 describe("restrained motion system", () => {
   it("enters only when the navigation key changes", () => {
@@ -28,9 +32,13 @@ describe("restrained motion system", () => {
     expect(source).not.toContain("security-motion");
   });
 
+  // Protects: the unlock screen reveals the SAME vector mark the loading screen
+  // does, once, above its heading -- one shared reveal, not a second bespoke
+  // animation. The heading became "Sign in" on 2026-08-06; the mark, the stage
+  // it sits in and its one-shot reveal are unchanged and are what this checks.
   it("uses the same simple one-shot reveal for password unlock", () => {
     expect(source).toContain('class="unlock-logo-stage"');
-    expect(source).toMatch(/class="unlock-logo-stage"[\s\S]*?src="\$\{oslVectorLogoUrl\}"[\s\S]*?Enter your password/);
+    expect(source).toMatch(/class="unlock-logo-stage"[\s\S]*?src="\$\{oslVectorLogoUrl\}"[\s\S]*?>Sign in<\/h1>/);
     expect(styles).toMatch(/\.signin-logo\s*\{[^}]*animation:\s*signin-logo-reveal 440ms/s);
     expect(styles).toMatch(/\.unlock-logo-stage \.osl-logo\s*\{[^}]*animation:\s*logo-soft-enter 360ms/s);
     expect(styles).not.toMatch(/security-(?:center|key|shackle|body|lock)/);
@@ -61,26 +69,40 @@ describe("restrained motion system", () => {
     expect(reduced).toContain('.toast { transform: translateX(-50%) !important; }');
   });
 
-  it("reveals the four sending steps once, slowly, from left to right", () => {
-    expect(source).toContain('step(1, "Write")');
-    expect(source).toContain('step(4, finalStep)');
-    expect(styles).toContain("animation: manual-send-step .48s var(--ease-out) 1 both");
-    expect(styles).toContain(".manual-send-demo span:nth-of-type(2) { animation-delay: .78s; }");
-    expect(styles).toContain(".manual-send-demo span:nth-of-type(4) { animation-delay: 2.34s; }");
-    expect(styles).not.toMatch(/manual-send-(?:step|flow)[^;]*infinite/);
-    const reduced = styles.slice(styles.indexOf("@media (prefers-reduced-motion: reduce)"));
-    expect(reduced).toMatch(/\.manual-send-demo span,[\s\S]*?animation:\s*none !important/);
+  // Protects the 2026-08-06 deletion: the Write/Encrypt/Copy/Send stepper animated
+  // one send mode's story on a screen offering four, so it is gone from main.ts
+  // and every rule and keyframe it owned is gone from styles.css. This is a
+  // deletion guard, not a motion check -- there is no such motion left to check.
+  it("keeps the retired four-step sending demo out of both the app and the sheet", () => {
+    expect(source).not.toContain("manualSendingAnimationMarkup");
+    expect(source).not.toContain('step(1, "Write")');
+    expect(source).not.toContain("manual-send-demo");
+    expect(styles).not.toContain("manual-send-demo");
+    expect(styles).not.toContain("manual-send-step");
+    expect(styles).not.toContain("manual-send-flow");
   });
 
+  // Protects: the two cover-insertion options are still told apart by looping
+  // motion -- one box blinks in whole, the other types -- and reduced motion
+  // still gets a COMPLETE static state, both boxes filled, so the comparison
+  // survives without animation instead of showing two empty boxes.
   it("loops the explicit atomic and character comparison with a static reduced-motion state", () => {
-    expect(source).toContain('class="cover-atomic-preview"');
-    expect(source).toContain('class="cover-composer cover-typing-preview"');
-    expect(styles).toContain("animation: cover-character-cycle 7.2s linear var(--cover-delay) infinite both");
-    expect(styles).toContain("animation: cover-atomic-cycle 7.2s var(--ease-out) infinite both");
-    expect(styles).toContain("animation: cover-caret-cycle 7.2s steps(1, end) infinite");
-    const reduced = styles.slice(styles.indexOf("@media (prefers-reduced-motion: reduce)"));
-    expect(reduced).toContain(".cover-atomic-preview");
-    expect(reduced).toContain(".cover-typing-preview i");
+    expect(coverSource).toContain('class="cover-demo-text cover-demo-atomic"');
+    expect(coverSource).toContain('class="cover-demo-clip"');
+    expect(coverSource).toContain('class="cover-caret"');
+    expect(coverStyles).toContain("animation: cover-atomic 3.2s step-end infinite");
+    expect(coverStyles).toContain("animation: cover-type 3s infinite");
+    expect(coverStyles).toContain("animation: cover-caret-blink 1.1s step-end infinite");
+    const reduced = coverStyles.slice(coverStyles.indexOf("@media (prefers-reduced-motion: reduce)"));
+    expect(reduced).toContain(".cover-demo-atomic");
+    expect(reduced).toContain(".cover-demo-clip");
+    expect(reduced).toContain(".cover-caret { animation: none; }");
+    expect(reduced).toContain(".cover-demo-atomic { opacity: 1; }");
+    expect(reduced).toContain(".cover-demo-clip { width: 10ch; }");
+    // Every loop in the module is one of those three; nothing else repeats.
+    const loops = [...coverStyles.matchAll(/animation:\s*([^;]*\binfinite\b[^;]*);/gu)].map((match) => match[1]);
+    expect(loops.length).toBe(3);
+    expect(loops.every((loop) => /cover-(?:atomic|type|caret-blink)/u.test(loop))).toBe(true);
   });
 
   it("gives transient feedback an exit instead of abruptly removing it", () => {

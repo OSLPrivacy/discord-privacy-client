@@ -1,0 +1,202 @@
+/* ---------------------------------------------------------------------------
+   What happens to old messages. 2026-08-06 restyle.
+
+   Same column, cards and Continue as the other redesigned setup screens. What
+   is its own here is the pair of lock animations: three green locks that get
+   rattled and hold, against three amber ones whose shackles swing open. Those
+   replaced two sentences of cryptographer language.
+   --------------------------------------------------------------------------- */
+.onboarding-shell:has(.fs-onboarding),
+.onboarding-panel:has(.fs-onboarding) {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--osl-setup-bg);
+  display: grid;
+  place-items: center;
+  align-content: center;
+}
+
+.fs-onboarding {
+  --fs-locked: #3dd68c;
+  --fs-open: #e59f3b;
+
+  width: 700px;
+  max-width: 100%;
+  margin: 0;
+  transform: translateY(-40px);
+  text-align: center;
+  font-family: "Onest Variable", Onest, var(--font-ui);
+}
+
+/* 30px, not the 34px the other setup screens use: this heading is a full
+   question over two lines and reads shouty at the larger size. */
+/* Written at panel specificity: `.onboarding-panel h1` (styles.css:5395) pins
+   margin-bottom to 22px, font-size to a clamp and letter-spacing to -.025em,
+   and out-specifies a lone class selector. */
+.onboarding-panel .fs-title,
+.fs-title {
+  margin: 0 0 30px;
+  font-family: inherit;
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -.02em;
+  color: var(--osl-setup-text);
+}
+
+.fs-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.fs-choice-card {
+  display: block;
+  padding: 18px 20px 20px;
+  border: 1.5px solid var(--osl-setup-line);
+  border-radius: 2px;
+  background: var(--osl-setup-card);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .2s;
+}
+
+.fs-choice-card.selected,
+.fs-choice-card:focus-within {
+  border-color: var(--osl-setup-accent);
+}
+
+/* Two lines' worth of height whether the title needs them or not. "Old messages
+   stay readable to you" wraps and "Old messages stay locked" does not, so
+   without this the two cards' lock rows sat at different heights and the pair
+   stopped reading as a comparison. */
+.fs-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+}
+
+.fs-card-head strong {
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--osl-setup-text);
+}
+
+.fs-locks {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  margin: 14px 0 0;
+  padding: 0 0 12px;
+}
+
+.fs-locks-held { color: var(--fs-locked); }
+.fs-locks-open { color: var(--fs-open); }
+
+/* The three locks are staggered so the card reads as three separate attempts
+   rather than one three-wide object moving. */
+.fs-locks .fs-lock:nth-child(2) { animation-delay: .4s; }
+.fs-locks .fs-lock:nth-child(3) { animation-delay: .8s; }
+.fs-locks-open .fs-lock:nth-child(2) .fs-lock-shackle { animation-delay: .4s; }
+.fs-locks-open .fs-lock:nth-child(3) .fs-lock-shackle { animation-delay: .8s; }
+
+/* Rattled, never opened. The whole lock shakes and the shackle never lifts --
+   that is the difference from the other card, and it has to be visible without
+   reading either line. */
+.fs-locks-held .fs-lock {
+  animation: fs-rattle 3.6s linear infinite;
+}
+
+@keyframes fs-rattle {
+  0%, 70% { transform: translateX(0); }
+  74%     { transform: translateX(-1.5px); }
+  78%     { transform: translateX(1.5px); }
+  82%     { transform: translateX(-1px); }
+  86%     { transform: translateX(.5px); }
+  90%, 100% { transform: translateX(0); }
+}
+
+/* Rotating about the hinge rather than the icon centre is what makes it read as
+   opening instead of tilting. */
+.fs-locks-open .fs-lock-shackle {
+  transform-origin: 16px 11px;
+  animation: fs-open 3.6s linear infinite;
+}
+
+@keyframes fs-open {
+  0%, 40%  { transform: rotate(0) translateY(0); }
+  55%, 85% { transform: rotate(35deg) translateY(-1px); }
+  100%     { transform: rotate(0) translateY(0); }
+}
+
+.fs-tradeoff {
+  display: block;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--osl-setup-muted);
+  text-align: center;
+}
+
+/* Continue and Back stack; the global Back is prepended into this row by
+   dockOnboardingBackControl, so `order` puts it back underneath. */
+.fs-onboarding .setup-footer.onboarding-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 18px;
+  margin: 24px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.fs-onboarding .fs-continue { order: 1; }
+
+.onboarding-panel .fs-onboarding #onboarding-back,
+.fs-onboarding #onboarding-back {
+  order: 2;
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--osl-setup-second);
+  text-align: center;
+  cursor: pointer;
+  transition: color .2s;
+}
+
+.fs-onboarding #onboarding-back::before { content: "\2190\00a0"; }
+.fs-onboarding #onboarding-back:hover { color: var(--osl-setup-text); background: transparent; }
+
+/* Still tells the two apart: left shut, right open, neither moving. Dropping
+   the motion must not drop the comparison. */
+@media (prefers-reduced-motion: reduce) {
+  .fs-locks-held .fs-lock,
+  .fs-locks-open .fs-lock-shackle { animation: none; }
+  .fs-locks-open .fs-lock-shackle {
+    transform-origin: 16px 11px;
+    transform: rotate(35deg) translateY(-1px);
+  }
+  .fs-choice-card { transition: none; }
+}
+
+@media (max-width: 46rem) {
+  .fs-onboarding { width: 100%; padding: 0 16px; }
+  .fs-choice-grid { grid-template-columns: 1fr; }
+}

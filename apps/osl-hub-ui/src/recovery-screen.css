@@ -1,0 +1,165 @@
+/* ---------------------------------------------------------------------------
+   Save your recovery kit. 2026-08-06 restyle.
+
+   Narrower column than the other setup screens (620px, not 700px) because the
+   content is two blocks of monospace phrase and a person has to read them
+   accurately enough to copy them by hand.
+
+   Gone: the Mullvad and Android "next steps" cards, the Account details
+   disclosure, the numbered badges and the per-phrase explanation sentences.
+   --------------------------------------------------------------------------- */
+.onboarding-shell:has(.recovery-screen),
+.onboarding-panel:has(.recovery-screen) {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--osl-setup-bg);
+  display: grid;
+  place-items: center;
+  align-content: center;
+}
+
+.recovery-screen {
+  width: 620px;
+  max-width: 100%;
+  margin: 0;
+  transform: translateY(-30px);
+  text-align: center;
+  font-family: "Onest Variable", Onest, var(--font-ui);
+}
+
+/* Written at panel specificity: `.onboarding-panel h1` (styles.css:5395) pins
+   margin-bottom to 22px and out-specifies a lone class selector, which is why
+   the gap under the title measured 22px instead of the 30px asked for. */
+.onboarding-panel .recovery-screen-title,
+.recovery-screen-title {
+  margin: 0 0 30px;
+  font-family: inherit;
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -.02em;
+  color: var(--osl-setup-text);
+}
+
+.recovery-phrase-list {
+  display: grid;
+  gap: 14px;
+}
+
+.recovery-phrase-card {
+  padding: 18px 20px;
+  border: 1px solid #1e2326;
+  border-radius: 2px;
+  background: var(--osl-setup-card);
+  text-align: left;
+}
+
+/* Baseline-aligned so the hint sits on the heading's baseline rather than
+   floating against its cap height. */
+.recovery-phrase-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.recovery-phrase-head strong {
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--osl-setup-text);
+}
+
+.recovery-phrase-head em {
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 13px;
+  font-style: normal;
+  color: var(--osl-setup-quiet);
+}
+
+/* Monospace, loose leading, extra tracking. This is the one block of text on
+   the screen someone may have to transcribe onto paper without a mistake. */
+.recovery-phrase-card code,
+.recovery-phrase-card p {
+  display: block;
+  margin: 10px 0 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace;
+  font-size: 15px;
+  line-height: 1.7;
+  letter-spacing: .02em;
+  color: #e8ecee;
+  overflow-wrap: anywhere;
+}
+
+/* Sits lower than a plain 12px gap would put it: it is a note about the two
+   cards above, not a caption on the button below, so it reads better nearer the
+   middle of the space between them. The Copy button's own top margin is reduced
+   by the same amount, so nothing further down the column moves. */
+.recovery-screen .recovery-kit-requirement {
+  margin: 6px 0 0;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--osl-setup-muted);
+  text-align: center;
+}
+
+.recovery-screen .recovery-copy { margin: 18px 0 0; }
+
+/* Both glyphs share the same seat, so swapping them cannot shift the label. */
+.recovery-copy .recovery-copied-glyph { opacity: 0; color: #3dd68c; }
+.recovery-copy.copied .recovery-copy-glyph { opacity: 0; }
+.recovery-copy.copied .recovery-copied-glyph { opacity: 1; }
+
+.recovery-saved-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 16px 0 0;
+  cursor: pointer;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--osl-setup-second);
+}
+
+.recovery-check { flex: 0 0 auto; }
+.recovery-check-box { stroke: var(--osl-setup-line); fill: transparent; transition: stroke .2s, fill .2s; }
+.recovery-check-mark { stroke: transparent; transition: stroke .2s; }
+.recovery-saved-row:has(input:checked) .recovery-check-box { stroke: var(--osl-setup-accent); fill: var(--osl-setup-accent); }
+.recovery-saved-row:has(input:checked) .recovery-check-mark { stroke: #04181c; }
+.recovery-saved-row:has(input:focus-visible) .recovery-check-box { stroke: var(--osl-setup-accent); }
+
+.recovery-screen .recovery-continue-button { margin: 22px 0 0; }
+
+/* Held back rather than greyed out: the button is legible, obviously not ready,
+   and says nothing about being broken. `:not(:hover)` matters -- pinning the
+   colours unconditionally out-specifies the shared hover rule and kills it. */
+.recovery-screen .recovery-continue-button:disabled {
+  opacity: .35;
+  cursor: default;
+}
+
+.recovery-screen .recovery-continue-button:disabled:not(:hover):not(:focus-visible) {
+  color: var(--osl-setup-text);
+  border-color: var(--osl-setup-line);
+}
+
+.recovery-screen .recovery-continue-button:disabled:hover .signin-arrow {
+  transform: translateY(calc(-50% - 1px));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .recovery-check-box,
+  .recovery-check-mark { transition: none; }
+}
+
+@media (max-width: 42rem) {
+  .recovery-screen { width: 100%; padding: 0 16px; }
+}

@@ -1,0 +1,368 @@
+/* ---------------------------------------------------------------------------
+   Sending behavior. 2026-08-06 restyle.
+
+   Four cards side by side, each showing the SAME journey -- your machine to the
+   server -- so the only thing that differs is what you have to do to make it
+   happen. Manual needs a click. Clipboard goes via the clipboard. Double Enter
+   flashes the key twice; Single Enter flashes it once. That one-versus-two
+   contrast is the explanation, and it replaced a sentence under each option.
+   --------------------------------------------------------------------------- */
+.onboarding-shell:has(.snd-onboarding),
+.onboarding-panel:has(.snd-onboarding) {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--osl-setup-bg);
+  display: grid;
+  place-items: center;
+  align-content: center;
+}
+
+.snd-onboarding {
+  --snd-quiet-line: #4a555b;
+  --snd-warn: #e59f3b;
+  --snd-danger: #e5383b;
+  --snd-card-line: #1e2326;
+
+  width: 880px;
+  max-width: 100%;
+  margin: 0;
+  transform: translateY(-20px);
+  text-align: center;
+  font-family: "Onest Variable", Onest, var(--font-ui);
+}
+
+/* Written at panel specificity: `.onboarding-panel h1` pins margin-bottom,
+   font-size and letter-spacing and out-specifies a lone class selector. */
+.onboarding-panel .snd-title,
+.snd-title {
+  margin: 0 0 30px;
+  font-family: inherit;
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -.02em;
+  color: var(--osl-setup-text);
+}
+
+.snd-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.snd-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 14px 10px;
+  border: 1.5px solid var(--osl-setup-line);
+  border-radius: 2px;
+  background: var(--osl-setup-card);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .2s;
+}
+
+.snd-card.selected,
+.snd-card:focus-within { border-color: var(--osl-setup-accent); }
+
+.snd-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.snd-card-head strong {
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--osl-setup-text);
+}
+
+/* Reserved whether the card has a tag or not, so the four scenes line up on one
+   row instead of the two safe cards riding higher than the two risky ones. */
+.snd-card-tag {
+  display: block;
+  min-height: 15px;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .07em;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.snd-tag-warn { color: var(--snd-warn); }
+.snd-tag-danger { color: var(--snd-danger); }
+
+/* --- the four scenes ------------------------------------------------------ */
+.snd-scene { display: block; width: 100%; height: auto; }
+.snd-ink { stroke: var(--osl-setup-muted); stroke-width: 1.5; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.snd-road { stroke: var(--snd-card-line); stroke-width: 1.5; fill: none; stroke-linecap: round; }
+.snd-bubble { fill: var(--osl-setup-card); stroke: var(--osl-setup-muted); stroke-width: 1.5; }
+.snd-key { fill: transparent; stroke: var(--osl-setup-muted); stroke-width: 1.5; }
+.snd-key-mark { stroke: var(--osl-setup-muted); stroke-width: 1.3; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.snd-cursor { fill: var(--osl-setup-text); stroke: #080c0d; stroke-width: .6; }
+
+/* MANUAL: nothing moves until a hand moves it. The cursor arrives, dips, and
+   only then does the message go. */
+.snd-cursor {
+  transform-box: fill-box;
+  transform-origin: 20% 20%;
+  animation: snd-cursor 4.2s linear infinite;
+}
+
+@keyframes snd-cursor {
+  0%        { transform: translate(26px, 16px) scale(1); opacity: 0; }
+  10%       { transform: translate(20px, 12px) scale(1); opacity: 1; }
+  32%       { transform: translate(0, 0) scale(1); opacity: 1; }
+  40%       { transform: translate(0, 0) scale(.85); opacity: 1; }
+  46%       { transform: translate(0, 0) scale(1); opacity: 1; }
+  56%, 100% { transform: translate(0, 0) scale(1); opacity: 0; }
+}
+
+.snd-manual-bubble { animation: snd-manual-bubble 4.2s linear infinite; }
+
+@keyframes snd-manual-bubble {
+  0%, 56%   { transform: translateX(0); opacity: 1; animation-timing-function: ease-in; }
+  80%       { transform: translateX(58px); opacity: 1; }
+  87%, 100% { transform: translateX(64px); opacity: 0; }
+}
+
+/* CLIPBOARD: the message goes somewhere else first, then comes back out. Two
+   bubbles, never one travelling the whole way -- that is the difference. */
+.snd-clip {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: snd-clip-pulse 4.2s linear infinite;
+}
+
+@keyframes snd-clip-pulse {
+  0%, 30%   { transform: scale(1); }
+  40%       { transform: scale(1.1); }
+  50%, 100% { transform: scale(1); }
+}
+
+.snd-clip-in { animation: snd-clip-in 4.2s linear infinite; }
+
+@keyframes snd-clip-in {
+  0%        { transform: translateX(0); opacity: 0; }
+  8%        { transform: translateX(0); opacity: 1; }
+  32%       { transform: translateX(28px); opacity: 1; }
+  38%, 100% { transform: translateX(28px); opacity: 0; }
+}
+
+.snd-clip-out { animation: snd-clip-out 4.2s linear infinite; }
+
+@keyframes snd-clip-out {
+  0%, 54%   { transform: translateX(0); opacity: 0; }
+  58%       { transform: translateX(0); opacity: 1; }
+  80%       { transform: translateX(26px); opacity: 1; }
+  87%, 100% { transform: translateX(26px); opacity: 0; }
+}
+
+/* DOUBLE vs SINGLE: same keycap, same bubble, same road. Two flashes against
+   one. Nothing else on these two cards differs, on purpose. */
+.snd-key-twice .snd-key { animation: snd-flash-twice 4.2s linear infinite; }
+.snd-key-once .snd-key { animation: snd-flash-once 4.2s linear infinite; }
+
+@keyframes snd-flash-twice {
+  0%, 23%   { fill: transparent; }
+  24%, 30%  { fill: rgba(42, 192, 240, .35); }
+  31%, 57%  { fill: transparent; }
+  58%, 64%  { fill: rgba(42, 192, 240, .35); }
+  65%, 100% { fill: transparent; }
+}
+
+@keyframes snd-flash-once {
+  0%, 39%   { fill: transparent; }
+  40%, 46%  { fill: rgba(42, 192, 240, .35); }
+  47%, 100% { fill: transparent; }
+}
+
+/* Waits for the FIRST press, sits there, and only leaves on the second. */
+.snd-double-bubble { animation: snd-double-bubble 4.2s linear infinite; }
+
+@keyframes snd-double-bubble {
+  0%, 30%   { transform: translateX(0); opacity: 0; }
+  36%, 64%  { transform: translateX(0); opacity: 1; animation-timing-function: ease-in; }
+  84%       { transform: translateX(46px); opacity: 1; }
+  91%, 100% { transform: translateX(52px); opacity: 0; }
+}
+
+/* Already there, and gone the moment the key is pressed. */
+.snd-single-bubble { animation: snd-single-bubble 4.2s linear infinite; }
+
+@keyframes snd-single-bubble {
+  0%        { transform: translateX(0); opacity: 0; }
+  10%, 46%  { transform: translateX(0); opacity: 1; animation-timing-function: ease-in; }
+  68%       { transform: translateX(46px); opacity: 1; }
+  75%, 100% { transform: translateX(52px); opacity: 0; }
+}
+
+/* --- the acknowledgement -------------------------------------------------- */
+/* Appears only for the two modes that press keys for you, and Continue stays
+   held until it is ticked. An automatic send mode must never be reachable by
+   scrolling past a sentence. */
+.snd-risk {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin: 12px 0 0;
+  padding: 15px 20px;
+  border: 1.5px solid var(--osl-setup-line);
+  border-radius: 2px;
+  background: var(--osl-setup-card);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .2s;
+}
+
+.snd-risk.accepted { border-color: var(--osl-setup-accent); }
+.snd-check { flex: 0 0 auto; margin-top: 1px; }
+.snd-check-box { stroke: var(--osl-setup-line); fill: transparent; transition: stroke .2s, fill .2s; }
+.snd-check-mark { stroke: transparent; transition: stroke .2s; }
+.snd-risk.accepted .snd-check-box { stroke: var(--osl-setup-accent); fill: var(--osl-setup-accent); }
+.snd-risk.accepted .snd-check-mark { stroke: #04181c; }
+.snd-risk:has(input:focus-visible) .snd-check-box { stroke: var(--osl-setup-accent); }
+
+.snd-risk-copy strong {
+  display: block;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--osl-setup-text);
+}
+
+.snd-risk-copy small {
+  display: block;
+  margin: 3px 0 0;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--osl-setup-muted);
+}
+
+.snd-quiet {
+  margin: 22px 0;
+  font-family: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  color: var(--snd-quiet-line);
+  text-align: center;
+}
+
+/* --- this device ---------------------------------------------------------- */
+/* Its own row, not a titled section above the modes. The old screen made it a
+   heading with a separate status row underneath, which is most of why the page
+   read as two pages stacked. */
+.snd-capture {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 15px 20px;
+  border: 1px solid var(--snd-card-line);
+  border-radius: 2px;
+  background: var(--osl-setup-card);
+  text-align: left;
+}
+
+.snd-capture-copy { flex: 1; min-width: 0; }
+
+.snd-capture-copy strong {
+  display: block;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--osl-setup-text);
+}
+
+.snd-capture-copy small {
+  display: block;
+  margin: 3px 0 0;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 13.5px;
+  color: var(--osl-setup-muted);
+}
+
+.snd-capture-control { flex: 0 0 auto; }
+
+/* Continue and Back stack; the global Back is prepended into this row by
+   dockOnboardingBackControl, so `order` puts it back underneath. */
+.snd-onboarding .setup-footer.onboarding-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 18px;
+  margin: 24px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.snd-onboarding .snd-continue { order: 1; }
+
+/* Held, not greyed out: legible, obviously not ready, and saying nothing about
+   being broken. `:not(:hover)` matters -- pinning the colours unconditionally
+   out-specifies the shared hover rule and kills it. */
+.snd-onboarding .snd-continue:disabled { opacity: .35; cursor: default; }
+
+.snd-onboarding .snd-continue:disabled:not(:hover):not(:focus-visible) {
+  color: var(--osl-setup-text);
+  border-color: var(--osl-setup-line);
+}
+
+.snd-onboarding .snd-continue:disabled:hover .signin-arrow {
+  transform: translateY(calc(-50% - 1px));
+}
+
+.onboarding-panel .snd-onboarding #onboarding-back,
+.snd-onboarding #onboarding-back {
+  order: 2;
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  color: #8a969c;
+  text-align: center;
+  cursor: pointer;
+  transition: color .2s;
+}
+
+.snd-onboarding #onboarding-back::before { content: "\2190\00a0"; }
+.snd-onboarding #onboarding-back:hover { color: var(--osl-setup-text); background: transparent; }
+
+/* Every scene holds its opening frame: both ends drawn, the message at the
+   start. Four still pictures of the same journey still compare. */
+@media (prefers-reduced-motion: reduce) {
+  .snd-cursor,
+  .snd-manual-bubble,
+  .snd-clip,
+  .snd-clip-in,
+  .snd-clip-out,
+  .snd-key-twice .snd-key,
+  .snd-key-once .snd-key,
+  .snd-double-bubble,
+  .snd-single-bubble { animation: none; }
+  .snd-cursor,
+  .snd-clip-out { opacity: 0; }
+  .snd-card,
+  .snd-risk,
+  .snd-check-box,
+  .snd-check-mark { transition: none; }
+}
+
+@media (max-width: 58rem) {
+  .snd-onboarding { width: 100%; padding: 0 16px; }
+  .snd-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .snd-quiet { white-space: normal; }
+}

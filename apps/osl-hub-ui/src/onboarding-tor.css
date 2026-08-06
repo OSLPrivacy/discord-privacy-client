@@ -1,46 +1,207 @@
+/* ---------------------------------------------------------------------------
+   Choose how OSL connects. 2026-08-06 restyle.
+
+   Same tokens and the same Continue button as the other redesigned entry
+   screens. The two SVG diagrams replaced the descriptive sentence that used to
+   sit inside each card.
+   --------------------------------------------------------------------------- */
+.onboarding-shell:has(.tor-onboarding),
+.onboarding-panel:has(.tor-onboarding) {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: #080c0d;
+  display: grid;
+  place-items: center;
+  align-content: center;
+}
+
 .tor-onboarding {
-  width: min(100%, 43rem);
-  margin: auto;
+  --tor-bg: #080c0d;
+  --tor-card: #0d1114;
+  --tor-line: #2a343a;
+  --tor-text: #f4f7f8;
+  --tor-second: #b8c2c7;
+  --tor-muted: #97a3a9;
+  --tor-caption: #66727a;
+  --tor-accent: #2ac0f0;
+
+  width: 700px;
+  max-width: 100%;
+  margin: 0;
+  /* Optically centred: dead centre reads low because the screen has no footer
+     under it. */
+  transform: translateY(-40px);
   text-align: center;
+  font-family: "Onest Variable", Onest, var(--font-ui);
+}
+
+/* Written at panel specificity: `.onboarding-panel h1` (styles.css:5395) pins
+   margin-bottom to 22px, font-size to a clamp and letter-spacing to -.025em,
+   and out-specifies a lone class selector. */
+.onboarding-panel .tor-title,
+.tor-title {
+  margin: 0 0 30px;
+  font-family: inherit;
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -.02em;
+  color: var(--tor-text);
 }
 
 .tor-choice-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
-  border: 0;
-  margin: 1.5rem 0 1rem;
+  gap: 18px;
+  margin: 0;
   padding: 0;
+  border: 0;
 }
 
 .tor-choice-card {
-  display: grid;
-  grid-template-columns: 1.125rem minmax(0, 1fr);
-  gap: .8rem;
-  align-items: start;
-  min-height: 9.5rem;
-  padding: 1rem;
-  border: 1px solid var(--line, #334155);
-  border-radius: .85rem;
+  display: block;
+  padding: 18px 20px 10px;
+  border: 1.5px solid var(--tor-line);
+  border-radius: 2px;
+  background: var(--tor-card);
   cursor: pointer;
   text-align: left;
+  transition: border-color .2s;
 }
 
-.tor-choice-card:focus-within,
-.tor-choice-card.selected {
-  border-color: var(--accent, #38bdf8);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #38bdf8) 28%, transparent);
+.tor-choice-card.selected,
+.tor-choice-card:focus-within {
+  border-color: var(--tor-accent);
 }
 
-/* Pin both children to their own column. Without this an extra element in the
-   card silently reflows the copy onto row 2 of the 1.125rem radio column and
-   the text wraps one or two words per line. */
-.tor-choice-card input { grid-column: 1; margin-top: .15rem; accent-color: var(--accent, #38bdf8); }
-.tor-choice-copy { grid-column: 2; display: grid; gap: .3rem; align-content: start; }
-.tor-choice-copy strong { font-weight: 600; }
-.tor-choice-copy small, .tor-choice-note { font-size: .875rem; line-height: 1.4; }
-.tor-choice-note { margin: 0; }
+.tor-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 
-@media (max-width: 38rem) {
+.tor-card-head strong {
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--tor-text);
+}
+
+.tor-diagram {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.tor-ico {
+  stroke: var(--tor-muted);
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.tor-route {
+  stroke: var(--tor-line);
+  stroke-width: 1.5;
+  fill: none;
+}
+
+/* Painted after the route so the line never shows through a relay. */
+.tor-relay {
+  fill: var(--tor-bg);
+  stroke: var(--tor-muted);
+  stroke-width: 1.5;
+}
+
+.tor-packet { fill: var(--tor-accent); }
+
+/* Three relays, each with a visible pause. The dot fades in at the machine and
+   out at the server rather than looping visibly back. */
+.tor-packet-slow {
+  animation: tor-hop 6s linear infinite;
+}
+
+@keyframes tor-hop {
+  0%   { transform: translate(50px, 59px);  opacity: 0; }
+  6%   { transform: translate(50px, 59px);  opacity: 1; }
+  24%  { transform: translate(103px, 32px); opacity: 1; }
+  32%  { transform: translate(103px, 32px); opacity: 1; }
+  50%  { transform: translate(160px, 88px); opacity: 1; }
+  58%  { transform: translate(160px, 88px); opacity: 1; }
+  76%  { transform: translate(217px, 32px); opacity: 1; }
+  82%  { transform: translate(217px, 32px); opacity: 1; }
+  97%  { transform: translate(270px, 59px); opacity: 1; }
+  100% { transform: translate(270px, 59px); opacity: 0; }
+}
+
+/* Same dot, same distance, under a third of the time. The contrast IS the
+   explanation -- neither card claims to be the safer one in words. */
+.tor-packet-fast {
+  animation: tor-direct 1.6s linear infinite;
+}
+
+@keyframes tor-direct {
+  0%   { transform: translate(50px, 59px);  opacity: 0; }
+  8%   { transform: translate(50px, 59px);  opacity: 1; }
+  68%  { transform: translate(270px, 59px); opacity: 1; }
+  74%  { transform: translate(270px, 59px); opacity: 0; }
+  100% { transform: translate(270px, 59px); opacity: 0; }
+}
+
+.tor-card-caption {
+  display: block;
+  padding: 0 0 8px;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 13px;
+  color: var(--tor-caption);
+  text-align: center;
+}
+
+/* Continue and Back stack. The global Back is prepended into this row by
+   dockOnboardingBackControl, so it arrives FIRST in the DOM and `order` puts
+   it back underneath. */
+.tor-onboarding .setup-footer.onboarding-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 18px;
+  margin: 24px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.tor-onboarding .tor-continue { order: 1; }
+
+.onboarding-panel .tor-onboarding #onboarding-back,
+.tor-onboarding #onboarding-back {
+  order: 2;
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--tor-second);
+  text-align: center;
+  cursor: pointer;
+  transition: color .2s;
+}
+
+.tor-onboarding #onboarding-back::before { content: "\2190\00a0"; }
+.tor-onboarding #onboarding-back:hover { color: var(--tor-text); background: transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tor-packet { display: none; }
+  .tor-choice-card { transition: none; }
+}
+
+@media (max-width: 46rem) {
+  .tor-onboarding { width: 100%; padding: 0 16px; }
   .tor-choice-grid { grid-template-columns: 1fr; }
 }

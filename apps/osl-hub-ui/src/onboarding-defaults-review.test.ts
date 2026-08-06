@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { nextOnboardingRoute, previousOnboardingRoute } from "./onboarding-sequence";
+import { initialDeleteChoices, onboardingDeleteMarkup } from "./onboarding-delete";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn(), getCurrentWindow: vi.fn() }));
 vi.mock("@fontsource-variable/inter/wght.css", () => ({}));
@@ -37,45 +37,68 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
-
-function functionSource(name: string, nextName: string): string {
-  const start = source.indexOf(`function ${name}`);
-  const end = source.indexOf(`function ${nextName}`, start + 1);
-  expect(start, `${name} should exist`).toBeGreaterThanOrEqual(0);
-  expect(end, `${nextName} should follow ${name}`).toBeGreaterThan(start);
-  return source.slice(start, end);
-}
-
 describe("review defaults onboarding", () => {
-  const review = functionSource("reviewDefaultsOnboardingContent", "coverDraftSetupContent");
+  // 2026-08-06 restyle: the screen moved into its own module, so what is checked
+  // is the markup it renders rather than the source that used to produce it.
+  const review = onboardingDeleteMarkup(initialDeleteChoices());
 
-  it("shows warnings, attachment cleaning, retention, cleanup, and inherited send behavior", () => {
-    expect(review).toContain("Review defaults");
-    expect(review).toContain("Warn before unprotected sends");
-    expect(review).toContain("Warn before protected sends");
-    expect(review).toContain('"Warn before protected sends", "Extra warning before already-protected handoff.", "Off"');
-    expect(review).toContain("Clean attachments");
-    expect(review).toContain("Keep protected drafts");
-    expect(review).toContain("Delete or clean up history");
-    expect(review).toContain("Send behavior");
-    expect(review).toContain("formatSendMode(defaultSetup.sendMode)");
+  // 2026-08-06 re-split, then restyled. This screen used to echo the six rows
+  // the preset screen had just shown. It became the two "what does OSL keep"
+  // settings, and is now phrased as "What should OSL delete?" -- same two
+  // settings, asked the other way round.
+  //
+  // THE POINT OF THE REPHRASING, and the thing this test exists to hold: asking
+  // what to KEEP put the safe answer on the side where the switches were lit.
+  // Asking what to DELETE puts the destructive answer behind a deliberate
+  // action, so both defaults are off and nothing is deleted unless someone says
+  // so here.
+  it("asks what to delete, with both destructive choices off", () => {
+    expect(review).toContain("What should OSL delete?");
+    expect(review).toContain("Unsent private messages");
+    expect(review).toContain("Old messages");
+    expect(initialDeleteChoices()).toEqual({ deleteDrafts: false, deleteOldMessages: false });
+    expect(review).not.toContain('id="delete-drafts" checked');
+    expect(review).not.toContain('id="delete-old-messages" checked');
+    // Each row is its own id, so one cannot be flipped as a side effect of the
+    // other -- which on a delete screen would destroy something unasked.
+    const flipped = onboardingDeleteMarkup({ deleteDrafts: true, deleteOldMessages: false });
+    expect(flipped).toContain('id="delete-drafts" checked');
+    expect(flipped).not.toContain('id="delete-old-messages" checked');
+    expect(review).toContain('id="continue-defaults-review"');
   });
 
+  // Guards two deletions. "A private record of what happened" was removed on the
+  // owner's instruction -- OSL must not keep an activity record at all -- and
+  // this screen must not go back to echoing the previous screen's six rows.
+  it("does not re-add the activity record or re-echo the before-send rows", () => {
+    expect(review).not.toMatch(/A private record of what happened|activity (?:record|log|history)/iu);
+    expect(review).not.toMatch(/Warn (?:me )?before/u);
+    expect(review).not.toContain("Clean attachments");
+    expect(review).not.toContain("Review defaults");
+    expect(review).not.toContain("What should OSL keep on this device?");
+  });
+
+  // Protects the rule, not its old wording: setup starts no destructive
+  // automation, and deleting anything still needs a separate review and a
+  // confirmation afterwards.
   it("starts destructive automation off and requires later review plus confirmation", () => {
-    expect(review).toContain("Timed deletion, bulk cleanup, and account cleanup do not run during onboarding.");
-    expect(review).toContain('"Delete or clean up history", "Timed deletion, bulk cleanup, and account cleanup do not run during onboarding.", "Off"');
-    expect(review).toContain("No destructive action starts from setup.");
-    expect(review).toContain("Cleanup requires a separate review and confirmation.");
+    // The rule survives the rewording twice over: the defaults are off, and the
+    // screen still says out loud that nothing goes without a confirmation.
+    expect(initialDeleteChoices().deleteOldMessages).toBe(false);
+    expect(initialDeleteChoices().deleteDrafts).toBe(false);
+    expect(review).toContain("Nothing is deleted without confirmation");
     expect(review).not.toContain("auto-retry");
     expect(review).not.toContain("retry automatically");
     expect(review).not.toContain("Single Enter");
   });
 
+  // Protects the first-run reading level on this screen.
   it("keeps implementation concepts out of first-run copy", () => {
     expect(review).not.toMatch(/keyserver|ratchet|receipt|browser profile|provider adapter/iu);
   });
 
+  // Protects: this screen sits between the protection presets and send setup, and
+  // both neighbours still render, so the route order cannot silently strand it.
   it("is wired between protection presets, the explicit Tor choice, and send setup", () => {
     const branches = { detected: false, install: false };
     const { reviewDefaultsOnboardingContent, sendingSetupContent } = ui;
@@ -87,6 +110,7 @@ describe("review defaults onboarding", () => {
     expect(nextOnboardingRoute("tor", branches)).toBe("sending");
     expect(previousOnboardingRoute("sending", branches)).toBe("tor");
     expect(reviewDefaultsOnboardingContent()).toContain('id="continue-defaults-review"');
-    expect(sendingSetupContent()).toContain("Choose how to send");
+    expect(sendingSetupContent()).toContain('data-send-mode="manual"');
+    expect(sendingSetupContent()).toContain('id="finish-onboarding"');
   });
 });

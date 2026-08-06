@@ -1,0 +1,211 @@
+/* ---------------------------------------------------------------------------
+   What should OSL delete? 2026-08-06 restyle.
+
+   Was "What should OSL keep on this device?", which put the safe answer on the
+   side where the switches were lit. Asking what to DELETE means the destructive
+   answer is the one that takes a deliberate action, and both defaults are dark.
+   --------------------------------------------------------------------------- */
+.onboarding-shell:has(.del-onboarding),
+.onboarding-panel:has(.del-onboarding) {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--osl-setup-bg);
+  display: grid;
+  place-items: center;
+  align-content: center;
+}
+
+.del-onboarding {
+  --del-faded: #66727a;
+  --del-quiet-line: #4a555b;
+  --del-good: #3dd68c;
+  --del-card-line: #1e2326;
+
+  width: 480px;
+  max-width: 100%;
+  margin: 0;
+  transform: translateY(-30px);
+  text-align: center;
+  font-family: "Onest Variable", Onest, var(--font-ui);
+}
+
+/* Written at panel specificity: `.onboarding-panel h1` pins margin-bottom,
+   font-size and letter-spacing and out-specifies a lone class selector. */
+.onboarding-panel .del-title,
+.del-title {
+  margin: 0 0 30px;
+  font-family: inherit;
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -.02em;
+  color: var(--osl-setup-text);
+}
+
+.del-list { display: grid; gap: 14px; }
+
+.del-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 16px 20px;
+  border: 1px solid var(--del-card-line);
+  border-radius: 2px;
+  background: var(--osl-setup-card);
+  text-align: left;
+}
+
+.del-row-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--osl-setup-text);
+}
+
+/* Both slots are fixed, so the two scenes share one vertical axis down the card
+   stack rather than each sitting wherever its own title length pushed it. */
+.del-art {
+  flex: 0 0 80px;
+  display: flex;
+  justify-content: center;
+}
+
+.del-control {
+  flex: 0 0 60px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* --- the two scenes ------------------------------------------------------- */
+.del-scene { display: block; }
+.del-ink { stroke: var(--osl-setup-muted); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+.del-ink-fill { fill: var(--osl-setup-muted); stroke: none; }
+.del-detail { stroke: var(--osl-setup-line); stroke-width: 1.4; stroke-linecap: round; fill: none; }
+.del-draft { fill: var(--osl-setup-card); }
+.del-note { stroke: var(--del-faded); stroke-width: 1.4; fill: none; }
+.del-badge-disc { fill: var(--del-good); stroke: none; }
+.del-badge-check { stroke: var(--osl-setup-card); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+
+/* The window goes; the draft stays. It never dips even to 0.99, because the
+   whole point is that closing OSL costs you nothing. */
+.del-blink { animation: del-blink 4.4s linear infinite; }
+
+@keyframes del-blink {
+  0%, 30%   { opacity: 1; }
+  38%, 56%  { opacity: .12; }
+  64%, 100% { opacity: 1; }
+}
+
+/* Arrives as the window comes back -- the reassurance lands on the return, not
+   on the disappearance. */
+.del-badge {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: del-badge-pop 4.4s linear infinite;
+}
+
+@keyframes del-badge-pop {
+  0%, 66%   { opacity: 0; transform: scale(.4); }
+  72%       { opacity: 1; transform: scale(1.12); }
+  77%       { opacity: 1; transform: scale(1); }
+  90%       { opacity: 1; transform: scale(1); }
+  96%, 100% { opacity: 0; transform: scale(1); }
+}
+
+/* One full turn per loop, so the passing of time is the thing driving the other
+   card rather than decoration on it. */
+.del-hand {
+  transform-origin: 70px 10px;
+  animation: del-hand-sweep 4.4s linear infinite;
+}
+
+@keyframes del-hand-sweep {
+  from { transform: rotate(0); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Staggered, so they age out one at a time instead of the tray emptying in a
+   single blink. */
+.del-note {
+  transform-box: fill-box;
+  animation: del-note-fade 4.4s linear infinite;
+}
+
+.del-note:nth-of-type(2) { animation-delay: .35s; }
+.del-note:nth-of-type(3) { animation-delay: .7s; }
+
+@keyframes del-note-fade {
+  0%, 30%  { transform: translateY(0);   opacity: 1; }
+  52%, 88% { transform: translateY(-9px); opacity: 0; }
+  100%     { transform: translateY(0);   opacity: 1; }
+}
+
+/* One line, deliberately. The 480px column is sized to hold it, and breaking a
+   promise about deletion across two lines makes it look like fine print. */
+.del-quiet {
+  margin: 22px 0 0;
+  font-family: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  color: var(--del-quiet-line);
+  text-align: center;
+}
+
+/* Continue and Back stack; the global Back is prepended into this row by
+   dockOnboardingBackControl, so `order` puts it back underneath. */
+.del-onboarding .setup-footer.onboarding-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 18px;
+  margin: 24px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.del-onboarding .del-continue { order: 1; }
+
+.onboarding-panel .del-onboarding #onboarding-back,
+.del-onboarding #onboarding-back {
+  order: 2;
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--osl-setup-second);
+  text-align: center;
+  cursor: pointer;
+  transition: color .2s;
+}
+
+.del-onboarding #onboarding-back::before { content: "\2190\00a0"; }
+.del-onboarding #onboarding-back:hover { color: var(--osl-setup-text); background: transparent; }
+
+/* Everything present and nothing moving: the window is there with its draft in
+   it, and the tray still has its messages. Both rows still show what they are
+   about without a single frame of motion. */
+@media (prefers-reduced-motion: reduce) {
+  .del-blink,
+  .del-badge,
+  .del-hand,
+  .del-note { animation: none; }
+  .del-badge { opacity: 0; }
+}
+
+@media (max-width: 34rem) {
+  .del-onboarding { width: 100%; padding: 0 16px; }
+  .del-row-title { white-space: normal; }
+  .del-quiet { white-space: normal; }
+}

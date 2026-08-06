@@ -100,6 +100,11 @@ describe("B0-02 handler bindings", () => {
     vi.unstubAllGlobals();
   });
 
+  // Protects: choosing a protection preset is local-only -- module state plus
+  // localStorage plus a rerender, never a backend call -- and it survives a
+  // restart. The onboarding radio grid that used to display the choice was
+  // removed by the 2026-08-06 re-split, so the rendered proof now reads the
+  // Privacy destination, which is the surface that consumes the stored preset.
   it("selects and persists the Maximum protection preset without IPC", async () => {
     const storage = memoryStorage();
     const maximum = new FakeElement({ value: "maximum" });
@@ -117,9 +122,11 @@ describe("B0-02 handler bindings", () => {
 
     expect(__oslHubUiTest.snapshot().protectionPreset).toBe("maximum");
     expect(storage.getItem("osl-protection-preset-v1")).toBe("maximum");
-    const markup = __oslHubUiTest.renderOnboardingRoute("privacy");
-    expect(markup).toContain('class="send-mode-option selected" data-protection-preset="maximum"');
-    expect(markup).toMatch(/value="maximum" checked/u);
+    const markup = __oslHubUiTest.renderWorkspaceContent("privacy");
+    expect(markup).toContain("ACTIVE PRESET");
+    expect(markup).toContain('<h2 id="privacy-preset-title">Maximum</h2>');
+    expect(markup).toContain("Inherited from Maximum until you make an exception.");
+    expect(markup).not.toContain("Inherited from Balanced");
     expect(mocks.invoke).not.toHaveBeenCalled();
 
     const restarted = await loadUi({}, storage);

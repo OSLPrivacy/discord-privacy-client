@@ -1,0 +1,465 @@
+/* ---------------------------------------------------------------------------
+   Stealth password. 2026-08-06 restyle.
+
+   The paragraph that used to sit under the title tried to explain a mode by
+   describing it. The picture does it instead: the workspace empties, and a
+   struck-through eye says why. What the paragraph said that the picture cannot
+   -- that OSL is still visibly installed -- is not dropped; it moves to the
+   place where it matters, which is the moment the mode is actually armed.
+   --------------------------------------------------------------------------- */
+.onboarding-shell:has(.stealth-screen),
+.onboarding-panel:has(.stealth-screen) {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--osl-setup-bg);
+  display: grid;
+  place-items: center;
+  align-content: center;
+}
+
+.stealth-screen {
+  --st-card: #141719;
+  --st-input: #101315;
+  --st-input-line: #2a2f33;
+  --st-card-line: #1e2326;
+  --st-link: #8a969c;
+  --st-quiet-line: #4a555b;
+  --st-error: #e5383b;
+
+  width: 600px;
+  max-width: 100%;
+  margin: 0;
+  transform: translateY(-20px);
+  text-align: center;
+  font-family: "Onest Variable", Onest, var(--font-ui);
+}
+
+/* Written at panel specificity: `.onboarding-panel h1` pins margin-bottom,
+   font-size and letter-spacing and out-specifies a lone class selector. */
+.onboarding-panel .stealth-title,
+.stealth-title {
+  margin: 0 0 14px;
+  font-family: inherit;
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -.02em;
+  color: var(--osl-setup-text);
+}
+
+.stealth-art { display: block; margin: 0 auto; }
+
+.stealth-quiet {
+  margin: 8px 0 0;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--st-quiet-line);
+  text-align: center;
+}
+
+/* --- the picture ---------------------------------------------------------- */
+.st-ink { stroke: var(--osl-setup-muted); stroke-width: 1.5; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.st-bar { stroke: var(--osl-setup-muted); stroke-width: 1.2; fill: none; stroke-linecap: round; }
+.st-dot { fill: var(--osl-setup-muted); stroke: none; }
+.st-bubble { stroke: var(--osl-setup-quiet); stroke-width: 1.4; fill: none; }
+.st-badge-disc { fill: var(--osl-setup-accent); stroke: none; }
+.st-badge-mark { stroke: #04181c; stroke-width: 1.2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+/* Red, and a cross rather than a struck-through eye. Stealth empties the
+   workspace; burn ends it. The two screens are otherwise identical, so the
+   badge is the only thing telling them apart at a glance -- it has to. */
+.st-badge-danger { fill: var(--st-error); }
+.st-badge-cross { stroke-width: 1.6; }
+
+/* The room empties. Nothing is hidden behind anything -- the messages are just
+   not loaded, which is what the mode actually does. */
+.st-content { animation: st-empty 4.4s linear infinite; }
+
+@keyframes st-empty {
+  0%, 26%   { opacity: 1; }
+  36%, 62%  { opacity: 0; }
+  72%, 100% { opacity: 1; }
+}
+
+/* Arrives WHILE the room is empty, so the badge reads as the cause of the empty
+   workspace rather than as a label on a full one. */
+.st-badge {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: st-badge-pop 4.4s linear infinite;
+}
+
+@keyframes st-badge-pop {
+  0%, 26%   { opacity: 0; transform: scale(.4); }
+  32%       { opacity: 1; transform: scale(1.12); }
+  37%       { opacity: 1; transform: scale(1); }
+  62%       { opacity: 1; transform: scale(1); }
+  68%, 100% { opacity: 0; transform: scale(1); }
+}
+
+/* --- the form ------------------------------------------------------------- */
+.onboarding-panel .stealth-form,
+.stealth-form {
+  width: 100%;
+  display: block;
+  margin: 28px 0 0;
+  padding: 22px;
+  border: 1px solid var(--st-card-line);
+  border-radius: 2px;
+  background: var(--st-card);
+  text-align: left;
+  font-family: inherit;
+}
+
+.stealth-form label {
+  display: block;
+  margin: 0 0 10px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--osl-setup-text);
+}
+
+.stealth-form .password-input-row + label { margin-top: 18px; }
+
+.stealth-form .password-input-row {
+  position: relative;
+  display: block;
+  height: 42px;
+}
+
+.stealth-form .password-input-row input {
+  width: 100%;
+  height: 42px;
+  min-height: 42px;
+  padding: 0 54px 0 12px;
+  border: 1px solid var(--st-input-line);
+  border-radius: 0;
+  background: var(--st-input);
+  font-family: inherit;
+  font-size: 15px;
+  color: var(--osl-setup-text);
+  transition: border-color .2s;
+}
+
+.stealth-form .password-input-row input:focus {
+  border-color: var(--osl-setup-accent);
+  outline: none;
+}
+
+/* Live, while the two fields disagree. A sentence alone was easy to miss right
+   beside the box it was about. */
+.stealth-form .password-input-row input.input-mismatch,
+.stealth-form .password-input-row input.input-mismatch:focus {
+  border-color: var(--st-error);
+}
+
+.stealth-form .password-input-row .password-eye {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 42px;
+  min-width: 42px;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-left: 1px solid var(--st-input-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--osl-setup-muted);
+}
+
+.stealth-form .password-input-row .password-eye:hover { color: var(--osl-setup-text); background: transparent; }
+
+/* Monospace and spaced out, because it is a word that has to be typed exactly.
+   A confirmation you can fumble is not a confirmation. */
+/* Two class selectors: `.password-form input` also matches this box and would
+   otherwise paint it with the light form default, which is how it first
+   rendered -- a white bar in the middle of a dark card. */
+.stealth-form .stealth-confirm-input {
+  width: 100%;
+  height: 42px;
+  min-height: 42px;
+  margin: 0;
+  padding: 0 12px;
+  border: 1px solid var(--st-input-line);
+  border-radius: 0;
+  background: var(--st-input);
+  font-family: Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace;
+  font-size: 15px;
+  letter-spacing: .1em;
+  color: var(--osl-setup-text);
+  transition: border-color .2s;
+}
+
+.stealth-form .stealth-confirm-input:focus { border-color: var(--osl-setup-accent); outline: none; }
+.stealth-form .password-input-row + label { margin-top: 18px; }
+.stealth-form .stealth-confirm-input + .unlock-error { margin-top: 12px; }
+
+.stealth-form .unlock-error {
+  margin: 12px 0 0;
+  min-height: 0;
+  font-size: 13px;
+  color: var(--st-error);
+}
+
+/* The one thing the removed paragraph said that the picture cannot: OSL is
+   still visibly installed. It sits with the control that arms the mode, where
+   somebody is actually deciding, rather than in a block above the fold. */
+.stealth-caveat {
+  display: block;
+  margin: 14px 0 0;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--osl-setup-muted);
+}
+
+.onboarding-panel .stealth-submit,
+.stealth-submit {
+  width: 100%;
+  margin: 24px 0 0;
+  padding: 14px 0;
+  border: 1.5px solid var(--osl-setup-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--osl-setup-text);
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color .2s, color .2s;
+}
+
+.stealth-submit span { display: inline-block; translate: 0 -1px; }
+
+.stealth-submit:hover,
+.stealth-submit:focus-visible {
+  border-color: var(--osl-setup-accent);
+  color: var(--osl-setup-accent);
+}
+
+/* Red on hover, not the usual cyan. Every other Continue in onboarding moves
+   you forward; this one destroys everything on the device, and the button
+   should not feel like the others under the cursor. */
+.stealth-destructive .stealth-submit:hover,
+.stealth-destructive .stealth-submit:focus-visible {
+  border-color: var(--st-error);
+  color: var(--st-error);
+}
+
+/* Held, not greyed out. `:not(:hover)` matters -- pinning the colours
+   unconditionally out-specifies the hover rule above and kills it. */
+.stealth-submit:disabled { opacity: .35; cursor: default; }
+
+.stealth-submit:disabled:not(:hover):not(:focus-visible) {
+  color: var(--osl-setup-text);
+  border-color: var(--osl-setup-line);
+}
+
+/* --- the two ways out ----------------------------------------------------- */
+/* Four class selectors, deliberately: the shared
+   `.onboarding-panel .setup-footer.onboarding-actions` rule is a three-class
+   selector, so anything lighter loses and the two links stack. */
+.onboarding-panel .setup-footer.onboarding-actions.stealth-links,
+.stealth-links {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 96px;
+  margin: 18px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+/* `.onboarding-actions .text-button` gives Skip `flex-basis: 100%`, which made
+   it take the whole row and pushed Back onto a line of its own. Both links are
+   pinned to their own size here so the row stays a row. */
+.onboarding-panel .setup-footer.onboarding-actions.stealth-links button,
+.stealth-links button {
+  flex: 0 0 auto;
+  flex-basis: auto;
+  width: auto;
+  margin-top: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--st-link);
+  cursor: pointer;
+  transition: color .2s;
+}
+
+.stealth-links button:hover { color: var(--osl-setup-text); background: transparent; }
+.stealth-links #onboarding-back::before { content: "\2190\00a0"; }
+.stealth-links #onboarding-back { order: 1; }
+.stealth-links .onboarding-role-skip { order: 2; }
+
+@media (prefers-reduced-motion: reduce) {
+  .st-content,
+  .st-badge { animation: none; }
+  .st-badge { opacity: 0; }
+  .stealth-form .password-input-row input,
+  .stealth-submit { transition: none; }
+}
+
+@media (max-width: 40rem) {
+  .stealth-screen { width: 100%; padding: 0 16px; }
+  .stealth-links { gap: 40px; }
+}
+
+/* ---------------------------------------------------------------------------
+   Restore your account. 2026-08-06. Same card, inputs, eye toggles, button and
+   link as the two password screens -- only the fields differ.
+   --------------------------------------------------------------------------- */
+.restore-screen { width: 600px; }
+.onboarding-panel .restore-title,
+.restore-title { margin: 0 0 30px; }
+
+/* The two helper sentences became hints beside their labels. A standalone
+   "6 minimum. 12+ suggested." UNDER the box reads as a rule you already broke;
+   next to the label it reads as the rule before you type. */
+.restore-label-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.restore-label-row label { margin: 0 0 10px; }
+
+.restore-label-row em {
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 13px;
+  font-style: normal;
+  color: var(--osl-setup-quiet);
+}
+
+/* Monospace, matching how the phrase was DISPLAYED on the recovery-kit screen.
+   Someone comparing what they wrote down against what they are typing should
+   not have to read it in two different faces. */
+/* Same reason as the confirmation box above: `.password-form textarea` paints
+   the light default unless this is written at two classes. */
+.stealth-form .restore-phrase {
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--st-input-line);
+  border-radius: 0;
+  background: var(--st-input);
+  resize: none;
+  font-family: Consolas, "Cascadia Mono", "DejaVu Sans Mono", monospace;
+  font-size: 14.5px;
+  letter-spacing: .02em;
+  line-height: 1.6;
+  color: var(--osl-setup-text);
+  transition: border-color .2s;
+}
+
+.stealth-form .restore-phrase:focus { border-color: var(--osl-setup-accent); outline: none; }
+.restore-phrase + .restore-label-row { margin-top: 18px; }
+.stealth-form .password-input-row + .restore-label-row { margin-top: 18px; }
+
+.restore-submit { position: relative; }
+.restore-submit .signin-icon { right: 14px; }
+
+@media (max-width: 40rem) {
+  .restore-screen { width: 100%; }
+}
+
+/* Forgot password. Same card, textarea, button and link as Restore; only the
+   heading, the quiet line and the single field differ. */
+.forgot-screen { transform: translateY(-40px); }
+.onboarding-panel .forgot-title,
+.forgot-title { margin: 0 0 8px; }
+.forgot-screen .stealth-quiet { margin: 0 0 28px; }
+.forgot-screen .stealth-form { margin-top: 0; }
+
+/* ---------------------------------------------------------------------------
+   This device can no longer open your account. 2026-08-06 restyle.
+   --------------------------------------------------------------------------- */
+.onboarding-shell:has(.keylost-screen),
+.onboarding-panel:has(.keylost-screen) {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--osl-setup-bg);
+  display: grid;
+  place-items: center;
+  align-content: center;
+}
+
+.keylost-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 520px;
+  max-width: 100%;
+  transform: translateY(-40px);
+  text-align: center;
+  font-family: "Onest Variable", Onest, var(--font-ui);
+}
+
+/* The tile's background has to match the window exactly, or the rounded corner
+   shows as a lighter square against the page. */
+.keylost-logo {
+  display: block;
+  width: 104px;
+  height: 104px;
+  margin: 0 0 26px;
+  border-radius: 23px !important;
+  background: var(--osl-setup-bg);
+}
+
+.onboarding-panel .keylost-title,
+.keylost-title {
+  margin: 0 0 14px;
+  font-family: inherit;
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -.02em;
+  color: var(--osl-setup-text);
+}
+
+.keylost-copy {
+  max-width: 460px;
+  margin: 0 0 28px;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--osl-setup-muted);
+}
+
+.onboarding-panel .keylost-action,
+.keylost-action {
+  width: 340px;
+  max-width: 100%;
+  margin: 0;
+  padding: 14px 0;
+  border: 1.5px solid var(--osl-setup-line);
+  border-radius: 2px;
+}
+
+.keylost-action .signin-unlock-label { font-size: 16px; translate: 0 -1px; }
+.keylost-action .signin-icon { right: 14px; }
+
+/* Answers the question the person is actually asking -- have I lost everything
+   -- so it is the one line that survived the paragraph cut. */
+.keylost-quiet {
+  margin: 18px 0 0;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--st-quiet-line, #4a555b);
+  text-align: center;
+}

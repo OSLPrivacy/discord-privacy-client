@@ -104,15 +104,27 @@ export const RECOVERY_REVEAL_REQUIRED_NOTICE =
  * The recovery phrases protect different things. Keep this copy with the kit
  * renderer so every place that shows both phrases makes that distinction.
  */
+/**
+ * 2026-08-06 restyle. The cards used to carry a numbered "1"/"2" badge and a
+ * sentence of explanation each ("Your identity phrase brings back who you
+ * are."). Both are now a three-word hint beside the heading -- the phrases
+ * themselves are the content, and two sentences of scaffolding around a secret
+ * a person is meant to copy accurately were in the way of reading it.
+ */
 export function recoveryKitSecretCardsMarkup(
   secrets: RecoveryKitSecrets,
   escape: (value: string) => string,
 ): string {
-  const identityPhrase = secrets.identityPhrase
+  const card = (id: string, heading: string, hint: string, body: string): string =>
+    `<article class="recovery-phrase-card" data-recovery-secret="${id}"><span class="recovery-phrase-head"><strong>${heading}</strong><em>${hint}</em></span>${body}</article>`;
+
+  // An imported identity has no phrase to show: it stayed on the machine it was
+  // imported from, and inventing one here would be a lie about what was saved.
+  const identityBody = secrets.identityPhrase
     ? `<code>${escape(secrets.identityPhrase)}</code>`
     : "<p>Keep using the identity phrase you imported.</p>";
 
-  return `<article class="recovery-kit-item" data-recovery-secret="identity"><span aria-hidden="true">1</span><div><strong>Identity phrase</strong><p>Your identity phrase brings back who you are.</p>${identityPhrase}</div></article><article class="recovery-kit-item" data-recovery-secret="password"><span aria-hidden="true">2</span><div><strong>Password phrase</strong><p>Your password phrase brings back your data.</p><code>${escape(secrets.passwordPhrase)}</code></div></article><p class="recovery-kit-requirement">You need both.</p>`;
+  return `${card("identity", "Identity phrase", "who you are", identityBody)}${card("password", "Password phrase", "your data", `<code>${escape(secrets.passwordPhrase)}</code>`)}<p class="recovery-kit-requirement">You need both.</p>`;
 }
 
 export function initialRecoveryKitState(

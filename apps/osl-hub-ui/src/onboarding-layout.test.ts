@@ -8,6 +8,7 @@ import {
 import { nextOnboardingRoute, ONBOARDING_SEQUENCE, previousOnboardingRoute } from "./onboarding-sequence";
 import { onboardingPaintDecision } from "./ui-behavior";
 import { onboardingPasswordRoleContent } from "./password-roles";
+import { onboardingSendingMarkup } from "./onboarding-sending";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
@@ -126,11 +127,25 @@ describe("clean onboarding sign in", () => {
     expect(styles).toMatch(/\.signin-lock-shackle[^}]*cubic-bezier\(\.34,\s*1\.56,\s*\.64,\s*1\)/s);
   });
 
+  // Protects the shape of the unlock screen: mark, ONE password field, ONE
+  // action. The heading was renamed "Enter your password" -> "Sign in" on
+  // 2026-08-06 and nothing else about the screen moved, so the old heading is
+  // pinned as an absence and the new one is pinned in the same anchored
+  // position under the mark. (The D80 rule this screen carries -- that no
+  // alternate credential may be named in text, placeholder, sr-only label,
+  // aria-label, title, autocomplete token or data- attribute -- is proven
+  // against the RENDERED markup and the accessibility tree in
+  // unlock-screen-single-credential.test.ts, which is where it belongs.)
   it("keeps password unlock to one field and one action", () => {
     expect(source).toContain('class="password-form unlock-form"');
     expect(source).toContain('class="unlock-logo-stage"');
-    expect(source).toMatch(/class="unlock-logo-stage"[\s\S]*?src="\$\{oslVectorLogoUrl\}"[\s\S]*?>Enter your password<\/h1>/);
-    expect(source).toContain(">Enter your password</h1>");
+    expect(source).toMatch(/class="unlock-logo-stage"[\s\S]*?src="\$\{oslVectorLogoUrl\}"[\s\S]*?>Sign in<\/h1>/);
+    expect(source).not.toContain(">Enter your password</h1>");
+    // Still exactly one credential row and one submit in the unlock branch.
+    const unlock = source.slice(source.indexOf('<section class="unlock-card"'), source.indexOf("</section>`;", source.indexOf('<section class="unlock-card"')));
+    expect(unlock).not.toBe("");
+    expect(unlock.match(/type="password"/gu) ?? []).toHaveLength(1);
+    expect(unlock.match(/type="submit"/gu) ?? []).toHaveLength(1);
     expect(source).toContain('id="identity-password-submit" type="submit" disabled>Unlock</button>');
     expect(styles).toMatch(/\.unlock-form\s*\{\s*gap:\s*12px;/);
     expect(styles).toMatch(/\.unlock-form \.unlock-error:empty\s*\{\s*display:\s*none;/);
@@ -271,15 +286,55 @@ describe("clean onboarding sign in", () => {
 
     // Steps that used to render their primary outside a shared action row.
     const pro = functionSource("proSetupContent", "tutorialContent");
-    expect(pro).toMatch(/<div class="setup-footer onboarding-actions">[^]*?type="submit">Continue<\/button><button class="text-button" id="skip-pro-setup"/u);
+    // 2026-08-06 redesign: the Pro step lost its action-row wrapper and its
+    // solid button. Continue is the shared entry-screen button, Skip is the
+    // shared quiet link, and Skip still follows Continue. The ORDER is what
+    // this test was protecting, so that is what it still checks.
+    expect(pro).toMatch(/class="signin-unlock pro-code-continue" type="submit">[^]*?Continue<\/span>[^]*?<button class="signin-recovery" id="skip-pro-setup"/u);
+    expect(pro).not.toContain('<p class="eyebrow">Optional</p>');
+    expect(pro).not.toContain('class="button primary" type="submit">Continue');
+    // BOTH password steps were rebuilt from one shared function on 2026-08-06
+    // (password-roles.ts): the submit sits inside the card and the escape sits
+    // in a `.setup-footer.onboarding-actions` row underneath, which is the row
+    // the sheet's order rules above govern and the row the global Back docks
+    // into. So what has to hold for these two is not the old markup shape but
+    // that, on EACH of them, the submit is still findable by the attribute the
+    // binding uses and there is still a way out.
+    for (const [role, next] of [["stealth", "burnpass"], ["burn", "mullvad"]] as const) {
+      const rendered = onboardingPasswordRoleContent({
+        role,
+        configured: false,
+        passwordEyeIcon: () => "",
+        statusTag: () => "",
+      });
+      expect(rendered).toContain("data-onboarding-role-submit");
+      // Submits the right form even though it is styled out of the shared row.
+      expect(rendered).toMatch(new RegExp(`type="submit" form="setup-${role}-form" data-onboarding-role-submit`, "u"));
+      expect(rendered).toContain('class="setup-footer onboarding-actions stealth-links"');
+      expect(rendered).toContain(`data-skip-onboarding-password-role="${next}"`);
+    }
+    const burn = onboardingPasswordRoleContent({
+      role: "burn",
+      configured: false,
+      passwordEyeIcon: () => "",
+      statusTag: () => "",
+    });
+    // t15-b4: canSetOnboardingPasswordRole() REQUIRES `burnConfirmation`, so
+    // without this input on the burn screen the burn password could never be
+    // set at all -- the validator would refuse a value the form gave no way to
+    // type. The rebuild kept it; this is what stops the next one dropping it.
+    expect(burn).toContain('id="setup-burn-confirmation"');
+    expect(burn).toContain('name="burnConfirmation"');
     const stealth = onboardingPasswordRoleContent({
       role: "stealth",
       configured: false,
       passwordEyeIcon: () => "",
       statusTag: () => "",
     });
-    expect(stealth).toMatch(/<div class="setup-footer onboarding-actions"><button class="button primary" type="submit" form="setup-stealth-form"/u);
-    expect(stealth).toContain('data-onboarding-role-submit');
+    // ...and only burn has one. Stealth is not destructive and must not ask
+    // anyone to type ERASE.
+    expect(stealth).not.toContain("setup-burn-confirmation");
+    expect(stealth).not.toContain("burnConfirmation");
     // The submit is no longer inside the form element, so the binding cannot
     // find it by walking the form's own subtree.
     expect(functionSource("bindOnboardingPasswordRole", "bindPasswordVisibility"))
@@ -364,13 +419,17 @@ describe("fresh-account continuation", () => {
     expect(choice).toContain('nativeCatalogBusy ? "Checking Windows…" : "Continue"');
   });
 
+  // Protects: browser import reaches the combined chooser and then Home with
+  // nothing wedged in between, and Back retraces it exactly. The tour used to
+  // sit in that gap; since 2026-08-06 it does not, so the gap is asserted to
+  // be empty rather than to contain it.
   it("routes browser import directly through the combined chooser to Home", () => {
     const branches = { detected: false, install: false };
 
-    expect(nextOnboardingRoute("browser", branches)).toBe("tutorial");
-    expect(previousOnboardingRoute("tutorial", branches)).toBe("browser");
-    expect(nextOnboardingRoute("tutorial", branches)).toBe("apps");
-    expect(previousOnboardingRoute("apps", branches)).toBe("tutorial");
+    expect(nextOnboardingRoute("browser", branches)).toBe("apps");
+    expect(previousOnboardingRoute("apps", branches)).toBe("browser");
+    expect(nextOnboardingRoute("apps", branches)).toBeNull();
+    expect(nextOnboardingRoute("browser", branches)).not.toBe("tutorial");
   });
 
   it("persists Home choices without installing, opening, or adopting native sessions", () => {
@@ -657,9 +716,10 @@ describe("fresh-account continuation", () => {
     const recovery = functionSource("recoveryContent", "identityPasswordForm");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(recovery).toContain('id="copy-recovery-kit"');
-    expect(recovery).toContain("secureRecoveryOnboardingContent()");
     expect(recovery).toContain('recoverySavedAcknowledged ? "checked" : ""');
-    expect(recovery).toContain('recoverySavedAcknowledged ? "" : "disabled"');
+    // Continue is held until the box is ticked. aria-disabled rides along so the
+    // held state is announced, not just drawn at 35% opacity.
+    expect(recovery).toContain('recoverySavedAcknowledged ? "" : "disabled aria-disabled');
     expect(binding).toMatch(/#copy-recovery-kit[\s\S]*?navigator\.clipboard\.writeText\(kit\)[\s\S]*?Recovery kit copied — save it, then confirm below/);
     expect(binding).not.toMatch(/#copy-recovery-kit[\s\S]*?recoverySavedAcknowledged = true/);
     // T15-A7: the checkbox and Continue now go through the recovery-kit
@@ -680,31 +740,34 @@ describe("fresh-account continuation", () => {
     expect(burn).toMatch(/localStorage\.clear\(\);[\s\S]*?recoveryBundle = null;[\s\S]*?recoverySavedAcknowledged = false;/);
   });
 
-  it("adds secure recovery next steps without exposing machinery or claiming Android readiness", () => {
-    const recovery = functionSource("recoveryContent", "secureRecoveryOnboardingContent");
-    const nextSteps = functionSource("secureRecoveryOnboardingContent", "identityPasswordForm");
-    // T15-A7: the capture latch is still what decides whether secrets paint —
-    // it is now read once into the recovery-kit state, and the next steps only
-    // render on the branch that got past `visibleRecoverySecrets`.
+  it("drops the recovery next-steps cards without losing the Mullvad offer", () => {
+    // 2026-08-06 restyle. The Mullvad and Android cards left this screen. Android
+    // was a coming-soon, which the owner banned; Mullvad is a real offer, so the
+    // rule is that it survived as its own step rather than being deleted with the
+    // card it happened to sit in.
+    const recovery = functionSource("recoveryContent", "identityPasswordForm");
     expect(functionSource("recoveryKitStateNow", "applyRecoveryKitAction"))
       .toContain("captureProven: recoveryCaptureGate.canRender()");
-    expect(recovery).toMatch(/visibleRecoverySecrets\(state\)[\s\S]*?secureRecoveryOnboardingContent\(\)/);
-    expect(nextSteps).toContain('class="secure-recovery-next-steps"');
-    expect(nextSteps).toContain("Mullvad");
-    expect(nextSteps).toContain("Optional. Use your existing session later for network privacy.");
-    expect(nextSteps).toContain("Android device");
-    expect(nextSteps).toContain("Coming later. Phone setup stays optional and separate.");
-    expect(nextSteps).not.toMatch(/keyserver|ratchet|receipt|browser profile|provider adapter|account number|tunnel state|credential|token/i);
-    expect(styles).toContain(".secure-recovery-next-steps");
+    expect(recovery).toMatch(/visibleRecoverySecrets\(state\)[\s\S]*?recoveryKitSecretCardsMarkup/);
+    expect(source).not.toContain("secure-recovery-next-steps");
+    expect(source).not.toContain("Android device");
+    expect(styles).not.toContain(".secure-recovery-next-steps");
+    expect(source).toContain('if (onboardingRoute === "mullvad") return mullvadSetupContent();');
   });
 
+  // Protects: every setup step gets the shared Back row and there is no
+  // "skip the rest of setup" escape anywhere. "tutorial" left this list on
+  // 2026-08-06 with the tour -- it renders its own Back (see
+  // onboarding-tour.test.ts), so the shared row must NOT dock into it, and the
+  // absence is asserted so re-adding it cannot ship two Backs again.
   it("keeps setup sequential without a global completion shortcut", () => {
     const onboardingRender = functionSource("renderOnboarding", "onboardingContent");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(onboardingRender).toContain('id="onboarding-back"');
     expect(onboardingRender).not.toContain('id="skip-onboarding"');
     expect(onboardingRender).not.toContain("Skip · manual setup");
-    expect(onboardingRender).toContain('["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "tutorial", "detected", "install", "apps", "mullvad"]');
+    expect(onboardingRender).toContain('["pro", "forward-secrecy", "privacy", "defaults", "tor", "sending", "cover", "passwords", "burnpass", "browser", "detected", "install", "apps", "mullvad"]');
+    expect(onboardingRender).not.toContain('"tutorial"');
     expect(onboardingRender).not.toContain('"scrub"].includes(onboardingRoute)');
     expect(binding).not.toContain('document.querySelector("#skip-onboarding")');
     expect(binding).toContain('document.querySelector("#onboarding-back")?.addEventListener("click"');
@@ -739,7 +802,12 @@ describe("fresh-account continuation", () => {
     expect(indexOf("sending")).toBeLessThan(indexOf("cover"));
     expect(indexOf("cover")).toBeLessThan(indexOf("passwords"));
     expect(indexOf("passwords")).toBeLessThan(indexOf("burnpass"));
-    expect(indexOf("browser")).toBeLessThan(indexOf("tutorial"));
+    expect(indexOf("browser")).toBeLessThan(indexOf("detected"));
+    // 2026-08-06: the tour left the first-run spine on the owner's instruction.
+    // The route and its steps still exist for Settings -> About to replay; what
+    // must not come back is walking a new person through it before they have
+    // used the app once.
+    expect(ONBOARDING_SEQUENCE).not.toContain("tutorial");
     expect(ONBOARDING_SEQUENCE).not.toContain("scrub");
     expect(nextOnboardingRoute(ONBOARDING_SEQUENCE.at(-1)!, { detected: true, install: true })).toBeNull();
   });
@@ -788,16 +856,41 @@ describe("fresh-account continuation", () => {
     expect(binding).toMatch(/#skip-pro-setup[\s\S]*?addEventListener\("click"[\s\S]*?continueFromProOnboarding\("skipped"\)\.route[\s\S]*?render\(\)/);
   });
 
+  // Protects the claim boundary, which is the whole point of this screen: OSL
+  // HANDS OFF to Mullvad and reports only what is installed. It may not imply
+  // it has tunnel access, carries traffic, or controls the VPN. The screen was
+  // rebuilt on 2026-08-06 into one status card whose dot carries the state, so
+  // the wording moved ("Optional network privacy", "Use my session") while
+  // every id and every forbidden claim stayed exactly where they were.
   it("offers an optional fixed Mullvad handoff without claiming tunnel access", () => {
     const content = functionSource("mullvadSetupContent", "scrubCategoryChooserMarkup");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
-    expect(content).toContain("Optional network privacy.");
+    expect(content).toContain("Optional network privacy");
     expect(content).toContain('id="install-mullvad"');
     expect(content).toContain('id="open-mullvad"');
-    expect(content).toContain("Use my Mullvad session");
+    expect(content).toContain("Use my session");
     expect(content).toContain('id="continue-mullvad"');
     expect(content).toContain('id="skip-mullvad"');
     expect(content).not.toMatch(/mullvad-connected|mullvad-autostart|refresh-mullvad|Mullvad pixels|does not copy or read/);
+    // It says only what is INSTALLED -- one line per availability state, and
+    // the state itself is carried by the card, not by a sentence.
+    expect(content).toContain("Mullvad is installed on this device");
+    expect(content).toContain("Mullvad is not installed. Windows can install it for you");
+    expect(content).toContain('data-mullvad-state="${state}"');
+    // ...and never a claim about the tunnel, the traffic, or being connected.
+    // Broader than the exact strings that used to be banned, so a reworded
+    // version of the same claim is caught too.
+    for (const claim of [
+      /\btunnel/iu,
+      /\bconnected\b/iu,
+      /\bencrypt/iu,
+      /your traffic/iu,
+      /through OSL/iu,
+      /OSL (?:routes|protects|connects|secures)/iu,
+      /\bVPN is\b/iu,
+    ]) {
+      expect(content, `the Mullvad screen must not claim ${claim.source}`).not.toMatch(claim);
+    }
     expect(binding).toContain('runMullvadSetupAction("install")');
     expect(binding).toContain('runMullvadSetupAction("open")');
     expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "browser"[\s\S]*?refreshBrowserImportReadiness\(\)/);
@@ -824,36 +917,34 @@ describe("fresh-account continuation", () => {
     expect(passwordBinding.match(/onboardingRoute === "mullvad"\) void refreshMullvadSetup\(\)/g)).toHaveLength(2);
   });
 
-  it("offers exactly the ordinary sending choices during onboarding", () => {
-    const content = functionSource("sendingSetupContent", "coverDraftSetupContent");
-    expect(content).toContain("Choose how to send");
-    expect(content).toContain("manualSendingAnimationMarkup(selectedMode)");
-    expect(source).toContain('step(1, "Write")');
-    expect(source).toContain('step(2, "Encrypt")');
-    expect(source).toContain('step(4, finalStep)');
-    expect(content).toContain('option("manual", "Manual"');
-    expect(content).toContain('option("clipboard", "Clipboard"');
-    expect(content).toContain('option("double", "Double Enter"');
-    expect(content).not.toContain('option("single", "Single Enter"');
+  // Protects: onboarding offers exactly the send modes the send model has -- no
+  // fewer (a mode the app supports but the setup hides is a mode the owner cannot
+  // consent to) and no more -- with the honest limit stated on the same screen,
+  // and without the deleted stepper that animated only one of them.
+  it("offers exactly the sending choices the send model has", () => {
+    const content = onboardingSendingMarkup({ mode: "manual", riskAccepted: false, captureEnabled: false, captureApplied: false });
+    expect([...content.matchAll(/data-send-mode="([^"]+)"/gu)].map((match) => match[1]))
+      .toEqual(["manual", "clipboard", "double", "single"]);
+    expect(content).toContain('id="route-heading"');
     expect(content).not.toContain("Highest risk");
-    expect(content).toContain("No mode silently sends");
-    expect(content).toContain("If OSL cannot prove the destination");
+    expect(content).toMatch(/cannot prove where it is sending[^<]*sends nothing/iu);
+    expect(source).not.toContain("manualSendingAnimationMarkup");
+    expect(source).not.toContain('step(1, "Write")');
   });
 
-  it("shows a restrained animated atomic-versus-typing comparison", () => {
+  it("delegates cover insertion to its own module and keeps the retired markup out", () => {
+    // 2026-08-06 restyle. The screen moved to src/onboarding-cover.ts; what is
+    // pinned here is that main.ts no longer carries a second copy of it.
     const content = functionSource("coverDraftSetupContent", "onboardingPasswordRoleContent");
-    expect(content).toContain("Choose cover insertion");
-    expect(content).toContain("AI writes the cover one character at a time");
-    expect(content).toContain("Insert on send");
-    expect(content).toContain("LOOKS GOOD");
-    expect(content).toContain("Pro");
-    expect(content).toContain('class="cover-atomic-preview"');
-    expect(content).toContain('class="cover-composer cover-typing-preview"');
-    expect(content).not.toContain('style="--cover-delay:');
-    expect(styles).toContain(".cover-typing-preview i:nth-child(10) { --cover-delay: 2.98s; }");
-    expect(content).toContain("OSL stops if it cannot verify the exact destination");
+    expect(content).toContain("onboardingCoverMarkup(coverInsertion)");
+    expect(content).not.toContain("cover-atomic-preview");
+    expect(content).not.toContain("cover-typing-preview");
+    expect(content).not.toContain("LOOKS GOOD");
   });
 
+  // Protects: setup only collects passwords that are actually wired, and it never
+  // claims screen-capture resistance it does not have -- it says plainly when the
+  // protection is off, and when this device cannot enforce it at all.
   it("collects only wired password roles and exposes only real capture resistance", () => {
     const stealthPassword = onboardingPasswordRoleContent({
       role: "stealth",
@@ -867,19 +958,42 @@ describe("fresh-account continuation", () => {
       passwordEyeIcon: () => "",
       statusTag: () => "",
     });
-    const privacy = functionSource("captureSetupMarkup", "coverDraftSetupContent");
     const binding = functionSource("bindOnboarding", "completeOnboarding");
+    // The capture section moved onto the sending screen as one row, so the honesty
+    // rule it carried is checked against all three states that row can be in.
+    const capture = (captureEnabled: boolean, captureApplied: boolean): string =>
+      onboardingSendingMarkup({ mode: "manual", riskAccepted: false, captureEnabled, captureApplied });
+    const off = capture(false, false);
+    const unsupported = capture(true, false);
+    const applied = capture(true, true);
     expect(stealthPassword).toContain("Stealth password");
     expect(burnPassword).toContain("Burn password");
     expect(stealthPassword).toContain('data-onboarding-password-role="stealth"');
     expect(stealthPassword).toContain("Current password");
     expect(stealthPassword).toContain("Set password");
-    expect(privacy).toContain("Protected messages appear only after OSL enables this protection");
-    expect(privacy).toContain('id="window-capture-enabled"');
-    expect(privacy).toContain('type="checkbox"');
-    expect(privacy).not.toContain("Decrypt display");
-    expect(privacy).not.toContain("Unavailable during setup");
-    expect(privacy).not.toContain('id="decrypt-display"');
+    for (const state of [off, unsupported, applied]) {
+      expect(state).toContain('id="window-capture-enabled"');
+      expect(state).toContain('type="checkbox"');
+      expect(state).not.toContain("Decrypt display");
+      expect(state).not.toContain("Unavailable during setup");
+      expect(state).not.toContain('id="decrypt-display"');
+    }
+    // Three states, three different true sentences. Only the state the platform
+    // is actually enforcing may claim the protection is on; the other two say the
+    // screen is exposed, including the one where the device cannot enforce it at
+    // all -- a switch that is ON but unenforced must never read as protection.
+    const note = (markup: string): string => {
+      const found = /<small>([^<]+)<\/small>\s*<\/span>\s*<span class="snd-capture-control"/u.exec(markup);
+      expect(found, "the capture row must state its status").not.toBeNull();
+      return found![1]!;
+    };
+    expect(new Set([note(off), note(unsupported), note(applied)]).size).toBe(3);
+    expect(note(off)).toMatch(/^off\b/iu);
+    expect(note(off)).toMatch(/can be captured/iu);
+    expect(note(unsupported)).toMatch(/device cannot/iu);
+    expect(note(unsupported)).toMatch(/can be captured/iu);
+    expect(note(applied)).toMatch(/active on this device/iu);
+    expect(note(applied)).not.toMatch(/can be captured|cannot|not active|off\b/iu);
     expect(binding).toContain("setScreenshotProtection(windowCaptureEnabled)");
   });
 

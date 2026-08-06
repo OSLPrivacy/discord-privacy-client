@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { SEND_OPTIONS, onboardingSendingMarkup, sendModeIsDangerous } from "./onboarding-sending";
+import { defaultSetup } from "./state";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
@@ -12,15 +14,26 @@ function functionSource(name: string, nextName: string): string {
 }
 
 describe("radically simple onboarding", () => {
-  it("keeps one recommended sending path and makes all three modes visible", () => {
-    const sending = functionSource("sendingSetupContent", "coverDraftSetupContent");
-    expect(sending).toContain("Choose how to send");
-    expect(sending).toContain("manualSendingAnimationMarkup(selectedMode)");
-    expect(sending).toContain('"Manual", "OSL prepares the protected message; you place it and send it.", "Recommended"');
-    expect(sending).toContain('"Clipboard", "OSL encrypts and copies; you paste it and send it."');
-    expect(sending).toContain('"Double Enter", "First Enter prepares and places. A second distinct Enter sends after another exact check."');
-    expect(sending).not.toContain('<details class="send-mode-advanced"');
-    expect(sending).not.toContain('option("single", "Single Enter"');
+  // Protects: the safe path is the one the app recommends by defaulting to it and
+  // listing it first, every mode is visible at the same level with its own
+  // description, none is buried in a disclosure drawer, and no single mode's
+  // animation stands in for the rest.
+  it("keeps one recommended sending path and makes every mode visible", () => {
+    const sending = onboardingSendingMarkup({ mode: "manual", riskAccepted: false, captureEnabled: false, captureApplied: false });
+    expect(SEND_OPTIONS.map((option) => option.mode)).toEqual(["manual", "clipboard", "double", "single"]);
+    // The recommendation is the default, and the default is never a risky mode.
+    expect(defaultSetup.sendMode).toBe(SEND_OPTIONS[0]!.mode);
+    expect(sendModeIsDangerous(defaultSetup.sendMode)).toBe(false);
+    // Each mode is described in its own words -- no shared blurb, no silent duplicate.
+    expect(new Set(SEND_OPTIONS.map((option) => option.described)).size).toBe(SEND_OPTIONS.length);
+    for (const option of SEND_OPTIONS) {
+      expect(option.described.length).toBeGreaterThan(0);
+      expect(sending).toContain(`data-send-mode="${option.mode}"`);
+      expect(sending).toContain(`<strong>${option.name}</strong>`);
+    }
+    expect(sending).not.toContain("<details");
+    expect(source).not.toContain('<details class="send-mode-advanced"');
+    expect(source).not.toContain("manualSendingAnimationMarkup");
   });
 });
 

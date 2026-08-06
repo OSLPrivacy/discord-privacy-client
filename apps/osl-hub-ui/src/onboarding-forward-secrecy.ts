@@ -1,47 +1,86 @@
-import "./onboarding-tor.css";
+import "./onboarding-forward-secrecy.css";
+import { choiceRadio, continueButton } from "./onboarding-controls";
 
 /** The delivery/recovery tradeoff must be selected rather than inferred. */
-export type ForwardSecrecyChoice = "protect-past" | "keep-group-delivery" | null;
+export type ForwardSecrecyChoice = "protect-past" | "keep-group-delivery";
 
 export interface ForwardSecrecyOnboardingState {
   choice: ForwardSecrecyChoice;
 }
 
-export const initialForwardSecrecyOnboardingState = (): ForwardSecrecyOnboardingState => ({ choice: null });
+// 2026-08-06: starts on "stay locked" rather than on nothing. The choice is
+// still saved on Continue, so what gets stored is what is on screen.
+export const initialForwardSecrecyOnboardingState = (): ForwardSecrecyOnboardingState => ({ choice: "protect-past" });
 
 export function chooseForwardSecrecyMode(
   _state: ForwardSecrecyOnboardingState,
-  choice: Exclude<ForwardSecrecyChoice, null>,
+  choice: ForwardSecrecyChoice,
 ): ForwardSecrecyOnboardingState {
   return { choice };
 }
 
+/** Guards the Continue handler against a restored session with no choice. */
 export function canContinuePastForwardSecrecyChoice(state: ForwardSecrecyOnboardingState): boolean {
-  return state.choice !== null;
+  return state.choice !== null && state.choice !== undefined;
 }
 
+/**
+ * One lock, drawn twice per card in two states. `open` lifts the shackle out of
+ * the body; the body is identical either way, so the only thing that changes
+ * between the two cards is whether the shackle is down.
+ */
+function lock(): string {
+  return `<svg class="fs-lock" viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path class="fs-lock-shackle" d="M8 11 V8 a4 4 0 0 1 8 0 v3"/>
+    <rect x="5" y="11" width="14" height="9" rx="2"/>
+  </svg>`;
+}
+
+/**
+ * 2026-08-06 rewrite, then restyle. The original copy read "a stolen data copy
+ * cannot reconstruct earlier message keys" -- cryptographer language on a screen
+ * a first-time user meets in their first two minutes. Nobody chooses well from
+ * that, so nobody chooses; they pick whichever word sounds safer.
+ *
+ * Same two choices, same two costs. What does the explaining now is the pair of
+ * animations: three green locks that get rattled and hold, against three amber
+ * locks whose shackles swing open.
+ */
 export function onboardingForwardSecrecyMarkup(state: ForwardSecrecyOnboardingState): string {
-  // The card is a two-column grid (radio | copy). A third child -- this step
-  // used to render a decorative icon span between them -- pushes the copy onto
-  // the grid's second row under the 1.125rem radio column, which squeezed the
-  // text into an ~80px ribbon wrapping one or two words per line. `tor` renders
-  // the same card with exactly two children and lays out correctly.
-  const card = (choice: Exclude<ForwardSecrecyChoice, null>, title: string, downside: string): string => {
+  const card = (
+    choice: ForwardSecrecyChoice,
+    title: string,
+    tradeoff: string,
+    lockClass: string,
+    label: string,
+  ): string => {
     const selected = state.choice === choice;
-    return `<label class="tor-choice-card${selected ? " selected" : ""}">
-      <input type="radio" name="forward-secrecy-mode" value="${choice}"${selected ? " checked" : ""}/>
-      <span class="tor-choice-copy"><strong>${title}</strong><small>${downside}</small></span>
+    return `<label class="fs-choice-card${selected ? " selected" : ""}">
+      <input class="sr-only" type="radio" name="forward-secrecy-mode" value="${choice}"${selected ? " checked" : ""}/>
+      <span class="fs-card-head">${choiceRadio()}<strong>${title}</strong></span>
+      <span class="fs-locks ${lockClass}" role="img" aria-label="${label}">${lock()}${lock()}${lock()}</span>
+      <small class="fs-tradeoff">${tradeoff}</small>
     </label>`;
   };
-  return `<section class="tor-onboarding" aria-labelledby="forward-secrecy-heading">
-    <p class="eyebrow">Message recovery choice</p>
-    <h1 id="forward-secrecy-heading" tabindex="-1">Choose message protection</h1>
-    <p class="compact-lead onboarding-centered-copy">Pick one before continuing. You can review this choice later in Settings.</p>
-    <fieldset class="tor-choice-grid"><legend class="sr-only">Message protection</legend>
-      ${card("protect-past", "Protect past messages", "A stolen data copy cannot reconstruct earlier message keys. Cost: a restart begins a fresh chain and late messages are lost.")}
-      ${card("keep-group-delivery", "Keep group delivery as today", "Cost: a persisted snapshot can recover prior message keys.")}
+
+  return `<section class="fs-onboarding" aria-labelledby="forward-secrecy-heading">
+    <h1 id="forward-secrecy-heading" tabindex="-1" class="fs-title">If someone gets into this computer,<br/>what happens to old messages?</h1>
+    <fieldset class="fs-choice-grid"><legend class="sr-only">Old messages</legend>
+      ${card(
+        "protect-past",
+        "Old messages stay locked",
+        "A break-in reads nothing. A badly timed restart can lose a message in transit.",
+        "fs-locks-held",
+        "three locks being rattled and staying shut",
+      )}
+      ${card(
+        "keep-group-delivery",
+        "Old messages stay readable to you",
+        "Nothing is ever lost, even joining late. A copy of your data reads what you sent.",
+        "fs-locks-open",
+        "three locks swinging open",
+      )}
     </fieldset>
-    <p class="tor-choice-note" role="status">${state.choice === null ? "Choose how message recovery works to continue." : "Your choice will be saved before OSL sends messages."}</p>
-    <div class="setup-footer onboarding-actions"><button class="button primary" data-forward-secrecy-continue type="button" ${canContinuePastForwardSecrecyChoice(state) ? "" : "disabled"}>Continue</button></div>
+    <div class="setup-footer onboarding-actions">${continueButton("data-forward-secrecy-continue", "fs-continue")}</div>
   </section>`;
 }

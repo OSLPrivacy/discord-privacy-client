@@ -170,16 +170,25 @@ describe("T15 the capture-resistance claim tracks the platform, not the return v
 });
 
 describe("T15-G3 recovery-kit secret explanations", () => {
-  it("renders each phrase in its own card with its distinct recovery purpose", () => {
+  it("renders each phrase in its own card, told apart without a sentence each", () => {
+    // 2026-08-06 restyle: the numbered badge and the explanation sentence under
+    // each heading became a three-word hint beside it. What still has to hold is
+    // that the two phrases are SEPARATE and LABELLED -- one phrase pasted into
+    // the wrong box is a recovery that silently fails.
     const markup = recoveryKitSecretCardsMarkup(SECRETS, (value) => value);
 
-    const cards = [...markup.matchAll(/<article class="recovery-kit-item" data-recovery-secret="([^"]+)">([\s\S]*?)<\/article>/g)];
+    const cards = [...markup.matchAll(/<article class="recovery-phrase-card" data-recovery-secret="([^"]+)">([\s\S]*?)<\/article>/g)];
     expect(cards).toHaveLength(2);
     expect(cards.map(([, secret]) => secret)).toEqual(["identity", "password"]);
     expect(cards[0][2]).toContain("Identity phrase");
-    expect(cards[0][2]).toContain("Your identity phrase brings back who you are.");
+    expect(cards[0][2]).toContain("who you are");
     expect(cards[1][2]).toContain("Password phrase");
-    expect(cards[1][2]).toContain("Your password phrase brings back your data.");
+    expect(cards[1][2]).toContain("your data");
+    // Neither card may carry the other's phrase.
+    expect(cards[0][2]).toContain(SECRETS.identityPhrase);
+    expect(cards[0][2]).not.toContain(SECRETS.passwordPhrase);
+    expect(cards[1][2]).toContain(SECRETS.passwordPhrase);
+    expect(cards[1][2]).not.toContain(SECRETS.identityPhrase);
     expect(markup).toContain("You need both.");
   });
 });

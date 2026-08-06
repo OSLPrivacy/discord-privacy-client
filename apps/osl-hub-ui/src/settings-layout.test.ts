@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { onboardingSendingMarkup } from "./onboarding-sending";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
@@ -18,9 +19,13 @@ describe("simplified truthful settings", () => {
     expect(settings).not.toContain('["privacy", "Privacy"]');
   });
 
+  // Protects: nothing claims OSL sends for you. The "copies and sends nothing"
+  // promise moved out of main.ts with the sending screen, so it is checked in the
+  // rendered markup of src/onboarding-sending.ts, where it now lives.
   it("does not advertise automatic sending as functional", () => {
     expect(source).toContain("OSL encrypts and copies. You choose where and when to send.");
-    expect(source).toContain("If OSL cannot prove the destination, it copies the encrypted text and sends nothing.");
+    expect(onboardingSendingMarkup({ mode: "manual", riskAccepted: false, captureEnabled: false, captureApplied: false }))
+      .toMatch(/cannot prove where it is sending[^<]*sends nothing/iu);
     expect(source).toContain("data-settings-send-mode");
     expect(source).not.toMatch(/Advanced sending preview|data-placement/);
     expect(source).not.toContain("Composer adapter required");

@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { initialBeforeSendChecks, onboardingBeforeSendMarkup } from "./onboarding-before-send";
+import { initialDeleteChoices, onboardingDeleteMarkup } from "./onboarding-delete";
 import { homeAppsFromServices, parseLinkedServices } from "./services";
 
 const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
@@ -39,14 +41,18 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 describe("B0-07b main.ts prohibitions", () => {
+  // Protects: no send mode the owner picked is silently rewritten into another
+  // one on the way to a consumer -- not Manual into Clipboard, and (since Single
+  // Enter was restored on 2026-08-06) not Single into Manual either.
   it("P-13 preserves Manual mode and exposes it to send-mode consumers", () => {
     const onboarding = functionSource("bindOnboarding", "completeOnboarding");
     const firstRun = functionSource("balancedFirstRunSetup", "completeSixStepOnboarding");
     const settings = functionSource("sendingSettingsContent", "privacySettingsContent");
     const protectedDraft = functionSource("prepareLocalProtectedDraft", "openLocalProtectedCapsule");
 
-    expect(onboarding).toContain('["manual", "clipboard", "double"].includes(mode)');
+    expect(onboarding).toContain('["manual", "clipboard", "double", "single"].includes(mode)');
     expect(onboarding).not.toContain('setup.sendMode === "manual") setup.sendMode = "clipboard"');
+    expect(source).not.toContain('setup.sendMode === "single" ? "manual"');
     expect(firstRun).toContain("const sendMode = state.sendMode");
     expect(firstRun).not.toContain('state.sendMode === "manual" ? "clipboard" : state.sendMode');
     expect(settings).toContain('["manual", "Manual", "Prepare only; you place and send"]');
@@ -120,18 +126,30 @@ describe("B0-07b main.ts prohibitions", () => {
     }
   });
 
+  // P-34: the unprotected-send warning and the protected-send warning stay two
+  // INDEPENDENT settings with independent defaults -- unprotected on, protected
+  // off. The 2026-08-06 re-split moved both onto the before-send screen (they
+  // apply at send time, not at rest), so the rule is checked there; they must
+  // never be merged into one "risky sends" control, and the keep-on-device
+  // screen must not carry a second, competing copy of them.
   it("P-34 states independent warning defaults", () => {
-    const review = functionSource("reviewDefaultsOnboardingContent", "coverDraftSetupContent");
-    const presets = functionSource("protectionPresetOnboardingContent", "mullvadSetupContent");
+    const review = onboardingDeleteMarkup(initialDeleteChoices());
+    // The screen moved into its own module in the 2026-08-06 restyle, so the
+    // rule is checked against what it renders rather than against main.ts.
+    const presets = onboardingBeforeSendMarkup(initialBeforeSendChecks());
 
-    expect(review).toContain('"Warn before unprotected sends"');
-    expect(review).toContain('"On", true');
-    expect(review).toContain('"Warn before protected sends"');
-    expect(review).toContain('"Warn before protected sends", "Extra warning before already-protected handoff.", "Off"');
-    expect(presets).toContain("<strong>Warn before unprotected sends</strong>");
-    expect(presets).toContain('${statusTag("On", "active")}');
-    expect(presets).toContain("<strong>Warn before protected sends</strong>");
-    expect(presets).toContain('${statusTag("Off")}');
+    expect(initialBeforeSendChecks().warnUnprotected).toBe(true);
+    expect(initialBeforeSendChecks().warnProtected).toBe(false);
+    expect(presets).toContain("Warn me before an unprotected message");
+    expect(presets).toContain("Warn me before a protected message too");
+    // Separate ids, and flipping one leaves the other exactly where it was, so
+    // neither default can be a side effect of the other.
+    expect(presets).toContain('id="warn-unprotected" checked');
+    expect(presets).not.toContain('id="warn-protected" checked');
+    const flipped = onboardingBeforeSendMarkup({ ...initialBeforeSendChecks(), warnProtected: true });
+    expect(flipped).toContain('id="warn-unprotected" checked');
+    expect(flipped).toContain('id="warn-protected" checked');
+    expect(review).not.toMatch(/Warn (?:me )?before/u);
     expect(`${review}${presets}`).not.toContain("Warn before risky sends");
   });
 
