@@ -1,0 +1,10 @@
+starting measurement only - this does not prove the new front-window grab works
+windows build: Microsoft Windows NT 10.0.19045.0
+background probe pid: 4412
+alt press before request: none
+setforegroundwindow call count: 1
+setforegroundwindow returned: False
+requested window: hwnd=7866498 pid=9020 process=Discord title="@Saint - Discord"
+foreground before request: hwnd=1248134 pid=20448 process=firefox title="App appearance modifications — Mozilla Firefox"
+actual foreground window: hwnd=1248134 pid=20448 process=firefox title="App appearance modifications — Mozilla Firefox"
+refusal count: 1
