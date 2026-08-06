@@ -490,6 +490,7 @@ macro_rules! hub_tauri_commands {
             ai_carrier_status,
             set_ai_carrier_preview_enabled,
             build_integrity_status,
+            list_bad_message_rules,
             list_hub_app_notifications,
             set_hub_notifications_enabled,
             set_hub_screenshot_protection,
@@ -1638,6 +1639,17 @@ mod tauri_registration_surface_tests {
                 "get_hub_recovery_kit_unsaved",
                 "set_hub_recovery_kit_unsaved",
             ],
+        );
+    }
+
+    #[test]
+    fn bad_message_rules_command_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "list_bad_message_rules",
         );
     }
 

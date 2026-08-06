@@ -862,6 +862,7 @@ mod tests {
         "ai_carrier_status",
         "set_ai_carrier_preview_enabled",
         "build_integrity_status",
+        "list_bad_message_rules",
     ];
 
     /// The commands that hold an authorized route open across their own send.

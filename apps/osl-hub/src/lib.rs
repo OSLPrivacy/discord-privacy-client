@@ -26,6 +26,7 @@ pub mod attachment_thumbnail_policy;
 pub mod ai_carrier;
 pub mod ai_consent;
 pub mod attended_imap;
+pub mod bad_message_rules;
 #[cfg(feature = "core")]
 pub mod autoscrub_bridge;
 #[cfg(feature = "core")]

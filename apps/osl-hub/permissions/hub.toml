@@ -19,6 +19,11 @@ description = "Read the already-computed startup build-integrity verdict; it cop
 commands.allow = ["build_integrity_status"]
 
 [[permission]]
+identifier = "allow-list-bad-message-rules"
+description = "List the six static bad-message rule choices and plain explanations; it accepts no input and reads no messages, files, accounts, credentials, or network data."
+commands.allow = ["list_bad_message_rules"]
+
+[[permission]]
 identifier = "allow-compose-scrub-erasure-request"
 description = "Compose a local GDPR/CCPA erasure request for the user to review and send themselves; it performs no network operation."
 commands.allow = ["compose_scrub_erasure_request"]

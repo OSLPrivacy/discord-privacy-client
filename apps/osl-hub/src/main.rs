@@ -7,6 +7,7 @@ use osl_privacy_hub::ai_carrier::{
     ai_carrier_status_for, set_ai_carrier_preview_enabled_for, AiCarrierState,
 };
 use osl_privacy_hub::autoscrub_run::{self, AutoScrubFleetStatus, AutoScrubReviewedRunRequest};
+use osl_privacy_hub::bad_message_rules::BadMessageRuleChoice;
 use osl_privacy_hub::broker::{
     self, DecryptedLocalProtectedMessage, HubBrokerState, OpenedHubAttachment,
     OpenedNativeOverlayTextBatch, OpenedPeerProseMessage, PreparedCoreMessage,
@@ -9323,6 +9324,11 @@ fn set_ai_carrier_preview_enabled(
 #[tauri::command]
 fn build_integrity_status(state: tauri::State<'_, BuildIntegrity>) -> BuildIntegrity {
     *state.inner()
+}
+
+#[tauri::command]
+fn list_bad_message_rules() -> Vec<BadMessageRuleChoice> {
+    osl_privacy_hub::bad_message_rules::list_bad_message_rules()
 }
 
 macro_rules! hub_tauri_generate_handler {
