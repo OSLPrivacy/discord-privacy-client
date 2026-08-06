@@ -1,6 +1,6 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { DELETE_GRANT_RECORD } from "../src/lib/delete-grant.js";
+import { DELETE_GRANT_RECORD, encodeDeleteGrant } from "../src/lib/delete-grant.js";
 import { sha256Hex } from "../src/lib/digest.js";
 import { d1All, d1Count, d1First, d1Run } from "./helpers/workerd.js";
 
@@ -21,7 +21,7 @@ async function seedProtectedStoredCopy() {
        blob_id, fetch_digest_sha256_hex, ack_digest_sha256_hex,
        manage_digest_sha256_hex, object_class, pool, delivery_tag,
        size_bytes, expires_at, created_at,
-       delete_grant_message, delete_grant_owner, burn_scope
+       delete_message, delete_owner, burn_scope
      ) VALUES (?, ?, ?, ?, 'single-ack', 'undelivered', ?, ?, ?, ?, ?, ?, ?)`,
     ID,
     fetchDigest,
@@ -40,11 +40,12 @@ async function seedProtectedStoredCopy() {
 }
 
 function senderDeleteGrant(): string {
-  return JSON.stringify({
-    record: DELETE_GRANT_RECORD,
+  return encodeDeleteGrant({
+    type: DELETE_GRANT_RECORD,
     message: MESSAGE,
     owner: OWNER,
     scope: BURN_SCOPE,
+    grant: MANAGE_CAP,
   });
 }
 
@@ -53,7 +54,7 @@ async function storedCopySnapshot() {
     `SELECT blob_id, fetch_digest_sha256_hex, ack_digest_sha256_hex,
             manage_digest_sha256_hex, object_class, pool, delivery_tag,
             size_bytes, expires_at, created_at,
-            delete_grant_message, delete_grant_owner, burn_scope
+            delete_message, delete_owner, burn_scope
        FROM blob_capability_index
       WHERE blob_id = ?`,
     ID,
