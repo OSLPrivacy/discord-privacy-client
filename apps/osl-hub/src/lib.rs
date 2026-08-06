@@ -148,6 +148,7 @@ pub(crate) mod seam_ledger;
 /// Every other implementation in the tree is `#[cfg(test)]`, which is why the
 /// offline send queue could not be wired at all before this module existed.
 pub mod secure_disk_backend;
+pub mod service_connections;
 pub mod service_host;
 #[cfg(feature = "core")]
 pub mod services;

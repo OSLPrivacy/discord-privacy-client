@@ -44,12 +44,42 @@ pub struct WebsitePageSnapshot {
     pub url: String,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum WebsiteControlKind {
+    EditableBox,
+    Button,
+    VisibleMessageArea,
+}
+
+impl WebsiteControlKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EditableBox => "editableBox",
+            Self::Button => "button",
+            Self::VisibleMessageArea => "visibleMessageArea",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct WebsiteNamedControlRequest {
+    pub name: &'static str,
+    pub kind: WebsiteControlKind,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct WebsiteNamedControl {
+    pub name: String,
+    pub kind: WebsiteControlKind,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum WebsiteDriverError {
     BrowserUnavailable,
     BrowserLaunchFailed(String),
     DevToolsUnavailable(String),
     PageUnavailable,
+    MissingNamedControl(String),
     InvalidUrl,
 }
 
@@ -57,6 +87,13 @@ pub trait WebsiteDriver {
     fn kind(&self) -> WebsiteDriverKind;
     fn find_page(&mut self, url: &Url) -> Result<WebsitePage, WebsiteDriverError>;
     fn read_page(&self, page: &WebsitePage) -> Result<WebsitePageSnapshot, WebsiteDriverError>;
+    fn read_named_controls(
+        &self,
+        _page: &WebsitePage,
+        _required: &[WebsiteNamedControlRequest],
+    ) -> Result<Vec<WebsiteNamedControl>, WebsiteDriverError> {
+        Err(WebsiteDriverError::PageUnavailable)
+    }
 }
 
 pub struct RealBrowserWebsiteDriver {
