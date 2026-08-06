@@ -860,7 +860,7 @@ describe("fresh-account continuation", () => {
   // HANDS OFF to Mullvad and reports only what is installed. It may not imply
   // it has tunnel access, carries traffic, or controls the VPN. The screen was
   // rebuilt on 2026-08-06 into one status card whose dot carries the state, so
-  // the wording moved ("Optional network privacy", "Use my session") while
+  // the wording moved ("Optional network privacy", "found session") while
   // every id and every forbidden claim stayed exactly where they were.
   it("offers an optional fixed Mullvad handoff without claiming tunnel access", () => {
     const content = functionSource("mullvadSetupContent", "scrubCategoryChooserMarkup");
@@ -868,7 +868,9 @@ describe("fresh-account continuation", () => {
     expect(content).toContain("Optional network privacy");
     expect(content).toContain('id="install-mullvad"');
     expect(content).toContain('id="open-mullvad"');
-    expect(content).toContain("Use my session");
+    expect(content).toContain("found session");
+    expect(content).toContain("install");
+    expect(content).toContain("Not now");
     expect(content).toContain('id="continue-mullvad"');
     expect(content).toContain('id="skip-mullvad"');
     expect(content).not.toMatch(/mullvad-connected|mullvad-autostart|refresh-mullvad|Mullvad pixels|does not copy or read/);
