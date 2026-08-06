@@ -11572,7 +11572,7 @@ mod tests {
             (
                 "missing echo",
                 serde_json::json!({ "items": [a_row()] }),
-                "did not confirm the sender filter",
+                "HTTP transport error: control-inbox drain did not confirm the sender filter it was asked for",
             ),
             (
                 "echo mismatch",
@@ -11586,7 +11586,7 @@ mod tests {
                         "retired": 0,
                     },
                 }),
-                "did not confirm the sender filter",
+                "HTTP transport error: control-inbox drain did not confirm the sender filter it was asked for",
             ),
             (
                 "echoed A containing B rows",
@@ -11600,12 +11600,12 @@ mod tests {
                         "retired": 0,
                     },
                 }),
-                "outside its sender filter",
+                "HTTP transport error: control-inbox drain returned a row outside its sender filter",
             ),
             (
                 "unfiltered fallback without echo",
                 serde_json::json!({ "items": [b_row(), a_row()] }),
-                "did not confirm the sender filter",
+                "HTTP transport error: control-inbox drain did not confirm the sender filter it was asked for",
             ),
             (
                 "missing delivery disposition",
@@ -11613,7 +11613,7 @@ mod tests {
                     "items": [],
                     "filtered_sender_id": sender_a,
                 }),
-                "did not return its sender delivery disposition",
+                "HTTP transport error: control-inbox drain did not return its sender delivery disposition",
             ),
         ];
 
@@ -11633,9 +11633,10 @@ mod tests {
             let client = keystore::KeyServerClient::new(&base_url).expect("build test client");
             let error = fetch_peer_control_inbox(&identity, &client, sender_a)
                 .expect_err("an unconfirmed or widened page must be refused");
-            assert!(
-                error.to_string().contains(expected_error),
-                "{label} must fail through its specific closed-path verdict"
+            assert_eq!(
+                error.to_string(),
+                expected_error,
+                "{label} must fail through its specific closed-path verdict",
             );
             assert_health_request(&requests.recv().expect("capture capability request"));
             assert_sender_filter_floor_request(
