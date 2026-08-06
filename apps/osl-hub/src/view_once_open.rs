@@ -57,10 +57,15 @@ pub struct NativeImageDisplayDuration {
     seconds: u64,
 }
 
+const MAX_NATIVE_IMAGE_DISPLAY_DURATION_SECONDS: u64 = 60;
+
 impl NativeImageDisplayDuration {
     pub fn from_seconds(seconds: u64) -> Result<Self, String> {
         if seconds == 0 {
             return Err("The protected image display duration must be positive".to_owned());
+        }
+        if seconds > MAX_NATIVE_IMAGE_DISPLAY_DURATION_SECONDS {
+            return Err("The protected image display duration must be at most 60 seconds".to_owned());
         }
         Ok(Self { seconds })
     }
@@ -359,14 +364,30 @@ mod tests {
     }
 
     #[test]
-    fn native_image_display_duration_refuses_zero_and_negative() {
-        assert_eq!(
-            NativeImageDisplayDuration::from_seconds(3)
-                .unwrap()
-                .seconds(),
-            3
-        );
-        assert!(NativeImageDisplayDuration::from_seconds(0).is_err());
+    fn native_image_display_duration_accepts_only_one_to_sixty_seconds() {
+        let attempts = [1_u64, 60, 0, 61];
+        let mut succeeded = Vec::new();
+        let mut failed = Vec::new();
+        for seconds in attempts {
+            match NativeImageDisplayDuration::from_seconds(seconds) {
+                Ok(duration) => {
+                    println!(
+                        "duration {seconds} seconds: succeeded as {} seconds",
+                        duration.seconds()
+                    );
+                    succeeded.push(seconds);
+                }
+                Err(error) => {
+                    println!("duration {seconds} seconds: failed: {error}");
+                    failed.push(seconds);
+                }
+            }
+        }
+        println!("successful durations: {succeeded:?}");
+        println!("failed durations: {failed:?}");
+
+        assert_eq!(succeeded, vec![1, 60]);
+        assert_eq!(failed, vec![0, 61]);
         assert!(NativeImageDisplayDuration::from_signed_seconds(0).is_err());
         assert!(NativeImageDisplayDuration::from_signed_seconds(-1).is_err());
     }
