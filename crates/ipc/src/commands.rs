@@ -10453,6 +10453,20 @@ pub struct SendFriendRequestResult {
     pub pending: PendingFriendRequestRecord,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreateFriendRequestByOslNameInput {
+    pub recipient_name: String,
+    pub request_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreateFriendRequestByOslNameResult {
+    pub request_id: String,
+    pub recipient_name: String,
+    pub peer_osl_user_id: String,
+    pub pending: PendingFriendRequestRecord,
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct FriendInviteLinkRecord {
@@ -10611,6 +10625,28 @@ fn local_friend_authority(
         .map_err(|e| format!("OSL: {e}"))
 }
 
+fn valid_public_osl_name(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 64
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_graphic() && *byte != b'/' && *byte != b'\\')
+}
+
+fn verified_key_bundle_from_pubkeys(
+    response: &keystore::PubkeysResponse,
+) -> Result<crate::tofu::KeyBundle, String> {
+    keystore::validate_peer_bundle(response)
+        .map_err(|_| "OSL: OSL name identity bundle verification failed".to_string())?;
+    Ok(crate::tofu::KeyBundle {
+        ed25519_pub: response.ik_ed25519_pub.clone(),
+        x25519_pub: response.ik_x25519_pub.clone(),
+        mlkem768_pub: response.ik_mlkem768_pub.clone(),
+        ratchet_initial_pub: response.ik_ratchet_initial_pub.clone(),
+    })
+}
+
 fn peer_friend_authority(
     state: &AppState,
     peer_discord_id: &str,
@@ -10625,6 +10661,82 @@ fn peer_friend_authority(
     };
     crate::friend_request::VerifiedFriendAuthority::from_tofu_trusted_key_bundle(&bundle)
         .map_err(|e| format!("OSL: {e}"))
+}
+
+pub fn cmd_osl_create_friend_request_by_osl_name(
+    state: &AppState,
+    input: CreateFriendRequestByOslNameInput,
+) -> Result<CreateFriendRequestByOslNameResult, String> {
+    record_activity_on_command_entry();
+    let name = input.recipient_name.as_str();
+    if input.request_id.is_empty() || input.request_id.len() > 128 {
+        return Err("OSL: request id is invalid".to_string());
+    }
+    if !valid_public_osl_name(name) {
+        return Err("OSL: OSL name is invalid".to_string());
+    }
+    let identity = state
+        .identity_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: identity not loaded".to_string())?;
+    let client = state
+        .keyserver_slot()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| "OSL: keyserver not configured".to_string())?;
+    let resolved = client
+        .resolve_username(name)
+        .map_err(|_| "OSL: OSL name lookup failed".to_string())?
+        .ok_or_else(|| "OSL: unknown OSL name".to_string())?;
+    if resolved.user_id == identity.user_id {
+        return Err("OSL: cannot request yourself".to_string());
+    }
+    let pubkeys = client
+        .fetch_pubkeys(&resolved.user_id)
+        .map_err(|_| "OSL: OSL name identity lookup failed".to_string())?;
+    let ed25519_pub = STANDARD
+        .decode(&pubkeys.ik_ed25519_pub)
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+        .ok_or_else(|| "OSL: OSL name identity bundle verification failed".to_string())?;
+    if pubkeys.user_id != resolved.user_id || ed25519_pub != resolved.ed25519_public {
+        return Err("OSL: OSL name identity bundle verification failed".to_string());
+    }
+    let peer_bundle = verified_key_bundle_from_pubkeys(&pubkeys)?;
+
+    {
+        let mut pm = state.peer_map.lock().expect("peer_map mutex poisoned");
+        pm.insert(
+            resolved.user_id.clone(),
+            crate::peer_map::PeerEntry {
+                osl_user_id: Some(resolved.user_id.clone()),
+                pubkey: Some(peer_bundle.x25519_pub.clone()),
+                ik_mlkem768_pub: Some(peer_bundle.mlkem768_pub.clone()),
+                ik_ratchet_initial_pub: peer_bundle.ratchet_initial_pub.clone(),
+                tofu_ed25519_pub: Some(peer_bundle.ed25519_pub.clone()),
+                tofu_key_bundle: Some(peer_bundle),
+                first_seen: Some(now_unix_secs().to_string()),
+                ..Default::default()
+            },
+        );
+    }
+
+    let dir =
+        keystore::osl_config_dir().map_err(|e| format!("OSL: pending friend request dir: {e}"))?;
+    let scope = crate::scope::Scope::dm(&resolved.user_id);
+    let sent = cmd_osl_send_friend_request_with_dir(
+        state,
+        resolved.user_id.clone(),
+        (&scope).into(),
+        &dir,
+    )?;
+    Ok(CreateFriendRequestByOslNameResult {
+        request_id: input.request_id,
+        recipient_name: name.to_string(),
+        peer_osl_user_id: resolved.user_id,
+        pending: sent.pending,
+    })
 }
 
 pub fn cmd_osl_send_friend_request(
