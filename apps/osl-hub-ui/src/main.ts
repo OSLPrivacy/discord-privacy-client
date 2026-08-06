@@ -1,4 +1,9 @@
 import "@fontsource-variable/inter/wght.css";
+// The brand kit's two faces: Onest for UI, Source Sans 3 for body text. Bundled
+// rather than fetched, so the first screen a person ever sees renders the same
+// offline and on first run instead of flashing a fallback.
+import "@fontsource-variable/onest/wght.css";
+import "@fontsource-variable/source-sans-3/wght.css";
 import "./styles.css";
 import "./local-protected-sheet.css";
 import "./friend-invite.css";
@@ -127,6 +132,7 @@ import { blankPeerProtectedModel, boundedPeerProtectedDraft, peerProtectedDraftB
 import { peerIntegrityMarkup } from "./peer-integrity";
 import oslLogoUrl from "../../osl-hub/icons/icon-cyan.png";
 import oslVectorLogoUrl from "./assets/logo-mark.svg";
+import oslGhostMarkUrl from "./assets/Ghost-white.svg";
 import { importLocalMessageExport, LOCAL_MESSAGE_IMPORT_MAX_BYTES } from "./local-message-import";
 import { clearPersistedLocalScrubExport, persistLocalScrubExport } from "./scrub-local";
 import {
@@ -1968,23 +1974,59 @@ function identityKeyLostContent(): string {
   </section>`;
 }
 
+/**
+ * The lock on the sign-in button. The shackle is its own element because the
+ * hover springs it open independently of the body, around an origin at the
+ * hinge (16px, 11px) rather than the icon's centre.
+ */
+function signinLockIcon(): string {
+  // viewBox is 24, not 20. The body runs to y=20 and its 2px stroke reaches y=21,
+  // so a 20-tall box clipped the bottom edge clean off. 24 also centres the
+  // drawing: content spans y=4..20, centre 12, which is the box centre.
+  // The body sits at x=5 -- the shackle spans x=8..16 with centre 12, so a
+  // 14-wide body has to start at 5 to share it.
+  return `<svg class="signin-icon signin-lock" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="signin-lock-shackle" d="M8 11 V8 a4 4 0 0 1 8 0 v3"/><rect x="5" y="11" width="14" height="9" rx="2"/></svg>`;
+}
+
+/** The arrow on the create-password submit. Slides right on hover. */
+function signinArrowIcon(): string {
+  return `<svg class="signin-icon signin-arrow" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12 h14"/><path d="M13 6 l6 6 -6 6"/></svg>`;
+}
+
+/** The plus on the create-account button. Rotates a quarter turn on hover. */
+function signinPlusIcon(): string {
+  return `<svg class="signin-icon signin-plus" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5 v14"/><path d="M5 12 h14"/></svg>`;
+}
+
+/**
+ * The bare entry screen: mark, one action, one way out. Sign in and Create
+ * account are the SAME screen — Liam's ruling, 2026-08-06, which overrides the
+ * handoff's suggestion that the two keep different corner radii. Only the
+ * label, the icon and where the button goes differ, so they are arguments
+ * rather than two copies that drift apart.
+ */
+function entryScreenContent(label: string, icon: string, route: OnboardingRoute): string {
+  return `<section class="signin-card signin-lock-screen" aria-labelledby="route-heading">
+    <h1 id="route-heading" class="sr-only" tabindex="-1">${label}</h1>
+    <div class="signin-lock-column">
+      <img class="signin-ghost-mark" src="${oslGhostMarkUrl}" alt="" width="148" height="148"/>
+      <button class="signin-unlock" data-onboarding="${route}" type="button"><span class="signin-unlock-label">${label}</span>${icon}</button>
+      <button class="signin-recovery" data-onboarding="import" type="button">Use recovery phrase</button>
+    </div>
+  </section>`;
+}
+
 function welcomeOnboardingContent(): string {
   const partialIdentity = core.readiness.identityLoaded && core.readiness.bootstrapStatus === "setupRequired";
   const returning = core.readiness.bootstrapStatus === "passwordRequired" || core.readiness.passwordGateRequired;
-  const primaryRoute: OnboardingRoute = partialIdentity ? "create" : returning ? "unlock" : "create";
-  const primaryLabel = partialIdentity ? "Finish setup" : returning ? "Unlock this device" : "Create account";
-  const heading = partialIdentity ? "Finish your account" : returning ? "Sign in" : "Protect the accounts you already use";
-  const intro = returning
-    ? "Unlock this device to continue protecting your existing accounts and private OSL communication."
-    : "Use OSL with the messaging, social and email accounts you already have. For conversations that need their own private place, OSL communication is built in.";
-  return `<section class="signin-card" aria-labelledby="route-heading">
-    <img class="osl-logo signin-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/>
-    <h1 id="route-heading" tabindex="-1">${heading}</h1>
-    <p class="compact-lead onboarding-centered-copy">${intro}</p>
-    <button class="button primary signin-primary" data-onboarding="${primaryRoute}">${primaryLabel}</button>
-    <button class="signin-link" data-onboarding="import">Use a recovery phrase</button>
-    ${returning ? `<div class="signin-divider" aria-hidden="true"><span></span></div><p class="signin-new">Unlock first to add another identity in Settings.</p>` : ""}
-  </section>`;
+
+  // Both entry screens are the same component. The heading, the explainer, the
+  // divider and the "add another identity in Settings" footnote were all removed
+  // by the 2026-08-06 redesign and must not come back. `Ghost-white.svg` carries
+  // its own #080c0d field, which is why the window behind it is that exact value
+  // -- any other and the mark reads as a tile sitting on the app.
+  if (returning) return entryScreenContent("Sign in", signinLockIcon(), "unlock");
+  return entryScreenContent(partialIdentity ? "Finish setup" : "Create account", signinPlusIcon(), "create");
 }
 
 function proSetupContent(): string {
@@ -2802,7 +2844,7 @@ function identityPasswordForm(title: string, action: string, mode: "setup" | "un
   // the accessibility tree is a published surface this project already drives
   // the app through. See `unlock-screen-single-credential.test.ts`.
   if (!setup) return `<section class="unlock-card" aria-labelledby="route-heading"><div class="unlock-logo-stage" aria-hidden="true"><img class="osl-logo logo-treatment" src="${oslVectorLogoUrl}" alt=""/></div><h1 id="route-heading" tabindex="-1">Enter your password</h1><form class="password-form unlock-form" id="identity-password-form" data-password-mode="unlock" novalidate><label class="sr-only" for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="current-password" placeholder="Password" required aria-describedby="password-error" autofocus/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>Unlock</button></form><button class="signin-link" type="button" data-onboarding="account-recovery">Forgot password?</button><button class="text-back" data-onboarding="welcome">← Back</button></section>`;
-  return `<h1 id="route-heading" tabindex="-1">${title}</h1><form class="setup-surface password-form" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="button primary" id="identity-password-submit" type="submit" disabled>${action}</button></form><button class="text-back" data-onboarding="welcome">← Back</button>`;
+  return `<h1 id="route-heading" class="password-screen-title" tabindex="-1">${title}</h1><form class="setup-surface password-form password-screen" id="identity-password-form" data-password-mode="setup" novalidate><label for="identity-password">Password</label><div class="password-input-row"><input id="identity-password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required aria-describedby="password-help password-error"/><button class="password-eye" type="button" data-password-toggle="identity-password" aria-controls="identity-password" aria-label="Show password">${passwordEyeIcon()}</button></div><small id="password-help">6 minimum. 12+ suggested.</small><label for="identity-password-confirm">Confirm</label><div class="password-input-row"><input id="identity-password-confirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required/><button class="password-eye" type="button" data-password-toggle="identity-password-confirm" aria-controls="identity-password-confirm" aria-label="Show password">${passwordEyeIcon()}</button></div><p class="unlock-error" id="password-error" role="alert"></p><button class="signin-unlock" id="identity-password-submit" type="submit" disabled><span class="signin-unlock-label">${action}</span>${signinArrowIcon()}</button></form><button class="text-back password-screen-back" data-onboarding="welcome">← Back</button>`;
 }
 
 export function sendingSetupContent(): string {
@@ -3453,6 +3495,7 @@ function bindPasswordForm(): void {
     // second field is not yet a mismatch.
     const confirmMismatch = Boolean(confirm && confirm.value.length > 0 && confirm.value !== password.value);
     error.textContent = confirmMismatch ? "Both passwords must match." : "";
+    confirm?.classList.toggle("input-mismatch", confirmMismatch);
   };
   password.addEventListener("input", validate);
   confirm?.addEventListener("input", validate);

@@ -44,16 +44,86 @@ describe("clean onboarding sign in", () => {
 
   it("uses account state to make create, finish, or unlock the one clear primary action", () => {
     expect(source).toContain('const partialIdentity = core.readiness.identityLoaded && core.readiness.bootstrapStatus === "setupRequired"');
-    expect(source).toContain('const primaryRoute: OnboardingRoute = partialIdentity ? "create" : returning ? "unlock" : "create"');
-    expect(source).toContain('data-onboarding="${primaryRoute}"');
     expect(source).toContain('partialIdentity ? "Finish setup"');
-    expect(source).toContain('class="signin-link" data-onboarding="import"');
-    expect(source).toContain("Unlock first to add another identity in Settings.");
+    expect(source).toContain('data-onboarding="${route}"');
+    expect(source).toContain('class="signin-recovery" data-onboarding="import"');
     expect(source).not.toContain('class="button signin-create" data-onboarding="create"');
     expect(source).not.toContain("Sign in to OSL");
     expect(source).not.toContain("Welcome back");
     expect(source).not.toContain("Open your private OSL workspace on this device.");
     expect(source).not.toContain("Your service passwords stay on each service's own sign-in page.");
+  });
+
+  // Sign in and Create account are ONE component, by Liam's ruling. If they ever
+  // become two copies they will drift, which is exactly what the handoff's
+  // "sign-in keeps 8px, create is 2px" note would have caused.
+  it("builds both entry screens from a single component", () => {
+    expect(source).toContain("function entryScreenContent(label: string, icon: string, route: OnboardingRoute)");
+    expect(source).toContain('entryScreenContent("Sign in", signinLockIcon(), "unlock")');
+    expect(source).toContain('signinPlusIcon(), "create"');
+    // One markup block, so the two screens cannot diverge.
+    expect(source.match(/class="signin-lock-column"/g)).toHaveLength(1);
+    expect(source.match(/class="signin-ghost-mark"/g)).toHaveLength(1);
+  });
+
+  it("uses one unified visual system across both entry screens", () => {
+    // 2px on BOTH. The handoff proposed different radii per screen and left the
+    // call to the design owner; he unified them.
+    expect(styles).toMatch(/\.signin-unlock\s*\{[^}]*border-radius:\s*2\.2px/s);
+    expect(styles).not.toMatch(/\.signin-unlock\s*\{[^}]*border-radius:\s*8px/s);
+    // Spacing: mark -> button 10px, button -> link 16px.
+    expect(styles).toMatch(/\.signin-ghost-mark[^}]*margin:\s*0 0 11px/s);
+    expect(styles).toMatch(/\.signin-recovery\s*\{[^}]*margin-top:\s*17\.6px/s);
+    // The link is the brand's body face, deliberately not the button's UI face.
+    expect(styles).toMatch(/\.signin-recovery[^}]*Source Sans 3 Variable/s);
+    // Both icons share one seat, so neither can drift from the right edge.
+    expect(styles).toMatch(/\.signin-icon\s*\{[^}]*right:\s*15\.4px/s);
+    // The plus turns a quarter turn on the same spring as the shackle.
+    expect(styles).toMatch(/\.signin-plus[^}]*cubic-bezier\(\.34,\s*1\.56,\s*\.64,\s*1\)/s);
+    expect(styles).toMatch(/hover \.signin-plus[^}]*rotate\(90deg\)/s);
+    // No scale() on the column. Transforming it resamples rendered text and the
+    // labels come out blurry -- 110% is baked into the real sizes instead.
+    expect(styles).not.toMatch(/\.signin-lock-column[^}]*scale\(/s);
+    // The lock needs a 24 box: its body reaches y=20 and the 2px stroke y=21,
+    // so a 20 box clips the bottom edge off.
+    expect(source).toContain('signin-icon signin-lock" viewBox="0 0 24 24"');
+  });
+
+  // 2026-08-06 redesign. The device-lock screen is mark, one action, one way
+  // out. The handoff is explicit that the heading, explainer, divider and
+  // footnote must not come back, so each is pinned as an absence here -- a
+  // redesign that only adds assertions for what it added would let the old
+  // furniture drift back in unnoticed.
+  it("shows the returning user a bare lock screen: mark, one action, one way out", () => {
+    expect(source).toContain('if (returning) return entryScreenContent(');
+    expect(source).toContain('class="signin-card signin-lock-screen"');
+    expect(source).toContain('class="signin-ghost-mark" src="${oslGhostMarkUrl}"');
+    expect(source).toContain('entryScreenContent("Sign in", signinLockIcon(), "unlock")');
+    expect(source).toContain('class="signin-recovery" data-onboarding="import"');
+    expect(source).toContain("Use recovery phrase");
+    expect(source).toContain('import oslGhostMarkUrl from "./assets/Ghost-white.svg"');
+  });
+
+  it("does not re-add the furniture the redesign removed", () => {
+    expect(source).not.toContain("Unlock first to add another identity in Settings.");
+    expect(source).not.toContain("Unlock this device to continue protecting your existing accounts");
+    expect(source).not.toContain('returning ? "Sign in"');
+    expect(source).not.toContain('returning ? "Unlock this device"');
+    expect(source).not.toContain("signin-divider");
+    expect(source).not.toContain("signin-new");
+  });
+
+  // The mark carries its own #080c0d field. If the window behind it is any
+  // other value the mark stops reading as a mark and becomes a tile with a
+  // visible edge, which is the one thing the handoff calls out by name.
+  it("keeps the lock screen flush with the mark's own background", () => {
+    expect(styles).toContain("--signin-bg: #080c0d");
+    expect(styles).toContain("--signin-accent: #2ac0f0");
+    expect(styles).toContain("--signin-border: #2a343a");
+    expect(styles).toMatch(/\.signin-ghost-mark[^}]*border-radius:\s*23px/s);
+    expect(styles).toMatch(/\.signin-unlock\s*\{[^}]*width:\s*321px/s);
+    expect(styles).toMatch(/\.signin-lock-shackle[^}]*transform-origin:\s*16px 11px/s);
+    expect(styles).toMatch(/\.signin-lock-shackle[^}]*cubic-bezier\(\.34,\s*1\.56,\s*\.64,\s*1\)/s);
   });
 
   it("keeps password unlock to one field and one action", () => {

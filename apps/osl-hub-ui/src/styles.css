@@ -1001,6 +1001,178 @@ code {
   font-size: 13px;
 }
 
+/* ---------------------------------------------------------------------------
+   Device lock screen. 2026-08-06 redesign.
+
+   The window behind this is #080c0d because Ghost-white.svg carries that exact
+   field itself. Any other value and the mark stops being a mark and starts
+   being a tile with a visible edge. That is the whole reason the number is
+   pinned here rather than taken from a theme token.
+   --------------------------------------------------------------------------- */
+/* The shell and the panel are painted too, not just this card. `position: fixed`
+   was not enough on its own -- the panel's own surface still showed through
+   around the button, which is exactly the visible tile the handoff forbids. So
+   the route's own wrapper is neutralised at source instead. */
+.onboarding-shell:has(.signin-lock-screen),
+.onboarding-panel:has(.signin-lock-screen) {
+  padding: 0;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  border: 0;
+  background: #080c0d;
+}
+
+/* ---------------------------------------------------------------------------
+   Entry-screen tokens. Shared by Sign in, Create account and Create a password.
+   Declared at the root because the button component is used on all three; when
+   these lived on .signin-lock-screen the password screen resolved them to
+   nothing and rendered with no border and unreadable text.
+   --------------------------------------------------------------------------- */
+:root {
+  --signin-bg: #080c0d;
+  --signin-text: #f4f7f8;
+  --signin-muted: #b8c2c7;
+  --signin-border: #2a343a;
+  --signin-accent: #2ac0f0;
+}
+
+.signin-lock-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--signin-bg);
+  font-family: "Onest Variable", Onest, var(--font-ui);
+}
+
+/* The COLUMN scales, not each item. Scaling children one by one also scales
+   each one's margins independently, so the 26px and 20px gaps drift out of the
+   ratio the handoff specifies. */
+.signin-lock-column {
+  /* How far above true centre the whole column sits. The handoff specified 88px;
+     Liam judged that too high on the real window and asked for it lower, so it
+     lives in one place rather than being buried in a transform. Everything --
+     mark, button, label, lock, recovery link -- moves together. */
+  --signin-rise: 58px;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* Deliberately NOT transformed. Enlarging the column resampled already-rendered
+     text, and that is what made the labels blurry. The handoff's 110% is baked
+     into the real numbers below, so every glyph is rasterised once at full size. */
+  transform: translateY(calc(var(--signin-rise) * -1));
+}
+
+.signin-ghost-mark {
+  width: 163px;
+  height: 163px;
+  margin: 0 0 11px;
+  border-radius: 23px;
+  object-fit: contain;
+}
+
+.signin-unlock {
+  position: relative;
+  width: 321px;
+  padding: 15.4px 0;
+  border: 1.65px solid var(--signin-border);
+  /* 2px on BOTH screens. Liam ruled the unified radius; the handoff had
+     sign-in at 8px and create at 2px, and left the choice to him. */
+  border-radius: 2.2px;
+  background: transparent;
+  color: var(--signin-text);
+  font-family: inherit;
+  font-size: 17.6px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .2s, color .2s;
+}
+
+.signin-unlock:hover,
+.signin-unlock:focus-visible {
+  border-color: var(--signin-accent);
+  color: var(--signin-accent);
+}
+
+/* Optical nudge on the LABEL only. Moving the button box would drag the lock
+   with it and break its 14px-from-the-right seat. */
+.signin-unlock-label {
+  display: inline-block;
+  translate: 0 -1px;
+}
+
+/* Both icons sit the same way: 14px from the right edge, and a pixel above dead
+   centre because optically they read low against a 16px label. */
+.signin-icon {
+  position: absolute;
+  top: 50%;
+  right: 15.4px;
+  transform: translateY(calc(-50% - 1px));
+}
+
+/* The shackle springs past its resting angle and settles back, which is what
+   the overshoot in the timing function buys. Rotating around the hinge rather
+   than the icon centre is what makes it read as opening instead of tilting. */
+.signin-lock-shackle {
+  transform-origin: 16px 11px;
+  transition: transform .35s cubic-bezier(.34, 1.56, .64, 1);
+}
+
+.signin-unlock:hover .signin-lock-shackle,
+.signin-unlock:focus-visible .signin-lock-shackle {
+  transform: rotate(35deg) translateY(-1px);
+}
+
+.signin-plus {
+  transition: transform .35s cubic-bezier(.34, 1.56, .64, 1);
+}
+
+.signin-unlock:hover .signin-plus,
+.signin-unlock:focus-visible .signin-plus {
+  transform: translateY(calc(-50% - 1px)) rotate(90deg);
+}
+
+.signin-recovery {
+  margin-top: 17.6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--signin-muted);
+  /* Source Sans 3 on BOTH screens -- the brand kit's body face, and deliberately
+     not the button's UI face. Named rather than inherited because a button
+     element takes the user-agent face unless told otherwise. */
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 15.5px;
+  font-weight: 500;
+  line-height: 1;
+  /* A global rule gives every button a 44px minimum for touch. That is right
+     everywhere else and wrong here: it wrapped this 16.5px line in a 44px box,
+     centred the text inside it, and pushed the words visibly below where the
+     design puts them. The gap was never the problem -- the box was. */
+  min-height: 0;
+  height: auto;
+  cursor: pointer;
+  /* Optical nudge, tuned by eye against the real render: 1px up, not 2. */
+  translate: 0 -1px;
+  transition: color .2s;
+}
+
+.signin-recovery:hover,
+.signin-recovery:focus-visible { color: var(--signin-text); }
+
+@media (prefers-reduced-motion: reduce) {
+  .signin-lock-shackle,
+  .signin-plus,
+  .signin-unlock,
+  .signin-recovery { transition: none; }
+}
+
 .signin-create { background: transparent; }
 
 .onboarding-unlock {
@@ -1117,9 +1289,17 @@ code {
 .onboarding-panel .recovery-heading { margin-bottom: 28px; }
 .recovery-surface { margin-top: 0; }
 
+/* The submit sits closer to the last field than the form's default gap allows;
+   it read as detached, floating below the pair it completes. */
+.password-form #identity-password-submit {
+  margin-top: -4px;
+}
+
 .password-form label,
 .inline-account-form label {
-  margin-top: 5px;
+  /* Lowered so each label reads as belonging to the field BELOW it rather than
+     floating between two. */
+  margin-top: 9px;
   color: var(--text);
   font-size: 12px;
   font-weight: 700;
@@ -5545,6 +5725,11 @@ code {
   width: 44px;
   min-width: 44px;
   min-height: 44px;
+  /* The button stretches the full height of the row, but nothing centred the
+     icon inside it, so the eye sat wherever the line box happened to put it. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 0;
   border: 0;
   border-left: 1px solid var(--line-soft);
@@ -7257,3 +7442,200 @@ code {
 .scrub-dryrun-items dl div { display: contents; }
 .scrub-dryrun-items dt { color: var(--muted); }
 .scrub-dryrun-preview code { overflow-wrap: anywhere; }
+
+/* ---------------------------------------------------------------------------
+   Create a password. 2026-08-06 restyle.
+
+   Scoped to .password-screen so the unlock form, which shares these class
+   names, is untouched. Same tokens as the sign-in and create-account screens.
+   --------------------------------------------------------------------------- */
+.onboarding-shell:has(.password-screen),
+.onboarding-panel:has(.password-screen) {
+  width: 100%;
+  max-width: none;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: #080c0d;
+  display: grid;
+  place-items: center;
+  align-content: center;
+}
+
+.password-screen-title {
+  width: 700px;
+  margin: 0 0 32px;
+  font-family: "Onest Variable", Onest, var(--font-ui);
+  font-size: 34px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -.02em;
+  color: #f4f7f8;
+  text-align: center;
+}
+
+.password-screen {
+  --pw-bg: #080c0d;
+  --pw-card: #141719;
+  --pw-card-line: #1e2326;
+  --pw-field: #101315;
+  --pw-field-line: #2a2f33;
+  --pw-text: #f4f7f8;
+  --pw-muted: #97a3a9;
+  --pw-second: #b8c2c7;
+  --pw-accent: #2ac0f0;
+  --pw-error: #e5383b;
+
+  width: 700px;
+  display: block;
+  padding: 22px;
+  border: 1px solid var(--pw-card-line);
+  border-radius: 2px;
+  background: var(--pw-card);
+  font-family: "Onest Variable", Onest, var(--font-ui);
+}
+
+.password-screen label {
+  display: block;
+  margin: 0 0 10px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--pw-text);
+}
+
+.password-screen .password-input-row {
+  position: relative;
+  display: block;
+  height: 42px;
+}
+
+.password-screen .password-input-row input {
+  width: 100%;
+  height: 42px;
+  min-height: 42px;
+  padding: 0 54px 0 12px;
+  border: 1px solid var(--pw-field-line);
+  border-radius: 0;
+  background: var(--pw-field);
+  font-family: inherit;
+  font-size: 15px;
+  color: var(--pw-text);
+  transition: border-color .2s;
+}
+
+.password-screen .password-input-row input:focus {
+  border-color: var(--pw-accent);
+  outline: none;
+}
+
+/* Live, while the two fields disagree. The check already existed and only ever
+   wrote a sentence; the field itself never changed, so the message was easy to
+   miss right next to the box it was about. */
+.password-screen .password-input-row input.input-mismatch,
+.password-screen .password-input-row input.input-mismatch:focus {
+  border-color: var(--pw-error);
+}
+
+.password-screen .password-input-row .password-eye {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 42px;
+  min-width: 42px;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-left: 1px solid var(--pw-field-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--pw-muted);
+}
+
+.password-screen .password-input-row .password-eye:hover { color: var(--pw-text); background: transparent; }
+
+.password-screen #password-help {
+  display: block;
+  margin: 12px 0 18px;
+  font-family: "Source Sans 3 Variable", "Source Sans 3", var(--font-ui);
+  font-size: 14px;
+  color: var(--pw-muted);
+}
+
+.password-screen .unlock-error {
+  margin: 0;
+  min-height: 0;
+  font-size: 13px;
+  color: var(--pw-error);
+}
+
+.password-screen #identity-password-submit {
+  width: 100%;
+  margin: 22px 0 0;
+  padding: 14px 0;
+  border: 1.5px solid var(--signin-border);
+  border-radius: 0;
+}
+
+.password-screen #identity-password-submit .signin-unlock-label {
+  font-size: 16px;
+  /* 2px up here, not the 1px the standalone screens use: the card button is
+     shorter, so the label reads lower inside it. */
+  translate: 0 -2px;
+}
+
+/* Disabled is quieter, not greyed out. The app's default disabled styling washed
+   the label to near-grey, which read as broken rather than as not-yet-ready.
+   `:not(:hover)` matters -- pinning the colours unconditionally out-specified
+   the hover rule and killed the cyan highlight entirely. */
+.password-screen #identity-password-submit:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.password-screen #identity-password-submit:disabled:not(:hover):not(:focus-visible) {
+  color: var(--signin-text);
+  border-color: var(--signin-border);
+}
+
+/* Hover has to out-specify the disabled rule above, so it is written at the same
+   weight rather than relying on the shared .signin-unlock:hover. */
+.password-screen #identity-password-submit:hover,
+.password-screen #identity-password-submit:focus-visible {
+  color: var(--signin-accent);
+  border-color: var(--signin-accent);
+}
+
+/* The arrow leans forward on hover, on the same spring as the lock and plus. */
+.signin-arrow { transition: transform .35s cubic-bezier(.34, 1.56, .64, 1); }
+
+.signin-unlock:hover .signin-arrow,
+.signin-unlock:focus-visible .signin-arrow {
+  transform: translate(3px, calc(-50% - 1px));
+}
+
+.onboarding-panel .password-screen-back,
+.password-screen-back {
+  width: 700px;
+  max-width: 700px;
+  justify-self: center;
+  min-height: 0;
+  margin: 16px 0 0;
+  padding: 13px 0;
+  border: 1px solid var(--pw-card-line);
+  border-radius: 2px;
+  background: #141719;
+  font-family: "Onest Variable", Onest, var(--font-ui);
+  font-size: 15px;
+  font-weight: 500;
+  color: #b8c2c7;
+  cursor: pointer;
+  transition: color .2s;
+}
+
+.password-screen-back:hover { color: #f4f7f8; }
+
+@media (prefers-reduced-motion: reduce) {
+  .signin-arrow { transition: none; }
+}
