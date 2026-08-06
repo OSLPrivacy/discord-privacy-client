@@ -37,7 +37,7 @@ fn task_0666_provider_shrink_and_resave_preserves_hidden_pointer() {
         },
         ProviderProfile {
             name: "INSTAGRAM",
-            max_long_edge: 1080,
+            max_long_edge: 240,
         },
         ProviderProfile {
             name: "SIGNAL",
@@ -47,16 +47,21 @@ fn task_0666_provider_shrink_and_resave_preserves_hidden_pointer() {
 
     for profile in profiles {
         let resaved = shrink_and_resave_png(&prepared, profile.max_long_edge);
-        let decoded = decode_png_hidden_pointer_bytes(&resaved)
-            .expect("provider-resaved image decodes")
-            .expect("provider-resaved image still contains an OSL pointer");
         let resaved_image = decode_png_rgb(&resaved);
-        let matches = decoded.pointer == sent_pointer;
-
         println!(
             "TASK0666_{}_RESAVED_DIMENSIONS={}x{}",
             profile.name, resaved_image.width, resaved_image.height
         );
+        let decoded = decode_png_hidden_pointer_bytes(&resaved)
+            .expect("provider-resaved image decodes")
+            .unwrap_or_else(|| {
+                panic!(
+                    "TASK0667_{}_DECODE_CHECK=red provider-resaved image no longer contains an OSL pointer",
+                    profile.name
+                )
+            });
+        let matches = decoded.pointer == sent_pointer;
+
         println!(
             "TASK0666_{}_DECODED_POINTER_HEX={}",
             profile.name,
