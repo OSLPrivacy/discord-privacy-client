@@ -1964,6 +1964,199 @@ fn reveal_once_consumes_on_b() {
     drop(storage);
 }
 
+#[test]
+fn task_1348_second_view_is_refused_on_both_copies() {
+    let _serial = fixture_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let relay = RelayServer::start();
+    let storage = TestStorage::new("task-1348-second-view");
+    let relay_url = relay.base_url();
+
+    let alice = Peer::new(&storage, "alice", &relay_url, "t1348a0");
+    let bob_first = Peer::new(&storage, "bob-first", &relay_url, "t1348b1");
+    let bob_second = Peer::new(&storage, "bob-second", &relay_url, "t1348b2");
+    *alice.core.osl.license_state.lock().unwrap() = keystore::LicenseStateDto {
+        state: keystore::LicenseState::Paid,
+        raw_status: "ACTIVE".to_owned(),
+        current_period_end: Some(9_999_999_999),
+        last_validated_at: Some(1_700_000_000),
+    };
+
+    alice.open_native_context_to(&bob_first.friend_code);
+    bob_first.open_native_context_to(&alice.friend_code);
+    let mark = format!("TASK1348_MARK_{}", uuid::Uuid::new_v4().simple());
+
+    alice.activate();
+    let first_prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        mark.clone(),
+        true,
+    )
+    .expect("put random marked view-once item on first copy");
+    assert!(first_prepared.prepared.view_once);
+
+    alice.open_native_context_to(&bob_second.friend_code);
+    bob_second.open_native_context_to(&alice.friend_code);
+    alice.activate();
+    let second_prepared = prepare_native_discord_overlay_text(
+        &alice.core,
+        &alice.security,
+        &alice.broker,
+        &ai_carrier_fixture(),
+        mark.clone(),
+        true,
+    )
+    .expect("put same random marked view-once item on second copy");
+    assert!(second_prepared.prepared.view_once);
+
+    let first_row = relay.posted_row(&alice.identity_id, &bob_first.identity_id);
+    let second_row = relay.posted_row(&alice.identity_id, &bob_second.identity_id);
+
+    bob_first.activate();
+    let first_list =
+        drain_native_discord_overlay_text(&bob_first.core, &bob_first.security, &bob_first.broker)
+            .expect("first copy reads pending view-once count");
+    bob_second.activate();
+    let second_list = drain_native_discord_overlay_text(
+        &bob_second.core,
+        &bob_second.security,
+        &bob_second.broker,
+    )
+    .expect("second copy reads pending view-once count");
+
+    assert!(first_list.messages.is_empty());
+    assert!(second_list.messages.is_empty());
+    assert_eq!(first_list.pending_view_once.len(), 1);
+    assert_eq!(second_list.pending_view_once.len(), 1);
+    assert_eq!(first_list.fetched, 1);
+    assert_eq!(second_list.fetched, 1);
+    assert_eq!(
+        first_list.pending_view_once[0].message_id,
+        first_prepared.prepared.message_id
+    );
+    assert_eq!(
+        second_list.pending_view_once[0].message_id,
+        second_prepared.prepared.message_id
+    );
+
+    bob_first.activate();
+    let first_open = reveal_native_discord_overlay_view_once(
+        &bob_first.core,
+        &bob_first.security,
+        &bob_first.broker,
+        &first_prepared.prepared.message_id,
+    )
+    .expect("first copy opens marked view-once item once");
+    bob_second.activate();
+    let second_open = reveal_native_discord_overlay_view_once(
+        &bob_second.core,
+        &bob_second.security,
+        &bob_second.broker,
+        &second_prepared.prepared.message_id,
+    )
+    .expect("second copy opens marked view-once item once");
+
+    assert_eq!(first_open.plaintext, mark);
+    assert_eq!(second_open.plaintext, mark);
+    assert!(first_open.view_once_consumed);
+    assert!(second_open.view_once_consumed);
+    let first_open_mark_count = usize::from(first_open.plaintext == mark);
+    let second_open_mark_count = usize::from(second_open.plaintext == mark);
+    drop(first_open);
+    drop(second_open);
+
+    let first_count_after_open = relay.pending_for(&bob_first.identity_id);
+    let second_count_after_open = relay.pending_for(&bob_second.identity_id);
+    assert_eq!(first_count_after_open, 0);
+    assert_eq!(second_count_after_open, 0);
+
+    let first_second_open = reveal_native_discord_overlay_view_once(
+        &bob_first.core,
+        &bob_first.security,
+        &bob_first.broker,
+        &first_prepared.prepared.message_id,
+    );
+    let second_second_open = reveal_native_discord_overlay_view_once(
+        &bob_second.core,
+        &bob_second.security,
+        &bob_second.broker,
+        &second_prepared.prepared.message_id,
+    );
+    let first_second_exit = if first_second_open.is_err() { 1 } else { 0 };
+    let second_second_exit = if second_second_open.is_err() { 1 } else { 0 };
+    let first_second_content_len = first_second_open
+        .as_ref()
+        .ok()
+        .map(|opened| opened.plaintext.len())
+        .unwrap_or(0);
+    let second_second_content_len = second_second_open
+        .as_ref()
+        .ok()
+        .map(|opened| opened.plaintext.len())
+        .unwrap_or(0);
+    assert_eq!(first_second_exit, 1);
+    assert_eq!(second_second_exit, 1);
+    assert_eq!(first_second_content_len, 0);
+    assert_eq!(second_second_content_len, 0);
+
+    bob_first.activate();
+    let first_after =
+        drain_native_discord_overlay_text(&bob_first.core, &bob_first.security, &bob_first.broker)
+            .expect("first copy stays empty after refused second open");
+    bob_second.activate();
+    let second_after = drain_native_discord_overlay_text(
+        &bob_second.core,
+        &bob_second.security,
+        &bob_second.broker,
+    )
+    .expect("second copy stays empty after refused second open");
+    assert!(first_after.messages.is_empty());
+    assert!(first_after.pending_view_once.is_empty());
+    assert!(second_after.messages.is_empty());
+    assert!(second_after.pending_view_once.is_empty());
+
+    println!(
+        "TASK1348_MARK mark={} first_message_id={} second_message_id={}",
+        mark, first_prepared.prepared.message_id, second_prepared.prepared.message_id
+    );
+    println!(
+        "TASK1348_FIRST_COUNTS first_mark={} first_count={} first_pending_id={} second_mark={} second_count={} second_pending_id={}",
+        mark,
+        first_list.pending_view_once.len(),
+        first_list.pending_view_once[0].message_id,
+        mark,
+        second_list.pending_view_once.len(),
+        second_list.pending_view_once[0].message_id
+    );
+    println!(
+        "TASK1348_FIRST_OPEN first_mark_count={} second_mark_count={}",
+        first_open_mark_count, second_open_mark_count
+    );
+    println!(
+        "TASK1348_AFTER_OPEN first_count={} second_count={} first_row_pending={} second_row_pending={}",
+        first_count_after_open,
+        second_count_after_open,
+        relay.still_pending(&first_row.id),
+        relay.still_pending(&second_row.id)
+    );
+    println!(
+        "TASK1348_SECOND_OPENS first_exit={} first_content_len={} second_exit={} second_content_len={}",
+        first_second_exit,
+        first_second_content_len,
+        second_second_exit,
+        second_second_content_len
+    );
+
+    drop(alice);
+    drop(bob_first);
+    drop(bob_second);
+    drop(storage);
+}
+
 /// A message larger than one carrier chunk is split by the sender into several
 /// independently encrypted rows and must be reassembled by the receiver into
 /// exactly the original text -- once. This is the `v = 4` chunk path, which had
