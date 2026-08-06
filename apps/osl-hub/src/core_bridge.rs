@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 
 pub struct HubCoreState {
     pub osl: Arc<AppState>,
+    startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches,
     bootstrap_attempted: bool,
     /// Serialises trusted identity/password transitions so Create, Import,
     /// Setup, and Unlock cannot race each other into replacing disk state.
@@ -23,6 +24,7 @@ impl Default for HubCoreState {
     fn default() -> Self {
         Self {
             osl: production_osl_state(),
+            startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches::default(),
             bootstrap_attempted: false,
             lifecycle_lock: Mutex::new(()),
         }
@@ -34,6 +36,18 @@ impl HubCoreState {
     pub(crate) fn new_for_test(osl: AppState) -> Self {
         Self {
             osl: Arc::new(osl),
+            startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches::default(),
+            bootstrap_attempted: false,
+            lifecycle_lock: Mutex::new(()),
+        }
+    }
+
+    pub fn with_startup_switches(
+        startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches,
+    ) -> Self {
+        Self {
+            osl: production_osl_state(),
+            startup_switches,
             bootstrap_attempted: false,
             lifecycle_lock: Mutex::new(()),
         }
@@ -42,8 +56,17 @@ impl HubCoreState {
     /// Load the original OSL account and security state from its sealed local
     /// configuration. Missing, locked, or corrupt state remains unavailable.
     pub fn bootstrap_from_disk() -> Self {
+        Self::bootstrap_from_disk_with_startup_switches(
+            crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches::default(),
+        )
+    }
+
+    pub fn bootstrap_from_disk_with_startup_switches(
+        startup_switches: crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches,
+    ) -> Self {
         let state = Self {
             osl: production_osl_state(),
+            startup_switches,
             bootstrap_attempted: true,
             lifecycle_lock: Mutex::new(()),
         };
@@ -55,6 +78,10 @@ impl HubCoreState {
         }
         crate::original_bootstrap::run_autostart_local(&state.osl);
         state
+    }
+
+    pub fn startup_switches(&self) -> crate::runtime_switches::ResolvedTestOnlyRunTimeSwitches {
+        self.startup_switches
     }
 
     pub fn register_after_local_bootstrap(&self) {
@@ -229,12 +256,13 @@ fn hub_license_state(value: keystore::LicenseStateDto) -> HubLicenseState {
 
 pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     let status = ipc::commands::cmd_status(&state.osl);
-    let password_gate_required = if cfg!(feature = "discord-qa-shell") {
-        false
-    } else {
-        ipc::commands::cmd_osl_password_status()
-            .map(|value| value.is_set)
-            .unwrap_or(true)
+    let password_gate_required = match state.startup_switches.password_screen_access {
+        crate::runtime_switches::PasswordScreenAccess::SkipPasswordScreenForTest => false,
+        crate::runtime_switches::PasswordScreenAccess::RequirePasswordScreen => {
+            ipc::commands::cmd_osl_password_status()
+                .map(|value| value.is_set)
+                .unwrap_or(true)
+        }
     };
     // D-207: NOT `get_file_storage_key().is_some()`. A device-bound fallback
     // key minted behind the user's back put 32 bytes in that slot, made this
@@ -263,7 +291,9 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
     // generated public identity registers in the background. Protected-send
     // commands still enforce registration themselves; only the setup UI gate
     // is bypassed in this compile-time-only build.
-    let bootstrap_status = if cfg!(feature = "discord-qa-shell")
+    let skips_password_screen = state.startup_switches.password_screen_access
+        == crate::runtime_switches::PasswordScreenAccess::SkipPasswordScreenForTest;
+    let bootstrap_status = if skips_password_screen
         && state.bootstrap_attempted
         && status.identity_loaded
         && unlocked
@@ -281,7 +311,7 @@ pub fn readiness(state: &HubCoreState) -> CoreReadiness {
             // that as satisfying the local password prerequisite rather than
             // letting the classifier read it as "not set yet" and route back
             // to setupRequired.
-            password_gate_required || cfg!(feature = "discord-qa-shell"),
+            password_gate_required || skips_password_screen,
             unlocked,
             status.keyserver_initialised,
             state.osl.cloud_registration_state() == ipc::state::CloudRegistrationState::Registered,

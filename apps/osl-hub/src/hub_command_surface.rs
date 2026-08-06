@@ -26,6 +26,7 @@ use crate::native_apps::BrowserImportId;
 use crate::native_discord_adapter::{
     guided_deletion, DiscordCarrierLayout, NativeDiscordComposerState,
 };
+use crate::runtime_switches::SafeSending;
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
 use serde::{Deserialize, Serialize};
@@ -385,6 +386,25 @@ pub fn require_native_discord_product_send_authority(
     scope_binding: &str,
     layout: Option<DiscordCarrierLayout>,
 ) -> Result<NativeDiscordProductSendAuthority, String> {
+    require_native_discord_product_send_authority_for_switch(
+        composer,
+        scope_binding,
+        layout,
+        SafeSending::LiveSendRequiresAuthority,
+    )
+}
+
+pub fn require_native_discord_product_send_authority_for_switch(
+    composer: &NativeDiscordComposerState,
+    scope_binding: &str,
+    layout: Option<DiscordCarrierLayout>,
+    safe_sending: SafeSending,
+) -> Result<NativeDiscordProductSendAuthority, String> {
+    if safe_sending == SafeSending::DryRunSendForTest {
+        return Ok(NativeDiscordProductSendAuthority {
+            carrier: "TASK0014 dry-run carrier".to_owned(),
+        });
+    }
     let plan = composer.take_prepared_carrier_plan(scope_binding, layout);
     if plan.decision != CarrierDecision::RowOverlay {
         return Err("The protected message is not ready to send; nothing was placed".to_owned());
@@ -404,8 +424,31 @@ pub fn with_native_discord_product_send_authority<T, Place>(
 where
     Place: FnOnce(NativeDiscordProductSendAuthority) -> Result<T, String>,
 {
-    let product_send_authority =
-        require_native_discord_product_send_authority(composer, scope_binding, layout)?;
+    with_native_discord_product_send_authority_for_switch(
+        composer,
+        scope_binding,
+        layout,
+        SafeSending::LiveSendRequiresAuthority,
+        place,
+    )
+}
+
+pub fn with_native_discord_product_send_authority_for_switch<T, Place>(
+    composer: &NativeDiscordComposerState,
+    scope_binding: &str,
+    layout: Option<DiscordCarrierLayout>,
+    safe_sending: SafeSending,
+    place: Place,
+) -> Result<T, String>
+where
+    Place: FnOnce(NativeDiscordProductSendAuthority) -> Result<T, String>,
+{
+    let product_send_authority = require_native_discord_product_send_authority_for_switch(
+        composer,
+        scope_binding,
+        layout,
+        safe_sending,
+    )?;
     place(product_send_authority)
 }
 
