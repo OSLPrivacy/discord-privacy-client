@@ -13435,6 +13435,12 @@ pub struct EmailWhitelistKindDto {
     pub name: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EmailSendModeDto {
+    pub id: String,
+    pub name: String,
+}
+
 /// Static email auto-whitelist kind query for settings/rule wiring.
 pub fn cmd_osl_list_email_whitelist_kinds() -> Vec<EmailWhitelistKindDto> {
     record_activity_on_command_entry();
@@ -13442,6 +13448,18 @@ pub fn cmd_osl_list_email_whitelist_kinds() -> Vec<EmailWhitelistKindDto> {
         .iter()
         .map(|kind| EmailWhitelistKindDto {
             name: kind.name().to_string(),
+        })
+        .collect()
+}
+
+/// Static email send-mode choices for settings/review wiring.
+pub fn cmd_osl_list_email_send_modes() -> Vec<EmailSendModeDto> {
+    record_activity_on_command_entry();
+    crate::email_send_modes::EmailSendMode::ALL
+        .iter()
+        .map(|mode| EmailSendModeDto {
+            id: mode.id().to_string(),
+            name: mode.name().to_string(),
         })
         .collect()
 }
