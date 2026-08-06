@@ -7,6 +7,7 @@
 use base64::Engine;
 use core::fmt;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{Read, Write},
@@ -57,6 +58,7 @@ pub struct WebsitePage {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebsiteTextPlacement {
     pub page: WebsitePage,
+    pub editable_box_name: String,
     pub text: String,
 }
 
@@ -64,6 +66,27 @@ pub struct WebsiteTextPlacement {
 pub struct WebsiteNamedControl {
     pub page: WebsitePage,
     pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteSendCommand {
+    pub placement: WebsiteTextPlacement,
+    pub send_control_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsitePlacementProof {
+    pub page: WebsitePage,
+    pub editable_box_name: String,
+    pub utf16_units: usize,
+    pub placed_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteSendReceipt {
+    pub placement_proof: WebsitePlacementProof,
+    pub send_control_name: String,
+    pub send_pressed: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -114,11 +137,31 @@ pub trait WebsiteDriver {
     fn find_page(&mut self, request: WebsitePageRequest)
         -> Result<WebsitePage, WebsiteDriverError>;
     fn read_page(&mut self, page: &WebsitePage) -> Result<WebsitePageText, WebsiteDriverError>;
-    fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError>;
+    fn place_text(
+        &mut self,
+        placement: WebsiteTextPlacement,
+    ) -> Result<WebsitePlacementProof, WebsiteDriverError>;
     fn press_named_control(
         &mut self,
         control: WebsiteNamedControl,
     ) -> Result<(), WebsiteDriverError>;
+    fn send_after_successful_placement(
+        &mut self,
+        command: WebsiteSendCommand,
+    ) -> Result<WebsiteSendReceipt, WebsiteDriverError> {
+        let page = command.placement.page.clone();
+        let send_control_name = command.send_control_name;
+        let placement_proof = self.place_text(command.placement)?;
+        self.press_named_control(WebsiteNamedControl {
+            page,
+            name: send_control_name.clone(),
+        })?;
+        Ok(WebsiteSendReceipt {
+            placement_proof,
+            send_control_name,
+            send_pressed: true,
+        })
+    }
 }
 
 pub struct RealBrowserWebsiteDriver {
@@ -144,6 +187,12 @@ struct BrowserPageSnapshot {
     title: String,
     text: String,
     controls: WebsitePageControls,
+}
+
+#[derive(Deserialize)]
+struct BrowserTextPlacementResult {
+    placed: bool,
+    readback: String,
 }
 
 impl RealBrowserWebsiteDriver {
@@ -278,8 +327,25 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
         }
     }
 
-    fn place_text(&mut self, _placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError> {
-        Err(WebsiteDriverError::TextPlacementFailed)
+    fn place_text(
+        &mut self,
+        placement: WebsiteTextPlacement,
+    ) -> Result<WebsitePlacementProof, WebsiteDriverError> {
+        let websocket_url = self.page_websocket_url(&placement.page)?;
+        let result = place_text_in_named_editable(
+            &websocket_url,
+            &placement.editable_box_name,
+            &placement.text,
+        )?;
+        if !result.placed || result.readback != placement.text {
+            return Err(WebsiteDriverError::TextPlacementFailed);
+        }
+        Ok(WebsitePlacementProof {
+            page: placement.page,
+            editable_box_name: placement.editable_box_name,
+            utf16_units: placement.text.encode_utf16().count(),
+            placed_sha256: sha256_hex(placement.text.as_bytes()),
+        })
     }
 
     fn press_named_control(
@@ -327,6 +393,85 @@ fn wait_for_devtools(
 fn read_page_snapshot(websocket_url: &str) -> Result<BrowserPageSnapshot, WebsiteDriverError> {
     let value = evaluate_target(websocket_url, PAGE_SNAPSHOT_EXPRESSION)?;
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn place_text_in_named_editable(
+    websocket_url: &str,
+    name: &str,
+    text: &str,
+) -> Result<BrowserTextPlacementResult, WebsiteDriverError> {
+    let name = serde_json::to_string(name).map_err(|_| WebsiteDriverError::TextPlacementFailed)?;
+    let text = serde_json::to_string(text).map_err(|_| WebsiteDriverError::TextPlacementFailed)?;
+    let expression = format!(
+        r#"
+(() => {{
+  const wanted = {name};
+  const text = {text};
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {{
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  }};
+  const enabled = (element) => !element.disabled && !element.readOnly && element.getAttribute('aria-disabled') !== 'true';
+  const labelledBy = (element) => compact(
+    (element.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((label) => label.innerText || label.textContent || '')
+      .join(' ')
+  );
+  const controlName = (element) => {{
+    const candidates = [
+      element.getAttribute('aria-label'),
+      labelledBy(element),
+      element.getAttribute('title'),
+      element.getAttribute('placeholder'),
+      element.getAttribute('name'),
+      element.id
+    ];
+    for (const candidate of candidates) {{
+      const name = compact(candidate);
+      if (name) return name;
+    }}
+    return '';
+  }};
+  const editable = (element) => {{
+    if (!enabled(element)) return false;
+    if (element.isContentEditable) return true;
+    const tag = element.tagName.toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return element.getAttribute('role') === 'textbox' || element.getAttribute('role') === 'searchbox';
+    const type = (element.getAttribute('type') || 'text').toLowerCase();
+    return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
+  }};
+  const read = (element) => element.isContentEditable ? (element.innerText || element.textContent || '') : String(element.value || '');
+  const write = (element) => {{
+    element.focus();
+    if (element.isContentEditable) {{
+      element.textContent = text;
+    }} else {{
+      element.value = text;
+    }}
+    element.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: text }}));
+    element.dispatchEvent(new Event('change', {{ bubbles: true }}));
+    return read(element);
+  }};
+  const matches = [];
+  for (const element of document.querySelectorAll('input, textarea, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="searchbox"]')) {{
+    if (!visible(element) || !editable(element) || controlName(element) !== wanted) continue;
+    matches.push(element);
+  }}
+  if (matches.length !== 1) return {{ placed: false, readback: '' }};
+  const readback = write(matches[0]);
+  return {{ placed: readback === text, readback }};
+}})()
+"#
+    );
+    let value = evaluate_target(websocket_url, &expression)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::TextPlacementFailed)
 }
 
 fn press_named_button(websocket_url: &str, name: &str) -> Result<bool, WebsiteDriverError> {
@@ -382,6 +527,10 @@ fn press_named_button(websocket_url: &str, name: &str) -> Result<bool, WebsiteDr
     evaluate_target(websocket_url, &expression)?
         .as_bool()
         .ok_or(WebsiteDriverError::ReadFailed)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn evaluate_target(
@@ -722,9 +871,14 @@ mod tests {
 
         fn place_text(
             &mut self,
-            _placement: WebsiteTextPlacement,
-        ) -> Result<(), WebsiteDriverError> {
-            Ok(())
+            placement: WebsiteTextPlacement,
+        ) -> Result<WebsitePlacementProof, WebsiteDriverError> {
+            Ok(WebsitePlacementProof {
+                page: placement.page,
+                editable_box_name: placement.editable_box_name,
+                utf16_units: placement.text.encode_utf16().count(),
+                placed_sha256: sha256_hex(placement.text.as_bytes()),
+            })
         }
 
         fn press_named_control(

@@ -1,5 +1,6 @@
 use osl_privacy_hub::website_driver::{
     RealBrowserWebsiteDriver, WebsiteDriver, WebsiteNamedControl, WebsitePageRequest,
+    WebsiteSendCommand, WebsiteTextPlacement,
 };
 use std::{
     io::{Read, Write},
@@ -15,6 +16,8 @@ use std::{
 const TASK_1201_TITLE: &str = "OSL Task 1201 Real Browser Title";
 const TASK_1204_TITLE: &str = "OSL Task 1204 Read Page Controls";
 const TASK_1216_TITLE: &str = "OSL Task 1216 Press Named Button";
+const TASK_1217_TITLE: &str = "OSL Task 1217 Send After Proof";
+const TASK_1217_MESSAGE: &str = "MAPLE-1217";
 
 #[test]
 fn task_1201_direct_driver_command_opens_local_test_page_and_reads_title() {
@@ -149,6 +152,95 @@ fn task_1216_named_send_command_makes_fixture_send_counter_one() {
     );
 }
 
+#[test]
+fn task_1217_direct_send_command_places_once_then_presses_send_once() {
+    let server = LocalTestPage::spawn_body(
+        TASK_1217_TITLE,
+        r#"
+            <main>
+              <label id="body-label" for="body">Body</label>
+              <textarea id="body" aria-labelledby="body-label"></textarea>
+              <p aria-live="polite">Placement proof count: <span id="proof-count">0</span></p>
+              <p aria-live="polite">Send press count: <span id="send-count">0</span></p>
+              <p aria-live="polite">Event log: <span id="event-log"></span></p>
+              <p aria-live="polite">Sent message: <span id="sent-message"></span></p>
+              <p>Fixture end</p>
+              <button type="button" onclick="
+                const count = document.getElementById('send-count');
+                const log = document.getElementById('event-log');
+                const body = document.getElementById('body');
+                count.textContent = String(Number(count.textContent) + 1);
+                log.textContent = log.textContent ? log.textContent + '>Send press' : 'Send press';
+                document.getElementById('sent-message').textContent = body.value;
+              ">Send</button>
+              <script>
+                document.getElementById('body').addEventListener('input', () => {
+                  const body = document.getElementById('body');
+                  if (body.value !== 'MAPLE-1217') return;
+                  const count = document.getElementById('proof-count');
+                  const log = document.getElementById('event-log');
+                  count.textContent = String(Number(count.textContent) + 1);
+                  log.textContent = log.textContent ? log.textContent + '>placement proof' : 'placement proof';
+                });
+              </script>
+            </main>
+        "#,
+    );
+    let mut driver = RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
+
+    let page = driver
+        .find_page(WebsitePageRequest { url: server.url() })
+        .expect("open local test page through real browser");
+    let before = driver
+        .read_page(&page)
+        .expect("read fixture before direct send command");
+    assert_eq!(
+        count_after_label(&before.text, "Placement proof count: "),
+        Some(0)
+    );
+    assert_eq!(
+        count_after_label(&before.text, "Send press count: "),
+        Some(0)
+    );
+
+    let receipt = driver
+        .send_after_successful_placement(WebsiteSendCommand {
+            placement: WebsiteTextPlacement {
+                page: page.clone(),
+                editable_box_name: "Body".to_owned(),
+                text: TASK_1217_MESSAGE.to_owned(),
+            },
+            send_control_name: "Send".to_owned(),
+        })
+        .expect("direct send places text before pressing Send");
+
+    let after = driver
+        .read_page(&page)
+        .expect("read fixture after direct send command");
+    let placement_proofs =
+        count_after_label(&after.text, "Placement proof count: ").expect("placement proof count");
+    let send_presses = count_after_label(&after.text, "Send press count: ").expect("send count");
+    let event_log = value_after_label(&after.text, "Event log: ").expect("event log");
+    let sent_message = value_after_label(&after.text, "Sent message: ").expect("sent message");
+
+    assert_eq!(receipt.placement_proof.editable_box_name, "Body");
+    assert_eq!(receipt.placement_proof.utf16_units, TASK_1217_MESSAGE.len());
+    assert_eq!(receipt.send_control_name, "Send");
+    assert!(receipt.send_pressed);
+    assert_eq!(placement_proofs, 1);
+    assert_eq!(send_presses, 1);
+    assert_eq!(event_log, "placement proof>Send press");
+    assert_eq!(sent_message, TASK_1217_MESSAGE);
+
+    println!("TASK1217 direct_send_command=send_after_successful_placement");
+    println!("TASK1217 placement_proof_count={placement_proofs}");
+    println!("TASK1217 placement_proof_editable=Body");
+    println!("TASK1217 named_send_control=Send");
+    println!("TASK1217 send_press_count={send_presses}");
+    println!("TASK1217 event_order={event_log}");
+    println!("TASK1217 sent_message={sent_message}");
+}
+
 fn fixture_send_counter(text: &str) -> Option<u32> {
     text.split("Send counter: ")
         .nth(1)?
@@ -156,6 +248,28 @@ fn fixture_send_counter(text: &str) -> Option<u32> {
         .next()?
         .parse()
         .ok()
+}
+
+fn count_after_label(text: &str, label: &str) -> Option<u32> {
+    text.split(label)
+        .nth(1)?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn value_after_label(text: &str, label: &str) -> Option<String> {
+    let value = text.split(label).nth(1)?.trim();
+    let next_label = value
+        .find("Send counter: ")
+        .or_else(|| value.find("Placement proof count: "))
+        .or_else(|| value.find("Send press count: "))
+        .or_else(|| value.find("Event log: "))
+        .or_else(|| value.find("Sent message: "))
+        .or_else(|| value.find("Fixture end"))
+        .unwrap_or(value.len());
+    Some(value[..next_label].trim().to_owned())
 }
 
 struct LocalTestPage {
