@@ -230,6 +230,15 @@
 .snd-risk.accepted .snd-check-mark { stroke: #04181c; }
 .snd-risk:has(input:focus-visible) .snd-check-box { stroke: var(--osl-setup-accent); }
 
+/* Needs a rule of its own, not just rules for its children: the coverage gate
+   reads the SUBJECT of each selector, so `.snd-risk-copy strong` registers
+   `strong` and leaves this element looking unpainted -- and under the shipped
+   CSP there is no runtime fallback if it ever really were. */
+.snd-risk-copy {
+  flex: 1;
+  min-width: 0;
+}
+
 .snd-risk-copy strong {
   display: block;
   font-family: inherit;

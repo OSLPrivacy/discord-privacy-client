@@ -56,7 +56,8 @@ const SHEETS = [
  * it paints would have made that sheet inert -- listed, read, and vouching for
  * nothing. Scanning both is what keeps the pair load-bearing.
  */
-const MARKUP = ["./main.ts", "./osl-mail-view.ts", "./osl-chats-view.ts", "./password-roles.ts"] as const;
+const MARKUP = [
+  "./onboarding-sending.ts","./main.ts", "./osl-mail-view.ts", "./osl-chats-view.ts", "./password-roles.ts"] as const;
 
 interface ClassAttribute {
   readonly tokens: readonly string[];
