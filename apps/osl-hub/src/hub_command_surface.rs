@@ -29,9 +29,8 @@ use crate::native_discord_adapter::{
 use crate::runtime_switches::SafeSending;
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
-use serde::Deserialize;
-#[cfg(feature = "discord-qa-shell")]
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 
 pub fn build_review_ui_identity_binding_verifier(
@@ -176,6 +175,7 @@ where
 struct DiscordGuidedDeletionPlanProducer {
     scan: Option<guided_deletion::DeletionScan>,
     preview: Option<guided_deletion::DeletionPreview>,
+    saved_state: Option<GuidedDeletionSavedStateKind>,
 }
 
 /// Native-held step-4 state for one Discord guided-deletion route.
@@ -200,6 +200,28 @@ pub struct GuidedDeletionRunAuthorityInput {
     pub mode: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuidedDeletionSavedStateKind {
+    PauseAfterCurrentScreen,
+    StopAfterCurrentSafeStep,
+}
+
+impl GuidedDeletionSavedStateKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::PauseAfterCurrentScreen => "pause_after_current_screen",
+            Self::StopAfterCurrentSafeStep => "stop_after_current_safe_step",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuidedDeletionSavedStateDto {
+    pub saved_state: &'static str,
+    pub match_count: usize,
+}
+
 impl DiscordGuidedDeletionPlanState {
     pub fn record_scan(
         &self,
@@ -211,7 +233,40 @@ impl DiscordGuidedDeletionPlanState {
             .map_err(|_| "Discord guided-deletion plan state is unavailable".to_owned())?;
         producer.scan = Some(scan.clone());
         producer.preview = None;
+        producer.saved_state = None;
         Ok(scan)
+    }
+
+    pub fn pause_after_current_screen(&self) -> Result<GuidedDeletionSavedStateDto, String> {
+        self.save_state(GuidedDeletionSavedStateKind::PauseAfterCurrentScreen)
+    }
+
+    pub fn stop_after_current_safe_step(&self) -> Result<GuidedDeletionSavedStateDto, String> {
+        self.save_state(GuidedDeletionSavedStateKind::StopAfterCurrentSafeStep)
+    }
+
+    fn save_state(
+        &self,
+        saved_state: GuidedDeletionSavedStateKind,
+    ) -> Result<GuidedDeletionSavedStateDto, String> {
+        let mut producer = self
+            .inner
+            .lock()
+            .map_err(|_| "Discord guided-deletion plan state is unavailable".to_owned())?;
+        let match_count = producer
+            .scan
+            .as_ref()
+            .ok_or_else(|| "Run and review a Discord scan before saving run state".to_owned())?
+            .candidates
+            .len();
+        producer.saved_state = Some(saved_state);
+        let saved_state = producer
+            .saved_state
+            .ok_or_else(|| "Discord guided-deletion saved state was not retained".to_owned())?;
+        Ok(GuidedDeletionSavedStateDto {
+            saved_state: saved_state.label(),
+            match_count,
+        })
     }
 
     pub fn build_preview(
@@ -553,6 +608,8 @@ macro_rules! hub_tauri_commands {
             scan_local_privacy,
             open_hosted_session_scan,
             request_hosted_session_scan,
+            request_discord_guided_deletion_pause_after_current_screen,
+            request_discord_guided_deletion_stop_after_current_safe_step,
             initialize_scrub_index,
             set_scrub_index_manifest,
             get_scrub_index_manifest,
@@ -861,6 +918,46 @@ mod discord_guided_deletion_plan_producer_tests {
             ),
             Err("Preview the exact Discord deletion plan before confirming it".to_owned()),
             "confirmation consumes the preview; a retry must preview and confirm again"
+        );
+    }
+
+    #[test]
+    fn task_1432_direct_pause_and_stop_commands_return_saved_state_and_match_count() {
+        let state = DiscordGuidedDeletionPlanState::default();
+        state
+            .record_scan(scan(vec![row(1), row(2), row(3)]))
+            .expect("scan is stored");
+
+        let pause = state
+            .pause_after_current_screen()
+            .expect("pause command saves current-screen state");
+        assert_eq!(pause.saved_state, "pause_after_current_screen");
+        assert_eq!(pause.match_count, 3);
+        let pause_preview = state
+            .build_preview(&[1], true)
+            .expect("pause retains found scan results for preview");
+        assert_eq!(pause_preview.rows.len(), 1);
+        println!(
+            "TASK1432 direct_pause_command=pause_after_current_screen saved_state={} match_count={} retained_preview_rows={}",
+            pause.saved_state,
+            pause.match_count,
+            pause_preview.rows.len()
+        );
+
+        let stop = state
+            .stop_after_current_safe_step()
+            .expect("stop command saves safe-step state");
+        assert_eq!(stop.saved_state, "stop_after_current_safe_step");
+        assert_eq!(stop.match_count, 3);
+        let stop_preview = state
+            .build_preview(&[2, 3], true)
+            .expect("stop retains found scan results for preview");
+        assert_eq!(stop_preview.rows.len(), 2);
+        println!(
+            "TASK1432 direct_stop_command=stop_after_current_safe_step saved_state={} match_count={} retained_preview_rows={}",
+            stop.saved_state,
+            stop.match_count,
+            stop_preview.rows.len()
         );
     }
 }
@@ -2259,10 +2356,12 @@ mod tauri_registration_surface_tests {
     #[test]
     fn hosted_session_scan_commands_are_registered() {
         let (handlers, permissions, capability) = registration_inputs();
-        const HOSTED_SESSION_SCAN_COMMANDS: [&str; 6] = [
+        const HOSTED_SESSION_SCAN_COMMANDS: [&str; 8] = [
             "open_hosted_session_scan",
             "request_hosted_session_scan",
             "request_hosted_session_scan_command",
+            "request_discord_guided_deletion_pause_after_current_screen",
+            "request_discord_guided_deletion_stop_after_current_safe_step",
             "scan_discord_own_messages_for_deletion",
             "preview_discord_guided_deletion",
             "execute_discord_guided_deletion",
