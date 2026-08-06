@@ -13346,9 +13346,17 @@ fn auto_whitelist_allowed_place(app_kind: &str) -> Option<AutoWhitelistAllowedPl
             kind: kind.to_string(),
         });
     }
-    crate::auto_whitelist_rules::telegram_allowed_place_kind_for_rule_key(app_kind).map(|kind| {
-        AutoWhitelistAllowedPlaceDto {
+    if let Some(kind) =
+        crate::auto_whitelist_rules::telegram_allowed_place_kind_for_rule_key(app_kind)
+    {
+        return Some(AutoWhitelistAllowedPlaceDto {
             app: "telegram".to_string(),
+            kind: kind.to_string(),
+        });
+    }
+    crate::auto_whitelist_rules::messenger_allowed_place_kind_for_rule_key(app_kind).map(|kind| {
+        AutoWhitelistAllowedPlaceDto {
+            app: "messenger".to_string(),
             kind: kind.to_string(),
         }
     })
