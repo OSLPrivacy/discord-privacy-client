@@ -75,6 +75,56 @@ impl UpdateChannel {
     }
 }
 
+/// Saved defaults applied when the user starts a new message.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageScopeDefault {
+    #[default]
+    Message,
+    Conversation,
+    App,
+}
+
+/// Saved preference for how outgoing text is written.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageWriterDefault {
+    #[default]
+    Plaintext,
+    AiCovertext,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageDefaults {
+    #[serde(default)]
+    pub scope: MessageScopeDefault,
+    #[serde(default = "default_message_timer_seconds")]
+    pub timer_seconds: u32,
+    #[serde(default = "default_display_length_seconds")]
+    pub display_length_seconds: u32,
+    #[serde(default)]
+    pub writer: MessageWriterDefault,
+}
+
+impl Default for MessageDefaults {
+    fn default() -> Self {
+        Self {
+            scope: MessageScopeDefault::default(),
+            timer_seconds: default_message_timer_seconds(),
+            display_length_seconds: default_display_length_seconds(),
+            writer: MessageWriterDefault::default(),
+        }
+    }
+}
+
+fn default_message_timer_seconds() -> u32 {
+    300
+}
+
+fn default_display_length_seconds() -> u32 {
+    10
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppPreferences {
     #[serde(default)]
@@ -87,6 +137,8 @@ pub struct AppPreferences {
     pub update_channel: UpdateChannel,
     #[serde(default)]
     pub auto_whitelist_rules: HashMap<String, crate::auto_whitelist_rules::AutoWhitelistChoice>,
+    #[serde(default)]
+    pub message_defaults: MessageDefaults,
 }
 
 pub const APP_PREFERENCES_VERSION: u32 = 2;

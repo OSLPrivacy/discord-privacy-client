@@ -16331,6 +16331,8 @@ pub fn cmd_osl_apply_server_default_to_existing_channels(
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppPreferencesDto {
     pub stego_mode: crate::app_preferences::StegoMode,
+    #[serde(default)]
+    pub message_defaults: crate::app_preferences::MessageDefaults,
 }
 
 pub fn cmd_osl_get_app_preferences(state: &AppState) -> Result<AppPreferencesDto, String> {
@@ -16341,6 +16343,7 @@ pub fn cmd_osl_get_app_preferences(state: &AppState) -> Result<AppPreferencesDto
         .expect("app_preferences mutex poisoned");
     Ok(AppPreferencesDto {
         stego_mode: g.stego_mode,
+        message_defaults: g.message_defaults.clone(),
     })
 }
 
@@ -16357,6 +16360,7 @@ pub fn cmd_osl_set_app_preferences(
             .expect("app_preferences mutex poisoned");
         g.version = crate::app_preferences::APP_PREFERENCES_VERSION;
         g.stego_mode = dto.stego_mode;
+        g.message_defaults = dto.message_defaults;
     }
     if let Some(dir) = config_dir {
         let g = state
@@ -16367,6 +16371,35 @@ pub fn cmd_osl_set_app_preferences(
         crate::app_preferences::write_app_preferences(&path, &g)?;
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct DirectNewMessagePlanDto {
+    pub kind: String,
+    pub scope: crate::app_preferences::MessageScopeDefault,
+    pub timer_seconds: u32,
+    pub display_length_seconds: u32,
+    pub writer: crate::app_preferences::MessageWriterDefault,
+}
+
+pub fn cmd_osl_start_direct_new_message_plan(
+    state: &AppState,
+) -> Result<DirectNewMessagePlanDto, String> {
+    record_activity_on_command_entry();
+    let defaults = {
+        let g = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        g.message_defaults.clone()
+    };
+    Ok(DirectNewMessagePlanDto {
+        kind: "direct".to_owned(),
+        scope: defaults.scope,
+        timer_seconds: defaults.timer_seconds,
+        display_length_seconds: defaults.display_length_seconds,
+        writer: defaults.writer,
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
