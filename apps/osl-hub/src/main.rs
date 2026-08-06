@@ -79,7 +79,9 @@ use osl_privacy_hub::password_lifecycle::{
     self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult, HubMainPasswordSetupResult,
 };
 use osl_privacy_hub::peer_attachment_io;
-use osl_privacy_hub::preferences::PreviewState;
+use osl_privacy_hub::preferences::{
+    PreviewState, ScrubAccountPermissionInput, ScrubAccountPermissionRead,
+};
 use osl_privacy_hub::privacy_scan::{self, LocalMessageCandidate, LocalPrivacyScanResult};
 use osl_privacy_hub::pro_context_cover::LocalCoverState;
 use osl_privacy_hub::revocation_drain_timer;
@@ -191,12 +193,13 @@ use native_discord_overlay::OverlaySessionState;
 use osl_privacy_hub::hub_command_surface::{
     build_review_ui_identity_binding_verifier, checked_browser_footprint_binding,
     checked_hosted_session_scan_flow, compose_erasure_request_for_user,
-    require_native_discord_product_send_authority,
-    require_review_ui_identity_binding_from_verifier, service_kind_id,
-    start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
-    start_autoscrub_reviewed_run_inner, with_native_discord_product_send_authority,
-    BrowserFootprintConsentRequest, CheckedHost, DiscordGuidedDeletionPlanState,
-    GuidedDeletionRunAuthorityInput, NativeDiscordProductSendAuthority,
+    get_scrub_account_permissions_command, require_native_discord_product_send_authority,
+    require_review_ui_identity_binding_from_verifier, save_scrub_account_permissions_command,
+    service_kind_id, start_autoscrub_reviewed_run_after_review_ui_binding,
+    start_autoscrub_reviewed_run_checked, start_autoscrub_reviewed_run_inner,
+    with_native_discord_product_send_authority, BrowserFootprintConsentRequest, CheckedHost,
+    DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
+    NativeDiscordProductSendAuthority,
 };
 use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
@@ -645,6 +648,25 @@ fn save_onboarding_preferences(
     preferences: OnboardingPreferences,
 ) -> Result<OnboardingPreferences, String> {
     state.save(preferences)
+}
+
+#[tauri::command]
+fn save_scrub_account_permissions(
+    state: State<'_, PreviewState>,
+    core: State<'_, HubCoreState>,
+    input: ScrubAccountPermissionInput,
+) -> Result<ScrubAccountPermissionRead, String> {
+    let owner = active_unlocked_osl_user_id(&core)?;
+    save_scrub_account_permissions_command(&state, &owner, input)
+}
+
+#[tauri::command]
+fn get_scrub_account_permissions(
+    state: State<'_, PreviewState>,
+    core: State<'_, HubCoreState>,
+) -> Result<ScrubAccountPermissionRead, String> {
+    let owner = active_unlocked_osl_user_id(&core)?;
+    get_scrub_account_permissions_command(&state, &owner)
 }
 
 /// Persist the explicit connection route selected during onboarding.

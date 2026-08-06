@@ -249,6 +249,16 @@ description = "Cancel and remove only the active identity's fixed encrypted Scru
 commands.allow = ["cancel_scrub_index"]
 
 [[permission]]
+identifier = "allow-save-scrub-account-permissions"
+description = "Save only the explicitly checked Scrub account ids for the active local OSL identity."
+commands.allow = ["save_scrub_account_permissions"]
+
+[[permission]]
+identifier = "allow-get-scrub-account-permissions"
+description = "Read only the checked Scrub account ids saved for the active local OSL identity."
+commands.allow = ["get_scrub_account_permissions"]
+
+[[permission]]
 identifier = "allow-get-autoscrub-run-fl"
 description = "Read the bounded local AutoScrub run fleet status; returns review state only and grants no mutation authority."
 commands.allow = ["get_autoscrub_run_fl"]

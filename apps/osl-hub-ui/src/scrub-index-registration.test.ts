@@ -111,6 +111,8 @@ describe("Scrub index registration", () => {
       "append_scrub_index_chunk",
       "get_scrub_index_status",
       "cancel_scrub_index",
+      "save_scrub_account_permissions",
+      "get_scrub_account_permissions",
       "get_autoscrub_run_fl",
       "start_autoscrub_reviewed_run",
       "request_autoscrub_global_stop",

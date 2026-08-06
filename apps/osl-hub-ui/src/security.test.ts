@@ -283,6 +283,8 @@ describe("bundled preview security boundary", () => {
       "allow-append-scrub-index-chunk",
       "allow-get-scrub-index-status",
       "allow-cancel-scrub-index",
+      "allow-save-scrub-account-permissions",
+      "allow-get-scrub-account-permissions",
       "allow-get-autoscrub-run-fl",
       "allow-start-autoscrub-reviewed-run",
       "allow-request-autoscrub-global-stop",

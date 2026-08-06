@@ -26,6 +26,7 @@ use crate::native_apps::BrowserImportId;
 use crate::native_discord_adapter::{
     guided_deletion, DiscordCarrierLayout, NativeDiscordComposerState,
 };
+use crate::preferences::{PreviewState, ScrubAccountPermissionInput, ScrubAccountPermissionRead};
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
 use serde::Deserialize;
@@ -59,6 +60,21 @@ pub fn compose_erasure_request_for_user(
     scrub_erasure::compose_erasure_request(&input).map_err(|_| {
         "Complete provider, account identifier, and data categories are required".to_owned()
     })
+}
+
+pub fn save_scrub_account_permissions_command(
+    state: &PreviewState,
+    owner_user_id: &str,
+    input: ScrubAccountPermissionInput,
+) -> Result<ScrubAccountPermissionRead, String> {
+    state.save_scrub_account_permissions(owner_user_id, input)
+}
+
+pub fn get_scrub_account_permissions_command(
+    state: &PreviewState,
+    owner_user_id: &str,
+) -> Result<ScrubAccountPermissionRead, String> {
+    state.get_scrub_account_permissions(owner_user_id)
 }
 
 pub fn require_review_ui_identity_binding_from_verifier(
@@ -505,6 +521,8 @@ macro_rules! hub_tauri_commands {
             append_scrub_index_chunk,
             get_scrub_index_status,
             cancel_scrub_index,
+            save_scrub_account_permissions,
+            get_scrub_account_permissions,
             list_linked_services,
             get_core_readiness,
             list_core_features,
@@ -670,6 +688,62 @@ macro_rules! hub_tauri_commands {
             get_hub_revocation_status
         }
     };
+}
+
+#[cfg(test)]
+mod scrub_account_permission_command_tests {
+    use super::{get_scrub_account_permissions_command, save_scrub_account_permissions_command};
+    use crate::preferences::{PreviewState, ScrubAccountPermissionInput};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_file() -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("osl-task-1401-{}-{nonce}", std::process::id()))
+            .join("preferences.json")
+    }
+
+    #[test]
+    fn task_1401_direct_scrub_account_permission_command_saves_only_ticked_account() {
+        let path = temporary_file();
+        let owner = "owner-task-1401";
+        let first = "account-alpha-1401";
+        let second = "account-beta-1401";
+        let save = save_scrub_account_permissions_command(
+            &PreviewState::load(path.clone()),
+            owner,
+            ScrubAccountPermissionInput {
+                available_account_ids: vec![first.to_owned(), second.to_owned()],
+                selected_account_ids: vec![first.to_owned()],
+            },
+        )
+        .expect("direct save command stores the chosen Scrub account permission");
+        println!(
+            "TASK1401_SAVE command=save_scrub_account_permissions available_ids={},{} selected_ids={} saved_ids={}",
+            first,
+            second,
+            first,
+            save.account_ids.join(",")
+        );
+
+        let read = get_scrub_account_permissions_command(&PreviewState::load(path.clone()), owner)
+            .expect("direct read command returns saved Scrub account permissions");
+        println!(
+            "TASK1401_READ command=get_scrub_account_permissions read_ids={} read_count={} unticked_saved={}",
+            read.account_ids.join(","),
+            read.account_ids.len(),
+            read.account_ids.iter().any(|id| id == second)
+        );
+
+        assert_eq!(save.account_ids, vec![first.to_owned()]);
+        assert_eq!(read.account_ids, vec![first.to_owned()]);
+        assert!(!read.account_ids.iter().any(|id| id == second));
+
+        let _ = std::fs::remove_dir_all(path.parent().expect("temp parent"));
+    }
 }
 
 #[cfg(test)]

@@ -20,6 +20,8 @@ struct PreferencesDocument {
     onboarding: OnboardingPreferences,
     #[serde(default)]
     home_tiles_by_user: BTreeMap<String, StoredHomeTileArrangement>,
+    #[serde(default)]
+    scrub_account_permissions_by_user: BTreeMap<String, StoredScrubAccountPermissions>,
 }
 
 impl Default for PreferencesDocument {
@@ -28,6 +30,7 @@ impl Default for PreferencesDocument {
             version: PREVIEW_STATE_VERSION,
             onboarding: OnboardingPreferences::default(),
             home_tiles_by_user: BTreeMap::new(),
+            scrub_account_permissions_by_user: BTreeMap::new(),
         }
     }
 }
@@ -36,6 +39,7 @@ pub struct PreviewState {
     path: PathBuf,
     onboarding: Mutex<OnboardingPreferences>,
     home_tiles_by_user: Mutex<BTreeMap<String, StoredHomeTileArrangement>>,
+    scrub_account_permissions_by_user: Mutex<BTreeMap<String, StoredScrubAccountPermissions>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -43,6 +47,25 @@ pub struct PreviewState {
 struct StoredHomeTileArrangement {
     order: Vec<String>,
     hidden: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScrubAccountPermissionInput {
+    pub available_account_ids: Vec<String>,
+    pub selected_account_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubAccountPermissionRead {
+    pub account_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredScrubAccountPermissions {
+    account_ids: Vec<String>,
 }
 
 impl PreviewState {
@@ -58,11 +81,23 @@ impl PreviewState {
                     .map(|owner| (owner, sanitize_arrangement(arrangement)))
             })
             .collect();
+        let scrub_account_permissions_by_user = document
+            .scrub_account_permissions_by_user
+            .into_iter()
+            .filter_map(|(owner, permissions)| {
+                validate_owner_key(&owner).ok().and_then(|owner| {
+                    sanitize_scrub_account_permissions(permissions)
+                        .ok()
+                        .map(|permissions| (owner, permissions))
+                })
+            })
+            .collect();
 
         Self {
             path,
             onboarding: Mutex::new(onboarding),
             home_tiles_by_user: Mutex::new(home_tiles_by_user),
+            scrub_account_permissions_by_user: Mutex::new(scrub_account_permissions_by_user),
         }
     }
 
@@ -83,8 +118,18 @@ impl PreviewState {
             .lock()
             .map_err(|_| "home tile preferences lock is unavailable".to_owned())?
             .clone();
-        write_preferences(&self.path, &preferences, &home_tiles_by_user)
-            .map_err(|error| format!("could not save preview preferences: {error}"))?;
+        let scrub_account_permissions_by_user = self
+            .scrub_account_permissions_by_user
+            .lock()
+            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?
+            .clone();
+        write_preferences(
+            &self.path,
+            &preferences,
+            &home_tiles_by_user,
+            &scrub_account_permissions_by_user,
+        )
+        .map_err(|error| format!("could not save preview preferences: {error}"))?;
 
         let mut current = self
             .onboarding
@@ -134,9 +179,19 @@ impl PreviewState {
             .map_err(|_| "home tile preferences lock is unavailable".to_owned())?
             .clone();
         home_tiles_by_user.insert(owner_user_id.clone(), stored.clone());
+        let scrub_account_permissions_by_user = self
+            .scrub_account_permissions_by_user
+            .lock()
+            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?
+            .clone();
 
-        write_preferences(&self.path, &onboarding, &home_tiles_by_user)
-            .map_err(|error| format!("could not save home tile preferences: {error}"))?;
+        write_preferences(
+            &self.path,
+            &onboarding,
+            &home_tiles_by_user,
+            &scrub_account_permissions_by_user,
+        )
+        .map_err(|error| format!("could not save home tile preferences: {error}"))?;
 
         let mut current = self
             .home_tiles_by_user
@@ -170,8 +225,18 @@ impl PreviewState {
         apply_arrangement_action(&mut stored, action)?;
 
         home_tiles_by_user.insert(owner_user_id.clone(), sanitize_arrangement(stored.clone()));
-        write_preferences(&self.path, &onboarding, &home_tiles_by_user)
-            .map_err(|error| format!("could not save home tile preferences: {error}"))?;
+        let scrub_account_permissions_by_user = self
+            .scrub_account_permissions_by_user
+            .lock()
+            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?
+            .clone();
+        write_preferences(
+            &self.path,
+            &onboarding,
+            &home_tiles_by_user,
+            &scrub_account_permissions_by_user,
+        )
+        .map_err(|error| format!("could not save home tile preferences: {error}"))?;
 
         let stored = home_tiles_by_user
             .get(&owner_user_id)
@@ -183,6 +248,60 @@ impl PreviewState {
             .map_err(|_| "home tile preferences lock is unavailable".to_owned())?;
         *current = home_tiles_by_user;
         Ok(read_arrangement(Some(stored)))
+    }
+
+    pub fn save_scrub_account_permissions(
+        &self,
+        owner_user_id: &str,
+        input: ScrubAccountPermissionInput,
+    ) -> Result<ScrubAccountPermissionRead, String> {
+        let owner_user_id = validate_owner_key(owner_user_id)?;
+        let stored = sanitize_scrub_account_permission_input(input)?;
+        let onboarding = self
+            .onboarding
+            .lock()
+            .map_err(|_| "preview preferences lock is unavailable".to_owned())?
+            .clone();
+        let home_tiles_by_user = self
+            .home_tiles_by_user
+            .lock()
+            .map_err(|_| "home tile preferences lock is unavailable".to_owned())?
+            .clone();
+        let mut scrub_account_permissions_by_user = self
+            .scrub_account_permissions_by_user
+            .lock()
+            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?
+            .clone();
+
+        scrub_account_permissions_by_user.insert(owner_user_id, stored.clone());
+        write_preferences(
+            &self.path,
+            &onboarding,
+            &home_tiles_by_user,
+            &scrub_account_permissions_by_user,
+        )
+        .map_err(|error| format!("could not save Scrub account permissions: {error}"))?;
+
+        let mut current = self
+            .scrub_account_permissions_by_user
+            .lock()
+            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?;
+        *current = scrub_account_permissions_by_user;
+        Ok(read_scrub_account_permissions(Some(stored)))
+    }
+
+    pub fn get_scrub_account_permissions(
+        &self,
+        owner_user_id: &str,
+    ) -> Result<ScrubAccountPermissionRead, String> {
+        let owner_user_id = validate_owner_key(owner_user_id)?;
+        let current = self
+            .scrub_account_permissions_by_user
+            .lock()
+            .map_err(|_| "Scrub account permissions lock is unavailable".to_owned())?;
+        Ok(read_scrub_account_permissions(
+            current.get(&owner_user_id).cloned(),
+        ))
     }
 }
 
@@ -202,11 +321,13 @@ fn write_preferences(
     path: &Path,
     preferences: &OnboardingPreferences,
     home_tiles_by_user: &BTreeMap<String, StoredHomeTileArrangement>,
+    scrub_account_permissions_by_user: &BTreeMap<String, StoredScrubAccountPermissions>,
 ) -> Result<(), String> {
     let document = PreferencesDocument {
         version: PREVIEW_STATE_VERSION,
         onboarding: preferences.clone(),
         home_tiles_by_user: home_tiles_by_user.clone(),
+        scrub_account_permissions_by_user: scrub_account_permissions_by_user.clone(),
     };
     let bytes = serde_json::to_vec_pretty(&document)
         .map_err(|_| "preferences could not be encoded".to_owned())?;
@@ -214,6 +335,83 @@ fn write_preferences(
         return Err("preview preferences exceed the size limit".to_owned());
     }
     crate::atomic_file::write_recoverable(path, &bytes, "preview preferences")
+}
+
+fn sanitize_scrub_account_permission_input(
+    input: ScrubAccountPermissionInput,
+) -> Result<StoredScrubAccountPermissions, String> {
+    if input.available_account_ids.len() > 32 || input.selected_account_ids.len() > 32 {
+        return Err("Scrub account permission list is too large".to_owned());
+    }
+    let mut available = HashSet::<String>::new();
+    for account_id in input.available_account_ids {
+        validate_scrub_account_id(&account_id)?;
+        if !available.insert(account_id) {
+            return Err("Scrub available accounts must be unique".to_owned());
+        }
+    }
+    let mut selected = HashSet::<String>::new();
+    for account_id in input.selected_account_ids {
+        validate_scrub_account_id(&account_id)?;
+        if !available.contains(&account_id) {
+            return Err("Scrub selected account is not available".to_owned());
+        }
+        if !selected.insert(account_id) {
+            return Err("Scrub selected accounts must be unique".to_owned());
+        }
+    }
+
+    let mut account_ids = available
+        .into_iter()
+        .filter(|account_id| selected.contains(account_id))
+        .collect::<Vec<_>>();
+    account_ids.sort();
+    Ok(StoredScrubAccountPermissions { account_ids })
+}
+
+fn sanitize_scrub_account_permissions(
+    permissions: StoredScrubAccountPermissions,
+) -> Result<StoredScrubAccountPermissions, String> {
+    if permissions.account_ids.len() > 32 {
+        return Err("Scrub account permission list is too large".to_owned());
+    }
+    let mut seen = HashSet::<String>::new();
+    let mut account_ids = Vec::with_capacity(permissions.account_ids.len());
+    for account_id in permissions.account_ids {
+        validate_scrub_account_id(&account_id)?;
+        if !seen.insert(account_id.clone()) {
+            return Err("Scrub account permissions must be unique".to_owned());
+        }
+        account_ids.push(account_id);
+    }
+    account_ids.sort();
+    Ok(StoredScrubAccountPermissions { account_ids })
+}
+
+fn read_scrub_account_permissions(
+    permissions: Option<StoredScrubAccountPermissions>,
+) -> ScrubAccountPermissionRead {
+    let account_ids = permissions
+        .and_then(|permissions| sanitize_scrub_account_permissions(permissions).ok())
+        .map(|permissions| permissions.account_ids)
+        .unwrap_or_default();
+    ScrubAccountPermissionRead { account_ids }
+}
+
+fn validate_scrub_account_id(account_id: &str) -> Result<(), String> {
+    let bytes = account_id.as_bytes();
+    if !bytes.is_empty()
+        && bytes.len() <= 64
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && (bytes[bytes.len() - 1].is_ascii_lowercase() || bytes[bytes.len() - 1].is_ascii_digit())
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+    {
+        Ok(())
+    } else {
+        Err("Scrub account id is invalid".to_owned())
+    }
 }
 
 fn validate_owner_key(owner_user_id: &str) -> Result<String, String> {
