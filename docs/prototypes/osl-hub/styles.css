@@ -137,6 +137,9 @@ main { min-width: 0; }
 .data-promise, .receipt-note { margin-top: 18px; padding: 16px 18px; display: flex; gap: 13px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--good-soft); }
 .data-promise svg { flex: 0 0 auto; color: var(--good); }
 .data-promise p, .receipt-note p { margin: 3px 0 0; }
+.doc-link-band { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 10px; }
+.doc-link-band a { min-height: 38px; padding: 9px 13px; display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font-weight: 800; text-decoration: none; }
+.doc-link-band a:hover, .doc-link-band a:focus-visible { border-color: var(--brand); color: var(--brand); outline: none; }
 
 .split-view { display: grid; grid-template-columns: minmax(250px, 340px) 1fr; gap: 16px; }
 .conversation-list, .conversation-preview { min-height: 490px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
