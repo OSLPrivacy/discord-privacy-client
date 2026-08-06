@@ -31,6 +31,8 @@ pub struct WrappedKeyUpload {
     pub single_use: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_duration_seconds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiry_seconds: Option<u32>,
     pub expires_at: String,
 }
 
@@ -66,6 +68,10 @@ pub fn canonical_wrapped_key_post_bytes(
         None => out.push(0),
     }
     write_lp(&mut out, upload.expires_at.as_bytes());
+    if let Some(seconds) = upload.expiry_seconds {
+        out.push(1);
+        out.extend_from_slice(&seconds.to_be_bytes());
+    }
     write_lp(&mut out, timestamp_ms.to_string().as_bytes());
     out
 }
@@ -106,6 +112,7 @@ mod tests {
             blob_version: 1,
             single_use: false,
             display_duration_seconds: None,
+            expiry_seconds: None,
             expires_at: "2026-07-18T00:00:00.000Z".into(),
         }
     }
@@ -132,6 +139,12 @@ mod tests {
         assert_ne!(
             encoded,
             canonical_wrapped_key_post_bytes("alice", &base, 1_700_000_000_124)
+        );
+        let mut expiry_changed = base.clone();
+        expiry_changed.expiry_seconds = Some(90);
+        assert_ne!(
+            encoded,
+            canonical_wrapped_key_post_bytes("alice", &expiry_changed, 1_700_000_000_123)
         );
     }
 

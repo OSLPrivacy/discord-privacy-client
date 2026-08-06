@@ -54,6 +54,7 @@ fn signed_mutation_round_trip_and_cleanup() {
                 blob_version: 1,
                 single_use: false,
                 display_duration_seconds: None,
+                expiry_seconds: None,
                 expires_at: bounded_expiry.clone(),
             },
         )?;
@@ -72,6 +73,7 @@ fn signed_mutation_round_trip_and_cleanup() {
                 blob_version: 1,
                 single_use: true,
                 display_duration_seconds: Some(10),
+                expiry_seconds: Some(10),
                 expires_at: bounded_expiry,
             },
         )?;

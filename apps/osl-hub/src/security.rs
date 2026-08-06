@@ -165,6 +165,108 @@ pub struct ScopeSecurityDto {
     pub decrypt_display_enabled: bool,
 }
 
+pub const TIMER_PICKER_MAX_DAYS: u32 = 30;
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimerPickerStateDto {
+    pub days: String,
+    pub hours: String,
+    pub minutes: String,
+    pub seconds: String,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimerPickerSendExpiryDto {
+    pub duration_seconds: u32,
+    pub expires_at: i64,
+}
+
+fn two_digit_timer_value(value: u32) -> String {
+    format!("{value:02}")
+}
+
+pub fn default_timer_picker_state() -> TimerPickerStateDto {
+    TimerPickerStateDto {
+        days: two_digit_timer_value(0),
+        hours: two_digit_timer_value(0),
+        minutes: two_digit_timer_value(0),
+        seconds: two_digit_timer_value(0),
+    }
+}
+
+pub fn timer_picker_state(
+    days: u32,
+    hours: u32,
+    minutes: u32,
+    seconds: u32,
+) -> Result<TimerPickerStateDto, String> {
+    if days > TIMER_PICKER_MAX_DAYS {
+        return Err("OSL timer picker days must be between 00 and 30".to_owned());
+    }
+    if hours > 23 {
+        return Err("OSL timer picker hours must be between 00 and 23".to_owned());
+    }
+    if minutes > 59 {
+        return Err("OSL timer picker minutes must be between 00 and 59".to_owned());
+    }
+    if seconds > 59 {
+        return Err("OSL timer picker seconds must be between 00 and 59".to_owned());
+    }
+    Ok(TimerPickerStateDto {
+        days: two_digit_timer_value(days),
+        hours: two_digit_timer_value(hours),
+        minutes: two_digit_timer_value(minutes),
+        seconds: two_digit_timer_value(seconds),
+    })
+}
+
+fn parse_timer_picker_part(raw: &str, label: &str, maximum: u32) -> Result<u32, String> {
+    if raw.len() != 2 || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(format!("OSL timer picker {label} must be two digits"));
+    }
+    let value = raw
+        .parse::<u32>()
+        .map_err(|_| format!("OSL timer picker {label} is invalid"))?;
+    if value > maximum {
+        return Err(format!(
+            "OSL timer picker {label} must be between 00 and {maximum:02}"
+        ));
+    }
+    Ok(value)
+}
+
+pub fn timer_picker_duration_seconds(state: &TimerPickerStateDto) -> Result<u32, String> {
+    let days = parse_timer_picker_part(&state.days, "days", TIMER_PICKER_MAX_DAYS)?;
+    let hours = parse_timer_picker_part(&state.hours, "hours", 23)?;
+    let minutes = parse_timer_picker_part(&state.minutes, "minutes", 59)?;
+    let seconds = parse_timer_picker_part(&state.seconds, "seconds", 59)?;
+    let total = days
+        .saturating_mul(86_400)
+        .saturating_add(hours.saturating_mul(3_600))
+        .saturating_add(minutes.saturating_mul(60))
+        .saturating_add(seconds);
+    if total == 0 {
+        return Err("OSL timer picker duration must be at least 01 second".to_owned());
+    }
+    Ok(total)
+}
+
+pub fn timer_picker_send_expiry_at(
+    state: &TimerPickerStateDto,
+    now: i64,
+) -> Result<TimerPickerSendExpiryDto, String> {
+    let duration_seconds = timer_picker_duration_seconds(state)?;
+    let expires_at = now
+        .checked_add(i64::from(duration_seconds))
+        .ok_or_else(|| "OSL timer picker expiry is too large".to_owned())?;
+    Ok(TimerPickerSendExpiryDto {
+        duration_seconds,
+        expires_at,
+    })
+}
+
 /// The minimum friend state needed to create a manual peer-messaging lease.
 /// Key material stays in the original core; callers receive only stable local
 /// and public identity identifiers.

@@ -808,6 +808,7 @@ fn wrapped_key_post_carries_sender_identity_signature_without_bearer() {
         blob_version: 1,
         single_use: false,
         display_duration_seconds: None,
+        expiry_seconds: None,
         expires_at: "2026-07-18T00:00:00.000Z".into(),
     };
     let client = KeyServerClient::new(format!("http://127.0.0.1:{port}")).unwrap();

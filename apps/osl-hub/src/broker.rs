@@ -179,6 +179,12 @@ const MAX_REVOCATION_BUNDLE_BYTES: usize = 16 * 1024;
 const MAX_REVOCATION_POSTS_PER_DRAIN: usize = 8;
 const MAX_PEER_LIFETIME_SECONDS: i64 = 7 * 24 * 60 * 60;
 const MAX_PEER_CLOCK_SKEW_SECONDS: i64 = 5 * 60;
+const PEER_STORE_TTL_OPTIONS: [u32; 4] = [
+    ipc::cipher_store_client::TTL_1H,
+    ipc::cipher_store_client::TTL_24H,
+    ipc::cipher_store_client::TTL_72H,
+    ipc::cipher_store_client::TTL_7D,
+];
 const VIEW_ONCE_UNAVAILABLE: &str = "This view-once message is unavailable or expired";
 const LOCAL_PROTECTED_MESSAGE_TYPE: u8 = 0x80;
 const LOCAL_PROTECTED_FILE: &str = "hub_local_protected.json";
@@ -1393,6 +1399,22 @@ struct PreparedPeerProseEnvelope {
     encrypted_wire: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PeerSendExpiry {
+    created_at: i64,
+    expires_at: i64,
+    expiry_seconds: u32,
+    store_ttl_seconds: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimerPickerSendCommandExpiry {
+    pub duration_seconds: u32,
+    pub seconds_ahead: i64,
+    pub expires_at: i64,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct LocalProtectedPayload {
     version: u32,
@@ -1444,6 +1466,8 @@ struct NativeTextChunkMeta {
     whole_sha256: String,
     created_at: i64,
     expires_at: i64,
+    expiry_seconds: u32,
+    store_ttl_seconds: u32,
 }
 
 struct NativeTextReassembly {
@@ -2101,8 +2125,18 @@ fn prepare_peer_prose_text_inner_with_chunk(
         manual.scope.clone(),
     )?;
     let context = broker.context_for(context_token)?;
-    let ttl_seconds = security::scope_security(manual.scope.clone())?.ttl_seconds;
-    if i64::from(ttl_seconds) > MAX_PEER_LIFETIME_SECONDS || ttl_seconds == 0 {
+    let scope_ttl_seconds = security::scope_security(manual.scope.clone())?.ttl_seconds;
+    let (ttl_seconds, store_ttl_seconds) = chunk
+        .as_ref()
+        .map_or((scope_ttl_seconds, scope_ttl_seconds), |chunk| {
+            (chunk.expiry_seconds, chunk.store_ttl_seconds)
+        });
+    if i64::from(ttl_seconds) > MAX_PEER_LIFETIME_SECONDS
+        || ttl_seconds == 0
+        || store_ttl_seconds == 0
+        || store_ttl_seconds < ttl_seconds
+        || i64::from(store_ttl_seconds) > MAX_PEER_LIFETIME_SECONDS
+    {
         return Err("OSL could not prepare a single manual peer message".to_owned());
     }
     let now = chunk
@@ -2163,7 +2197,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
             &detection_key,
             send_keys,
             &encrypted,
-            ttl_seconds,
+            store_ttl_seconds,
         )
     } else {
         ipc::prose_token::prose_token_send(
@@ -2172,7 +2206,7 @@ fn prepare_peer_prose_text_inner_with_chunk(
             &detection_key,
             send_keys,
             &encrypted,
-            ttl_seconds,
+            store_ttl_seconds,
         )
     }
     // D-144: the user-facing sentence stays byte-identical, but the cause is no
@@ -2258,6 +2292,7 @@ fn build_native_overlay_wrapped_key_upload(
         blob_version: 1,
         single_use: view_once,
         display_duration_seconds: view_once.then_some(ttl_seconds),
+        expiry_seconds: Some(ttl_seconds),
         expires_at: keystore::iso_8601_from_unix_seconds(expires_at_unix),
     })
 }
@@ -3875,6 +3910,29 @@ pub fn prepare_native_discord_overlay_text(
         &context_token,
         plaintext,
         view_once,
+        None,
+    )
+}
+
+pub fn prepare_native_discord_overlay_text_with_timer_picker(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
+    plaintext: String,
+    view_once: bool,
+    timer_picker: Option<security::TimerPickerStateDto>,
+) -> Result<PreparedNativeOverlayCarrier, String> {
+    let context_token = broker.active_native_manual_context_token()?;
+    prepare_peer_inbox_text(
+        core,
+        security_state,
+        broker,
+        ai_carrier,
+        &context_token,
+        plaintext,
+        view_once,
+        timer_picker,
     )
 }
 
@@ -3903,6 +3961,34 @@ pub fn prepare_native_discord_overlay_text_with_route_clients(
         &context_token,
         plaintext,
         view_once,
+        None,
+        Some(store_client),
+        keyserver_client,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_native_discord_overlay_text_with_timer_picker_and_route_clients(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
+    plaintext: String,
+    view_once: bool,
+    timer_picker: Option<security::TimerPickerStateDto>,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
+    keyserver_client: Option<&keystore::KeyServerClient>,
+) -> Result<PreparedNativeOverlayCarrier, String> {
+    let context_token = broker.active_native_manual_context_token()?;
+    prepare_peer_inbox_text_with_route_clients(
+        core,
+        security_state,
+        broker,
+        ai_carrier,
+        &context_token,
+        plaintext,
+        view_once,
+        timer_picker,
         Some(store_client),
         keyserver_client,
     )
@@ -3926,6 +4012,30 @@ pub fn prepare_osl_chat_text(
         &context_token,
         plaintext,
         view_once,
+        None,
+    )
+    .map(|carrier| carrier.prepared)
+}
+
+pub fn prepare_osl_chat_text_with_timer_picker(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
+    plaintext: String,
+    view_once: bool,
+    timer_picker: Option<security::TimerPickerStateDto>,
+) -> Result<PreparedNativeOverlayText, String> {
+    let context_token = broker.active_osl_chat_context_token()?;
+    prepare_peer_inbox_text(
+        core,
+        security_state,
+        broker,
+        ai_carrier,
+        &context_token,
+        plaintext,
+        view_once,
+        timer_picker,
     )
     .map(|carrier| carrier.prepared)
 }
@@ -3949,6 +4059,35 @@ pub fn prepare_osl_chat_text_with_route_clients(
         &context_token,
         plaintext,
         view_once,
+        None,
+        Some(store_client),
+        keyserver_client,
+    )
+    .map(|carrier| carrier.prepared)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_osl_chat_text_with_timer_picker_and_route_clients(
+    core: &HubCoreState,
+    security_state: &HubSecurityState,
+    broker: &HubBrokerState,
+    ai_carrier: &crate::ai_carrier::AiCarrierState,
+    plaintext: String,
+    view_once: bool,
+    timer_picker: Option<security::TimerPickerStateDto>,
+    store_client: &ipc::cipher_store_client::CipherStoreClient,
+    keyserver_client: Option<&keystore::KeyServerClient>,
+) -> Result<PreparedNativeOverlayText, String> {
+    let context_token = broker.active_osl_chat_context_token()?;
+    prepare_peer_inbox_text_with_route_clients(
+        core,
+        security_state,
+        broker,
+        ai_carrier,
+        &context_token,
+        plaintext,
+        view_once,
+        timer_picker,
         Some(store_client),
         keyserver_client,
     )
@@ -3997,6 +4136,58 @@ fn qa_encrypt_refusal_site(site: &'static str) {
 #[cfg(not(feature = "discord-qa-shell"))]
 fn qa_encrypt_refusal_site(_site: &'static str) {}
 
+fn store_ttl_for_expiry_seconds(expiry_seconds: u32) -> Result<u32, String> {
+    PEER_STORE_TTL_OPTIONS
+        .into_iter()
+        .find(|ttl| *ttl >= expiry_seconds)
+        .ok_or_else(|| "OSL timer picker duration exceeds send storage limits".to_owned())
+}
+
+fn peer_send_expiry_for_scope_and_picker(
+    scope: ScopeInput,
+    timer_picker: Option<security::TimerPickerStateDto>,
+    now: i64,
+) -> Result<PeerSendExpiry, String> {
+    let expiry_seconds = match timer_picker {
+        Some(state) => security::timer_picker_send_expiry_at(&state, now)?.duration_seconds,
+        None => security::scope_security(scope)?.ttl_seconds,
+    };
+    if expiry_seconds == 0 || i64::from(expiry_seconds) > MAX_PEER_LIFETIME_SECONDS {
+        return Err("OSL timer picker duration exceeds send storage limits".to_owned());
+    }
+    let expires_at = now
+        .checked_add(i64::from(expiry_seconds))
+        .ok_or_else(|| "OSL timer picker expiry is too large".to_owned())?;
+    let store_ttl_seconds = store_ttl_for_expiry_seconds(expiry_seconds)?;
+    Ok(PeerSendExpiry {
+        created_at: now,
+        expires_at,
+        expiry_seconds,
+        store_ttl_seconds,
+    })
+}
+
+pub fn timer_picker_send_command_expiry_at(
+    state: &security::TimerPickerStateDto,
+    now: i64,
+) -> Result<TimerPickerSendCommandExpiry, String> {
+    let expiry = peer_send_expiry_for_scope_and_picker(
+        ScopeInput {
+            kind: ScopeKind::Dm,
+            id: "task-0550".to_owned(),
+            server_id: None,
+            channel_id: Some("task-0550".to_owned()),
+        },
+        Some(state.clone()),
+        now,
+    )?;
+    Ok(TimerPickerSendCommandExpiry {
+        duration_seconds: expiry.expiry_seconds,
+        seconds_ahead: expiry.expires_at.saturating_sub(expiry.created_at),
+        expires_at: expiry.expires_at,
+    })
+}
+
 fn prepare_peer_inbox_text(
     core: &HubCoreState,
     security_state: &HubSecurityState,
@@ -4005,6 +4196,7 @@ fn prepare_peer_inbox_text(
     context_token: &str,
     plaintext: String,
     view_once: bool,
+    timer_picker: Option<security::TimerPickerStateDto>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
     prepare_peer_inbox_text_with_route_clients(
         core,
@@ -4014,6 +4206,7 @@ fn prepare_peer_inbox_text(
         context_token,
         plaintext,
         view_once,
+        timer_picker,
         None,
         None,
     )
@@ -4028,6 +4221,7 @@ fn prepare_peer_inbox_text_with_route_clients(
     context_token: &str,
     plaintext: String,
     view_once: bool,
+    timer_picker: Option<security::TimerPickerStateDto>,
     store_client: Option<&ipc::cipher_store_client::CipherStoreClient>,
     keyserver_client: Option<&keystore::KeyServerClient>,
 ) -> Result<PreparedNativeOverlayCarrier, String> {
@@ -4046,11 +4240,13 @@ fn prepare_peer_inbox_text_with_route_clients(
     let manual = broker.manual_peer_for(context_token)?;
     let context = broker.context_for(context_token)?;
     let now = ipc::main_password::now_unix_secs_pub();
-    let ttl_seconds = security::scope_security(manual.scope.clone())?.ttl_seconds;
-    let expires_at = now.checked_add(i64::from(ttl_seconds)).ok_or_else(|| {
-        qa_encrypt_refusal_site("expires_at_overflow");
-        "OSL could not deliver the protected message".to_owned()
-    })?;
+    let expiry = peer_send_expiry_for_scope_and_picker(manual.scope.clone(), timer_picker, now)
+        .map_err(|_| {
+            qa_encrypt_refusal_site("expires_at_overflow");
+            "OSL could not deliver the protected message".to_owned()
+        })?;
+    let ttl_seconds = expiry.expiry_seconds;
+    let expires_at = expiry.expires_at;
     let history_plaintext =
         (context.service_id == "osl-chat" && !view_once).then(|| plaintext.clone());
     let chunks = split_native_overlay_text(&plaintext)?;
@@ -4189,6 +4385,8 @@ fn prepare_peer_inbox_text_with_route_clients(
             whole_sha256: whole_sha256.clone(),
             created_at: now,
             expires_at,
+            expiry_seconds: ttl_seconds,
+            store_ttl_seconds: expiry.store_ttl_seconds,
         };
         #[cfg(feature = "discord-qa-shell")]
         record_fixed_discord_qa_broker_stage(
@@ -11124,6 +11322,7 @@ mod tests {
         assert_eq!(upload.blob_version, 1);
         assert!(upload.single_use);
         assert_eq!(upload.display_duration_seconds, Some(3_600));
+        assert_eq!(upload.expiry_seconds, Some(3_600));
         assert_eq!(upload.expires_at, "2023-11-14T23:13:20.000Z");
         assert_eq!(
             STANDARD
@@ -11144,6 +11343,7 @@ mod tests {
         .expect("ordinary native overlay wrapped-key upload");
         assert!(!reusable.single_use);
         assert_eq!(reusable.display_duration_seconds, None);
+        assert_eq!(reusable.expiry_seconds, Some(3_600));
 
         let source = include_str!("broker.rs");
         let production = source
@@ -11192,6 +11392,24 @@ mod tests {
                 "mutation {index} must break the production wrapped-key ordering gate"
             );
         }
+    }
+
+    #[test]
+    fn task_0550_timer_picker_one_minute_thirty_seconds_is_sent_expiry() {
+        let now = 1_700_000_000;
+        let picker = security::timer_picker_state(0, 0, 1, 30).unwrap();
+        let expiry = timer_picker_send_command_expiry_at(&picker, now).unwrap();
+        println!("TASK0550 timer_picker.minutes={}", picker.minutes);
+        println!("TASK0550 timer_picker.seconds={}", picker.seconds);
+        println!("TASK0550 send.duration_seconds={}", expiry.duration_seconds);
+        println!("TASK0550 send.now={now}");
+        println!("TASK0550 send.expires_at={}", expiry.expires_at);
+        println!("TASK0550 send.seconds_ahead={}", expiry.seconds_ahead);
+        assert_eq!(picker.minutes, "01");
+        assert_eq!(picker.seconds, "30");
+        assert_eq!(expiry.duration_seconds, 90);
+        assert_eq!(expiry.expires_at, now + 90);
+        assert_eq!(expiry.seconds_ahead, 90);
     }
 
     fn install_sender_filter_test_account(label: &str) -> std::path::PathBuf {
@@ -11408,6 +11626,7 @@ mod tests {
             wrapped_body["display_duration_seconds"].as_u64(),
             Some(3_600)
         );
+        assert_eq!(wrapped_body["expiry_seconds"].as_u64(), Some(3_600));
         assert!(
             wrapped_body["sender_signature_b64"]
                 .as_str()
@@ -14519,6 +14738,8 @@ mod tests {
                 whole_sha256: sha256_hex(b"private chat"),
                 created_at: 1_700_000_000,
                 expires_at: 1_700_003_600,
+                expiry_seconds: 3_600,
+                store_ttl_seconds: 3_600,
             }),
         )
         .unwrap();
@@ -15150,6 +15371,8 @@ mod tests {
             whole_sha256: sha256_hex(chunk_plaintext.as_bytes()),
             created_at: 1_700_000_000,
             expires_at: 1_700_003_600,
+            expiry_seconds: 3_600,
+            store_ttl_seconds: 3_600,
         };
         let wire = prepare_direct_manual_v3(
             &core,

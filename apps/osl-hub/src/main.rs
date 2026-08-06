@@ -3821,6 +3821,7 @@ async fn prepare_native_discord_overlay_text(
     session: State<'_, HubAccountSessionState>,
     plaintext: String,
     view_once: bool,
+    timer_picker: Option<security::TimerPickerStateDto>,
 ) -> Result<broker::PreparedNativeDiscordOverlayText, String> {
     if caller.label() != native_discord_overlay::OVERLAY_LABEL {
         return Err("Only the trusted native Discord overlay may protect text".to_owned());
@@ -3851,16 +3852,18 @@ async fn prepare_native_discord_overlay_text(
         let (context_epoch, host) = require_overlay_context_snapshot(&app)?;
         let scope_binding = native_discord_scope_binding(&app)?;
         let visual = deidentify_prepared_visual_structure(&plaintext);
-        let carrier = broker::prepare_native_discord_overlay_text_with_route_clients(
-            &app.state::<HubCoreState>(),
-            &app.state::<HubSecurityState>(),
-            &app.state::<HubBrokerState>(),
-            &app.state::<AiCarrierState>(),
-            plaintext,
-            view_once,
-            &store_client,
-            keyserver_client.as_ref(),
-        )?;
+        let carrier =
+            broker::prepare_native_discord_overlay_text_with_timer_picker_and_route_clients(
+                &app.state::<HubCoreState>(),
+                &app.state::<HubSecurityState>(),
+                &app.state::<HubBrokerState>(),
+                &app.state::<AiCarrierState>(),
+                plaintext,
+                view_once,
+                timer_picker,
+                &store_client,
+                keyserver_client.as_ref(),
+            )?;
         require_same_overlay_context(&app, context_epoch, &host)?;
         // Exactly one String: the composer remembers the cover it will type, and
         // the receipt echoes that same cover so the renderer can label the Discord
@@ -3917,6 +3920,7 @@ async fn send_native_discord_qa_atomic_text(
     session: State<'_, HubAccountSessionState>,
     plaintext: String,
     view_once: bool,
+    timer_picker: Option<security::TimerPickerStateDto>,
     mode: DiscordCarrierMode,
     chars_per_second: u16,
     layout: Option<DiscordCarrierLayout>,
@@ -3990,13 +3994,14 @@ async fn send_native_discord_qa_atomic_text(
         // copy has been committed. That matches the documented ordering — the
         // OSL inbox commit precedes any Discord contact — and a later carrier
         // refusal is reported as an honest OSL-only send below.
-        let carrier_prepared = match broker::prepare_native_discord_overlay_text(
+        let carrier_prepared = match broker::prepare_native_discord_overlay_text_with_timer_picker(
             &app.state::<HubCoreState>(),
             &app.state::<HubSecurityState>(),
             &app.state::<HubBrokerState>(),
             &app.state::<AiCarrierState>(),
             plaintext,
             view_once,
+            timer_picker,
         ) {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -5031,6 +5036,7 @@ async fn prepare_osl_chat_text(
     session: State<'_, HubAccountSessionState>,
     plaintext: String,
     view_once: bool,
+    timer_picker: Option<security::TimerPickerStateDto>,
 ) -> Result<PreparedNativeOverlayText, String> {
     if caller.label() != "main" {
         return Err("Only the trusted OSL window may send OSL Chats".to_owned());
@@ -5044,13 +5050,14 @@ async fn prepare_osl_chat_text(
             .map_err(|_| "OSL store transport is unavailable".to_owned())?;
         let store_client = route.cipher_store_client(&config_dir)?;
         let keyserver_client = route.tor_keyserver_client(&config_dir)?;
-        broker::prepare_osl_chat_text_with_route_clients(
+        broker::prepare_osl_chat_text_with_timer_picker_and_route_clients(
             &app.state::<HubCoreState>(),
             &app.state::<HubSecurityState>(),
             &app.state::<HubBrokerState>(),
             &app.state::<AiCarrierState>(),
             plaintext,
             view_once,
+            timer_picker,
             &store_client,
             keyserver_client.as_ref(),
         )
@@ -5772,7 +5779,9 @@ async fn set_osl_chat_capture_preference(
     local_opt_in: bool,
 ) -> Result<ChatCaptureProtectionDto, String> {
     if caller.label() != "main" {
-        return Err("Only the trusted OSL window may change OSL Chat capture protection".to_owned());
+        return Err(
+            "Only the trusted OSL window may change OSL Chat capture protection".to_owned(),
+        );
     }
     let _session = session.transition.lock().await;
     let binding = security::manual_peer_binding(&core, person_id)?;
