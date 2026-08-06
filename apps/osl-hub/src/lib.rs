@@ -79,6 +79,8 @@ pub mod entitlement_refresh;
 pub mod execution_consent;
 pub mod external_overlay;
 pub(crate) mod firefox_migration_coordinator;
+#[cfg(feature = "core")]
+pub mod friend_account_reach;
 pub mod hosted_audience;
 pub mod hosted_port;
 pub mod hosted_provider_recipe;

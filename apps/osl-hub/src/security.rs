@@ -1080,6 +1080,34 @@ pub fn list_people(core: &HubCoreState) -> Result<Vec<PersonDto>, String> {
         .collect()
 }
 
+/// Confirm that a local person row is an accepted, verified friend before a
+/// separate backend records account reach for that person.
+pub fn require_accepted_friend(core: &HubCoreState, person_id: &str) -> Result<(), String> {
+    require_unlocked()?;
+    validate_person_id(person_id)?;
+    let people = load_people_file(&config_dir()?)?;
+    let metadata = people
+        .people
+        .get(person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    if !peer_is_verified(
+        people.version,
+        metadata.safety_number_verified,
+        metadata.pending_ed25519_public.is_some() || metadata.pending_key_bundle.is_some(),
+    ) {
+        return Err("OSL friend is not accepted".to_owned());
+    }
+    let peer = core
+        .osl
+        .peer_map
+        .lock()
+        .map_err(|_| "OSL peer state is unavailable".to_owned())?
+        .get(person_id)
+        .cloned()
+        .ok_or_else(|| "OSL friend key state is missing".to_owned())?;
+    validate_manual_peer_identity(person_id, metadata, &peer)
+}
+
 /// Set or clear a user-owned nickname for one friend. The nickname is written
 /// only to the encrypted device-local People file; it is never included in a
 /// friend code, peer key lookup, or Cloudflare request.
@@ -4409,6 +4437,9 @@ fn write_encrypted_json_with_key<T: Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::friend_account_reach::FriendAccountReachState;
+    use crate::models::ServiceKind;
+    use crate::services::ServiceRegistryState;
 
     const TEST_FILE_KEY: [u8; 32] = [0x91; 32];
 
@@ -5008,6 +5039,69 @@ mod tests {
         );
         assert!(friend_row.whitelisted_scopes[0].user_specific);
         assert!(!friend_row.reach_broadened);
+    }
+
+    #[test]
+    fn task_0239_per_friend_account_reach_direct_record_check_prints_owner_friend_account_allowed_state(
+    ) {
+        let harness = FileBackedSecurityHarness::new("task-0239-friend-account-reach");
+        let core = HubCoreState::default();
+        install_self_identity(&core);
+        let owner = active_user_id(&core).unwrap();
+        let (friend, metadata, peer) = test_friend(39);
+        write_people(harness.path(), &friend, metadata);
+        install_peer_map(&core, harness.path(), &friend, peer);
+
+        let registry =
+            ServiceRegistryState::load(harness.path().join("task-0239-service-registry.json"));
+        let account = registry
+            .create_for_owner(&owner, ServiceKind::Discord, "Owner Discord".to_owned())
+            .unwrap();
+        let reach_path = harness.path().join("task-0239-friend-account-reach.json");
+        FriendAccountReachState::load(reach_path.clone())
+            .set_choice(
+                &core,
+                &registry,
+                &owner,
+                &friend,
+                ServiceKind::Discord,
+                &account.id,
+                true,
+            )
+            .unwrap();
+
+        let stored = FriendAccountReachState::load(reach_path)
+            .record(
+                &core,
+                &registry,
+                &owner,
+                &friend,
+                ServiceKind::Discord,
+                &account.id,
+            )
+            .unwrap()
+            .expect("the per-friend account reach choice was stored");
+        assert_eq!(stored.owner_osl_user_id, owner);
+        assert_eq!(stored.friend_person_id, friend);
+        assert_eq!(stored.account_id, account.id);
+        assert!(stored.allowed);
+        assert!(FriendAccountReachState::load(
+            harness.path().join("task-0239-friend-account-reach.json")
+        )
+        .is_allowed(
+            &core,
+            &registry,
+            &stored.owner_osl_user_id,
+            &stored.friend_person_id,
+            ServiceKind::Discord,
+            &stored.account_id
+        )
+        .unwrap());
+
+        println!(
+            "TASK 0239 direct record check: owner={} friend={} account={} allowed={}",
+            stored.owner_osl_user_id, stored.friend_person_id, stored.account_id, stored.allowed
+        );
     }
 
     #[test]
