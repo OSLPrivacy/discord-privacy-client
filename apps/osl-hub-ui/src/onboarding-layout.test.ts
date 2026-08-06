@@ -841,9 +841,10 @@ describe("fresh-account continuation", () => {
     const bootstrap = source.slice(source.indexOf("async function bootstrap"));
     expect(content).toContain("Enter Pro code");
     expect(content).toContain('id="activation-form"');
-    expect(content).toContain('data-onboarding="sending"');
+    expect(content).toContain('id="continue-pro-ready"');
     expect(binding).toContain('"#activation-form"');
     expect(activation).toContain("validateHubActivationCode(activationCode)");
+    expect(activation).toContain("proOnboardingReadyResult = true");
     expect(activation).toContain('onboardingRoute === "pro"');
     expect(content).not.toMatch(/localStorage|sessionStorage/);
     expect(bootstrap).toContain('onboardingRoute = "welcome"');

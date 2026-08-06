@@ -396,6 +396,8 @@ function passwordEyeIcon(visible = false): string {
 let services: LinkedService[] = [];
 let core: CoreIntegration = structuredClone(unavailableCoreIntegration);
 let licenseState: HubLicenseState = structuredClone(unconfiguredLicenseState);
+let proOnboardingReadyResult = false;
+let proOnboardingCodeEntryRequested = false;
 let massCleanupCapabilities: MassCleanupCapabilityManifest | null = null;
 let massCleanupLoading = false;
 let autoScrubFleetStatus: AutoScrubFleetStatus | null = null;
@@ -2048,7 +2050,7 @@ function welcomeOnboardingContent(): string {
 
 function proSetupContent(): string {
   const pro = licenseState.access === "pro" || licenseState.access === "offlineGrace";
-  if (pro) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><div class="setup-footer onboarding-actions"><button class="button primary" data-onboarding="sending" type="button">Continue</button></div></section>`;
+  if (pro && !proOnboardingCodeEntryRequested) return `<section class="pro-setup onboarding-centered-step" aria-labelledby="route-heading">${statusTag("Pro active", "active")}<h1 id="route-heading" tabindex="-1">OSL Pro is ready</h1><p class="compact-lead onboarding-centered-copy">Pro features are available on this device.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="continue-pro-ready" type="button">Continue</button></div></section>`;
   // The submit and the Skip escape hatch sit in the step's own action row, so
   // the docking pass folds Back in beside them instead of leaving a third,
   // separate footer below a loose text link.
@@ -3049,7 +3051,14 @@ function bindOnboarding(): void {
   }));
   bindAccountRecovery();
   document.querySelector<HTMLButtonElement>("#skip-pro-setup")?.addEventListener("click", () => {
+    proOnboardingReadyResult = false;
+    proOnboardingCodeEntryRequested = false;
     onboardingRoute = onboardingRouteForBuild(continueFromProOnboarding("skipped").route);
+    render();
+  });
+  document.querySelector<HTMLButtonElement>("#continue-pro-ready")?.addEventListener("click", () => {
+    if (!proOnboardingReadyResult) return;
+    onboardingRoute = onboardingRouteForBuild(continueFromProOnboarding("activated").route);
     render();
   });
   document.querySelector<HTMLFormElement>("#activation-form")?.addEventListener("submit", (event) => void activatePro(event));
@@ -3229,6 +3238,15 @@ function bindOnboarding(): void {
       replayingOnboardingTour = false;
       onboardingTourStep = 0;
       route = "home";
+      render();
+      return;
+    }
+    if (onboardingRoute === "pro"
+      && (licenseState.access === "pro" || licenseState.access === "offlineGrace")
+      && !proOnboardingReadyResult
+      && !proOnboardingCodeEntryRequested
+    ) {
+      proOnboardingCodeEntryRequested = true;
       render();
       return;
     }
@@ -8817,7 +8835,10 @@ async function activatePro(event: SubmitEvent): Promise<void> {
   if (submit) { submit.disabled = true; submit.textContent = "Activating…"; }
   try {
     licenseState = await validateHubActivationCode(activationCode);
-    if (route === "onboarding" && onboardingRoute === "pro" && licenseState.access !== "free") onboardingRoute = "forward-secrecy";
+    if (route === "onboarding" && onboardingRoute === "pro" && licenseState.access !== "free") {
+      proOnboardingReadyResult = true;
+      proOnboardingCodeEntryRequested = false;
+    }
     render();
     showToast(licenseState.access === "free" ? "This code does not include active Pro access" : "Pro activated on this device");
   } catch (failure) {
@@ -10149,6 +10170,8 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   notificationPreviewContent = patch.notificationPreviewContent ?? true;
   appNotifications = patch.appNotifications ?? [];
   licenseState = { ...unconfiguredLicenseState, access: patch.licenseAccess ?? "free" };
+  proOnboardingReadyResult = false;
+  proOnboardingCodeEntryRequested = false;
   autoScrubFleetStatus = patch.autoScrubFleetStatus ?? null;
   autoScrubStatusLoading = false;
   autoScrubStopPending = false;
