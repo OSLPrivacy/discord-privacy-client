@@ -11,17 +11,26 @@ function functionSource(name: string, nextName: string): string {
   return source.slice(start, end);
 }
 
+function sourceBlock(startText: string, endText: string): string {
+  const start = source.indexOf(startText);
+  const end = source.indexOf(endText, start + 1);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return source.slice(start, end);
+}
+
 describe("first-launch protected messaging tour", () => {
   // Protects the tour's CONTENT -- the five things it explains and the two
   // controls that step through them. This did not change on 2026-08-06; only
   // where the tour sits did. (Where it is reachable from is asserted below.)
   it("ships a click-through explanation of Lock, Eye, ring, send mode, and limits", () => {
-    const tour = functionSource("tutorialContent", "chooseAppsOnboardingContent");
+    const tour = sourceBlock("const quickTourCards", "function parseProtectionPreset");
+    const renderer = functionSource("tutorialContent", "chooseAppsOnboardingContent");
     for (const required of ["Lock", "Eye", "cyan ring", "Send mode", "App limits"]) {
       expect(tour.toLowerCase()).toContain(required.toLowerCase());
     }
-    expect(tour).toContain('id="onboarding-tour-next"');
-    expect(tour).toContain('id="onboarding-tour-back"');
+    expect(renderer).toContain('id="onboarding-tour-next"');
+    expect(renderer).toContain('id="onboarding-tour-back"');
   });
 
   // Protects the 2026-08-06 removal, which is the half a deletion normally
@@ -53,7 +62,8 @@ describe("first-launch protected messaging tour", () => {
     // Being the only Back, it cannot be inert on the first sub-step.
     expect(tour).not.toContain('onboardingTourStep === 0 ? "disabled"');
     const binding = source.slice(source.indexOf('#onboarding-tour-back'));
-    expect(binding.slice(0, 500)).toContain("previousSetupRoute(onboardingRoute)");
+    expect(binding.slice(0, 500)).toContain("backQuickTour()");
+    expect(functionSource("backQuickTour", "nextQuickTour")).toContain("previousSetupRoute(onboardingRoute)");
   });
 
   it("can be replayed from Settings without re-running setup", () => {

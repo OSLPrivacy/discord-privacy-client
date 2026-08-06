@@ -353,6 +353,14 @@ const protectionPresetStorageKey = "osl-protection-preset-v1";
 const oslMailNotificationsStorageKey = "osl-mail-notifications-v1";
 const protectionPresetValues: readonly ProtectionPreset[] = ["basic", "balanced", "maximum"];
 const inboxFilterValues: readonly InboxFilter[] = ["all", "osl", "connected", "requests"];
+const quickTourRoute: OnboardingRoute = "tutorial";
+const quickTourCards = [
+  ["Lock", "Lock turns on protected input and protected send routing. Turn it off to use the host app’s ordinary composer."],
+  ["Eye", "Eye controls decrypted display only. With Eye off, OSL leaves the native carrier rows untouched."],
+  ["Cyan ring", "The small cyan ring around the native composer means protected input is active. No ring means you are typing into the host’s plaintext composer."],
+  ["Send mode", "Choose Manual, Clipboard, Double Enter or Single Enter. No mode silently sends: OSL stops if it cannot prove the exact destination."],
+  ["App limits", "Protection is limited to the app, account, chat, and composer OSL can verify. If that proof changes, OSL refuses protected routing rather than guessing."],
+] as const;
 
 function parseProtectionPreset(raw: unknown): ProtectionPreset {
   return protectionPresetValues.includes(raw as ProtectionPreset) ? raw as ProtectionPreset : "balanced";
@@ -2058,19 +2066,12 @@ function proSetupContent(): string {
 }
 
 function tutorialContent(): string {
-  const steps = [
-    ["Lock", "Lock turns on protected input and protected send routing. Turn it off to use the host app’s ordinary composer."],
-    ["Eye", "Eye controls decrypted display only. With Eye off, OSL leaves the native carrier rows untouched."],
-    ["Cyan ring", "The small cyan ring around the native composer means protected input is active. No ring means you are typing into the host’s plaintext composer."],
-    ["Send mode", "Choose Manual, Clipboard, Double Enter or Single Enter. No mode silently sends: OSL stops if it cannot prove the exact destination."],
-    ["App limits", "Protection is limited to the app, account, chat, and composer OSL can verify. If that proof changes, OSL refuses protected routing rather than guessing."],
-  ] as const;
-  const current = steps[onboardingTourStep];
+  const current = quickTourCards[onboardingTourStep];
   if (!current) return replayingOnboardingTour
     ? `<h1 id="route-heading" tabindex="-1">Tour complete</h1><p class="compact-lead onboarding-centered-copy">You can replay this tour any time from Settings → About.</p><div class="setup-footer onboarding-actions"><button class="button primary" id="finish-onboarding-tour" type="button">Return to Home</button></div>`
     : chooseAppsOnboardingContent();
   const [title, detail] = current;
-  return `<section class="onboarding-tour" aria-labelledby="route-heading" data-onboarding-tour-step="${onboardingTourStep + 1}"><p class="eyebrow">Quick tour · ${onboardingTourStep + 1} of ${steps.length}</p><h1 id="route-heading" tabindex="-1">${title}</h1><p class="compact-lead onboarding-centered-copy">${detail}</p><p class="send-mode-truth">You can return to this tour later from Settings → About.</p><div class="setup-footer onboarding-actions"><button class="button ghost onboarding-back onboarding-step-back" id="onboarding-tour-back" type="button">Back</button><button class="button primary" id="onboarding-tour-next" type="button">${onboardingTourStep + 1 === steps.length ? "Choose apps" : "Next"}</button></div></section>`;
+  return `<section class="onboarding-tour" aria-labelledby="route-heading" data-onboarding-tour-step="${onboardingTourStep + 1}"><p class="eyebrow">Quick tour · ${onboardingTourStep + 1} of ${quickTourCards.length}</p><h1 id="route-heading" tabindex="-1">${title}</h1><p class="compact-lead onboarding-centered-copy">${detail}</p><p class="send-mode-truth">You can return to this tour later from Settings → About.</p><div class="setup-footer onboarding-actions"><button class="button ghost onboarding-back onboarding-step-back" id="onboarding-tour-back" type="button">Back</button><button class="button primary" id="onboarding-tour-next" type="button">${onboardingTourStep + 1 === quickTourCards.length ? "Choose apps" : "Next"}</button></div></section>`;
 }
 
 function chooseAppsOnboardingContent(): string {
@@ -3038,6 +3039,88 @@ function previousSetupRoute(current: OnboardingRoute): OnboardingRoute {
   return onboardingRouteForBuild(previousOnboardingRoute(current, onboardingBranch) ?? "welcome");
 }
 
+type QuickTourScreen = "setup" | "tour-card" | "app-selection" | "home";
+type QuickTourControl = "Back" | "Next" | "Choose apps" | "Set card";
+type QuickTourControlResult = {
+  accepted: boolean;
+  control: QuickTourControl;
+  screen: QuickTourScreen;
+  route: Route;
+  onboardingRoute: OnboardingRoute;
+  cardNumber: number | null;
+  completedCardCount: number;
+  reason: string | null;
+};
+
+function quickTourCardNumber(): number | null {
+  return onboardingRoute === "tutorial" && onboardingTourStep >= 0 && onboardingTourStep < quickTourCards.length
+    ? onboardingTourStep + 1
+    : null;
+}
+
+function completedQuickTourCardCount(): number {
+  return Math.min(Math.max(onboardingTourStep, 0), quickTourCards.length);
+}
+
+function quickTourScreen(): QuickTourScreen {
+  if (route === "home") return "home";
+  if (route === "onboarding" && onboardingRoute === "tutorial") {
+    return quickTourCardNumber() === null ? "app-selection" : "tour-card";
+  }
+  return "setup";
+}
+
+function quickTourControlResult(control: QuickTourControl, accepted: boolean, reason: string | null = null): QuickTourControlResult {
+  return {
+    accepted,
+    control,
+    screen: quickTourScreen(),
+    route,
+    onboardingRoute,
+    cardNumber: quickTourCardNumber(),
+    completedCardCount: completedQuickTourCardCount(),
+    reason,
+  };
+}
+
+function setQuickTourCardNumber(cardNumber: number): QuickTourControlResult {
+  if (!Number.isInteger(cardNumber) || cardNumber < 1 || cardNumber > quickTourCards.length) {
+    return quickTourControlResult("Set card", false, "invalid-card-number");
+  }
+  route = "onboarding";
+  onboardingRoute = quickTourRoute;
+  onboardingTourStep = cardNumber - 1;
+  return quickTourControlResult("Set card", true);
+}
+
+function backQuickTour(): QuickTourControlResult {
+  if (onboardingTourStep > 0) {
+    onboardingTourStep -= 1;
+  } else if (replayingOnboardingTour) {
+    replayingOnboardingTour = false;
+    route = "home";
+  } else {
+    onboardingRoute = previousSetupRoute(onboardingRoute);
+  }
+  return quickTourControlResult("Back", true);
+}
+
+function nextQuickTour(): QuickTourControlResult {
+  if (onboardingTourStep < 0 || onboardingTourStep >= quickTourCards.length) {
+    return quickTourControlResult("Next", false, "invalid-card-number");
+  }
+  onboardingTourStep += 1;
+  return quickTourControlResult("Next", true);
+}
+
+function chooseAppsFromQuickTour(): QuickTourControlResult {
+  if (onboardingTourStep !== quickTourCards.length - 1) {
+    return quickTourControlResult("Choose apps", false, "quick-tour-incomplete");
+  }
+  onboardingTourStep += 1;
+  return quickTourControlResult("Choose apps", true);
+}
+
 function bindOnboarding(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => {
     onboardingRoute = onboardingRouteForBuild(button.dataset.onboarding as OnboardingRoute);
@@ -3151,18 +3234,12 @@ function bindOnboarding(): void {
   // has to leave the route rather than sit there disabled: back out of a replay
   // to Home, and out of first-run setup to the previous setup step.
   document.querySelector<HTMLButtonElement>("#onboarding-tour-back")?.addEventListener("click", () => {
-    if (onboardingTourStep > 0) {
-      onboardingTourStep -= 1;
-    } else if (replayingOnboardingTour) {
-      replayingOnboardingTour = false;
-      route = "home";
-    } else {
-      onboardingRoute = previousSetupRoute(onboardingRoute);
-    }
+    backQuickTour();
     render();
   });
   document.querySelector<HTMLButtonElement>("#onboarding-tour-next")?.addEventListener("click", () => {
-    onboardingTourStep += 1;
+    if (onboardingTourStep + 1 === quickTourCards.length) chooseAppsFromQuickTour();
+    else nextQuickTour();
     render();
   });
   document.querySelector<HTMLButtonElement>("#finish-onboarding-tour")?.addEventListener("click", () => {
@@ -10042,6 +10119,7 @@ function scheduleOslChatBackgroundSync(delayMs = 30_000): void {
 type OslHubUiTestStatePatch = {
   route?: Route;
   onboardingRoute?: OnboardingRoute;
+  onboardingTourStep?: number;
   setup?: Partial<SetupState>;
   coreReady?: boolean;
   storageMethod?: string | null;
@@ -10100,6 +10178,8 @@ function applyTestCoreState(ready: boolean, storageMethod: string | null, bootst
 function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   route = patch.route ?? "home";
   onboardingRoute = patch.onboardingRoute ?? "welcome";
+  onboardingTourStep = patch.onboardingTourStep ?? 0;
+  replayingOnboardingTour = false;
   setup = { ...defaultSetup, ...patch.setup };
   settingsSection = "account";
   activeService = null;
@@ -10170,6 +10250,21 @@ export const __oslHubUiTest = {
   },
   bindOnboarding(): void {
     bindOnboarding();
+  },
+  quickTourSnapshot(): QuickTourControlResult {
+    return quickTourControlResult("Set card", true);
+  },
+  setQuickTourCardNumber(cardNumber: number): QuickTourControlResult {
+    return setQuickTourCardNumber(cardNumber);
+  },
+  chooseAppsFromQuickTour(): QuickTourControlResult {
+    return chooseAppsFromQuickTour();
+  },
+  nextQuickTour(): QuickTourControlResult {
+    return nextQuickTour();
+  },
+  backQuickTour(): QuickTourControlResult {
+    return backQuickTour();
   },
   bindWorkspace(): void {
     bindWorkspace();
@@ -10345,6 +10440,9 @@ export const __oslHubUiTest = {
   snapshot(): {
     route: Route;
     onboardingRoute: OnboardingRoute;
+    onboardingTourCardNumber: number | null;
+    completedTourCardCount: number;
+    quickTourScreen: QuickTourScreen;
     settingsSection: SettingsSection;
     homePrimaryIssue: HomePrimaryIssue;
     privacyProtectionReviewOpen: boolean;
@@ -10360,6 +10458,9 @@ export const __oslHubUiTest = {
     return {
       route,
       onboardingRoute,
+      onboardingTourCardNumber: quickTourCardNumber(),
+      completedTourCardCount: completedQuickTourCardCount(),
+      quickTourScreen: quickTourScreen(),
       settingsSection,
       homePrimaryIssue: homePrimaryRecommendation().issue,
       privacyProtectionReviewOpen,
