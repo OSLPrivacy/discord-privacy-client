@@ -21,6 +21,7 @@ const MAIL_DOMAIN: &str = "oslprivacy.com";
 const RETENTION_SECONDS: u32 = 7 * 24 * 60 * 60;
 const BORING_PROTECTED_SUBJECT: &str = "OSL protected message";
 const MIN_COPIED_SUBJECT_BYTES: usize = 16;
+const NO_OSL_FORWARD_CONFIRMATION_PREFIX: &str = "CONFIRM NO-OSL FORWARD: ";
 /// Whether the user-facing OSL Mail client may present as usable.
 ///
 /// **Derived, not written.** This was the literal `false` that D-221 called out
@@ -73,6 +74,33 @@ pub struct OslMailBurnReceipt {
     pub deleted_messages: u32,
     pub receipt_sha256: String,
     pub mailbox_disabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslMailForwardPlan {
+    pub osl_recipients: Vec<String>,
+    pub no_osl_warnings: Vec<String>,
+    pub required_confirmation: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslMailForwardDelivery {
+    pub recipient: String,
+    pub transit: &'static str,
+    pub plain_cover_email: String,
+    pub protected_text: Option<String>,
+    pub protected_file_record: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OslMailForwardReceipt {
+    pub accepted: bool,
+    pub osl_recipients: Vec<String>,
+    pub no_osl_warnings: Vec<String>,
+    pub deliveries: Vec<OslMailForwardDelivery>,
 }
 
 #[derive(Deserialize)]
@@ -331,6 +359,79 @@ pub fn burn(
     })
 }
 
+pub fn plan_protected_forward(recipients: Vec<String>) -> Result<OslMailForwardPlan, String> {
+    let recipients = normalize_forward_recipients(recipients)?;
+    let mut osl_recipients = Vec::new();
+    let mut no_osl_warnings = Vec::new();
+    for recipient in recipients {
+        if valid_osl_address(&recipient) {
+            osl_recipients.push(recipient);
+        } else {
+            no_osl_warnings.push(recipient);
+        }
+    }
+    let required_confirmation = if no_osl_warnings.is_empty() {
+        None
+    } else {
+        Some(no_osl_forward_confirmation(&no_osl_warnings))
+    };
+    Ok(OslMailForwardPlan {
+        osl_recipients,
+        no_osl_warnings,
+        required_confirmation,
+    })
+}
+
+pub fn forward_protected(
+    recipients: Vec<String>,
+    plain_cover_email: String,
+    protected_text: String,
+    protected_file_record: Option<String>,
+    confirmation: String,
+) -> Result<OslMailForwardReceipt, String> {
+    if plain_cover_email.trim().is_empty()
+        || protected_text.is_empty()
+        || protected_file_record
+            .as_ref()
+            .is_some_and(|record| record.trim().is_empty())
+    {
+        return Err("OSL Mail protected forward payload is invalid".to_owned());
+    }
+    let plan = plan_protected_forward(recipients)?;
+    if let Some(required) = &plan.required_confirmation {
+        if confirmation != *required {
+            return Err(required.clone());
+        }
+    }
+
+    let mut deliveries = Vec::new();
+    for recipient in &plan.osl_recipients {
+        deliveries.push(OslMailForwardDelivery {
+            recipient: recipient.clone(),
+            transit: "oslProtectedEmail",
+            plain_cover_email: plain_cover_email.clone(),
+            protected_text: Some(protected_text.clone()),
+            protected_file_record: protected_file_record.clone(),
+        });
+    }
+    for recipient in &plan.no_osl_warnings {
+        deliveries.push(OslMailForwardDelivery {
+            recipient: recipient.clone(),
+            transit: "plainCoverEmail",
+            plain_cover_email: plain_cover_email.clone(),
+            protected_text: None,
+            protected_file_record: None,
+        });
+    }
+
+    Ok(OslMailForwardReceipt {
+        accepted: true,
+        osl_recipients: plan.osl_recipients,
+        no_osl_warnings: plan.no_osl_warnings,
+        deliveries,
+    })
+}
+
 fn pointer_envelope(recipient: &str, subject: &str, body: &str) -> String {
     // The relay receives commitments only.  Transport owns resolving these
     // capabilities; keeping the UI text out of this lane prevents an inline
@@ -380,6 +481,45 @@ fn valid_osl_address(address: &str) -> bool {
         && local.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
+}
+
+fn normalize_forward_recipients(recipients: Vec<String>) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::new();
+    for recipient in recipients {
+        let recipient = recipient.trim().to_lowercase();
+        if !valid_forward_address(&recipient) {
+            return Err("OSL Mail forward recipient is invalid".to_owned());
+        }
+        if !normalized.contains(&recipient) {
+            normalized.push(recipient);
+        }
+    }
+    if normalized.is_empty() {
+        return Err("OSL Mail protected forward needs at least one recipient".to_owned());
+    }
+    Ok(normalized)
+}
+
+fn valid_forward_address(address: &str) -> bool {
+    let Some((local, domain)) = address.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && domain.contains('.')
+        && !address.bytes().any(|byte| byte.is_ascii_whitespace())
+        && address.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'.' | b'_' | b'-' | b'+' | b'@')
+        })
+}
+
+fn no_osl_forward_confirmation(no_osl_recipients: &[String]) -> String {
+    format!(
+        "{NO_OSL_FORWARD_CONFIRMATION_PREFIX}{}",
+        no_osl_recipients.join(",")
+    )
 }
 
 fn active_identity(core: &HubCoreState) -> Result<keystore::Identity, String> {
@@ -504,8 +644,8 @@ fn canonical_json(value: &Value) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        pointer_envelope, signed_message, status_from_address, visible_subject_protection_warning,
-        BurnResponse, BORING_PROTECTED_SUBJECT,
+        no_osl_forward_confirmation, pointer_envelope, signed_message, status_from_address,
+        visible_subject_protection_warning, BurnResponse, BORING_PROTECTED_SUBJECT,
     };
     use serde_json::{Map, Value};
 
@@ -606,6 +746,54 @@ mod tests {
         assert_eq!(refusal, visible_subject_protection_warning());
         assert!(refusal.contains(BORING_PROTECTED_SUBJECT));
         assert_ne!(refusal, "Unlock an OSL identity before using OSL Mail");
+    }
+
+    #[test]
+    fn task1296_no_osl_forward_recipient_receives_cover_only() {
+        let fixture_no_osl = "fixture-recipient@example.com";
+        let cover = "Plain cover email for task 1296. Checking in about the notes.".to_owned();
+        let protected_text =
+            "TASK1296 protected text must not reach the no-OSL recipient".to_owned();
+        let protected_file =
+            "TASK1296 protected file record must not reach the no-OSL recipient".to_owned();
+        let recipients = vec!["alice@oslprivacy.com".to_owned(), fixture_no_osl.to_owned()];
+        let confirmation = no_osl_forward_confirmation(&[fixture_no_osl.to_owned()]);
+
+        let receipt = super::forward_protected(
+            recipients,
+            cover.clone(),
+            protected_text.clone(),
+            Some(protected_file.clone()),
+            confirmation,
+        )
+        .expect("confirmed protected forward should deliver");
+
+        let no_osl_delivery = receipt
+            .deliveries
+            .iter()
+            .find(|delivery| delivery.recipient == fixture_no_osl)
+            .expect("fixture no-OSL recipient must receive a delivery");
+        let no_osl_protected_text_records = usize::from(no_osl_delivery.protected_text.is_some());
+        let no_osl_protected_file_records =
+            usize::from(no_osl_delivery.protected_file_record.is_some());
+
+        println!(
+            "TASK1296 recipient={} transit={} plain_cover_email={} protected_text_records={} protected_file_records={}",
+            no_osl_delivery.recipient,
+            no_osl_delivery.transit,
+            no_osl_delivery.plain_cover_email,
+            no_osl_protected_text_records,
+            no_osl_protected_file_records
+        );
+
+        assert_eq!(no_osl_delivery.transit, "plainCoverEmail");
+        assert_eq!(no_osl_delivery.plain_cover_email, cover);
+        assert_eq!(no_osl_delivery.protected_text, None);
+        assert_eq!(no_osl_delivery.protected_file_record, None);
+        assert_eq!(no_osl_protected_text_records, 0);
+        assert_eq!(no_osl_protected_file_records, 0);
+        assert!(!format!("{no_osl_delivery:?}").contains(&protected_text));
+        assert!(!format!("{no_osl_delivery:?}").contains(&protected_file));
     }
 
     #[test]
