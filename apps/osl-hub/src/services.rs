@@ -564,6 +564,51 @@ pub struct ServiceCapabilityFacts {
     pub real_two_person_protected_messaging: bool,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ServiceControlCapability {
+    OpenApp,
+    PlaceMessage,
+    ReadMessages,
+    ProtectedMessaging,
+}
+
+impl ServiceControlCapability {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::OpenApp => "open_app",
+            Self::PlaceMessage => "place_message",
+            Self::ReadMessages => "read_messages",
+            Self::ProtectedMessaging => "protected_messaging",
+        }
+    }
+
+    const fn is_built_by(self, facts: ServiceCapabilityFacts) -> bool {
+        match self {
+            Self::OpenApp => facts.opening,
+            Self::PlaceMessage => facts.placing,
+            Self::ReadMessages => facts.reading,
+            Self::ProtectedMessaging => facts.real_two_person_protected_messaging,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceScreenControl {
+    pub id: &'static str,
+    pub service_id: ServiceKind,
+    pub capability: ServiceControlCapability,
+    pub label: &'static str,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceScreenTree {
+    pub service_id: ServiceKind,
+    pub controls: Vec<ServiceScreenControl>,
+}
+
 pub fn installed_service_count() -> usize {
     service_descriptors()
         .into_iter()
@@ -582,6 +627,48 @@ pub fn installed_service_capability_facts() -> Vec<ServiceCapabilityFacts> {
 pub fn service_capability_facts(service_id: &str) -> Option<ServiceCapabilityFacts> {
     let service_id = service_kind_from_id(service_id)?;
     service_capability_facts_for_kind(service_id)
+}
+
+pub fn installed_service_screen_trees() -> Vec<ServiceScreenTree> {
+    installed_service_capability_facts()
+        .into_iter()
+        .map(service_screen_tree_from_capability_facts)
+        .collect()
+}
+
+pub fn service_screen_tree_from_capability_facts(
+    facts: ServiceCapabilityFacts,
+) -> ServiceScreenTree {
+    let controls = SERVICE_CONTROL_DEFINITIONS
+        .into_iter()
+        .filter(|definition| definition.capability.is_built_by(facts))
+        .map(|definition| ServiceScreenControl {
+            id: definition.id,
+            service_id: facts.service_id,
+            capability: definition.capability,
+            label: definition.label,
+        })
+        .collect();
+
+    ServiceScreenTree {
+        service_id: facts.service_id,
+        controls,
+    }
+}
+
+pub fn drawn_controls_without_capability_record(
+    screen_trees: &[ServiceScreenTree],
+    capability_records: &[ServiceCapabilityFacts],
+) -> usize {
+    screen_trees
+        .iter()
+        .flat_map(|tree| tree.controls.iter())
+        .filter(|control| {
+            !capability_records.iter().any(|facts| {
+                facts.service_id == control.service_id && control.capability.is_built_by(*facts)
+            })
+        })
+        .count()
 }
 
 pub fn generated_tile_label(facts: ServiceCapabilityFacts) -> &'static str {
@@ -846,6 +933,36 @@ fn service_capability_facts_for_kind(service_id: ServiceKind) -> Option<ServiceC
         .copied()
         .find(|facts| facts.service_id == service_id)
 }
+
+#[derive(Debug, Clone, Copy)]
+struct ServiceControlDefinition {
+    id: &'static str,
+    capability: ServiceControlCapability,
+    label: &'static str,
+}
+
+const SERVICE_CONTROL_DEFINITIONS: [ServiceControlDefinition; 4] = [
+    ServiceControlDefinition {
+        id: "open-app",
+        capability: ServiceControlCapability::OpenApp,
+        label: "Open app",
+    },
+    ServiceControlDefinition {
+        id: "place-message",
+        capability: ServiceControlCapability::PlaceMessage,
+        label: "Place message",
+    },
+    ServiceControlDefinition {
+        id: "read-messages",
+        capability: ServiceControlCapability::ReadMessages,
+        label: "Read messages",
+    },
+    ServiceControlDefinition {
+        id: "protected-messaging",
+        capability: ServiceControlCapability::ProtectedMessaging,
+        label: "Protected messaging",
+    },
+];
 
 const MESSAGING_RISK_FACT_ROWS: [MessagingRiskFacts; 7] = [
     messaging_risk_facts_row("discord", "Discord"),
