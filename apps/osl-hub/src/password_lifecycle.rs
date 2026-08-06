@@ -869,4 +869,296 @@ mod tests {
         let _ = std::fs::remove_dir_all(config_dir);
         let _ = std::fs::remove_dir_all(local_data_dir);
     }
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    struct Task3560SetupRecord {
+        identity_user_id: Option<String>,
+        password_marker: bool,
+        recovery_kit_status: bool,
+    }
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    enum Task3560ActionResult {
+        NamedRefusal(&'static str),
+        CompleteRestoredIdentity { user_id: String },
+    }
+
+    const TASK_3560_KNOWN_IDENTITY_ENTROPY: [u8; 16] = [0x35; 16];
+    const TASK_3560_RESTORED_PASSWORD: &str = "aB3!z9-task-3560-restored";
+    const TASK_3560_RECOVERED_PASSWORD: &str = "aB3!z9-task-3560-recovered";
+
+    fn task_3560_onboarding_steps() -> Vec<&'static str> {
+        let source = include_str!("../../osl-hub-ui/src/onboarding-sequence.ts");
+        let start = source
+            .find("export const ONBOARDING_SEQUENCE = [")
+            .expect("onboarding sequence export exists");
+        let end = source[start..]
+            .find("] as const")
+            .map(|offset| start + offset)
+            .expect("onboarding sequence has const terminator");
+        let steps = source[start..end]
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix('"'))
+            .map(|line| {
+                line.split('"')
+                    .next()
+                    .expect("quoted onboarding step has a closing quote")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            steps,
+            vec![
+                "welcome",
+                "recovery",
+                "pro",
+                "forward-secrecy",
+                "privacy",
+                "defaults",
+                "tor",
+                "sending",
+                "cover",
+                "passwords",
+                "burnpass",
+                "mullvad",
+                "browser",
+                "tutorial",
+                "detected",
+                "install",
+                "apps",
+            ],
+            "task 3560 must follow the canonical unfinished onboarding sequence"
+        );
+        steps
+    }
+
+    fn task_3560_record(
+        dir: &std::path::Path,
+        sealer: &keystore::MemorySealer,
+    ) -> Task3560SetupRecord {
+        let identity_user_id = dir.join("identity.json").is_file().then(|| {
+            keystore::load_identity(&dir.join("identity.json"), sealer)
+                .expect("task 3560 identity record is loadable")
+                .user_id
+                .clone()
+        });
+        Task3560SetupRecord {
+            identity_user_id,
+            password_marker: dir.join("password_marker.json").is_file(),
+            recovery_kit_status: dir
+                .join(crate::account_recovery::RECOVERY_KIT_STATUS_FILE)
+                .is_file(),
+        }
+    }
+
+    fn task_3560_seed_partial_unfinished_account(
+        state: &HubCoreState,
+        dir: &std::path::Path,
+        sealer: &keystore::MemorySealer,
+        entropy: [u8; 16],
+    ) -> String {
+        let mut identity = keystore::identity_from_entropy(entropy, "task-3560-partial".to_owned());
+        identity.user_id = native_user_id(&identity);
+        let user_id = identity.user_id.clone();
+        install_identity(&state.osl, identity, dir, sealer, None, true)
+            .expect("task 3560 seeds the unfinished account identity");
+        user_id
+    }
+
+    fn task_3560_restore_identity(
+        state: &HubCoreState,
+        dir: &std::path::Path,
+        sealer: &keystore::MemorySealer,
+        phrase: &str,
+    ) -> Task3560ActionResult {
+        let current = readiness(state);
+        if !current.can_import_identity_phrase {
+            return Task3560ActionResult::NamedRefusal("refused-identity-import-unavailable");
+        }
+        let entropy = match parse_identity_phrase(phrase) {
+            Ok(entropy) => entropy,
+            Err(_) => return Task3560ActionResult::NamedRefusal("refused-invalid-identity-phrase"),
+        };
+        let mut identity =
+            keystore::identity_from_entropy(entropy, "task-3560-restored".to_owned());
+        identity.user_id = native_user_id(&identity);
+        let user_id = identity.user_id.clone();
+        match ensure_empty_identity_slot(&state.osl, dir).and_then(|()| {
+            install_identity(&state.osl, identity, dir, sealer, None, true)?;
+            setup_main_password_using(state, dir, || {
+                ipc::main_password::set_main_password(dir, TASK_3560_RESTORED_PASSWORD)
+            })?;
+            crate::account_recovery::mark_recovery_kit_unsaved()?;
+            Ok(())
+        }) {
+            Ok(()) => Task3560ActionResult::CompleteRestoredIdentity { user_id },
+            Err(error) => Task3560ActionResult::NamedRefusal(task_3560_named_refusal(&error)),
+        }
+    }
+
+    fn task_3560_recover_password(
+        state: &HubCoreState,
+        dir: &std::path::Path,
+        phrase: &str,
+    ) -> Task3560ActionResult {
+        let token = match ipc::main_password::verify_recovery_phrase(&state.osl, dir, phrase) {
+            Ok(token) => token,
+            Err(error) => {
+                return Task3560ActionResult::NamedRefusal(task_3560_named_refusal(&error));
+            }
+        };
+        match ipc::main_password::set_main_password_after_recovery(
+            &state.osl,
+            dir,
+            TASK_3560_RECOVERED_PASSWORD,
+            &token,
+        ) {
+            Ok(()) => {
+                let user_id = state
+                    .osl
+                    .identity
+                    .lock()
+                    .expect("identity lock")
+                    .as_ref()
+                    .expect("recovered account keeps identity")
+                    .user_id
+                    .clone();
+                Task3560ActionResult::CompleteRestoredIdentity { user_id }
+            }
+            Err(error) => Task3560ActionResult::NamedRefusal(task_3560_named_refusal(&error)),
+        }
+    }
+
+    fn task_3560_named_refusal(error: &str) -> &'static str {
+        if error.contains("password_marker.json") || error.contains("No such file") {
+            "refused-no-password-marker"
+        } else if error.contains("not available in the current access state") {
+            "refused-identity-import-unavailable"
+        } else if error.contains("already loaded") || error.contains("already exists") {
+            "refused-existing-identity"
+        } else if error.contains("bad recovery phrase") || error.contains("\"ok\":false") {
+            "refused-recovery-phrase-mismatch"
+        } else if error.contains("cannot complete recovery") {
+            "refused-legacy-marker-with-orphan-risk"
+        } else if error.contains("no active recovery token") {
+            "refused-no-active-recovery-token"
+        } else {
+            "refused-other-named-error"
+        }
+    }
+
+    fn task_3560_mixed_fields(
+        before: &Task3560SetupRecord,
+        after: &Task3560SetupRecord,
+        result: &Task3560ActionResult,
+    ) -> Vec<&'static str> {
+        let mut mixed = Vec::new();
+        let Task3560ActionResult::CompleteRestoredIdentity { user_id } = result else {
+            return mixed;
+        };
+        if after.identity_user_id.as_deref() != Some(user_id.as_str()) {
+            mixed.push("identity_user_id");
+        }
+        if !after.password_marker {
+            mixed.push("password_marker");
+        }
+        if !after.recovery_kit_status {
+            mixed.push("recovery_kit_status");
+        }
+        if before
+            .identity_user_id
+            .as_ref()
+            .is_some_and(|partial| partial != user_id)
+            && after.identity_user_id == before.identity_user_id
+        {
+            mixed.push("identity_user_id");
+        }
+        mixed
+    }
+
+    #[test]
+    fn task_3560_check_restore_during_every_unfinished_onboarding_step() {
+        let _guard = crate::global_keystore_test_lock();
+        let _reset = KeystoreGlobalReset;
+        let known_identity = keystore::identity_from_entropy(
+            TASK_3560_KNOWN_IDENTITY_ENTROPY,
+            "task-3560-known".to_owned(),
+        );
+        let known_user_id = native_user_id(&known_identity);
+        let known_phrase =
+            identity_recovery_phrase(&known_identity).expect("known identity phrase is valid");
+        let steps = task_3560_onboarding_steps();
+        let mut mixed_field_count = 0usize;
+        let mut result_count = 0usize;
+
+        for (index, step) in steps.iter().enumerate() {
+            for action in ["recovery", "restore"] {
+                ipc::main_password::set_file_storage_key(None);
+                let dir = temp_dir(&format!("task-3560-{step}-{action}"));
+                std::fs::create_dir_all(&dir).expect("task 3560 creates isolated root");
+                keystore::set_base_dir_override(Some(dir.clone()));
+                keystore::set_active_account_dir(None);
+                let sealer = keystore::MemorySealer::new();
+                let state = HubCoreState::default();
+                let expected_user_id = if *step == "welcome" {
+                    known_user_id.clone()
+                } else {
+                    let partial_entropy = [0x60u8.saturating_add(index as u8); 16];
+                    task_3560_seed_partial_unfinished_account(
+                        &state,
+                        &dir,
+                        &sealer,
+                        partial_entropy,
+                    )
+                };
+
+                let before = task_3560_record(&dir, &sealer);
+                let result = match action {
+                    "recovery" => task_3560_recover_password(&state, &dir, &known_phrase),
+                    "restore" => task_3560_restore_identity(&state, &dir, &sealer, &known_phrase),
+                    _ => unreachable!("task 3560 action list is fixed"),
+                };
+                let after = task_3560_record(&dir, &sealer);
+                let mixed = task_3560_mixed_fields(&before, &after, &result);
+                mixed_field_count += mixed.len();
+                result_count += 1;
+                match &result {
+                    Task3560ActionResult::NamedRefusal(name) => {
+                        assert_eq!(
+                            after, before,
+                            "task 3560 {step}/{action} refusal mutated the setup record"
+                        );
+                        println!(
+                            "TASK3560_STEP step={step} action={action} result={name} mixed_fields={}",
+                            mixed.len()
+                        );
+                    }
+                    Task3560ActionResult::CompleteRestoredIdentity { user_id } => {
+                        assert_eq!(
+                            user_id, &expected_user_id,
+                            "task 3560 {step}/{action} restored the wrong identity"
+                        );
+                        println!(
+                            "TASK3560_STEP step={step} action={action} result=complete-restored-identity user_id_prefix={} mixed_fields={}",
+                            &user_id[..8],
+                            mixed.len()
+                        );
+                    }
+                }
+                assert!(
+                    mixed.is_empty(),
+                    "TASK3560_MIXED_FIELD step={step} action={action} fields={mixed:?} before={before:?} after={after:?} result={result:?}"
+                );
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+
+        println!(
+            "TASK3560_SUMMARY unfinished_steps={} actions_per_step=2 results={} mixed_partial_and_restored_fields={mixed_field_count}",
+            steps.len(),
+            result_count
+        );
+        assert_eq!(steps.len(), 17);
+        assert_eq!(result_count, steps.len() * 2);
+        assert_eq!(mixed_field_count, 0);
+    }
 }
