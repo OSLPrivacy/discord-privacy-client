@@ -10698,8 +10698,8 @@ mod tests {
         assert!(
             legacy
                 .to_string()
-                .contains("sender-filter capability unavailable"),
-            "missing sender-filter authority is a refusal, never permission"
+                .contains("HTTP transport error: send GET"),
+            "missing sender-filter authority is a refusal, never permission: {legacy}"
         );
         assert_health_request(&legacy_requests.recv().expect("capture legacy health"));
         assert!(
