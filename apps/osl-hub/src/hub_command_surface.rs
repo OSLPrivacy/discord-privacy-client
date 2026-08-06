@@ -28,9 +28,8 @@ use crate::native_discord_adapter::{
 };
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
-use serde::Deserialize;
-#[cfg(feature = "discord-qa-shell")]
-use serde::Serialize;
+use crate::website_driver::{WebsiteDriver, WebsitePageRequest};
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
 pub fn build_review_ui_identity_binding_verifier(
@@ -58,6 +57,45 @@ pub fn compose_erasure_request_for_user(
 ) -> Result<ComposedErasureRequest, String> {
     scrub_erasure::compose_erasure_request(&input).map_err(|_| {
         "Complete provider, account identifier, and data categories are required".to_owned()
+    })
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedEmailOpenMessageReadRequest {
+    pub page_url: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedEmailOpenMessageRead {
+    pub cover_message: String,
+    pub conversation_identity: String,
+}
+
+pub fn read_protected_email_open_message_with_driver<D>(
+    driver: &mut D,
+    request: ProtectedEmailOpenMessageReadRequest,
+) -> Result<ProtectedEmailOpenMessageRead, String>
+where
+    D: WebsiteDriver,
+{
+    if request.page_url.trim().is_empty() {
+        return Err("Protected email reader requires an open service page".to_owned());
+    }
+
+    let page = driver
+        .find_page(WebsitePageRequest {
+            url: request.page_url,
+        })
+        .map_err(|error| error.to_string())?;
+    let selected = driver
+        .read_selected_email(&page)
+        .map_err(|error| error.to_string())?;
+
+    Ok(ProtectedEmailOpenMessageRead {
+        cover_message: selected.body,
+        conversation_identity: selected.conversation_identity,
     })
 }
 
@@ -587,6 +625,7 @@ macro_rules! hub_tauri_commands {
             resize_default_browser_companion,
             focus_default_browser_companion,
             detach_default_browser_companion,
+            read_protected_email_open_message,
             host_native_app_window,
             native_app_takeover_requires_consent,
             discord_marker_available,
@@ -1750,6 +1789,17 @@ mod tauri_registration_surface_tests {
                 "get_hub_recovery_kit_unsaved",
                 "set_hub_recovery_kit_unsaved",
             ],
+        );
+    }
+
+    #[test]
+    fn protected_email_open_message_reader_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &["read_protected_email_open_message"],
         );
     }
 

@@ -1,5 +1,8 @@
-use osl_privacy_hub::website_driver::{
-    RealBrowserWebsiteDriver, WebsiteDriver, WebsitePageRequest,
+use osl_privacy_hub::{
+    hub_command_surface::{
+        read_protected_email_open_message_with_driver, ProtectedEmailOpenMessageReadRequest,
+    },
+    website_driver::{RealBrowserWebsiteDriver, WebsiteDriver, WebsitePageRequest},
 };
 use std::{
     io::{Read, Write},
@@ -18,6 +21,10 @@ const TASK_1213_TITLE: &str = "OSL Task 1213 Read Open Message Pane";
 const TASK_1213_BODY: &str =
     "Fixture selected email body for task 1213. It stays inside the open message pane.";
 const TASK_1213_THREAD_ID: &str = "email-thread-1213-stable";
+const TASK_1214_TITLE: &str = "OSL Task 1214 Protected Email Reader";
+const TASK_1214_COVER_MESSAGE: &str =
+    "Fixture cover message for task 1214. The protected email reader got it through the driver.";
+const TASK_1214_THREAD_ID: &str = "email-thread-1214-stable";
 
 #[test]
 fn task_1201_direct_driver_command_opens_local_test_page_and_reads_title() {
@@ -135,6 +142,48 @@ fn task_1213_fixture_message_returns_body_and_stable_thread_identity() {
     println!(
         "TASK1213 stable_thread_identity={}",
         selected.conversation_identity
+    );
+}
+
+#[test]
+fn task_1214_direct_reader_command_returns_fixture_cover_message() {
+    let server = LocalTestPage::spawn_body(
+        TASK_1214_TITLE,
+        r#"
+            <main>
+              <section role="log" aria-label="Reading pane">
+                <article data-osl-open-email="true" data-osl-thread-id="email-thread-1214-stable">
+                  <header>
+                    <h2>Task 1214 fixture cover</h2>
+                  </header>
+                  <p data-osl-email-body>
+                    Fixture cover message for task 1214.
+                    The protected email reader got it through the driver.
+                  </p>
+                </article>
+              </section>
+            </main>
+        "#,
+    );
+    let mut driver = RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
+
+    let read = read_protected_email_open_message_with_driver(
+        &mut driver,
+        ProtectedEmailOpenMessageReadRequest {
+            page_url: server.url(),
+        },
+    )
+    .expect("direct reader command reads the open email through the driver");
+
+    assert_eq!(read.cover_message, TASK_1214_COVER_MESSAGE);
+    assert_eq!(read.conversation_identity, TASK_1214_THREAD_ID);
+
+    println!("TASK1214 direct_reader_command=read_protected_email_open_message");
+    println!("TASK1214 driver_command=read_selected_email");
+    println!("TASK1214 fixture_cover_message={}", read.cover_message);
+    println!(
+        "TASK1214 stable_thread_identity={}",
+        read.conversation_identity
     );
 }
 

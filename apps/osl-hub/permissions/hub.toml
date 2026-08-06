@@ -169,6 +169,11 @@ description = "Allow only the trusted OSL header to enable or disable the fixed 
 commands.allow = ["set_native_discord_covertext_enabled"]
 
 [[permission]]
+identifier = "allow-read-protected-email-open-message"
+description = "Allow only the trusted main OSL window to read the currently open email message body through the fixed website driver; it accepts no message body, credential, profile path, or provider token from the renderer."
+commands.allow = ["read_protected_email_open_message"]
+
+[[permission]]
 identifier = "allow-set-hub-screenshot-protection"
 description = "Apply or remove Windows capture resistance for the trusted OSL Privacy window and its child service surface."
 commands.allow = ["set_hub_screenshot_protection"]
