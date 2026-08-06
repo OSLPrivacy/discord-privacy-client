@@ -777,6 +777,21 @@ impl TimedDeleteProtection {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TimedDeleteStoreStatus {
+    Present,
+    Missing,
+}
+
+impl TimedDeleteStoreStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Present => "present",
+            Self::Missing => "missing",
+        }
+    }
+}
+
 /// Everything OSL must remember to find and delete one native-service message.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -787,6 +802,13 @@ pub struct TimedDeleteRecord {
     pub sent_at_unix_seconds: i64,
     pub delete_at_unix_seconds: i64,
     pub protection: TimedDeleteProtection,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimedDeleteStoreSnapshot {
+    pub status: TimedDeleteStoreStatus,
+    pub record_count: usize,
+    pub records: Vec<TimedDeleteRecord>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -988,6 +1010,34 @@ pub fn find_timed_delete_record_at_path(
         .and_then(|conversations| conversations.get(conversation_id))
         .and_then(|messages| messages.get(message_locator))
         .cloned())
+}
+
+fn timed_delete_store_file_exists(path: &Path) -> bool {
+    path.is_file() || path.with_extension("bak").is_file()
+}
+
+/// Fresh-read snapshot of every native-service message scheduled to go.
+pub fn read_timed_delete_store_snapshot_at_path(
+    path: &Path,
+    key: &[u8; 32],
+) -> Result<TimedDeleteStoreSnapshot, String> {
+    let status = if timed_delete_store_file_exists(path) {
+        TimedDeleteStoreStatus::Present
+    } else {
+        TimedDeleteStoreStatus::Missing
+    };
+    let ledger = load_timed_delete_ledger(path, key)?;
+    let mut records = Vec::with_capacity(ledger.total_records());
+    for conversations in ledger.apps.into_values() {
+        for messages in conversations.into_values() {
+            records.extend(messages.into_values());
+        }
+    }
+    Ok(TimedDeleteStoreSnapshot {
+        status,
+        record_count: records.len(),
+        records,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1201,6 +1251,14 @@ pub fn find_timed_delete_record(
         conversation_id,
         message_locator,
     )
+}
+
+/// Read every scheduled native-service message deletion in the active account's
+/// sealed ledger. A missing ledger is reported distinctly from an empty ledger.
+pub fn read_timed_delete_store_snapshot() -> Result<TimedDeleteStoreSnapshot, String> {
+    let key = ipc::main_password::get_file_storage_key()
+        .ok_or_else(|| "OSL must be unlocked to read timed deletes".to_owned())?;
+    read_timed_delete_store_snapshot_at_path(&timed_delete_path()?, &key)
 }
 
 /// Run one bounded lifecycle sweep.
@@ -1801,6 +1859,88 @@ mod tests {
             cmd_record_timed_delete_at_path(&path, &KEY, missing_conversation).unwrap_err();
         assert_eq!(refused, "OSL timed-delete record missing conversation");
         println!("task_3306_missing_conversation_refused={refused}");
+    }
+
+    #[test]
+    fn task_3307_keeps_timed_delete_records_across_restart_and_reports_wiped_store() {
+        let path = timed_delete_path("task-3307");
+        let records = vec![
+            TimedDeleteRecord {
+                app_id: "discord".to_owned(),
+                conversation_id: "dm:task-3307-a".to_owned(),
+                message_locator: "discord-message-3307-a".to_owned(),
+                sent_at_unix_seconds: 1_910_000_000,
+                delete_at_unix_seconds: 1_910_003_600,
+                protection: TimedDeleteProtection::Protected,
+            },
+            TimedDeleteRecord {
+                app_id: "signal".to_owned(),
+                conversation_id: "chat:task-3307-b".to_owned(),
+                message_locator: "signal-message-3307-b".to_owned(),
+                sent_at_unix_seconds: 1_910_010_000,
+                delete_at_unix_seconds: 1_910_096_400,
+                protection: TimedDeleteProtection::Ordinary,
+            },
+            TimedDeleteRecord {
+                app_id: "whatsapp".to_owned(),
+                conversation_id: "chat:task-3307-c".to_owned(),
+                message_locator: "whatsapp-message-3307-c".to_owned(),
+                sent_at_unix_seconds: 1_910_020_000,
+                delete_at_unix_seconds: 1_910_023_600,
+                protection: TimedDeleteProtection::Protected,
+            },
+        ];
+
+        for record in &records {
+            cmd_record_timed_delete_at_path(&path, &KEY, record.clone()).unwrap();
+        }
+        let stored = read_timed_delete_store_snapshot_at_path(&path, &KEY).unwrap();
+        assert_eq!(stored.status, TimedDeleteStoreStatus::Present);
+        assert_eq!(stored.record_count, 3);
+        println!("task_3307_store_command=cmd_record_timed_delete_at_path");
+        println!("task_3307_initial_store_count={}", stored.record_count);
+
+        // A fresh read from the sealed file is the backend equivalent of OSL
+        // closing for an update or restart, then reopening with the same account.
+        let reopened = read_timed_delete_store_snapshot_at_path(&path, &KEY).unwrap();
+        assert_eq!(reopened.status, TimedDeleteStoreStatus::Present);
+        assert_eq!(reopened.record_count, 3);
+        assert_eq!(reopened.records, records);
+        println!("task_3307_reopen_simulation=fresh_read_from_sealed_file");
+        println!(
+            "task_3307_reopened_store_status={}",
+            reopened.status.as_str()
+        );
+        println!("task_3307_reopened_record_count={}", reopened.record_count);
+        for (index, record) in reopened.records.iter().enumerate() {
+            println!(
+                "task_3307_reopened_record_{} app={} conversation={} locator={} delete_at={}",
+                index + 1,
+                record.app_id,
+                record.conversation_id,
+                record.message_locator,
+                record.delete_at_unix_seconds
+            );
+            assert_eq!(
+                record.delete_at_unix_seconds,
+                records[index].delete_at_unix_seconds
+            );
+        }
+
+        std::fs::remove_file(&path).unwrap();
+        let _ = std::fs::remove_file(path.with_extension("bak"));
+        let wiped_reopen = read_timed_delete_store_snapshot_at_path(&path, &KEY).unwrap();
+        assert_eq!(wiped_reopen.status, TimedDeleteStoreStatus::Missing);
+        assert_eq!(wiped_reopen.record_count, 0);
+        assert!(wiped_reopen.records.is_empty());
+        println!(
+            "task_3307_wiped_reopen_store_status={}",
+            wiped_reopen.status.as_str()
+        );
+        println!(
+            "task_3307_wiped_reopen_record_count={}",
+            wiped_reopen.record_count
+        );
     }
 
     // ---- staging sweep ----
