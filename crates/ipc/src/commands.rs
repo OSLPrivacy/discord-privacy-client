@@ -10010,6 +10010,7 @@ fn cmd_osl_send_typed_friend_request_with_dir(
     dir: &Path,
 ) -> Result<SendFriendRequestResult, String> {
     guard_friend_request_peer_binding(state, &peer_discord_id)?;
+    guard_friend_request_not_blocked(dir, &peer_discord_id)?;
     let scope = request.scope_grant.scope().clone();
     if scope.kind == crate::scope::ScopeKind::Dm && scope.id != peer_discord_id {
         return Err("OSL: friend request DM scope does not match peer".to_string());
@@ -10081,6 +10082,7 @@ pub fn cmd_osl_accept_friend_request(
 }
 
 const PENDING_FRIEND_REQUESTS_FILE: &str = "pending_friend_requests.json";
+const BLOCKED_PEOPLE_FILE: &str = "blocked_people.json";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -10088,6 +10090,14 @@ pub struct PendingFriendRequestRecord {
     pub peer_discord_id: String,
     pub scope_storage_key: String,
     pub created_at_unix_seconds: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockedPersonRecord {
+    pub peer_discord_id: String,
+    pub state: String,
+    pub blocked_at_unix_seconds: u64,
 }
 
 #[derive(Clone, serde::Serialize, PartialEq, Eq)]
@@ -10105,6 +10115,10 @@ pub struct SendFriendRequestResult {
 
 fn pending_friend_requests_path(dir: &Path) -> PathBuf {
     dir.join(PENDING_FRIEND_REQUESTS_FILE)
+}
+
+fn blocked_people_path(dir: &Path) -> PathBuf {
+    dir.join(BLOCKED_PEOPLE_FILE)
 }
 
 /// A6-F2: the pending social graph — who is trying to reach the user and who
@@ -10166,6 +10180,87 @@ fn save_pending_friend_requests(
         .map_err(|_| "OSL: pending friend request storage is unavailable".to_string())
 }
 
+fn load_blocked_people(path: &Path) -> Result<Vec<BlockedPersonRecord>, String> {
+    let blob = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("OSL: blocked people storage is unavailable".to_string()),
+    };
+    let plain = crate::main_password::maybe_decrypt(&blob)
+        .map_err(|_| "OSL: blocked people storage is unreadable".to_string())?;
+    let records: Vec<BlockedPersonRecord> = serde_json::from_slice(&plain)
+        .map_err(|_| "OSL: blocked people storage is unreadable".to_string())?;
+    if records
+        .iter()
+        .any(|record| record.peer_discord_id.trim().is_empty() || record.state != "Blocked")
+    {
+        return Err("OSL: blocked people storage is unreadable".to_string());
+    }
+    if !crate::main_password::has_enc_magic(&blob) {
+        save_blocked_people(path, &records)?;
+    }
+    Ok(records)
+}
+
+fn save_blocked_people(path: &Path, records: &[BlockedPersonRecord]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|_| "OSL: blocked people storage is unavailable".to_string())?;
+    }
+    let bytes = serde_json::to_vec_pretty(records)
+        .map_err(|_| "OSL: blocked people storage is unavailable".to_string())?;
+    let sealed = crate::main_password::maybe_encrypt(&bytes)
+        .map_err(|_| "OSL: blocked people storage is unavailable".to_string())?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &sealed)
+        .map_err(|_| "OSL: blocked people storage is unavailable".to_string())?;
+    std::fs::rename(&tmp, path)
+        .map_err(|_| "OSL: blocked people storage is unavailable".to_string())
+}
+
+fn persist_blocked_person(dir: &Path, peer_discord_id: &str) -> Result<(), String> {
+    let path = blocked_people_path(dir);
+    let mut records = load_blocked_people(&path)?;
+    if let Some(record) = records
+        .iter_mut()
+        .find(|record| record.peer_discord_id == peer_discord_id)
+    {
+        record.state = "Blocked".to_string();
+    } else {
+        records.push(BlockedPersonRecord {
+            peer_discord_id: peer_discord_id.to_string(),
+            state: "Blocked".to_string(),
+            blocked_at_unix_seconds: now_unix_secs() as u64,
+        });
+    }
+    save_blocked_people(&path, &records)
+}
+
+fn guard_friend_request_not_blocked(dir: &Path, peer_discord_id: &str) -> Result<(), String> {
+    if load_blocked_people(&blocked_people_path(dir))?
+        .iter()
+        .any(|record| record.peer_discord_id == peer_discord_id)
+    {
+        return Err("OSL: friend request peer is blocked".to_string());
+    }
+    Ok(())
+}
+
+fn remove_pending_friend_requests_for_peer(
+    dir: &Path,
+    peer_discord_id: &str,
+) -> Result<usize, String> {
+    let path = pending_friend_requests_path(dir);
+    let mut records = load_pending_friend_requests(&path)?;
+    let before = records.len();
+    records.retain(|record| record.peer_discord_id != peer_discord_id);
+    let removed = before - records.len();
+    if removed > 0 {
+        save_pending_friend_requests(&path, &records)?;
+    }
+    Ok(removed)
+}
+
 fn local_friend_authority(
     identity: &keystore::Identity,
 ) -> Result<crate::friend_request::VerifiedFriendAuthority, String> {
@@ -10224,6 +10319,7 @@ fn cmd_osl_send_friend_request_with_dir(
     dir: &Path,
 ) -> Result<SendFriendRequestResult, String> {
     guard_friend_request_peer_binding(state, &peer_discord_id)?;
+    guard_friend_request_not_blocked(dir, &peer_discord_id)?;
     let scope: crate::scope::Scope = scope_input
         .try_into()
         .map_err(|e: crate::scope::ScopeError| format!("OSL: {e}"))?;
@@ -10283,6 +10379,12 @@ fn cmd_osl_list_friend_requests_with_dir(
     load_pending_friend_requests(&pending_friend_requests_path(dir))
 }
 
+pub fn cmd_osl_list_blocked_people(_state: &AppState) -> Result<Vec<BlockedPersonRecord>, String> {
+    record_activity_on_command_entry();
+    let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: blocked people dir: {e}"))?;
+    load_blocked_people(&blocked_people_path(&dir))
+}
+
 #[cfg(test)]
 fn persist_typed_friend_request_with_dir(
     state: &AppState,
@@ -10291,6 +10393,7 @@ fn persist_typed_friend_request_with_dir(
     dir: &Path,
 ) -> Result<PendingFriendRequestResult, String> {
     guard_friend_request_peer_binding(state, &peer_discord_id)?;
+    guard_friend_request_not_blocked(dir, &peer_discord_id)?;
     let _peer_authority = peer_friend_authority(state, &peer_discord_id)?;
     let scope = request.scope_grant.scope().clone();
     if scope.kind == crate::scope::ScopeKind::Dm && scope.id != peer_discord_id {
@@ -15590,11 +15693,14 @@ pub fn cmd_osl_block_friend_request(
 
     local_unwhitelist_apply(
         state,
-        peer_discord_id,
+        peer_discord_id.clone(),
         crate::scope::ScopeInput::from(&scope),
         true,
         /* wipe_local_decrypt */ false,
     )?;
+    let dir = keystore::osl_config_dir().map_err(|e| format!("OSL: blocked people dir: {e}"))?;
+    let _ = remove_pending_friend_requests_for_peer(&dir, &peer_discord_id)?;
+    persist_blocked_person(&dir, &peer_discord_id)?;
 
     Ok(FriendRequestDecisionResult {
         decision: if accepted_grant_exists {
