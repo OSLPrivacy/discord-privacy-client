@@ -92,6 +92,7 @@ import {
 } from "./endpoints/sender-filter-rollout-root.js";
 import { handleUpdateManifest } from "./endpoints/update-manifest.js";
 import { handleSpaceEventAck, handleSpaceEventDrainPost, handleSpaceEventPost } from "./endpoints/space-events.js";
+import { handleSpaceInviteRedeem } from "./endpoints/space-invites.js";
 import {
   handleWrappedKeysDelete,
   handleWrappedKeysGet,
@@ -481,6 +482,7 @@ async function dispatch(
     // 64 KiB ciphertext cap is no longer the first bound on what gets read
     // and JSON.parsed.
     if (path === "/v1/space-events") return await handleSpaceEventPost(request, env);
+    if (path === "/v1/space-invites/redeem") return await handleSpaceInviteRedeem(request, env);
     // D-273: the acknowledgement half of D15 for the Space lane. It was a NEW
     // route when it landed, added so no frozen T21-C1 route had to change; the
     // drain has since joined it here. The tag is in the body, not the path (D81).
