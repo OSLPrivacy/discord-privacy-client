@@ -10,7 +10,9 @@
 //! verbatim through reconnect retries: it is a non-expiring bearer capability,
 //! not a signed command that may be re-stamped.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -45,14 +47,25 @@ pub struct EagerFetchDriver<T, S> {
     transport: T,
     store: S,
     burns: EncryptedBurnQueue,
+    reservations: FetchReservations,
 }
 
 impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
     pub fn new(transport: T, store: S, burns: EncryptedBurnQueue) -> Self {
+        Self::with_reservations(transport, store, burns, FetchReservations::default())
+    }
+
+    pub fn with_reservations(
+        transport: T,
+        store: S,
+        burns: EncryptedBurnQueue,
+        reservations: FetchReservations,
+    ) -> Self {
         Self {
             transport,
             store,
             burns,
+            reservations,
         }
     }
 
@@ -60,11 +73,27 @@ impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
     /// Retries retain the cipher-store reservation created before the first
     /// byte. A failed fetch/decrypt/write leaves no ACK decision to this task.
     pub fn on_pointer_arrival(&mut self, pointer: &PointerArrival) -> Result<(), String> {
+        self.fetch_and_persist_once(pointer).map(|_| ())
+    }
+
+    /// Called by the slower conversation/inbox look path. It shares the same
+    /// per-blob reservation as pointer arrival, so two triggers cannot fetch the
+    /// same ciphertext concurrently.
+    pub fn on_poll_arrival(&mut self, pointer: &PointerArrival) -> Result<bool, String> {
+        self.fetch_and_persist_once(pointer)
+    }
+
+    fn fetch_and_persist_once(&mut self, pointer: &PointerArrival) -> Result<bool, String> {
+        let Some(permit) = self.reservations.reserve(&pointer.blob_id)? else {
+            return Ok(false);
+        };
         let ciphertext = crate::eager_fetch_retry::retry_reserved_fetch(|| {
             self.transport.fetch(&pointer.blob_id, &pointer.fetch_cap)
         })?;
         self.store
-            .decrypt_and_persist(&pointer.blob_id, &ciphertext)
+            .decrypt_and_persist(&pointer.blob_id, &ciphertext)?;
+        permit.commit()?;
+        Ok(true)
     }
 
     /// Local destruction is first.  Capacity is checked before destruction so
@@ -93,6 +122,72 @@ impl<T: CipherStoreTransport, S: LocalMessageStore> EagerFetchDriver<T, S> {
 
     pub fn into_parts(self) -> (T, S, EncryptedBurnQueue) {
         (self.transport, self.store, self.burns)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FetchReservations {
+    inner: Arc<Mutex<FetchReservationState>>,
+}
+
+#[derive(Debug, Default)]
+struct FetchReservationState {
+    in_flight: BTreeSet<String>,
+    completed: BTreeSet<String>,
+}
+
+impl FetchReservations {
+    fn reserve(&self, blob_id: &str) -> Result<Option<FetchPermit>, String> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| "OSL Chat fetch reservations are unavailable".to_owned())?;
+        if state.completed.contains(blob_id) || !state.in_flight.insert(blob_id.to_owned()) {
+            return Ok(None);
+        }
+        Ok(Some(FetchPermit {
+            reservations: self.clone(),
+            blob_id: blob_id.to_owned(),
+            committed: false,
+        }))
+    }
+
+    pub fn completed_count(&self) -> Result<usize, String> {
+        self.inner
+            .lock()
+            .map(|state| state.completed.len())
+            .map_err(|_| "OSL Chat fetch reservations are unavailable".to_owned())
+    }
+}
+
+struct FetchPermit {
+    reservations: FetchReservations,
+    blob_id: String,
+    committed: bool,
+}
+
+impl FetchPermit {
+    fn commit(mut self) -> Result<(), String> {
+        let mut state = self
+            .reservations
+            .inner
+            .lock()
+            .map_err(|_| "OSL Chat fetch reservations are unavailable".to_owned())?;
+        state.in_flight.remove(&self.blob_id);
+        state.completed.insert(self.blob_id.clone());
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for FetchPermit {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if let Ok(mut state) = self.reservations.inner.lock() {
+            state.in_flight.remove(&self.blob_id);
+        }
     }
 }
 

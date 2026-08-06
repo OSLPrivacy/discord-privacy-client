@@ -61,6 +61,10 @@ impl BlobId {
         &self.0
     }
 
+    pub fn to_hex(self) -> String {
+        hex_id(&self.0)
+    }
+
     const fn is_zero(&self) -> bool {
         let mut index = 0;
         while index < ID_BYTES {
@@ -344,4 +348,13 @@ fn hex(byte: u8) -> Result<u8, FrameError> {
         b'a'..=b'f' => Ok(byte - b'a' + 10),
         _ => Err(FrameError::InvalidIdentifier),
     }
+}
+
+fn hex_id(bytes: &[u8; ID_BYTES]) -> String {
+    let mut value = String::with_capacity(ID_BYTES * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut value, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    value
 }

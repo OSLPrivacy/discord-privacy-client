@@ -13,7 +13,10 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use rand::{rngs::OsRng, RngCore};
 
-use crate::realtime_client::{FrameError, RealtimeClient, ScheduledFetch, FRAME_BYTES};
+use crate::realtime_client::{
+    AuthorizedFetch, FrameError, RealtimeClient, ScheduledFetch, FRAME_BYTES,
+};
+use crate::realtime_decoy::DecoyFetch;
 use crate::realtime_resume::ReconnectSchedule;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -198,6 +201,12 @@ pub struct RealtimePipeReport {
     pub authorized_fetches: usize,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RealtimeFetchDrainReport {
+    pub pretend_fetches: usize,
+    pub authorized_fetches: usize,
+}
+
 pub trait RealtimePipeClock {
     fn wait_until(&mut self, scheduled_at: Duration);
     fn wait_for_reconnect(&mut self, delay: Duration);
@@ -340,12 +349,35 @@ fn receive_tick(
 }
 
 fn drain_fetch_work(client: &mut RealtimeClient, report: &mut RealtimePipeReport) {
+    let drained = drain_scheduled_fetches(client, |_| Ok::<_, ()>(()), |_| Ok::<_, ()>(()))
+        .expect("count-only fetch drain cannot fail");
+    report.authorized_fetches += drained.authorized_fetches;
+    report.pretend_fetches += drained.pretend_fetches;
+}
+
+pub fn drain_scheduled_fetches<A, D, E>(
+    client: &mut RealtimeClient,
+    mut authorized: A,
+    mut decoy: D,
+) -> Result<RealtimeFetchDrainReport, E>
+where
+    A: FnMut(AuthorizedFetch) -> Result<(), E>,
+    D: FnMut(DecoyFetch) -> Result<(), E>,
+{
+    let mut report = RealtimeFetchDrainReport::default();
     while let Some(fetch) = client.take_fetch_work() {
         match fetch {
-            ScheduledFetch::Authorized(_) => report.authorized_fetches += 1,
-            ScheduledFetch::Decoy(_) => report.pretend_fetches += 1,
+            ScheduledFetch::Authorized(fetch) => {
+                authorized(fetch)?;
+                report.authorized_fetches += 1;
+            }
+            ScheduledFetch::Decoy(fetch) => {
+                decoy(fetch)?;
+                report.pretend_fetches += 1;
+            }
         }
     }
+    Ok(report)
 }
 
 fn is_reconnectable(error: &RealtimePipeError) -> bool {
