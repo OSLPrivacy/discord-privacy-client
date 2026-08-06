@@ -33,6 +33,15 @@ impl SharedMailboxFolder {
             account_id: account_id.into(),
         }
     }
+
+    pub fn gmail_label(id: impl Into<String>, account_id: impl Into<String>) -> Self {
+        let id = id.into();
+        Self::new(id.clone(), id, "gmail", account_id)
+    }
+
+    pub fn is_gmail_label(&self) -> bool {
+        self.service == "gmail"
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -112,6 +121,14 @@ impl SharedMailboxReader {
         self.folders.clone()
     }
 
+    pub fn list_gmail_labels(&self) -> Vec<SharedMailboxFolder> {
+        self.folders
+            .iter()
+            .filter(|folder| folder.is_gmail_label())
+            .cloned()
+            .collect()
+    }
+
     pub fn list_messages(
         &self,
         folder_id: &str,
@@ -144,7 +161,9 @@ impl SharedMailboxReader {
         if page_size == 0 {
             return Err("mailbox page size must be at least one".to_owned());
         }
+        let folder = self.folder_for(folder_id)?.clone();
         Ok(SharedMailboxFolderPagePlace {
+            folder,
             messages: self.messages_for_folder(folder_id)?.to_vec(),
             current_page: 0,
             page_size,
@@ -154,10 +173,27 @@ impl SharedMailboxReader {
         })
     }
 
-    fn messages_for_folder(&self, folder_id: &str) -> Result<&[SharedMailboxMessage], String> {
-        if !self.folders.iter().any(|folder| folder.id == folder_id) {
-            return Err("mailbox folder not found".to_owned());
+    pub fn gmail_label_page_place(
+        &self,
+        label_id: &str,
+        page_size: usize,
+    ) -> Result<SharedMailboxFolderPagePlace, String> {
+        let label = self.folder_for(label_id)?;
+        if !label.is_gmail_label() {
+            return Err("mailbox folder is not a Gmail label".to_owned());
         }
+        self.folder_page_place(label_id, page_size)
+    }
+
+    fn folder_for(&self, folder_id: &str) -> Result<&SharedMailboxFolder, String> {
+        self.folders
+            .iter()
+            .find(|folder| folder.id == folder_id)
+            .ok_or_else(|| "mailbox folder not found".to_owned())
+    }
+
+    fn messages_for_folder(&self, folder_id: &str) -> Result<&[SharedMailboxMessage], String> {
+        self.folder_for(folder_id)?;
         Ok(self
             .messages_by_folder
             .get(folder_id)
@@ -167,6 +203,7 @@ impl SharedMailboxReader {
 }
 
 pub struct SharedMailboxFolderPagePlace {
+    folder: SharedMailboxFolder,
     messages: Vec<SharedMailboxMessage>,
     current_page: usize,
     page_size: usize,
@@ -178,6 +215,7 @@ pub struct SharedMailboxFolderPagePlace {
 impl std::fmt::Debug for SharedMailboxFolderPagePlace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SharedMailboxFolderPagePlace")
+            .field("folder", &self.folder)
             .field("message_count", &self.messages.len())
             .field("current_page", &self.current_page)
             .field("page_size", &self.page_size)
@@ -188,6 +226,10 @@ impl std::fmt::Debug for SharedMailboxFolderPagePlace {
 }
 
 impl SharedMailboxFolderPagePlace {
+    pub fn folder(&self) -> &SharedMailboxFolder {
+        &self.folder
+    }
+
     pub fn message_count(&self) -> usize {
         self.messages.len()
     }
