@@ -15797,6 +15797,22 @@ pub struct ChannelMessageThreadDto {
     pub parent_thread_count: usize,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ChannelMessageDto {
+    pub message_id: String,
+    pub channel_id: String,
+    pub thread_ids: Vec<String>,
+    pub thread_count: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct OpenedChannelMessageThreadDto {
+    pub thread_id: String,
+    pub channel_id: String,
+    pub parent_message_id: String,
+    pub parent_message: ChannelMessageDto,
+}
+
 /// Create one local thread attached to a parent channel message.
 ///
 /// The parent message is recorded in the same command so the thread cannot
@@ -15877,6 +15893,64 @@ pub fn cmd_osl_create_channel_message_thread(
         channel_message_count,
         thread_count,
         parent_thread_count,
+    })
+}
+
+/// Open one local channel-message thread and return the parent message that
+/// owns it.
+pub fn cmd_osl_open_channel_message_thread(
+    state: &AppState,
+    thread_id: String,
+) -> Result<OpenedChannelMessageThreadDto, String> {
+    record_activity_on_command_entry();
+    let thread_id = normalize_channel_thread_field("thread_id", thread_id)?;
+
+    let threads = state
+        .channel_threads
+        .lock()
+        .expect("channel_threads mutex poisoned");
+    let thread = threads
+        .get(&thread_id)
+        .cloned()
+        .ok_or_else(|| format!("OSL: thread '{thread_id}' does not exist"))?;
+    drop(threads);
+
+    let messages = state
+        .channel_messages
+        .lock()
+        .expect("channel_messages mutex poisoned");
+    let parent = messages
+        .get(&thread.parent_message_id)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "OSL: parent message '{}' for thread '{}' does not exist",
+                thread.parent_message_id, thread.thread_id
+            )
+        })?;
+    if parent.channel_id != thread.channel_id {
+        return Err(format!(
+            "OSL: parent message '{}' belongs to channel '{}', not '{}'",
+            parent.message_id, parent.channel_id, thread.channel_id
+        ));
+    }
+    if !parent.thread_ids.iter().any(|id| id == &thread.thread_id) {
+        return Err(format!(
+            "OSL: parent message '{}' does not list thread '{}'",
+            parent.message_id, thread.thread_id
+        ));
+    }
+
+    Ok(OpenedChannelMessageThreadDto {
+        thread_id: thread.thread_id,
+        channel_id: thread.channel_id,
+        parent_message_id: parent.message_id.clone(),
+        parent_message: ChannelMessageDto {
+            thread_count: parent.thread_ids.len(),
+            message_id: parent.message_id,
+            channel_id: parent.channel_id,
+            thread_ids: parent.thread_ids,
+        },
     })
 }
 
