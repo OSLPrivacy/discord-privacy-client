@@ -1,6 +1,7 @@
 import { SELF, env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { handleCryptoQuote } from "../../src/endpoints/crypto-checkout.js";
+import { usdCentsToAtomic } from "../../src/lib/anonymous-crypto.js";
 import {
   handleCryptoSettlement,
   sweepAnonymousCryptoInvoices,
@@ -165,6 +166,13 @@ async function quote(
   return await response.json() as {
     invoice_id: string; claim_token: string; amount_atomic: string; expires_at: number;
   };
+}
+
+async function licenseCount(invoiceId: string): Promise<number> {
+  const row = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM licenses WHERE subscription_id = ?",
+  ).bind(`crypto_${invoiceId}`).first<{ count: number }>();
+  return row?.count ?? 0;
 }
 
 beforeAll(async () => {
@@ -391,6 +399,46 @@ describe("anonymous node-verified lifetime Pro flow", () => {
       "SELECT status FROM crypto_invoices_v2 WHERE invoice_id = ?",
     ).bind(invoice.invoice_id).first<{ status: string }>();
     expect(row?.status).toBe("pending");
+  });
+
+  it("refuses a payment one cent under price before accepting the exact amount", async () => {
+    const keys = await deliveryKeys();
+    const invoice = await quote("btc", keys.publicKey);
+    const shortAtomic = usdCentsToAtomic(499, "60000", "btc").amountAtomic;
+    expect(BigInt(shortAtomic)).toBeLessThan(BigInt(invoice.amount_atomic));
+
+    const beforeCount = await licenseCount(invoice.invoice_id);
+    const shortEvidence = await settlementEvidence(invoice, "btc", 2);
+    shortEvidence.amount_atomic = shortAtomic;
+    shortEvidence.event_id = `evt_${await sha256Hex(
+      `${shortEvidence.invoice_id}:${shortEvidence.payment_method}:${shortEvidence.payment_reference_commitment}`,
+    )}`;
+    const shortPayment = await settleReady(shortEvidence);
+    const shortBody = await shortPayment.json() as { error: string };
+    const afterShortCount = await licenseCount(invoice.invoice_id);
+
+    const exactEvidence = await settlementEvidence(invoice, "btc", 2);
+    const exactPayment = await settleReady(exactEvidence);
+    expect(exactPayment.status, await exactPayment.clone().text()).toBe(200);
+    const afterExactCount = await licenseCount(invoice.invoice_id);
+    console.log(
+      [
+        `TASK3197_LICENSE_COUNT_BEFORE=${beforeCount}`,
+        `TASK3197_LICENSE_COUNT_AFTER_SHORT=${afterShortCount}`,
+        `TASK3197_LICENSE_COUNT_AFTER_EXACT=${afterExactCount}`,
+        `TASK3197_SHORT_EXPECTED=${invoice.amount_atomic}`,
+        `TASK3197_SHORT_GOT=${shortAtomic}`,
+        `TASK3197_SHORT_ERROR="${shortBody.error}"`,
+      ].join(" "),
+    );
+
+    expect(beforeCount).toBe(0);
+    expect(shortPayment.status).toBe(409);
+    expect(afterShortCount).toBe(0);
+    expect(shortBody.error).toBe(
+      `payment amount too low: expected ${invoice.amount_atomic}, got ${shortAtomic}`,
+    );
+    expect(afterExactCount).toBe(1);
   });
 
   it("deduplicates replay and concurrent callbacks", async () => {

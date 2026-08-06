@@ -120,9 +120,13 @@ export async function handleCryptoSettlement(
       body.confirmations < requiredConfirmations) {
     return conflict("payment does not have enough confirmations");
   }
-  if (invoice.payment_method !== body.payment_method ||
-      BigInt(body.amount_atomic) < BigInt(invoice.amount_atomic)) {
+  if (invoice.payment_method !== body.payment_method) {
     return conflict("payment does not satisfy this invoice");
+  }
+  if (BigInt(body.amount_atomic) < BigInt(invoice.amount_atomic)) {
+    return conflict(
+      `payment amount too low: expected ${invoice.amount_atomic}, got ${body.amount_atomic}`,
+    );
   }
   const nowSeconds = Math.floor(Date.now() / 1000);
   if (body.observed_at < invoice.created_at || body.observed_at > invoice.expires_at) {
