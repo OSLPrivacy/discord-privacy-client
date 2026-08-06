@@ -168,6 +168,20 @@ pub struct ScopeSecurityDto {
     pub decrypt_display_enabled: bool,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedPlaceDirectionState {
+    pub app: String,
+    pub kind: String,
+    pub first_account: String,
+    pub second_account: String,
+    pub first_to_second_stable_id: String,
+    pub second_to_first_stable_id: String,
+    pub first_to_second_allowed: bool,
+    pub second_to_first_allowed: bool,
+    pub state: String,
+}
+
 /// The minimum friend state needed to create a manual peer-messaging lease.
 /// Key material stays in the original core; callers receive only stable local
 /// and public identity identifiers.
@@ -1174,6 +1188,52 @@ pub fn list_allowed_place_records(
     let prefs =
         load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
     Ok(prefs.allowed_places.values().cloned().collect())
+}
+
+pub fn compare_allowed_place_direction_state(
+    _security: &HubSecurityState,
+    app: String,
+    kind: String,
+    first_account: String,
+    second_account: String,
+) -> Result<AllowedPlaceDirectionState, String> {
+    require_unlocked()?;
+    validate_allowed_place_id(&app, "OSL allowed-place app is invalid")?;
+    validate_allowed_place_id(&kind, "OSL allowed-place kind is invalid")?;
+    validate_allowed_place_id(&first_account, "OSL allowed-place account is invalid")?;
+    validate_allowed_place_id(&second_account, "OSL allowed-place account is invalid")?;
+    if first_account == second_account {
+        return Err("OSL allowed-place accounts must be different".to_owned());
+    }
+    let first_to_second_stable_id =
+        allowed_place_stable_id(&app, &first_account, &kind, &second_account);
+    let second_to_first_stable_id =
+        allowed_place_stable_id(&app, &second_account, &kind, &first_account);
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    let first_to_second_allowed = prefs
+        .allowed_places
+        .contains_key(&first_to_second_stable_id);
+    let second_to_first_allowed = prefs
+        .allowed_places
+        .contains_key(&second_to_first_stable_id);
+    let state = match (first_to_second_allowed, second_to_first_allowed) {
+        (true, true) => "two-way",
+        (true, false) | (false, true) => "one-way",
+        (false, false) => "none",
+    }
+    .to_owned();
+    Ok(AllowedPlaceDirectionState {
+        app,
+        kind,
+        first_account,
+        second_account,
+        first_to_second_stable_id,
+        second_to_first_stable_id,
+        first_to_second_allowed,
+        second_to_first_allowed,
+        state,
+    })
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -3827,6 +3887,10 @@ fn validate_allowed_place_record(record: &AllowedPlaceRecord) -> Result<(), Stri
     Ok(())
 }
 
+fn allowed_place_stable_id(app: &str, account: &str, kind: &str, peer_account: &str) -> String {
+    format!("{app}:{account}:{kind}:{peer_account}")
+}
+
 fn validate_allowed_place_id(value: &str, message: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > MAX_ALLOWED_PLACE_FIELD_BYTES
@@ -4576,6 +4640,50 @@ mod tests {
             queried.stable_id,
             "discord:900000000000000001:direct_message:900000000000000003"
         );
+    }
+
+    #[test]
+    fn direct_allowed_place_direction_state_moves_from_one_way_to_two_way() {
+        let _harness = FileBackedSecurityHarness::new("allowed-place-two-way-state");
+        let security = HubSecurityState::default();
+        let first =
+            AllowedPlaceRecord::discord_direct_message("900000000000000170", "900000000000000171");
+        let second =
+            AllowedPlaceRecord::discord_direct_message("900000000000000171", "900000000000000170");
+
+        add_allowed_place_record(&security, first.clone()).unwrap();
+        let one_way = compare_allowed_place_direction_state(
+            &security,
+            "discord".to_owned(),
+            "direct_message".to_owned(),
+            first.account.clone(),
+            second.account.clone(),
+        )
+        .unwrap();
+        println!(
+            "TASK0170 allowed_place_direction saved_directions=1 state={} first_to_second={} second_to_first={}",
+            one_way.state, one_way.first_to_second_allowed, one_way.second_to_first_allowed
+        );
+        assert_eq!(one_way.state, "one-way");
+        assert!(one_way.first_to_second_allowed);
+        assert!(!one_way.second_to_first_allowed);
+
+        add_allowed_place_record(&security, second).unwrap();
+        let two_way = compare_allowed_place_direction_state(
+            &security,
+            "discord".to_owned(),
+            "direct_message".to_owned(),
+            "900000000000000170".to_owned(),
+            "900000000000000171".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "TASK0170 allowed_place_direction saved_directions=2 state={} first_to_second={} second_to_first={}",
+            two_way.state, two_way.first_to_second_allowed, two_way.second_to_first_allowed
+        );
+        assert_eq!(two_way.state, "two-way");
+        assert!(two_way.first_to_second_allowed);
+        assert!(two_way.second_to_first_allowed);
     }
 
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {

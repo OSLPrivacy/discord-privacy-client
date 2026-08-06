@@ -654,6 +654,7 @@ macro_rules! hub_tauri_commands {
             add_allowed_place_record,
             remove_allowed_place_record,
             query_allowed_place_record,
+            compare_allowed_place_direction_state,
             set_active_hub_friend_permission,
             set_active_hub_friend_reach,
             revoke_active_hub_friend_scope,
@@ -1924,6 +1925,19 @@ mod tauri_registration_surface_tests {
     #[test]
     fn allowed_place_commands_are_registered_and_acl_granted() {
         let (handlers, permissions, capability) = registration_inputs();
+        for command in [
+            "add_group_member_permission",
+            "remove_group_member_permission",
+            "list_group_member_permissions",
+            "add_allowed_place_record",
+            "remove_allowed_place_record",
+            "query_allowed_place_record",
+            "compare_allowed_place_direction_state",
+            "list_whatsapp_whitelist_kinds",
+            "create_one_use_invite_link",
+        ] {
+            assert_registered_and_granted(&handlers, &permissions, &capability, command);
+        }
         assert_each_registration_surface_is_required(
             &handlers,
             &permissions,
@@ -1932,6 +1946,7 @@ mod tauri_registration_surface_tests {
                 "add_allowed_place_record",
                 "remove_allowed_place_record",
                 "query_allowed_place_record",
+                "compare_allowed_place_direction_state",
             ],
         );
     }

@@ -87,7 +87,7 @@ use osl_privacy_hub::scrub_index::{
     ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
-    self, AddFriendResult, AllowedPlaceRecord, FriendCodeExport, HubRevocationStatusDto, HubScopeBurnResult,
+    self, AddFriendResult, AllowedPlaceDirectionState, AllowedPlaceRecord, FriendCodeExport, HubRevocationStatusDto, HubScopeBurnResult,
     HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
@@ -6267,6 +6267,26 @@ async fn query_allowed_place_record(
     let _session = session.transition.lock().await;
     security::query_allowed_place_record(&security_state, stable_id)
 }
+
+#[tauri::command]
+async fn compare_allowed_place_direction_state(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    app: String,
+    kind: String,
+    first_account: String,
+    second_account: String,
+) -> Result<AllowedPlaceDirectionState, String> {
+    let _session = session.transition.lock().await;
+    security::compare_allowed_place_direction_state(
+        &security_state,
+        app,
+        kind,
+        first_account,
+        second_account,
+    )
+}
+
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
