@@ -119,6 +119,72 @@ cmd_push() {
 }
 
 overall_exit() { case "$1" in pass) return 0 ;; fail) return 1 ;; unmeasurable) return 2 ;; blocked) return 3 ;; timeout) return 4 ;; *) return 3 ;; esac; }
+test_command_metadata_dir() {
+  printf '%s\n' "${VMQA_TEST_METADATA_DIR:-$REPO_ROOT/docs/reports/vmqa/test-command-metadata}"
+}
+
+write_test_command_metadata() {
+  local category="$1" command_name="$2" verdict="$3" exit_code="$4" reported_result="${5:-$3}"
+  local dir
+  dir="$(test_command_metadata_dir)"
+  mkdir -p -- "$dir" || return 9
+  python3 - "$dir" "$category" "$command_name" "$verdict" "$exit_code" "$reported_result" "$REPO_ROOT" <<'PY'
+import datetime
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+directory = Path(sys.argv[1])
+category, command, verdict, exit_code, reported = sys.argv[2:7]
+repo_root = Path(sys.argv[7])
+if category not in {"unit", "two-copy", "screen"}:
+    raise SystemExit("unsupported test metadata category")
+if verdict not in {"pass", "fail"}:
+    raise SystemExit("unsupported test metadata verdict")
+slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", command).strip("-")
+if not slug:
+    raise SystemExit("empty test metadata command")
+version = json.loads(
+    (repo_root / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+).get("version")
+if not isinstance(version, str) or not version.strip():
+    raise SystemExit("one-build version missing from src-tauri/tauri.conf.json")
+# "feature:desktop" mirrors the contract pin (buildIdentity.build.features
+# must equal ['desktop']); OSL_* env vars are the app's run-time switches.
+switches = ["feature:desktop"] + sorted(
+    f"{name}={value}" for name, value in os.environ.items() if name.startswith("OSL_")
+)
+record = {
+    "schemaVersion": 1,
+    "kind": "vmqa-test-command-metadata",
+    "category": category,
+    "command": command,
+    "verdict": verdict,
+    "reportedResult": reported,
+    "exitCode": int(exit_code),
+    "oneBuildVersion": version,
+    "switches": switches,
+    "recordedAtUtc": os.environ.get("VMQA_TEST_METADATA_RECORDED_AT_UTC")
+    or datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+}
+(directory / f"{category}-{slug}.json").write_text(
+    json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+recorded_test_command() {
+  local category="$1" command_name="$2"; shift 2
+  local rc verdict
+  if "$@"; then rc=0; else rc=$?; fi
+  verdict="fail"
+  [ "$rc" -eq 0 ] && verdict="pass"
+  write_test_command_metadata "$category" "$command_name" "$verdict" "$rc" "$verdict" || return 9
+  return "$rc"
+}
 
 write_request() {
   local run_id="$1" identifier="$2" run_start="$3" steps_file="$4" identity_file="$5" out="$6"
@@ -1180,15 +1246,27 @@ PY
 
 cmd_named_tests() {
   local target="${1:-all}"
+  local rc verdict
   case "$target" in
     all)
-      f1_live_windows_walkthrough_imports_nonempty_receipt
-      f2_real_vm_five_frame_walkthrough
+      if f1_live_windows_walkthrough_imports_nonempty_receipt; then
+        if f2_real_vm_five_frame_walkthrough; then rc=0; else rc=$?; fi
+      else
+        rc=$?
+      fi
       ;;
-    f1) f1_live_windows_walkthrough_imports_nonempty_receipt ;;
-    f2) f2_real_vm_five_frame_walkthrough ;;
+    f1)
+      if f1_live_windows_walkthrough_imports_nonempty_receipt; then rc=0; else rc=$?; fi
+      ;;
+    f2)
+      if f2_real_vm_five_frame_walkthrough; then rc=0; else rc=$?; fi
+      ;;
     *) die_usage "unknown test target: $target" ;;
   esac
+  verdict="fail"
+  [ "$rc" -eq 0 ] && verdict="pass"
+  write_test_command_metadata "unit" "test:$target" "$verdict" "$rc" "$verdict" || return 9
+  return "$rc"
 }
 
 cmd_selftest() {
@@ -1197,6 +1275,7 @@ cmd_selftest() {
   local bundle_dir="" exe exe_sha build_identity evidence_dir
   local steps_file="$SELFTEST_STEPS" neg_steps neg_ping heartbeat_file
   local expected_agent_sha expected_win32_sha live_agent_sha live_win32_sha
+  local grade_out grade_rc reported_result verdict
   while [ $# -gt 0 ]; do
     case "$1" in
       --vm) [ $# -ge 2 ] || die_usage "--vm needs a value"; vm="$2"; shift 2 ;;
@@ -1257,9 +1336,26 @@ cmd_selftest() {
   pos_file="$(fetch_run_verdict "$vm" "$identifier" "$steps_file" "$bundle_dir" "$timeout" "$pos_id")"; pos_rc=$?
   neg_file="$(fetch_run_verdict "$vm" "$NEGATIVE_IDENTIFIER" "$steps_file" "$bundle_dir" "$timeout" "$neg_id")"; neg_rc=$?
   set -e
-  grade_selftest "$pos_file" "$neg_file" "$pos_rc" "$neg_rc" \
-    "$expected_agent_sha" "$expected_win32_sha" "$exe_sha" \
-    "$EXPECTED_SELFTEST_SURFACE_CLASS" "$build_identity" "$exe" "$evidence_dir" "" false
+  grade_out="$(mktemp)"
+  if grade_selftest "$pos_file" "$neg_file" "$pos_rc" "$neg_rc" \
+      "$expected_agent_sha" "$expected_win32_sha" "$exe_sha" \
+      "$EXPECTED_SELFTEST_SURFACE_CLASS" "$build_identity" "$exe" "$evidence_dir" "" false \
+      >"$grade_out"; then
+    grade_rc=0
+  else
+    grade_rc=$?
+  fi
+  reported_result="$(tail -n 1 "$grade_out" 2>/dev/null || true)"
+  verdict="fail"
+  [ "$grade_rc" -eq 0 ] && verdict="pass"
+  write_test_command_metadata "screen" "selftest" "$verdict" "$grade_rc" "${reported_result:-$verdict}" || {
+    cat "$grade_out"
+    rm -f -- "$grade_out" "$steps_file"
+    return 9
+  }
+  cat "$grade_out"
+  rm -f -- "$grade_out" "$steps_file"
+  return "$grade_rc"
 }
 
 
@@ -1275,9 +1371,11 @@ main() {
     selftest) cmd_selftest "$@" ;;
     test) cmd_named_tests "$@" ;;
     f1_live_windows_walkthrough_imports_nonempty_receipt)
-      f1_live_windows_walkthrough_imports_nonempty_receipt "$@" ;;
+      recorded_test_command "two-copy" "f1_live_windows_walkthrough_imports_nonempty_receipt" \
+        f1_live_windows_walkthrough_imports_nonempty_receipt "$@" ;;
     f2_real_vm_five_frame_walkthrough)
-      f2_real_vm_five_frame_walkthrough "$@" ;;
+      recorded_test_command "screen" "f2_real_vm_five_frame_walkthrough" \
+        f2_real_vm_five_frame_walkthrough "$@" ;;
     *) die_usage "unknown subcommand: $cmd" ;;
   esac
 }
