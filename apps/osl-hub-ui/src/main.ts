@@ -10277,6 +10277,74 @@ export const __oslHubUiTest = {
   renderProtectedSheets(): string {
     return workspaceProtectedSheetMarkup();
   },
+  renderDialogSurfaceForTest(
+    name: "friends" | "people-in-chat" | "whitelist-roster" | "native-protect-friend" | "scrub-review" | "burn" | "owned-confirmation" | "update" | "osl-chat-settings",
+  ): string {
+    friendsDialogOpen = false;
+    whitelistRosterOpen = false;
+    nativeProtectPickerOpen = false;
+    scrubReviewOpen = false;
+    burnDialogOpen = false;
+    ownedConfirmation = null;
+    updateStatus = { state: "unavailable" };
+    oslChatSettingsPersonId = null;
+    activeNativeHostId = null;
+    activeNativeHostMode = null;
+    activeService = null;
+    activeHomeAppId = null;
+
+    if (name === "friends") {
+      route = "home";
+      friendsDialogOpen = true;
+      return friendsDialogMarkup();
+    }
+    if (name === "people-in-chat") {
+      this.renderServiceHeader("discord");
+      return peopleDialogMarkup();
+    }
+    if (name === "whitelist-roster") {
+      whitelistRosterOpen = true;
+      return whitelistRosterMarkup();
+    }
+    if (name === "native-protect-friend") {
+      activeNativeHostId = "discord";
+      activeNativeHostMode = "dedicated";
+      nativeProtectPickerOpen = true;
+      return nativeDiscordProtectPickerMarkup();
+    }
+    if (name === "scrub-review") {
+      scrubReviewOpen = true;
+      return scrubReviewDialogMarkup();
+    }
+    if (name === "burn") {
+      burnDialogOpen = true;
+      burnScope = "account";
+      return burnDialogMarkup();
+    }
+    if (name === "owned-confirmation") {
+      ownedConfirmation = { kind: "clearActivation" };
+      return ownedConfirmationMarkup();
+    }
+    if (name === "update") {
+      updateStatus = { state: "available", current: "0.1.0", next: "0.1.1", notes: "Focused keyboard travel fixture." };
+      return updateDialogMarkup();
+    }
+
+    const friend = testHubPerson({ personId: "friend-1", alias: "Verified friend", safetyNumberVerified: true });
+    hubPeople = [friend];
+    route = "osl-chat";
+    activeOslChatPersonId = friend.personId;
+    activeOslChatContext = {
+      contextToken: "test-context",
+      serviceId: "osl-chat",
+      accountId: "local",
+      personId: friend.personId,
+      peerOslUserId: friend.oslUserId,
+      scopeApproved: true,
+    };
+    oslChatSettingsPersonId = friend.personId;
+    return oslChatFriendSettingsMarkup(friend);
+  },
   /** D80: the rendered onboarding screen, markup only, for the unlock-screen
    * advertisement audit in `unlock-screen-single-credential.test.ts`. */
   renderOnboardingRoute(destination: OnboardingRoute): string {

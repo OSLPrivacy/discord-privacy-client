@@ -7,15 +7,9 @@
 
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { createRequire } from 'node:module';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { launchChrome } from './lib/cdp-harness.mjs';
-
-const SCRIPTS_DIR = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.dirname(SCRIPTS_DIR);
-const UI_ROOT = path.join(REPO_ROOT, 'apps', 'osl-hub-ui');
+import { hubScreenshotSurfaceMarkup } from './lib/hub-surface-fixtures.mjs';
 
 const BANNED_COPY = [
   /screenshot[-\s]?proof/iu,
@@ -40,64 +34,6 @@ function assertSafeRenderedDom(surfaces) {
     }
   }
   assert.equal(violations.length, 0, violations.join('\n'));
-}
-
-async function realSurfaceMarkup() {
-  const requireFromUi = createRequire(path.join(UI_ROOT, 'package.json'));
-  const { createServer: createViteServer } = requireFromUi('vite');
-  const previousVitest = process.env.VITEST;
-  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-  const values = new Map();
-  Object.defineProperty(globalThis, 'localStorage', {
-    configurable: true,
-    value: {
-      getItem: (key) => values.get(key) ?? null,
-      setItem: (key, value) => values.set(key, String(value)),
-      removeItem: (key) => values.delete(key),
-      clear: () => values.clear(),
-    },
-  });
-  process.env.VITEST = 'screenshot-claim-gate';
-  const vite = await createViteServer({
-    root: UI_ROOT,
-    configFile: false,
-    appType: 'custom',
-    logLevel: 'error',
-    // This is a one-shot gate, not a development server. Avoid consuming a
-    // watcher for every UI file when several verification lanes run at once.
-    server: { middlewareMode: true, watch: { ignored: ['**/*'] } },
-  });
-  try {
-    const { __oslHubUiTest: ui } = await vite.ssrLoadModule('/src/main.ts');
-    const surfaces = [];
-    const add = (name, markup) => surfaces.push({ name, markup });
-    const routes = ['home', 'inbox', 'people', 'privacy', 'activity', 'connections', 'mullvad', 'osl-chat', 'osl-mail', 'osl-servers', 'signal-qa'];
-    const onboarding = ['pro', 'welcome', 'create', 'import', 'unlock', 'account-recovery', 'recovery', 'mullvad', 'sending', 'defaults', 'cover', 'passwords', 'burnpass', 'privacy', 'tutorial', 'detected', 'install', 'apps', 'browser', 'decoy'];
-    const settings = ['account', 'apps', 'scrub', 'cleanup', 'notifications', 'appearance', 'about'];
-
-    for (const route of routes) {
-      ui.reset({ coreReady: true, servicesChecked: true });
-      add(`route:${route}`, ui.renderWorkspaceContent(route));
-    }
-    for (const destination of onboarding) {
-      ui.reset({ coreReady: true, servicesChecked: true });
-      add(`onboarding:${destination}`, ui.renderOnboardingRoute(destination));
-    }
-    for (const section of settings) {
-      ui.reset({ coreReady: true, servicesChecked: true });
-      add(`settings:${section}`, ui.renderSettingsSection(section));
-    }
-    ui.reset({ coreReady: true, servicesChecked: true });
-    add('service:discord', ui.renderServiceHeader('discord'));
-    add('protected-sheets', ui.renderProtectedSheets());
-    return surfaces;
-  } finally {
-    await vite.close();
-    if (previousVitest === undefined) delete process.env.VITEST;
-    else process.env.VITEST = previousVitest;
-    if (previousStorage) Object.defineProperty(globalThis, 'localStorage', previousStorage);
-    else delete globalThis.localStorage;
-  }
 }
 
 function startServer(surfaces) {
@@ -154,7 +90,7 @@ async function run({ selfTest = false } = {}) {
     console.log('check-screenshot-claims: self-test rejected prohibited copy and affirmative detection tone');
   }
 
-  const markup = await realSurfaceMarkup();
+  const markup = await hubScreenshotSurfaceMarkup();
   const server = await startServer(markup);
   const chrome = await launchChrome();
   const { port } = server.address();
