@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,6 +31,145 @@ struct AccountRecord {
     owner_osl_user_id: Option<String>,
     #[serde(default)]
     provider: Option<EmailProvider>,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MailboxFolderCandidate {
+    pub folder_id: String,
+    pub label: String,
+}
+
+impl MailboxFolderCandidate {
+    pub fn new(folder_id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            folder_id: folder_id.into(),
+            label: label.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MailboxMessageCandidate {
+    pub folder_id: String,
+    pub message_id: String,
+    pub subject: String,
+    pub time: i64,
+    pub sender: String,
+    pub body: String,
+}
+
+impl MailboxMessageCandidate {
+    pub fn new(
+        folder_id: impl Into<String>,
+        message_id: impl Into<String>,
+        subject: impl Into<String>,
+        time: i64,
+        sender: impl Into<String>,
+        body: impl Into<String>,
+    ) -> Self {
+        Self {
+            folder_id: folder_id.into(),
+            message_id: message_id.into(),
+            subject: subject.into(),
+            time,
+            sender: sender.into(),
+            body: body.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MailboxReaderSnapshot {
+    pub folders: Vec<MailboxFolderCandidate>,
+    pub messages: Vec<MailboxMessageCandidate>,
+}
+
+impl MailboxReaderSnapshot {
+    pub fn new(
+        folders: impl IntoIterator<Item = MailboxFolderCandidate>,
+        messages: impl IntoIterator<Item = MailboxMessageCandidate>,
+    ) -> Self {
+        Self {
+            folders: folders.into_iter().collect(),
+            messages: messages.into_iter().collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedMailboxFolder {
+    pub service_id: String,
+    pub account_id: String,
+    pub folder_id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedMailboxMessageSummary {
+    pub service_id: String,
+    pub account_id: String,
+    pub folder_id: String,
+    pub message_id: String,
+    pub subject: String,
+    pub time: i64,
+    pub sender: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SharedMailboxMessage {
+    pub service_id: String,
+    pub account_id: String,
+    pub folder_id: String,
+    pub message_id: String,
+    pub subject: String,
+    pub time: i64,
+    pub sender: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct VisibleMailMessage {
+    pub message_id: String,
+    pub mailbox: String,
+    pub sender_address: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum MailOwnerCheckError {
+    SenderAddressUnreadable,
+}
+
+impl MailOwnerCheckError {
+    pub const fn reason(&self) -> &'static str {
+        match self {
+            Self::SenderAddressUnreadable => "OSL: sender address cannot be read",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlookWebScrubMessageSummary {
+    pub message_id: String,
+    pub folder_id: String,
+    pub subject: String,
+    pub time: i64,
+    pub sender: String,
+    pub owner_label: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlookWebScrubMailboxRead {
+    pub folders: Vec<SharedMailboxFolder>,
+    pub sent_items: Vec<OutlookWebScrubMessageSummary>,
+    pub inbox: Vec<OutlookWebScrubMessageSummary>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -257,6 +397,174 @@ impl ServiceRegistryState {
     }
 }
 
+pub fn read_shared_mailbox_folders(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+    service_filled_mailbox: &MailboxReaderSnapshot,
+) -> Result<Vec<SharedMailboxFolder>, String> {
+    validate_mailbox_reader_binding(owner_osl_user_id, service_id, account_id)?;
+    validate_mailbox_folders(&service_filled_mailbox.folders)?;
+
+    service_filled_mailbox
+        .folders
+        .iter()
+        .map(|folder| {
+            Ok(SharedMailboxFolder {
+                service_id: service_id.to_owned(),
+                account_id: account_id.to_owned(),
+                folder_id: folder.folder_id.clone(),
+                label: folder.label.clone(),
+            })
+        })
+        .collect()
+}
+
+pub fn read_shared_mailbox_messages(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+    folder_id: &str,
+    service_filled_mailbox: &MailboxReaderSnapshot,
+) -> Result<Vec<SharedMailboxMessageSummary>, String> {
+    validate_mailbox_reader_binding(owner_osl_user_id, service_id, account_id)?;
+    validate_mailbox_folders(&service_filled_mailbox.folders)?;
+    ensure_mailbox_folder_exists(&service_filled_mailbox.folders, folder_id)?;
+
+    service_filled_mailbox
+        .messages
+        .iter()
+        .filter(|message| message.folder_id == folder_id)
+        .map(|message| {
+            validate_mailbox_message(message)?;
+            Ok(SharedMailboxMessageSummary {
+                service_id: service_id.to_owned(),
+                account_id: account_id.to_owned(),
+                folder_id: message.folder_id.clone(),
+                message_id: message.message_id.clone(),
+                subject: message.subject.clone(),
+                time: message.time,
+                sender: message.sender.clone(),
+            })
+        })
+        .collect()
+}
+
+pub fn open_shared_mailbox_message(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+    folder_id: &str,
+    message_id: &str,
+    service_filled_mailbox: &MailboxReaderSnapshot,
+) -> Result<SharedMailboxMessage, String> {
+    validate_mailbox_reader_binding(owner_osl_user_id, service_id, account_id)?;
+    validate_mailbox_folders(&service_filled_mailbox.folders)?;
+    ensure_mailbox_folder_exists(&service_filled_mailbox.folders, folder_id)?;
+    validate_mailbox_text(message_id, "mailbox message id", 180)?;
+
+    let mut matches = service_filled_mailbox
+        .messages
+        .iter()
+        .filter(|message| message.folder_id == folder_id && message.message_id == message_id);
+    let Some(message) = matches.next() else {
+        return Err("mailbox message not found".to_owned());
+    };
+    if matches.next().is_some() {
+        return Err("mailbox message is duplicated".to_owned());
+    }
+    validate_mailbox_message(message)?;
+    Ok(SharedMailboxMessage {
+        service_id: service_id.to_owned(),
+        account_id: account_id.to_owned(),
+        folder_id: message.folder_id.clone(),
+        message_id: message.message_id.clone(),
+        subject: message.subject.clone(),
+        time: message.time,
+        sender: message.sender.clone(),
+        body: message.body.clone(),
+    })
+}
+
+pub fn mail_message_is_owned_by_signed_in_address(
+    signed_in_address: &str,
+    message: &VisibleMailMessage,
+) -> Result<bool, MailOwnerCheckError> {
+    let sender = message
+        .sender_address
+        .as_deref()
+        .map(str::trim)
+        .filter(|sender| !sender.is_empty())
+        .ok_or(MailOwnerCheckError::SenderAddressUnreadable)?;
+    Ok(sender.eq_ignore_ascii_case(signed_in_address.trim()))
+}
+
+pub fn read_outlook_web_scrub_mailbox(
+    owner_osl_user_id: &str,
+    account_id: &str,
+    signed_in_address: &str,
+    service_filled_mailbox: &MailboxReaderSnapshot,
+) -> Result<OutlookWebScrubMailboxRead, String> {
+    let folders = read_shared_mailbox_folders(
+        owner_osl_user_id,
+        "outlook",
+        account_id,
+        service_filled_mailbox,
+    )?;
+    let sent_items = read_shared_mailbox_messages(
+        owner_osl_user_id,
+        "outlook",
+        account_id,
+        "Sent Items",
+        service_filled_mailbox,
+    )?;
+    let inbox = read_shared_mailbox_messages(
+        owner_osl_user_id,
+        "outlook",
+        account_id,
+        "Inbox",
+        service_filled_mailbox,
+    )?;
+
+    Ok(OutlookWebScrubMailboxRead {
+        folders,
+        sent_items: outlook_web_scrub_summaries(signed_in_address, sent_items)?,
+        inbox: outlook_web_scrub_summaries(signed_in_address, inbox)?,
+    })
+}
+
+fn outlook_web_scrub_summaries(
+    signed_in_address: &str,
+    messages: Vec<SharedMailboxMessageSummary>,
+) -> Result<Vec<OutlookWebScrubMessageSummary>, String> {
+    messages
+        .into_iter()
+        .map(|message| {
+            let owned = mail_message_is_owned_by_signed_in_address(
+                signed_in_address,
+                &VisibleMailMessage {
+                    message_id: message.message_id.clone(),
+                    mailbox: message.folder_id.clone(),
+                    sender_address: Some(message.sender.clone()),
+                },
+            )
+            .map_err(|error| error.reason().to_owned())?;
+            Ok(OutlookWebScrubMessageSummary {
+                message_id: message.message_id,
+                folder_id: message.folder_id,
+                subject: message.subject,
+                time: message.time,
+                sender: message.sender,
+                owner_label: if owned {
+                    "yours".to_owned()
+                } else {
+                    "not_yours".to_owned()
+                },
+            })
+        })
+        .collect()
+}
+
 pub fn service_kind_from_id(service_id: &str) -> Option<ServiceKind> {
     Some(match service_id {
         "discord" => ServiceKind::Discord,
@@ -337,6 +645,87 @@ fn valid_account_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+fn validate_mailbox_reader_binding(
+    owner_osl_user_id: &str,
+    service_id: &str,
+    account_id: &str,
+) -> Result<(), String> {
+    validate_owner_osl_user_id(owner_osl_user_id)?;
+    if !valid_account_id(account_id) {
+        return Err("mailbox account is invalid".to_owned());
+    }
+    validate_mail_service_id(service_id)
+}
+
+fn validate_mail_service_id(service_id: &str) -> Result<(), String> {
+    match service_id {
+        "email" | "gmail" | "outlook" | "proton" | "tuta" | "yahoo" | "aol" | "gmx"
+        | "maildotcom" | "icloud" => Ok(()),
+        _ => Err("unknown mail service".to_owned()),
+    }
+}
+
+fn validate_mailbox_folders(folders: &[MailboxFolderCandidate]) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for folder in folders {
+        validate_mailbox_text(&folder.folder_id, "mailbox folder id", 128)?;
+        validate_mailbox_text(&folder.label, "mailbox folder label", 128)?;
+        if !seen.insert(folder.folder_id.as_str()) {
+            return Err("mailbox folder is duplicated".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn ensure_mailbox_folder_exists(
+    folders: &[MailboxFolderCandidate],
+    folder_id: &str,
+) -> Result<(), String> {
+    validate_mailbox_text(folder_id, "mailbox folder id", 128)?;
+    if folders.iter().any(|folder| folder.folder_id == folder_id) {
+        Ok(())
+    } else {
+        Err("mailbox folder not found".to_owned())
+    }
+}
+
+fn validate_mailbox_message(message: &MailboxMessageCandidate) -> Result<(), String> {
+    validate_mailbox_text(&message.folder_id, "mailbox folder id", 128)?;
+    validate_mailbox_text(&message.message_id, "mailbox message id", 180)?;
+    validate_mailbox_text(&message.subject, "mailbox message subject", 512)?;
+    validate_mailbox_text(&message.sender, "mailbox message sender", 254)?;
+    validate_mailbox_body(&message.body)?;
+    if message.time > 0 {
+        Ok(())
+    } else {
+        Err("mailbox message time is invalid".to_owned())
+    }
+}
+
+fn validate_mailbox_text(value: &str, label: &str, max_bytes: usize) -> Result<(), String> {
+    if value.trim() == value
+        && !value.is_empty()
+        && value.len() <= max_bytes
+        && !value.chars().any(|character| character.is_control())
+    {
+        Ok(())
+    } else {
+        Err(format!("{label} is invalid"))
+    }
+}
+
+fn validate_mailbox_body(value: &str) -> Result<(), String> {
+    if value.len() <= 256 * 1024
+        && value
+            .chars()
+            .all(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'))
+    {
+        Ok(())
+    } else {
+        Err("mailbox message body is invalid".to_owned())
+    }
 }
 
 fn load_protected_registry(path: &Path) -> Result<Vec<AccountRecord>, String> {
@@ -798,6 +1187,151 @@ mod tests {
             .filter(|service| service.id != ServiceKind::Signal)
             .all(|service| service.accounts.is_empty()));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn task_3050_outlook_web_shared_mailbox_reader_returns_seeded_scrub_mailbox() {
+        let owner = "osl_task_3050_owner";
+        let account = "acct-task-3050-outlook";
+        let signed_in = "owner@outlook.example";
+        let mailbox = MailboxReaderSnapshot::new(
+            [
+                MailboxFolderCandidate::new("Inbox", "Inbox"),
+                MailboxFolderCandidate::new("Sent Items", "Sent Items"),
+                MailboxFolderCandidate::new("Archive", "Archive"),
+                MailboxFolderCandidate::new("Deleted Items", "Deleted Items"),
+            ],
+            [
+                MailboxMessageCandidate::new(
+                    "Sent Items",
+                    "sent-task-3050-001",
+                    "SCRUB-OW-MINE",
+                    1_786_017_600_000,
+                    signed_in,
+                    "Outlook web message that belongs to the signed-in mailbox.",
+                ),
+                MailboxMessageCandidate::new(
+                    "Sent Items",
+                    "sent-task-3050-002",
+                    "SCRUB-OW-SENT-SECOND",
+                    1_786_021_200_000,
+                    signed_in.to_ascii_uppercase(),
+                    "Second sent Outlook web message.",
+                ),
+                MailboxMessageCandidate::new(
+                    "Sent Items",
+                    "sent-task-3050-003",
+                    "SCRUB-OW-SENT-THIRD",
+                    1_786_024_800_000,
+                    "Owner@Outlook.Example",
+                    "Third sent Outlook web message.",
+                ),
+                MailboxMessageCandidate::new(
+                    "Inbox",
+                    "inbox-task-3050-001",
+                    "SCRUB-OW-INBOX-FIRST",
+                    1_786_028_400_000,
+                    "friend-one@example.test",
+                    "Inbox negative control one.",
+                ),
+                MailboxMessageCandidate::new(
+                    "Inbox",
+                    "inbox-task-3050-002",
+                    "SCRUB-OW-INBOX-SECOND",
+                    1_786_032_000_000,
+                    "alerts@example.test",
+                    "Inbox negative control two.",
+                ),
+            ],
+        );
+
+        let read = read_outlook_web_scrub_mailbox(owner, account, signed_in, &mailbox)
+            .expect("seeded Outlook web mailbox reads through the shared mailbox reader");
+        println!("TASK3050_DIRECT_READER=outlook_web_shared_mailbox_reader");
+        println!("TASK3050_FOLDER_COUNT={}", read.folders.len());
+        for folder in &read.folders {
+            println!(
+                "TASK3050_FOLDER id=\"{}\" label=\"{}\" service={} account={}",
+                folder.folder_id, folder.label, folder.service_id, folder.account_id
+            );
+        }
+        println!(
+            "TASK3050_SENT_ITEMS_MESSAGE_COUNT={}",
+            read.sent_items.len()
+        );
+        for message in &read.sent_items {
+            println!(
+                "TASK3050_SENT_ITEM id={} subject=\"{}\" time={} sender=\"{}\" called={}",
+                message.message_id,
+                message.subject,
+                message.time,
+                message.sender,
+                message.owner_label
+            );
+        }
+        for message in &read.inbox {
+            println!(
+                "TASK3050_INBOX_NEGATIVE id={} subject=\"{}\" sender=\"{}\" called={}",
+                message.message_id, message.subject, message.sender, message.owner_label
+            );
+        }
+        let marked = read
+            .sent_items
+            .iter()
+            .find(|message| message.subject == "SCRUB-OW-MINE")
+            .expect("seeded marker is present in Sent Items");
+        println!(
+            "TASK3050_MARKED marker=SCRUB-OW-MINE called={}",
+            marked.owner_label
+        );
+        println!(
+            "TASK3050_INBOX_NOT_YOURS_COUNT={}",
+            read.inbox
+                .iter()
+                .filter(|message| message.owner_label == "not_yours")
+                .count()
+        );
+
+        assert_eq!(read.folders.len(), 4);
+        assert_eq!(
+            read.folders
+                .iter()
+                .map(|folder| folder.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Inbox", "Sent Items", "Archive", "Deleted Items"]
+        );
+        assert_eq!(read.sent_items.len(), 3);
+        assert_eq!(
+            read.sent_items
+                .iter()
+                .map(|message| {
+                    (
+                        message.subject.as_str(),
+                        message.time,
+                        message.sender.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                ("SCRUB-OW-MINE", 1_786_017_600_000, "owner@outlook.example",),
+                (
+                    "SCRUB-OW-SENT-SECOND",
+                    1_786_021_200_000,
+                    "OWNER@OUTLOOK.EXAMPLE",
+                ),
+                (
+                    "SCRUB-OW-SENT-THIRD",
+                    1_786_024_800_000,
+                    "Owner@Outlook.Example",
+                ),
+            ]
+        );
+        assert_eq!(marked.owner_label, "yours");
+        assert_eq!(read.inbox.len(), 2);
+        assert!(read
+            .inbox
+            .iter()
+            .all(|message| message.owner_label == "not_yours"));
     }
 
     #[test]
