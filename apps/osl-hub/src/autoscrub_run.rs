@@ -1303,6 +1303,93 @@ pub struct AutoScrubRunSummary {
     pub last_outcome: AutoScrubRunOutcome,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoScrubServiceConnectionEventKind {
+    Logout,
+    HumanCheck,
+    Suspension,
+}
+
+impl AutoScrubServiceConnectionEventKind {
+    fn stopped_state(self) -> ServiceConnectionState {
+        match self {
+            Self::Logout => ServiceConnectionState::StoppedOnLogout,
+            Self::HumanCheck => ServiceConnectionState::StoppedOnHumanCheck,
+            Self::Suspension => ServiceConnectionState::StoppedOnSuspension,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Logout => "logout",
+            Self::HumanCheck => "human_check",
+            Self::Suspension => "suspension",
+        }
+    }
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutoScrubServiceConnectionEvent {
+    pub service_id: ServiceKind,
+    pub account_id: String,
+    pub event: AutoScrubServiceConnectionEventKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServiceConnectionState {
+    Running,
+    StoppedOnLogout,
+    StoppedOnHumanCheck,
+    StoppedOnSuspension,
+}
+
+impl ServiceConnectionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::StoppedOnLogout => "stopped_on_logout",
+            Self::StoppedOnHumanCheck => "stopped_on_human_check",
+            Self::StoppedOnSuspension => "stopped_on_suspension",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServiceConnectionLogAction {
+    RecordState,
+}
+
+impl ServiceConnectionLogAction {
+    fn is_credential_action(self) -> bool {
+        false
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServiceConnectionLogEntry {
+    pub run_id: String,
+    pub service_id: ServiceKind,
+    pub event: AutoScrubServiceConnectionEventKind,
+    pub state: ServiceConnectionState,
+    action: ServiceConnectionLogAction,
+}
+
+impl ServiceConnectionLogEntry {
+    pub fn event_label(&self) -> &'static str {
+        self.event.as_str()
+    }
+
+    pub fn state_label(&self) -> &'static str {
+        self.state.as_str()
+    }
+
+    pub fn is_credential_action(&self) -> bool {
+        self.action.is_credential_action()
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoScrubQuitGuardEstimate {
@@ -1342,8 +1429,16 @@ pub struct AutoScrubReviewedRunRequest {
 #[derive(Default)]
 struct AutoScrubRunStore {
     next_sequence: u64,
-    runs: Vec<AutoScrubRunSummary>,
+    runs: Vec<AutoScrubRunRecord>,
+    service_connection_log: Vec<ServiceConnectionLogEntry>,
     global_stop_requested: bool,
+}
+
+#[derive(Clone, Debug)]
+struct AutoScrubRunRecord {
+    account_id: String,
+    service_connection_state: ServiceConnectionState,
+    summary: AutoScrubRunSummary,
 }
 
 static RUN_STORE: OnceLock<Mutex<AutoScrubRunStore>> = OnceLock::new();
@@ -1385,6 +1480,18 @@ pub fn request_global_stop(state: &AppState) -> Result<AutoScrubFleetStatus, Str
     Ok(store.request_global_stop())
 }
 
+pub fn record_service_connection_event(
+    state: &AppState,
+    event: AutoScrubServiceConnectionEvent,
+) -> Result<AutoScrubFleetStatus, String> {
+    require_pro(state)?;
+    validate_service_connection_event(&event)?;
+    let mut store = run_store()
+        .lock()
+        .map_err(|_| "AutoScrub run store is unavailable".to_owned())?;
+    store.record_service_connection_event(event)
+}
+
 fn require_pro(state: &AppState) -> Result<(), String> {
     if ipc::tier_gate::is_paid_equivalent(state) {
         Ok(())
@@ -1402,15 +1509,19 @@ impl AutoScrubRunStore {
             return Err("AutoScrub cannot open more than two reviewed runs".to_owned());
         }
         self.next_sequence = self.next_sequence.saturating_add(1);
-        self.runs.push(AutoScrubRunSummary {
-            run_id: format!("autoscrub-run-{:04}", self.next_sequence),
-            service_id: request.service_id,
-            phase: AutoScrubRunPhase::Running,
-            reviewed_item_count: request.reviewed_item_count,
-            remaining_item_count: request.reviewed_item_count,
-            stop_requested: false,
-            mutation_allowed: false,
-            last_outcome: AutoScrubRunOutcome::Held,
+        self.runs.push(AutoScrubRunRecord {
+            account_id: request.account_id,
+            service_connection_state: ServiceConnectionState::Running,
+            summary: AutoScrubRunSummary {
+                run_id: format!("autoscrub-run-{:04}", self.next_sequence),
+                service_id: request.service_id,
+                phase: AutoScrubRunPhase::Running,
+                reviewed_item_count: request.reviewed_item_count,
+                remaining_item_count: request.reviewed_item_count,
+                stop_requested: false,
+                mutation_allowed: false,
+                last_outcome: AutoScrubRunOutcome::Held,
+            },
         });
         Ok(self.fleet())
     }
@@ -1419,14 +1530,41 @@ impl AutoScrubRunStore {
         self.global_stop_requested = true;
         for run in &mut self.runs {
             if matches!(
-                run.phase,
+                run.summary.phase,
                 AutoScrubRunPhase::Running | AutoScrubRunPhase::ReviewRequired
             ) {
-                run.phase = AutoScrubRunPhase::Stopping;
+                run.summary.phase = AutoScrubRunPhase::Stopping;
             }
-            run.stop_requested = true;
+            run.summary.stop_requested = true;
         }
         self.fleet()
+    }
+
+    fn record_service_connection_event(
+        &mut self,
+        event: AutoScrubServiceConnectionEvent,
+    ) -> Result<AutoScrubFleetStatus, String> {
+        let Some(run) = self.runs.iter_mut().find(|run| {
+            run.summary.service_id == event.service_id && run.account_id == event.account_id
+        }) else {
+            return Err(
+                "AutoScrub service connection event did not match an open account".to_owned(),
+            );
+        };
+        let state = event.event.stopped_state();
+        run.service_connection_state = state;
+        run.summary.phase = AutoScrubRunPhase::Blocked;
+        run.summary.stop_requested = true;
+        run.summary.mutation_allowed = false;
+        run.summary.last_outcome = AutoScrubRunOutcome::Held;
+        self.service_connection_log.push(ServiceConnectionLogEntry {
+            run_id: run.summary.run_id.clone(),
+            service_id: event.service_id,
+            event: event.event,
+            state,
+            action: ServiceConnectionLogAction::RecordState,
+        });
+        Ok(self.fleet())
     }
 
     fn fleet(&self) -> AutoScrubFleetStatus {
@@ -1437,7 +1575,7 @@ impl AutoScrubRunStore {
             global_stop_requested: self.global_stop_requested,
             unattended_execution_allowed: false,
             quit_guard: self.quit_guard(open_run_count),
-            runs: self.runs.clone(),
+            runs: self.runs.iter().map(|run| run.summary.clone()).collect(),
         }
     }
 
@@ -1446,7 +1584,7 @@ impl AutoScrubRunStore {
             .iter()
             .filter(|run| {
                 matches!(
-                    run.phase,
+                    run.summary.phase,
                     AutoScrubRunPhase::ReviewRequired
                         | AutoScrubRunPhase::Running
                         | AutoScrubRunPhase::Stopping
@@ -1479,12 +1617,21 @@ impl AutoScrubRunStore {
     }
 }
 
-fn honest_stop_estimate_seconds(runs: &[AutoScrubRunSummary]) -> u32 {
+fn honest_stop_estimate_seconds(runs: &[AutoScrubRunRecord]) -> u32 {
     runs.iter()
-        .filter(|run| run.stop_requested)
-        .map(|run| run.remaining_item_count.max(1).saturating_mul(30))
+        .filter(|run| run.summary.stop_requested)
+        .map(|run| run.summary.remaining_item_count.max(1).saturating_mul(30))
         .max()
         .unwrap_or(30)
+}
+
+fn validate_service_connection_event(
+    event: &AutoScrubServiceConnectionEvent,
+) -> Result<(), String> {
+    if !valid_opaque(&event.account_id, MAX_ACCOUNT_ID_BYTES) {
+        return Err("AutoScrub service connection event is invalid".to_owned());
+    }
+    Ok(())
 }
 
 fn validate_reviewed_run_request(request: &AutoScrubReviewedRunRequest) -> Result<(), String> {
@@ -2306,9 +2453,17 @@ mod production_fleet_tests {
         service_id: ServiceKind,
         reviewed_item_count: u32,
     ) -> AutoScrubReviewedRunRequest {
+        reviewed_request_for(service_id, "acct-discord-1", reviewed_item_count)
+    }
+
+    fn reviewed_request_for(
+        service_id: ServiceKind,
+        account_id: &str,
+        reviewed_item_count: u32,
+    ) -> AutoScrubReviewedRunRequest {
         AutoScrubReviewedRunRequest {
             service_id,
-            account_id: "acct-discord-1".to_owned(),
+            account_id: account_id.to_owned(),
             review_token: format!("review-token-{reviewed_item_count}"),
             plan_digest: "a".repeat(64),
             reviewed_item_count,
@@ -2361,6 +2516,99 @@ mod production_fleet_tests {
             r#"{"serviceId":"discord","accountId":"acct-1","reviewToken":"review-1","planDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewedItemCount":1}"#,
         )
         .is_err());
+    }
+
+    #[test]
+    fn task1440_logout_human_check_and_suspension_events_record_stop_state_without_credential_actions(
+    ) {
+        let _guard = crate::global_keystore_test_lock();
+        let state = state_with_license(LicenseState::Paid, "ACTIVE");
+        let fixtures = [
+            (
+                "acct-logout",
+                AutoScrubServiceConnectionEventKind::Logout,
+                ServiceConnectionState::StoppedOnLogout,
+            ),
+            (
+                "acct-human-check",
+                AutoScrubServiceConnectionEventKind::HumanCheck,
+                ServiceConnectionState::StoppedOnHumanCheck,
+            ),
+            (
+                "acct-suspension",
+                AutoScrubServiceConnectionEventKind::Suspension,
+                ServiceConnectionState::StoppedOnSuspension,
+            ),
+        ];
+        let mut states = Vec::new();
+        let mut credential_action_count = 0;
+
+        for forbidden_field in ["password", "code", "check"] {
+            let mut raw = serde_json::json!({
+                "serviceId": "discord",
+                "accountId": "acct-forbidden-credential-action",
+                "event": "logout",
+            });
+            raw[forbidden_field] = serde_json::json!("must-not-be-accepted");
+            assert!(
+                serde_json::from_value::<AutoScrubServiceConnectionEvent>(raw).is_err(),
+                "service connection events must not accept {forbidden_field} fields"
+            );
+        }
+
+        for (index, (account_id, event, expected_state)) in fixtures.iter().enumerate() {
+            reset_run_store_for_test();
+            start_reviewed_run(
+                &state,
+                reviewed_request_for(ServiceKind::Discord, account_id, (index + 1) as u32),
+            )
+            .expect("fixture AutoScrub run opens");
+            let fleet = record_service_connection_event(
+                &state,
+                AutoScrubServiceConnectionEvent {
+                    service_id: ServiceKind::Discord,
+                    account_id: (*account_id).to_owned(),
+                    event: *event,
+                },
+            )
+            .expect("fixture service connection event records");
+            let run = fleet
+                .runs
+                .first()
+                .expect("stopped account remains visible in fleet");
+            assert_eq!(run.service_id, ServiceKind::Discord);
+            assert_eq!(run.phase, AutoScrubRunPhase::Blocked);
+            assert!(run.stop_requested);
+            assert!(!run.mutation_allowed);
+            assert_eq!(expected_state.as_str(), event.stopped_state().as_str());
+
+            let store = run_store().lock().expect("AutoScrub test run store lock");
+            assert_eq!(store.service_connection_log.len(), 1);
+            let entry = &store.service_connection_log[0];
+            assert_eq!(entry.event, *event);
+            assert_eq!(entry.state, *expected_state);
+            states.push(format!("{}:{}", entry.event_label(), entry.state_label()));
+            credential_action_count += store
+                .service_connection_log
+                .iter()
+                .filter(|entry| entry.is_credential_action())
+                .count();
+            assert!(store.runs.iter().all(|run| !run.summary.mutation_allowed
+                && matches!(run.summary.phase, AutoScrubRunPhase::Blocked)));
+        }
+
+        assert_eq!(
+            states,
+            vec![
+                "logout:stopped_on_logout",
+                "human_check:stopped_on_human_check",
+                "suspension:stopped_on_suspension",
+            ]
+        );
+        assert_eq!(credential_action_count, 0);
+
+        println!("task1440_fixture_states={}", states.join(","));
+        println!("task1440_credential_action_count={credential_action_count}");
     }
 
     #[test]
