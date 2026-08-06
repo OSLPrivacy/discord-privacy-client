@@ -840,6 +840,8 @@ mod tests {
         "remove_hub_friend",
         "list_hub_people",
         "set_hub_friend_nickname",
+        "get_hub_friend_future_account_auto_whitelist",
+        "set_hub_friend_future_account_auto_whitelist",
         "set_active_hub_friend_permission",
         "set_active_hub_friend_reach",
         "revoke_active_hub_friend_scope",

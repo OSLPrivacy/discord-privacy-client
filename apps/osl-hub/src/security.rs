@@ -138,6 +138,14 @@ pub struct PersonDto {
     pub reach_narrowed_scopes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FriendFutureAccountAutoWhitelistDto {
+    pub person_id: String,
+    pub enabled: bool,
+    pub result: &'static str,
+}
+
 /// A local-only description of one approved encryption scope. It deliberately
 /// contains no service or account handle: current friend codes do not prove
 /// either relationship, so OSL must not infer one from a conversation id.
@@ -441,6 +449,8 @@ struct PersonMetadata {
     pending_ed25519_public: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_key_bundle: Option<FriendCodeUnsigned>,
+    #[serde(default)]
+    auto_whitelist_future_accounts: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -822,6 +832,7 @@ pub fn add_friend_code(
             safety_number_verified: false,
             pending_ed25519_public: None,
             pending_key_bundle: None,
+            auto_whitelist_future_accounts: false,
         },
     );
     if let Err(error) = write_encrypted_json(&dir.join(PEOPLE_FILE), &people) {
@@ -1106,6 +1117,46 @@ pub fn set_friend_alias(
     let updated = metadata.clone();
     write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
     person_dto(core, &person_id, &updated, &load_security_preferences()?)
+}
+
+pub fn query_friend_future_account_auto_whitelist(
+    person_id: String,
+) -> Result<FriendFutureAccountAutoWhitelistDto, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let people = load_people_file(&config_dir()?)?;
+    let metadata = people
+        .people
+        .get(&person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    Ok(friend_future_account_auto_whitelist_dto(
+        &person_id,
+        metadata.auto_whitelist_future_accounts,
+    ))
+}
+
+pub fn set_friend_future_account_auto_whitelist(
+    security: &HubSecurityState,
+    person_id: String,
+    enabled: bool,
+) -> Result<FriendFutureAccountAutoWhitelistDto, String> {
+    require_unlocked()?;
+    validate_person_id(&person_id)?;
+    let _transition = security
+        .transition
+        .lock()
+        .map_err(|_| "OSL People state is unavailable".to_owned())?;
+    let dir = config_dir()?;
+    let mut people = load_people_file(&dir)?;
+    let metadata = people
+        .people
+        .get_mut(&person_id)
+        .ok_or_else(|| "OSL friend is unknown".to_owned())?;
+    metadata.auto_whitelist_future_accounts = enabled;
+    write_encrypted_json(&dir.join(PEOPLE_FILE), &people)?;
+    Ok(friend_future_account_auto_whitelist_dto(
+        &person_id, enabled,
+    ))
 }
 
 /// Grant or revoke one friend's approval for exactly one scope.
@@ -3767,6 +3818,17 @@ fn manual_approved_scopes_for_person(
         .collect()
 }
 
+fn friend_future_account_auto_whitelist_dto(
+    person_id: &str,
+    enabled: bool,
+) -> FriendFutureAccountAutoWhitelistDto {
+    FriendFutureAccountAutoWhitelistDto {
+        person_id: person_id.to_owned(),
+        enabled,
+        result: if enabled { "on" } else { "off" },
+    }
+}
+
 fn person_dto(
     core: &HubCoreState,
     person_id: &str,
@@ -5654,6 +5716,38 @@ mod tests {
         assert!(normalise_alias(Some(&"a".repeat(MAX_ALIAS_BYTES + 1))).is_err());
         assert!(normalise_alias(Some("Rose\u{202e}hidden")).is_err());
         assert!(normalise_alias(Some("Rose\nOther")).is_err());
+    }
+
+    #[test]
+    fn task0263_future_account_auto_whitelist_direct_query_returns_on_and_off_for_one_friend() {
+        let harness = FileBackedSecurityHarness::new("task0263-future-account-auto-whitelist");
+        let security = HubSecurityState::default();
+        let (person_id, metadata, _) = test_friend(26);
+        write_people(harness.path(), &person_id, metadata);
+
+        let on = set_friend_future_account_auto_whitelist(&security, person_id.clone(), true)
+            .expect("future-account auto-whitelist turns on");
+        let queried_on = query_friend_future_account_auto_whitelist(person_id.clone())
+            .expect("direct query returns saved on state");
+        println!(
+            "TASK0263 direct query friend={} future_account_auto_whitelist={}",
+            queried_on.person_id, queried_on.result
+        );
+        assert!(on.enabled);
+        assert_eq!(queried_on.person_id, person_id);
+        assert_eq!(queried_on.result, "on");
+
+        let off = set_friend_future_account_auto_whitelist(&security, person_id.clone(), false)
+            .expect("future-account auto-whitelist turns off");
+        let queried_off = query_friend_future_account_auto_whitelist(person_id.clone())
+            .expect("direct query returns saved off state");
+        println!(
+            "TASK0263 direct query friend={} future_account_auto_whitelist={}",
+            queried_off.person_id, queried_off.result
+        );
+        assert!(!off.enabled);
+        assert_eq!(queried_off.person_id, person_id);
+        assert_eq!(queried_off.result, "off");
     }
 
     #[test]

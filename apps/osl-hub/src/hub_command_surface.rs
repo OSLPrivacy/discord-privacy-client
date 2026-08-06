@@ -652,6 +652,8 @@ macro_rules! hub_tauri_commands {
             remove_hub_friend,
             list_hub_people,
             set_hub_friend_nickname,
+            get_hub_friend_future_account_auto_whitelist,
+            set_hub_friend_future_account_auto_whitelist,
             set_active_hub_friend_permission,
             set_active_hub_friend_reach,
             revoke_active_hub_friend_scope,
@@ -1650,6 +1652,20 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             "list_bad_message_rules",
+        );
+    }
+
+    #[test]
+    fn future_account_auto_whitelist_commands_are_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_each_registration_surface_is_required(
+            &handlers,
+            &permissions,
+            &capability,
+            &[
+                "get_hub_friend_future_account_auto_whitelist",
+                "set_hub_friend_future_account_auto_whitelist",
+            ],
         );
     }
 

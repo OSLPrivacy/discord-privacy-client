@@ -88,8 +88,9 @@ use osl_privacy_hub::scrub_index::{
     ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
-    self, AddFriendResult, FriendCodeExport, HubRevocationStatusDto, HubScopeBurnResult,
-    HubSecurityState, PersonDto, RemoveFriendResult, ScopeSecurityDto,
+    self, AddFriendResult, FriendCodeExport, FriendFutureAccountAutoWhitelistDto,
+    HubRevocationStatusDto, HubScopeBurnResult, HubSecurityState, PersonDto, RemoveFriendResult,
+    ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -6237,6 +6238,26 @@ async fn set_hub_friend_nickname(
 ) -> Result<PersonDto, String> {
     let _session = session.transition.lock().await;
     security::set_friend_alias(&core, &security_state, person_id, nickname)
+}
+
+#[tauri::command]
+async fn get_hub_friend_future_account_auto_whitelist(
+    session: State<'_, HubAccountSessionState>,
+    person_id: String,
+) -> Result<FriendFutureAccountAutoWhitelistDto, String> {
+    let _session = session.transition.lock().await;
+    security::query_friend_future_account_auto_whitelist(person_id)
+}
+
+#[tauri::command]
+async fn set_hub_friend_future_account_auto_whitelist(
+    security_state: State<'_, HubSecurityState>,
+    session: State<'_, HubAccountSessionState>,
+    person_id: String,
+    enabled: bool,
+) -> Result<FriendFutureAccountAutoWhitelistDto, String> {
+    let _session = session.transition.lock().await;
+    security::set_friend_future_account_auto_whitelist(&security_state, person_id, enabled)
 }
 
 #[tauri::command]

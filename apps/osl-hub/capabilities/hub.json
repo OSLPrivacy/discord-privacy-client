@@ -153,6 +153,8 @@
     "allow-remove-hub-friend",
     "allow-list-hub-people",
     "allow-set-hub-friend-nickname",
+    "allow-get-hub-friend-future-account-auto-whitelist",
+    "allow-set-hub-friend-future-account-auto-whitelist",
     "allow-set-active-hub-friend-permission",
     "allow-set-active-hub-friend-reach",
     "allow-revoke-active-hub-friend-scope",

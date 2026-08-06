@@ -774,6 +774,16 @@ description = "Set or clear a bounded nickname in encrypted device-local People 
 commands.allow = ["set_hub_friend_nickname"]
 
 [[permission]]
+identifier = "allow-get-hub-friend-future-account-auto-whitelist"
+description = "Read one friend's encrypted local preference for automatically allowing accounts added later."
+commands.allow = ["get_hub_friend_future_account_auto_whitelist"]
+
+[[permission]]
+identifier = "allow-set-hub-friend-future-account-auto-whitelist"
+description = "Set one friend's encrypted local preference for automatically allowing accounts added later."
+commands.allow = ["set_hub_friend_future_account_auto_whitelist"]
+
+[[permission]]
 identifier = "allow-set-active-hub-friend-permission"
 description = "Grant or revoke one verified person's permission for only the exact active hosted context."
 commands.allow = ["set_active_hub_friend_permission"]
