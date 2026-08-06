@@ -1482,6 +1482,235 @@ mod tests {
         let _ = std::fs::remove_dir_all(local);
     }
 
+    #[test]
+    fn task_3186_uninstall_without_backup_removes_the_counted_fixture() {
+        let _serial = crate::global_keystore_test_lock();
+        let config = temp_root("task-3186-config");
+        let local = temp_root("task-3186-local");
+        let core_dir = config.join(HUB_CORE_DIR);
+        let identity_dir = core_dir.join("hub-identities").join("owner");
+        let people_dir = core_dir.join("people");
+        let messages_dir = core_dir.join("messages");
+        let downloads_dir = local.join("peer-attachment-staging").join("downloads");
+        let identity_name = "task-3186-owner-identity";
+
+        std::fs::create_dir_all(&identity_dir).unwrap();
+        std::fs::create_dir_all(&people_dir).unwrap();
+        std::fs::create_dir_all(&messages_dir).unwrap();
+        std::fs::create_dir_all(&downloads_dir).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&local).unwrap();
+        keystore::set_base_dir_override(Some(core_dir.clone()));
+        ipc::main_password::set_file_storage_key(Some([0x31; 32]));
+
+        let core = crate::core_bridge::HubCoreState::default();
+        *core.osl.identity.lock().unwrap() = Some(keystore::identity_from_entropy(
+            [0x86; 16],
+            identity_name.to_owned(),
+        ));
+
+        std::fs::write(
+            identity_dir.join("identity.json"),
+            format!(r#"{{"user_id":"{identity_name}"}}"#),
+        )
+        .unwrap();
+        for index in 0..3 {
+            std::fs::write(
+                people_dir.join(format!("friend-{index}.json")),
+                format!(r#"{{"friend":"task-3186-friend-{index}"}}"#),
+            )
+            .unwrap();
+        }
+        for index in 0..10 {
+            std::fs::write(
+                messages_dir.join(format!("message-{index:02}.json")),
+                format!(r#"{{"message":"task-3186-message-{index:02}"}}"#),
+            )
+            .unwrap();
+        }
+        for index in 0..2 {
+            std::fs::write(
+                downloads_dir.join(format!("download-{index}.bin")),
+                format!("downloaded file {index}"),
+            )
+            .unwrap();
+        }
+        std::fs::write(config.join("service-registry.json"), br#"{"accounts":[1]}"#).unwrap();
+        std::fs::write(
+            config.join("service-scope-index.json"),
+            br#"{"scopes":[1]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            config.join("preview-preferences.json"),
+            br#"{"ready":true}"#,
+        )
+        .unwrap();
+
+        let before = task_3186_counts(&config, &local, identity_name);
+        task_3186_print_counts("before", &before);
+        assert_eq!(before.identity_records, 1);
+        assert_eq!(before.friend_records, 3);
+        assert_eq!(before.message_records, 10);
+        assert_eq!(before.downloaded_files, 2);
+        assert_eq!(before.service_registry_files, 1);
+        assert_eq!(before.service_scope_index_files, 1);
+        assert_eq!(before.preview_preference_files, 1);
+        assert_eq!(before.identity_name_file_search_matches, 1);
+
+        let wipe = KeyMaterialWipe {
+            evict_tpm_key: Box::new(|| KeyMaterialOutcome::Wiped),
+            purge_keyring_entry: Box::new(|| KeyMaterialOutcome::Wiped),
+        };
+        let report =
+            execute_full_hub_cleanup_with_key_material_wipe(&core, &config, &local, true, &wipe)
+                .expect("uninstall cleanup runs");
+        assert!(
+            report.local_cleanup_complete,
+            "uninstall without backup did not complete: {:?}",
+            report.failed_targets
+        );
+        assert!(report.failed_targets.is_empty());
+
+        let after = task_3186_counts(&config, &local, identity_name);
+        task_3186_print_counts("after", &after);
+        assert_eq!(after.identity_records, 0);
+        assert_eq!(after.friend_records, 0);
+        assert_eq!(after.message_records, 0);
+        assert_eq!(after.downloaded_files, 0);
+        assert_eq!(after.service_registry_files, 0);
+        assert_eq!(after.service_scope_index_files, 0);
+        assert_eq!(after.preview_preference_files, 0);
+        assert_eq!(after.identity_name_file_search_matches, 0);
+
+        println!("TASK3186 uninstall.keep_backup=false");
+        println!("TASK3186 cleanup.local_cleanup_complete=true");
+        println!(
+            "TASK3186 cleanup.removed_targets={}",
+            report.removed_targets.join(",")
+        );
+
+        ipc::main_password::set_file_storage_key(None);
+        keystore::set_active_account_dir(None);
+        keystore::set_base_dir_override(None);
+        let _ = std::fs::remove_dir_all(config);
+        let _ = std::fs::remove_dir_all(local);
+    }
+
+    struct Task3186Counts {
+        identity_records: usize,
+        friend_records: usize,
+        message_records: usize,
+        downloaded_files: usize,
+        service_registry_files: usize,
+        service_scope_index_files: usize,
+        preview_preference_files: usize,
+        identity_name_file_search_matches: usize,
+    }
+
+    fn task_3186_counts(config: &Path, local: &Path, identity_name: &str) -> Task3186Counts {
+        let core = config.join(HUB_CORE_DIR);
+        Task3186Counts {
+            identity_records: count_files_named(&core, "identity.json"),
+            friend_records: count_regular_files(&core.join("people")),
+            message_records: count_regular_files(&core.join("messages")),
+            downloaded_files: count_regular_files(
+                &local.join("peer-attachment-staging").join("downloads"),
+            ),
+            service_registry_files: usize::from(config.join("service-registry.json").is_file()),
+            service_scope_index_files: usize::from(
+                config.join("service-scope-index.json").is_file(),
+            ),
+            preview_preference_files: usize::from(
+                config.join("preview-preferences.json").is_file(),
+            ),
+            identity_name_file_search_matches: count_files_containing(config, identity_name)
+                + count_files_containing(local, identity_name),
+        }
+    }
+
+    fn task_3186_print_counts(label: &str, counts: &Task3186Counts) {
+        println!(
+            "TASK3186 {label}.identity_records={}",
+            counts.identity_records
+        );
+        println!("TASK3186 {label}.friend_records={}", counts.friend_records);
+        println!(
+            "TASK3186 {label}.message_records={}",
+            counts.message_records
+        );
+        println!(
+            "TASK3186 {label}.downloaded_files={}",
+            counts.downloaded_files
+        );
+        println!(
+            "TASK3186 {label}.service_registry_files={}",
+            counts.service_registry_files
+        );
+        println!(
+            "TASK3186 {label}.service_scope_index_files={}",
+            counts.service_scope_index_files
+        );
+        println!(
+            "TASK3186 {label}.preview_preference_files={}",
+            counts.preview_preference_files
+        );
+        println!(
+            "TASK3186 {label}.identity_name_file_search_matches={}",
+            counts.identity_name_file_search_matches
+        );
+    }
+
+    fn count_regular_files(path: &Path) -> usize {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return 0;
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+            .count()
+    }
+
+    fn count_files_named(path: &Path, wanted: &str) -> usize {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return 0;
+        };
+        let mut count = 0;
+        for entry in entries.filter_map(Result::ok) {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_file() {
+                if entry.file_name() == wanted {
+                    count += 1;
+                }
+            } else if kind.is_dir() {
+                count += count_files_named(&entry.path(), wanted);
+            }
+        }
+        count
+    }
+
+    fn count_files_containing(path: &Path, needle: &str) -> usize {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return 0;
+        };
+        let mut count = 0;
+        for entry in entries.filter_map(Result::ok) {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_file() {
+                if std::fs::read_to_string(entry.path()).is_ok_and(|text| text.contains(needle)) {
+                    count += 1;
+                }
+            } else if kind.is_dir() {
+                count += count_files_containing(&entry.path(), needle);
+            }
+        }
+        count
+    }
+
     /// `collect_identities` used to `break` at `MAX_IDENTITIES` without
     /// incrementing `unreadable`, so a 17th identity was never
     /// remote-unregistered, never counted, and the frontend's
