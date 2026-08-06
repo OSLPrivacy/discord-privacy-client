@@ -16690,16 +16690,25 @@ pub struct BurnScopeDataDto {
     pub channel_id: String,
 }
 
+fn channel_ids_for_server(state: &AppState, server_id: &str) -> Vec<String> {
+    let gl = state.guild_list.lock().expect("guild_list mutex poisoned");
+    gl.iter()
+        .find(|g| g.id == server_id)
+        .map(|g| g.channel_ids.clone())
+        .unwrap_or_default()
+}
+
 /// Destroy local message rows for the channel(s) covered by
 /// `scope`. Per spec 7d-FIX1 Task 3a + 7d-D Task 2:
 ///   - DM and server_channel_full scopes resolve to a single
 ///     channel_id and `DELETE FROM messages WHERE channel_id = ?`.
 ///   - gc_full (7d-D): scope_id IS the GC channel_id — same
 ///     single-channel DELETE as DM.
-///   - gc_per_user and server_full / server_full_per_user remain
-///     NOT implemented in this phase (they'd require either
-///     per-sender row filtering or enumerating multiple
-///     channel_ids); we return a not-implemented error string
+///   - server_full / server_full_per_user enumerate the current
+///     gateway-provided guild channel inventory and delete each
+///     channel in that server.
+///   - gc_per_user remains NOT implemented in this phase (it would
+///     require per-sender row filtering); we return a not-implemented error string
 ///     so the JS caller can surface it but the rest of the burn
 ///     flow keeps going.
 pub fn cmd_osl_burn_scope_data(
@@ -16729,11 +16738,38 @@ pub fn cmd_osl_burn_scope_data(
             ));
         }
         "server_full" | "server_full_per_user" => {
-            return Err(format!(
-                "OSL: burn_scope_data: server_full burn not yet implemented (scope_id={scope_id}) — \
-                 deferred, see 7d-D spec",
-                scope_id = crate::log_id::log_id(&scope_id)
-            ));
+            let server_id = server_id.as_deref().unwrap_or(scope_id.as_str());
+            let channel_ids = channel_ids_for_server(state, server_id);
+            if channel_ids.is_empty() {
+                return Err(format!(
+                    "OSL: burn_scope_data: server_full has no channel inventory (server_id={scope_id})",
+                    scope_id = crate::log_id::log_id(server_id)
+                ));
+            }
+            let rows = if let Some(store) = state
+                .message_store
+                .lock()
+                .expect("message_store mutex poisoned")
+                .as_ref()
+            {
+                let mut rows = 0usize;
+                for channel_id in &channel_ids {
+                    rows += store
+                        .delete_messages_in_channel(channel_id)
+                        .map_err(|e| format!("OSL: delete_messages_in_channel: {e}"))?;
+                }
+                rows
+            } else {
+                0
+            };
+            eprintln!(
+                "[OSL][burn] destroyed {rows} rows across {} channels for server {server_id}",
+                channel_ids.len()
+            );
+            return Ok(BurnScopeDataDto {
+                rows_destroyed: rows,
+                channel_id: server_id.to_string(),
+            });
         }
         other => {
             return Err(format!("OSL: burn_scope_data: unknown scope_kind={other}"));
