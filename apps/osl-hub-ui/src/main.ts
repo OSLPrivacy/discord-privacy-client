@@ -2913,6 +2913,16 @@ function previousSetupRoute(current: OnboardingRoute): OnboardingRoute {
   return onboardingRouteForBuild(previousOnboardingRoute(current, onboardingBranch) ?? "welcome");
 }
 
+async function saveSendingSetupDraft(): Promise<void> {
+  await saveOnboardingPreferences({
+    onboardingComplete: false,
+    setup,
+    showPlaintextPreview: true,
+    windowCaptureEnabled,
+    forwardSecrecyMode,
+  });
+}
+
 function bindOnboarding(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-onboarding]").forEach((button) => button.addEventListener("click", () => {
     onboardingRoute = onboardingRouteForBuild(button.dataset.onboarding as OnboardingRoute);
@@ -3117,20 +3127,24 @@ function bindOnboarding(): void {
     setup.placementMode = "atomic";
     setup.acceptedRisk = false;
     setup.acceptedRiskForMode = null;
+    void saveSendingSetupDraft().catch(() => undefined);
     render();
   }));
   document.querySelector<HTMLInputElement>("#accept-send-risk")?.addEventListener("change", (event) => {
     const accepted = (event.currentTarget as HTMLInputElement).checked;
     setup.acceptedRisk = accepted;
     setup.acceptedRiskForMode = accepted ? setup.sendMode : null;
+    void saveSendingSetupDraft().catch(() => undefined);
     render();
   });
   document.querySelector("#finish-onboarding")?.addEventListener("click", () => {
     if (onboardingRoute !== "sending") return;
     if (!canCompleteSetup(setup)) return;
     setup.placementMode = "atomic";
-    onboardingRoute = "cover";
-    render();
+    void saveSendingSetupDraft().then(() => {
+      onboardingRoute = "cover";
+      render();
+    }).catch(() => undefined);
   });
   document.querySelector("#continue-defaults-review")?.addEventListener("click", () => { onboardingRoute = "tor"; render(); });
   document.querySelectorAll<HTMLInputElement>('input[name="tor-route"]').forEach((input) => input.addEventListener("change", () => {
@@ -3192,6 +3206,7 @@ function bindOnboarding(): void {
     await setScreenshotProtection(windowCaptureEnabled).catch(() => false);
     screenshotProtectionEnabled = windowCaptureEnabled && captureProtectionEnforced();
     if (windowCaptureEnabled && !screenshotProtectionEnabled) showToast("Windows capture resistance is unavailable on this device");
+    await saveSendingSetupDraft().catch(() => undefined);
     render();
   });
   document.querySelector("#skip-mullvad")?.addEventListener("click", () => { onboardingRoute = "browser"; render(); void refreshBrowserImportReadiness(); });
@@ -10201,6 +10216,8 @@ export const __oslHubUiTest = {
     mullvadSetupNotice: string;
     ownedConfirmationKind: OwnedConfirmation["kind"] | null;
     ownedConfirmationPersonId: string | null;
+    setup: SetupState;
+    windowCaptureEnabled: boolean;
   } {
     return {
       route,
@@ -10218,6 +10235,8 @@ export const __oslHubUiTest = {
       ownedConfirmationPersonId: ownedConfirmation?.kind === "verifyFriend" || ownedConfirmation?.kind === "removeFriend"
         ? ownedConfirmation.personId
         : null,
+      setup: { ...setup },
+      windowCaptureEnabled,
     };
   },
 };
