@@ -76,6 +76,7 @@ use osl_privacy_hub::osl_mail::{self, OslMailState, OslMailStatus};
 use osl_privacy_hub::osl_profile::{self, HubProfileDto, HubProfileInput};
 use osl_privacy_hub::password_lifecycle::{
     self, HubIdentityCreationOwnerSignoff, HubIdentitySetupResult, HubMainPasswordSetupResult,
+    HubPasswordResetPhraseCheck,
 };
 use osl_privacy_hub::peer_attachment_io;
 use osl_privacy_hub::preferences::PreviewState;
@@ -1525,6 +1526,19 @@ async fn view_hub_recovery_phrase(current: String) -> Result<String, String> {
     })
     .await
     .map_err(|_| "OSL recovery phrase worker failed".to_string())?
+}
+
+#[tauri::command]
+async fn check_hub_password_reset_phrase(
+    app: tauri::AppHandle,
+    phrase: String,
+) -> Result<HubPasswordResetPhraseCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<HubCoreState>();
+        password_lifecycle::check_password_reset_phrase(&state, phrase)
+    })
+    .await
+    .map_err(|_| "OSL password reset phrase worker failed".to_string())?
 }
 
 #[tauri::command]
