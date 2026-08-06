@@ -86,6 +86,14 @@ class OslVmDiscordUiaRunnerStaticTests(unittest.TestCase):
             r"if\s*\(Test-Path[^\r\n]+\$resultTemporary[^)]*\)\s*\{[^}]*Terminal\s*=\s*\$true",
         )
 
+    def test_arm_carries_named_discord_qa_message_to_harness(self) -> None:
+        self.assertRegex(
+            self.arm,
+            r"\[ValidatePattern\('\^\[A-Z0-9\._-\]\{0,64\}\$'\)\]\s*\[\s*string\s*\]\$QaMessage",
+        )
+        self.assertRegex(self.arm, r"QaMessage\s+=\s+\$QaMessage")
+        self.assertRegex(self.arm, r"QaMessage\s+=\s+`\$request\.QaMessage")
+
     def test_d3_qualifies_discord_protected_send_tri_state(self) -> None:
         adapter = (Path(__file__).parents[1] / "apps" / "osl-hub" / "src" / "native_discord_adapter.rs").read_text(encoding="utf-8")
         self.assertRegex(

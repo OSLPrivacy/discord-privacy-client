@@ -38,6 +38,9 @@ param(
   [ValidateSet('On', 'Off')]
   [string]$Visibility = 'On',
 
+  [ValidatePattern('^[A-Z0-9._-]{0,64}$')]
+  [string]$QaMessage = '',
+
   [ValidateRange(10, 180)]
   [int]$TimeoutSeconds = 60
 )
@@ -112,6 +115,7 @@ $request = [ordered]@{
   SessionId = $SessionId
   CaseId = $CaseId
   Visibility = $Visibility
+  QaMessage = $QaMessage
   TimeoutSeconds = $TimeoutSeconds
   ResultPath = $resultPath
 }
@@ -135,6 +139,7 @@ try {
     SessionId = [int]`$request.SessionId
     CaseId = `$request.CaseId
     Visibility = `$request.Visibility
+    QaMessage = `$request.QaMessage
     TimeoutSeconds = [int]`$request.TimeoutSeconds
   }
   `$started = [DateTime]::UtcNow.ToString('o')

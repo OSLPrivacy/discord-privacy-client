@@ -279,6 +279,41 @@ class OslVmDiscordUiaHarnessStaticTests(unittest.TestCase):
         ):
             self.assertNotIn(label, self.source)
 
+    def test_one_person_discord_writes_are_guarded_to_deckard(self) -> None:
+        self.assertIn("$script:OnePersonDiscordQaConversation = 'deckard'", self.source)
+        self.assertIn("function Assert-CurrentOnePersonDiscordQaConversation", self.source)
+        self.assertIn("ConvertFrom-DiscordQaComposerName", self.source)
+
+        set_body = action_body(self.source, "SetDeterministic")
+        self.assertLess(
+            set_body.index("Assert-CurrentOnePersonDiscordQaConversation"),
+            set_body.index("Set-FreshValue"),
+        )
+        self.assertIn("Conversation=$target.Conversation", set_body)
+
+        send_body = action_body(self.source, "Send")
+        self.assertLess(
+            send_body.index("Assert-CurrentOnePersonDiscordQaConversation"),
+            send_body.index("Invoke-FreshControl 'Overlay'"),
+        )
+        self.assertIn("Conversation=$target.Conversation", send_body)
+
+        inbound_body = action_body(self.source, "InspectInbound")
+        self.assertLess(
+            inbound_body.index("Assert-CurrentOnePersonDiscordQaConversation"),
+            inbound_body.index("Get-ExactPlaintextSnapshot"),
+        )
+        self.assertIn("Conversation=$target.Conversation", inbound_body)
+        self.assertIn("PlacedCharacters = 0", self.source)
+
+    def test_one_person_discord_message_can_be_named_by_runner(self) -> None:
+        self.assertRegex(
+            self.source,
+            r"\[ValidatePattern\('\^\[A-Z0-9\._-\]\{0,64\}\$'\)\]\s*\[\s*string\s*\]\$QaMessage",
+        )
+        message = function_body(self.source, "New-DeterministicQaMessage")
+        self.assertIn("if ($QaMessage) { return $QaMessage }", message)
+
     def test_main_osl_identity_explicitly_excludes_guardian_mode(self) -> None:
         identity = function_body(self.source, "Get-ExactOslProcess")
         self.assertIn("--osl-borrowed-window-guardian-v1", identity)
