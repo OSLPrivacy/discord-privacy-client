@@ -174,9 +174,10 @@ pub(crate) mod test_process_globals {
 
 pub use at_rest_boundary::AtRestBoundary;
 pub use commands::{
-    AeadOpenRequest, AeadSealRequest, AeadSealResponse, FetchPubkeysResponse,
-    GenerateIdentityResponse, RegisterResponse, StatusResponse, StegoDecodeResponse,
-    StegoEncodeRequest, StegoEncodeResponse, UiSessionEncryptionKeyDto,
+    AeadOpenRequest, AeadSealRequest, AeadSealResponse, DirectChatSecurityState,
+    DirectChatSecurityStatus, FetchPubkeysResponse, GenerateIdentityResponse, RegisterResponse,
+    StatusResponse, StegoDecodeResponse, StegoEncodeRequest, StegoEncodeResponse,
+    UiSessionEncryptionKeyDto,
 };
 pub use state::AppState;
 

@@ -3902,6 +3902,59 @@ pub struct SkdmPeerStatus {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectChatSecurityState {
+    Stronger,
+    Pending,
+    Refused,
+}
+
+impl DirectChatSecurityState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stronger => "stronger",
+            Self::Pending => "pending",
+            Self::Refused => "refused",
+        }
+    }
+}
+
+/// Safe renderer-facing status for one direct chat.
+///
+/// This intentionally carries no peer id, public key, signature, ciphertext,
+/// session filename, or capability bitmap. It is only the user-visible outcome
+/// of the direct-chat security decision.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectChatSecurityStatus {
+    pub state: DirectChatSecurityState,
+    pub reason: String,
+}
+
+impl DirectChatSecurityStatus {
+    fn stronger() -> Self {
+        Self {
+            state: DirectChatSecurityState::Stronger,
+            reason: "Direct chat uses the stronger OSL-RN sequence.".to_owned(),
+        }
+    }
+
+    fn pending() -> Self {
+        Self {
+            state: DirectChatSecurityState::Pending,
+            reason: "Direct chat is waiting for verified OSL-RN support.".to_owned(),
+        }
+    }
+
+    fn refused() -> Self {
+        Self {
+            state: DirectChatSecurityState::Refused,
+            reason: "Direct chat refused a weaker or unverifiable sequence.".to_owned(),
+        }
+    }
+}
+
 /// Internal return of [`cmd_osl_encrypt_message_v2_wire`]: the
 /// CONTENT wire plus any v=5 SKDM control wires that must be posted
 /// as their own Discord messages, and the per-peer dispatch status.
@@ -3956,6 +4009,58 @@ fn select_rn_wire_path_for_send(
             peer = crate::log_id::log_id(peer_discord_id)
         )
     })
+}
+
+/// Return a scrubbed status for the direct-chat security path.
+///
+/// The send command needs peer keys to encrypt. This status command only
+/// projects the same RN downgrade decision into three safe labels:
+/// `stronger`, `pending`, or `refused`.
+pub fn cmd_osl_direct_chat_security_status(
+    state: &AppState,
+    peer_discord_id: String,
+) -> Result<DirectChatSecurityStatus, String> {
+    record_activity_on_command_entry();
+    direct_chat_security_status(state, &peer_discord_id)
+}
+
+fn direct_chat_security_status(
+    state: &AppState,
+    peer_discord_id: &str,
+) -> Result<DirectChatSecurityStatus, String> {
+    if !is_discord_snowflake_shaped(peer_discord_id) {
+        return Ok(DirectChatSecurityStatus::refused());
+    }
+
+    let peer_entry = {
+        let peer_map = state.peer_map.lock().expect("peer_map mutex poisoned");
+        let Some(peer_entry) = peer_map.get(peer_discord_id).cloned() else {
+            return Ok(DirectChatSecurityStatus::refused());
+        };
+        peer_entry
+    };
+    let Ok(peer_identity) = rn_peer_identity_from_entry(peer_discord_id, &peer_entry) else {
+        return Ok(DirectChatSecurityStatus::refused());
+    };
+    let Ok(store) = rn_session_store_from_config_dir() else {
+        return Ok(DirectChatSecurityStatus::refused());
+    };
+    let pin = match store.load_pin(peer_identity.as_bytes()) {
+        Ok(pin) => pin,
+        Err(_) => return Ok(DirectChatSecurityStatus::refused()),
+    };
+    let capabilities = verified_rn_capabilities_for_live_peer(state, &peer_entry)
+        .unwrap_or(keystore::client::PeerCapabilities::Absent);
+
+    match crate::wire_rn::select_wire_version(
+        &pin,
+        capabilities,
+        crate::wire_rn::RnPolicy::Opportunistic,
+    ) {
+        Ok(crate::wire_rn::SelectedVersion::Rn) => Ok(DirectChatSecurityStatus::stronger()),
+        Ok(crate::wire_rn::SelectedVersion::LegacyV3) => Ok(DirectChatSecurityStatus::pending()),
+        Err(_) => Ok(DirectChatSecurityStatus::refused()),
+    }
 }
 
 fn encrypt_rn_content_send(
