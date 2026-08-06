@@ -867,8 +867,8 @@ describe("fresh-account continuation", () => {
     const binding = functionSource("bindOnboarding", "completeOnboarding");
     expect(content).toContain("Optional network privacy");
     expect(content).toContain('id="install-mullvad"');
-    expect(content).toContain('id="open-mullvad"');
-    expect(content).toContain("Use my session");
+    expect(content).toContain('id="found-session-mullvad"');
+    expect(content).toContain("Found session");
     expect(content).toContain('id="continue-mullvad"');
     expect(content).toContain('id="skip-mullvad"');
     expect(content).not.toMatch(/mullvad-connected|mullvad-autostart|refresh-mullvad|Mullvad pixels|does not copy or read/);
@@ -891,9 +891,10 @@ describe("fresh-account continuation", () => {
     ]) {
       expect(content, `the Mullvad screen must not claim ${claim.source}`).not.toMatch(claim);
     }
-    expect(binding).toContain('runMullvadSetupAction("install")');
-    expect(binding).toContain('runMullvadSetupAction("open")');
-    expect(binding).toMatch(/#continue-mullvad[\s\S]*?onboardingRoute = "browser"[\s\S]*?refreshBrowserImportReadiness\(\)/);
+    expect(binding).toContain("openMullvadInstallPage()");
+    expect(binding).toContain("confirmMullvadFoundSession()");
+    expect(binding).toMatch(/#continue-mullvad[\s\S]*?continueMullvadSetup\(\)/);
+    expect(binding).toMatch(/#skip-mullvad[\s\S]*?skipMullvadSetup\(\)/);
   });
 
   it("keeps Mullvad installation and hosting behind one setup action", () => {

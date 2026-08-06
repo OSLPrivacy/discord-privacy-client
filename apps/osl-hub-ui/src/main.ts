@@ -477,6 +477,7 @@ let mullvadStatus: MullvadStatus = {
 };
 let mullvadBusy = false;
 let mullvadSetupNotice = "";
+let mullvadSetupRoute: MullvadSetupRoute | null = null;
 let mullvadAutoStart = false;
 let mullvadAutoStartAttempted = false;
 let mullvadWindowHosted = false;
@@ -747,6 +748,7 @@ const savedAccountsReadyStorageKey = "osl-browser-accounts-ready-v1";
 const preferredBrowserStorageKey = "osl-preferred-browser-v1";
 const completedBrowserImportsStorageKey = "osl-browser-import-sources-v1";
 const browserImportPendingStorageKey = "osl-browser-import-pending-v1";
+const mullvadSetupRouteStorageKey = "osl-mullvad-setup-route-v1";
 const onboardingResumeStorageKey = "osl-onboarding-resume-v1";
 const onboardingBranchStorageKey = "osl-onboarding-branch-v1";
 const experimentalSendConsentStorageKey = "osl-experimental-send-consent-v1";
@@ -758,6 +760,7 @@ const oslChatUnreadStorageKey = "osl-chat-unread-v1";
 const oslChatNotificationStorageKey = "osl-chat-notifications-v1";
 type OslChatSecureStore = Pick<SecureLocalStore, "getItem" | "setItem">;
 type BrowserImportStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+type MullvadSetupRoute = "found-session" | "no-mullvad";
 export type OslChatUiPreferenceSnapshot = {
   readonly previewsVisible: boolean;
   readonly mutedPeople: readonly string[];
@@ -1405,6 +1408,7 @@ export async function loadUiPreferences(): Promise<void> {
     confirmedNativeSessionModes.clear();
   }
   browserSessionModeConfirmed = localStorage.getItem(browserSessionModeConfirmedStorageKey) === "true";
+  mullvadSetupRoute = parseMullvadSetupRoute(localStorage.getItem(mullvadSetupRouteStorageKey));
   savedAccountsReady = false;
   notificationsEnabled = localStorage.getItem(notificationsStorageKey) === "true";
   notificationPreviewContent = localStorage.getItem(notificationPreviewStorageKey) === "true";
@@ -3009,7 +3013,7 @@ function mullvadSetupContent(): string {
       ? "Mullvad is not installed. Windows can install it for you"
       : "Mullvad or Windows App Installer was not found";
   const action = found
-    ? `<button class="mv-action" id="open-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Opening…" : "Use my session"}</button>`
+    ? `<button class="mv-action" id="found-session-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Checking…" : "Found session"}</button>`
     : availability === "installable"
       ? `<button class="mv-action" id="install-mullvad" type="button" ${mullvadBusy ? "disabled" : ""}>${mullvadBusy ? "Starting…" : "Install"}</button>`
       : "";
@@ -3026,8 +3030,66 @@ function mullvadSetupContent(): string {
     </div>
     ${notice}
     ${continueButton('id="continue-mullvad"', "mv-continue")}
-    <div class="setup-footer onboarding-actions mv-links"><button class="text-button" id="skip-mullvad" type="button">Skip</button></div>
+    <div class="setup-footer onboarding-actions mv-links"><button class="text-button" id="skip-mullvad" type="button">Not now</button></div>
   </section>`;
+}
+
+function parseMullvadSetupRoute(raw: string | null): MullvadSetupRoute | null {
+  return raw === "found-session" || raw === "no-mullvad" ? raw : null;
+}
+
+function persistMullvadSetupRoute(choice: MullvadSetupRoute): void {
+  mullvadSetupRoute = choice;
+  localStorage.setItem(mullvadSetupRouteStorageKey, choice);
+}
+
+function openOnboardingAppSelection(): void {
+  resetOnboardingBranch();
+  resetOnboardingConnections();
+  onboardingRoute = "apps";
+  render();
+}
+
+function confirmMullvadFoundSession(): boolean {
+  if (mullvadStatus.availability !== "installed") {
+    showToast("No existing Mullvad session was found");
+    return false;
+  }
+  persistMullvadSetupRoute("found-session");
+  mullvadSetupNotice = "Existing Mullvad session selected";
+  render();
+  return true;
+}
+
+async function openMullvadInstallPage(): Promise<void> {
+  if (mullvadBusy) return;
+  mullvadBusy = true;
+  mullvadSetupNotice = "Opening Mullvad install page…";
+  render();
+  try {
+    await withNativeDeadline(installMullvad(), "Open Mullvad install page");
+    mullvadSetupNotice = "Mullvad install page opened";
+  } catch (failure) {
+    mullvadSetupNotice = localActionError(failure, "Mullvad install page could not open");
+    showToast(mullvadSetupNotice);
+  } finally {
+    mullvadBusy = false;
+    render();
+  }
+}
+
+function continueMullvadSetup(): boolean {
+  if (mullvadSetupRoute !== "found-session") {
+    showToast("Choose Found session or Not now first");
+    return false;
+  }
+  openOnboardingAppSelection();
+  return true;
+}
+
+function skipMullvadSetup(): void {
+  persistMullvadSetupRoute("no-mullvad");
+  openOnboardingAppSelection();
 }
 
 function scrubCategoryChooserMarkup(compact = false): string {
@@ -3231,7 +3293,7 @@ function bindOnboarding(): void {
       render();
       return;
     }
-    onboardingRoute = previousSetupRoute(onboardingRoute);
+    onboardingRoute = onboardingRoute === "mullvad" ? "cover" : previousSetupRoute(onboardingRoute);
     render();
     if (onboardingRoute === "browser") void refreshBrowserImportReadiness();
     if (onboardingRoute === "mullvad") void refreshMullvadSetup();
@@ -3349,10 +3411,10 @@ function bindOnboarding(): void {
     if (windowCaptureEnabled && !screenshotProtectionEnabled) showToast("Windows capture resistance is unavailable on this device");
     render();
   });
-  document.querySelector("#skip-mullvad")?.addEventListener("click", () => { onboardingRoute = "browser"; render(); void refreshBrowserImportReadiness(); });
-  document.querySelector("#continue-mullvad")?.addEventListener("click", () => { onboardingRoute = "browser"; render(); void refreshBrowserImportReadiness(); });
-  document.querySelector("#install-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("install"));
-  document.querySelector("#open-mullvad")?.addEventListener("click", () => void runMullvadSetupAction("open"));
+  document.querySelector("#skip-mullvad")?.addEventListener("click", () => { skipMullvadSetup(); });
+  document.querySelector("#continue-mullvad")?.addEventListener("click", () => { continueMullvadSetup(); });
+  document.querySelector("#install-mullvad")?.addEventListener("click", () => void openMullvadInstallPage());
+  document.querySelector("#found-session-mullvad")?.addEventListener("click", () => { confirmMullvadFoundSession(); });
   document.querySelector("#close-decoy")?.addEventListener("click", () => void getCurrentWindow().close().catch(() => undefined));
 }
 
@@ -10147,6 +10209,9 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
     privacyScope: "networkOnly",
     connectionState: "notObserved",
   };
+  mullvadSetupRoute = parseMullvadSetupRoute(localStorage.getItem(mullvadSetupRouteStorageKey));
+  mullvadSetupNotice = "";
+  mullvadBusy = false;
   applyTestCoreState(patch.coreReady ?? false, patch.storageMethod ?? null, patch.bootstrapStatus);
 }
 
@@ -10294,6 +10359,22 @@ export const __oslHubUiTest = {
     setup = { ...defaultSetup, sendMode };
     return sendingSetupContent();
   },
+  confirmMullvadFoundSession(): boolean {
+    return confirmMullvadFoundSession();
+  },
+  openMullvadInstallPage(): Promise<void> {
+    return openMullvadInstallPage();
+  },
+  continueMullvadSetup(): boolean {
+    return continueMullvadSetup();
+  },
+  skipMullvadSetup(): void {
+    skipMullvadSetup();
+  },
+  backFromMullvadSetup(): void {
+    onboardingRoute = "cover";
+    render();
+  },
   persistOslChatNotifications(): void {
     persistOslChatNotifications();
   },
@@ -10356,6 +10437,8 @@ export const __oslHubUiTest = {
     inboxFilter: InboxFilter;
     oslMailNotifications: boolean;
     mullvadSetupNotice: string;
+    mullvadSetupRoute: MullvadSetupRoute | null;
+    mullvadAvailability: MullvadStatus["availability"];
     ownedConfirmationKind: OwnedConfirmation["kind"] | null;
     ownedConfirmationPersonId: string | null;
   } {
@@ -10371,6 +10454,8 @@ export const __oslHubUiTest = {
       inboxFilter,
       oslMailNotifications,
       mullvadSetupNotice,
+      mullvadSetupRoute,
+      mullvadAvailability: mullvadStatus.availability,
       ownedConfirmationKind: ownedConfirmation?.kind ?? null,
       ownedConfirmationPersonId: ownedConfirmation?.kind === "verifyFriend" || ownedConfirmation?.kind === "removeFriend"
         ? ownedConfirmation.personId
