@@ -87,9 +87,9 @@ use osl_privacy_hub::scrub_index::{
     ScrubIndexStatus,
 };
 use osl_privacy_hub::security::{
-    self, AddFriendResult, FriendCodeExport, HubRevocationStatusDto, HubScopeBurnResult,
-    HubSecurityState, PersonDto, PrivateContactLinkExport, PrivateContactLinkStatus,
-    RemoveFriendResult, ScopeSecurityDto,
+    self, AddFriendResult, AllowedPlaceDirectionStateDto, FriendCodeExport, HubRevocationStatusDto,
+    HubScopeBurnResult, HubSecurityState, PersonDto, PrivateContactLinkExport,
+    PrivateContactLinkStatus, RemoveFriendResult, ScopeSecurityDto,
 };
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
@@ -6263,6 +6263,18 @@ async fn list_hub_people(
 }
 
 #[tauri::command]
+async fn compare_allowed_place_direction_state(
+    session: State<'_, HubAccountSessionState>,
+    app: String,
+    first_account: String,
+    second_account: String,
+    kind: String,
+) -> Result<AllowedPlaceDirectionStateDto, String> {
+    let _session = session.transition.lock().await;
+    security::compare_allowed_place_direction_state(app, first_account, second_account, kind)
+}
+
+#[tauri::command]
 async fn set_hub_friend_nickname(
     core: State<'_, HubCoreState>,
     security_state: State<'_, HubSecurityState>,
@@ -9621,7 +9633,7 @@ fn main() {
                 panic!("OSL test-only runtime switches refused startup: {error}")
             });
     startup_breadcrumb("setup_before"); // STARTUP-TRACE
-    let builder = builder.setup(|app| {
+    let builder = builder.setup(move |app| {
         startup_breadcrumb("setup_enter"); // STARTUP-TRACE
         let profiles =
             osl_privacy_hub::adapter_profile_boot::load_verified_adapter_profiles_at_boot()

@@ -188,6 +188,16 @@ pub struct ScopeSecurityDto {
     pub decrypt_display_enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowedPlaceDirectionStateDto {
+    /// `none`, `one-way`, or `two-way`.
+    pub state: String,
+    pub saved_directions: usize,
+    pub first_to_second: bool,
+    pub second_to_first: bool,
+}
+
 /// The minimum friend state needed to create a manual peer-messaging lease.
 /// Key material stays in the original core; callers receive only stable local
 /// and public identity identifiers.
@@ -573,6 +583,10 @@ struct SecurityPreferences {
     /// so it can never outlive one.
     #[serde(default)]
     manual_approved_scope_people: BTreeMap<String, String>,
+    /// Directional allowed-place records. A direct conversation is complete
+    /// only when both people saved the reciprocal record for the same app kind.
+    #[serde(default)]
+    allowed_place_directions: BTreeSet<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -3904,6 +3918,94 @@ fn load_security_preferences() -> Result<SecurityPreferences, String> {
     load_encrypted_json::<SecurityPreferences>(&path)
 }
 
+fn validate_allowed_place_component(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 80
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+    {
+        return Err(format!("OSL allowed-place {label} is invalid"));
+    }
+    Ok(())
+}
+
+fn allowed_place_direction_key(app: &str, account: &str, kind: &str, stable_id: &str) -> String {
+    format!("{app}:{account}:{kind}:{stable_id}")
+}
+
+fn validate_allowed_place_direction(
+    app: &str,
+    first_account: &str,
+    second_account: &str,
+    kind: &str,
+) -> Result<(), String> {
+    validate_allowed_place_component(app, "app")?;
+    validate_allowed_place_component(kind, "kind")?;
+    if kind != "direct_message" {
+        return Err("OSL allowed-place kind is invalid".to_owned());
+    }
+    if first_account == second_account {
+        return Err("OSL allowed-place direction needs two different people".to_owned());
+    }
+    if app == "discord" {
+        if !is_discord_snowflake_shaped(first_account)
+            || !is_discord_snowflake_shaped(second_account)
+        {
+            return Err("OSL allowed-place Discord account is invalid".to_owned());
+        }
+    } else {
+        validate_allowed_place_component(first_account, "account")?;
+        validate_allowed_place_component(second_account, "account")?;
+    }
+    Ok(())
+}
+
+fn compare_allowed_place_direction_state_from_prefs(
+    prefs: &SecurityPreferences,
+    app: &str,
+    first_account: &str,
+    second_account: &str,
+    kind: &str,
+) -> Result<AllowedPlaceDirectionStateDto, String> {
+    validate_allowed_place_direction(app, first_account, second_account, kind)?;
+    let first_key = allowed_place_direction_key(app, first_account, kind, second_account);
+    let second_key = allowed_place_direction_key(app, second_account, kind, first_account);
+    let first_to_second = prefs.allowed_place_directions.contains(&first_key);
+    let second_to_first = prefs.allowed_place_directions.contains(&second_key);
+    let saved_directions = usize::from(first_to_second) + usize::from(second_to_first);
+    let state = match saved_directions {
+        0 => "none",
+        1 => "one-way",
+        2 => "two-way",
+        _ => unreachable!("only two directions are compared"),
+    }
+    .to_owned();
+    Ok(AllowedPlaceDirectionStateDto {
+        state,
+        saved_directions,
+        first_to_second,
+        second_to_first,
+    })
+}
+
+pub fn compare_allowed_place_direction_state(
+    app: String,
+    first_account: String,
+    second_account: String,
+    kind: String,
+) -> Result<AllowedPlaceDirectionStateDto, String> {
+    require_unlocked()?;
+    let prefs = load_security_preferences()?;
+    compare_allowed_place_direction_state_from_prefs(
+        &prefs,
+        &app,
+        &first_account,
+        &second_account,
+        &kind,
+    )
+}
+
 fn manual_approved_scopes_for_person(
     prefs: &SecurityPreferences,
     person_id: &str,
@@ -6783,6 +6885,64 @@ key"
         ));
         prefs.burned_manual_scopes.insert(discord_a.clone());
         assert!(!manual_scope_preference_approved(&prefs, &discord_a));
+    }
+
+    #[test]
+    fn direct_allowed_place_direction_state_moves_from_one_way_to_two_way() {
+        let harness = FileBackedSecurityHarness::new("task0170-direction-state");
+        let first_account = "900000000000000170";
+        let second_account = "900000000000000171";
+        let first_to_second =
+            allowed_place_direction_key("discord", first_account, "direct_message", second_account);
+        let second_to_first =
+            allowed_place_direction_key("discord", second_account, "direct_message", first_account);
+        let prefs_path = harness.path().join(SECURITY_PREFS_FILE);
+        let mut prefs = SecurityPreferences {
+            version: 2,
+            ..SecurityPreferences::default()
+        };
+        prefs.allowed_place_directions.insert(first_to_second);
+        write_encrypted_json(&prefs_path, &prefs).unwrap();
+
+        let one_way = compare_allowed_place_direction_state(
+            "discord".to_owned(),
+            first_account.to_owned(),
+            second_account.to_owned(),
+            "direct_message".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "TASK0170 allowed_place_direction saved_directions={} state={} first_to_second={} second_to_first={}",
+            one_way.saved_directions,
+            one_way.state,
+            one_way.first_to_second,
+            one_way.second_to_first
+        );
+        assert_eq!(one_way.saved_directions, 1);
+        assert_eq!(one_way.state, "one-way");
+        assert!(one_way.first_to_second);
+        assert!(!one_way.second_to_first);
+
+        prefs.allowed_place_directions.insert(second_to_first);
+        write_encrypted_json(&prefs_path, &prefs).unwrap();
+        let two_way = compare_allowed_place_direction_state(
+            "discord".to_owned(),
+            first_account.to_owned(),
+            second_account.to_owned(),
+            "direct_message".to_owned(),
+        )
+        .unwrap();
+        println!(
+            "TASK0170 allowed_place_direction saved_directions={} state={} first_to_second={} second_to_first={}",
+            two_way.saved_directions,
+            two_way.state,
+            two_way.first_to_second,
+            two_way.second_to_first
+        );
+        assert_eq!(two_way.saved_directions, 2);
+        assert_eq!(two_way.state, "two-way");
+        assert!(two_way.first_to_second);
+        assert!(two_way.second_to_first);
     }
 
     #[test]
