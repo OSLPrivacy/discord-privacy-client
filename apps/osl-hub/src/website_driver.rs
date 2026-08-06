@@ -74,6 +74,13 @@ pub struct WebsitePageText {
     pub controls: WebsitePageControls,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WebsiteSelectedEmail {
+    pub page: WebsitePage,
+    pub body: String,
+    pub conversation_identity: String,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 pub struct WebsitePageControls {
     pub editable_boxes: Vec<String>,
@@ -114,6 +121,10 @@ pub trait WebsiteDriver {
     fn find_page(&mut self, request: WebsitePageRequest)
         -> Result<WebsitePage, WebsiteDriverError>;
     fn read_page(&mut self, page: &WebsitePage) -> Result<WebsitePageText, WebsiteDriverError>;
+    fn read_selected_email(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError>;
     fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError>;
     fn press_named_control(
         &mut self,
@@ -144,6 +155,12 @@ struct BrowserPageSnapshot {
     title: String,
     text: String,
     controls: WebsitePageControls,
+}
+
+#[derive(Deserialize)]
+struct BrowserSelectedEmailSnapshot {
+    body: String,
+    conversation_identity: String,
 }
 
 impl RealBrowserWebsiteDriver {
@@ -266,6 +283,43 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
         }
     }
 
+    fn read_selected_email(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
+        let target_id = page
+            .target_id
+            .as_ref()
+            .ok_or(WebsiteDriverError::ReadFailed)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+
+        loop {
+            let target = self
+                .devtools_targets()?
+                .into_iter()
+                .find(|target| target.target_type == "page" && &target.id == target_id)
+                .ok_or(WebsiteDriverError::ReadFailed)?;
+
+            if !target.title.is_empty() {
+                let websocket_url = target
+                    .web_socket_debugger_url
+                    .ok_or(WebsiteDriverError::ReadFailed)?;
+                if let Ok(snapshot) = read_selected_email_snapshot(&websocket_url) {
+                    return Ok(WebsiteSelectedEmail {
+                        page: page.clone(),
+                        body: snapshot.body,
+                        conversation_identity: snapshot.conversation_identity,
+                    });
+                }
+            }
+
+            if std::time::Instant::now() >= deadline {
+                return Err(WebsiteDriverError::ReadFailed);
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     fn place_text(&mut self, _placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError> {
         Err(WebsiteDriverError::TextPlacementFailed)
     }
@@ -310,6 +364,13 @@ fn wait_for_devtools(
 
 fn read_page_snapshot(websocket_url: &str) -> Result<BrowserPageSnapshot, WebsiteDriverError> {
     let value = evaluate_target(websocket_url, PAGE_SNAPSHOT_EXPRESSION)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn read_selected_email_snapshot(
+    websocket_url: &str,
+) -> Result<BrowserSelectedEmailSnapshot, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, SELECTED_EMAIL_EXPRESSION)?;
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
 }
 
@@ -561,6 +622,59 @@ const PAGE_SNAPSHOT_EXPRESSION: &str = r#"
 })()
 "#;
 
+const SELECTED_EMAIL_EXPRESSION: &str = r#"
+(() => {
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const firstVisible = (root, selector) => {
+    for (const element of root.querySelectorAll(selector)) {
+      if (visible(element)) return element;
+    }
+    return null;
+  };
+  const selected = firstVisible(document, [
+    '[data-osl-open-email="true"]',
+    '[data-osl-selected-email="true"]',
+    '[data-selected-email="true"]',
+    '[role="article"][aria-selected="true"]',
+    '[role="document"][aria-selected="true"]',
+    '[aria-current="true"][data-osl-email]'
+  ].join(', '));
+  if (!selected) return null;
+
+  const identityAttrs = [
+    'data-osl-thread-id',
+    'data-thread-id',
+    'data-osl-conversation-id',
+    'data-conversation-id',
+    'data-message-thread-id',
+    'data-email-thread-id'
+  ];
+  let conversationIdentity = '';
+  for (let current = selected; current && !conversationIdentity; current = current.parentElement) {
+    for (const attr of identityAttrs) {
+      conversationIdentity = compact(current.getAttribute(attr));
+      if (conversationIdentity) break;
+    }
+  }
+
+  const bodyElement =
+    firstVisible(selected, '[data-osl-email-body], [data-email-body], [data-message-body], [role="document"]') ||
+    selected;
+  const body = compact(bodyElement.innerText || bodyElement.textContent || '');
+  if (!body || !conversationIdentity) return null;
+  return {
+    body,
+    conversation_identity: conversationIdentity
+  };
+})()
+"#;
+
 fn reserve_loopback_port() -> Result<u16, WebsiteDriverError> {
     TcpListener::bind("127.0.0.1:0")
         .and_then(|listener| listener.local_addr())
@@ -646,6 +760,17 @@ mod tests {
                     buttons: vec!["Send".to_owned()],
                     visible_message_areas: vec!["Reading pane".to_owned()],
                 },
+            })
+        }
+
+        fn read_selected_email(
+            &mut self,
+            page: &WebsitePage,
+        ) -> Result<WebsiteSelectedEmail, WebsiteDriverError> {
+            Ok(WebsiteSelectedEmail {
+                page: page.clone(),
+                body: "selected email body".to_owned(),
+                conversation_identity: "stable-thread-identity".to_owned(),
             })
         }
 

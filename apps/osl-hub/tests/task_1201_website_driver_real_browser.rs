@@ -14,6 +14,10 @@ use std::{
 
 const TASK_1201_TITLE: &str = "OSL Task 1201 Real Browser Title";
 const TASK_1204_TITLE: &str = "OSL Task 1204 Read Page Controls";
+const TASK_1213_TITLE: &str = "OSL Task 1213 Read Open Message Pane";
+const TASK_1213_BODY: &str =
+    "Fixture selected email body for task 1213. It stays inside the open message pane.";
+const TASK_1213_THREAD_ID: &str = "email-thread-1213-stable";
 
 #[test]
 fn task_1201_direct_driver_command_opens_local_test_page_and_reads_title() {
@@ -89,6 +93,49 @@ fn task_1204_fixture_page_returns_compose_send_and_reading_pane_names() {
     for name in &read.controls.visible_message_areas {
         println!("TASK1204 visible_message_area_name={name}");
     }
+}
+
+#[test]
+fn task_1213_fixture_message_returns_body_and_stable_thread_identity() {
+    let server = LocalTestPage::spawn_body(
+        TASK_1213_TITLE,
+        r#"
+            <main>
+              <section role="log" aria-label="Reading pane">
+                <article data-osl-open-email="true" data-osl-thread-id="email-thread-1213-stable">
+                  <header>
+                    <h2>Task 1213 fixture message</h2>
+                  </header>
+                  <div data-osl-email-body>
+                    Fixture selected email body for task 1213.
+                    It stays inside the open message pane.
+                  </div>
+                </article>
+              </section>
+              <article data-osl-open-email="false" data-osl-thread-id="other-thread">
+                <div data-osl-email-body>Wrong body</div>
+              </article>
+            </main>
+        "#,
+    );
+    let mut driver = RealBrowserWebsiteDriver::launch().expect("launch real browser driver");
+
+    let page = driver
+        .find_page(WebsitePageRequest { url: server.url() })
+        .expect("open local email fixture page through real browser");
+    let selected = driver
+        .read_selected_email(&page)
+        .expect("read selected fixture email through real browser");
+
+    assert_eq!(selected.body, TASK_1213_BODY);
+    assert_eq!(selected.conversation_identity, TASK_1213_THREAD_ID);
+
+    println!("TASK1213 direct_driver_command=read_selected_email");
+    println!("TASK1213 fixture_message_body={}", selected.body);
+    println!(
+        "TASK1213 stable_thread_identity={}",
+        selected.conversation_identity
+    );
 }
 
 struct LocalTestPage {
