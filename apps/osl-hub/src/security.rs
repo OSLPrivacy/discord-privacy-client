@@ -1925,7 +1925,6 @@ pub fn chat_approval_suggestion_for_manual_peer_scope(
     scope_input: ScopeInput,
 ) -> Result<ChatApprovalSuggestionAnswer, String> {
     let binding = manual_peer_binding(core, person_id)?;
-    require_person_not_blocked(&binding.person_id)?;
     require_exact_manual_peer_scope_input(&scope_input, "OSL manual peer scope is invalid")?;
     let scope: Scope = scope_input
         .try_into()
@@ -1939,12 +1938,13 @@ pub fn chat_approval_suggestion_for_manual_peer_scope(
     )?;
     let prefs = load_security_preferences()?;
     let already_approved = manual_scope_preference_approved(&prefs, &scope.storage_key());
-    let suggestion =
-        if prefs.chat_approval_suggestion == ChatApprovalSuggestionChoice::On && !already_approved {
-            "offer_approval"
-        } else {
-            "no_suggestion"
-        };
+    let suggestion = if prefs.chat_approval_suggestion == ChatApprovalSuggestionChoice::On
+        && !already_approved
+    {
+        "offer_approval"
+    } else {
+        "no_suggestion"
+    };
     Ok(ChatApprovalSuggestionAnswer {
         suggestion: suggestion.to_owned(),
     })
@@ -5088,11 +5088,7 @@ mod tests {
         )
         .expect("approve chat");
         let approved_on = chat_approval_suggestion_for_manual_peer_scope(
-            &core,
-            "osl-chat",
-            "osl-main",
-            person_id,
-            scope,
+            &core, "osl-chat", "osl-main", person_id, scope,
         )
         .expect("answer approved chat with choice on");
         println!(
