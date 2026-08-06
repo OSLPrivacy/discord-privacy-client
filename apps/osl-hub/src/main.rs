@@ -25,6 +25,9 @@ use osl_privacy_hub::browser_profile_scan::{
     BrowserProfileScanReceipt, BrowserProfileScanState,
 };
 use osl_privacy_hub::build_integrity::{check_current, BuildIntegrity};
+use osl_privacy_hub::burn_review_state::{
+    BurnReviewBackResult, BurnReviewSelection, BurnReviewState,
+};
 use osl_privacy_hub::chat_capture_protection::{
     ChatCaptureProtectionState, ConsentTransition, EffectiveCaptureProtection,
 };
@@ -648,6 +651,28 @@ fn save_onboarding_preferences(
     preferences: OnboardingPreferences,
 ) -> Result<OnboardingPreferences, String> {
     state.save(preferences)
+}
+
+#[tauri::command]
+fn save_burn_review_state(
+    state: State<'_, BurnReviewState>,
+    selected_scope: String,
+    selected_chat: String,
+    hide_other_people: bool,
+) -> Result<BurnReviewSelection, String> {
+    state.save_command(selected_scope, selected_chat, hide_other_people)
+}
+
+#[tauri::command]
+fn get_burn_review_state(
+    state: State<'_, BurnReviewState>,
+) -> Result<Option<BurnReviewSelection>, String> {
+    state.get_command()
+}
+
+#[tauri::command]
+fn back_burn_review(state: State<'_, BurnReviewState>) -> Result<BurnReviewBackResult, String> {
+    state.back_command()
 }
 
 /// Persist the explicit connection route selected during onboarding.
@@ -9755,6 +9780,10 @@ fn main() {
             config_dir.join("preview-preferences.json"),
         ));
         startup_breadcrumb("setup_step_14_preview_state_managed"); // STARTUP-TRACE
+        app.manage(BurnReviewState::load(
+            config_dir.join("burn-review-state.json"),
+        ));
+        startup_breadcrumb("setup_step_14b_burn_review_state_managed"); // STARTUP-TRACE
         app.manage(TorPreferenceState::load_with_arti_proxy_config(
             config_dir.join("tor-preference.json"),
             osl_privacy_hub::tor_pref::arti_proxy_config_from_env(),
@@ -10663,6 +10692,15 @@ mod tauri_command_acl_tests {
     #[test]
     fn scr_g1_erasure_composition_is_registered_on_the_shipping_command_surface() {
         assert_registered_and_acl_granted(&["compose_scrub_erasure_request"]);
+    }
+
+    #[test]
+    fn burn_review_state_commands_are_registered_and_acl_granted() {
+        assert_registered_and_acl_granted(&[
+            "save_burn_review_state",
+            "get_burn_review_state",
+            "back_burn_review",
+        ]);
     }
 
     #[test]
