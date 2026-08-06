@@ -421,7 +421,7 @@ impl Default for AppState {
             recovery_guard: Mutex::new(crate::recovery::RecoveryGuard::default()),
             scope_membership: Mutex::new(crate::membership::ScopeMembership::default()),
             production_duress_engine: Mutex::new(None),
-            rn_wire_in_enabled: AtomicBool::new(false),
+            rn_wire_in_enabled: AtomicBool::new(true),
         }
     }
 }
@@ -845,10 +845,10 @@ mod tests {
     }
 
     #[test]
-    fn rn_wire_in_runtime_gate_defaults_to_closed() {
+    fn rn_wire_in_runtime_gate_defaults_to_open() {
         let state = AppState::new();
 
-        assert!(!state.rn_wire_in_enabled());
+        assert!(state.rn_wire_in_enabled());
     }
 
     #[test]
