@@ -15955,6 +15955,57 @@ pub fn cmd_osl_set_app_preferences(
     Ok(())
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct IdleLockTimeChoiceDto {
+    pub choice: String,
+    pub seconds: Option<u64>,
+    pub label: String,
+}
+
+impl From<crate::app_preferences::IdleLockTimeChoice> for IdleLockTimeChoiceDto {
+    fn from(choice: crate::app_preferences::IdleLockTimeChoice) -> Self {
+        Self {
+            choice: choice.choice().to_string(),
+            seconds: choice.seconds(),
+            label: choice.label(),
+        }
+    }
+}
+
+pub fn cmd_osl_save_idle_lock_time_choice(
+    state: &AppState,
+    choice: String,
+    config_dir: Option<std::path::PathBuf>,
+) -> Result<IdleLockTimeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = crate::app_preferences::parse_idle_lock_time_choice(&choice)?;
+    {
+        let mut prefs = state
+            .app_preferences
+            .lock()
+            .expect("app_preferences mutex poisoned");
+        prefs.version = crate::app_preferences::APP_PREFERENCES_VERSION;
+        prefs.idle_lock_time_choice = choice;
+        if let Some(dir) = config_dir {
+            let path = dir.join("app_preferences.json");
+            crate::app_preferences::write_app_preferences(&path, &prefs)?;
+        }
+    }
+    Ok(choice.into())
+}
+
+pub fn cmd_osl_read_idle_lock_time_choice(
+    state: &AppState,
+) -> Result<IdleLockTimeChoiceDto, String> {
+    record_activity_on_command_entry();
+    let choice = state
+        .app_preferences
+        .lock()
+        .expect("app_preferences mutex poisoned")
+        .idle_lock_time_choice;
+    Ok(choice.into())
+}
+
 // ---- G3.3: auto-updater channel ----
 //
 // Channel persists in the SAME app_preferences.json as every other
