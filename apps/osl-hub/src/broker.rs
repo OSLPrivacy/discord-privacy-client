@@ -13701,6 +13701,258 @@ mod tests {
         let _ = std::fs::remove_dir_all(&receipt_dir);
     }
 
+    fn task_3580_counts(
+        dir: &Path,
+        file_key: &[u8; 32],
+        unlock_scope_key: &str,
+    ) -> (usize, usize, usize) {
+        let readable = load_local_ledger(&dir.join(LOCAL_PROTECTED_FILE), file_key)
+            .expect("read protected ledger")
+            .records
+            .len();
+        let unlock = match std::fs::read(dir.join("scope_blobs.json")) {
+            Ok(sealed) => {
+                let plain = ipc::main_password::decrypt_at_rest(&sealed, file_key)
+                    .expect("decrypt unlock-key ledger");
+                let ledger: ipc::scope_blobs_file::ScopeBlobsFile =
+                    serde_json::from_slice(&plain).expect("decode unlock-key ledger");
+                ipc::scope_blobs_file::count_for(&ledger, unlock_scope_key)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => panic!("read unlock-key ledger: {error}"),
+        };
+        let send_success =
+            load_native_overlay_receipts(&dir.join(NATIVE_OVERLAY_RECEIPTS_FILE), file_key)
+                .expect("read send-success ledger")
+                .records
+                .values()
+                .filter(|record| record.status == NativeOverlayReceiptStatus::Sent)
+                .count();
+        (readable, unlock, send_success)
+    }
+
+    fn task_3580_unlock_key_fingerprints(
+        dir: &Path,
+        file_key: &[u8; 32],
+        unlock_scope_key: &str,
+    ) -> Vec<String> {
+        let sealed = std::fs::read(dir.join("scope_blobs.json")).expect("read unlock-key ledger");
+        let plain = ipc::main_password::decrypt_at_rest(&sealed, file_key)
+            .expect("decrypt unlock-key ledger");
+        let ledger: ipc::scope_blobs_file::ScopeBlobsFile =
+            serde_json::from_slice(&plain).expect("decode unlock-key ledger");
+        let mut fingerprints = ledger
+            .burn_capabilities
+            .get(unlock_scope_key)
+            .into_iter()
+            .flat_map(|by_blob| by_blob.values())
+            .map(|capability| sha256_hex(capability.as_bytes()))
+            .collect::<Vec<_>>();
+        fingerprints.sort();
+        fingerprints
+    }
+
+    #[test]
+    fn task_3580_disk_full_during_each_message_write_keeps_prior_control_exact() {
+        let _serial = crate::global_keystore_test_lock();
+        let _globals = KeystoreGlobalsGuard;
+        const PASSWORD: &str = "task3580-main-password";
+        const CONTROL_TEXT: &str = "TASK-3580 marked control message stays exact";
+        let dir = std::env::temp_dir().join(format!(
+            "osl-hub-task-3580-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        keystore::set_base_dir_override(Some(dir.clone()));
+        keystore::set_active_account_dir(Some(dir.clone()));
+        ipc::main_password::set_main_password(&dir, PASSWORD).unwrap();
+
+        let identity = keystore::generate_identity("self-liam".to_owned());
+        let key_fingerprint = sha256_hex(identity.x25519_public.as_bytes());
+        let core = HubCoreState::default();
+        *core.osl.identity.lock().unwrap() = Some(identity.clone());
+        let broker = HubBrokerState::default();
+        let security_state = HubSecurityState::default();
+        let lease = broker
+            .activate(context("email-task-3580", "dm-task-3580"), 3580)
+            .unwrap();
+        let manual = ManualPeerContext {
+            service_id: "email".to_owned(),
+            account_id: "email-task-3580".to_owned(),
+            person_id: "peer-rose".to_owned(),
+            peer_osl_user_id: "peer-rose-osl".to_owned(),
+            scope: ScopeInput {
+                kind: ScopeKind::Dm,
+                id: "scope-task-3580".to_owned(),
+                server_id: None,
+                channel_id: Some("dm-task-3580".to_owned()),
+            },
+        };
+        let hub_context = broker.context_for(&lease.context_token).unwrap();
+        let unlock_scope: ipc::scope::Scope = manual.scope.clone().try_into().unwrap();
+        let unlock_scope_key = unlock_scope.storage_key();
+
+        let control = prepare_local_protected_text(
+            &core,
+            &broker,
+            &lease.context_token,
+            CONTROL_TEXT.to_owned(),
+        )
+        .expect("save marked readable control message");
+        let control_read = decrypt_local_protected_capsule(
+            &core,
+            &broker,
+            &lease.context_token,
+            control.capsule.clone(),
+        )
+        .expect("read marked control message");
+        assert_eq!(control_read.plaintext, CONTROL_TEXT);
+
+        let control_unlock_key = "22222222222222222222222222222222".to_owned();
+        security::record_peer_prose_blob(
+            &security_state,
+            manual.scope.clone(),
+            "1111111111111111".to_owned(),
+            Some(control_unlock_key.clone()),
+        )
+        .expect("save one unlock key for the control message");
+        record_native_overlay_sent_after_verified_native_posts(
+            1,
+            1,
+            &core,
+            &broker,
+            &hub_context,
+            &manual,
+            "msg-task-3580-control",
+            1_700_003_600,
+            false,
+        )
+        .expect("save one send-success receipt for the control message");
+
+        let file_key =
+            ipc::main_password::get_file_storage_key().expect("main password installs file key");
+        let before = task_3580_counts(&dir, &file_key, &unlock_scope_key);
+        let unlock_fingerprints_before =
+            task_3580_unlock_key_fingerprints(&dir, &file_key, &unlock_scope_key);
+        assert_eq!(before, (1, 1, 1));
+        assert_eq!(
+            unlock_fingerprints_before,
+            vec![sha256_hex(control_unlock_key.as_bytes())]
+        );
+        eprintln!(
+            "TASK3580 before readable-message={} unlock-key={} send-success={}",
+            before.0, before.1, before.2
+        );
+        eprintln!("TASK3580 control-text={CONTROL_TEXT}");
+        eprintln!("TASK3580 identity-key-fingerprint={key_fingerprint}");
+        eprintln!(
+            "TASK3580 unlock-key-fingerprints={}",
+            unlock_fingerprints_before.join(",")
+        );
+
+        crate::atomic_file::fail_next_write_with_label("OSL protected ledger");
+        let readable_error = match prepare_local_protected_text(
+            &core,
+            &broker,
+            &lease.context_token,
+            "TASK-3580 second message readable write must fail".to_owned(),
+        ) {
+            Ok(_) => panic!("disk-full readable-message write must fail"),
+            Err(error) => error,
+        };
+        let after_readable = task_3580_counts(&dir, &file_key, &unlock_scope_key);
+        assert_eq!(after_readable, before);
+        eprintln!("TASK3580 failure=readable-message error={readable_error}");
+        eprintln!(
+            "TASK3580 after-readable-message readable-message={} unlock-key={} send-success={}",
+            after_readable.0, after_readable.1, after_readable.2
+        );
+
+        crate::atomic_file::fail_next_write_with_label("OSL security state");
+        let unlock_error = security::record_peer_prose_blob(
+            &security_state,
+            manual.scope.clone(),
+            "3333333333333333".to_owned(),
+            Some("44444444444444444444444444444444".to_owned()),
+        )
+        .expect_err("disk-full unlock-key write must fail");
+        let after_unlock = task_3580_counts(&dir, &file_key, &unlock_scope_key);
+        assert_eq!(after_unlock, before);
+        eprintln!("TASK3580 failure=unlock-key error={unlock_error}");
+        eprintln!(
+            "TASK3580 after-unlock-key readable-message={} unlock-key={} send-success={}",
+            after_unlock.0, after_unlock.1, after_unlock.2
+        );
+
+        crate::atomic_file::fail_next_write_with_label("OSL native overlay receipt ledger");
+        let send_error = record_native_overlay_sent_after_verified_native_posts(
+            1,
+            1,
+            &core,
+            &broker,
+            &hub_context,
+            &manual,
+            "msg-task-3580-second",
+            1_700_003_600,
+            false,
+        )
+        .expect_err("disk-full send-success write must fail");
+        let after_send = task_3580_counts(&dir, &file_key, &unlock_scope_key);
+        assert_eq!(after_send, before);
+        eprintln!("TASK3580 failure=send-success error={send_error}");
+        eprintln!(
+            "TASK3580 after-send-success readable-message={} unlock-key={} send-success={}",
+            after_send.0, after_send.1, after_send.2
+        );
+
+        ipc::main_password::set_file_storage_key(None);
+        match ipc::main_password::verify_gate_password_attempt(&dir, PASSWORD).unwrap() {
+            ipc::main_password::GatePasswordAttemptResult::Main(_) => {}
+            _ => panic!("restart unlock did not return main-password success"),
+        }
+        let restart_key =
+            ipc::main_password::get_file_storage_key().expect("restart unlock installs file key");
+        assert_eq!(restart_key, file_key);
+        let restarted_core = HubCoreState::default();
+        *restarted_core.osl.identity.lock().unwrap() = Some(identity);
+        let restarted_broker = HubBrokerState::default();
+        let restarted_lease = restarted_broker
+            .activate(context("email-task-3580", "dm-task-3580"), 3581)
+            .unwrap();
+        let restarted_read = decrypt_local_protected_capsule(
+            &restarted_core,
+            &restarted_broker,
+            &restarted_lease.context_token,
+            control.capsule,
+        )
+        .expect("read marked control message after restart");
+        assert_eq!(restarted_read.plaintext, CONTROL_TEXT);
+        let after_restart = task_3580_counts(&dir, &restart_key, &unlock_scope_key);
+        let unlock_fingerprints_after =
+            task_3580_unlock_key_fingerprints(&dir, &restart_key, &unlock_scope_key);
+        assert_eq!(after_restart, before);
+        assert_eq!(unlock_fingerprints_after, unlock_fingerprints_before);
+        eprintln!(
+            "TASK3580 after-restart readable-message={} unlock-key={} send-success={}",
+            after_restart.0, after_restart.1, after_restart.2
+        );
+        eprintln!(
+            "TASK3580 after-restart-control-text={}",
+            restarted_read.plaintext
+        );
+        eprintln!("TASK3580 after-restart-identity-key-fingerprint={key_fingerprint}");
+        eprintln!(
+            "TASK3580 after-restart-unlock-key-fingerprints={}",
+            unlock_fingerprints_after.join(",")
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn owned_loopback_context_derives_self_only_and_exact_host_generation() {
         // temporary_registry() flips the process-wide main-password test key

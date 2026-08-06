@@ -6,6 +6,18 @@
 
 use std::io::Write as _;
 use std::path::Path;
+#[cfg(test)]
+use std::sync::Mutex;
+
+#[cfg(test)]
+static FAIL_NEXT_WRITE_LABEL: Mutex<Option<String>> = Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn fail_next_write_with_label(label: &str) {
+    *FAIL_NEXT_WRITE_LABEL
+        .lock()
+        .expect("atomic write failure hook lock") = Some(label.to_owned());
+}
 
 pub(crate) fn read_recoverable(path: &Path, label: &str) -> Result<Option<Vec<u8>>, String> {
     match std::fs::read(path) {
@@ -56,6 +68,16 @@ pub(crate) fn read_recoverable_bounded(
 }
 
 pub(crate) fn write_recoverable(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if FAIL_NEXT_WRITE_LABEL
+        .lock()
+        .expect("atomic write failure hook lock")
+        .take()
+        .is_some_and(|expected| expected == label)
+    {
+        return Err(format!("{label} simulated disk full during write"));
+    }
+
     let parent = path
         .parent()
         .ok_or_else(|| format!("{label} path is invalid"))?;
