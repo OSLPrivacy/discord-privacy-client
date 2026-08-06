@@ -161,6 +161,8 @@
     "allow-add-allowed-place-record",
     "allow-remove-allowed-place-record",
     "allow-query-allowed-place-record",
+    "allow-list-allowed-place-records",
+    "allow-query-allowed-place-allowed",
     "allow-compare-allowed-place-direction-state",
     "allow-list-whatsapp-whitelist-kinds",
     "allow-set-active-hub-friend-permission",

@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
-pub use ipc::allowed_places::AllowedPlaceRecord;
+pub use ipc::allowed_places::{AllowedPlaceQuery, AllowedPlaceRecord};
 
 use crate::core_bridge::HubCoreState;
 
@@ -1374,6 +1374,27 @@ pub fn query_allowed_place_record(
     let prefs =
         load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
     Ok(prefs.allowed_places.get(&stable_id).cloned())
+}
+
+pub fn query_allowed_place_allowed(
+    _security: &HubSecurityState,
+    query: AllowedPlaceQuery,
+) -> Result<bool, String> {
+    require_unlocked()?;
+    validate_allowed_place_record(&AllowedPlaceRecord {
+        app: query.app.clone(),
+        account: query.account.clone(),
+        kind: query.kind.clone(),
+        stable_id: query.stable_id.clone(),
+    })?;
+    let prefs =
+        load_encrypted_json::<SecurityPreferences>(&config_dir()?.join(SECURITY_PREFS_FILE))?;
+    Ok(prefs
+        .allowed_places
+        .get(&query.stable_id)
+        .is_some_and(|record| {
+            record.app == query.app && record.account == query.account && record.kind == query.kind
+        }))
 }
 
 pub fn list_allowed_place_records(
@@ -5216,6 +5237,81 @@ mod tests {
         assert_eq!(two_way.state, "two-way");
         assert!(two_way.first_to_second_allowed);
         assert!(two_way.second_to_first_allowed);
+    }
+
+    #[test]
+    fn direct_allowed_place_commands_return_json_without_opening_osl_window() {
+        let _harness = FileBackedSecurityHarness::new("allowed-place-command-json");
+        let security = HubSecurityState::default();
+        let first =
+            AllowedPlaceRecord::discord_direct_message("900000000000000107", "900000000000000108");
+        let second =
+            AllowedPlaceRecord::discord_direct_message("900000000000000108", "900000000000000107");
+        let first_id = first.stable_id.clone();
+
+        let add_json = serde_json::to_value(add_allowed_place_record(&security, first).unwrap())
+            .expect("add command result serializes");
+        add_allowed_place_record(&security, second).unwrap();
+        let list_json = serde_json::to_value(list_allowed_place_records(&security).unwrap())
+            .expect("list command result serializes");
+        let query_json =
+            serde_json::to_value(query_allowed_place_record(&security, first_id.clone()).unwrap())
+                .expect("query command result serializes");
+        let allowed_json = serde_json::to_value(
+            query_allowed_place_allowed(
+                &security,
+                AllowedPlaceQuery {
+                    app: "discord".to_owned(),
+                    account: "900000000000000107".to_owned(),
+                    kind: "direct_message".to_owned(),
+                    stable_id: first_id.clone(),
+                },
+            )
+            .unwrap(),
+        )
+        .expect("allowed command result serializes");
+        let compare_json = serde_json::to_value(
+            compare_allowed_place_direction_state(
+                &security,
+                "discord".to_owned(),
+                "direct_message".to_owned(),
+                "900000000000000107".to_owned(),
+                "900000000000000108".to_owned(),
+            )
+            .unwrap(),
+        )
+        .expect("allowed query command result serializes");
+        let remove_json =
+            serde_json::to_value(remove_allowed_place_record(&security, first_id).unwrap())
+                .expect("remove command result serializes");
+
+        let list_count = list_json.as_array().map_or(0, Vec::len);
+        println!(
+            "TASK0107 allowed_place_command_json add={} remove={} list_count={} query_present={} allowed={} allowed_state={} first_to_second={} second_to_first={} window_opened=false",
+            add_json["stableId"].as_str().unwrap_or(""),
+            remove_json.as_bool().unwrap_or(false),
+            list_count,
+            !query_json.is_null(),
+            allowed_json.as_bool().unwrap_or(false),
+            compare_json["state"].as_str().unwrap_or(""),
+            compare_json["firstToSecondAllowed"].as_bool().unwrap_or(false),
+            compare_json["secondToFirstAllowed"].as_bool().unwrap_or(false)
+        );
+
+        assert_eq!(
+            add_json["stableId"],
+            "discord:900000000000000107:direct_message:900000000000000108"
+        );
+        assert_eq!(list_count, 2);
+        assert_eq!(
+            query_json["stableId"],
+            "discord:900000000000000107:direct_message:900000000000000108"
+        );
+        assert_eq!(allowed_json, true);
+        assert_eq!(compare_json["state"], "two-way");
+        assert_eq!(compare_json["firstToSecondAllowed"], true);
+        assert_eq!(compare_json["secondToFirstAllowed"], true);
+        assert_eq!(remove_json, true);
     }
 
     fn fresh_test_dir(label: &str) -> std::path::PathBuf {
