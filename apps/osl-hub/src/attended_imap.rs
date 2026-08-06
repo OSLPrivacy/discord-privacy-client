@@ -918,6 +918,12 @@ pub fn still_authorizes_imap_delete(
     {
         return Err(ImapPolicyError::FingerprintMismatch);
     }
+    if !grant
+        .message_digests
+        .contains(&prepared_message_digest(candidate))
+    {
+        return Err(ImapPolicyError::FingerprintMismatch);
+    }
     if !grant.message_fingerprints.contains(&candidate.fingerprint) {
         return Err(ImapPolicyError::DeleteGrantWrongScope);
     }
