@@ -179,6 +179,7 @@ pub mod placement;
 
 #[cfg(feature = "core")]
 pub mod broker;
+pub mod chat_app_timer_policy;
 pub mod chat_capture_protection;
 /// **The claim state.** What OSL may publicly say about each ruled surface, and
 /// why — the owner gate `PLAN.md` r4-5 calls "the claim-state gap". Not behind a
