@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -47,6 +48,30 @@ pub struct ServiceRegistryState {
     next_id: AtomicU64,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceAccountRunQueue {
+    pub service_id: ServiceKind,
+    pub accounts: Vec<ServiceAccountRunQueueEntry>,
+    pub active_count: usize,
+    pub waiting_count: usize,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceAccountRunQueueEntry {
+    pub account_id: String,
+    pub label: String,
+    pub status: ServiceAccountRunStatus,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceAccountRunStatus {
+    Active,
+    Waiting,
+}
+
 #[derive(Default)]
 struct RegistryCache {
     loaded: bool,
@@ -84,6 +109,78 @@ impl ServiceRegistryState {
         validate_owner_osl_user_id(owner_osl_user_id)?;
         let cache = self.locked_cache()?;
         Ok(service_registry(&cache.accounts, owner_osl_user_id))
+    }
+
+    pub fn run_queue_for_owner(
+        &self,
+        owner_osl_user_id: &str,
+        service_id: ServiceKind,
+        approved_account_ids: &[String],
+    ) -> Result<ServiceAccountRunQueue, String> {
+        validate_owner_osl_user_id(owner_osl_user_id)?;
+        let approved =
+            approved_account_ids
+                .iter()
+                .try_fold(BTreeSet::new(), |mut approved, account_id| {
+                    if !valid_account_id(account_id) {
+                        return Err("approved service account id is invalid".to_owned());
+                    }
+                    approved.insert(account_id.as_str());
+                    Ok(approved)
+                })?;
+        let cache = self.locked_cache()?;
+        let saved_accounts = cache
+            .accounts
+            .iter()
+            .filter(|account| {
+                account.service_id == service_id
+                    && account.owner_osl_user_id.as_deref() == Some(owner_osl_user_id)
+            })
+            .collect::<Vec<_>>();
+        for account_id in &approved {
+            if !saved_accounts
+                .iter()
+                .any(|account| account.id.as_str() == *account_id)
+            {
+                return Err(
+                    "approved service account is not registered for the active OSL identity"
+                        .to_owned(),
+                );
+            }
+        }
+
+        let mut active_assigned = false;
+        let accounts = saved_accounts
+            .into_iter()
+            .filter(|account| approved.contains(account.id.as_str()))
+            .map(|account| {
+                let status = if active_assigned {
+                    ServiceAccountRunStatus::Waiting
+                } else {
+                    active_assigned = true;
+                    ServiceAccountRunStatus::Active
+                };
+                ServiceAccountRunQueueEntry {
+                    account_id: account.id.clone(),
+                    label: account.label.clone(),
+                    status,
+                }
+            })
+            .collect::<Vec<_>>();
+        let active_count = accounts
+            .iter()
+            .filter(|account| account.status == ServiceAccountRunStatus::Active)
+            .count();
+        let waiting_count = accounts
+            .iter()
+            .filter(|account| account.status == ServiceAccountRunStatus::Waiting)
+            .count();
+        Ok(ServiceAccountRunQueue {
+            service_id,
+            accounts,
+            active_count,
+            waiting_count,
+        })
     }
 
     pub fn create_for_owner(
@@ -925,6 +1022,43 @@ mod tests {
         assert!(state
             .require_owned(OWNER_B, ServiceKind::Discord, &account_a.id)
             .is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn task_1421_direct_command_with_two_accounts_reports_one_active_and_one_waiting() {
+        let _serial = crate::global_keystore_test_lock();
+        let path = temporary_registry();
+        let state = ServiceRegistryState::load(path.clone());
+        let first = state
+            .create_for_owner(OWNER_A, ServiceKind::Discord, "First".to_owned())
+            .unwrap();
+        let second = state
+            .create_for_owner(OWNER_A, ServiceKind::Discord, "Second".to_owned())
+            .unwrap();
+        let approved_in_unsaved_order = vec![second.id.clone(), first.id.clone()];
+
+        let queue = state
+            .run_queue_for_owner(OWNER_A, ServiceKind::Discord, &approved_in_unsaved_order)
+            .unwrap();
+
+        println!("task_1421_direct_command=list_service_account_run_queue");
+        println!("task_1421_account_count={}", queue.accounts.len());
+        println!("task_1421_active_count={}", queue.active_count);
+        println!("task_1421_waiting_count={}", queue.waiting_count);
+        println!(
+            "task_1421_queue_statuses={}:active,{}:waiting",
+            queue.accounts[0].account_id, queue.accounts[1].account_id
+        );
+        println!("task_1421_saved_order_preserved={},{}", first.id, second.id);
+
+        assert_eq!(queue.accounts.len(), 2);
+        assert_eq!(queue.active_count, 1);
+        assert_eq!(queue.waiting_count, 1);
+        assert_eq!(queue.accounts[0].account_id, first.id);
+        assert_eq!(queue.accounts[0].status, ServiceAccountRunStatus::Active);
+        assert_eq!(queue.accounts[1].account_id, second.id);
+        assert_eq!(queue.accounts[1].status, ServiceAccountRunStatus::Waiting);
         let _ = fs::remove_file(path);
     }
 

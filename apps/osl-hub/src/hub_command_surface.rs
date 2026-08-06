@@ -671,6 +671,7 @@ macro_rules! hub_tauri_commands {
             focus_mullvad_window,
             restore_mullvad_window,
             create_service_account,
+            list_service_account_run_queue,
             open_service_host,
             request_hosted_session_scan_command,
             scan_discord_own_messages_for_deletion,
@@ -1821,6 +1822,17 @@ mod tauri_registration_surface_tests {
             &permissions,
             &capability,
             &["set_hub_friend_account_reach_everywhere"],
+        );
+    }
+
+    #[test]
+    fn task_1421_service_account_run_queue_command_is_registered_and_granted() {
+        let (handlers, permissions, capability) = registration_inputs();
+        assert_registered_and_granted(
+            &handlers,
+            &permissions,
+            &capability,
+            "list_service_account_run_queue",
         );
     }
 

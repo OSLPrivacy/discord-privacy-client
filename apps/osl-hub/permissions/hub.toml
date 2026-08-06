@@ -269,6 +269,11 @@ description = "Create local metadata for one fresh isolated service profile; sto
 commands.allow = ["create_service_account"]
 
 [[permission]]
+identifier = "allow-list-service-account-run-queue"
+description = "Read the active/waiting run order for approved local service profiles owned by the unlocked OSL identity."
+commands.allow = ["list_service_account_run_queue"]
+
+[[permission]]
 identifier = "allow-remove-service-account"
 description = "Close and atomically detach one exact isolated service profile, then remove its local registry record."
 commands.allow = ["remove_service_account"]

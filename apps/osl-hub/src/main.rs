@@ -95,7 +95,7 @@ use osl_privacy_hub::security::{
 use osl_privacy_hub::security_credentials::{self, HubPasswordRoleStatus};
 use osl_privacy_hub::service_host::{self, ActiveServiceHost, ServiceHostState};
 use osl_privacy_hub::service_scope_index::{ImmutableServiceBurnManifest, ServiceScopeIndexState};
-use osl_privacy_hub::services::ServiceRegistryState;
+use osl_privacy_hub::services::{ServiceAccountRunQueue, ServiceRegistryState};
 use osl_privacy_hub::startup_gate::{self, HubGateUnlockResult, VerifiedGateRole};
 use osl_privacy_hub::tor_pref::{TorPreference, TorPreferenceState};
 use osl_privacy_hub::updates::{
@@ -5413,6 +5413,19 @@ async fn create_service_account(
         return Err(error);
     }
     Ok(account)
+}
+
+#[tauri::command]
+async fn list_service_account_run_queue(
+    core: State<'_, HubCoreState>,
+    registry: State<'_, ServiceRegistryState>,
+    session: State<'_, HubAccountSessionState>,
+    service_id: ServiceKind,
+    approved_account_ids: Vec<String>,
+) -> Result<ServiceAccountRunQueue, String> {
+    let _session = session.transition.lock().await;
+    let owner = active_unlocked_osl_user_id(&core)?;
+    registry.run_queue_for_owner(&owner, service_id, &approved_account_ids)
 }
 
 #[tauri::command]
