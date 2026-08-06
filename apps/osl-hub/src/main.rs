@@ -198,14 +198,15 @@ use native_discord_overlay::OverlaySessionState;
 use osl_privacy_hub::hub_command_surface::{
     build_review_ui_identity_binding_verifier, checked_browser_footprint_binding,
     checked_hosted_session_scan_flow, compose_erasure_request_for_user,
+    read_protected_email_live_run_progress_with_driver,
     read_protected_email_open_message_with_driver, require_native_discord_product_send_authority,
     require_review_ui_identity_binding_from_verifier, service_kind_id,
     start_autoscrub_reviewed_run_after_review_ui_binding, start_autoscrub_reviewed_run_checked,
     start_autoscrub_reviewed_run_inner, with_allowed_place_before_incoming_read,
     with_native_discord_product_send_authority, BrowserFootprintConsentRequest, CheckedHost,
     DiscordGuidedDeletionPlanState, GuidedDeletionRunAuthorityInput,
-    NativeDiscordProductSendAuthority, ProtectedEmailOpenMessageRead,
-    ProtectedEmailOpenMessageReadRequest,
+    NativeDiscordProductSendAuthority, ProtectedEmailLiveRunProgressRequest,
+    ProtectedEmailOpenMessageRead, ProtectedEmailOpenMessageReadRequest,
 };
 use osl_privacy_hub::native_surface_capture;
 // The QA-evidence half of the surface is compiled only for the disposable QA
@@ -2366,6 +2367,26 @@ async fn read_protected_email_open_message(
     })
     .await
     .map_err(|_| "The protected email reader was interrupted".to_owned())?
+}
+
+#[tauri::command]
+async fn read_protected_email_live_run_progress(
+    caller: tauri::WebviewWindow,
+    core: State<'_, HubCoreState>,
+    session: State<'_, HubAccountSessionState>,
+    request: ProtectedEmailLiveRunProgressRequest,
+) -> Result<osl_privacy_hub::website_driver::WebsiteLiveRunProgress, String> {
+    if caller.label() != "main" {
+        return Err("Only the trusted OSL window may read protected email progress".to_owned());
+    }
+    let _session = session.transition.lock().await;
+    let _owner = active_unlocked_osl_user_id(&core)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut driver = RealBrowserWebsiteDriver::launch().map_err(|error| error.to_string())?;
+        read_protected_email_live_run_progress_with_driver(&mut driver, request)
+    })
+    .await
+    .map_err(|_| "The protected email progress reader was interrupted".to_owned())?
 }
 
 #[tauri::command]

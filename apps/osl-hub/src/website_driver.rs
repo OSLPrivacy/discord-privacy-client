@@ -6,7 +6,7 @@
 
 use base64::Engine;
 use core::fmt;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::{Read, Write},
@@ -81,6 +81,18 @@ pub struct WebsiteSelectedEmail {
     pub conversation_identity: String,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebsiteLiveRunProgress {
+    pub active_account: String,
+    pub current_place: String,
+    pub messages_checked: usize,
+    pub matches: usize,
+    pub scrolls: usize,
+    pub waits: usize,
+    pub changes: usize,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 pub struct WebsitePageControls {
     pub editable_boxes: Vec<String>,
@@ -125,6 +137,10 @@ pub trait WebsiteDriver {
         &mut self,
         page: &WebsitePage,
     ) -> Result<WebsiteSelectedEmail, WebsiteDriverError>;
+    fn read_live_run_progress(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError>;
     fn place_text(&mut self, placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError>;
     fn press_named_control(
         &mut self,
@@ -225,6 +241,18 @@ impl RealBrowserWebsiteDriver {
             .json::<Vec<DevtoolsTarget>>()
             .map_err(|_| WebsiteDriverError::ReadFailed)
     }
+
+    fn page_websocket_url(&self, page: &WebsitePage) -> Result<String, WebsiteDriverError> {
+        let target_id = page
+            .target_id
+            .as_ref()
+            .ok_or(WebsiteDriverError::ReadFailed)?;
+        self.devtools_targets()?
+            .into_iter()
+            .find(|target| target.target_type == "page" && &target.id == target_id)
+            .and_then(|target| target.web_socket_debugger_url)
+            .ok_or(WebsiteDriverError::ReadFailed)
+    }
 }
 
 impl WebsiteDriver for RealBrowserWebsiteDriver {
@@ -320,15 +348,42 @@ impl WebsiteDriver for RealBrowserWebsiteDriver {
         }
     }
 
+    fn read_live_run_progress(
+        &mut self,
+        page: &WebsitePage,
+    ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+
+        loop {
+            if let Ok(websocket_url) = self.page_websocket_url(page) {
+                if let Ok(progress) = read_live_run_progress_snapshot(&websocket_url) {
+                    return Ok(progress);
+                }
+            }
+
+            if std::time::Instant::now() >= deadline {
+                return Err(WebsiteDriverError::ReadFailed);
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     fn place_text(&mut self, _placement: WebsiteTextPlacement) -> Result<(), WebsiteDriverError> {
         Err(WebsiteDriverError::TextPlacementFailed)
     }
 
     fn press_named_control(
         &mut self,
-        _control: WebsiteNamedControl,
+        control: WebsiteNamedControl,
     ) -> Result<(), WebsiteDriverError> {
-        Err(WebsiteDriverError::NamedControlNotFound)
+        let websocket_url = self.page_websocket_url(&control.page)?;
+        let name =
+            serde_json::to_string(&control.name).map_err(|_| WebsiteDriverError::ReadFailed)?;
+        let expression = CLICK_NAMED_CONTROL_EXPRESSION.replace("__OSL_CONTROL_NAME__", &name);
+        match evaluate_target(&websocket_url, &expression)? {
+            serde_json::Value::Bool(true) => Ok(()),
+            _ => Err(WebsiteDriverError::NamedControlNotFound),
+        }
     }
 }
 
@@ -371,6 +426,13 @@ fn read_selected_email_snapshot(
     websocket_url: &str,
 ) -> Result<BrowserSelectedEmailSnapshot, WebsiteDriverError> {
     let value = evaluate_target(websocket_url, SELECTED_EMAIL_EXPRESSION)?;
+    serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
+}
+
+fn read_live_run_progress_snapshot(
+    websocket_url: &str,
+) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
+    let value = evaluate_target(websocket_url, LIVE_RUN_PROGRESS_EXPRESSION)?;
     serde_json::from_value(value).map_err(|_| WebsiteDriverError::ReadFailed)
 }
 
@@ -675,6 +737,76 @@ const SELECTED_EMAIL_EXPRESSION: &str = r#"
 })()
 "#;
 
+const LIVE_RUN_PROGRESS_EXPRESSION: &str = r#"
+(() => {
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const root = document.querySelector('[data-osl-live-run-progress]');
+  if (!root) return null;
+  const valueFor = (name) => {
+    const fromRoot = root.getAttribute(`data-osl-${name}`);
+    if (fromRoot !== null) return fromRoot;
+    const element = document.querySelector(`[data-osl-${name}]`);
+    return element ? element.getAttribute(`data-osl-${name}`) : '';
+  };
+  const numberFor = (name) => {
+    const parsed = Number.parseInt(valueFor(name), 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  };
+  return {
+    activeAccount: compact(valueFor('active-account')),
+    currentPlace: compact(valueFor('current-place')),
+    messagesChecked: numberFor('messages-checked'),
+    matches: numberFor('matches'),
+    scrolls: numberFor('scrolls'),
+    waits: numberFor('waits'),
+    changes: numberFor('changes')
+  };
+})()
+"#;
+
+const CLICK_NAMED_CONTROL_EXPRESSION: &str = r#"
+(() => {
+  const expected = __OSL_CONTROL_NAME__;
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (element) => {
+    if (!element || element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    return element.getClientRects().length > 0;
+  };
+  const labelledBy = (element) => compact(
+    (element.getAttribute('aria-labelledby') || '')
+      .split(/\s+/)
+      .map((id) => document.getElementById(id))
+      .filter(Boolean)
+      .map((label) => label.innerText || label.textContent || '')
+      .join(' ')
+  );
+  const controlName = (element) => {
+    const candidates = [
+      element.getAttribute('aria-label'),
+      labelledBy(element),
+      element.getAttribute('title'),
+      element.value,
+      element.innerText || element.textContent,
+      element.getAttribute('name'),
+      element.id
+    ];
+    for (const candidate of candidates) {
+      const name = compact(candidate);
+      if (name) return name;
+    }
+    return '';
+  };
+  for (const element of document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"]')) {
+    if (!visible(element) || controlName(element) !== expected) continue;
+    element.click();
+    return true;
+  }
+  return false;
+})()
+"#;
+
 fn reserve_loopback_port() -> Result<u16, WebsiteDriverError> {
     TcpListener::bind("127.0.0.1:0")
         .and_then(|listener| listener.local_addr())
@@ -771,6 +903,21 @@ mod tests {
                 page: page.clone(),
                 body: "selected email body".to_owned(),
                 conversation_identity: "stable-thread-identity".to_owned(),
+            })
+        }
+
+        fn read_live_run_progress(
+            &mut self,
+            _page: &WebsitePage,
+        ) -> Result<WebsiteLiveRunProgress, WebsiteDriverError> {
+            Ok(WebsiteLiveRunProgress {
+                active_account: "fixture@example.invalid".to_owned(),
+                current_place: "Inbox".to_owned(),
+                messages_checked: 1,
+                matches: 1,
+                scrolls: 0,
+                waits: 0,
+                changes: 1,
             })
         }
 

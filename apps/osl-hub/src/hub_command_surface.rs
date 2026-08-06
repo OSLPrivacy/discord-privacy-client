@@ -28,7 +28,7 @@ use crate::native_discord_adapter::{
 };
 use crate::scrub_erasure::{self, ComposedErasureRequest, ErasureRequestInput};
 use crate::service_host::ActiveServiceHost;
-use crate::website_driver::{WebsiteDriver, WebsitePageRequest};
+use crate::website_driver::{WebsiteDriver, WebsiteLiveRunProgress, WebsitePageRequest};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
@@ -73,6 +73,12 @@ pub struct ProtectedEmailOpenMessageRead {
     pub conversation_identity: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedEmailLiveRunProgressRequest {
+    pub page_url: String,
+}
+
 pub fn read_protected_email_open_message_with_driver<D>(
     driver: &mut D,
     request: ProtectedEmailOpenMessageReadRequest,
@@ -97,6 +103,27 @@ where
         cover_message: selected.body,
         conversation_identity: selected.conversation_identity,
     })
+}
+
+pub fn read_protected_email_live_run_progress_with_driver<D>(
+    driver: &mut D,
+    request: ProtectedEmailLiveRunProgressRequest,
+) -> Result<WebsiteLiveRunProgress, String>
+where
+    D: WebsiteDriver,
+{
+    if request.page_url.trim().is_empty() {
+        return Err("Protected email progress requires an open service page".to_owned());
+    }
+
+    let page = driver
+        .find_page(WebsitePageRequest {
+            url: request.page_url,
+        })
+        .map_err(|error| error.to_string())?;
+    driver
+        .read_live_run_progress(&page)
+        .map_err(|error| error.to_string())
 }
 
 pub fn require_review_ui_identity_binding_from_verifier(
@@ -626,6 +653,7 @@ macro_rules! hub_tauri_commands {
             focus_default_browser_companion,
             detach_default_browser_companion,
             read_protected_email_open_message,
+            read_protected_email_live_run_progress,
             host_native_app_window,
             native_app_takeover_requires_consent,
             discord_marker_available,
@@ -1799,7 +1827,10 @@ mod tauri_registration_surface_tests {
             &handlers,
             &permissions,
             &capability,
-            &["read_protected_email_open_message"],
+            &[
+                "read_protected_email_open_message",
+                "read_protected_email_live_run_progress",
+            ],
         );
     }
 
