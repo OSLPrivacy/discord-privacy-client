@@ -1265,6 +1265,32 @@ pub struct OpenedNativeOverlayText {
     pub expires_at: i64,
 }
 
+#[cfg(test)]
+impl OpenedNativeOverlayText {
+    pub(crate) fn test_fixture(
+        message_id: &str,
+        cover_pointer: Option<&str>,
+        plaintext: &str,
+        context_verified: bool,
+        person_to_person_e2ee: bool,
+        view_once_consumed: bool,
+        created_at: i64,
+        expires_at: i64,
+    ) -> Self {
+        Self {
+            message_id: message_id.to_owned(),
+            sender_order: None,
+            cover_pointer: cover_pointer.map(str::to_owned),
+            plaintext: plaintext.to_owned(),
+            context_verified,
+            person_to_person_e2ee,
+            view_once_consumed,
+            created_at,
+            expires_at,
+        }
+    }
+}
+
 /// A single-device protected capsule. This is intentionally not described as
 /// person-to-person E2EE: the current identity encrypts to its own X25519 key
 /// and the context-bound ledger is local to this OSL Privacy identity.

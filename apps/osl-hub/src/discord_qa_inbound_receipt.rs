@@ -652,21 +652,22 @@ mod tests {
 
     fn batch(plaintext: &str) -> OpenedNativeOverlayTextBatch {
         OpenedNativeOverlayTextBatch {
-            messages: vec![OpenedNativeOverlayText {
-                message_id: "peer-00001111222233334444555566667777".to_owned(),
-                cover_pointer: Some("qa cover prose".to_owned()),
-                plaintext: plaintext.to_owned(),
-                context_verified: true,
-                person_to_person_e2ee: true,
-                view_once_consumed: false,
-                created_at: 1_899_996_400,
-                expires_at: 1_900_000_000,
-            }],
+            messages: vec![OpenedNativeOverlayText::test_fixture(
+                "peer-00001111222233334444555566667777",
+                Some("qa cover prose"),
+                plaintext,
+                true,
+                true,
+                false,
+                1_899_996_400,
+                1_900_000_000,
+            )],
             pending_view_once: Vec::new(),
             acknowledgments: Vec::new(),
             fetched: 1,
             decrypt_display_enabled: true,
             deferred_rows: 0,
+            unrecognized_wire_rows: 0,
         }
     }
 
@@ -711,6 +712,7 @@ mod tests {
             fetched: 0,
             decrypt_display_enabled: true,
             deferred_rows: 0,
+            unrecognized_wire_rows: 0,
         };
         write_receipt(&path, &empty).expect("empty poll");
         assert_eq!(std::fs::read(&path).expect("read after"), before);
@@ -776,6 +778,7 @@ mod tests {
             fetched: 0,
             decrypt_display_enabled: true,
             deferred_rows: 0,
+            unrecognized_wire_rows: 0,
         };
         let empty_receipt = poll_receipt_for(Ok(&empty));
         assert_eq!(empty_receipt.outcome, "success_empty");
