@@ -336,9 +336,12 @@ impl IcloudFakePageFixture {
     }
 
     pub fn place(&mut self) -> Result<&str, String> {
+        self.place_body(ICLOUD_1274_MARKED_WORDS)
+    }
+
+    pub fn place_body(&mut self, message: impl Into<String>) -> Result<&str, String> {
         self.require_control("Place")?;
-        self.placed_messages
-            .push(ICLOUD_1274_MARKED_WORDS.to_owned());
+        self.placed_messages.push(message.into());
         Ok(self
             .placed_messages
             .last()
@@ -666,6 +669,65 @@ mod tests {
         assert_eq!(before_remove.sent_email_count, 1);
         assert_eq!(after_remove.sent_email_count, 1);
         assert_eq!(fixture.control_names(), ICLOUD_FAKE_PAGE_CONTROL_NAMES);
+    }
+
+    #[test]
+    fn task_1276_icloud_body_rename_refuses_without_changing_placed_body() {
+        const BODY: &str = "MAPLE-1276";
+        const MISSING_BODY: &str = "Missing Body";
+
+        let mut fixture = icloud_fake_page_fixture();
+        let before_place = fixture.snapshot();
+        println!(
+            "TASK1276 icloud_placement_count_before={}",
+            before_place.placed_message_count
+        );
+        assert_eq!(before_place.placed_message_count, 0);
+
+        let placed = fixture
+            .place_body(BODY)
+            .expect("iCloud body control places MAPLE-1276")
+            .to_owned();
+        let after_place = fixture.snapshot();
+        let read_after_place = fixture
+            .read()
+            .expect("iCloud body reads after placement")
+            .to_owned();
+        println!(
+            "TASK1276 icloud_placement_count_after={} body_read={}",
+            after_place.placed_message_count, read_after_place
+        );
+        assert_eq!(placed, BODY);
+        assert_eq!(after_place.placed_message_count, 1);
+        assert_eq!(read_after_place, BODY);
+
+        let renamed_targets = icloud_web_control_targets()
+            .iter()
+            .copied()
+            .map(|mut target| {
+                if target.name == "body" {
+                    target.name = MISSING_BODY;
+                }
+                target
+            })
+            .collect::<Vec<_>>();
+        let refused = validate_icloud_web_control_targets(&renamed_targets)
+            .expect_err("renaming only iCloud body target must be refused");
+        println!("TASK1276 renamed_body_control={MISSING_BODY}");
+        println!("TASK1276 missing_body_refusal={refused}");
+        assert_eq!(refused, "missing required iCloud web control target: body");
+
+        let after_refusal = fixture.snapshot();
+        let read_after_refusal = fixture
+            .read()
+            .expect("iCloud body remains readable after refused target rename")
+            .to_owned();
+        println!(
+            "TASK1276 after_missing_body_refusal_count={} body_read={}",
+            after_refusal.placed_message_count, read_after_refusal
+        );
+        assert_eq!(after_refusal.placed_message_count, 1);
+        assert_eq!(read_after_refusal, BODY);
     }
 
     #[test]
