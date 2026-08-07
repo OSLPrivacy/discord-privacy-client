@@ -1,4 +1,5 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,13 +49,12 @@ const BAD_MESSAGE_RULE_CHOICES: [BadMessageRuleChoice; 6] = [
 
 pub fn list_bad_message_rules() -> Vec<BadMessageRuleChoice> {
     BAD_MESSAGE_RULE_CHOICES.to_vec()
-//! Persistent selections for a local bad-message review run.
-//!
-//! The scanner can suggest matches, but the stored decision remains a possible
-//! match so downstream deletion/review flows cannot treat a rule hit as proof.
+}
 
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+// Persistent selections for a local bad-message review run.
+//
+// The scanner can suggest matches, but the stored decision remains a possible
+// match so downstream deletion/review flows cannot treat a rule hit as proof.
 
 const STORE_DIR: &str = "bad-message-rules-v1";
 const MAX_RUN_ID_BYTES: usize = 64;
@@ -70,8 +70,6 @@ pub enum BadMessageMatchTreatment {
 }
 
 impl BadMessageMatchTreatment {
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::PossibleMatch => "possible_match",

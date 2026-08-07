@@ -39,7 +39,6 @@ use crate::discord_carrier_geometry::{
 use crate::native_a11y::msaa_bridge_call_class;
 #[cfg(any(target_os = "windows", test))]
 use crate::native_a11y::MsaaBridgeCallClass;
-use crate::row_who_wrote_it::SharedRowWhoWroteIt;
 
 /// `Scan -> Preview -> Confirm -> Execute -> Verify -> Receipt` for deleting the
 /// operator's OWN messages from Discord through Discord's own UI.
@@ -6134,17 +6133,6 @@ pub struct VisibleMessageRow {
     pub attribution: Option<NativeDiscordRowAttributionEvidence>,
 }
 
-/// Discord message ids selected for a chat burn from the currently open native
-/// chat. These are provider message ids for rows the signed-in account posted;
-/// peer rows and rows proven for any other scope are not representable here.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatBurnSenderMessageSelection {
-    pub scope_binding_sha256: String,
-    pub window_generation: u64,
-    pub sender_message_ids: Vec<String>,
-}
-
 /// Which provider identity Discord proved posted one visible native row.
 ///
 /// This is not inferred from the protected wire. The native producer must
@@ -6167,7 +6155,7 @@ pub enum NativeDiscordRowPoster {
 pub struct NativeDiscordRowAttributionEvidence {
     pub discord_message_id: String,
     pub poster_identity_sha256: String,
-    pub who_wrote_it: SharedRowWhoWroteIt,
+    pub poster: NativeDiscordRowPoster,
     pub native_locator_sha256: String,
     pub carrier_sha256: String,
     pub scope_binding_sha256: String,
@@ -6180,60 +6168,6 @@ pub fn native_row_attribution_scope_sha256(scope_binding: &str) -> String {
     stable_hash("discord-row-attribution-scope", scope_binding)
 }
 
-/// Select only the signed-in account's Discord message ids from the active
-/// chat's native row proof.
-///
-/// The display line is not consulted. Authority comes from the producer-owned
-/// attribution: same scope commitment, self poster, canonical Discord message id.
-pub fn chat_burn_sender_message_ids_from_rows(
-    rows: &[VisibleMessageRow],
-    scope_binding: &str,
-    window_generation: u64,
-) -> ChatBurnSenderMessageSelection {
-    let scope_binding_sha256 = native_row_attribution_scope_sha256(scope_binding);
-    let mut seen = std::collections::HashSet::with_capacity(rows.len());
-    let sender_message_ids = rows
-        .iter()
-        .filter_map(|row| row.attribution.as_ref())
-        .filter(|evidence| {
-            evidence.scope_binding_sha256 == scope_binding_sha256
-                && evidence.window_generation == window_generation
-                && evidence.poster == NativeDiscordRowPoster::SelfAccount
-                && canonical_discord_snowflake(&evidence.discord_message_id)
-        })
-        .filter_map(|evidence| {
-            seen.insert(evidence.discord_message_id.clone())
-                .then(|| evidence.discord_message_id.clone())
-        })
-        .collect();
-    ChatBurnSenderMessageSelection {
-        scope_binding_sha256,
-        window_generation,
-        sender_message_ids,
-    }
-}
-
-/// Read the active native Discord chat and select the signed-in account's
-/// provider message ids for burn-related follow-up.
-pub fn chat_burn_sender_message_ids(
-    host: &crate::native_window_host::NativeWindowHostState,
-    owner_osl_user_id: &str,
-    scope_binding: &str,
-    window_generation: u64,
-) -> Result<ChatBurnSenderMessageSelection, String> {
-    let rows = read_visible_message_rows(
-        host,
-        owner_osl_user_id,
-        scope_binding,
-        MAX_VISIBLE_CARRIER_ROWS,
-    )?;
-    Ok(chat_burn_sender_message_ids_from_rows(
-        &rows,
-        scope_binding,
-        window_generation,
-    ))
-}
-
 /// Domain-separated public-carrier commitment shared by producer and broker.
 pub fn native_row_attribution_carrier_sha256(carrier: &str) -> String {
     stable_hash("discord-row-attribution-carrier", carrier)
@@ -6244,7 +6178,9 @@ pub fn native_row_attribution_poster_sha256(provider_identity: &str) -> String {
     stable_hash("discord-row-attribution-poster", provider_identity)
 }
 
+#[cfg(any(test, target_os = "windows"))]
 const DISCORD_SNOWFLAKE_MIN_BYTES: usize = 15;
+#[cfg(any(test, target_os = "windows"))]
 const DISCORD_SNOWFLAKE_MAX_BYTES: usize = 22;
 #[cfg(any(test, target_os = "windows"))]
 const DISCORD_MESSAGE_CONTENT_AUTOMATION_ID_PREFIX: &str = "message-content-";
@@ -6254,6 +6190,7 @@ const DISCORD_AVATAR_URL_PREFIXES: [&str; 2] = [
     "https://media.discordapp.net/avatars/",
 ];
 
+#[cfg(any(test, target_os = "windows"))]
 fn canonical_discord_snowflake(value: &str) -> bool {
     (DISCORD_SNOWFLAKE_MIN_BYTES..=DISCORD_SNOWFLAKE_MAX_BYTES).contains(&value.len())
         && value.bytes().all(|byte| byte.is_ascii_digit())
@@ -6375,12 +6312,14 @@ pub(crate) fn native_row_attribution_from_provider(
     {
         return None;
     }
-    let who_wrote_it = if observation.poster_identity == observation.self_identity {
-        SharedRowWhoWroteIt::Yours
+    let poster = if observation.poster_identity == observation.self_identity {
+        NativeDiscordRowPoster::SelfAccount
     } else if observation.poster_identity == observation.expected_peer_identity {
-        SharedRowWhoWroteIt::Theirs
+        NativeDiscordRowPoster::PeerAccount
     } else {
-        SharedRowWhoWroteIt::NotPublishedByApp
+        // A different non-self account is not "the peer". The expected peer
+        // comes from the conversation header, independently of this row.
+        return None;
     };
     let authority_runtime_ids = [
         observation.self_avatar_runtime_id.as_slice(),
@@ -6421,7 +6360,7 @@ pub(crate) fn native_row_attribution_from_provider(
     Some(NativeDiscordRowAttributionEvidence {
         discord_message_id: observation.discord_message_id,
         poster_identity_sha256: native_row_attribution_poster_sha256(&observation.poster_identity),
-        who_wrote_it,
+        poster,
         native_locator_sha256: stable_hash(
             "discord-native-visible-row-provider-binding-v1",
             &native_binding,
@@ -6455,22 +6394,21 @@ pub(crate) fn native_row_producer_batch_is_valid(
         let Some(evidence) = row.attribution.as_ref() else {
             return false;
         };
-        let poster_is_consistent = match evidence.who_wrote_it {
-            SharedRowWhoWroteIt::Yours => {
+        let poster_is_consistent = match evidence.poster {
+            NativeDiscordRowPoster::SelfAccount => {
                 peer_poster.as_deref() != Some(evidence.poster_identity_sha256.as_str())
                     && self_poster
                         .get_or_insert_with(|| evidence.poster_identity_sha256.clone())
                         .as_str()
                         == evidence.poster_identity_sha256.as_str()
             }
-            SharedRowWhoWroteIt::Theirs => {
+            NativeDiscordRowPoster::PeerAccount => {
                 self_poster.as_deref() != Some(evidence.poster_identity_sha256.as_str())
                     && peer_poster
                         .get_or_insert_with(|| evidence.poster_identity_sha256.clone())
                         .as_str()
                         == evidence.poster_identity_sha256.as_str()
             }
-            SharedRowWhoWroteIt::NotPublishedByApp => false,
         };
         let matching_carriers = row
             .decode_candidates
@@ -6632,14 +6570,13 @@ fn qualify_native_visible_rows(rows: &[VisibleMessageRow]) -> NativeVisibleRowQu
         match row.attribution.as_ref() {
             Some(evidence) => {
                 qualification.proof_some = qualification.proof_some.saturating_add(1);
-                match evidence.who_wrote_it {
-                    SharedRowWhoWroteIt::Yours => {
+                match evidence.poster {
+                    NativeDiscordRowPoster::SelfAccount => {
                         qualification.own_rows = qualification.own_rows.saturating_add(1);
                     }
-                    SharedRowWhoWroteIt::Theirs => {
+                    NativeDiscordRowPoster::PeerAccount => {
                         qualification.peer_rows = qualification.peer_rows.saturating_add(1);
                     }
-                    SharedRowWhoWroteIt::NotPublishedByApp => {}
                 }
             }
             None => {
@@ -7484,10 +7421,8 @@ const MAX_OPERATOR_NAME_BYTES: usize = 64;
 /// it may never stand in for it.
 pub fn deletion_row_is_provider_attributed_to_operator(row: &VisibleMessageRow) -> bool {
     matches!(
-        row.attribution
-            .as_ref()
-            .map(|evidence| evidence.who_wrote_it),
-        Some(SharedRowWhoWroteIt::Yours)
+        row.attribution.as_ref().map(|evidence| evidence.poster),
+        Some(NativeDiscordRowPoster::SelfAccount)
     )
 }
 
@@ -27432,8 +27367,8 @@ mod tests {
         const OWN_CARRIER: &str = "the quiet harbour keeps every lantern burning tonight";
         const PEER_CARRIER: &str = "the winter garden waits beside the silver morning";
         let (own, peer) = own_and_peer_provider_evidence();
-        assert_eq!(own.who_wrote_it, SharedRowWhoWroteIt::Yours);
-        assert_eq!(peer.who_wrote_it, SharedRowWhoWroteIt::Theirs);
+        assert_eq!(own.poster, NativeDiscordRowPoster::SelfAccount);
+        assert_eq!(peer.poster, NativeDiscordRowPoster::PeerAccount);
         assert_eq!(own.discord_message_id, "333333333333333333");
         assert_eq!(peer.discord_message_id, "444444444444444444");
         assert_ne!(own.poster_identity_sha256, peer.poster_identity_sha256);
@@ -27448,96 +27383,15 @@ mod tests {
         assert_eq!(visible.len(), 2);
         assert!(visible.iter().all(|row| row.attribution.is_some()));
         assert_eq!(
-            visible[0]
-                .attribution
-                .as_ref()
-                .map(|proof| proof.who_wrote_it),
-            Some(SharedRowWhoWroteIt::Yours)
+            visible[0].attribution.as_ref().map(|proof| proof.poster),
+            Some(NativeDiscordRowPoster::SelfAccount)
         );
         assert_eq!(
-            visible[1]
-                .attribution
-                .as_ref()
-                .map(|proof| proof.who_wrote_it),
-            Some(SharedRowWhoWroteIt::Theirs)
+            visible[1].attribution.as_ref().map(|proof| proof.poster),
+            Some(NativeDiscordRowPoster::PeerAccount)
         );
         assert_eq!(visible[0].line, OWN_CARRIER);
         assert_eq!(visible[1].line, PEER_CARRIER);
-    }
-
-    #[test]
-    fn task_0524_chat_burn_selection_returns_only_active_chat_sender_ids() {
-        const SELF: &str = "111111111111111111";
-        const PEER: &str = "222222222222222222";
-        const ACTIVE_SCOPE: &str = "chat-a-active-scope";
-        const OTHER_SCOPE: &str = "chat-b-open-elsewhere";
-        const ACTIVE_GENERATION: u64 = 41;
-        const OTHER_GENERATION: u64 = 42;
-
-        let evidence = |message_id: &str,
-                        poster_identity: &str,
-                        scope: &str,
-                        generation: u64,
-                        row_index: usize,
-                        seed: i32| {
-            let carrier = format!("provider carrier for task 0524 row {seed}");
-            native_row_attribution_from_provider(
-                provider_observation(message_id, poster_identity, SELF, &carrier, seed),
-                &[carrier],
-                scope,
-                generation,
-                row_index,
-            )
-            .expect("provider attribution fixture is valid")
-        };
-
-        let active_a1 = "333333333333333331";
-        let active_a2 = "333333333333333332";
-        let active_peer = "444444444444444441";
-        let other_chat_b = "555555555555555551";
-        let stale_a = "666666666666666661";
-        let rows = vec![
-            provider_visible_row(
-                evidence(active_a1, SELF, ACTIVE_SCOPE, ACTIVE_GENERATION, 0, 31),
-                "active chat A sender row 1",
-            ),
-            provider_visible_row(
-                evidence(active_peer, PEER, ACTIVE_SCOPE, ACTIVE_GENERATION, 1, 41),
-                "active chat A peer row",
-            ),
-            provider_visible_row(
-                evidence(other_chat_b, SELF, OTHER_SCOPE, ACTIVE_GENERATION, 0, 51),
-                "chat B sender row",
-            ),
-            provider_visible_row(
-                evidence(stale_a, SELF, ACTIVE_SCOPE, OTHER_GENERATION, 0, 61),
-                "stale chat A sender row",
-            ),
-            provider_visible_row(
-                evidence(active_a2, SELF, ACTIVE_SCOPE, ACTIVE_GENERATION, 2, 71),
-                "active chat A sender row 2",
-            ),
-        ];
-
-        let selection =
-            chat_burn_sender_message_ids_from_rows(&rows, ACTIVE_SCOPE, ACTIVE_GENERATION);
-        println!(
-            "TASK 0524 direct chat A sender ids: {}",
-            selection.sender_message_ids.join(",")
-        );
-        println!("TASK 0524 excluded chat B/stale ids: {other_chat_b},{stale_a},{active_peer}");
-
-        assert_eq!(
-            selection.sender_message_ids,
-            vec![active_a1.to_owned(), active_a2.to_owned()]
-        );
-        assert!(!selection
-            .sender_message_ids
-            .contains(&other_chat_b.to_owned()));
-        assert!(!selection.sender_message_ids.contains(&stale_a.to_owned()));
-        assert!(!selection
-            .sender_message_ids
-            .contains(&active_peer.to_owned()));
     }
 
     #[test]
@@ -27674,8 +27528,7 @@ mod tests {
     }
 
     #[test]
-    fn native_provider_answers_not_published_for_a_different_non_self_poster_than_the_header_peer()
-    {
+    fn native_provider_refuses_a_different_non_self_poster_than_the_header_peer() {
         const SELF: &str = "111111111111111111";
         const FOREIGN: &str = "999999999999999999";
         const CARRIER: &str = "the winter garden waits beside the silver morning";
@@ -27685,23 +27538,14 @@ mod tests {
             observation.poster_identity,
             observation.expected_peer_identity
         );
-        let evidence = native_row_attribution_from_provider(
+        assert!(native_row_attribution_from_provider(
             observation,
             &[CARRIER.to_owned()],
             "trusted-scope",
             7,
             0,
         )
-        .expect("different non-self poster is an evidenced not-published answer");
-        assert_eq!(
-            evidence.who_wrote_it,
-            SharedRowWhoWroteIt::NotPublishedByApp
-        );
-        assert!(!native_row_producer_batch_is_valid(
-            &[provider_visible_row(evidence, CARRIER)],
-            "trusted-scope",
-            7
-        ));
+        .is_none());
     }
 
     #[test]
@@ -28398,15 +28242,14 @@ mod tests {
         line: &str,
         top: i32,
         bottom: i32,
-        who_wrote_it: SharedRowWhoWroteIt,
+        poster: NativeDiscordRowPoster,
         seed: i32,
     ) -> VisibleMessageRow {
         const SELF_ID: &str = "111111111111111111";
         const PEER_ID: &str = "222222222222222222";
-        let poster_identity = match who_wrote_it {
-            SharedRowWhoWroteIt::Yours => SELF_ID,
-            SharedRowWhoWroteIt::Theirs => PEER_ID,
-            SharedRowWhoWroteIt::NotPublishedByApp => "999999999999999999",
+        let poster_identity = match poster {
+            NativeDiscordRowPoster::SelfAccount => SELF_ID,
+            NativeDiscordRowPoster::PeerAccount => PEER_ID,
         };
         let carrier = format!("provider carrier for deletion row {seed}");
         let evidence = native_row_attribution_from_provider(
@@ -28423,7 +28266,7 @@ mod tests {
             0,
         )
         .expect("the production attribution constructor must accept this observation");
-        assert_eq!(evidence.who_wrote_it, who_wrote_it);
+        assert_eq!(evidence.poster, poster);
         VisibleMessageRow {
             locator_sha256: evidence.native_locator_sha256.clone(),
             line: line.to_owned(),
@@ -28435,13 +28278,13 @@ mod tests {
 
     /// A row Discord's own provider proved the operator's account posted.
     fn owned_read_row(line: &str, top: i32, bottom: i32, seed: i32) -> VisibleMessageRow {
-        attributed_read_row(line, top, bottom, SharedRowWhoWroteIt::Yours, seed)
+        attributed_read_row(line, top, bottom, NativeDiscordRowPoster::SelfAccount, seed)
     }
 
     /// A row Discord's own provider proved SOMEONE ELSE posted, whatever the
     /// rendered line says.
     fn peer_read_row(line: &str, top: i32, bottom: i32, seed: i32) -> VisibleMessageRow {
-        attributed_read_row(line, top, bottom, SharedRowWhoWroteIt::Theirs, seed)
+        attributed_read_row(line, top, bottom, NativeDiscordRowPoster::PeerAccount, seed)
     }
 
     #[test]
@@ -28519,84 +28362,6 @@ mod tests {
         );
         assert_eq!(scan.generation, 9);
         assert_eq!(scan.walk, guided_deletion::WalkCompleteness::Complete);
-    }
-
-    #[test]
-    fn task_3006_owner_check_refuses_another_persons_message() {
-        fn scrub_marker(line: &str) -> &str {
-            line.split_whitespace()
-                .find(|part| part.starts_with("SCRUB-"))
-                .expect("TASK 3006 seeded row must carry its scrub marker")
-        }
-
-        let rows = vec![
-            owned_read_row("Deckard SCRUB-MINE-1", 0, 44, 61),
-            peer_read_row("Deckard SCRUB-THEIRS-1", 44, 88, 62),
-            owned_read_row("Deckard SCRUB-MINE-2", 88, 132, 63),
-            peer_read_row("Deckard SCRUB-THEIRS-2", 132, 176, 64),
-            owned_read_row("Deckard SCRUB-MINE-3", 176, 220, 65),
-            peer_read_row("Deckard SCRUB-THEIRS-3", 220, 264, 66),
-        ];
-        let owner_check: Vec<(&str, bool)> = rows
-            .iter()
-            .map(|row| {
-                (
-                    scrub_marker(&row.line),
-                    deletion_row_is_provider_attributed_to_operator(row),
-                )
-            })
-            .collect();
-        let yours: Vec<&str> = owner_check
-            .iter()
-            .filter_map(|(marker, owned)| owned.then_some(*marker))
-            .collect();
-        println!(
-            "TASK 3006 owner_check_yours_before_anything_else={}_of_{}",
-            yours.len(),
-            owner_check.len()
-        );
-        println!("TASK 3006 owner_check_yours_markers={}", yours.join(","));
-        assert_eq!(yours, vec!["SCRUB-MINE-1", "SCRUB-MINE-2", "SCRUB-MINE-3"]);
-
-        let not_yours_error = guided_deletion::PlanRefusal::ForeignRow.reason();
-        let refused: Vec<(&str, &str)> = owner_check
-            .iter()
-            .filter_map(|(marker, owned)| (!owned).then_some((*marker, not_yours_error)))
-            .collect();
-        for (marker, reason) in &refused {
-            println!("TASK 3006 refused_marker={marker} error={reason}");
-        }
-        assert_eq!(
-            refused,
-            vec![
-                ("SCRUB-THEIRS-1", "row_is_not_your_own_message"),
-                ("SCRUB-THEIRS-2", "row_is_not_your_own_message"),
-                ("SCRUB-THEIRS-3", "row_is_not_your_own_message"),
-            ]
-        );
-
-        let scan = deletion_scan_from_rows(
-            &rows,
-            "scope",
-            9,
-            &["Deckard".to_owned()],
-            MAX_VISIBLE_CARRIER_ROWS,
-            Some(true),
-        );
-        let scanned_markers: Vec<&str> = scan
-            .candidates
-            .iter()
-            .map(|candidate| scrub_marker(&rows[candidate.scan_ordinal].line))
-            .collect();
-        println!(
-            "TASK 3006 scan_candidates_after_owner_check={}",
-            scanned_markers.join(",")
-        );
-        assert_eq!(scan.rows_seen, 6);
-        assert_eq!(
-            scanned_markers,
-            vec!["SCRUB-MINE-1", "SCRUB-MINE-2", "SCRUB-MINE-3"]
-        );
     }
 
     #[test]

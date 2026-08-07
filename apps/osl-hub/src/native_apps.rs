@@ -924,7 +924,7 @@ fn list_native_apps_with_claims_and_installer_probe(
                     .map(|blocker| blocker.slug())
                     .collect(),
                 claim_note: claim.reason,
-                status_page: crate::claim_state::status_page_data_for(claim).into(),
+                status_page: crate::claim_state::status_page_data_for(&claim).into(),
                 protected_mode: native_app_protected_mode(app.id),
                 isolated_profile_available: isolated_native_profile_available(app.id),
                 supports_overlay: false,
