@@ -42,6 +42,17 @@ import { componentPickerScreen } from "./component-picker";
 import { componentManagerFromOnboarding } from "./component-manager";
 import { autoScrubConsentPrompt, decideAutoScrubInstall } from "./component-consent";
 import { autoScrubTierStatus } from "./autoscrub-tier";
+import {
+  chooseMessageDefault,
+  initialMessageDefaultsScreenState,
+  messageDefaultsScreenMarkup,
+  resetMessageDefaults,
+  savedMessageDefaultLabels,
+  saveMessageDefaults,
+  type MessageDefaults,
+  type MessageDefaultsControl,
+  type MessageDefaultsScreenState,
+} from "./message-defaults";
 import { deviceTransferManifestScreen } from "./device-transfer";
 import { initialOldDeviceCopyDecision, oldDeviceCopyDecisionView } from "./device-transfer-source";
 import { renderDeadmanScreen, selectDeadmanAction } from "./deadman";
@@ -233,7 +244,7 @@ import {
 import type { SecureLocalStore } from "./secure-local-store";
 import { createOslChatSecureLocalStore } from "./osl-chat-secure-store";
 
-export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
+export type Route = "onboarding" | "home" | "inbox" | "people" | "privacy" | "activity" | "connections" | "service" | "settings" | "message-defaults" | "mullvad" | "osl-chat" | "osl-mail" | "osl-servers" | "signal-qa";
 
 /**
  * The colour a status chip is allowed to claim, resolved from the word printed
@@ -470,6 +481,7 @@ const recoveryKitUnsavedFlag = createRecoveryKitUnsavedFlag({
   write: (unsaved) => setHubRecoveryKitUnsaved(unsaved),
 });
 let settingsSection: SettingsSection = "account";
+let messageDefaultsScreen: MessageDefaultsScreenState = initialMessageDefaultsScreenState();
 let activeService: LinkedService | null = null;
 let activeHomeAppId: HomeAppId | null = null;
 let appLaunchPendingId: HomeAppId | null = null;
@@ -4847,6 +4859,7 @@ function workspaceContent(): string {
   if (route === "osl-mail") return oslMailContent();
   if (route === "osl-servers") return oslServersContent();
   if (route === "settings") return settingsContent();
+  if (route === "message-defaults") return messageDefaultsScreenMarkup(messageDefaultsScreen);
   if (route === "service" && activeService) return serviceContent();
   const launchableHomeApps = homeAppsFromServices(services).filter((app) => app.visibility === "launch");
   const roadmapHomeApps = launchableHomeApps.filter((app) => app.launchState !== "available");
@@ -5861,12 +5874,18 @@ function settingsContent(): string {
 
 function settingsSectionContent(): string {
   if (settingsSection === "account") return `${identitySettingsContent()}${settingsDivider()}${passwordSecuritySettingsContent()}${accountAdvancedSettingsContent()}${renderRecoveryStatesSettings()}`;
-  if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}`;
+  if (settingsSection === "apps") return `${serviceAccountsSettingsContent()}${optionalComponentsSettingsContent()}${sendingSettingsContent()}${messageDefaultsSettingsEntry()}`;
   if (settingsSection === "scrub") return privacySettingsContent();
   if (settingsSection === "cleanup") return massCleanupSettingsContent();
   if (settingsSection === "notifications") return notificationSettingsContent();
   if (settingsSection === "appearance") return appearanceSettingsContent();
   return updateSettingsContent();
+}
+
+/** The way in to the Message defaults screen from Settings. */
+function messageDefaultsSettingsEntry(): string {
+  const labels = savedMessageDefaultLabels(messageDefaultsScreen.saved);
+  return `<div class="setting-line" data-message-defaults-entry><span><strong>Message defaults</strong><small>Timer ${escapeHtml(labels.timer)} · Burn ${escapeHtml(labels["burn-scope"])} · View once ${escapeHtml(labels["view-once-length"])} · ${escapeHtml(labels.writing)}</small></span><button class="button compact" type="button" data-route="message-defaults">Open</button></div>`;
 }
 
 function optionalComponentsSettingsContent(): string {
@@ -7922,6 +7941,27 @@ function bindWorkspace(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-settings-send-mode]").forEach((button) => button.addEventListener("click", () => {
     void changeSendingMode(button.dataset.settingsSendMode as SendMode);
   }));
+  // Message defaults. Save and Reset move the screen's own state; the saved
+  // values do not leave the app yet because `osl_save_message_defaults` is an
+  // `ipc` command that is not on the hub command surface. Wiring it is a
+  // separate step; the controls and their saved reading are this screen's job.
+  document.querySelectorAll<HTMLInputElement>("[data-message-default]").forEach((input) => input.addEventListener("change", () => {
+    messageDefaultsScreen = chooseMessageDefault(
+      messageDefaultsScreen,
+      input.dataset.messageDefault as MessageDefaultsControl,
+      input.value,
+    );
+    render();
+  }));
+  document.querySelector<HTMLButtonElement>("[data-message-default-save]")?.addEventListener("click", () => {
+    messageDefaultsScreen = saveMessageDefaults(messageDefaultsScreen);
+    render();
+    showToast("Message defaults saved");
+  });
+  document.querySelector<HTMLButtonElement>("[data-message-default-reset]")?.addEventListener("click", () => {
+    messageDefaultsScreen = resetMessageDefaults(messageDefaultsScreen);
+    render();
+  });
   document.querySelector<HTMLButtonElement>("[data-inbox-start-private]")?.addEventListener("click", () => inboxPrimaryAction());
   document.querySelectorAll<HTMLButtonElement>("[data-inbox-filter]").forEach((button) => button.addEventListener("click", () => {
     inboxFilter = parseInboxFilter(button.dataset.inboxFilter);
@@ -10628,6 +10668,7 @@ type OslHubUiTestStatePatch = {
   oslChatDraft?: string;
   recoveryBundle?: { userId: string; identityPhrase: string | null; passwordPhrase: string } | null;
   recoveryKitUnsaved?: boolean;
+  messageDefaults?: MessageDefaults;
 };
 
 function testHubPerson(person: Partial<HubPerson> & { personId: string }): HubPerson {
@@ -10676,6 +10717,7 @@ function applyOslHubUiTestState(patch: OslHubUiTestStatePatch = {}): void {
   deleteChoices = initialDeleteChoices();
   torOnboarding = initialTorOnboardingState();
   settingsSection = "account";
+  messageDefaultsScreen = initialMessageDefaultsScreenState(patch.messageDefaults);
   activeService = null;
   activeHomeAppId = null;
   activeOslChatPersonId = patch.activeOslChatPersonId ?? null;
@@ -11147,6 +11189,9 @@ export const __oslHubUiTest = {
     route = "settings";
     settingsSection = section;
     return workspaceContent();
+  },
+  messageDefaultsStateForTest(): MessageDefaultsScreenState {
+    return { saved: { ...messageDefaultsScreen.saved }, draft: { ...messageDefaultsScreen.draft } };
   },
   renderRouteShell(destination: Route): string {
     route = destination;
