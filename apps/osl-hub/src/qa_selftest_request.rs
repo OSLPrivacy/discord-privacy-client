@@ -881,6 +881,7 @@ pub struct DrainReport {
     pub acknowledgment_kind_order: Vec<&'static str>,
     pub fetched: u32,
     pub deferred_rows: u32,
+    pub already_opened_count: u32,
     pub decrypt_display_enabled: bool,
     pub context_verified_count: usize,
     pub person_to_person_e2ee_count: usize,
@@ -915,6 +916,7 @@ impl DrainReport {
             acknowledgment_kind_order: acknowledgment_kind_order(batch),
             fetched: batch.fetched,
             deferred_rows: batch.deferred_rows,
+            already_opened_count: batch.already_opened,
             decrypt_display_enabled: batch.decrypt_display_enabled,
             context_verified_count: count(|message| message.context_verified),
             person_to_person_e2ee_count: count(|message| message.person_to_person_e2ee),
@@ -1658,6 +1660,9 @@ mod tests {
                 .collect(),
             decrypt_display_enabled: true,
             deferred_rows: 0,
+            unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
+            already_opened: 0,
         }
     }
 

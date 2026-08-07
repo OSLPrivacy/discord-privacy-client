@@ -36,7 +36,7 @@ function batchWithUnrecognized(): NativeDiscordOverlayOpenedBatch {
     decryptDisplayEnabled: true,
     deferredRows: 0,
     unrecognizedWireRows: 1,
-    contentGoneRows: 0,
+    contentGoneRows: 0, alreadyOpened: 0,
   };
 }
 
@@ -57,7 +57,7 @@ function openedBatch(messageId: string, plaintext: string): NativeDiscordOverlay
     decryptDisplayEnabled: true,
     deferredRows: 0,
     unrecognizedWireRows: 0,
-    contentGoneRows: 0,
+    contentGoneRows: 0, alreadyOpened: 0,
   };
 }
 

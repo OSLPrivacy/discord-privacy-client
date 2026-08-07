@@ -583,7 +583,7 @@ describe("trusted composer overlay", () => {
     // The handle is held to the id shape the rest of this path already uses.
     expect(parseNativeDiscordOverlayOpened({ ...opened, messageId: "not-a-peer-id" })).toBeNull();
     const pendingViewOnce = { messageId: "peer-0123456789abcdef0123456789abcdef", expiresAt: prepared.expiresAt, displayDurationSeconds: 15, personToPersonE2ee: true };
-    const batch = { messages: [opened], pendingViewOnce: [pendingViewOnce], acknowledgments: [acknowledgment], fetched: 2, decryptDisplayEnabled: true, deferredRows: 0, unrecognizedWireRows: 0, contentGoneRows: 0 };
+    const batch = { messages: [opened], pendingViewOnce: [pendingViewOnce], acknowledgments: [acknowledgment], fetched: 2, decryptDisplayEnabled: true, deferredRows: 0, unrecognizedWireRows: 0, contentGoneRows: 0, alreadyOpened: 0 };
     expect(parseNativeDiscordOverlayOpenedBatch(batch)).toEqual(batch);
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, pendingViewOnce: [{ ...pendingViewOnce, displayDurationSeconds: 61 }] })).toBeNull();
     // A batch that cannot say whether opening was switched on, or how many rows it
@@ -597,6 +597,8 @@ describe("trusted composer overlay", () => {
     expect(parseNativeDiscordOverlayOpenedBatch(batchWithoutUnrecognized)).toBeNull();
     const { contentGoneRows: _gone, ...batchWithoutGone } = batch;
     expect(parseNativeDiscordOverlayOpenedBatch(batchWithoutGone)).toBeNull();
+    const { alreadyOpened: _alreadyOpened, ...batchWithoutAlreadyOpened } = batch;
+    expect(parseNativeDiscordOverlayOpenedBatch(batchWithoutAlreadyOpened)).toBeNull();
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, decryptDisplayEnabled: false })?.decryptDisplayEnabled).toBe(false);
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, deferredRows: 3 })?.deferredRows).toBe(3);
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, deferredRows: -1 })).toBeNull();
@@ -604,6 +606,8 @@ describe("trusted composer overlay", () => {
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, unrecognizedWireRows: -1 })).toBeNull();
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, contentGoneRows: 1 })?.contentGoneRows).toBe(1);
     expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, contentGoneRows: -1 })).toBeNull();
+    expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, alreadyOpened: 1 })?.alreadyOpened).toBe(1);
+    expect(parseNativeDiscordOverlayOpenedBatch({ ...batch, alreadyOpened: -1 })).toBeNull();
     expect(parseNativeDiscordOverlayState({ ...state, scopeApproved: false })).toBeNull();
     const { discordMarkerAvailable: _marker, ...stateWithoutMarkerAvailability } = state;
     expect(parseNativeDiscordOverlayState(stateWithoutMarkerAvailability)).toBeNull();

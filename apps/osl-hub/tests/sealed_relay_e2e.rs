@@ -1038,11 +1038,13 @@ pub fn osl_chat_message_survives_a_lost_wrapped_key_response() {
     let wrong_scope = relay.replay_first_message(&alice_id, &bob_id, Some("wrong-scope"));
     TestStorage::activate(&bob_dir);
     let opened = drain_osl_chat_text(&bob, &bob_security, &bob_broker, true).unwrap();
-    assert_eq!(opened.messages.len(), 1);
+    let opened_private_messages_after_first = opened.messages.len();
+    assert_eq!(opened_private_messages_after_first, 1);
     assert_eq!(opened.messages[0].plaintext, plaintext);
     assert!(opened.messages[0].context_verified);
     assert!(opened.messages[0].person_to_person_e2ee);
     assert!(opened.messages[0].view_once_consumed);
+    assert_eq!(opened.already_opened, 0);
     assert_eq!(relay.pending_for(&bob_id), 1);
     relay.remove_inbox(&wrong_scope);
 
@@ -1082,6 +1084,19 @@ pub fn osl_chat_message_survives_a_lost_wrapped_key_response() {
     let replay = drain_osl_chat_text(&bob, &bob_security, &bob_broker, true).unwrap();
     assert!(replay.messages.is_empty());
     assert!(replay.pending_view_once.is_empty());
+    let opened_private_messages_after_second =
+        opened_private_messages_after_first + replay.messages.len();
+    assert_eq!(opened_private_messages_after_second, 1);
+    assert_eq!(replay.already_opened, 1);
+    eprintln!("TASK3984 opened_private_messages_after_first={opened_private_messages_after_first}");
+    eprintln!(
+        "TASK3984 opened_private_messages_after_second={opened_private_messages_after_second}"
+    );
+    eprintln!("TASK3984 second_attempt_recorded_as=already opened");
+    eprintln!(
+        "TASK3984 second_attempt_already_opened_count={}",
+        replay.already_opened
+    );
     assert_eq!(relay.pending_for(&bob_id), 0);
 
     TestStorage::activate(&alice_dir);

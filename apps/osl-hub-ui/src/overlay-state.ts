@@ -139,6 +139,8 @@ export interface NativeDiscordOverlayOpenedBatch {
    * was already gone. Count-only: the renderer shows one fixed refusal sentence.
    */
   contentGoneRows: number;
+  /** Authenticated relay rows for messages this scope already opened. */
+  alreadyOpened: number;
 }
 
 export interface NativeDiscordOverlayPendingViewOnce {
@@ -432,7 +434,7 @@ export function overlayExpiryDelayMs(expiresAtSeconds: number, nowMs: number): n
 }
 
 export function parseNativeDiscordOverlayOpenedBatch(value: unknown): NativeDiscordOverlayOpenedBatch | null {
-  if (!exactRecord(value, ["messages", "pendingViewOnce", "acknowledgments", "fetched", "decryptDisplayEnabled", "deferredRows", "unrecognizedWireRows", "contentGoneRows"])
+  if (!exactRecord(value, ["messages", "pendingViewOnce", "acknowledgments", "fetched", "decryptDisplayEnabled", "deferredRows", "unrecognizedWireRows", "contentGoneRows", "alreadyOpened"])
     || !Array.isArray(value.messages)
     || !Array.isArray(value.pendingViewOnce) || !Array.isArray(value.acknowledgments) || value.acknowledgments.length > 64
     || value.pendingViewOnce.length > 64
@@ -453,13 +455,15 @@ export function parseNativeDiscordOverlayOpenedBatch(value: unknown): NativeDisc
     || !Number.isSafeInteger(value.unrecognizedWireRows)
     || Number(value.unrecognizedWireRows) < 0
     || !Number.isSafeInteger(value.contentGoneRows)
-    || Number(value.contentGoneRows) < 0) return null;
+    || Number(value.contentGoneRows) < 0
+    || !Number.isSafeInteger(value.alreadyOpened)
+    || Number(value.alreadyOpened) < 0) return null;
   const messages = value.messages.map(parseNativeDiscordOverlayOpened);
   const pendingViewOnce = value.pendingViewOnce.map(parseNativeDiscordOverlayPendingViewOnce);
   const acknowledgments = value.acknowledgments.map(parseNativeDiscordOverlayAcknowledgment);
   if (messages.some((message) => message === null) || pendingViewOnce.some((message) => message === null)
     || acknowledgments.some((receipt) => receipt === null)) return null;
-  return { messages: messages as NativeDiscordOverlayOpened[], pendingViewOnce: pendingViewOnce as NativeDiscordOverlayPendingViewOnce[], acknowledgments: acknowledgments as NativeDiscordOverlayAcknowledgment[], fetched: value.fetched as number, decryptDisplayEnabled: value.decryptDisplayEnabled as boolean, deferredRows: value.deferredRows as number, unrecognizedWireRows: value.unrecognizedWireRows as number, contentGoneRows: value.contentGoneRows as number };
+  return { messages: messages as NativeDiscordOverlayOpened[], pendingViewOnce: pendingViewOnce as NativeDiscordOverlayPendingViewOnce[], acknowledgments: acknowledgments as NativeDiscordOverlayAcknowledgment[], fetched: value.fetched as number, decryptDisplayEnabled: value.decryptDisplayEnabled as boolean, deferredRows: value.deferredRows as number, unrecognizedWireRows: value.unrecognizedWireRows as number, contentGoneRows: value.contentGoneRows as number, alreadyOpened: value.alreadyOpened as number };
 }
 
 export function nativeDiscordOverlayReceiveScreen(

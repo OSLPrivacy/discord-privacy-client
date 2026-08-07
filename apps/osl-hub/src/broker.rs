@@ -1227,6 +1227,17 @@ pub struct OpenedNativeOverlayTextBatch {
     /// build.  As with every receive-side tally, it carries no row identifier
     /// or content-derived data across the Tauri boundary.
     pub unrecognized_wire_rows: u32,
+    /// Rows whose public cover was recognized after their protected store
+    /// content had already disappeared. This remains count-only across IPC.
+    pub content_gone_rows: u32,
+    /// Authenticated relay rows naming a message this scope has already
+    /// durably consumed.
+    ///
+    /// The row is retired again, but no plaintext is returned. This count is
+    /// the receive-side proof that an exact replay reached the opener and was
+    /// classified as already opened rather than silently disappearing into an
+    /// empty batch.
+    pub already_opened: u32,
 }
 
 /// Counts of acknowledgement states in one broker batch.
@@ -4889,6 +4900,7 @@ fn drain_peer_inbox_text(
     // empty inbox.  The row is retained: this build cannot authenticate and
     // consume it, but a compatible build may be able to after an update.
     let mut unrecognized_wire_rows = 0u32;
+    let mut already_opened = 0u32;
     for item in items {
         // Unrelated inbox traffic must never consume this bounded display
         // budget. Stop only after 64 messages for this exact friend/scope were
@@ -5370,6 +5382,7 @@ fn drain_peer_inbox_text(
             // Durable replay consumption, not a read receipt, authorizes
             // retiring this relay row. Opened acknowledgments stay suppressed
             // until a durable mutual-consent grant exists.
+            already_opened = already_opened.saturating_add(1);
             let _ = client.delete_control_inbox(&identity, &item.id);
             continue;
         }
@@ -5582,6 +5595,8 @@ fn drain_peer_inbox_text(
                 created_at: logical.created_at,
                 expires_at: logical.expires_at,
             });
+        } else {
+            already_opened = already_opened.saturating_add(1);
         }
     }
     // Outbound half of the bilateral burn, posted on the same authenticated
@@ -5616,6 +5631,8 @@ fn drain_peer_inbox_text(
         decrypt_display_enabled: allow_messages,
         deferred_rows,
         unrecognized_wire_rows,
+        content_gone_rows: 0,
+        already_opened,
     })
 }
 
@@ -12801,6 +12818,8 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
+            already_opened: 0,
         })
         .unwrap();
         assert_eq!(value["fetched"], 2);
@@ -12829,6 +12848,7 @@ mod tests {
         assert_eq!(value["decryptDisplayEnabled"], true);
         assert_eq!(value["deferredRows"], 0);
         assert_eq!(value["unrecognizedWireRows"], 0);
+        assert_eq!(value["alreadyOpened"], 0);
 
         // A multi-row message has no single cover, and the absent key is what the
         // renderer's exact-key parser expects rather than an explicit null.
@@ -13057,6 +13077,8 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
+            already_opened: 0,
         };
         let counters = batch.acknowledgment_counters();
         assert_eq!(counters.received, 1);
@@ -13092,6 +13114,8 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
+            already_opened: 0,
         };
 
         assert_eq!(
@@ -13168,6 +13192,8 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
+            already_opened: 0,
         };
 
         let statuses = batch
@@ -13216,6 +13242,8 @@ mod tests {
                 decrypt_display_enabled: true,
                 deferred_rows: 0,
                 unrecognized_wire_rows: 0,
+                content_gone_rows: 0,
+                already_opened: 0,
             };
         let labels = |batch: &OpenedNativeOverlayTextBatch| {
             batch
@@ -13360,6 +13388,8 @@ mod tests {
             decrypt_display_enabled: true,
             deferred_rows: 0,
             unrecognized_wire_rows: 0,
+            content_gone_rows: 0,
+            already_opened: 0,
         };
 
         let value = serde_json::to_value(batch).expect("B-side batch serializes");
