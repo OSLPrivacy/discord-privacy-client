@@ -181,6 +181,7 @@ function finishAssert(condition, message) {
 const [cutHash, cutAuthorDate, cutCommitDate, cutSubject] = commitLine(CUT);
 const cutCommitUtc = commitUtcDate(CUT);
 const deletedGroups = parseDeletedGroups();
+const expectedItems = [];
 const items = [];
 const perApp = new Map(APPS.map((app) => [app.id, []]));
 
@@ -192,12 +193,16 @@ for (const group of deletedGroups) {
     for (const app of apps) {
       for (const line of unit.lines) {
         const item = `${app.display} | ${category} | ${unit.file} | ${line.trim()} | brought back from history`;
+        expectedItems.push(item);
         perApp.get(app.id).push(item);
         items.push(item);
       }
     }
   }
 }
+
+const listedItems = new Set(items);
+const missingExpectedItems = expectedItems.filter((item) => !listedItems.has(item));
 
 const neitherCount = exactLineCountWithNeither(items);
 const deletedColorClaims = colorClaimCount(items);
@@ -209,6 +214,10 @@ finishAssert(cutHash === CUT, "cut hash mismatch");
 finishAssert(cutAuthorDate.startsWith("2026-08-04T21:49:55-07:00"), "cut local date was not 2026-08-04");
 finishAssert(cutCommitUtc.startsWith("2026-08-05T04:49:55Z"), "cut UTC date was not 2026-08-05");
 for (const app of APPS) finishAssert((perApp.get(app.id)?.length ?? 0) > 0, `missing lines for ${app.id}`);
+finishAssert(
+  missingExpectedItems.length === 0,
+  `deleted-work list does not mention piece deleted by ${CUT}: ${missingExpectedItems[0]}`
+);
 finishAssert(neitherCount === 0, "some listed lines lack brought back/written again");
 finishAssert(deletedColorClaims === 0, "a listed line claims colors were deleted");
 finishAssert(touchedListCount === task4250Checked, "touched list count does not match 4250 checked list count");
