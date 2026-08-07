@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Apps and sending</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import "/src/styles.css";
+      const { appsAndSendingScreenMarkup } = await import("/src/apps-and-sending-screen.ts");
+      const response = await fetch("/screenshots/fixtures/task-0760-apps-and-sending.json");
+      const saved = await response.json();
+
+      // The capture check re-renders a changed copy of the same model so it can
+      // prove the pixels it photographed came from the saved choices.
+      window.task0760Render = (model) => {
+        document.querySelector("#app").innerHTML = appsAndSendingScreenMarkup(model);
+        document.title = model.title;
+        document.documentElement.dataset.task0760 = "ready";
+      };
+
+      window.task0760Render(saved);
+    </script>
+  </body>
+</html>
