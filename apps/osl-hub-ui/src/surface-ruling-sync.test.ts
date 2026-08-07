@@ -6,7 +6,16 @@ type Ruling = {
   email_carriers: string[];
   native_email_carriers: string[];
   first_party_surfaces: string[];
+  mailbox_reading_ruling: MailboxReadingRuling;
   cut_surfaces: string[];
+};
+
+type MailboxReadingRuling = {
+  task: string;
+  ruled_on: string;
+  ruled_by: string;
+  owner_words: string;
+  outside_services_correction: string;
 };
 
 const root = new URL("../../..", import.meta.url);
@@ -95,6 +104,12 @@ function rustNativeAppRefs(text: string): string[] {
   return [...text.matchAll(/NativeAppId::([A-Z][A-Za-z0-9]*)/g)].map((match) => rustVariantId(match[1]));
 }
 
+function assertText(path: string, actual: string, expected: string): void {
+  if (actual !== expected) {
+    throw new Error(`TASK4086_MAILBOX_RULING_WORDING ${path}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+  }
+}
+
 describe("surface ruling synchronization", () => {
   it("keeps every executable enumeration reconciled to the 2026-08-05 ruling", () => {
     const servicesTs = source("apps/osl-hub-ui/src/services.ts");
@@ -150,5 +165,22 @@ describe("surface ruling synchronization", () => {
       expect(homeAppIds, `cut surface ${cut} must not be in active home app ruling`).not.toContain(cut);
       expect(serviceIds, `cut surface ${cut} must not be in active service ruling`).not.toContain(cut);
     }
+  });
+
+  it("keeps the mailbox ruling record resolved for task 4086", () => {
+    const expected: MailboxReadingRuling = {
+      task: "4086",
+      ruled_on: "2026-08-07",
+      ruled_by: "Liam",
+      owner_words: "mailboxes can be read",
+      outside_services_correction: "Nothing was ever removed for the ten outside services, so there is nothing to put back there, only new work.",
+    };
+
+    expect(ruling.mailbox_reading_ruling, "TASK4086_MAILBOX_RULING_RECORD data/surface-ruling-2026-08-05.json$.mailbox_reading_ruling").toEqual(expected);
+    assertText(
+      "data/surface-ruling-2026-08-05.json$.mailbox_reading_ruling.owner_words task=4086",
+      ruling.mailbox_reading_ruling.owner_words,
+      expected.owner_words,
+    );
   });
 });

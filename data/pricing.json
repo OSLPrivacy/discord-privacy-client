@@ -1633,6 +1633,13 @@
       "email_carriers": ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"],
       "native_email_carriers": ["outlook"],
       "first_party_surfaces": ["osl-chats", "osl-mail"],
+      "mailbox_reading_ruling": {
+        "task": "4086",
+        "ruled_on": "2026-08-07",
+        "ruled_by": "Liam",
+        "owner_words": "mailboxes can be read",
+        "outside_services_correction": "Nothing was ever removed for the ten outside services, so there is nothing to put back there, only new work."
+      },
       "owner_rulings": [
         {
           "ruled_on": "2026-08-07",
