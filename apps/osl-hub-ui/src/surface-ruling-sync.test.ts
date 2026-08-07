@@ -7,6 +7,12 @@ type Ruling = {
   native_email_carriers: string[];
   first_party_surfaces: string[];
   cut_surfaces: string[];
+  mailbox_reading_ruling: {
+    ruled_on: string;
+    allowed: boolean;
+    owner_words: string;
+    outside_services_correction: string;
+  };
 };
 
 const root = new URL("../../..", import.meta.url);
@@ -25,6 +31,7 @@ const nativeAppIds = unique([
   ...ruling.native_email_carriers,
 ]);
 const instagramCutSurfaceRecordedBefore = 3;
+const unresolvedChoicePattern = new RegExp(`\\b(?:${["wait" + "ing", "await" + "ing"].join("|")})\\b`, "iu");
 
 function assertSameSet(name: string, actual: readonly string[], expected: readonly string[]): void {
   const actualSet = unique(actual);
@@ -101,6 +108,13 @@ function rustServiceAliasRefs(text: string): string[] {
 
 function rustNativeAppRefs(text: string): string[] {
   return [...text.matchAll(/NativeAppId::([A-Z][A-Za-z0-9]*)/g)].map((match) => rustVariantId(match[1]));
+}
+
+function collectStringValues(value: unknown, path = "$"): Array<{ path: string; value: string }> {
+  if (typeof value === "string") return [{ path, value }];
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.flatMap((entry, index) => collectStringValues(entry, `${path}[${index}]`));
+  return Object.entries(value).flatMap(([key, entry]) => collectStringValues(entry, `${path}.${key}`));
 }
 
 describe("surface ruling synchronization", () => {
@@ -210,6 +224,12 @@ describe("surface ruling synchronization", () => {
     assertSameSet("ruling chat carriers", ruling.chat_carriers, ["discord", "signal", "whatsapp", "telegram", "messenger"]);
     assertSameSet("ruling email carriers", ruling.email_carriers, ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"]);
     assertSameSet("ruling first-party non-carriers", ruling.first_party_surfaces, ["osl-chats", "osl-mail"]);
+    expect(ruling.mailbox_reading_ruling).toEqual({
+      ruled_on: "2026-08-07",
+      allowed: true,
+      owner_words: "mailboxes can be read",
+      outside_services_correction: "Nothing was ever removed for the ten outside services, so there is nothing to put back there, only new work.",
+    });
 
     assertSameSet("Rust ServiceKind enum", rustEnum(modelsRs, "ServiceKind"), serviceIds);
     assertSameSet("Rust service_kind_from_id", quotedValues(rustFunctionBody(servicesRs, "service_kind_from_id")), serviceIds);
@@ -245,5 +265,23 @@ describe("surface ruling synchronization", () => {
       expect(homeAppIds, `cut surface ${cut} must not be in active home app ruling`).not.toContain(cut);
       expect(serviceIds, `cut surface ${cut} must not be in active service ruling`).not.toContain(cut);
     }
+  });
+
+  it("keeps the surface ruling decisions resolved", () => {
+    const supportMatrix = JSON.parse(source("docs/status/support-matrix.json")) as { surface_ruling: Ruling };
+    const pricing = JSON.parse(source("data/pricing.json")) as { surface_policy: { surface_ruling: Ruling } };
+    const records = [
+      { name: "data/surface-ruling-2026-08-05.json", value: ruling },
+      { name: "docs/status/support-matrix.json", value: supportMatrix.surface_ruling },
+      { name: "data/pricing.json", value: pricing.surface_policy.surface_ruling },
+    ];
+
+    const matches = records.flatMap((record) =>
+      collectStringValues(record.value)
+        .filter((entry) => unresolvedChoicePattern.test(entry.value))
+        .map((entry) => `${record.name}${entry.path}: ${entry.value}`),
+    );
+
+    expect(matches, `unresolved choice text in the surface ruling: ${matches.join("; ")}`).toEqual([]);
   });
 });

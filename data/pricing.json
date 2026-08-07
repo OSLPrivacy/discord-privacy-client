@@ -1632,7 +1632,13 @@
       "email_carriers": ["gmail", "outlook", "proton", "yahoo", "aol", "gmx", "maildotcom", "icloud", "tuta"],
       "native_email_carriers": ["outlook"],
       "first_party_surfaces": ["osl-chats", "osl-mail"],
-      "cut_surfaces": ["instagram", "snapchat", "x", "slack", "linkedin", "teams"]
+      "cut_surfaces": ["instagram", "snapchat", "x", "slack", "linkedin", "teams"],
+      "mailbox_reading_ruling": {
+        "ruled_on": "2026-08-07",
+        "allowed": true,
+        "owner_words": "mailboxes can be read",
+        "outside_services_correction": "Nothing was ever removed for the ten outside services, so there is nothing to put back there, only new work."
+      }
     },
     "matrix_files": [
       "docs/status.html"
