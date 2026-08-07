@@ -200,6 +200,7 @@ fn placed() -> PlacementReceipt {
 
 struct Task1206Page {
     body_present: bool,
+    body_editable: bool,
     send_present: bool,
     body_text: String,
 }
@@ -216,6 +217,7 @@ impl Task1206Fixture {
         Self {
             page: Mutex::new(Task1206Page {
                 body_present: true,
+                body_editable: true,
                 send_present: true,
                 body_text: String::new(),
             }),
@@ -239,6 +241,10 @@ impl Task1206Fixture {
 
     fn set_send_present(&self, present: bool) {
         self.page.lock().unwrap().send_present = present;
+    }
+
+    fn set_body_editable(&self, editable: bool) {
+        self.page.lock().unwrap().body_editable = editable;
     }
 
     fn last_control_refusal(&self) -> Option<WebPageControlRefusal> {
@@ -291,6 +297,7 @@ impl WebSurfaceBackend for Task1206Fixture {
         let page = self.page.lock().unwrap();
         let controls = WebPageControls {
             body_present: page.body_present,
+            body_editable: page.body_editable,
             send_present: page.send_present,
         };
         *self.last_control_refusal.lock().unwrap() = controls.validate().err();
@@ -617,5 +624,60 @@ fn task_1209_check_placement_does_not_submit() {
     println!(
         "TASK1209_SEND_COUNT_AFTER_SUBMIT_REFUSAL={}",
         adapter.backend().send_count()
+    );
+}
+
+#[test]
+fn task_1263_gmx_body_editable_no_refuses_second_placement() {
+    let adapter = adapter(Task1206Fixture::new());
+    let binding = adapter.locate(&current_target()).unwrap();
+    let carrier = Carrier("MAPLE-4172".into());
+
+    println!(
+        "TASK1263_GMX_PLACEMENT_COUNT_BEFORE={}",
+        adapter.backend().placement_count()
+    );
+    assert_eq!(adapter.backend().placement_count(), 0);
+
+    let good = adapter.place(
+        &binding,
+        &PlacementAuthorization::for_scope("opaque-scope"),
+        &carrier,
+    );
+    assert_eq!(good.status, PlacementStatus::Placed);
+    assert_eq!(adapter.backend().placement_count(), 1);
+    assert_eq!(adapter.backend().body_text(), "MAPLE-4172");
+    println!(
+        "TASK1263_GMX_BODY_AFTER_EDITABLE_YES={}",
+        adapter.backend().body_text()
+    );
+    println!(
+        "TASK1263_GMX_PLACEMENT_COUNT_AFTER_EDITABLE_YES={}",
+        adapter.backend().placement_count()
+    );
+
+    adapter.backend().set_body_editable(false);
+    let refused = adapter.place(
+        &binding,
+        &PlacementAuthorization::for_scope("opaque-scope"),
+        &carrier,
+    );
+    assert_eq!(refused.status, PlacementStatus::NotPlaced);
+    let refusal = adapter
+        .backend()
+        .last_control_refusal()
+        .expect("non-editable Body must be the named page-control refusal");
+    assert_eq!(refusal, WebPageControlRefusal::BodyNotEditable);
+    assert_eq!(refusal.to_string(), "GMX Body not editable");
+    assert_eq!(adapter.backend().body_text(), "MAPLE-4172");
+    assert_eq!(adapter.backend().placement_count(), 1);
+    println!("TASK1263_GMX_EDITABLE_NO_REFUSAL={refusal}");
+    println!(
+        "TASK1263_GMX_BODY_AFTER_EDITABLE_NO={}",
+        adapter.backend().body_text()
+    );
+    println!(
+        "TASK1263_GMX_PLACEMENT_COUNT_AFTER_EDITABLE_NO={}",
+        adapter.backend().placement_count()
     );
 }

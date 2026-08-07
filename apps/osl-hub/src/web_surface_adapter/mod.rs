@@ -10,6 +10,7 @@ use std::fmt;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WebPageControlRefusal {
     MissingBody,
+    BodyNotEditable,
     MissingSend,
 }
 
@@ -17,6 +18,7 @@ impl fmt::Display for WebPageControlRefusal {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             WebPageControlRefusal::MissingBody => "missing Body",
+            WebPageControlRefusal::BodyNotEditable => "GMX Body not editable",
             WebPageControlRefusal::MissingSend => "missing Send",
         })
     }
@@ -25,6 +27,7 @@ impl fmt::Display for WebPageControlRefusal {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WebPageControls {
     pub body_present: bool,
+    pub body_editable: bool,
     pub send_present: bool,
 }
 
@@ -32,6 +35,7 @@ impl WebPageControls {
     pub const fn complete() -> Self {
         Self {
             body_present: true,
+            body_editable: true,
             send_present: true,
         }
     }
@@ -39,6 +43,9 @@ impl WebPageControls {
     pub fn validate(self) -> Result<(), WebPageControlRefusal> {
         if !self.body_present {
             return Err(WebPageControlRefusal::MissingBody);
+        }
+        if !self.body_editable {
+            return Err(WebPageControlRefusal::BodyNotEditable);
         }
         if !self.send_present {
             return Err(WebPageControlRefusal::MissingSend);

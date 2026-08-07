@@ -8,9 +8,13 @@
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
+#[cfg(not(feature = "task-1263-only"))]
 pub mod discord;
+#[cfg(not(feature = "task-1263-only"))]
 pub mod signal;
+#[cfg(not(feature = "task-1263-only"))]
 pub mod telegram;
+#[cfg(not(feature = "task-1263-only"))]
 pub mod whatsapp;
 
 pub const ADAPTER_ABI_VERSION: u32 = 1;
