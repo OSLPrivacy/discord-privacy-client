@@ -22,6 +22,8 @@ use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 use zeroize::Zeroize;
 
+pub(crate) const PRO_ATTACHMENT_LIMIT_BYTES: u64 = 1_073_741_824;
+
 /// Build the attachment store client for whatever route this process is on.
 ///
 /// `CipherStoreClient::new` is the unrouted constructor, so while Tor is
@@ -159,6 +161,9 @@ fn select_encrypt_upload_deliver_inner(
         .map_err(|_| "The selected attachment could not be checked".to_owned())?;
     if !metadata.is_file() {
         return Err("The selected attachment is not a regular file".to_owned());
+    }
+    if metadata.len() > PRO_ATTACHMENT_LIMIT_BYTES {
+        return Err(pro_attachment_too_large_message(metadata.len()));
     }
     let config_root = app
         .path()
@@ -972,6 +977,39 @@ fn external_viewer_unavailable() -> Result<(), String> {
     Err("Native attachment viewing is available only on Windows".to_owned())
 }
 
+fn pro_attachment_too_large_message(file_size: u64) -> String {
+    format!(
+        "This file is {} ({} bytes). Pro files are limited to 1 GB ({} bytes).",
+        format_attachment_size(file_size),
+        grouped_decimal(file_size),
+        grouped_decimal(PRO_ATTACHMENT_LIMIT_BYTES),
+    )
+}
+
+fn format_attachment_size(bytes: u64) -> String {
+    let tenths = bytes
+        .saturating_mul(10)
+        .saturating_add(PRO_ATTACHMENT_LIMIT_BYTES / 2)
+        / PRO_ATTACHMENT_LIMIT_BYTES;
+    if tenths % 10 == 0 {
+        format!("{} GB", tenths / 10)
+    } else {
+        format!("{}.{} GB", tenths / 10, tenths % 10)
+    }
+}
+
+fn grouped_decimal(value: u64) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
 /// Absolute System32 path for a Windows helper binary, so neither spawn can be
 /// redirected by a hijacked `PATH`.
 #[cfg(windows)]
@@ -1033,6 +1071,19 @@ mod tests {
         );
         assert!(parse_token("0011").is_err());
         assert!(parse_token("00112233445566778899aabbccddeefg").is_err());
+    }
+
+    #[test]
+    fn pro_too_large_message_names_exact_file_size_and_limit() {
+        let file_size = PRO_ATTACHMENT_LIMIT_BYTES + (PRO_ATTACHMENT_LIMIT_BYTES / 10);
+        let message = pro_attachment_too_large_message(file_size);
+        assert_eq!(
+            message,
+            "This file is 1.1 GB (1,181,116,006 bytes). Pro files are limited to 1 GB (1,073,741,824 bytes)."
+        );
+        println!(
+            "TASK0049 rust_message=\"{message}\" file_size_bytes={file_size} limit_bytes={PRO_ATTACHMENT_LIMIT_BYTES}"
+        );
     }
 
     #[cfg(not(windows))]
