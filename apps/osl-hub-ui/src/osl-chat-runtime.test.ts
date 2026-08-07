@@ -55,12 +55,14 @@ describe("OSL Chat delivery runtime receive failures", () => {
         plaintext: "first good row",
         createdAt: 1_700_000_001,
         decryptedAt: 1_700_000_001,
+        reactions: [],
       }, {
         messageId: "peer-22222222222222222222222222222222",
         senderOslUserId: "OSLUSER-p1",
         plaintext: "second good row",
         createdAt: 1_700_000_002,
         decryptedAt: 1_700_000_002,
+        reactions: [],
       }],
       commitBatch: (_personId, batch) => {
         events.push(`batch:${batch.messages.map((message) => message.plaintext).join("|")}`);

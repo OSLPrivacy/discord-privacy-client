@@ -387,7 +387,6 @@ describe("fresh-account continuation", () => {
     // join it as a first-class resumable step. Assert the policy itself, not
     // the inlined comparisons it replaced.
     expect(pending).toContain("resumeOnboardingRoute(localStorage, onboardingResumeStorageKey)");
-    for (const route of ["pro", "privacy", "defaults", "tor", "sending", "cover", "silent-visible", "passwords", "burnpass", "mullvad", "browser", "tutorial"] as const) {
     for (const route of ["pro", "privacy", "defaults", "tor", "sending", "cover", "visibility", "passwords", "burnpass", "mullvad", "browser", "tutorial"] as const) {
       expect(RESUMABLE_ONBOARDING_ROUTES).toContain(route);
       expect(resumeOnboardingRoute(fakeResumeStorage({ [RESUME_STORAGE_KEY]: route }), RESUME_STORAGE_KEY)).toBe(route);
