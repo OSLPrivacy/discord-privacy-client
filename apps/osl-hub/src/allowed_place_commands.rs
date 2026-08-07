@@ -6,16 +6,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 pub const ALLOWED_PLACE_CLI_FLAG: &str = "--allowed-place";
+pub const X_ALLOWED_TEXT_PERMISSIONS: &[&str] = &["placing"];
+pub const X_SEND_PERMISSION: &str = "sending";
+pub const X_SEND_CHECK_PERMISSION: &str = "checking a send";
 
 const HEADLESS_ALLOWED_PLACE_FILE_KEY: [u8; 32] = [0xA7; 32];
 static HEADLESS_ALLOWED_PLACE_LOCK: Mutex<()> = Mutex::new(());
-
-use ipc::allowed_places::{
-    add_allowed_place_record, allowed_place_is_allowed, list_allowed_place_records,
-    remove_allowed_place_record, AllowedPlaceQuery, AllowedPlaceRecord,
-};
-
-pub const ALLOWED_PLACE_CLI_FLAG: &str = "--allowed-place";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase", tag = "command")]
@@ -39,6 +35,16 @@ pub enum AllowedPlaceCommandJson {
         ok: bool,
         allowed: bool,
         query: AllowedPlaceQuery,
+    },
+    XPermissions {
+        ok: bool,
+        app: String,
+        allowed: Vec<&'static str>,
+    },
+    XPermissionCheck {
+        ok: bool,
+        app: String,
+        checked: Vec<&'static str>,
     },
 }
 
@@ -80,7 +86,6 @@ where
         },
         Err(error) => HeadlessCommandResult {
             exit_code: 1,
-            exit_code: 2,
             stdout: format_json_line(&AllowedPlaceErrorJson {
                 ok: false,
                 command: if command.is_empty() {
@@ -103,8 +108,6 @@ pub fn add_allowed_place_json(
         let record = security::add_allowed_place_record(security, record)?;
         Ok(AllowedPlaceCommandJson::Add { ok: true, record })
     })
-    let record = add_allowed_place_record(store_dir, record).map_err(|error| error.to_string())?;
-    Ok(AllowedPlaceCommandJson::Add { ok: true, record })
 }
 
 pub fn remove_allowed_place_json(
@@ -118,12 +121,6 @@ pub fn remove_allowed_place_json(
             stable_id,
             removed,
         })
-    let removed =
-        remove_allowed_place_record(store_dir, &stable_id).map_err(|error| error.to_string())?;
-    Ok(AllowedPlaceCommandJson::Remove {
-        ok: true,
-        stable_id,
-        removed,
     })
 }
 
@@ -135,11 +132,6 @@ pub fn list_allowed_places_json(store_dir: &Path) -> Result<AllowedPlaceCommandJ
             count: records.len(),
             records,
         })
-    let records = list_allowed_place_records(store_dir).map_err(|error| error.to_string())?;
-    Ok(AllowedPlaceCommandJson::List {
-        ok: true,
-        count: records.len(),
-        records,
     })
 }
 
@@ -154,11 +146,6 @@ pub fn allowed_place_allowed_json(
             allowed,
             query,
         })
-    let allowed = allowed_place_is_allowed(store_dir, &query).map_err(|error| error.to_string())?;
-    Ok(AllowedPlaceCommandJson::Allowed {
-        ok: true,
-        allowed,
-        query,
     })
 }
 
@@ -172,11 +159,46 @@ fn run_allowed_place_command(
         "remove" => remove_allowed_place_json(&parsed.store, parsed.required("stable-id")?),
         "list" => list_allowed_places_json(&parsed.store),
         "allowed" => allowed_place_allowed_json(&parsed.store, parsed.query()?),
+        "x-permissions" => x_permissions_json(),
+        "x-send" => x_send_json(),
+        "x-permission-check" => x_permission_check_json(),
         _ => Err(
-            "usage: --allowed-place <add|remove|list|allowed> --store <dir> [--app <app> --account <account> --kind <kind> --stable-id <stable-id>]"
+            "usage: --allowed-place <add|remove|list|allowed|x-permissions|x-send|x-permission-check> --store <dir> [--app <app> --account <account> --kind <kind> --stable-id <stable-id>]"
                 .to_owned(),
         ),
     }
+}
+
+fn x_permissions_json() -> Result<AllowedPlaceCommandJson, String> {
+    Ok(AllowedPlaceCommandJson::XPermissions {
+        ok: true,
+        app: "x".to_owned(),
+        allowed: X_ALLOWED_TEXT_PERMISSIONS.to_vec(),
+    })
+}
+
+fn x_send_json() -> Result<AllowedPlaceCommandJson, String> {
+    Err(format!(
+        "OSL X send refused: missing permission {X_SEND_PERMISSION}"
+    ))
+}
+
+fn x_permission_check_json() -> Result<AllowedPlaceCommandJson, String> {
+    x_permission_check_for(X_ALLOWED_TEXT_PERMISSIONS)?;
+    Ok(AllowedPlaceCommandJson::XPermissionCheck {
+        ok: true,
+        app: "x".to_owned(),
+        checked: X_ALLOWED_TEXT_PERMISSIONS.to_vec(),
+    })
+}
+
+fn x_permission_check_for(permissions: &[&str]) -> Result<(), String> {
+    if permissions.contains(&X_SEND_PERMISSION) || permissions.contains(&X_SEND_CHECK_PERMISSION) {
+        return Err(format!(
+            "OSL X permission guard failed: X allowed permissions must not include {X_SEND_PERMISSION} or {X_SEND_CHECK_PERMISSION} until a real X send has been watched"
+        ));
+    }
+    Ok(())
 }
 
 fn with_headless_store<T>(
@@ -560,7 +582,10 @@ mod tests {
         assert_eq!(rejected.exit_code, 1);
         let rejected_json = json(&rejected.stdout);
         assert_eq!(rejected_json["ok"], false);
-        assert_eq!(rejected_json["error"], "OSL X allowed-place kind is invalid");
+        assert_eq!(
+            rejected_json["error"],
+            "OSL X allowed-place kind is invalid"
+        );
 
         println!(
             "TASK0158 x_allowed_place_kinds created={} resolved={} kinds={} rejected_kind=group_chat rejected_exit_code={}",
