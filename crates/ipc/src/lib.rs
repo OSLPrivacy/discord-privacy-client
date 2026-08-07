@@ -53,6 +53,7 @@ pub mod control_inbox_dead_letter;
 pub mod control_messages;
 pub mod decoy_mp4;
 pub mod destruct_ack;
+pub mod email_pointer_files;
 pub mod email_send_modes;
 pub mod email_whitelist_kinds;
 pub mod fresh_start;
