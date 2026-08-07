@@ -206,6 +206,7 @@ import { initializeThemePreference, themeStorageKey, type ThemeChoice } from "./
 import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
+import { configuredAutoWhitelistAppKinds, loadSavedAutoWhitelistChoices, saveAutoWhitelistRuleChoice, whitelistingSettingsMarkup, type AutoWhitelistRuleChoiceId } from "./auto-whitelist-settings";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
 import { addFriendFailureStatus, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy } from "./ui-behavior";
@@ -2541,6 +2542,13 @@ function bindSavedAccountControls(): void {
     preferredBrowserId = supportedBrowserId(requested) ? requested : null;
     persistBrowserAccountPreferences();
     render();
+  }));
+  document.querySelectorAll<HTMLButtonElement>("[data-auto-rule-choice]").forEach((button) => button.addEventListener("click", () => {
+    const appKind = button.dataset.autoRuleAppKind ?? "";
+    const choice = button.dataset.autoRuleChoice ?? "";
+    void saveAutoWhitelistRuleChoice((command, args) => invoke(command, args), appKind, choice)
+      .then(() => refreshAutoWhitelistSavedChoices())
+      .catch(() => showToast("Could not save the auto-rule choice"));
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-discord-session-mode]").forEach((button) => button.addEventListener("click", () => {
     setNativeSessionMode("discord", parseDiscordSessionMode(button.dataset.discordSessionMode));
@@ -6051,6 +6059,17 @@ function accountAdvancedSettingsContent(): string {
   return `<details class="account-advanced settings-disclosure"><summary>Advanced</summary><div class="danger-zone"><h3>Burn local data</h3><p>Review the scope and limits before anything changes.</p><button class="button danger" id="full-cleanup-button" data-open-burn="account">Review Burn</button></div></details>`;
 }
 
+let autoWhitelistSavedChoices: Record<string, AutoWhitelistRuleChoiceId> = {};
+
+async function refreshAutoWhitelistSavedChoices(): Promise<void> {
+  try {
+    autoWhitelistSavedChoices = await loadSavedAutoWhitelistChoices((command, args) => invoke(command, args));
+  } catch {
+    autoWhitelistSavedChoices = {};
+  }
+  render();
+}
+
 function serviceAccountsSettingsContent(): string {
   const rows = homeAppsFromServices(services).filter((app) => app.visibility === "launch").map((app) => {
     const state = app.linked ? `${app.accountCount} local ${app.accountCount === 1 ? "profile" : "profiles"}` : app.launchState === "available" ? "Not set up" : "Coming later";
@@ -6070,7 +6089,7 @@ function serviceAccountsSettingsContent(): string {
     ? `<details class="saved-account-settings settings-disclosure account-opening-settings" open><summary>Account opening</summary><div class="account-opening-content">${nativeModeRows}</div></details>`
     : "";
   const browserSettings = `<details class="saved-account-settings settings-disclosure account-opening-settings" open><summary>Browser for web apps</summary><div class="account-opening-content">${browserChoices}</div></details>`;
-  return `<h2>Apps</h2><div class="account-settings-list">${rows}</div>${nativeModeSettings}${browserSettings}`;
+  return `<h2>Apps</h2><div class="account-settings-list">${rows}</div>${whitelistingSettingsMarkup(configuredAutoWhitelistAppKinds, autoWhitelistSavedChoices)}${nativeModeSettings}${browserSettings}`;
 }
 
 async function scanPrivacyExport(input: HTMLInputElement): Promise<void> {
@@ -7915,6 +7934,7 @@ function bindWorkspace(): void {
     render();
     if (next === "scrub") void refreshAutoScrubFleetStatus();
     if (next === "cleanup") void refreshMassCleanupCapabilities();
+    if (next === "apps") void refreshAutoWhitelistSavedChoices();
   }));
   document.querySelectorAll<HTMLButtonElement>("[data-settings-send-mode]").forEach((button) => button.addEventListener("click", () => {
     void changeSendingMode(button.dataset.settingsSendMode as SendMode);
