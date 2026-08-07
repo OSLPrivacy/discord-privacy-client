@@ -93,6 +93,100 @@ pub fn gmx_web_control_driver() -> GmxWebControlDriver {
     }
 }
 
+pub const GMX_1261_MARKED_WORDS: &str = "OSL-GMX-1261 cover message";
+pub const GMX_1261_CONTROL_NAMES: [&str; 3] = ["Place", "Read", "Send"];
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct GmxFakePageControl {
+    pub name: &'static str,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum GmxFakePageError {
+    MissingControl(&'static str),
+    NoPlacedMessage,
+    ProtectedControlRemovalRefused(&'static str),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct GmxFakePageConnection {
+    controls: Vec<GmxFakePageControl>,
+    placed_messages: Vec<String>,
+    sent_emails: Vec<String>,
+}
+
+impl Default for GmxFakePageConnection {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GmxFakePageConnection {
+    pub fn new() -> Self {
+        Self {
+            controls: GMX_1261_CONTROL_NAMES
+                .into_iter()
+                .map(|name| GmxFakePageControl { name })
+                .collect(),
+            placed_messages: Vec::new(),
+            sent_emails: Vec::new(),
+        }
+    }
+
+    pub fn control_names(&self) -> Vec<&'static str> {
+        self.controls.iter().map(|control| control.name).collect()
+    }
+
+    pub fn placed_message_count(&self) -> usize {
+        self.placed_messages.len()
+    }
+
+    pub fn sent_email_count(&self) -> usize {
+        self.sent_emails.len()
+    }
+
+    pub fn place_marked_cover_message(&mut self) -> Result<(), GmxFakePageError> {
+        self.require_control("Place")?;
+        self.placed_messages.push(GMX_1261_MARKED_WORDS.to_owned());
+        Ok(())
+    }
+
+    pub fn read_marked_words(&self) -> Result<&str, GmxFakePageError> {
+        self.require_control("Read")?;
+        self.placed_messages
+            .last()
+            .map(String::as_str)
+            .ok_or(GmxFakePageError::NoPlacedMessage)
+    }
+
+    pub fn send_placed_message(&mut self) -> Result<(), GmxFakePageError> {
+        self.require_control("Send")?;
+        let message = self
+            .placed_messages
+            .last()
+            .cloned()
+            .ok_or(GmxFakePageError::NoPlacedMessage)?;
+        self.sent_emails.push(message);
+        Ok(())
+    }
+
+    pub fn remove_control(&mut self, name: &'static str) -> Result<(), GmxFakePageError> {
+        if name == "Send" {
+            return Err(GmxFakePageError::ProtectedControlRemovalRefused("Send"));
+        }
+        self.controls.retain(|control| control.name != name);
+        Ok(())
+    }
+
+    fn require_control(&self, name: &'static str) -> Result<(), GmxFakePageError> {
+        self.controls
+            .iter()
+            .any(|control| control.name == name)
+            .then_some(())
+            .ok_or(GmxFakePageError::MissingControl(name))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,61 @@
+#[path = "../src/web_surface_adapter/gmx.rs"]
+mod gmx;
+
+use gmx::{
+    GmxFakePageConnection, GmxFakePageError, GMX_1261_CONTROL_NAMES, GMX_1261_MARKED_WORDS,
+};
+
+#[test]
+fn task_1261_gmx_fake_page_controls_place_read_send_and_refuse_send_removal() {
+    let mut fixture = GmxFakePageConnection::new();
+
+    let initial_sent = fixture.sent_email_count();
+    let initial_controls = fixture.control_names();
+    println!("TASK1261 initial_sent_email_count={initial_sent}");
+    println!("TASK1261 named_controls={}", initial_controls.join(","));
+
+    fixture
+        .place_marked_cover_message()
+        .expect("Place adds the marked GMX cover message");
+    let after_place_count = fixture.placed_message_count();
+    let after_place_sent = fixture.sent_email_count();
+    println!("TASK1261 after_place_marked_message_count={after_place_count}");
+    println!("TASK1261 after_place_sent_email_count={after_place_sent}");
+
+    let read_words = fixture
+        .read_marked_words()
+        .expect("Read returns the placed GMX marked words")
+        .to_owned();
+    println!("TASK1261 read_marked_words={read_words}");
+
+    fixture
+        .send_placed_message()
+        .expect("Send raises the GMX sent count");
+    let after_send_count = fixture.sent_email_count();
+    let after_send_placed_count = fixture.placed_message_count();
+    println!("TASK1261 after_send_sent_email_count={after_send_count}");
+    println!("TASK1261 after_send_placed_message_count={after_send_placed_count}");
+
+    let remove_send = fixture
+        .remove_control("Send")
+        .expect_err("removing Send is refused");
+    let after_remove_placed_count = fixture.placed_message_count();
+    let after_remove_sent_count = fixture.sent_email_count();
+    println!("TASK1261 remove_send_refusal={remove_send:?}");
+    println!("TASK1261 after_remove_send_placed_message_count={after_remove_placed_count}");
+    println!("TASK1261 after_remove_send_sent_email_count={after_remove_sent_count}");
+
+    assert_eq!(initial_sent, 0);
+    assert_eq!(initial_controls, GMX_1261_CONTROL_NAMES);
+    assert_eq!(after_place_count, 1);
+    assert_eq!(after_place_sent, 0);
+    assert_eq!(read_words, GMX_1261_MARKED_WORDS);
+    assert_eq!(after_send_count, 1);
+    assert_eq!(after_send_placed_count, 1);
+    assert_eq!(
+        remove_send,
+        GmxFakePageError::ProtectedControlRemovalRefused("Send")
+    );
+    assert_eq!(after_remove_placed_count, after_send_placed_count);
+    assert_eq!(after_remove_sent_count, after_send_count);
+}
