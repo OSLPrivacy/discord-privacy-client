@@ -4344,15 +4344,18 @@ fn rn_session_store_from_config_dir() -> Result<crate::wire_rn::RnSessionStore, 
 fn select_rn_wire_path_for_send(
     store: &crate::wire_rn::RnSessionStore,
     peer_discord_id: &str,
+    local_identity_x25519: &[u8; 32],
     peer_identity_x25519: &[u8; 32],
     peer_capabilities: keystore::client::PeerCapabilities,
 ) -> Result<RnWirePath, String> {
-    let pin = store.load_pin(peer_identity_x25519).map_err(|e| {
-        format!(
-            "OSL: send refused for peer {peer}: OSL-RN version pin could not be read: {e}",
-            peer = crate::log_id::log_id(peer_discord_id)
-        )
-    })?;
+    let pin = store
+        .load_pair_pin(local_identity_x25519, peer_identity_x25519)
+        .map_err(|e| {
+            format!(
+                "OSL: send refused for peer {peer}: OSL-RN version pin could not be read: {e}",
+                peer = crate::log_id::log_id(peer_discord_id)
+            )
+        })?;
 
     select_rn_wire_path(
         &pin,
@@ -4408,6 +4411,7 @@ mod rn_send_selection_tests {
             select_rn_wire_path_for_send(
                 &store,
                 "123456789012345678",
+                &[0x11u8; 32],
                 &peer,
                 keystore::client::PeerCapabilities::Absent
             ),
@@ -4420,12 +4424,16 @@ mod rn_send_selection_tests {
     fn send_time_selection_refuses_legacy_for_stored_rn_pin() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let local = [0x41u8; 32];
         let peer = [18u8; 32];
-        store.raise_pin_to_rn(&peer).expect("raise pin");
+        store
+            .raise_pair_pin_to_rn(&local, &peer)
+            .expect("raise pin");
 
         let err = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             &peer,
             keystore::client::PeerCapabilities::Absent,
         )
@@ -4441,6 +4449,7 @@ mod rn_send_selection_tests {
     fn send_selection_verify_peer_capabilities_feeds_pre_send_select_wire_version() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let local = [0x24u8; 32];
         let peer_identity = keystore::generate_identity("b24-peer".to_string());
         let x25519 = STANDARD.encode(peer_identity.x25519_public.as_bytes());
         let ed25519 = STANDARD.encode(peer_identity.ed25519_public.as_bytes());
@@ -4477,6 +4486,7 @@ mod rn_send_selection_tests {
         let absent = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             peer_identity.x25519_public.as_bytes(),
             keystore::client::PeerCapabilities::Absent,
         )
@@ -4486,6 +4496,7 @@ mod rn_send_selection_tests {
         let verified_result = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             peer_identity.x25519_public.as_bytes(),
             verified,
         );
@@ -4496,6 +4507,7 @@ mod rn_send_selection_tests {
     fn verify_peer_capabilities_feeds_pre_send_select_wire_version() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let local = [0x25u8; 32];
         let peer_identity = keystore::generate_identity("b24-peer-exact".to_string());
         let x25519 = STANDARD.encode(peer_identity.x25519_public.as_bytes());
         let ed25519 = STANDARD.encode(peer_identity.ed25519_public.as_bytes());
@@ -4536,6 +4548,7 @@ mod rn_send_selection_tests {
         let legacy = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             peer_identity.x25519_public.as_bytes(),
             keystore::client::PeerCapabilities::Absent,
         )
@@ -4549,6 +4562,7 @@ mod rn_send_selection_tests {
         let selected = select_rn_wire_path_for_send(
             &store,
             "123456789012345678",
+            &local,
             peer_identity.x25519_public.as_bytes(),
             verified,
         )
@@ -4639,6 +4653,7 @@ mod rn_legacy_fallback_send_path_tests {
     fn gate_off_unpinned_peer_dispatches_legacy_v3_unchanged() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let store = crate::wire_rn::RnSessionStore::new(dir.path().join("rn"));
+        let local = [0x78u8; 32];
         let peer = [0x79u8; 32];
 
         let raw_selected = crate::wire_rn::select_wire_version(
@@ -4652,6 +4667,7 @@ mod rn_legacy_fallback_send_path_tests {
         let send_path = select_rn_wire_path_for_send(
             &store,
             "900000000000000079",
+            &local,
             &peer,
             keystore::client::PeerCapabilities::Absent,
         )
@@ -4659,11 +4675,12 @@ mod rn_legacy_fallback_send_path_tests {
         assert_eq!(send_path, RnWirePath::LegacyV3);
 
         store
-            .raise_pin_to_rn(&peer)
+            .raise_pair_pin_to_rn(&local, &peer)
             .expect("test should be able to model an existing RN pin");
         let pinned = select_rn_wire_path_for_send(
             &store,
             "900000000000000079",
+            &local,
             &peer,
             keystore::client::PeerCapabilities::Absent,
         );
@@ -4967,6 +4984,7 @@ pub fn cmd_osl_encrypt_message_v2_wire(
             match select_rn_wire_path_for_send(
                 &rn_store,
                 peer_did,
+                self_pk.as_bytes(),
                 recipient.x25519_pub.as_bytes(),
                 peer_capabilities,
             )? {
@@ -5087,7 +5105,7 @@ fn try_encrypt_rn_first_contact_from_state(
         Ok(caps) => caps,
         Err(e) => {
             if store
-                .load_pin(peer_identity.as_bytes())
+                .load_pair_pin(identity.x25519_public.as_bytes(), peer_identity.as_bytes())
                 .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?
                 .is_pinned_to_rn()
             {
@@ -5098,7 +5116,7 @@ fn try_encrypt_rn_first_contact_from_state(
     };
 
     let pin = store
-        .load_pin(peer_identity.as_bytes())
+        .load_pair_pin(identity.x25519_public.as_bytes(), peer_identity.as_bytes())
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?;
     match crate::wire_rn::select_wire_version(&pin, caps, crate::wire_rn::RnPolicy::Opportunistic)
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?
@@ -5307,7 +5325,7 @@ fn try_encrypt_rn_first_contact_with_bundle(
 
     let peer_identity = *peer_bundle.identity.as_bytes();
     let pin = store
-        .load_pin(&peer_identity)
+        .load_pair_pin(own_identity_public.as_bytes(), &peer_identity)
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?;
     match crate::wire_rn::select_wire_version(&pin, caps, crate::wire_rn::RnPolicy::Opportunistic)
         .map_err(|e| format!("OSL: OSL-RN first contact: {e}"))?
@@ -7231,7 +7249,13 @@ pub fn cmd_osl_decrypt_message_v2(
                         // real symptom. The durable detector decides whether
                         // it is a single bad packet or a desync.
                         let peer = peer.as_bytes();
-                        let _ = record_rn_receive_failure(config_dir.as_deref(), peer);
+                        let local = state
+                            .identity_slot()
+                            .as_ref()
+                            .map(|identity| *identity.x25519_public.as_bytes());
+                        if let Some(local) = local.as_ref() {
+                            let _ = record_rn_receive_failure(config_dir.as_deref(), local, peer);
+                        }
                     }
                     return Err(error);
                 }
@@ -7400,7 +7424,11 @@ fn record_rn_successful_decrypt(config_dir: Option<&Path>, peer: &[u8; 32]) -> R
         .map_err(|e| format!("OSL: RN health state could not be saved: {e}"))
 }
 
-fn record_rn_receive_failure(config_dir: Option<&Path>, peer: &[u8; 32]) -> Result<(), String> {
+fn record_rn_receive_failure(
+    config_dir: Option<&Path>,
+    local: &[u8; 32],
+    peer: &[u8; 32],
+) -> Result<(), String> {
     let dir = match config_dir {
         Some(dir) => dir.to_path_buf(),
         None => keystore::osl_config_dir()
@@ -7409,7 +7437,7 @@ fn record_rn_receive_failure(config_dir: Option<&Path>, peer: &[u8; 32]) -> Resu
     let sessions = crate::wire_rn::RnSessionStore::for_config_dir(&dir)
         .map_err(|e| format!("OSL: cannot open RN session store: {e}"))?;
     if !sessions
-        .load_pin(peer)
+        .load_pair_pin(local, peer)
         .map_err(|e| format!("OSL: RN version pin could not be read: {e}"))?
         .is_pinned_to_rn()
     {
@@ -22231,10 +22259,17 @@ fn direct_chat_security_status(
     let Ok(peer_identity) = rn_peer_identity_from_entry(peer_discord_id, &peer_entry) else {
         return Ok(DirectChatSecurityStatus::refused());
     };
+    let local_identity = {
+        let identity = state.identity_slot();
+        let Some(identity) = identity.as_ref() else {
+            return Ok(DirectChatSecurityStatus::refused());
+        };
+        *identity.x25519_public.as_bytes()
+    };
     let Ok(store) = rn_session_store_from_config_dir() else {
         return Ok(DirectChatSecurityStatus::refused());
     };
-    let pin = match store.load_pin(peer_identity.as_bytes()) {
+    let pin = match store.load_pair_pin(&local_identity, peer_identity.as_bytes()) {
         Ok(pin) => pin,
         Err(_) => return Ok(DirectChatSecurityStatus::refused()),
     };
