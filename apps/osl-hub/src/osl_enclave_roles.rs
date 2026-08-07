@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub const OWNER_ROLE_NAME: &str = "OWNER";
 pub const MOD_ROLE_NAME: &str = "MOD";
@@ -60,6 +60,49 @@ pub enum EnclavePermissionDecisionRule {
 pub struct EnclavePermissionResolution {
     pub decision: EnclavePermissionDecision,
     pub rule: EnclavePermissionDecisionRule,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct EnclaveRoleRelayLimits {
+    pub slow_mode_seconds: u64,
+    pub longest_mute_seconds: u64,
+    pub actions_per_hour_budget: usize,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum EnclaveRelayActionMetadata {
+    SendMessage,
+    CreateMute { duration_seconds: u64 },
+    GovernanceAction,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct EnclaveRelayLimitInput<'a> {
+    pub role_name: &'a str,
+    pub role_limits: &'a BTreeMap<String, EnclaveRoleRelayLimits>,
+    pub action: EnclaveRelayActionMetadata,
+    pub now_unix_seconds: u64,
+    pub last_message_unix_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum EnclaveRelayLimitKind {
+    SlowMode,
+    LongestMute,
+    ActionBudget,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct EnclaveRelayLimitResolution {
+    pub decision: EnclavePermissionDecision,
+    pub rule: EnclavePermissionDecisionRule,
+    pub limit: Option<EnclaveRelayLimitKind>,
+    pub retry_after_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct EnclaveRelayActionBudget {
+    action_unix_seconds: BTreeMap<String, VecDeque<u64>>,
 }
 
 pub fn new_enclave_role_catalog() -> EnclaveRoleCatalog {
@@ -148,6 +191,39 @@ pub fn resolve_enclave_permission(
     EnclavePermissionResolution::denied(EnclavePermissionDecisionRule::Off)
 }
 
+pub fn resolve_enclave_relay_limits(
+    input: EnclaveRelayLimitInput<'_>,
+) -> EnclaveRelayLimitResolution {
+    let Some(limits) = input.role_limits.get(input.role_name) else {
+        return EnclaveRelayLimitResolution::denied(EnclaveRelayLimitKind::ActionBudget, None);
+    };
+
+    match input.action {
+        EnclaveRelayActionMetadata::SendMessage => {
+            if let Some(last_message) = input.last_message_unix_seconds {
+                let next_allowed = last_message.saturating_add(limits.slow_mode_seconds);
+                if limits.slow_mode_seconds > 0 && input.now_unix_seconds < next_allowed {
+                    return EnclaveRelayLimitResolution::denied(
+                        EnclaveRelayLimitKind::SlowMode,
+                        Some(next_allowed - input.now_unix_seconds),
+                    );
+                }
+            }
+        }
+        EnclaveRelayActionMetadata::CreateMute { duration_seconds } => {
+            if duration_seconds > limits.longest_mute_seconds {
+                return EnclaveRelayLimitResolution::denied(
+                    EnclaveRelayLimitKind::LongestMute,
+                    None,
+                );
+            }
+        }
+        EnclaveRelayActionMetadata::GovernanceAction => {}
+    }
+
+    EnclaveRelayLimitResolution::allow_by_relay()
+}
+
 impl EnclavePermissionResolution {
     fn allow_by(rule: EnclavePermissionDecisionRule) -> Self {
         Self {
@@ -196,6 +272,70 @@ impl EnclavePermissionResolution {
 
     pub fn allowed(&self) -> bool {
         self.decision == EnclavePermissionDecision::Allowed
+    }
+}
+
+impl EnclaveRelayLimitResolution {
+    fn allow_by_relay() -> Self {
+        Self {
+            decision: EnclavePermissionDecision::Allowed,
+            rule: EnclavePermissionDecisionRule::Relay,
+            limit: None,
+            retry_after_seconds: None,
+        }
+    }
+
+    fn denied(limit: EnclaveRelayLimitKind, retry_after_seconds: Option<u64>) -> Self {
+        Self {
+            decision: EnclavePermissionDecision::Denied,
+            rule: EnclavePermissionDecisionRule::Relay,
+            limit: Some(limit),
+            retry_after_seconds,
+        }
+    }
+
+    pub fn allowed(&self) -> bool {
+        self.decision == EnclavePermissionDecision::Allowed
+    }
+
+    pub fn denied_by(&self) -> Option<&'static str> {
+        if self.allowed() {
+            None
+        } else {
+            Some("RELAY")
+        }
+    }
+
+    pub fn decided_by(&self) -> &'static str {
+        "RELAY"
+    }
+}
+
+impl EnclaveRelayActionBudget {
+    pub fn check_and_record(
+        &mut self,
+        role_name: &str,
+        limits: &BTreeMap<String, EnclaveRoleRelayLimits>,
+        now_unix_seconds: u64,
+    ) -> EnclaveRelayLimitResolution {
+        let Some(limit) = limits.get(role_name) else {
+            return EnclaveRelayLimitResolution::denied(EnclaveRelayLimitKind::ActionBudget, None);
+        };
+        let actions = self
+            .action_unix_seconds
+            .entry(role_name.to_owned())
+            .or_default();
+        while actions
+            .front()
+            .is_some_and(|recorded_at| recorded_at.saturating_add(3600) <= now_unix_seconds)
+        {
+            actions.pop_front();
+        }
+        if actions.len() >= limit.actions_per_hour_budget {
+            return EnclaveRelayLimitResolution::denied(EnclaveRelayLimitKind::ActionBudget, None);
+        }
+        actions.push_back(now_unix_seconds);
+        EnclaveRelayLimitResolution::allow_by_relay()
     }
 }
 
