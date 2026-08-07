@@ -123,6 +123,13 @@ export interface OslChatFriend {
    * presented as a finished, readable delivery.
    */
   handshakeConfirmed?: boolean;
+  /**
+   * TASK0171's `verification_state` for this person's OSL allowed-place
+   * direction, collapsed to a boolean: `true` only when both directions are
+   * saved (two-way). One-way or absent allowances must never draw the tick --
+   * a one-way allowance is not a reciprocal, verified relationship.
+   */
+  verificationTwoWay?: boolean;
 }
 
 export interface OslChatMessage {
@@ -145,6 +152,25 @@ export interface OslChatBuildWarning {
   reason: "changed" | "corruptProof";
   message: string;
   messageSendingAvailable: true;
+}
+
+export interface OslChatGroup {
+  groupId: string;
+  name: string;
+  memberCount: number;
+  memberIds: readonly string[];
+}
+
+export interface OslGroupChatHeaderAction {
+  id: string;
+  label: string;
+  disabled?: boolean;
+}
+
+export interface OslGroupChatHeaderModel {
+  groupName: string;
+  memberCount: number;
+  actions: readonly OslGroupChatHeaderAction[];
 }
 
 export interface OslChatsViewModel {
@@ -228,6 +254,17 @@ const chatIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17.5 3
 const settingsIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>';
 const onceIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="9" r="2"/><path d="m4 17 5-5 4 4 2-2 5 4"/></svg>';
 const sendIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
+const verificationTickIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4 4 10-10"/></svg>';
+
+/**
+ * TASK0175. The tick is the two-way whitelist relationship becoming
+ * verified (TASK0171) -- it must be absent for `none`, `one-way`, and
+ * `undefined`, and present only once both allowed-place directions exist.
+ */
+export function oslVerificationTickMarkup(twoWay: boolean | undefined): string {
+  if (twoWay !== true) return "";
+  return `<span class="osl-verification-tick" data-osl-verification-tick="visible" title="Verified">${verificationTickIcon}</span>`;
+}
 
 function initials(value: string): string {
   return value.split(/\s+/u).filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?";
@@ -297,7 +334,7 @@ function friendRow(friend: OslChatFriend, activePersonId: string | null, busy: b
   const active = friend.personId === activePersonId;
   return `<div class="osl-chat-friend${active ? " is-active" : ""}" data-person-id="${escapeHtml(friend.personId)}">
     <button class="osl-chat-friend-open" type="button" data-osl-chat-open="${escapeHtml(friend.personId)}" ${active ? 'aria-current="true"' : ""} ${busy || !friend.verified ? 'disabled aria-disabled="true"' : ""}>
-      ${avatar(friend.nickname)}<span class="osl-chat-friend-copy"><strong>${escapeHtml(friend.nickname)}</strong>${friendPreview(friend)}</span><span class="osl-chat-kind" title="Direct message">${chatIcon}</span>
+      ${avatar(friend.nickname)}<span class="osl-chat-friend-copy"><strong>${escapeHtml(friend.nickname)}${oslVerificationTickMarkup(friend.verificationTwoWay)}</strong>${friendPreview(friend)}</span><span class="osl-chat-kind" title="Direct message">${chatIcon}</span>
     </button>
     <button class="osl-chat-friend-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Settings for ${escapeHtml(friend.nickname)}">${settingsIcon}</button>
   </div>`;
@@ -389,6 +426,8 @@ function buildIntegrityWarningRow(status: OslChatBuildIntegrityStatus | null | u
     ? "This app copy does not match OSL's signed build list. You can still send messages, but update or reinstall OSL before trusting this build."
     : "OSL could not verify this app copy against its signed build list. You can still send messages, but update or reinstall OSL before trusting this build.";
   return `<p class="osl-chat-build-warning warning" role="status" data-osl-build-integrity="${status}"><strong>Build verification warning</strong><small>${escapeHtml(detail)}</small></p>`;
+}
+
 function buildWarningRow(warning: OslChatBuildWarning | null | undefined): string {
   if (!warning || warning.kind !== "changedBuild" || warning.messageSendingAvailable !== true) {
     return "";
@@ -427,7 +466,7 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
     : "";
   return `<section class="osl-chat-thread" aria-label="OSL direct chat with ${escapeHtml(friend.nickname)}">
     ${unconfirmed}
-    <header class="osl-chat-thread-header">${avatar(friend.nickname, "is-thread")}<div><h2>${escapeHtml(friend.nickname)}</h2><span>${friend.ready ? "Ready" : "Connecting"} · ${friend.verified ? "Verified" : "Unverified"}</span></div><button class="osl-chat-thread-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Chat settings">${settingsIcon}</button></header>
+    <header class="osl-chat-thread-header">${avatar(friend.nickname, "is-thread")}<div><h2>${escapeHtml(friend.nickname)}${oslVerificationTickMarkup(friend.verificationTwoWay)}</h2><span>${friend.ready ? "Ready" : "Connecting"} · ${friend.verified ? "Verified" : "Unverified"}</span></div><button class="osl-chat-thread-settings" type="button" data-osl-chat-settings="${escapeHtml(friend.personId)}" aria-label="Chat settings">${settingsIcon}</button></header>
     <div class="osl-chat-message-list" role="log" aria-live="polite" aria-relevant="additions text">${messages}</div>
     ${buildIntegrityWarningRow(model.buildIntegrity)}
     ${buildWarningRow(model.buildWarning)}
@@ -438,6 +477,39 @@ function activeThread(model: OslChatsViewModel, friend: OslChatFriend): string {
       <div class="osl-chat-composer-meta"><span id="osl-chat-readiness" class="osl-chat-readiness">${readiness}</span><output id="osl-chat-draft-count" class="osl-chat-byte-count${withinLimit ? "" : " is-over"}">${bytes.toLocaleString("en-US")} / ${OSL_CHAT_MAX_DRAFT_BYTES.toLocaleString("en-US")}</output></div>
     </form>
   </section>`;
+}
+
+export function oslGroupChatHeaderMarkup(model: OslGroupChatHeaderModel): string {
+  const memberCountText = `${model.memberCount} member${model.memberCount === 1 ? "" : "s"}`;
+  const actions = model.actions
+    .map(
+      (action) =>
+        `<button class="osl-group-chat-action" type="button" data-osl-group-chat-action="${escapeHtml(action.id)}" ${action.disabled ? 'disabled aria-disabled="true"' : ""}>${escapeHtml(action.label)}</button>`,
+    )
+    .join("");
+  return `<header class="osl-group-chat-header" aria-label="OSL group chat header">
+    <div class="osl-group-chat-identity">
+      <span class="osl-group-chat-avatar" aria-hidden="true">${escapeHtml(initials(model.groupName))}</span>
+      <div>
+        <h2 class="osl-group-chat-name">${escapeHtml(model.groupName)}</h2>
+        <span class="osl-group-chat-member-count" data-osl-group-chat-member-count="${model.memberCount}">${escapeHtml(memberCountText)}</span>
+      </div>
+    </div>
+    <div class="osl-group-chat-actions" aria-label="Chat actions">${actions}</div>
+  </header>`;
+}
+
+export function oslGroupChatHeaderEmptyMarkup(): string {
+  return `<header class="osl-group-chat-header is-empty" aria-label="OSL group chat header">
+    <div class="osl-group-chat-identity">
+      <span class="osl-group-chat-avatar is-empty" aria-hidden="true">?</span>
+      <div>
+        <h2 class="osl-group-chat-name">Select a group</h2>
+        <span class="osl-group-chat-member-count" data-osl-group-chat-member-count="0">No group selected</span>
+      </div>
+    </div>
+    <div class="osl-group-chat-actions" aria-label="Chat actions"></div>
+  </header>`;
 }
 
 export function oslChatsViewMarkup(model: OslChatsViewModel): string {

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Verification tick</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import "/src/styles.css";
+      const { oslChatsViewMarkup } = await import("/src/osl-chats-view.ts");
+      const params = new URLSearchParams(window.location.search);
+      const fixture = params.get("fixture") === "one-way"
+        ? "task-0175-verification-tick-one-way.json"
+        : "task-0175-verification-tick-two-way.json";
+      const response = await fetch(`/screenshots/fixtures/${fixture}`);
+      const friend = await response.json();
+
+      window.task0175Render = (model) => {
+        const markup = oslChatsViewMarkup({
+          friends: [model],
+          activePersonId: model.personId,
+          messages: [],
+          draft: "",
+          busy: false,
+        });
+        document.querySelector("#app").innerHTML = markup;
+        document.documentElement.dataset.task0175 = "ready";
+      };
+
+      window.task0175Render(friend);
+    </script>
+  </body>
+</html>

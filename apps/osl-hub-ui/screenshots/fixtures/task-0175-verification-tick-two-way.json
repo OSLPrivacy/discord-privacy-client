@@ -1,0 +1,11 @@
+{
+  "personId": "friend-two-way",
+  "nickname": "Two-Way Friend",
+  "verified": true,
+  "ready": true,
+  "preview": "Hey, are we still on for later?",
+  "previewVisible": true,
+  "unreadCount": 0,
+  "handshakeConfirmed": true,
+  "verificationTwoWay": true
+}
