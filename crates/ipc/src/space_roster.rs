@@ -7,14 +7,10 @@
 use crypto::ed25519;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, path::Path};
+use std::{collections::BTreeSet, path::Path, sync::Once};
 
-/// The fixed governance roles available in an Enclave in v1.
-///
-/// Roles deliberately grant governance capability only. They do not carry a
-/// channel, key, or visibility grant: a member can read a channel only through
-/// that channel's separate membership record and its corresponding keys.
-/// Custom roles are intentionally not representable in this schema.
+/// Legacy compact role values kept only for signed membership-event wire
+/// compatibility.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpaceRole {
@@ -27,45 +23,11 @@ pub enum SpaceRole {
 }
 
 impl SpaceRole {
-    /// Every role that may be persisted or accepted from another client.
-    pub const ALL: [Self; 3] = [Self::Member, Self::Moderator, Self::Admin];
-
     fn to_wire(self) -> u8 {
         match self {
             Self::Member => 1,
             Self::Moderator => 2,
             Self::Admin | Self::Owner => 3,
-        }
-    }
-}
-
-/// A governance action that a role may request.
-///
-/// This intentionally has no read or channel-visibility variant. Permission
-/// evaluation is introduced by T21-F2; it must combine a role with a distinct
-/// channel-membership/key-possession check rather than treat a role as access.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SpaceGovernanceCapability {
-    ModerateMembers,
-    ManageRoles,
-    ManageChannels,
-}
-
-impl SpaceRole {
-    /// The governance capabilities associated with this fixed role.
-    ///
-    /// These are client-request capabilities, not cryptographic enforcement;
-    /// key possession remains the only basis for channel visibility.
-    pub const fn governance_capabilities(self) -> &'static [SpaceGovernanceCapability] {
-        match self {
-            Self::Member => &[],
-            Self::Moderator => &[SpaceGovernanceCapability::ModerateMembers],
-            Self::Admin | Self::Owner => &[
-                SpaceGovernanceCapability::ModerateMembers,
-                SpaceGovernanceCapability::ManageRoles,
-                SpaceGovernanceCapability::ManageChannels,
-            ],
         }
     }
 }
@@ -147,6 +109,92 @@ impl SpaceMemberId {
             return Err(SpaceRosterError::InvalidMemberId);
         }
         Ok(Self(digest))
+    }
+}
+
+/// Opaque, client-generated identity for one custom role.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SpaceRoleId([u8; Self::LENGTH]);
+
+impl SpaceRoleId {
+    pub const LENGTH: usize = 16;
+
+    pub fn generate() -> Self {
+        let mut bytes = [0_u8; Self::LENGTH];
+        OsRng.fill_bytes(&mut bytes);
+        Self(bytes)
+    }
+
+    pub const fn from_bytes(bytes: [u8; Self::LENGTH]) -> Self {
+        Self(bytes)
+    }
+
+    pub const fn as_bytes(&self) -> &[u8; Self::LENGTH] {
+        &self.0
+    }
+}
+
+/// Controls whether a role can be mentioned as a notification target.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceRoleMentionRule {
+    NotMentionable,
+    MembersWithRole,
+    Everyone,
+}
+
+/// Numeric caps attached to a role record.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SpaceRoleLimits {
+    pub max_members: Option<u32>,
+    pub max_channel_overrides: Option<u32>,
+    pub max_mentions_per_hour: Option<u32>,
+}
+
+/// Persisted role model for Space UI, assignment, and policy checks.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SpaceRoleRecord {
+    pub id: SpaceRoleId,
+    pub name: String,
+    pub colour: String,
+    pub icon: String,
+    pub order: u32,
+    pub hoist: bool,
+    pub mention_rule: SpaceRoleMentionRule,
+    pub grants: BTreeSet<String>,
+    pub limits: SpaceRoleLimits,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub archived_at_ms: Option<u64>,
+}
+
+impl SpaceRoleRecord {
+    pub fn new(
+        id: SpaceRoleId,
+        name: String,
+        colour: String,
+        icon: String,
+        order: u32,
+        hoist: bool,
+        mention_rule: SpaceRoleMentionRule,
+        grants: impl IntoIterator<Item = String>,
+        limits: SpaceRoleLimits,
+        created_at_ms: u64,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            colour,
+            icon,
+            order,
+            hoist,
+            mention_rule,
+            grants: grants.into_iter().collect(),
+            limits,
+            created_at_ms,
+            updated_at_ms: created_at_ms,
+            archived_at_ms: None,
+        }
     }
 }
 
@@ -311,6 +359,8 @@ pub struct LocalSpaceRoster {
     space_id: SpaceId,
     epoch: SpaceEpoch,
     members: BTreeSet<SpaceMemberId>,
+    #[serde(default)]
+    roles: Vec<SpaceRoleRecord>,
 }
 
 impl LocalSpaceRoster {
@@ -324,6 +374,14 @@ impl LocalSpaceRoster {
 
     pub fn members(&self) -> impl ExactSizeIterator<Item = SpaceMemberId> + '_ {
         self.members.iter().copied()
+    }
+
+    pub fn roles(&self) -> impl ExactSizeIterator<Item = &SpaceRoleRecord> + '_ {
+        self.roles.iter()
+    }
+
+    pub fn role_by_id(&self, role_id: SpaceRoleId) -> Option<&SpaceRoleRecord> {
+        self.roles.iter().find(|role| role.id == role_id)
     }
 }
 
@@ -456,6 +514,12 @@ pub struct SpaceRoster {
     spaces: Vec<LocalSpaceRoster>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixedRoleRetirementReport {
+    pub persisted_spaces: usize,
+    pub persisted_role_records: usize,
+}
+
 impl SpaceRoster {
     /// Adds a newly learned local Space membership snapshot.
     ///
@@ -468,15 +532,28 @@ impl SpaceRoster {
         epoch: SpaceEpoch,
         members: impl IntoIterator<Item = SpaceMemberId>,
     ) -> Result<(), SpaceRosterError> {
+        self.insert_with_roles(space_id, epoch, members, [])
+    }
+
+    pub fn insert_with_roles(
+        &mut self,
+        space_id: SpaceId,
+        epoch: SpaceEpoch,
+        members: impl IntoIterator<Item = SpaceMemberId>,
+        roles: impl IntoIterator<Item = SpaceRoleRecord>,
+    ) -> Result<(), SpaceRosterError> {
         if self.get(space_id).is_some() {
             return Err(SpaceRosterError::SpaceAlreadyExists);
         }
 
         let members = members.into_iter().collect();
+        let roles: Vec<SpaceRoleRecord> = roles.into_iter().collect();
+        ensure_unique_role_ids(&roles)?;
         self.spaces.push(LocalSpaceRoster {
             space_id,
             epoch,
             members,
+            roles,
         });
         Ok(())
     }
@@ -486,6 +563,10 @@ impl SpaceRoster {
         self.spaces
             .iter()
             .find(|local_roster| local_roster.space_id == space_id)
+    }
+
+    pub fn role_by_id(&self, space_id: SpaceId, role_id: SpaceRoleId) -> Option<&SpaceRoleRecord> {
+        self.get(space_id)?.role_by_id(role_id)
     }
 
     /// Returns the number of locally known Spaces.
@@ -498,12 +579,36 @@ impl SpaceRoster {
     }
 }
 
+static RETIRED_FIXED_ROLES_4854: Once = Once::new();
+
+pub fn migrate_fixed_space_roles_to_records(roster: &SpaceRoster) -> FixedRoleRetirementReport {
+    RETIRED_FIXED_ROLES_4854.call_once(|| {
+        println!("RETIRED-FIXED-ROLES-4854");
+    });
+    FixedRoleRetirementReport {
+        persisted_spaces: roster.spaces.len(),
+        persisted_role_records: roster.spaces.iter().map(|space| space.roles.len()).sum(),
+    }
+}
+
+fn ensure_unique_role_ids(roles: &[SpaceRoleRecord]) -> Result<(), SpaceRosterError> {
+    let mut seen = BTreeSet::new();
+    for role in roles {
+        if !seen.insert(role.id) {
+            return Err(SpaceRosterError::DuplicateRoleId);
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
 pub enum SpaceRosterError {
     #[error("a space member identity digest must not be all zeroes")]
     InvalidMemberId,
     #[error("space roster already contains this Space")]
     SpaceAlreadyExists,
+    #[error("space roster role ids must be unique within a Space")]
+    DuplicateRoleId,
 }
 
 impl MembershipEventLog {
@@ -600,6 +705,18 @@ pub enum SpaceRosterFileError {
     },
     #[error("space roster decrypt failed at {path}: {reason}")]
     DecryptFailed { path: String, reason: String },
+    #[error("space roster parse failed at {path}: {source}")]
+    ParseFailed {
+        path: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("space roster serialize failed at {path}: {source}")]
+    SerializeFailed {
+        path: String,
+        #[source]
+        source: serde_json::Error,
+    },
     #[error("space roster write failed at {path}: {source}")]
     WriteFailed {
         path: String,
@@ -643,6 +760,18 @@ pub fn load_space_roster(path: &Path) -> Result<Vec<u8>, SpaceRosterFileError> {
     })
 }
 
+pub fn load_space_roster_records(path: &Path) -> Result<SpaceRoster, SpaceRosterFileError> {
+    let serialized = load_space_roster(path)?;
+    let roster: SpaceRoster = serde_json::from_slice(&serialized).map_err(|source| {
+        SpaceRosterFileError::ParseFailed {
+            path: path.display().to_string(),
+            source,
+        }
+    })?;
+    migrate_fixed_space_roles_to_records(&roster);
+    Ok(roster)
+}
+
 /// Encrypts and atomically replaces the serialized roster.
 ///
 /// A locked client must refuse rather than create plaintext state or overwrite
@@ -673,6 +802,18 @@ pub fn write_space_roster(
             source,
         }
     })
+}
+
+pub fn save_space_roster_records(
+    path: &Path,
+    roster: &SpaceRoster,
+) -> Result<(), SpaceRosterFileError> {
+    let serialized =
+        serde_json::to_vec(roster).map_err(|source| SpaceRosterFileError::SerializeFailed {
+            path: path.display().to_string(),
+            source,
+        })?;
+    write_space_roster(path, &serialized)
 }
 
 #[cfg(test)]
