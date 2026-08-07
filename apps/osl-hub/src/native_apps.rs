@@ -801,6 +801,10 @@ fn manifest(id: NativeAppId) -> &'static NativeAppManifest {
     }
 }
 
+pub(crate) fn native_app_display_name(id: NativeAppId) -> &'static str {
+    manifest(id).display_name
+}
+
 pub(crate) fn whatsapp_store_package_family_name() -> &'static str {
     manifest(NativeAppId::Whatsapp)
         .store_package_family_name
@@ -1595,6 +1599,122 @@ pub(crate) fn browser_display_name(id: BrowserImportId) -> &'static str {
 }
 
 #[cfg(any(target_os = "windows", test))]
+pub(crate) fn firefox_service_display_name(id: FirefoxServiceId) -> &'static str {
+    match id {
+        FirefoxServiceId::Gmail => "Gmail",
+        FirefoxServiceId::Outlook => "Outlook",
+        FirefoxServiceId::Proton => "Proton Mail",
+        FirefoxServiceId::Tuta => "Tuta Mail",
+        FirefoxServiceId::Yahoo => "Yahoo Mail",
+        FirefoxServiceId::Aol => "AOL Mail",
+        FirefoxServiceId::Gmx => "GMX Mail",
+        FirefoxServiceId::Maildotcom => "mail.com",
+        FirefoxServiceId::Icloud => "iCloud Mail",
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn version_from_package_full_name(full_name: &str) -> Option<String> {
+    let version = full_name.split('_').nth(1)?;
+    let components = version.split('.').collect::<Vec<_>>();
+    (components.len() == 4
+        && components.iter().all(|component| {
+            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+        }))
+    .then(|| version.to_owned())
+}
+
+#[cfg(target_os = "windows")]
+fn file_version(path: &Path) -> Option<String> {
+    let system_directory = system_directory()?;
+    let powershell = system_directory
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
+    if !powershell.is_file() {
+        return None;
+    }
+    let mut command = Command::new(powershell);
+    command
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Diagnostics.FileVersionInfo]::GetVersionInfo($args[0]).FileVersion",
+        ])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let output = command_output_with_timeout(command, APP_INSTALLER_PROBE_TIMEOUT).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = std::str::from_utf8(&output.stdout).ok()?.trim();
+    (!version.is_empty()
+        && !version.contains('\0')
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b' ')))
+    .then(|| version.to_owned())
+}
+
+#[cfg(target_os = "windows")]
+fn trusted_executable_version(executable: &TrustedExecutable) -> Option<String> {
+    if let Some(parent) = executable.path().parent() {
+        if let Some(version) = parent
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix("app-"))
+            .filter(|version| discord_version_key(&format!("app-{version}")).is_some())
+        {
+            return Some(version.to_owned());
+        }
+    }
+    file_version(executable.path())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn native_app_exact_version(id: NativeAppId) -> Option<String> {
+    match id {
+        NativeAppId::Whatsapp => whatsapp_store_package_version(),
+        NativeAppId::Outlook => outlook_store_package_version().or_else(|| {
+            installed_executable(manifest(id))
+                .and_then(|executable| trusted_executable_version(&executable))
+        }),
+        _ => installed_executable(manifest(id))
+            .and_then(|executable| trusted_executable_version(&executable)),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn native_app_exact_version(_id: NativeAppId) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn browser_import_exact_version(id: BrowserImportId) -> Option<String> {
+    browser_import_executable(browser_import_manifest(id))
+        .and_then(|executable| trusted_executable_version(&executable))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn browser_import_exact_version(_id: BrowserImportId) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn firefox_service_browser_exact_version(_id: FirefoxServiceId) -> Option<String> {
+    firefox_executable().and_then(|executable| trusted_executable_version(&executable))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn firefox_service_browser_exact_version(_id: FirefoxServiceId) -> Option<String> {
+    None
+}
+
+#[cfg(any(target_os = "windows", test))]
 pub(crate) fn browser_uses_chromium_app_mode(id: BrowserImportId) -> bool {
     matches!(
         id,
@@ -1866,6 +1986,12 @@ fn whatsapp_store_package_installed() -> bool {
     whatsapp_store_package_root().is_some()
 }
 
+#[cfg(target_os = "windows")]
+fn whatsapp_store_package_version() -> Option<String> {
+    whatsapp_store_package_full_name()
+        .and_then(|full_name| version_from_package_full_name(&full_name))
+}
+
 /// Resolve the executable only through the current user's exact AppX
 /// registration. WhatsApp's packaged executable is not independently
 /// Authenticode signed, so callers must never fall back to a user-writable
@@ -1882,6 +2008,11 @@ pub(crate) fn whatsapp_store_executable_path() -> Option<PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn whatsapp_store_package_root() -> Option<PathBuf> {
+    whatsapp_store_package_full_name().and_then(|full_name| package_path_from_full_name(&full_name))
+}
+
+#[cfg(target_os = "windows")]
+fn whatsapp_store_package_full_name() -> Option<String> {
     use std::os::windows::ffi::OsStrExt;
 
     use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
@@ -1941,7 +2072,6 @@ fn whatsapp_store_package_root() -> Option<PathBuf> {
                     utf16_string_from_api_buffer(*package_name, &buffer[..buffer_length as usize])
                 })
                 .flatten()
-                .and_then(|full_name| package_path_from_full_name(&full_name))
         })
 }
 
@@ -1958,7 +2088,18 @@ fn outlook_store_executable_path() -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
+fn outlook_store_package_version() -> Option<String> {
+    outlook_store_package_full_name()
+        .and_then(|full_name| version_from_package_full_name(&full_name))
+}
+
+#[cfg(target_os = "windows")]
 fn outlook_store_package_root() -> Option<PathBuf> {
+    outlook_store_package_full_name().and_then(|full_name| package_path_from_full_name(&full_name))
+}
+
+#[cfg(target_os = "windows")]
+fn outlook_store_package_full_name() -> Option<String> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
     use windows_sys::Win32::Storage::Packaging::Appx::GetPackagesByPackageFamily;
@@ -2016,7 +2157,7 @@ fn outlook_store_package_root() -> Option<PathBuf> {
                 return None;
             }
             let path = package_path_from_full_name(&full_name)?;
-            is_trusted_outlook_package_path(&path, &program_files).then_some(path)
+            is_trusted_outlook_package_path(&path, &program_files).then_some(full_name)
         })
 }
 
