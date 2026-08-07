@@ -386,6 +386,32 @@ pub fn encode_shrunk_token(mac_key: &[u8], id: &[u8; SHRUNK_TOKEN_ID_BYTES]) -> 
     crate::bigram::render_words(&words)
 }
 
+/// Encode the compact shared-key handle over the fixed word-bank codec, with
+/// the capitalisation layer (task 0075) as an on/off switch.
+///
+/// The word bank is the first 64 vocabulary words. With `capitalise = false`
+/// each word carries six bits, so the 80-bit handle+detector needs
+/// `ceil(80 / 6) = 14` words. With `capitalise = true` the case of each word's
+/// first letter is a seventh bit — the same 64-word bank now spells 128
+/// distinct written forms — so the same payload needs only `ceil(80 / 7) = 12`
+/// words. Turning the switch off restores the 14-word form exactly; both forms
+/// carry the identical handle and so address the identical private message.
+pub fn encode_shrunk_token_word_bank(
+    mac_key: &[u8],
+    id: &[u8; SHRUNK_TOKEN_ID_BYTES],
+    capitalise: bool,
+) -> String {
+    let tag = compute_shrunk_token_tag(mac_key, id);
+    let bits = shrunk_token_payload_bits(id, &tag);
+    if capitalise {
+        let words = crate::bigram::cap_wide_decode_bits(&bits, SHRUNK_TOKEN_PAYLOAD_BITS);
+        crate::bigram::render_cap_words(&words)
+    } else {
+        let words = crate::bigram::legacy_wide_decode_bits(&bits, SHRUNK_TOKEN_PAYLOAD_BITS);
+        crate::bigram::render_words(&words)
+    }
+}
+
 /// Try to decode a Discord message as an OSL prose-token. Returns the
 /// 160-bit carrier seed iff the recovered detection tag verifies under
 /// `mac_key`.
@@ -420,12 +446,26 @@ pub fn decode_token(
 /// the wrong shared key. It deliberately does not expose a partially decoded
 /// handle before the keyed detector verifies.
 pub fn decode_shrunk_token(mac_key: &[u8], msg: &str) -> Option<[u8; SHRUNK_TOKEN_ID_BYTES]> {
-    let words = crate::bigram::parse_words(msg)?;
-    let bits = crate::bigram::arithmetic_encode_words(&words, SHRUNK_TOKEN_PAYLOAD_BITS);
+    if let Some(id) = decode_shrunk_token_arithmetic(mac_key, msg) {
+        return Some(id);
+    }
+    // Word-bank covers (task 0075): the capitalisation-on form is tried first
+    // because it is case-sensitive and a cased cover carries the extra bit the
+    // lowercase paths would silently discard. Each path is gated by the same
+    // 16-bit detector, so the extra attempts cost only HMAC comparisons.
+    if let Some(id) = decode_shrunk_token_cap_wide(mac_key, msg) {
+        return Some(id);
+    }
+    decode_shrunk_token_plain_wide(mac_key, msg)
+}
+
+/// Split a verified `SHRUNK_TOKEN_PAYLOAD_BITS` payload into `id || tag`.
+fn split_shrunk_payload(
+    bits: &[bool],
+) -> Option<([u8; SHRUNK_TOKEN_ID_BYTES], [u8; SHRUNK_TOKEN_TAG_BYTES])> {
     if bits.len() < SHRUNK_TOKEN_PAYLOAD_BITS as usize {
         return None;
     }
-
     let mut id = [0u8; SHRUNK_TOKEN_ID_BYTES];
     for (byte_i, slot) in id.iter_mut().enumerate() {
         let mut v = 0u8;
@@ -434,7 +474,6 @@ pub fn decode_shrunk_token(mac_key: &[u8], msg: &str) -> Option<[u8; SHRUNK_TOKE
         }
         *slot = v;
     }
-
     let mut tag = [0u8; SHRUNK_TOKEN_TAG_BYTES];
     for (byte_i, slot) in tag.iter_mut().enumerate() {
         let mut v = 0u8;
@@ -444,15 +483,59 @@ pub fn decode_shrunk_token(mac_key: &[u8], msg: &str) -> Option<[u8; SHRUNK_TOKE
         }
         *slot = v;
     }
+    Some((id, tag))
+}
 
+fn decode_shrunk_token_arithmetic(
+    mac_key: &[u8],
+    msg: &str,
+) -> Option<[u8; SHRUNK_TOKEN_ID_BYTES]> {
+    let words = crate::bigram::parse_words(msg)?;
+    let bits = crate::bigram::arithmetic_encode_words(&words, SHRUNK_TOKEN_PAYLOAD_BITS);
+    let (id, tag) = split_shrunk_payload(&bits)?;
     let expected = compute_shrunk_token_tag(mac_key, &id);
     if !constant_time_eq_shrunk_token(&tag, &expected) {
         return None;
     }
-
     let canonical_bits = shrunk_token_payload_bits(&id, &expected);
     let canonical_words =
         crate::bigram::arithmetic_decode_bits(&canonical_bits, SHRUNK_TOKEN_PAYLOAD_BITS);
+    if words != canonical_words {
+        return None;
+    }
+    Some(id)
+}
+
+/// Decode a capitalisation-on word-bank cover (task 0075).
+fn decode_shrunk_token_cap_wide(mac_key: &[u8], msg: &str) -> Option<[u8; SHRUNK_TOKEN_ID_BYTES]> {
+    let words = crate::bigram::parse_cap_words(msg)?;
+    let bits = crate::bigram::cap_wide_encode_words(&words, SHRUNK_TOKEN_PAYLOAD_BITS);
+    let (id, tag) = split_shrunk_payload(&bits)?;
+    let expected = compute_shrunk_token_tag(mac_key, &id);
+    if !constant_time_eq_shrunk_token(&tag, &expected) {
+        return None;
+    }
+    let canonical_bits = shrunk_token_payload_bits(&id, &expected);
+    let canonical_words =
+        crate::bigram::cap_wide_decode_bits(&canonical_bits, SHRUNK_TOKEN_PAYLOAD_BITS);
+    if words != canonical_words {
+        return None;
+    }
+    Some(id)
+}
+
+/// Decode a capitalisation-off (plain lowercase) word-bank cover (task 0075).
+fn decode_shrunk_token_plain_wide(mac_key: &[u8], msg: &str) -> Option<[u8; SHRUNK_TOKEN_ID_BYTES]> {
+    let words = crate::bigram::parse_words(msg)?;
+    let bits = crate::bigram::legacy_wide_encode_words(&words, SHRUNK_TOKEN_PAYLOAD_BITS);
+    let (id, tag) = split_shrunk_payload(&bits)?;
+    let expected = compute_shrunk_token_tag(mac_key, &id);
+    if !constant_time_eq_shrunk_token(&tag, &expected) {
+        return None;
+    }
+    let canonical_bits = shrunk_token_payload_bits(&id, &expected);
+    let canonical_words =
+        crate::bigram::legacy_wide_decode_bits(&canonical_bits, SHRUNK_TOKEN_PAYLOAD_BITS);
     if words != canonical_words {
         return None;
     }

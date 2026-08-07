@@ -540,6 +540,83 @@ pub fn legacy_wide_encode_words(words: &[usize], target_bits: u32) -> Vec<bool> 
     }
 }
 
+// ============================================================
+// Capitalisation layer over the fixed word-bank codec (task 0075)
+// ============================================================
+//
+// The wide codec above draws each cover word from the first 64 vocabulary
+// slots, so one word carries `WIDE_TOKEN_WORD_BITS = 6` bits. Writing that same
+// word two ways — lowercase or with a capital first letter — is a second,
+// independent binary choice per word, so the 64-word bank doubles to 128
+// distinct *written* forms without adding a single entry to the vocabulary.
+// That is the "second layer": the case of the first letter is an extra bit
+// riding on top of the six word-bank bits, `CAP_WIDE_WORD_BITS = 7` in total.
+//
+// It is a switch. Encoders choose the plain 6-bit form or this 7-bit form; a
+// 7-bit word carries more, so the same fixed payload needs fewer words
+// (`ceil(bits / 7)` instead of `ceil(bits / 6)`). Every corpus token starts
+// with an ASCII letter, so capitalising the first character is always a valid,
+// reversible carrier for the extra bit.
+pub const CAP_WIDE_WORD_BITS: usize = 7;
+
+/// Word count a cased word-bank cover uses for `target_bits`: `ceil(bits / 7)`.
+pub fn cap_wide_word_count(target_bits: u32) -> usize {
+    (target_bits as usize).div_ceil(CAP_WIDE_WORD_BITS)
+}
+
+/// Bits -> `(word_index, is_capital)` pairs for the cased word-bank codec.
+///
+/// Mirrors [`legacy_wide_decode_bits`] but seven bits at a time: the first bit
+/// of each chunk is the case (`true` = capitalised), the remaining up-to-six
+/// index the first 64 vocabulary words. A short trailing chunk still carries a
+/// case bit; it simply indexes fewer words.
+pub fn cap_wide_decode_bits(bits: &[bool], target_bits: u32) -> Vec<(usize, bool)> {
+    bits.iter()
+        .copied()
+        .chain(std::iter::repeat(false))
+        .take(target_bits as usize)
+        .collect::<Vec<_>>()
+        .chunks(CAP_WIDE_WORD_BITS)
+        .map(|chunk| {
+            let is_capital = chunk[0];
+            let value = chunk[1..]
+                .iter()
+                .fold(0usize, |value, bit| (value << 1) | *bit as usize);
+            (1 + value, is_capital)
+        })
+        .collect()
+}
+
+/// Inverse of [`cap_wide_decode_bits`]. Returns an all-false payload of the
+/// requested width on any structural mismatch (wrong word count, out-of-bank
+/// index), exactly as the plain wide inverse does, so a bad cover simply fails
+/// the detector rather than panicking.
+pub fn cap_wide_encode_words(words: &[(usize, bool)], target_bits: u32) -> Vec<bool> {
+    if words.len() != cap_wide_word_count(target_bits) {
+        return vec![false; target_bits as usize];
+    }
+    let mut bits = Vec::with_capacity(target_bits as usize);
+    for (index, &(word, is_capital)) in words.iter().enumerate() {
+        if !(1..=64).contains(&word) {
+            return vec![false; target_bits as usize];
+        }
+        let remaining = target_bits as usize - index * CAP_WIDE_WORD_BITS;
+        let width = remaining.min(CAP_WIDE_WORD_BITS);
+        bits.push(is_capital);
+        let value = word - 1;
+        let word_bits = width - 1;
+        for shift in (0..word_bits).rev() {
+            bits.push((value >> shift) & 1 == 1);
+        }
+    }
+    bits.truncate(target_bits as usize);
+    if bits.len() == target_bits as usize {
+        bits
+    } else {
+        vec![false; target_bits as usize]
+    }
+}
+
 /// Smallest word index `w` whose floored narrowed boundary
 /// `⌊width·cum[w]/total⌋` strictly exceeds `offset` — i.e. the
 /// bucket that contains `offset` under the exact same arithmetic
@@ -620,6 +697,82 @@ pub fn parse_words(s: &str) -> Option<Vec<usize>> {
         }
         let idx = *model.index_of.get(t.as_str())?;
         out.push(idx);
+    }
+    if out.is_empty() {
+        return None;
+    }
+    Some(out)
+}
+
+/// Render `(word_index, is_capital)` pairs as space-separated text with a
+/// trailing period. Like [`render_words`] but each word whose `is_capital`
+/// flag is set gets an upper-cased first letter — the extra bit the
+/// capitalisation layer carries.
+pub fn render_cap_words(words: &[(usize, bool)]) -> String {
+    let model = model();
+    let mut out = String::with_capacity(words.len() * 6);
+    let mut first = true;
+    for &(w, is_capital) in words {
+        if w == BOS_IDX || w >= VOCAB_SIZE {
+            continue;
+        }
+        if !first {
+            out.push(' ');
+        }
+        let word = model.vocab[w];
+        if is_capital {
+            let mut chars = word.chars();
+            if let Some(head) = chars.next() {
+                out.push(head.to_ascii_uppercase());
+                out.push_str(chars.as_str());
+            }
+        } else {
+            out.push_str(word);
+        }
+        first = false;
+    }
+    if !out.is_empty() {
+        out.push('.');
+    }
+    out
+}
+
+/// Case-sensitive inverse of [`render_cap_words`]. Recovers each token's
+/// vocab index *and* whether its first letter was capitalised. Returns `None`
+/// if any token isn't in the vocab — the same cheap "not an OSL token"
+/// rejection [`parse_words`] gives.
+pub fn parse_cap_words(s: &str) -> Option<Vec<(usize, bool)>> {
+    let model = model();
+    let mut out = Vec::new();
+    for tok in s.split_ascii_whitespace() {
+        // Strip the same punctuation set as `parse_words`, trailing then
+        // leading, but keep the original case so we can read the extra bit.
+        let mut t = tok.to_string();
+        while let Some(c) = t.chars().last() {
+            if matches!(c, '.' | ',' | '!' | '?' | ';' | ':' | '"' | ')' | ']') {
+                t.pop();
+            } else {
+                break;
+            }
+        }
+        while let Some(c) = t.chars().next() {
+            if matches!(c, '"' | '(' | '[') {
+                t.remove(0);
+            } else {
+                break;
+            }
+        }
+        if t.is_empty() {
+            continue;
+        }
+        let is_capital = t
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_uppercase())
+            .unwrap_or(false);
+        let lower = t.to_ascii_lowercase();
+        let idx = *model.index_of.get(lower.as_str())?;
+        out.push((idx, is_capital));
     }
     if out.is_empty() {
         return None;
