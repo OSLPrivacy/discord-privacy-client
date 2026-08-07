@@ -136,7 +136,7 @@ pub mod osl_chat_drag_drop;
 pub mod osl_chat_file_limits;
 #[cfg(feature = "core")]
 pub mod osl_chat_local_state_key;
-#[cfg(all(feature = "core", feature = "desktop"))]
+#[cfg(feature = "core")]
 pub mod osl_mail;
 #[cfg(feature = "core")]
 pub mod osl_profile;
