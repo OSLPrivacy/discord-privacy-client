@@ -3537,19 +3537,7 @@ pub fn rehydrate_native_discord_overlay_history(
             ) {
                 Ok(authenticated) => authenticated,
                 Err(failure) => {
-                    match failure {
-                        PeerProsePointerError::Pointer(PeerProsePointerFailure::NotAToken) => {
-                            counts.pointer_absent += 1
-                        }
-                        PeerProsePointerError::Pointer(
-                            PeerProsePointerFailure::PointerBlobGone,
-                        ) => counts.pointer_blob_gone += 1,
-                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Transport) => {
-                            counts.store_unreachable += 1
-                        }
-                        PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
-                        | PeerProsePointerError::Local(_) => counts.refused += 1,
-                    }
+                    record_rehydrate_pointer_failure(&mut counts, failure);
                     return None;
                 }
             };
@@ -3584,6 +3572,25 @@ pub fn rehydrate_native_discord_overlay_history(
         counts.refused += opened;
     }
     Ok(RehydratedNativeDiscordTranscript { rows, counts })
+}
+
+fn record_rehydrate_pointer_failure(
+    counts: &mut RehydrateDecodeCounts,
+    failure: PeerProsePointerError,
+) {
+    match failure {
+        PeerProsePointerError::Pointer(PeerProsePointerFailure::NotAToken) => {
+            counts.pointer_absent += 1
+        }
+        PeerProsePointerError::Pointer(PeerProsePointerFailure::PointerBlobGone) => {
+            counts.pointer_blob_gone += 1
+        }
+        PeerProsePointerError::Pointer(PeerProsePointerFailure::Transport) => {
+            counts.store_unreachable += 1
+        }
+        PeerProsePointerError::Pointer(PeerProsePointerFailure::Rejected)
+        | PeerProsePointerError::Local(_) => counts.refused += 1,
+    }
 }
 
 #[cfg(any(test, feature = "discord-qa-shell"))]
@@ -17259,6 +17266,107 @@ mod tests {
         assert_eq!(
             local.into_user_message(),
             "OSL Privacy account storage is unavailable"
+        );
+    }
+
+    #[test]
+    fn task_3987_refusals_match_by_hand_and_are_silent_on_arrival() {
+        let refusal_cases = [
+            ("not_a_token", PeerProsePointerFailure::NotAToken),
+            ("pointer_blob_gone", PeerProsePointerFailure::PointerBlobGone),
+            ("rejected", PeerProsePointerFailure::Rejected),
+        ];
+        let mut by_hand_times = Vec::new();
+        let by_hand = refusal_cases
+            .iter()
+            .map(|(label, failure)| {
+                let started = Instant::now();
+                let sentence = failure.user_message();
+                by_hand_times.push(format!("{label}:{}", started.elapsed().as_nanos()));
+                (*label, sentence)
+            })
+            .collect::<Vec<_>>();
+        let shared_sentence = "This encrypted message could not be opened";
+        assert_eq!(by_hand.len(), 3);
+        assert!(by_hand
+            .iter()
+            .all(|(_, sentence)| sentence == shared_sentence));
+
+        let mut counts = RehydrateDecodeCounts {
+            rows: refusal_cases.len(),
+            ..RehydrateDecodeCounts::default()
+        };
+        let mut arriving_times = Vec::new();
+        let mut index = 0usize;
+        let rows = rehydrated_rows(
+            refusal_cases.iter().map(|(label, _)| {
+                (
+                    format!("visible row for {label}"),
+                    vec![format!("candidate for {label}")],
+                    None,
+                    None,
+                )
+            }),
+            |_, _| {
+                let (label, failure) = refusal_cases[index];
+                index += 1;
+                let started = Instant::now();
+                record_rehydrate_pointer_failure(&mut counts, failure.into());
+                arriving_times.push(format!("{label}:{}", started.elapsed().as_nanos()));
+                None
+            },
+        );
+        assert_eq!(index, 3);
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|row| row.plaintext.is_none()));
+        assert!(rows.iter().all(|row| row.orientation.is_none()));
+        assert!(rows.iter().all(|row| row.attribution.is_none()));
+        assert_eq!(counts.pointer_absent, 1);
+        assert_eq!(counts.pointer_blob_gone, 1);
+        assert_eq!(counts.refused, 1);
+        assert_eq!(counts.store_unreachable, 0);
+        assert_eq!(counts.plaintext, 0);
+        assert_eq!(counts.rows, 3);
+
+        let surfaces_checked = 2usize;
+        assert_eq!(surfaces_checked, 2);
+        assert_eq!(by_hand_times.len(), 3);
+        assert_eq!(arriving_times.len(), 3);
+        let by_hand_rendered = by_hand
+            .iter()
+            .map(|(label, sentence)| format!("{label}=\"{sentence}\""))
+            .collect::<Vec<_>>()
+            .join("|");
+        let arriving_plaintexts = rows
+            .iter()
+            .zip(refusal_cases)
+            .map(|(row, (label, _))| {
+                format!(
+                    "{label}:{}",
+                    if row.plaintext.is_some() {
+                        "said"
+                    } else {
+                        "silent"
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        println!(
+            "TASK3987_BY_HAND surface=by_hand refusal_count=3 sentence=\"{shared_sentence}\" refusals={by_hand_rendered}"
+        );
+        println!(
+            "TASK3987_ARRIVING surface=arriving refusal_count=3 row_speech={arriving_plaintexts} counters={REHYDRATE_DECODE_POINTER_ABSENT}={}|{REHYDRATE_DECODE_POINTER_BLOB_GONE}={}|{REHYDRATE_DECODE_REFUSED}={}|{REHYDRATE_DECODE_STORE_UNREACHABLE}={}|{REHYDRATE_DECODE_PLAINTEXT}={}",
+            counts.pointer_absent,
+            counts.pointer_blob_gone,
+            counts.refused,
+            counts.store_unreachable,
+            counts.plaintext,
+        );
+        println!(
+            "TASK3987_SURFACES_CHECKED={surfaces_checked} timing_compare_scope=within_surface_only store_trip_refusal=pointer_blob_gone by_hand_ns={} arriving_ns={}",
+            by_hand_times.join("|"),
+            arriving_times.join("|")
         );
     }
 
