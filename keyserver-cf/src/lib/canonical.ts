@@ -385,29 +385,30 @@ export function canonicalControlInboxPostBytes(args: {
 /**
  * Canonical bytes for the inbox drain.
  *
- * `sender_id` is the optional per-sender filter (see
- * `handleControlInboxGet`). It is a **signed** component, appended only
- * when the caller asked for a filtered drain — exactly the
+ * `sender_id` and `device_id` are optional filters (see
+ * `handleControlInboxGet`). They are **signed** components, appended only
+ * when the caller asked for a filtered drain or a device-scoped drain -- exactly the
  * optional-component shape `buildRegMsg` uses, and for the same two
  * reasons:
  *
  * - A caller that did not ask for a filter produces the byte-identical
  *   pre-filter message, so every deployed client keeps working.
- * - Adding, removing or altering `?sender=` in transit changes the
+ * - Adding, removing or altering `?sender=` or `?device_id=` in transit changes the
  *   server's reconstruction, so the signature stops verifying. In
  *   particular an attacker **cannot strip the filter** to silently
  *   restore the head-of-line starvation the filter exists to fix: that
  *   request is refused, not quietly served unfiltered.
  *
- * Unambiguity: the unfiltered form ends after the timestamp; the
- * filtered form appends one more length-prefixed component. A zero
- * length prefix is not producible, because an empty `?sender=` is
- * rejected by `isProtocolId` before it ever reaches here.
+ * Unambiguity: the unfiltered form ends after the timestamp; filtered forms
+ * append length-prefixed components in fixed sender-then-device order. A zero
+ * length prefix is not producible, because empty filter values are rejected by
+ * `isProtocolId` before they ever reach here.
  */
 export function canonicalControlInboxGetBytes(args: {
   user_id: string;
   timestamp_ms: number;
   sender_id?: string | null;
+  device_id?: string | null;
 }): Uint8Array {
   const parts = [
     lpString(CONTROL_INBOX_GET_DOMAIN),
@@ -416,6 +417,9 @@ export function canonicalControlInboxGetBytes(args: {
   ];
   if (args.sender_id !== undefined && args.sender_id !== null) {
     parts.push(lpString(args.sender_id));
+  }
+  if (args.device_id !== undefined && args.device_id !== null) {
+    parts.push(lpString(args.device_id));
   }
   return concatBytes(parts);
 }

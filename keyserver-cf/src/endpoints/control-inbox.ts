@@ -751,7 +751,7 @@ async function insertControlInboxRow(
 }
 
 /**
- * `GET /v1/control-inbox/:user_id[?sender=<id>]`
+ * `GET /v1/control-inbox/:user_id[?sender=<id>&device_id=<id>]`
  *
  * # The bug the `sender` filter fixes
  *
@@ -843,6 +843,18 @@ async function handleControlInboxGetInner(
   }
   const senderFilter: string | null = rawSender;
 
+  // Optional per-device drain fence for multi-device sync. A removed device can
+  // still authenticate as the account owner, but it is no longer an active
+  // delivery target. Returning a signed empty page makes every new poll look
+  // like no mail rather than leaking rows that were addressed only after
+  // removal. Older account-wide drains omit this parameter and keep their
+  // previous behavior.
+  const rawDeviceId = url.searchParams.get("device_id");
+  if (rawDeviceId !== null && !isProtocolId(rawDeviceId)) {
+    return badRequest("device_id must be a bounded identifier when present");
+  }
+  const deviceId: string | null = rawDeviceId;
+
   const user = await getUserForVerify(env.DB, userId);
   if (!user) return notFound();
 
@@ -850,6 +862,7 @@ async function handleControlInboxGetInner(
     user_id: userId,
     timestamp_ms: ts,
     sender_id: senderFilter,
+    device_id: deviceId,
   });
   const pubBytes = safeDecodeBase64(user.ik_ed25519_pub);
   const sigBytes = safeDecodeBase64(sigB64);
@@ -859,6 +872,36 @@ async function handleControlInboxGetInner(
   if (!sigBytes) return badRequest("signature is not valid base64");
   const ok = await verifyEd25519(pubBytes, message, sigBytes);
   if (!ok) return unauthorized("signature verification failed");
+
+  if (deviceId !== null) {
+    const activeDevice = await env.DB.prepare(
+      "SELECT 1 AS present FROM device_roster WHERE user_id = ? AND device_id = ?",
+    )
+      .bind(userId, deviceId)
+      .first<{ present: number }>();
+    if (!activeDevice) {
+      const empty = { items: [] as unknown[] };
+      if (senderFilter !== null) {
+        return json({
+          ...empty,
+          filtered_sender_id: senderFilter,
+          filtered_sender_delivery: {
+            live: 0,
+            retryable: 0,
+            quarantined: 0,
+            retired: 0,
+          },
+          filtered_device_id: deviceId,
+          device_delivery: "removed",
+        });
+      }
+      return json({
+        ...empty,
+        filtered_device_id: deviceId,
+        device_delivery: "removed",
+      });
+    }
+  }
 
   // Drain in FIFO order. The recipient's poll loop calls DELETE
   // per-row after apply; we don't auto-delete on read so a crash
@@ -974,9 +1017,17 @@ async function handleControlInboxGetInner(
       items,
       filtered_sender_id: senderFilter,
       filtered_sender_delivery: deliveryCounts,
+      ...(deviceId !== null
+        ? { filtered_device_id: deviceId, device_delivery: "active" }
+        : {}),
     });
   }
-  return json({ items });
+  return json({
+    items,
+    ...(deviceId !== null
+      ? { filtered_device_id: deviceId, device_delivery: "active" }
+      : {}),
+  });
 }
 
 export async function handleControlInboxDelete(
