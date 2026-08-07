@@ -23,14 +23,43 @@ pub struct EnclaveRoleCatalog {
     roles: Vec<EnclaveRoleRow>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct EnclavePermissionMigrationReport {
+    pub introduced_permission_names: BTreeSet<String>,
+    pub existing_role_count: usize,
+}
+
 pub fn new_enclave_role_catalog() -> EnclaveRoleCatalog {
-    EnclaveRoleCatalog {
+    new_enclave_role_catalog_from_template_values(
+        all_persisted_permission_names(),
+        mod_permission_names(),
+        member_permission_names(),
+    )
+    .expect("built-in enclave role templates are valid")
+}
+
+pub fn new_enclave_role_catalog_from_template_values(
+    all_permission_names: BTreeSet<String>,
+    mod_default_permission_names: BTreeSet<String>,
+    member_default_permission_names: BTreeSet<String>,
+) -> Result<EnclaveRoleCatalog, String> {
+    ensure_subset(
+        &mod_default_permission_names,
+        &all_permission_names,
+        MOD_ROLE_NAME,
+    )?;
+    ensure_subset(
+        &member_default_permission_names,
+        &all_permission_names,
+        MEMBER_ROLE_NAME,
+    )?;
+    Ok(EnclaveRoleCatalog {
         roles: vec![
-            EnclaveRoleRow::new(OWNER_ROLE_NAME, all_persisted_permission_names()),
-            EnclaveRoleRow::new(MOD_ROLE_NAME, mod_permission_names()),
-            EnclaveRoleRow::new(MEMBER_ROLE_NAME, member_permission_names()),
+            EnclaveRoleRow::new(OWNER_ROLE_NAME, all_permission_names),
+            EnclaveRoleRow::new(MOD_ROLE_NAME, mod_default_permission_names),
+            EnclaveRoleRow::new(MEMBER_ROLE_NAME, member_default_permission_names),
         ],
-    }
+    })
 }
 
 pub fn enclave_permissions() -> &'static [EnclavePermission] {
@@ -57,6 +86,10 @@ impl EnclaveRoleCatalog {
         &self.roles
     }
 
+    pub fn role(&self, role_name: &str) -> Option<&EnclaveRoleRow> {
+        self.roles.iter().find(|role| role.name == role_name)
+    }
+
     pub fn role_names(&self) -> Vec<&str> {
         self.roles.iter().map(|role| role.name.as_str()).collect()
     }
@@ -81,6 +114,63 @@ impl EnclaveRoleCatalog {
         self.roles.push(EnclaveRoleRow::new(name, permissions));
         Ok(self.roles.last().expect("role was just pushed"))
     }
+
+    pub fn set_permission_for_role(
+        &mut self,
+        role_name: &str,
+        permission_name: impl Into<String>,
+        ticked: bool,
+    ) -> Result<(), String> {
+        let permission_name = permission_name.into();
+        let role = self
+            .roles
+            .iter_mut()
+            .find(|role| role.name == role_name)
+            .ok_or_else(|| format!("unknown enclave role: {role_name}"))?;
+        if ticked {
+            role.ticked_permission_names.insert(permission_name);
+        } else {
+            role.ticked_permission_names.remove(&permission_name);
+        }
+        Ok(())
+    }
+
+    pub fn migrate_existing_roles_for_introduced_permissions(
+        &mut self,
+        previous_permission_names: &BTreeSet<String>,
+        current_permission_names: &BTreeSet<String>,
+    ) -> EnclavePermissionMigrationReport {
+        let introduced_permission_names: BTreeSet<String> = current_permission_names
+            .difference(previous_permission_names)
+            .cloned()
+            .collect();
+        for role in &mut self.roles {
+            for permission_name in &introduced_permission_names {
+                role.ticked_permission_names.remove(permission_name);
+            }
+        }
+        EnclavePermissionMigrationReport {
+            introduced_permission_names,
+            existing_role_count: self.roles.len(),
+        }
+    }
+
+    pub fn require_introduced_permissions_off(
+        &self,
+        introduced_permission_names: &BTreeSet<String>,
+    ) -> Result<(), String> {
+        for role in &self.roles {
+            for permission_name in introduced_permission_names {
+                if role.ticked_permission_names.contains(permission_name) {
+                    return Err(format!(
+                        "introduced permission {permission_name} is on for existing role {}",
+                        role.name
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl EnclaveRoleRow {
@@ -100,6 +190,10 @@ impl EnclaveRoleRow {
             .into_iter()
             .filter(|name| self.ticked_permission_names.contains(*name))
             .count()
+    }
+
+    pub fn permission_is_ticked(&self, permission_name: &str) -> bool {
+        self.ticked_permission_names.contains(permission_name)
     }
 }
 
@@ -145,6 +239,21 @@ fn named_permissions(names: &[&str]) -> BTreeSet<String> {
                 .to_string()
         })
         .collect()
+}
+
+fn ensure_subset(
+    role_permission_names: &BTreeSet<String>,
+    all_permission_names: &BTreeSet<String>,
+    role_name: &str,
+) -> Result<(), String> {
+    for permission_name in role_permission_names {
+        if !all_permission_names.contains(permission_name) {
+            return Err(format!(
+                "{role_name} default enclave permission is not declared: {permission_name}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn mod_permission_names() -> BTreeSet<String> {

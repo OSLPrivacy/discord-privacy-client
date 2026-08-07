@@ -1,5 +1,6 @@
 //! TASK 4855: OWNER, MOD and MEMBER are defaults only.
 
+#[allow(dead_code)]
 #[path = "../../src/osl_enclave_roles.rs"]
 mod osl_enclave_roles;
 
