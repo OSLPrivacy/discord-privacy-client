@@ -211,6 +211,7 @@ import { inDomTooltipMarkup } from "./in-dom-tooltip";
 import { applyOslChatDraftToElement, firstPartyOslSurfaceContract, OSL_CHAT_MAX_DRAFT_BYTES, oslChatDraftBytes, oslChatHandshakeConfirmed, oslChatsViewMarkup, senderReceiptStateFor, submitsOslChatDraft, type OslChatMessage } from "./osl-chats-view";
 import { createOslChatDeliveryRuntime, mergeOslChatTimeline, oslChatHistoryMessages, oslChatOpenRefusalMessage, receivedOslChatBatchMessage, type OslChatDeliveryHost } from "./osl-chat-runtime";
 import { peopleReverificationNoticeMarkup } from "./people-reverification-notice";
+import { discordQaWhitelistButtonMarkup } from "./discord-qa-whitelist-button";
 import { parseEnclaveAudience, type EnclaveAudience } from "./osl-collab";
 import { addFriendByNameBoxMarkup, addFriendFailureStatus, bindAddFriendByNameForm, bindFriendRemovalControls, bindMainWindowFocusChanges, friendHandshakeDetail, friendHandshakeSummary, friendInviteCardMarkup, friendRemovalButtonMarkup, friendTrustAction, friendVerificationCopy, friendWideWhitelistButtonsMarkup, inviteCopyFailureToast, onboardingPaintDecision, ownedConfirmationSubmitDisabled, RecoveryCaptureGate, removeHubFriend, shouldClearRemovedFriendChat, verificationSubmission, type FriendVerificationCopy, type PendingFriendRequestEntry } from "./ui-behavior";
 import { runRecoveryReveal, submitsRecoveryReveal } from "./recovery-reveal";
@@ -4650,7 +4651,7 @@ function nativeDiscordHeaderControls(): string {
   // attribute: the shipped CSP is `style-src 'self'` with no `'unsafe-inline'`,
   // which drops inline style attributes too, so the inline copy styled nothing.
   const whitelistWarningNotice = nativeDiscordProtectionActive && verifiedPeer && !scopeApproved
-    ? '<span class="discord-qa-whitelist-warning" id="discord-qa-whitelist-warning" role="status" data-whitelist-state="revoked">Encryption revoked for this chat — sends will fail until you allow it again. Press the + button to allow this chat again. Until then, every message you send in it will fail to send.</span>'
+    ? '<span class="discord-qa-whitelist-warning" id="discord-qa-whitelist-warning" role="status" data-whitelist-state="revoked">Encryption revoked for this chat — sends will fail until you allow it again. Press the Off list button to allow this chat again. Until then, every message you send in it will fail to send.</span>'
     : "";
   const transcriptVisible = peerProtectedSheet.decryptDisplayEnabled;
   const flame = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.4 2.8c.5 3.6-2.6 4.8-2.6 7.4 0 1.1.7 2 1.8 2.4-.2-1.8.8-3.2 2.3-4.4 2.4 1.8 4 4.2 4 7.1A6.9 6.9 0 0 1 12 22a6.9 6.9 0 0 1-6.9-6.7c0-3.8 2.3-7.2 6.9-10.3-.1 2.5.6 3.3 1.4 4.1.8-1.8 1-3.9 0-6.3Z"/></svg>`;
@@ -4741,7 +4742,7 @@ function nativeDiscordHeaderControls(): string {
           ? "Checking row proof…"
           : "Check row proof";
   const rowProofControl = `<button class="discord-qa-control" id="discord-qa-row-proof" type="button" data-runtime-proof="${discordQaRowProofState}" aria-label="${rowProofLabel}" title="${rowProofLabel}" ${!nativeDiscordProtectionActive || !verifiedPeer || rowProofBusy ? "disabled" : ""}>Proof</button>`;
-  return `<div class="native-discord-header-controls discord-qa-header-controls" aria-label="Discord QA privacy controls"><div class="discord-qa-header-left"><button class="discord-qa-control danger icon-only in-dom-tooltip-anchor" data-open-burn="account" type="button" aria-label="Account Burn">${accountBurnIcon}${inDomTooltipMarkup("Open Account Burn confirmation")}</button></div><button class="discord-qa-control danger icon-only discord-qa-discord-burn in-dom-tooltip-anchor" data-open-burn="app" type="button" aria-label="Discord Burn">${discordBurnIcon}${inDomTooltipMarkup("Open Discord Burn confirmation")}</button><div class="discord-qa-header-right">${rowProofControl}<div class="discord-qa-whitelist" role="group" aria-label="Connected verified peer whitelist"><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-roster" type="button" aria-haspopup="menu" aria-controls="whitelist-roster-dropdown" aria-expanded="${whitelistRosterOpen}" ${discordQaHeaderBusy ? "disabled" : ""}>Whitelist${inDomTooltipMarkup("Review who is whitelisted in this group")}</button><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-add" type="button" aria-label="Allow this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || scopeApproved || whitelistBusy ? "disabled" : ""}>+${inDomTooltipMarkup("Allow this verified peer scope")}</button><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-remove" type="button" aria-label="Revoke this verified peer scope" ${!nativeDiscordProtectionActive || !verifiedPeer || !scopeApproved || whitelistBusy ? "disabled" : ""}>−${inDomTooltipMarkup("Revoke this verified peer scope")}</button></div><button class="discord-qa-control danger icon-only chat-burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive} aria-label="Chat Burn">${flame}${inDomTooltipMarkup("Open Chat Burn confirmation")}</button>${composerUnreachableNotice}${composerRefusalNotice}${transcriptNotice}${transcriptVisibilityControl}${composerControl}${whitelistWarningNotice}</div></div>`;
+  return `<div class="native-discord-header-controls discord-qa-header-controls" aria-label="Discord QA privacy controls"><div class="discord-qa-header-left"><button class="discord-qa-control danger icon-only in-dom-tooltip-anchor" data-open-burn="account" type="button" aria-label="Account Burn">${accountBurnIcon}${inDomTooltipMarkup("Open Account Burn confirmation")}</button></div><button class="discord-qa-control danger icon-only discord-qa-discord-burn in-dom-tooltip-anchor" data-open-burn="app" type="button" aria-label="Discord Burn">${discordBurnIcon}${inDomTooltipMarkup("Open Discord Burn confirmation")}</button><div class="discord-qa-header-right">${rowProofControl}<div class="discord-qa-whitelist" role="group" aria-label="Connected verified peer whitelist"><button class="in-dom-tooltip-anchor" id="discord-qa-whitelist-roster" type="button" aria-haspopup="dialog" aria-expanded="${whitelistRosterOpen}" ${discordQaHeaderBusy ? "disabled" : ""}>Whitelist${inDomTooltipMarkup("Review who is whitelisted and where")}</button>${discordQaWhitelistButtonMarkup({ scopeApproved, protectionActive: nativeDiscordProtectionActive, verifiedPeer: Boolean(verifiedPeer), busy: whitelistBusy })}</div><button class="discord-qa-control danger icon-only chat-burn in-dom-tooltip-anchor" data-open-burn="chat" type="button" ${inactive} aria-label="Chat Burn">${flame}${inDomTooltipMarkup("Open Chat Burn confirmation")}</button>${composerUnreachableNotice}${composerRefusalNotice}${transcriptNotice}${transcriptVisibilityControl}${composerControl}${whitelistWarningNotice}</div></div>`;
 }
 
 function trustedHeader(): string {
@@ -8587,11 +8588,9 @@ function bindWorkspace(): void {
   document.querySelector<HTMLButtonElement>("#discord-qa-open-composer")?.addEventListener("click", () => {
     void openDiscordQaComposer();
   });
-  document.querySelector<HTMLButtonElement>("#discord-qa-whitelist-add")?.addEventListener("click", () => {
-    void setDiscordQaWhitelistPermission(true);
-  });
-  document.querySelector<HTMLButtonElement>("#discord-qa-whitelist-remove")?.addEventListener("click", () => {
-    void setDiscordQaWhitelistPermission(false);
+  document.querySelector<HTMLButtonElement>("#discord-qa-whitelist-toggle")?.addEventListener("click", (event) => {
+    const requested = (event.currentTarget as HTMLButtonElement).dataset.whitelistNext === "allow";
+    void setDiscordQaWhitelistPermission(requested);
   });
   document.querySelector<HTMLButtonElement>("#discord-qa-whitelist-roster")?.addEventListener("click", () => {
     whitelistRosterOpen = !whitelistRosterOpen;
