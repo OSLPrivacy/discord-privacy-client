@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/account-screen.css" />
+    <title>OSL Privacy - TASK 0792</title>
+  </head>
+  <body class="account-screen-stage">
+    <div id="app"></div>
+    <script type="module">
+      const { attachAccountScreen } = await import("/src/account-screen.ts");
+      const { ACCOUNT_SCREEN_SECRETS, ACCOUNT_SCREEN_SETTINGS } = await import(
+        "/src/account-screen-data.ts"
+      );
+      // The page really does hold the secrets: the capture reads this back and
+      // compares it with the module, so "the screenshot has no password in it"
+      // is a statement about a screen that was handed one.
+      window.oslAccountSecrets = ACCOUNT_SCREEN_SECRETS;
+      window.oslLastSavedAccount = null;
+      window.oslLastAccountRequest = null;
+      attachAccountScreen(
+        document.querySelector("#app"),
+        ACCOUNT_SCREEN_SECRETS,
+        ACCOUNT_SCREEN_SETTINGS,
+        {
+          onSave: (saved) => { window.oslLastSavedAccount = saved; },
+          onRequest: (id) => { window.oslLastAccountRequest = id; },
+        },
+      );
+      // `?leak=1` is the positive control, and lives here rather than in the
+      // screen: it puts each secret into the slot that stands for it, so the
+      // same search that comes back empty against the real screen can be shown
+      // coming back full against one that leaks. Nothing in src can do this.
+      if (new URLSearchParams(location.search).get("leak") === "1") {
+        const leaks = {
+          password: ACCOUNT_SCREEN_SECRETS.password,
+          recovery: ACCOUNT_SCREEN_SECRETS.recoveryPhrase,
+          "pro-code": ACCOUNT_SCREEN_SECRETS.proCode,
+          stealth: ACCOUNT_SCREEN_SECRETS.stealthPassword,
+          "burn-password": ACCOUNT_SCREEN_SECRETS.burnPassword,
+        };
+        for (const [id, secret] of Object.entries(leaks)) {
+          const slot = document.querySelector(`[data-account-masked="${id}"]`);
+          if (slot) slot.textContent = secret;
+        }
+        document.documentElement.dataset.task0792Leak = "yes";
+      }
+      await document.fonts.ready;
+      document.documentElement.dataset.task0792 = "ready";
+    </script>
+  </body>
+</html>
