@@ -1,8 +1,7 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use ipc::wire_v2::{
-    decrypt_v3_for_sender, encrypt_v3, RecipientV3, MSG_TYPE_NATIVE_OVERLAY_RELAY,
-    WIRE_VERSION_V3,
+    decrypt_v3_for_sender, encrypt_v3, RecipientV3, MSG_TYPE_NATIVE_OVERLAY_RELAY, WIRE_VERSION_V3,
 };
 
 const FUTURE_WIRE_VERSION: u8 = 0x07;
@@ -70,7 +69,8 @@ fn open_private_queue(
             &sender.x25519_public,
         ) {
             Ok(recovered) if recovered.msg_type == MSG_TYPE_NATIVE_OVERLAY_RELAY => {
-                opened.push(String::from_utf8(recovered.plaintext).expect("fixture plaintext UTF-8"));
+                opened
+                    .push(String::from_utf8(recovered.plaintext).expect("fixture plaintext UTF-8"));
             }
             _ => retained.push(row),
         }

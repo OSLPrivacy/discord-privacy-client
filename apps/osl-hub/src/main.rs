@@ -10166,9 +10166,63 @@ fn main() {
 #[cfg(not(feature = "signal-qa-shell"))]
 fn main() {
     if let Some(exit_code) =
+        osl_privacy_hub::front_window_grab::run_front_window_grab_cli_from_env()
+    {
+        std::process::exit(exit_code);
+    }
+
+    if let Some(exit_code) =
         osl_privacy_hub::allowed_place_commands::run_allowed_place_cli_from_env()
     {
         std::process::exit(exit_code);
+    }
+
+    // Report whether this installation can find its packaged Tor sidecar,
+    // then exit. Exists so a packaged build can be checked without a
+    // display server or an unlocked profile; it runs the exact resolver
+    // the Tor route uses at startup.
+    if std::env::args_os().any(|arg| arg == std::ffi::OsStr::new("--osl-tor-sidecar-status")) {
+        match osl_privacy_hub::tor_pref::resolve_tor_sidecar_program() {
+            Ok(program) => {
+                println!("OSL tor sidecar: {}", program.display());
+                std::process::exit(0);
+            }
+            Err(refusal) => {
+                eprintln!("{refusal}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    #[cfg(feature = "core")]
+    if std::env::args_os()
+        .any(|arg| arg == std::ffi::OsStr::new(cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_ARG))
+    {
+        match cleanup::execute_windows_remove_program_uninstall_from_env() {
+            Ok(report) if report.local_cleanup_complete => {
+                println!(
+                    "OSL uninstall step {} complete: removed_targets={} failed_targets=0",
+                    cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_STEP,
+                    report.removed_targets.len()
+                );
+                std::process::exit(0);
+            }
+            Ok(report) => {
+                eprintln!(
+                    "OSL uninstall step {} incomplete: failed_targets={:?}",
+                    cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_STEP,
+                    report.failed_targets
+                );
+                std::process::exit(1);
+            }
+            Err(error) => {
+                eprintln!(
+                    "OSL uninstall step {} failed: {error}",
+                    cleanup::WINDOWS_REMOVE_PROGRAM_UNINSTALL_STEP
+                );
+                std::process::exit(1);
+            }
+        }
     }
 
     #[cfg(feature = "discord-qa-shell")]

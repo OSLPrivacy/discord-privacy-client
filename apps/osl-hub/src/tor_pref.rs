@@ -339,6 +339,31 @@ pub fn tor_sidecar_config_from_env_or_bundle(config_dir: &Path) -> Option<TorSid
     bundled_tor_sidecar_config_from_executable(&std::env::current_exe().ok()?, config_dir)
 }
 
+/// Resolve the exact sidecar program used by this run and refuse a missing
+/// packaged binary instead of silently selecting another Tor installation.
+pub fn resolve_tor_sidecar_program() -> Result<PathBuf, String> {
+    if let Some(program) =
+        std::env::var_os("OSL_ARTI_PROXY_PATH").or_else(|| std::env::var_os("OSL_ARTI_PROXY"))
+    {
+        return Ok(program.into());
+    }
+    let executable = std::env::current_exe()
+        .map_err(|_| "OSL could not resolve its own executable path".to_owned())?;
+    let path = executable
+        .parent()
+        .ok_or_else(|| "OSL executable has no parent directory".to_owned())?
+        .join(bundled_sidecar_name());
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err(format!(
+            "OSL refuses to start Tor: the packaged {} is missing at {}",
+            bundled_sidecar_name(),
+            path.display()
+        ))
+    }
+}
+
 /// Build the production sidecar configuration from a known packaged app path.
 pub fn bundled_tor_sidecar_config_from_executable(
     application_executable: &Path,

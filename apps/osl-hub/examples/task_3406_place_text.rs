@@ -510,9 +510,8 @@ mod windows_place_text {
     }
 
     fn verify_target_onscreen(hwnd: HWND, app: &str) -> Result<(), CommandError> {
-        let rect = window_rect(hwnd).ok_or_else(|| {
-            CommandError::exit1(format!("{app} window bounds could not be read"))
-        })?;
+        let rect = window_rect(hwnd)
+            .ok_or_else(|| CommandError::exit1(format!("{app} window bounds could not be read")))?;
         let origin_x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
         let origin_y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
         let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };

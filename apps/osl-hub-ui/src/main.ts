@@ -9806,6 +9806,8 @@ function bindWorkspace(): void {
   document.querySelector<HTMLFormElement>("#add-friend-form")?.addEventListener("submit", (event) => void submitFriendCode(event));
   bindAddFriendByNameForm(document, pendingFriendRequestsByName, { createRequest: createOslFriendRequestByOslName }, escapeHtml);
   document.querySelectorAll<HTMLFormElement>("[data-nickname-person]").forEach((form) => form.addEventListener("submit", (event) => void saveFriendNickname(event)));
+  const futureAccountToggles = document.querySelectorAll<HTMLInputElement>("[data-future-account-toggle]");
+  futureAccountToggles.forEach((input) => input.addEventListener("change", (event) => void changeFriendFutureAccountSwitch(event.currentTarget as HTMLInputElement)));
   document.querySelector<HTMLButtonElement>("#copy-friend-code")?.addEventListener("click", () => void copyFriendInvite());
   document.querySelector<HTMLInputElement>("#notifications-opt-in")?.addEventListener("change", (event) => void changeNotifications(event.currentTarget as HTMLInputElement));
   document.querySelector<HTMLInputElement>("#notification-chat-activity")?.addEventListener("change", (event) => {

@@ -52,11 +52,7 @@ fn task_4206_old_discord_places_keep_their_old_answers_after_record_gate() {
 
         println!(
             "TASK4206_OLD_PLACE label={} old_answer={} new_answer={} allowed={} changed={}",
-            place.label,
-            old_answer,
-            new_answer_text,
-            !answer_changed,
-            answer_changed
+            place.label, old_answer, new_answer_text, !answer_changed, answer_changed
         );
         if answer_changed {
             eprintln!("TASK4206_OLD_PLACE_ANSWER_CHANGED={}", place.label);

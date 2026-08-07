@@ -31,3 +31,8 @@ serde_json = "1"
 
 [dev-dependencies]
 serde_json = "1"
+
+# The sidecar ships inside the Tauri bundle; symbols would roughly double the
+# compressed package growth the release budget allows.
+[profile.release]
+strip = "symbols"
