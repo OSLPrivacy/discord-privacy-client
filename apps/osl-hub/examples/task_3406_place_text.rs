@@ -208,18 +208,7 @@ mod windows_place_text {
             bounds[0], bounds[1], bounds[2], bounds[3]
         );
 
-        click_composer(bounds, discord.hwnd)?;
-        thread::sleep(Duration::from_millis(180));
-        let focus = unsafe { composer.CurrentHasKeyboardFocus() }
-            .map(|value| value.as_bool())
-            .unwrap_or(false);
-        println!("composer_has_keyboard_focus={focus}");
-        if !focus {
-            return Err(CommandError::exit1(format!(
-                "{} composer did not take keyboard focus",
-                args.app
-            )));
-        }
+        verify_focused_typing_point(&automation, &composer, discord.hwnd, &args.app)?;
 
         let snapshot = snapshot_clipboard()
             .map_err(|error| CommandError::exit1(format!("clipboard snapshot failed: {error}")))?;
@@ -245,6 +234,7 @@ mod windows_place_text {
         println!("clipboard_after_digest={after_digest:016x}");
         println!("clipboard_restored_exact={}", before_digest == after_digest);
         println!("osl_clipboard_entries=0");
+        println!("placed_count=1");
 
         if readback != args.text {
             return Err(CommandError::exit1(format!(
@@ -256,6 +246,44 @@ mod windows_place_text {
             return Err(CommandError::exit1(
                 "clipboard content changed across placement",
             ));
+        }
+        Ok(())
+    }
+
+    fn verify_focused_typing_point(
+        automation: &IUIAutomation,
+        composer: &IUIAutomationElement,
+        expected_root: HWND,
+        app: &str,
+    ) -> Result<(), CommandError> {
+        let front = foreground_window().ok_or_else(|| {
+            CommandError::exit1("Windows reported no foreground window before paste")
+        })?;
+        if !same_root(front.hwnd, expected_root) {
+            println!(
+                "placement_refused_focused_app={}",
+                describe_window(&front).replace('\n', " ")
+            );
+            return Err(CommandError::exit1(format!(
+                "{app} placement refused: focused app was not {app}"
+            )));
+        }
+
+        let focused = unsafe { automation.GetFocusedElement() }.map_err(|error| {
+            CommandError::exit1(format!("focused typing point could not be read: {error:?}"))
+        })?;
+        let focused_name = element_name(&focused);
+        println!("focused_box_name={focused_name:?}");
+        let composer_has_focus = unsafe { composer.CurrentHasKeyboardFocus() }
+            .map(|value| value.as_bool())
+            .unwrap_or(false);
+        let focused_is_message_box = composer_has_focus && element_is_composer(&focused);
+        println!("typing_point_in_message_box={focused_is_message_box}");
+        if !focused_is_message_box {
+            println!("placement_refused_focused_box={focused_name:?}");
+            return Err(CommandError::exit1(format!(
+                "{app} placement refused: focused box was {focused_name:?}, not the conversation message box"
+            )));
         }
         Ok(())
     }
