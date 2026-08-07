@@ -1188,6 +1188,187 @@ mod tests {
             "D-SEP requires independent HKDF outputs"
         );
     }
+
+    fn task_3959_scope() -> ScopeInput {
+        ScopeInput {
+            kind: crate::scope::ScopeKind::Dm,
+            id: "task-3959-peer".to_owned(),
+            server_id: None,
+            channel_id: Some("task-3959-real-keyed-dm-channel".to_owned()),
+        }
+    }
+
+    fn task_3959_ordinary_message(index: usize) -> String {
+        const OPENERS: &[&str] = &[
+            "hey",
+            "quick note",
+            "buenas",
+            "bonjour",
+            "ciao",
+            "hallo",
+            "olá",
+            "namaste",
+            "selam",
+            "привет",
+            "مرحبا",
+            "こんにちは",
+            "안녕",
+            "你好",
+            "hola",
+            "salut",
+        ];
+        const BODIES: &[&str] = &[
+            "i moved the meeting to the small room because the projector upstairs is still broken",
+            "can you send the grocery list again before you leave work",
+            "the train is delayed and i may miss the first ten minutes",
+            "thanks for checking the invoice number; the amount finally matches",
+            "la reunión terminó temprano y voy camino a casa",
+            "je garde le reçu dans le dossier partagé pour demain matin",
+            "ich habe den Termin verschoben, weil der Kalender doppelt gebucht war",
+            "posso passare dopo pranzo se il pacco arriva in tempo",
+            "vou revisar o rascunho quando terminar esta chamada",
+            "kannst du bitte das fenster schließen bevor du gehst",
+            "今日は少し遅れますが、駅に着いたら連絡します",
+            "회의 자료는 공유 폴더에 올려 두었어요",
+            "我把晚饭放在冰箱里，回来以后再热一下",
+            "заберу документы после обеда и напишу когда буду рядом",
+            "سأراجع الملاحظات بعد الاجتماع وأرسل النسخة الجديدة",
+            "the local server changed ports again so refresh the bookmark",
+            "please ignore the typo in the first line of the draft",
+            "i found the charger in the blue bag by the door",
+            "the receipt is in downloads and the photo is already backed up",
+            "we can delete the old branch after the release note lands",
+        ];
+        const DETAILS: &[&str] = &[
+            "no rush",
+            "when you get a minute",
+            "before lunch if possible",
+            "after the school pickup",
+            "with the latest attachment",
+            "from my phone",
+            "once the build finishes",
+            "tomorrow morning is fine",
+            "and please keep the original name",
+            "because the first copy was blurry",
+            "si tienes tiempo",
+            "quand tu peux",
+            "wenn es passt",
+            "quando puder",
+            "今日は無理しないで",
+            "천천히 해도 돼요",
+            "不用着急",
+            "بدون استعجال",
+        ];
+        let mut message = format!(
+            "{}: {} {}.",
+            OPENERS[index % OPENERS.len()],
+            BODIES[(index * 17 + 3) % BODIES.len()],
+            DETAILS[(index * 29 + 5) % DETAILS.len()]
+        );
+        let repeats = match index % 11 {
+            0 => 0,
+            1 | 2 => 1,
+            3 | 4 | 5 => 2,
+            6 | 7 => 4,
+            8 | 9 => 7,
+            _ => 12,
+        };
+        for round in 0..repeats {
+            message.push(' ');
+            message.push_str(BODIES[(index + round * 7) % BODIES.len()]);
+            message.push(' ');
+            message.push_str(DETAILS[(index + round * 11) % DETAILS.len()]);
+            message.push('.');
+        }
+        message
+    }
+
+    fn task_3959_cover(index: usize) -> (BridgePointer, String) {
+        let scope = task_3959_scope();
+        let detection_key = derive_detection_key(b"task-3959-real-conversation-secret")
+            .expect("conversation secret derives detector");
+        let cipher = derive_scope_cipher(&scope).expect("scope cipher");
+        let scoped_detector =
+            scope_bound_detection_key(&detection_key, &scope).expect("scope-bound detector");
+
+        let mut id = [0u8; BRIDGE_ID_BYTES];
+        let mut seed = [0u8; BRIDGE_SEED_BYTES];
+        for (offset, byte) in id.iter_mut().enumerate() {
+            *byte = (index as u8)
+                .wrapping_mul(19)
+                .wrapping_add(offset as u8)
+                .wrapping_add(0x39);
+        }
+        for (offset, byte) in seed.iter_mut().enumerate() {
+            *byte = (index as u8)
+                .wrapping_mul(31)
+                .wrapping_add((offset as u8).wrapping_mul(7))
+                .wrapping_add(0x59);
+        }
+
+        let pointer = BridgePointer {
+            server_blob_id: id,
+            seed,
+        };
+        let cover = stego::encode_token(&cipher, &scoped_detector, &pointer.carrier());
+        (pointer, cover)
+    }
+
+    #[test]
+    fn task_3959_ordinary_chat_is_never_called_a_cover_message() {
+        let scope = task_3959_scope();
+        let detection_key = derive_detection_key(b"task-3959-real-conversation-secret")
+            .expect("conversation secret derives detector");
+        let ordinary: Vec<String> = (0..5_000).map(task_3959_ordinary_message).collect();
+
+        let ordinary_called_cover_count = ordinary
+            .iter()
+            .filter(|message| {
+                prose_token_bridge_pointer(&scope, &detection_key, message)
+                    .expect("pointer reader accepts the keyed scope")
+                    .is_some()
+            })
+            .count();
+
+        let covers: Vec<(usize, BridgePointer, String)> = (0..10)
+            .map(|cover_index| {
+                let insertion_index = cover_index * 497 + 23;
+                let (expected, cover) = task_3959_cover(cover_index);
+                (insertion_index, expected, cover)
+            })
+            .collect();
+
+        let mut mixed = ordinary.clone();
+        for (position, _, cover) in covers.iter().rev() {
+            mixed.insert(*position, cover.clone());
+        }
+
+        let mut mixed_cover_count = 0usize;
+        let mut mixed_cover_matches = 0usize;
+        for message in mixed.iter() {
+            let decoded = prose_token_bridge_pointer(&scope, &detection_key, message)
+                .expect("pointer reader accepts the keyed scope");
+            if let Some(pointer) = decoded {
+                mixed_cover_count += 1;
+                if covers.iter().any(|(_, expected, _)| *expected == pointer) {
+                    mixed_cover_matches += 1;
+                }
+            }
+        }
+
+        println!("TASK3959 ordinary_messages_total={}", ordinary.len());
+        println!("TASK3959 ordinary_called_cover_count={ordinary_called_cover_count}");
+        println!("TASK3959 real_covers_mixed_in={}", covers.len());
+        println!("TASK3959 mixed_messages_total={}", mixed.len());
+        println!("TASK3959 mixed_cover_count={mixed_cover_count}");
+        println!("TASK3959 mixed_cover_matches={mixed_cover_matches}");
+
+        assert_eq!(ordinary.len(), 5_000);
+        assert_eq!(ordinary_called_cover_count, 0);
+        assert_eq!(covers.len(), 10);
+        assert_eq!(mixed_cover_count, 10);
+        assert_eq!(mixed_cover_matches, 10);
+    }
 }
 
 #[cfg(test)]
