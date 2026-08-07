@@ -46,7 +46,7 @@ import { handleCryptoSettlement, sweepAnonymousCryptoInvoices } from "./endpoint
 import { handleCryptoStatus } from "./endpoints/crypto-status.js";
 import { handleHealthz } from "./endpoints/healthz.js";
 import { handleWindowsDownload } from "./endpoints/download.js";
-import { handleDevicesLookup } from "./endpoints/devices.js";
+import { handleDevicesLookup, handleDevicesPost } from "./endpoints/devices.js";
 import { handleLicenseRedeem } from "./endpoints/license-redeem.js";
 import { handleLicenseValidate } from "./endpoints/license.js";
 import { handleLinkGrant } from "./endpoints/link-grant.js";
@@ -485,6 +485,7 @@ async function dispatch(
       return await handleAccountOwnershipProof(request, env);
     }
     if (path === "/v1/register") return await handleRegister(request, env);
+    if (path === "/v1/devices") return await handleDevicesPost(request, env);
     if (path === "/v1/mail/address") return await handleMailProvision(request, env);
     if (path === "/v1/mail/consent") return await handleMailConsent(request, env);
     if (path === "/v1/mail/send/osl") return await handleMailSendOsl(request, env);

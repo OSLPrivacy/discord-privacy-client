@@ -46,6 +46,7 @@ const WRAPPED_KEY_OPEN_CLAIM_DOMAIN =
   "discord-privacy-client/wrapped-key-open-claim/v1";
 const WRAPPED_KEY_POST_DOMAIN = "discord-privacy-client/wrapped-key-post/v1";
 const LINK_GRANT_DOMAIN = "discord-privacy-client/link-grant/v1";
+const DEVICE_LIST_DOMAIN = "discord-privacy-client/device-list/v1";
 
 export const SIGNED_COMMAND_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
 
@@ -145,6 +146,31 @@ export function canonicalUnregisterBytes(args: {
     lpString(args.user_id),
     lpString(String(args.timestamp_ms)),
   ]);
+}
+
+// ---- device roster ----
+
+export interface CanonicalDeviceListEntry {
+  device_id: string;
+  prekey_bundle: string;
+}
+
+export function canonicalDeviceListBytes(args: {
+  user_id: string;
+  version: number;
+  devices: CanonicalDeviceListEntry[];
+}): Uint8Array {
+  const parts: Uint8Array[] = [
+    lpString(DEVICE_LIST_DOMAIN),
+    lpString(args.user_id),
+    u32be(args.version),
+    u32be(args.devices.length),
+  ];
+  for (const device of args.devices) {
+    parts.push(lpString(device.device_id));
+    parts.push(lpString(device.prekey_bundle));
+  }
+  return concatBytes(parts);
 }
 
 // ---- replenish ----
