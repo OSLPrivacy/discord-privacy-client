@@ -4884,6 +4884,7 @@ function nativeDiscordHeaderControls(): string {
   const visibilityBusy = discordQaHeaderBusy === "visibility";
   const rowProofBusy = discordQaRowProofState === "busy";
   const scopeApproved = context?.scopeApproved === true;
+  const openPlaceAllowed = context === null || scopeApproved;
   // Revoking used to be silent: the scope goes un-approved and the very next
   // send just fails closed in Rust ("Approve encryption for this friend
   // before continuing"), with nothing on screen explaining why. This chip
@@ -4930,7 +4931,9 @@ function nativeDiscordHeaderControls(): string {
   const transcriptNotice = transcriptFailed || transcriptUnapplied
     ? `<span class="discord-qa-visibility-notice" id="discord-qa-transcript-visibility-notice" role="status" data-transcript-state="${transcriptOutcome}">${transcriptFailed ? "Eye failed — transcript unchanged" : "Eye saved — no display surface open"}</span>`
     : "";
-  const transcriptVisibilityControl = `<button class="discord-qa-icon-control ${transcriptVisible ? "visible" : "hidden"}${transcriptFailed ? " transcript-failed" : ""}" id="discord-qa-transcript-visibility" type="button" aria-pressed="${transcriptVisible}" data-transcript-mode="${transcriptMode}" data-transcript-state="${transcriptOutcome}" ${transcriptFailed ? 'aria-invalid="true" ' : ""}aria-label="${transcriptVisible ? "Hide protected transcript" : "Show protected transcript"}" title="${transcriptTitle}" ${!verifiedPeer || visibilityBusy ? "disabled" : ""}>${eye}</button>`;
+  const transcriptVisibilityControl = openPlaceAllowed
+    ? `<button class="discord-qa-icon-control ${transcriptVisible ? "visible" : "hidden"}${transcriptFailed ? " transcript-failed" : ""}" id="discord-qa-transcript-visibility" type="button" aria-pressed="${transcriptVisible}" data-transcript-mode="${transcriptMode}" data-transcript-state="${transcriptOutcome}" ${transcriptFailed ? 'aria-invalid="true" ' : ""}aria-label="${transcriptVisible ? "Hide protected transcript" : "Show protected transcript"}" title="${transcriptTitle}" ${!verifiedPeer || visibilityBusy ? "disabled" : ""}>${eye}</button>`
+    : "";
   const lock = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="${nativeDiscordProtectionActive ? "M8 10V7a4 4 0 0 1 8 0v3" : "M8 10V7a4 4 0 0 1 7.7-1.5"}"/></svg>`;
   // "Refused" only survives while protection is still off: an open composer
   // answers the question the refusal was asking. The four states are otherwise
@@ -4966,7 +4969,7 @@ function nativeDiscordHeaderControls(): string {
   // Pages with no message composer (e.g. Friends) report discordMarkerAvailable
   // false; the lock is hidden there. Protection already open stays shown so it
   // always has a control to turn back off, even if the view changes under it.
-  const composerControl = discordMarkerAvailable || nativeDiscordProtectionActive
+  const composerControl = openPlaceAllowed && (discordMarkerAvailable || nativeDiscordProtectionActive)
     ? `<button class="discord-qa-icon-control composer ${nativeDiscordProtectionActive ? "locked" : "unlocked"}${composerRefusal ? " composer-refused" : ""}" id="discord-qa-toggle-composer" type="button" aria-pressed="${nativeDiscordProtectionActive}" aria-label="${composerProtectionLabel}" title="${composerProtectionLabel}" ${discordQaComposerBusy ? "disabled" : ""} data-lock-state="${composerLockState}"${composerRefusal ? ' aria-invalid="true"' : ""}>${lock}${composerRefusedMark}</button>`
     : "";
   // Persistent, plain-language refusal in the header strip — the one surface
